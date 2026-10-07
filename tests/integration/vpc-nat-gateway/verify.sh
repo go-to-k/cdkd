@@ -27,6 +27,10 @@
 # (both compare clean after the deploy), and a standalone EIP released out of
 # band reports `deleted` with exit 1 rather than "drift unknown".
 #
+# PLUS issue #4606 (Phases 1d / 1e): a `--no-rollback` deploy whose NAT gateway
+# (then Elastic IP) CREATE fails after AWS made it, then a fix-forward under the
+# same logical id: that successful deploy deletes the earlier one and exits 0.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -72,6 +76,7 @@ cd "$(dirname "$0")"
 STACK="CdkdVpcNatGateway"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 NAT_TYPE="AWS::EC2::NatGateway"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -96,6 +101,20 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   elif [ -n "${STATE_BUCKET:-}" ]; then
     echo "    NOTE: state destroy exited ${destroy_rc}; keeping cdkd state so the stack stays retryable" >&2
+  fi
+  rm -f "${FF_LOG:-}"
+  # go-to-k/cdkd#4606: `state destroy` deletes what the rollback journal holds
+  # too; this backstop releases a Phase 1e address neither record reached
+  # (an unassociated EIP bills by the hour). Only the allocation ids THIS run
+  # captured: a tag filter would also release a concurrent run's address.
+  # Only after a clean destroy: a kept state may still record the address.
+  if [ "${destroy_rc}" -eq 0 ]; then
+    for alloc in ${ORPHAN_EIP_ALLOC:-} ${FF_EIP_ALLOC:-}; do
+      case "${alloc}" in eipalloc-*) ;; *) continue;; esac
+      if aws ec2 release-address --allocation-id "${alloc}" --region "${REGION}" >/dev/null 2>&1; then
+        echo "    released leftover ${alloc}"
+      fi
+    done
   fi
   set -eu
 }
@@ -282,13 +301,6 @@ fi
 rm -f "${DRIFT_JSON_FILE}"
 echo "    OK: ${PROBE_ID} released out of band reports deleted, exit 1"
 
-# --- Phase 2: destroy -----------------------------------------------------
-echo "==> Phase 2: destroy (SDK delete for one gateway, CC delete for the other)"
-node "${LOCAL_DIST}" destroy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
-  --force
-
 # A deleted NAT gateway lingers in `describe-nat-gateways` as State=deleted
 # rather than 404-ing, so the gone-probe helper does not apply here: assert on
 # the reported state instead, and treat a genuine not-found as gone too.
@@ -316,6 +328,182 @@ assert_nat_gone() { # usage: assert_nat_gone <nat-gateway-id> <label>
   fi
   echo "    OK: ${label} NAT gateway ${id} is ${state}"
 }
+
+# --- Phases 1d / 1e: the fix-forward of a failed CREATE (go-to-k/cdkd#4606) ---
+# A `--no-rollback` deploy whose CREATE fails after AWS made the resource
+# journals it as a proven orphan. The fix-forward redeploy keeps the logical id
+# with a valid shape, so the CREATE succeeds and a record under that id holds a
+# NEW resource. `EC2Provider.isSameResource` proves the earlier one is another
+# resource: the deploy deletes it, keeps the new one, exits 0 and drops the
+# journal. Before #4606 it warned, named the earlier one, exited 2 and left it.
+
+# The journal's failed operation for a logical id (compact JSON, empty if none).
+journal_op() { # usage: journal_op <logical-id> <when>
+  local body
+  if ! body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"; then
+    echo "FAIL: no rollback journal $2" >&2
+    exit 1
+  fi
+  printf '%s' "${body}" | jq -c --arg id "$1" \
+    '[.segments[]?.failedOperations[]? | select(.logicalId == $id)] | last // empty'
+}
+
+# The journaled proven orphan's physical id for a logical id, or a FAIL.
+journaled_orphan_id() { # usage: journaled_orphan_id <logical-id> <when>
+  local op
+  op="$(journal_op "$1" "$2")"
+  if [ -z "${op}" ] || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ]; then
+    echo "FAIL: the journal does not carry $1 as a proven orphan $2 (op: ${op:-<none>})" >&2
+    exit 1
+  fi
+  printf '%s' "${op}" | jq -r '.physicalId // ""'
+}
+
+state_physical_id() { # usage: state_physical_id <logical-id>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "$1" '.resources[$id].physicalId // "<absent>"'
+}
+
+# The fix-forward deploy's own verdict: exit 0, the earlier attempt deleted
+# (not warned about), the journal gone.
+assert_fix_forward_deleted() { # usage: assert_fix_forward_deleted <logical-id> <rc> <log>
+  local id="$1" rc="$2" log="$3"
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: the ${id} fix-forward deploy exited ${rc} (expected 0: the earlier attempt is proven another resource and deleted -- output above)" >&2
+    echo "      (before go-to-k/cdkd#4606 it exited 2 and left the earlier ${id})" >&2
+    exit 1
+  fi
+  if ! grep -q "deleting partially-created ${id}" "${log}"; then
+    echo "FAIL: the fix-forward deploy did not delete the earlier attempt's ${id} (output above)" >&2
+    exit 1
+  fi
+  if grep -q "Skipping failed CREATE of ${id}" "${log}"; then
+    echo "FAIL: the fix-forward deploy still warned about the earlier ${id} instead of deleting it (output above)" >&2
+    exit 1
+  fi
+  assert_gone "rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY} still present after the ${id} fix-forward deploy" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+}
+
+FF_LOG=$(mktemp)
+
+echo "==> Phase 1d: --no-rollback deploy whose OrphanNatGateway CREATE fails after CreateNatGateway"
+set +e
+INJECT_NAT_ORPHAN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback >"${FF_LOG}" 2>&1
+NAT_FAIL_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+if [ "${NAT_FAIL_RC}" -eq 0 ]; then
+  echo "FAIL: the OrphanNatGateway injection deploy unexpectedly SUCCEEDED (the gateway should go failed: its EIP is already associated)" >&2
+  exit 1
+fi
+if [ "$(state_physical_id OrphanNatGateway)" != "<absent>" ]; then
+  echo "FAIL: state records OrphanNatGateway after a CREATE that threw (expected no record)" >&2
+  exit 1
+fi
+ORPHAN_NAT_ID="$(journaled_orphan_id OrphanNatGateway 'after the --no-rollback deploy of Phase 1d')"
+case "${ORPHAN_NAT_ID}" in nat-*) ;; *) echo "FAIL: journaled OrphanNatGateway id is not a NAT gateway id: '${ORPHAN_NAT_ID}'" >&2; exit 1;; esac
+# The arm discriminates only while the earlier gateway is still listed short of
+# `deleted`: unfixed, it stays `failed`; fixed, the settle deletes it.
+ORPHAN_NAT_STATE="$(aws ec2 describe-nat-gateways --nat-gateway-ids "${ORPHAN_NAT_ID}" \
+  --region "${REGION}" --query 'NatGateways[0].State' --output text)"
+# Pinned to `failed`: the injection's mechanism (Resource.AlreadyAssociated);
+# any other state means the wait failed for another reason and the arm would
+# not exercise the failed-gateway delete.
+if [ "${ORPHAN_NAT_STATE}" != "failed" ]; then
+  echo "FAIL: the journaled ${ORPHAN_NAT_ID} is '${ORPHAN_NAT_STATE}' before the fix-forward, expected 'failed' (the EIP-already-associated injection did not fire as designed)" >&2
+  exit 1
+fi
+echo "    OK: OrphanNatGateway ${ORPHAN_NAT_ID} (${ORPHAN_NAT_STATE}) is journaled as a proven orphan, no state record"
+
+echo "==> Phase 1d: the fix-forward deploy (same logical id, a private gateway)"
+set +e
+INJECT_NAT_ORPHAN=true NAT_FIX_FORWARD=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FF_LOG}" 2>&1
+NAT_FF_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+assert_fix_forward_deleted OrphanNatGateway "${NAT_FF_RC}" "${FF_LOG}"
+assert_nat_gone "${ORPHAN_NAT_ID}" "the earlier attempt's (go-to-k/cdkd#4606)"
+FF_NAT_ID="$(state_physical_id OrphanNatGateway)"
+case "${FF_NAT_ID}" in nat-*) ;; *) echo "FAIL: state records OrphanNatGateway as '${FF_NAT_ID}' after the fix-forward (expected a NAT gateway id)" >&2; exit 1;; esac
+if [ "${FF_NAT_ID}" = "${ORPHAN_NAT_ID}" ]; then
+  echo "FAIL: state records OrphanNatGateway as the earlier attempt's ${ORPHAN_NAT_ID}" >&2
+  exit 1
+fi
+# The new gateway is the record's: deleting the earlier one must not touch it.
+FF_NAT_STATE="$(aws ec2 describe-nat-gateways --nat-gateway-ids "${FF_NAT_ID}" \
+  --region "${REGION}" --query 'NatGateways[0].State' --output text)"
+if [ "${FF_NAT_STATE}" != "available" ]; then
+  echo "FAIL: the fix-forward gateway ${FF_NAT_ID} is ${FF_NAT_STATE} (expected available -- the settle must not delete the record's gateway)" >&2
+  exit 1
+fi
+echo "    OK: the fix-forward deleted ${ORPHAN_NAT_ID}, kept ${FF_NAT_ID}, exited 0 and dropped the journal"
+
+# The fix-forward gateway is a normal state resource: the next plain deploy
+# removes it from the template and deletes it.
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_nat_gone "${FF_NAT_ID}" "the fix-forward"
+
+echo "==> Phase 1e: --no-rollback deploy whose OrphanEip CREATE fails after AllocateAddress"
+set +e
+INJECT_EIP_ORPHAN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback >"${FF_LOG}" 2>&1
+EIP_FAIL_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+if [ "${EIP_FAIL_RC}" -eq 0 ]; then
+  echo "FAIL: the OrphanEip injection deploy unexpectedly SUCCEEDED (AssociateAddress should reject the malformed instance id)" >&2
+  exit 1
+fi
+if [ "$(state_physical_id OrphanEip)" != "<absent>" ]; then
+  echo "FAIL: state records OrphanEip after a CREATE that threw (expected no record)" >&2
+  exit 1
+fi
+ORPHAN_EIP_PID="$(journaled_orphan_id OrphanEip 'after the --no-rollback deploy of Phase 1e')"
+ORPHAN_EIP_ALLOC="${ORPHAN_EIP_PID#*|}"
+case "${ORPHAN_EIP_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: journaled OrphanEip id '${ORPHAN_EIP_PID}' carries no allocation id" >&2; exit 1;; esac
+if gone_probe aws ec2 describe-addresses --allocation-ids "${ORPHAN_EIP_ALLOC}" --region "${REGION}"; then
+  echo "FAIL: the journaled ${ORPHAN_EIP_ALLOC} is not in AWS before the fix-forward (the arm could not tell a delete)" >&2
+  exit 1
+fi
+echo "    OK: OrphanEip ${ORPHAN_EIP_ALLOC} is journaled as a proven orphan, no state record"
+
+echo "==> Phase 1e: the fix-forward deploy (same logical id, no instance)"
+set +e
+INJECT_EIP_ORPHAN=true EIP_FIX_FORWARD=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FF_LOG}" 2>&1
+EIP_FF_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+assert_fix_forward_deleted OrphanEip "${EIP_FF_RC}" "${FF_LOG}"
+assert_gone "the earlier attempt's ${ORPHAN_EIP_ALLOC} still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
+  aws ec2 describe-addresses --allocation-ids "${ORPHAN_EIP_ALLOC}" --region "${REGION}"
+FF_EIP_PID="$(state_physical_id OrphanEip)"
+FF_EIP_ALLOC="${FF_EIP_PID#*|}"
+case "${FF_EIP_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: state records OrphanEip as '${FF_EIP_PID}' after the fix-forward (expected an allocation id)" >&2; exit 1;; esac
+if [ "${FF_EIP_ALLOC}" = "${ORPHAN_EIP_ALLOC}" ]; then
+  echo "FAIL: state records OrphanEip as the earlier attempt's ${ORPHAN_EIP_ALLOC}" >&2
+  exit 1
+fi
+if gone_probe aws ec2 describe-addresses --allocation-ids "${FF_EIP_ALLOC}" --region "${REGION}"; then
+  echo "FAIL: the fix-forward address ${FF_EIP_ALLOC} is gone (the settle must not release the record's address)" >&2
+  exit 1
+fi
+echo "    OK: the fix-forward released ${ORPHAN_EIP_ALLOC}, kept ${FF_EIP_ALLOC}, exited 0 and dropped the journal"
+
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone "the fix-forward ${FF_EIP_ALLOC} still exists after the deploy that removed it" \
+  aws ec2 describe-addresses --allocation-ids "${FF_EIP_ALLOC}" --region "${REGION}"
+rm -f "${FF_LOG}"
+echo "    OK: Phases 1d / 1e passed"
+
+# --- Phase 2: destroy -----------------------------------------------------
+echo "==> Phase 2: destroy (SDK delete for one gateway, CC delete for the other)"
+node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
 
 assert_nat_gone "${DRAIN_NAT_ID}" "drain (cc-api)"
 assert_nat_gone "${PLAIN_NAT_ID}" "plain (sdk)"

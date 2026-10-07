@@ -15,6 +15,7 @@ v0.31.
 | `MaxDrainDurationSeconds` auto-route (issue #1411) | Second, L1-only NAT gateway sets it; must be provisioned via Cloud Control API |
 | Heterogeneous routing in one stack | The L2 NAT stays on the SDK provider while the L1 NAT routes via Cloud Control |
 | `cdkd drift` Elastic IP reader (issue #4447) | Both EIPs compare clean after deploy; `DriftProbeEip`, released out of band, reports `deleted` with exit 1 |
+| Fix-forward of a failed NAT gateway / Elastic IP CREATE (issue #4606) | `INJECT_NAT_ORPHAN` / `INJECT_EIP_ORPHAN` add a resource whose CREATE fails after AWS made it (`--no-rollback`, journaled); the `*_FIX_FORWARD` redeploy under the same logical id succeeds, deletes the earlier one and exits 0 |
 
 ## Stack shape
 

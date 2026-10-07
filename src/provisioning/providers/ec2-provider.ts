@@ -164,6 +164,7 @@ import type {
   ResourceImportResult,
   ResourceNotFound,
   ReadCurrentStateContext,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
@@ -515,6 +516,41 @@ export function describedInstanceAttributes(
 function isEc2NotFoundCode(error: unknown): boolean {
   const name = (error as { name?: unknown } | null)?.name;
   return typeof name === 'string' && name.endsWith('.NotFound');
+}
+
+/** Whether `error` carries one of `names` as its EC2 error code. */
+function isNamedError(error: unknown, names: ReadonlySet<string>): boolean {
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && names.has(name);
+}
+
+/** `DescribeNatGateways`'s answer for a gateway id EC2 no longer lists. */
+const NAT_GATEWAY_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['NatGatewayNotFound']);
+/** `DescribeAddresses`'s answer for an allocation id EC2 no longer holds. */
+const EIP_ALLOCATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
+  'InvalidAllocationID.NotFound',
+]);
+
+const NAT_GATEWAY_ID_PATTERN = /^nat-[0-9a-f]+$/;
+const EIP_ALLOCATION_ID_PATTERN = /^eipalloc-[0-9a-f]+$/;
+
+/** go-to-k/cdkd#4606: a NAT gateway physical id's identity, or `undefined` for any other form. */
+function natGatewayIdentity(physicalId: string): string | undefined {
+  return NAT_GATEWAY_ID_PATTERN.test(physicalId) ? physicalId : undefined;
+}
+
+/**
+ * go-to-k/cdkd#4606: the allocation id an Elastic IP physical id carries —
+ * the composite `PublicIp|AllocationId` or a bare allocation id — or
+ * `undefined` for any other form (a bare public IP included).
+ */
+function eipAllocationIdentity(physicalId: string): string | undefined {
+  const segments = physicalId.split('|');
+  const allocationId =
+    segments.length === 1 ? segments[0] : segments.length === 2 ? segments[1] : undefined;
+  return allocationId !== undefined && EIP_ALLOCATION_ID_PATTERN.test(allocationId)
+    ? allocationId
+    : undefined;
 }
 
 /*
@@ -1295,6 +1331,120 @@ export class EC2Provider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the NAT gateway or Elastic IP a failed CREATE
+   * journaled is the one the record under the same logical id holds (a
+   * fix-forward that created a new one there). Every other type this provider
+   * serves is `'unknown'`.
+   *
+   * The identity is the AWS-generated id: a NAT gateway's `nat-…` id, and an
+   * Elastic IP's `eipalloc-…` allocation id (carried by the composite
+   * `PublicIp|AllocationId` physical id or as a bare id, the fallback the
+   * create journals only when the composite fence refused; a bare journaled
+   * id is only ever `'same'` or `'unknown'`, since the settle's holder checks
+   * compare the id string and cannot be trusted with that spelling).
+   * Both are unique per account and region and never
+   * reassigned, so two distinct ids in the stack's region name two distinct
+   * resources. A public IP is NOT an identity (a released address can be
+   * handed out again), so an id without an allocation segment, and anything
+   * else, is `'unknown'`. Equal ids are `'same'` without a read. After the
+   * region check, the record's resource must read back live under its own id
+   * (a NAT gateway `pending` or `available`; a `failed`, `deleting` or
+   * `deleted` one is gone), else `'unknown'`; the journaled one is then
+   * `'different'` whether it reads back under its own id or AWS reports it
+   * gone. A journaled NAT gateway left `failed` by its create is
+   * `'different'` too: the settle's delete removes it.
+   *
+   * SDK-routed resources only: the settle asks the provider the journaled
+   * operation was provisioned by, so a Cloud Control-routed NAT gateway or
+   * Elastic IP (e.g. one setting `MaxDrainDurationSeconds`) never reaches
+   * this method and keeps the warning.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    let read: (id: string) => Promise<string | undefined>;
+    let journaledId: string | undefined;
+    let recordId: string | undefined;
+    if (resourceType === 'AWS::EC2::NatGateway') {
+      journaledId = natGatewayIdentity(journaledPhysicalId);
+      recordId = natGatewayIdentity(record.physicalId);
+      read = (id) => this.readNatGatewayIdIfLive(id);
+    } else if (resourceType === 'AWS::EC2::EIP') {
+      journaledId = eipAllocationIdentity(journaledPhysicalId);
+      recordId = eipAllocationIdentity(record.physicalId);
+      read = (id) => this.readEipAllocationIdIfExists(id);
+    } else {
+      return 'unknown';
+    }
+    if (journaledId === undefined || recordId === undefined) return 'unknown';
+    if (journaledId === recordId) return 'same';
+    // A bare journaled allocation id is never `'different'`. The bare form
+    // exists only as the create's fallback when the composite fence refused,
+    // so it is a spelling no record holds: the settle's holder checks compare
+    // the physical id STRING and cannot be trusted with it in either
+    // direction (a record of either spelling of that address goes unseen).
+    if (resourceType === 'AWS::EC2::EIP' && journaledPhysicalId === journaledId) return 'unknown';
+    const clientRegion = await this.ec2Client.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    if ((await read(recordId)) !== recordId) return 'unknown';
+    const journaledLive = await read(journaledId);
+    return journaledLive === recordId ? 'same' : 'different';
+  }
+
+  /**
+   * The id `DescribeNatGateways` reports for `natGatewayId` while the gateway
+   * is `pending` or `available`; `undefined` when EC2 reports it gone
+   * (`NatGatewayNotFound`, or a `failed` / `deleting` / `deleted` gateway).
+   * Any other failure, and a response naming no gateway, throws: "could not
+   * read" never reads as "gone".
+   */
+  private async readNatGatewayIdIfLive(natGatewayId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.ec2Client.send(
+        new DescribeNatGatewaysCommand({ NatGatewayIds: [natGatewayId] })
+      );
+    } catch (error) {
+      if (isNamedError(error, NAT_GATEWAY_NOT_FOUND_NAMES)) return undefined;
+      throw error;
+    }
+    const gateways = response.NatGateways ?? [];
+    if (gateways.length !== 1 || typeof gateways[0]?.NatGatewayId !== 'string') {
+      throw new Error('DescribeNatGateways did not return exactly the gateway asked for');
+    }
+    const gateway = gateways[0];
+    return gateway.State === 'pending' || gateway.State === 'available'
+      ? gateway.NatGatewayId
+      : undefined;
+  }
+
+  /**
+   * The allocation id `DescribeAddresses` reports for `allocationId`, or
+   * `undefined` when EC2 reports the address gone
+   * (`InvalidAllocationID.NotFound`). Any other failure, and a response
+   * naming no address, throws.
+   */
+  private async readEipAllocationIdIfExists(allocationId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.ec2Client.send(
+        new DescribeAddressesCommand({ AllocationIds: [allocationId] })
+      );
+    } catch (error) {
+      if (isNamedError(error, EIP_ALLOCATION_NOT_FOUND_NAMES)) return undefined;
+      throw error;
+    }
+    const addresses = response.Addresses ?? [];
+    if (addresses.length !== 1 || typeof addresses[0]?.AllocationId !== 'string') {
+      throw new Error('DescribeAddresses did not return exactly the address asked for');
+    }
+    return addresses[0].AllocationId;
   }
 
   // ─── AWS::EC2::VPC ────────────────────────────────────────────────
@@ -2451,7 +2601,15 @@ export class EC2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`EIP ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  Elastic IP ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`EIP ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2796,7 +2954,15 @@ export class EC2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`NatGateway ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  NAT gateway ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`NatGateway ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2844,9 +3010,10 @@ export class EC2Provider implements ResourceProvider {
         { NatGatewayIds: [physicalId] }
       );
     } catch (error) {
-      // The waiter throws on TIMEOUT and on FAILURE (the one
-      // FAILURE acceptor is `failed` state). Treat both as soft
-      // warnings — the EC2 console will show the gateway, the user
+      // The waiter has no FAILURE acceptor (only `deleted` and
+      // `NatGatewayNotFound` end it) and retries every other describe
+      // error, so it throws only on TIMEOUT. Treat that as a soft
+      // warning — the EC2 console will show the gateway, the user
       // can clean it up manually. We do NOT re-throw because doing
       // so would block downstream Subnet / VPC delete from running,
       // which is worse.
