@@ -440,7 +440,8 @@
         "secrets-dynamic-ref",
         "sns-sqs-event",
         "sns-subscription-filter",
-        "type-change-replacement"
+        "type-change-replacement",
+        "vpc-nat-gateway"
       ]
     },
     {
@@ -1803,6 +1804,7 @@
     "--alarm-types",
     "--all",
     "--allocation-id",
+    "--allocation-ids",
     "--api-id",
     "--api-key",
     "--application-id",

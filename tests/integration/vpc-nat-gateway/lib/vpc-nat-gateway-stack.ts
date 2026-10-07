@@ -100,6 +100,44 @@ export class VpcNatGatewayStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-drift-probe' }],
     });
 
+    // go-to-k/cdkd#4606: the fix-forward arms (Phases 1d / 1e of `verify.sh`).
+    // Each env-gated resource's first deploy is a CREATE that fails AFTER AWS
+    // made the resource, so the journal holds it as a proven orphan; the
+    // `*_FIX_FORWARD` redeploy keeps the logical id with a valid shape, the
+    // CREATE succeeds, and that successful deploy must delete the earlier one.
+    if (process.env.INJECT_NAT_ORPHAN === 'true') {
+      if (process.env.NAT_FIX_FORWARD === 'true') {
+        // EIP-free, like the drain gateway above.
+        new ec2.CfnNatGateway(this, 'OrphanNatGateway', {
+          subnetId: vpc.privateSubnets[1]!.subnetId,
+          connectivityType: 'private',
+          tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-orphan' }],
+        });
+      } else {
+        // `CreateNatGateway` accepts an allocation id the L2 gateway already
+        // holds; the gateway then goes `failed` (Resource.AlreadyAssociated),
+        // so the available-state wait fails after the gateway exists.
+        const natEip = vpc.publicSubnets[0]!.node.tryFindChild('EIP');
+        if (!(natEip instanceof ec2.CfnEIP)) {
+          throw new Error("the L2 NAT gateway's CfnEIP was not found under publicSubnets[0]");
+        }
+        new ec2.CfnNatGateway(this, 'OrphanNatGateway', {
+          subnetId: vpc.publicSubnets[1]!.subnetId,
+          allocationId: natEip.attrAllocationId,
+          tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-orphan' }],
+        });
+      }
+    }
+    if (process.env.INJECT_EIP_ORPHAN === 'true') {
+      // `AllocateAddress` succeeds, then `AssociateAddress` rejects the
+      // malformed instance id (`InvalidInstanceID.Malformed`, not retried).
+      new ec2.CfnEIP(this, 'OrphanEip', {
+        domain: 'vpc',
+        ...(process.env.EIP_FIX_FORWARD !== 'true' && { instanceId: 'i-cdkdmalformed' }),
+        tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-orphan' }],
+      });
+    }
+
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
       description: 'VPC ID (NAT Gateway lives in the public subnet of this VPC)',
