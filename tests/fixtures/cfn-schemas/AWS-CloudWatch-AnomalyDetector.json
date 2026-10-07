@@ -1,10 +1,10 @@
 {
   "resourceType": "AWS::CloudWatch::AnomalyDetector",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-07",
   "properties": [
+    "AnomalyDetectorId",
     "Configuration",
     "Dimensions",
-    "Id",
     "MetricCharacteristics",
     "MetricMathAnomalyDetector",
     "MetricName",
@@ -13,7 +13,7 @@
     "Stat"
   ],
   "readOnlyProperties": [
-    "Id"
+    "AnomalyDetectorId"
   ],
   "createOnlyProperties": [
     "Dimensions",
@@ -48,7 +48,7 @@
     ]
   ],
   "primaryIdentifier": [
-    "Id"
+    "AnomalyDetectorId"
   ],
   "nestedProperties": {
     "MetricCharacteristics": [
@@ -138,12 +138,12 @@
   "definitionShapes": {
     "#top": {
       "MetricCharacteristics": "object",
+      "AnomalyDetectorId": "scalar",
       "MetricName": "scalar",
       "Stat": "scalar",
       "Configuration": "object",
       "MetricMathAnomalyDetector": "object",
       "Dimensions": "array",
-      "Id": "scalar",
       "Namespace": "scalar",
       "SingleMetricAnomalyDetector": "object"
     },
@@ -153,7 +153,7 @@
     "MetricMathAnomalyDetector": {
       "MetricDataQueries": "array"
     },
-    "Configuration": {
+    "MetricConfiguration": {
       "MetricTimeZone": "scalar",
       "ExcludedTimeRanges": "array"
     },
@@ -244,5 +244,23 @@
       "Name",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Configuration": "object",
+    "Configuration.ExcludedTimeRanges": "array",
+    "Configuration.ExcludedTimeRanges[]": "object",
+    "Dimensions": "array",
+    "Dimensions[]": "object",
+    "MetricCharacteristics": "object",
+    "MetricMathAnomalyDetector": "object",
+    "MetricMathAnomalyDetector.MetricDataQueries": "array",
+    "MetricMathAnomalyDetector.MetricDataQueries[]": "object",
+    "MetricMathAnomalyDetector.MetricDataQueries[].MetricStat": "object",
+    "MetricMathAnomalyDetector.MetricDataQueries[].MetricStat.Metric": "object",
+    "MetricMathAnomalyDetector.MetricDataQueries[].MetricStat.Metric.Dimensions": "array",
+    "MetricMathAnomalyDetector.MetricDataQueries[].MetricStat.Metric.Dimensions[]": "object",
+    "SingleMetricAnomalyDetector": "object",
+    "SingleMetricAnomalyDetector.Dimensions": "array",
+    "SingleMetricAnomalyDetector.Dimensions[]": "object"
   }
 }

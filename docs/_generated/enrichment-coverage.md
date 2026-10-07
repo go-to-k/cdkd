@@ -138,7 +138,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudFront::OriginAccessControl` | yes | enriched | `Id` (OK) |
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::CloudWatch::AnomalyDetector` | yes | enriched | `Id` (allow) |
+| `AWS::CloudWatch::AnomalyDetector` | yes | enriched | `AnomalyDetectorId` (allow) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Name` (GAP), `RepositoryId` (allow) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (allow) |
