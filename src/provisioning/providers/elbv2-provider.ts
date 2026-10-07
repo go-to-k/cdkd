@@ -83,6 +83,7 @@ import type {
   UpdateContext,
   SecretMasker,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -562,6 +563,38 @@ function isElbv2NotFoundName(error: unknown): boolean {
 }
 
 /**
+ * go-to-k/cdkd#4606: the ARN form each type's physical id takes on both
+ * routes (Cloud Control's primary identifier is the ARN too), with the
+ * partition, region and account captured. The last segment(s) are the
+ * AWS-generated id a create mints, so a re-created resource of the same name
+ * gets another ARN.
+ */
+const ELBV2_ARN_PATTERNS: ReadonlyMap<string, RegExp> = new Map([
+  [
+    'AWS::ElasticLoadBalancingV2::LoadBalancer',
+    /^arn:(aws[a-z-]*):elasticloadbalancing:([a-z0-9-]+):(\d{12}):loadbalancer\/(?:app|net|gwy)\/[A-Za-z0-9-]+\/[0-9a-f]+$/,
+  ],
+  [
+    'AWS::ElasticLoadBalancingV2::TargetGroup',
+    /^arn:(aws[a-z-]*):elasticloadbalancing:([a-z0-9-]+):(\d{12}):targetgroup\/[A-Za-z0-9-]+\/[0-9a-f]+$/,
+  ],
+  [
+    'AWS::ElasticLoadBalancingV2::Listener',
+    /^arn:(aws[a-z-]*):elasticloadbalancing:([a-z0-9-]+):(\d{12}):listener\/(?:app|net|gwy)\/[A-Za-z0-9-]+\/[0-9a-f]+\/[0-9a-f]+$/,
+  ],
+]);
+
+/**
+ * go-to-k/cdkd#4606: the `partition:region:account` scope of an ELBv2 ARN of
+ * `resourceType`, or `undefined` for any other form (a name, another type's
+ * ARN, another type).
+ */
+function elbv2ArnScope(resourceType: string, physicalId: string): string | undefined {
+  const match = ELBV2_ARN_PATTERNS.get(resourceType)?.exec(physicalId);
+  return match ? `${match[1]}:${match[2]}:${match[3]}` : undefined;
+}
+
+/**
  * AWS ELBv2 Provider
  *
  * Implements resource provisioning for ELBv2 resources:
@@ -695,6 +728,28 @@ export class ELBv2Provider implements ResourceProvider {
   private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
     const mask = maskerOrIdentity(maskSecrets);
     return mask(error instanceof Error ? error.message : String(error));
+  }
+
+  /**
+   * A delete whose target ELBv2 reports gone. go-to-k/cdkd#4606: a journaled
+   * orphan already gone settles with exit 0, so it is named once at info
+   * (masked by the caller's printing bag); a record's own delete keeps the
+   * quiet `debugText`.
+   */
+  private logDeleteTargetGone(
+    context: DeleteContext | undefined,
+    what: string,
+    physicalId: string,
+    logicalId: string,
+    debugText: string
+  ): void {
+    if (context?.failedCreateOrphan === true) {
+      this.logger.info(
+        safeMsg`  ${what} ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+      );
+    } else {
+      this.logger.debug(debugText);
+    }
   }
 
   /**
@@ -897,6 +952,106 @@ export class ELBv2Provider implements ResourceProvider {
           physicalId
         );
     }
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the load balancer, target group or listener a
+   * failed CREATE journaled is the one the record under the same logical id
+   * holds (a fix-forward that created a new one there).
+   *
+   * The identity is the ARN, the physical id on both routes. Its last
+   * segment(s) are an id AWS mints per create, so even a load balancer or
+   * target group re-created under the same NAME gets another ARN, and none of
+   * the three can be renamed: two distinct ARNs of one type name two distinct
+   * resources. The name alone is no identity (it is reusable once the holder
+   * is deleted), so anything but the type's ARN form is `'unknown'`, as are
+   * two ARNs outside the stack's region or of different partitions or
+   * accounts. Equal ARNs are `'same'` without a read. After the client-region
+   * check, the record's ARN must read back as itself (else `'unknown'`); the
+   * journaled one is then `'different'` when it reads back as itself or AWS
+   * reports it gone (a listener whose load balancer was deleted included),
+   * `'same'` when it reads back as the record's, and `'unknown'` for any
+   * other answer.
+   *
+   * SDK-routed resources only: the settle asks the provider the journaled
+   * operation was provisioned by, and only this provider's creates journal
+   * one (`markCreatedBeforeFailure`, when the wiring-failure cleanup could
+   * not delete what the create made).
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    const journaledScope = elbv2ArnScope(resourceType, journaledPhysicalId);
+    const recordScope = elbv2ArnScope(resourceType, record.physicalId);
+    if (journaledScope === undefined || journaledScope !== recordScope) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledScope.split(':')[1] !== context.expectedRegion) return 'unknown';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    if ((await this.readElbv2ArnIfExists(resourceType, record.physicalId)) !== record.physicalId) {
+      return 'unknown';
+    }
+    const journaledLive = await this.readElbv2ArnIfExists(resourceType, journaledPhysicalId);
+    if (journaledLive === record.physicalId) return 'same';
+    return journaledLive === undefined || journaledLive === journaledPhysicalId
+      ? 'different'
+      : 'unknown';
+  }
+
+  /**
+   * The ARN `Describe*` reports for `arn` of `resourceType`, or `undefined`
+   * when ELBv2 reports it gone by the type's own not-found error NAME. Any
+   * other failure, and a response naming no single resource, throws: "could
+   * not read" never reads as "gone".
+   */
+  private async readElbv2ArnIfExists(
+    resourceType: string,
+    arn: string
+  ): Promise<string | undefined> {
+    let notFoundName: string;
+    let read: () => Promise<Array<string | undefined> | undefined>;
+    switch (resourceType) {
+      case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
+        notFoundName = 'LoadBalancerNotFoundException';
+        read = async () =>
+          (
+            await this.getClient().send(
+              new DescribeLoadBalancersCommand({ LoadBalancerArns: [arn] })
+            )
+          ).LoadBalancers?.map((lb) => lb.LoadBalancerArn);
+        break;
+      case 'AWS::ElasticLoadBalancingV2::TargetGroup':
+        notFoundName = 'TargetGroupNotFoundException';
+        read = async () =>
+          (
+            await this.getClient().send(new DescribeTargetGroupsCommand({ TargetGroupArns: [arn] }))
+          ).TargetGroups?.map((tg) => tg.TargetGroupArn);
+        break;
+      case 'AWS::ElasticLoadBalancingV2::Listener':
+        notFoundName = 'ListenerNotFoundException';
+        read = async () =>
+          (
+            await this.getClient().send(new DescribeListenersCommand({ ListenerArns: [arn] }))
+          ).Listeners?.map((l) => l.ListenerArn);
+        break;
+      default:
+        throw new Error(`No ELBv2 identity read for ${resourceType}`);
+    }
+    let arns: Array<string | undefined> | undefined;
+    try {
+      arns = await read();
+    } catch (error) {
+      if ((error as { name?: unknown } | null)?.name === notFoundName) return undefined;
+      throw error;
+    }
+    const found = arns ?? [];
+    if (found.length !== 1 || typeof found[0] !== 'string' || found[0] === '') {
+      throw new Error('ELBv2 did not return exactly the resource asked for');
+    }
+    return found[0];
   }
 
   // ─── AWS::ElasticLoadBalancingV2::LoadBalancer ─────────────────────
@@ -1679,7 +1834,13 @@ export class ELBv2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`LoadBalancer ${physicalId} does not exist, skipping deletion`);
+        this.logDeleteTargetGone(
+          context,
+          'Load balancer',
+          physicalId,
+          logicalId,
+          `LoadBalancer ${physicalId} does not exist, skipping deletion`
+        );
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2167,7 +2328,13 @@ export class ELBv2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`TargetGroup ${physicalId} does not exist, skipping deletion`);
+        this.logDeleteTargetGone(
+          context,
+          'Target group',
+          physicalId,
+          logicalId,
+          `TargetGroup ${physicalId} does not exist, skipping deletion`
+        );
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2578,7 +2745,13 @@ export class ELBv2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Listener ${physicalId} does not exist, skipping deletion`);
+        this.logDeleteTargetGone(
+          context,
+          'Listener',
+          physicalId,
+          logicalId,
+          `Listener ${physicalId} does not exist, skipping deletion`
+        );
         return;
       }
       const cause = error instanceof Error ? error : undefined;
