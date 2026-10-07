@@ -196,6 +196,7 @@
         "ecs-service-update-props",
         "efs-immutable-replacement",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
@@ -434,6 +435,7 @@
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
+        "elasticache-fix-forward-orphan",
         "emr-cluster",
         "fsx-lustre",
         "import-retain-destroy",
@@ -561,6 +563,7 @@
         "ecs-service-update-props",
         "efs-immutable-replacement",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -908,6 +911,7 @@
         "ecs-service-update-props",
         "efs-immutable-replacement",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -1139,6 +1143,7 @@
       "flag": "--resource-timeout",
       "integs": [
         "docdb-neptune",
+        "elasticache-fix-forward-orphan",
         "rds-fix-forward-orphan",
         "remove-protection"
       ]
@@ -1146,6 +1151,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "elasticache-fix-forward-orphan",
         "emr-cluster",
         "fsx-lustre",
         "local-invoke-from-cfn-stack",
@@ -1285,6 +1291,7 @@
         "ecs-service-update-props",
         "efs-immutable-replacement",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -1483,6 +1490,7 @@
       "flag": "--state-prefix",
       "integs": [
         "destroy-interrupt",
+        "elasticache-fix-forward-orphan",
         "importvalue-chain",
         "remove-protection-journaled-orphan"
       ]
@@ -1649,6 +1657,7 @@
         "ecs-service-update-props",
         "efs-immutable-replacement",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -1877,6 +1886,7 @@
     "--budget-name",
     "--build-arg",
     "--cache-cluster-id",
+    "--cache-subnet-group-name",
     "--capacity-provider-name",
     "--category",
     "--certificate-arn",

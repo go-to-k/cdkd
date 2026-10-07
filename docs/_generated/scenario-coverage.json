@@ -1007,6 +1007,11 @@
       "scenarios": []
     },
     {
+      "name": "elasticache-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "elasticache-replicationgroup-getatt",
       "annotated": true,
       "scenarios": [
@@ -3225,6 +3230,7 @@
     "ecr-scanning",
     "ecs-schedule-targets",
     "efs-immutable-replacement",
+    "elasticache-fix-forward-orphan",
     "elbv2-same-name-replacement",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",

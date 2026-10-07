@@ -1240,6 +1240,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -1337,6 +1338,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -1459,6 +1463,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -1551,6 +1556,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -1695,6 +1703,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -1793,6 +1802,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -1917,6 +1929,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -2014,6 +2027,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -2343,6 +2359,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -2445,6 +2462,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -2598,6 +2618,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -2690,6 +2711,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -2807,6 +2831,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -2914,6 +2939,9 @@
         "efs-standalone": [
           "l2",
           "literal"
+        ],
+        "elasticache-fix-forward-orphan": [
+          "l2"
         ],
         "elasticache-replicationgroup-getatt": [
           "l2"
@@ -3074,6 +3102,7 @@
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt",
         "elbv2-same-name-replacement",
         "emr-cluster",
@@ -3171,6 +3200,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -3655,7 +3687,8 @@
       "resourceType": "AWS::ElastiCache::CacheCluster",
       "integs": [
         "cache-streaming",
-        "cc-final-snapshot-handlers"
+        "cc-final-snapshot-handlers",
+        "elasticache-fix-forward-orphan"
       ],
       "signals": {
         "cache-streaming": [
@@ -3666,6 +3699,10 @@
           "l1",
           "l2",
           "literal"
+        ],
+        "elasticache-fix-forward-orphan": [
+          "l1",
+          "l2"
         ]
       }
     },
@@ -3674,6 +3711,7 @@
       "integs": [
         "cache-streaming",
         "cc-final-snapshot-handlers",
+        "elasticache-fix-forward-orphan",
         "elasticache-replicationgroup-getatt"
       ],
       "signals": {
@@ -3682,6 +3720,10 @@
           "l2"
         ],
         "cc-final-snapshot-handlers": [
+          "l1",
+          "l2"
+        ],
+        "elasticache-fix-forward-orphan": [
           "l1",
           "l2"
         ],
