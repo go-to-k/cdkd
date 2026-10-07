@@ -678,6 +678,11 @@ export class ELBv2Provider implements ResourceProvider {
         'AlpnPolicy',
         'MutualAuthentication',
         'ListenerAttributes',
+        // Sent by CreateListener, diffed by update's applyTagDiff and read back
+        // by readListener. Undeclared, a tagged listener (any CDK app with
+        // stack tags) routed via Cloud Control, whose update leaves a removed
+        // ListenerAttributes key live (go-to-k/cdkd#2085).
+        'Tags',
       ]),
     ],
   ]);
@@ -2699,10 +2704,7 @@ export class ELBv2Provider implements ResourceProvider {
         );
       }
 
-      // Apply tag diff. Listener `handledProperties` doesn't currently
-      // include Tags but AWS allows tags on listeners; previous state may
-      // hold them after import / drift refresh, so handle the diff for
-      // safety.
+      // Apply tag diff. ELBv2 uses AddTags / RemoveTags with [arn].
       await this.applyTagDiff(
         physicalId,
         resourceType,
