@@ -1951,6 +1951,11 @@
       "scenarios": []
     },
     {
+      "name": "remove-protection-journaled-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rename-refactor",
       "annotated": false,
       "scenarios": []
@@ -3263,6 +3268,7 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "remove-protection-compensation",
+    "remove-protection-journaled-orphan",
     "rename-refactor",
     "replace-squatter-refusal",
     "replacement-immutable-name",

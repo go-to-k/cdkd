@@ -2121,6 +2121,7 @@
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
+        "remove-protection-journaled-orphan",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
@@ -2228,6 +2229,10 @@
         ],
         "remove-protection": [
           "l2"
+        ],
+        "remove-protection-journaled-orphan": [
+          "l1",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l2"
@@ -2339,6 +2344,7 @@
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
+        "remove-protection-journaled-orphan",
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "sdk-to-cc-autoroute",
@@ -2495,6 +2501,10 @@
         ],
         "remove-protection": [
           "l2"
+        ],
+        "remove-protection-journaled-orphan": [
+          "l1",
+          "literal"
         ],
         "replacement-rename-onto-holder": [
           "l1",
@@ -2791,6 +2801,7 @@
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
+        "remove-protection-journaled-orphan",
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
@@ -2960,6 +2971,10 @@
         ],
         "remove-protection": [
           "l2"
+        ],
+        "remove-protection-journaled-orphan": [
+          "l1",
+          "literal"
         ],
         "replacement-rename-onto-holder": [
           "l1",
@@ -3673,6 +3688,7 @@
         "nlb-source-nat",
         "partial-create-handback",
         "remove-protection",
+        "remove-protection-journaled-orphan",
         "replacement-rename-onto-holder"
       ],
       "signals": {
@@ -3716,6 +3732,10 @@
         ],
         "remove-protection": [
           "l2",
+          "literal"
+        ],
+        "remove-protection-journaled-orphan": [
+          "l1",
           "literal"
         ],
         "replacement-rename-onto-holder": [
@@ -6680,6 +6700,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
         "redshift-cluster-getatt",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
@@ -6923,6 +6944,10 @@
         ],
         "redshift-cluster-getatt": [
           "l1"
+        ],
+        "remove-protection-journaled-orphan": [
+          "l1",
+          "literal"
         ],
         "rename-refactor": [
           "l2",

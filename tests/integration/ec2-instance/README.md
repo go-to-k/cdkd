@@ -18,6 +18,13 @@ Minimal EC2 Instance deployment example for cdkd.
 - Amazon Linux 2023 AMI (resolved by CDK)
 - Resource dependencies (Instance depends on VPC, Subnet, SecurityGroup)
 - `Fn::GetAtt` for outputs (Instance ID, Public IP, Private IP)
+- `EC2Provider.isSameResource` for instances (issue #4606): `verify.sh` Phase 1b runs
+  `same-resource-probe.mjs` against the live instances, a terminated throwaway and
+  an id that never existed
+- The same read for VPC / Subnet / SecurityGroup (issue #4606): `verify.sh` Phase 1c runs
+  `network-same-resource-probe.mjs` against the stack's resources, a throwaway VPC / subnet /
+  security group it creates, the default VPC and never-existed ids, then the settle's delete
+  of the throwaways and the reads once they are gone
 
 ## Deploy
 

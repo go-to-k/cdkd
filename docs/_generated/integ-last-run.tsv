@@ -101,7 +101,7 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-03T04:20:39Z	PASS	279	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-03T04:28:29Z	PASS	68	verify.sh	rc ok, orph clean (#4283 PR #4449)
-ec2-instance	2026-10-05T14:42:45Z	PASS	126	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
+ec2-instance	2026-10-07T19:43:02Z	PASS	0	verify.sh	#4606 Phase 1c VPC/Subnet/SG isSameResource live probe ALL 23 + ALL 9 PASSED; Phase 1b ALL 9 PASSED; destroy 0 errors, 0 orphans
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-10-05T14:42:45Z	PASS	606	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
@@ -116,7 +116,7 @@ efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 de
 efs-standalone	2026-10-07T16:21:49Z	PASS	165	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 elasticache-replicationgroup-getatt	2026-10-03T06:06:22Z	PASS	806	verify.sh	rc ok, orph clean (#4497)
 elbv2-same-name-replacement	2026-10-05T02:29:22Z	PASS	66	verify.sh	rc ok, orph clean (#4569 @480676155)
-emr-cluster	2026-10-06T02:22:44Z	PASS	773	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+emr-cluster	2026-10-07T18:32:50Z	PASS	0	verify.sh	#4606 Phase 3b fix-forward settles the journaled OrphanCluster (already TERMINATED_WITH_ERRORS); destroy 0 errors, 0 orphans
 emr-instance-configs	2026-10-06T02:22:44Z	PASS	922	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 emr-instance-fleets	2026-10-06T02:22:44Z	PASS	1354	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
@@ -272,6 +272,7 @@ redacted-delete-address	2026-10-06T05:40:55Z	PASS	100	verify.sh	rc ok, orph clea
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-07T16:21:49Z	PASS	2124	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
+remove-protection-journaled-orphan	2026-10-07T19:09:03Z	PASS	0	verify.sh	#4678 destroy and rollback --remove-protection clear the protected journaled orphan, kept without the flag; per-run state prefix; 0 orphans
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-05T02:29:22Z	PASS	65	verify.sh	rc ok, orph clean (#4569 @480676155)
 replacement-fanout	2026-10-06T12:30:56Z	PASS	85	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean

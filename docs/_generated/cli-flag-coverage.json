@@ -297,6 +297,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -427,10 +428,12 @@
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
+        "emr-cluster",
         "fsx-lustre",
         "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
+        "remove-protection-journaled-orphan",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-explicit-name-rewrite",
@@ -666,6 +669,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1006,6 +1010,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1095,7 +1100,8 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "remove-protection",
-        "remove-protection-compensation"
+        "remove-protection-compensation",
+        "remove-protection-journaled-orphan"
       ]
     },
     {
@@ -1123,6 +1129,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "emr-cluster",
         "fsx-lustre",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
@@ -1373,6 +1380,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1453,7 +1461,8 @@
       "flag": "--state-prefix",
       "integs": [
         "destroy-interrupt",
-        "importvalue-chain"
+        "importvalue-chain",
+        "remove-protection-journaled-orphan"
       ]
     },
     {
@@ -1717,6 +1726,7 @@
         "redacted-delete-address",
         "redshift-cluster-getatt",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1847,6 +1857,7 @@
     "--category",
     "--certificate-arn",
     "--cfn-stack-name",
+    "--cidr-block",
     "--cli-binary-format",
     "--cli-input-json",
     "--client-certificate-id",
