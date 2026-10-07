@@ -731,6 +731,7 @@ describe('the success settle with ElastiCacheProvider (go-to-k/cdkd#4606, #4655)
       },
     });
     expect(r.del).not.toHaveBeenCalled();
+    expect(r.warned).toContain('nothing proves');
     expect(r.out.unaddressed).toBe(1);
   });
 
