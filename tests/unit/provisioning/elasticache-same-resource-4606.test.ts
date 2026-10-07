@@ -35,6 +35,7 @@ import {
   createdBeforeFailure,
   createdResourceIdentityBeforeFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
+import { withRetry } from '../../../src/deployment/retry.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { settleJournaledOrphansOnSuccess } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import type { RollbackExecutorContext } from '../../../src/deployment/rollback-executor.js';
@@ -444,6 +445,47 @@ describe('the created-before-failure mark of a CacheCluster (go-to-k/cdkd#4655)'
     const error = await failureOf(provider.create('Orphan', TYPE, PROPS));
     expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('Orphan-Cache');
     expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
+  });
+
+  // The retry a poll's AccessDenied triggers replays the create, which fails
+  // with AlreadyExists: the error finally thrown keeps the FIRST attempt's
+  // mark, token included (the elasticache-fix-forward-orphan fixture's path).
+  it('a replay failing with AlreadyExists keeps the first attempt\'s id and token', async () => {
+    let creates = 0;
+    let poll = 0;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateCacheClusterCommand) {
+        if (creates++ > 0) {
+          throw Object.assign(new Error('already exists'), {
+            name: 'CacheClusterAlreadyExistsFault',
+          });
+        }
+        return { CacheCluster: { CacheClusterId: 'orphan-cache', ARN: ARN('orphan-cache') } };
+      }
+      if (cmd instanceof DescribeCacheClustersCommand) {
+        if (poll++ === 0) return { CacheClusters: [creating({ CacheClusterCreateTime: T1 })] };
+        throw denied();
+      }
+      throw new Error('unexpected command');
+    });
+    const provider = new ElastiCacheProvider();
+    vi.spyOn(provider as unknown as { sleep: () => Promise<void> }, 'sleep').mockResolvedValue();
+    let attempts = 0;
+    const error = await failureOf(
+      withRetry(
+        () => {
+          attempts++;
+          return provider.create('Orphan', TYPE, PROPS);
+        },
+        'Orphan',
+        { sleep: async () => {}, maxRetries: 2, initialDelayMs: 1, maxDelayMs: 1 }
+      )
+    );
+    expect(attempts).toBeGreaterThan(1);
+    expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('Orphan-Cache');
+    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe(
+      `${ARN('orphan-cache')}@${T1.getTime()}`
+    );
   });
 
   it('polls that never name the creation time leave the mark without a token', async () => {
