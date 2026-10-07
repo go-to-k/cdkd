@@ -52,6 +52,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 
 /**
  * How long a cluster or instance delete waits for the resource to be gone:
@@ -137,6 +138,7 @@ class GlobalClusterDetachError extends Error {
  */
 export class RDSProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
+  private createClient?: RDSClient;
   private readonly providerRegion: string | undefined;
   private logger = getLogger().child('RDSProvider');
   /**
@@ -299,12 +301,39 @@ export class RDSProvider implements ResourceProvider {
 
   private getClient(): RDSClient {
     if (!this.rdsClient) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.rdsClient = new RDSClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new RDSClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.rdsClient;
+  }
+
+  /**
+   * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance`
+   * go through: SDK retries on, except a 5xx (`withoutServerErrorRetries`,
+   * issue #4639). Separate so every other call keeps the full SDK retry.
+   *
+   * None of the three carries an idempotency token, and each name is unique
+   * per account and region, so the SDK's own replay of a 5xx whose request
+   * had succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): RDSClient {
+    this.getClient();
+    return this.createClient as RDSClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -420,7 +449,7 @@ export class RDSProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
-      const created = await this.getClient().send(
+      const created = await this.getCreateClient().send(
         new CreateDBSubnetGroupCommand({
           DBSubnetGroupName: dbSubnetGroupName,
           DBSubnetGroupDescription:
@@ -633,7 +662,7 @@ export class RDSProvider implements ResourceProvider {
       // read-only `SecretArn` / `SecretStatus` (ignored on the write side).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
 
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateDBClusterCommand({
           DBClusterIdentifier: dbClusterIdentifier,
           Engine: properties['Engine'] as string,
@@ -1147,7 +1176,7 @@ export class RDSProvider implements ResourceProvider {
       // `MasterUserSecretKmsKeyId` (same flip as the DBCluster path).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
 
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateDBInstanceCommand({
           DBInstanceIdentifier: dbInstanceIdentifier,
           DBInstanceClass: properties['DBInstanceClass'] as string,

@@ -460,7 +460,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         .map((c) => c[0])
         .filter((c) => c instanceof TagResourceCommand);
       expect(tagCalls).toHaveLength(0);
-      expect(regionalClientSpy).not.toHaveBeenCalled();
+      // Only the local-region client `CreateTable` goes through (#4639).
+      expect(regionalClientSpy.mock.calls).toEqual([['us-east-1']]);
     });
 
     // Issue #441: cross-region Tags propagation failure on create logs

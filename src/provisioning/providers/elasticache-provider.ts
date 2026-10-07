@@ -43,6 +43,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { slowCcOperationTimeoutMs } from '../slow-cc-operation-timeouts.js';
 
 /**
@@ -68,6 +69,7 @@ const CACHE_DELETE_WAIT_MS = Math.max(
  */
 export class ElastiCacheProvider implements ResourceProvider {
   private client?: ElastiCacheClient;
+  private createClient?: ElastiCacheClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ElastiCacheProvider');
 
@@ -137,12 +139,39 @@ export class ElastiCacheProvider implements ResourceProvider {
 
   private getClient(): ElastiCacheClient {
     if (!this.client) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.client = new ElastiCacheClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new ElastiCacheClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateCacheSubnetGroup` / `CreateCacheCluster` go through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * Neither carries an idempotency token, and each name is unique per account
+   * and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): ElastiCacheClient {
+    this.getClient();
+    return this.createClient as ElastiCacheClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -247,7 +276,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateCacheSubnetGroupCommand({
           CacheSubnetGroupName: cacheSubnetGroupName,
           // CFn schema spells the description field `Description`; AWS API
@@ -426,7 +455,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateCacheCluster returned (no self-cleanup).
     let clusterCreated = false;
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateCacheClusterCommand({
           CacheClusterId: cacheClusterId,
           Engine: properties['Engine'] as string,

@@ -38,6 +38,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -123,6 +124,7 @@ function instanceAttributes(
  */
 export class NeptuneProvider implements ResourceProvider {
   private neptuneClient?: NeptuneClient;
+  private createClient?: NeptuneClient;
   private readonly providerRegion: string | undefined;
   private logger = getLogger().child('NeptuneProvider');
   /**
@@ -206,12 +208,40 @@ export class NeptuneProvider implements ResourceProvider {
 
   private getClient(): NeptuneClient {
     if (!this.neptuneClient) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.neptuneClient = new NeptuneClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new NeptuneClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.neptuneClient;
+  }
+
+  /**
+   * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance` go
+   * through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * None of the three carries an idempotency token, and each name is unique
+   * per account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): NeptuneClient {
+    this.getClient();
+    return this.createClient as NeptuneClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -327,7 +357,7 @@ export class NeptuneProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateDBSubnetGroupCommand({
           DBSubnetGroupName: dbSubnetGroupName,
           DBSubnetGroupDescription:
@@ -485,7 +515,7 @@ export class NeptuneProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
     try {
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateDBClusterCommand({
           DBClusterIdentifier: dbClusterIdentifier,
           // Neptune engine value is fixed: only `neptune` is accepted.
@@ -829,7 +859,7 @@ export class NeptuneProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
     try {
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateDBInstanceCommand({
           DBInstanceIdentifier: dbInstanceIdentifier,
           DBInstanceClass: properties['DBInstanceClass'] as string,
