@@ -53,6 +53,13 @@ export class JournaledOrphanNetStack extends cdk.Stack {
  * `Anchor` is created BEFORE it, so the `--no-rollback` deploy leaves a state
  * record for the destroy to start from.
  *
+ * With `COMPLETED_LB=1` as well, the stack instead holds `CompletedLb`, a
+ * deletion-protected load balancer whose CREATE COMPLETES, and `FailLater`,
+ * which waits on it and is refused by SSM (its value does not match its own
+ * `AllowedPattern`). The `--no-rollback` deploy then leaves the load balancer
+ * in state as a completed CREATE the rollback journal reverts, the case
+ * `cdkd rollback --remove-protection` must delete.
+ *
  * covers: AWS::ElasticLoadBalancingV2::LoadBalancer
  * covers: AWS::SSM::Parameter
  */
@@ -67,6 +74,24 @@ export class JournaledOrphanStack extends cdk.Stack {
 
     const subnets = (process.env.ORPHAN_SUBNETS ?? '').split(',').filter((s) => s !== '');
     if (subnets.length === 0) return;
+    if (process.env.COMPLETED_LB === '1') {
+      const completedLb = new elbv2.CfnLoadBalancer(this, 'CompletedLb', {
+        name: 'cdkd-4678-completed',
+        type: 'application',
+        scheme: 'internal',
+        subnets,
+        securityGroups: [process.env.ORPHAN_SECURITY_GROUP ?? ''],
+        loadBalancerAttributes: [{ key: 'deletion_protection.enabled', value: 'true' }],
+      });
+      completedLb.node.addDependency(anchor);
+      const failLater = new ssm.CfnParameter(this, 'FailLater', {
+        type: 'String',
+        value: 'not-a-number',
+        allowedPattern: '^[0-9]+$',
+      });
+      failLater.node.addDependency(completedLb);
+      return;
+    }
     const orphanLb = new elbv2.CfnLoadBalancer(this, 'OrphanLb', {
       name: 'cdkd-4678-orphan',
       type: 'application',

@@ -17,7 +17,16 @@
 #      entry are kept.
 #   7. `cdkd rollback --remove-protection`: exits 0, the load balancer and the
 #      journal are gone.
-#   8. Destroy the network stack.
+#   8. `--no-rollback` deploy with COMPLETED_LB=1: CompletedLb's CREATE
+#      COMPLETES with deletion protection on, then FailLater fails, so state
+#      records the load balancer and the journal holds its completed CREATE.
+#   9. `cdkd rollback` WITHOUT the flag: non-zero, the load balancer, its
+#      protection, its state record and the journal are kept.
+#  10. `cdkd rollback --remove-protection`: exits 0, the load balancer, its
+#      state record and the journal are gone. Before the completed-CREATE half
+#      of #4678 the rollback's delete of a completed CREATE dropped the flag and
+#      this step failed exactly like step 9.
+#  11. Destroy the network stack.
 #
 # The run lives under its OWN state prefix (STATE_PREFIX, unique per run): the
 # foreign-holder scan `--remove-protection` asks before stripping reads every
@@ -68,6 +77,7 @@ export AWS_REGION="${REGION}"
 NET_STACK="CdkdRpJournaledOrphanNet"
 STACK="CdkdRpJournaledOrphanExample"
 LB_NAME="cdkd-4678-orphan"
+COMPLETED_LB_NAME="cdkd-4678-completed"
 STATE_PREFIX="${STATE_PREFIX:-cdkd-rpjo-$(date +%s)-$$}"
 STATE_KEY="${STATE_PREFIX}/${STACK}/${REGION}/state.json"
 JOURNAL_KEY="${STATE_PREFIX}/${STACK}/${REGION}/rollback-journal.json"
@@ -85,6 +95,8 @@ fi
 
 # Set only from what THIS run's AWS calls returned; the trap acts on nothing else.
 ORPHAN_LB_ARN=""
+# CompletedLb's ARN as this run's state recorded it (step 8).
+COMPLETED_LB_ARN=""
 # What the journal records for OrphanLb: the trap deletes it too, so cleanup
 # does not hang on the warning cdkd printed (the code under test) alone.
 JOURNALED_ARN=""
@@ -152,7 +164,7 @@ cleanup() {
   # Only the ARNs THIS run captured, never one found by name: clear the
   # protection and delete each BEFORE the network stack, whose subnets and
   # security group it holds.
-  for arn in "${ORPHAN_LB_ARN:-}" "${JOURNALED_ARN:-}"; do
+  for arn in "${ORPHAN_LB_ARN:-}" "${JOURNALED_ARN:-}" "${COMPLETED_LB_ARN:-}"; do
     case "${arn}" in
       arn:*:loadbalancer/app/*)
         aws elbv2 modify-load-balancer-attributes --load-balancer-arn "${arn}" \
@@ -197,10 +209,12 @@ done
 # A load balancer of this name from an earlier run would be handed back by
 # CreateLoadBalancer (same name and settings) or collide with it. Never
 # deleted by name here: it is not this run's.
-if ! gone_probe aws elbv2 describe-load-balancers --names "${LB_NAME}" --region "${REGION}"; then
-  echo "FAIL: a load balancer named ${LB_NAME} already exists -- delete it by hand first" >&2
-  exit 1
-fi
+for name in "${LB_NAME}" "${COMPLETED_LB_NAME}"; do
+  if ! gone_probe aws elbv2 describe-load-balancers --names "${name}" --region "${REGION}"; then
+    echo "FAIL: a load balancer named ${name} already exists -- delete it by hand first" >&2
+    exit 1
+  fi
+done
 
 echo ""
 echo "==> Step 1: deploy ${NET_STACK}"
@@ -391,7 +405,107 @@ assert_gone "state ${STATE_KEY} still exists after the rollback and its record c
 echo "    OK: the orphan and the journal are gone"
 
 echo ""
-echo "==> Step 8: destroy ${NET_STACK}"
+echo "==> Step 8: --no-rollback deploy of ${STACK} with COMPLETED_LB=1 (CompletedLb completes, FailLater fails)"
+set +e
+COMPLETED_LB=1 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" \
+  --yes --no-rollback >"${RUN_LOG}" 2>&1
+DEPLOY_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+# Captured BEFORE any FAIL below, so the trap can clear the protection on and
+# delete the load balancer no later check reached.
+COMPLETED_LB_ARN="$( (aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - || true) | jq -r '.resources.CompletedLb.physicalId // ""' 2>/dev/null || true)"
+if [ "${DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the COMPLETED_LB deploy unexpectedly SUCCEEDED (SSM should refuse FailLater's value against its AllowedPattern)" >&2
+  exit 1
+fi
+case "${COMPLETED_LB_ARN}" in
+  arn:*:loadbalancer/app/${COMPLETED_LB_NAME}/*) ;;
+  *)
+    echo "FAIL: state does not record CompletedLb as a completed CREATE of ${COMPLETED_LB_NAME} (got '${COMPLETED_LB_ARN}'; output above)" >&2
+    exit 1
+    ;;
+esac
+if ! grep -q "FailLater" "${RUN_LOG}"; then
+  echo "FAIL: the deploy failed, but not at FailLater (output above)" >&2
+  exit 1
+fi
+if [ "$(lb_protection "${COMPLETED_LB_ARN}")" != "true" ]; then
+  echo "FAIL: CompletedLb ${COMPLETED_LB_ARN} is not deletion-protected (the injection did not fire as designed)" >&2
+  exit 1
+fi
+if ! COMPLETED_OP="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq -c \
+  '[.segments[]?.operations[]? | select(.logicalId == "CompletedLb" and .changeType == "CREATE")] | last // empty')" ||
+  [ "$(printf '%s' "${COMPLETED_OP}" | jq -r '.physicalId // ""')" != "${COMPLETED_LB_ARN}" ]; then
+  echo "FAIL: the journal does not hold CompletedLb's completed CREATE of ${COMPLETED_LB_ARN} (op: ${COMPLETED_OP:-<none>})" >&2
+  exit 1
+fi
+echo "    OK: CompletedLb ${COMPLETED_LB_ARN} is a completed, deletion-protected CREATE in state and in the journal"
+
+echo ""
+echo "==> Step 9: cdkd rollback WITHOUT --remove-protection keeps the completed protected load balancer"
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force >"${RUN_LOG}" 2>&1
+PLAIN_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${PLAIN_RC}" -eq 0 ]; then
+  echo "FAIL: the rollback without --remove-protection exited 0 with a deletion-protected completed CREATE to revert" >&2
+  exit 1
+fi
+if ! grep -q "Deleting created resource CompletedLb" "${RUN_LOG}"; then
+  echo "FAIL: the rollback did not attempt CompletedLb's delete (output above)" >&2
+  exit 1
+fi
+if gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${COMPLETED_LB_ARN}" --region "${REGION}"; then
+  echo "FAIL: ${COMPLETED_LB_ARN} is gone after a rollback without --remove-protection (it must not strip protection)" >&2
+  exit 1
+fi
+if [ "$(lb_protection "${COMPLETED_LB_ARN}")" != "true" ]; then
+  echo "FAIL: the rollback without --remove-protection turned off deletion protection on ${COMPLETED_LB_ARN}" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.CompletedLb.physicalId // ""')" != "${COMPLETED_LB_ARN}" ]; then
+  echo "FAIL: state no longer records CompletedLb ${COMPLETED_LB_ARN} after a rollback whose delete was refused" >&2
+  exit 1
+fi
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "FAIL: the rollback journal is gone after a rollback whose delete was refused" >&2
+  exit 1
+fi
+echo "    OK: exit ${PLAIN_RC}; the load balancer, its protection, its state record and the journal are kept"
+
+echo ""
+echo "==> Step 10: cdkd rollback --remove-protection deletes the completed protected load balancer (go-to-k/cdkd#4678)"
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force --remove-protection >"${RUN_LOG}" 2>&1
+RP_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${RP_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd rollback --remove-protection exited ${RP_RC} (expected 0: the flag reaches a completed CREATE's delete -- output above)" >&2
+  echo "      (before the completed-CREATE half of go-to-k/cdkd#4678 that delete dropped the flag and AWS refused it)" >&2
+  exit 1
+fi
+for _ in $(seq 1 24); do
+  gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${COMPLETED_LB_ARN}" --region "${REGION}" && break
+  sleep 5
+done
+assert_gone "${COMPLETED_LB_ARN} still exists after cdkd rollback --remove-protection (go-to-k/cdkd#4678)" \
+  aws elbv2 describe-load-balancers --load-balancer-arns "${COMPLETED_LB_ARN}" --region "${REGION}"
+assert_gone "rollback journal ${JOURNAL_KEY} still exists after the rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+if [ "$( (aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null || true) | jq -r '.resources.CompletedLb.physicalId // ""' 2>/dev/null || true)" != "" ]; then
+  echo "FAIL: state still records CompletedLb after cdkd rollback --remove-protection deleted it" >&2
+  exit 1
+fi
+node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" --yes >/dev/null 2>&1 || true
+assert_gone "state ${STATE_KEY} still exists after the rollback and its record cleanup" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    OK: the completed load balancer, its state record and the journal are gone"
+
+echo ""
+echo "==> Step 11: destroy ${NET_STACK}"
 node "${LOCAL_DIST}" destroy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force
 assert_gone "state ${NET_STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}"
@@ -401,4 +515,4 @@ assert_gone "security group ${ORPHAN_SECURITY_GROUP} still exists after the dest
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
 sweep_run_prefix
-echo "[verify] PASS — cdkd destroy / rollback --remove-protection cleared the protected journaled orphan (#4678)"
+echo "[verify] PASS — cdkd destroy / rollback --remove-protection cleared the protected journaled orphan, and cdkd rollback --remove-protection the protected completed CREATE (#4678)"

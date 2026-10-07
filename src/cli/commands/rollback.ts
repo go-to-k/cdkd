@@ -1123,7 +1123,7 @@ export async function rollbackCommand(
         const ok = await confirm(
           `Roll back ${stackRegionShown(stackName, region)}` +
             (options.removeProtection === true
-              ? ', TURNING DELETION PROTECTION OFF on resources a failed CREATE left?'
+              ? ', TURNING DELETION PROTECTION OFF on the resources the failed deploy created?'
               : '?')
         );
         if (!ok) {
@@ -1893,10 +1893,11 @@ export function createRollbackCommand(): Command {
     .addOption(
       new Option(
         '--remove-protection',
-        'Turn deletion protection off before deleting a resource a failed CREATE left behind ' +
-          '(a journaled orphan, or under --revert-failed the failed CREATE itself), when cdkd ' +
-          'can prove it is that resource and no other stack holds it. On a failed nested ' +
-          "stack it cascades to that child's resources. Covers " +
+        'Turn deletion protection off before deleting a resource the failed deploy created: ' +
+          "one whose CREATE completed (this stack's state records it), or one a failed CREATE " +
+          'left behind (a journaled orphan, or under --revert-failed the failed CREATE itself) ' +
+          'when cdkd can prove it is that resource and no other stack holds it. A nested stack ' +
+          "it deletes cascades the flag to that child's resources. Covers " +
           `${removeProtectionTypeList()}.`
       ).default(false)
     )
@@ -1912,7 +1913,7 @@ export function createRollbackCommand(): Command {
         '  cdkd rollback MyStack --orphan MyBucket --orphan MyTable',
         '  cdkd rollback MyStack --revert-failed   # also revert the failed in-flight resource',
         '  cdkd rollback MyStack --skip-final-snapshot  # DeletionPolicy Snapshot → delete without the snapshot',
-        '  cdkd rollback MyStack --remove-protection   # clear a protected resource a failed CREATE left',
+        '  cdkd rollback MyStack --remove-protection   # also delete protected resources the failed deploy created',
         '  cdkd rollback MyStack --stack-region us-west-2',
         '  cdkd rollback MyStack --drop-failed MyQueuePolicy  # forget one undeletable failed CREATE',
         '',
