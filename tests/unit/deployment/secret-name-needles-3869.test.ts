@@ -278,6 +278,8 @@ describe('maskEventTextWithBoundBags (go-to-k/cdkd#3869)', () => {
     const own = {
       ...event(true),
       error: {
+        // The command line's id is a vetted logical id; here it collides
+        // with a needle, which must not cut the pasteable command.
         message: `Cannot reverse the replacement of 'Q' (it read ${USER_ID})\nTo orphan it: cdkd rollback S --orphan ${USER_ID}`,
         ownLines: true as const,
       },

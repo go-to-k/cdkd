@@ -1323,4 +1323,50 @@ describe("a nested child's revert masks a secret-derived name (go-to-k/cdkd#3869
     expect(recorded[0]!.reason).toContain('could not confirm ');
     expect(recorded[0]!.reason!.includes(NAME)).toBe(shown);
   });
+
+  it.each([
+    ['a user the child names by its reference', REF, false],
+    ['negative control, a literal name', NAME, true],
+  ])("on a child op's line naming a record it READ: %s", async (_l, userName, shown) => {
+    const h = harness({
+      state: childState({
+        User: {
+          physicalId: NAME,
+          resourceType: 'AWS::IAM::User',
+          properties: { UserName: userName },
+          attributes: {},
+          dependencies: [],
+        },
+        Key: {
+          physicalId: 'AKIAEXAMPLEKEY',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: { UserName: NAME },
+          attributes: {},
+          dependencies: ['User'],
+        },
+      }),
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            {
+              logicalId: 'Key',
+              resourceType: 'AWS::IAM::AccessKey',
+              changeType: 'CREATE',
+              physicalId: 'AKIAEXAMPLEKEY',
+              properties: { UserName: NAME },
+            },
+          ] as RollbackJournalSegment['operations'],
+        }),
+      ],
+    });
+    let line: string | undefined;
+    replay.duringReplay = () => {
+      const raw = `Deleting access key AKIAEXAMPLEKEY of user ${NAME}`;
+      line = currentLogLineMasker()?.(raw) ?? raw;
+    };
+    await h.run('run-1');
+    // Premise: the child replay ran with the key's op.
+    expect(replay.calls.map((c) => c.ops)).toEqual([['Key']]);
+    expect(line!.includes(NAME)).toBe(shown);
+  });
 });

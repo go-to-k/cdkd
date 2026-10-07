@@ -334,9 +334,14 @@ export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedS
  * A message marked `ownLines` (a replay refusal from the completed-op arms,
  * masked at construction by the op masker, which holds no name the entry READ
  * from a sibling) is masked LINE BY LINE, except its labelled `To orphan it:`
- * command line: that line carries only the vetted logical id, and a short
+ * command line: that line carries only the vetted logical id and the run's own
+ * stack, region and option values, none derived from a secret, and a short
  * needle would cut the pasteable command. The completed-op replay now runs
  * under a bound bag, so these events reach this masker with needles in it.
+ * The terminal line of the same refusal is masked WHOLE by the logger's sink,
+ * its command line too: an over-mask a needle equal to a stack name, region or
+ * vetted logical id can cause there, accepted rather than special-cased in the
+ * sink.
  */
 /** The label of `orphanRemedy`'s pasteable command line. */
 const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
