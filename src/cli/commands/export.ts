@@ -5397,11 +5397,6 @@ export async function buildImportPlan(
       // `resolveResourceIdentifier` takes the entry rather than re-fetching it.
       // A failure here means no usable schema AND no fallback entry, which the
       // catch reports with `fetchPrimaryIdentifier`'s own remediation message.
-      // The measured list needs no schema, so it is consulted BEFORE the
-      // DescribeType fetch: a type on it has no PRIMARY_IDENTIFIER_FALLBACK
-      // row, and a fetch failure (permissions, throttle) would otherwise
-      // report `could not resolve resource identifier` in place of the
-      // refusal that actually applies.
       // Not a pre-flight heuristic: cdkd holds no value the IMPORT changeset
       // could address the resource by, so the skip flag does not bypass it.
       const noIdentifier = physicalIdIsNotImportIdentifier(resourceType);
@@ -5417,6 +5412,11 @@ export async function buildImportPlan(
         });
         continue;
       }
+      // The measured list needs no schema, so it is consulted BEFORE the
+      // DescribeType fetch: a type on it has no PRIMARY_IDENTIFIER_FALLBACK
+      // row, and a fetch failure (permissions, throttle) would otherwise
+      // report `could not resolve resource identifier` in place of the
+      // refusal that actually applies.
       const measuredRefusal = cfnRefusesImportDespiteRegistry(resourceType);
       if (!options.skipImportSupportPreflight && measuredRefusal !== undefined) {
         blocked.push({

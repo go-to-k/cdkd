@@ -31,7 +31,7 @@ bench-cdk-sample	2026-10-03T09:45:36Z	PASS	416	std-flow	rc ok, orph clean (#4505
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
-budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
+budgets	2026-10-07T12:15:10Z	PASS	78	verify.sh	rc ok, orph clean (#4668 drift arm moved here)
 cache-streaming	2026-10-06T02:22:44Z	PASS	677	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 cc-api-fallback	2026-10-05T15:03:08Z	PASS	40	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
 cc-api-fallback-transitions	2026-10-05T15:03:08Z	PASS	90	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
@@ -45,7 +45,7 @@ ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-10-06T12:30:56Z	PASS	185	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-cloudwatch-anomaly-detector	2026-10-07T11:48:17Z	FAIL	61	verify.sh	phase 2b drift: AWS added CC handlers to the type, CC read of descriptor id fails; orph clean
+cloudwatch-anomaly-detector	2026-10-07T12:15:10Z	PASS	80	verify.sh	rc ok, orph clean (#4668 deny-list + AnomalyDetectorId GetAtt)
 codebuild-project	2026-10-03T04:24:03Z	PASS	97	verify.sh	rc ok, orph clean (#4283 PR #4449)
 codecommit	2026-10-06T12:30:56Z	PASS	170	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
