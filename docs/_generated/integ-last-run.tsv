@@ -33,6 +33,8 @@ bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-10-07T16:21:49Z	PASS	65	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 cache-streaming	2026-10-06T02:22:44Z	PASS	677	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
+cache-streaming	2026-10-07T10:50:32Z	PASS	724	verify.sh	PR #4654 (#4639 database slice); first run FAILED in a host DNS outage window (ENOTFOUND 09:30-09:44Z), orphans removed by hand, re-run rc 0, destroy clean, orph clean
 cc-api-fallback	2026-10-05T15:03:08Z	PASS	40	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
 cc-api-fallback-transitions	2026-10-05T15:03:08Z	PASS	90	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
@@ -84,7 +86,7 @@ destroy-interrupt	2026-10-06T17:51:13Z	PASS	376	verify.sh	rc ok, orph clean (#32
 diff-fail-on-destructive	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607 PR #4608)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
-docdb-neptune	2026-10-06T02:22:44Z	PASS	5209	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+docdb-neptune	2026-10-07T10:50:32Z	PASS	5343	verify.sh	PR #4654 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-07T06:44:03Z	PASS	375	verify.sh	PR #4645 (#1889 terminal resolver throws + nested child failure non-retryable); rc 0, destroy clean, orph clean
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
@@ -92,13 +94,13 @@ drift-revert-vpc	2026-10-07T06:44:03Z	PASS	391	verify.sh	PR #4645 (#1889 termina
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-globaltable	2026-10-06T02:22:44Z	PASS	1393	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+dynamodb-globaltable	2026-10-07T10:50:32Z	PASS	1569	verify.sh	PR #4654 (#4639 database slice); first run FAILED in a host DNS outage window (ENOTFOUND 09:30-09:44Z), orphans removed by hand, re-run rc 0, destroy clean, orph clean (re-run from a detached sibling at the same sha)
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-gsi-update	2026-10-03T04:22:26Z	PASS	1316	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-ondemand	2026-10-03T04:20:17Z	PASS	254	verify.sh	rc ok, orph clean (#4283 PR #4449)
+dynamodb-ondemand	2026-10-07T10:50:32Z	PASS	264	verify.sh	PR #4654 (#4639 database slice); first run FAILED in a host DNS outage window (ENOTFOUND 09:30-09:44Z), orphans removed by hand, re-run rc 0, destroy clean, orph clean
 dynamodb-sse	2026-10-03T04:28:40Z	PASS	57	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-streams	2026-10-03T04:20:39Z	PASS	279	verify.sh	rc ok, orph clean (#4283 PR #4449)
+dynamodb-streams	2026-10-07T10:50:32Z	PASS	397	verify.sh	PR #4654 (#4639 database slice create client); rc 0, destroy clean, orph clean
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-03T04:28:29Z	PASS	68	verify.sh	rc ok, orph clean (#4283 PR #4449)
 ec2-instance	2026-10-05T14:42:45Z	PASS	126	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
@@ -259,9 +261,9 @@ parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run
 partial-create-handback	2026-10-06T02:22:44Z	PASS	436	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 propagation-races-2	2026-10-06T02:22:44Z	PASS	110	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-06T02:22:44Z	PASS	4774	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
-rds-dbinstance-backfill	2026-10-03T04:13:46Z	PASS	783	verify.sh	rc ok, orph clean (#4283 PR #4449)
-rds-full-stack	2026-10-06T02:22:44Z	PASS	1017	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+rds-aurora	2026-10-07T10:50:32Z	PASS	4829	verify.sh	PR #4654 (#4639 database slice create client); rc 0, destroy clean, orph clean
+rds-dbinstance-backfill	2026-10-07T10:50:32Z	PASS	780	verify.sh	PR #4654 (#4639 database slice); first run FAILED in a host DNS outage window (ENOTFOUND 09:30-09:44Z), orphans removed by hand, re-run rc 0, destroy clean, orph clean
+rds-full-stack	2026-10-07T10:50:32Z	PASS	1103	verify.sh	PR #4654 (#4639 database slice create client); rc 0, destroy clean, orph clean
 recreate-mixed-direction	2026-10-02T20:40:31Z	PASS	111	verify.sh	rc ok, orph clean (#4468)
 recreate-nested-logical-id-collision	2026-10-02T20:42:43Z	PASS	130	verify.sh	rc ok, orph clean (#4468)
 recreate-parent-child-permission	2026-10-06T05:49:58Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)
