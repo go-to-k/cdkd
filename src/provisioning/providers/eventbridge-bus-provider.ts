@@ -17,6 +17,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -88,6 +90,42 @@ export class EventBridgeBusProvider implements ResourceProvider {
     this.eventBridgeClient = getAwsClients().eventBridge;
   }
 
+  private createClient: Promise<EventBridgeClient> | undefined;
+
+  /**
+   * The client `CreateEventBus` goes through (issue #4639): SDK retries on,
+   * except a 5xx (`withoutServerErrorRetries`). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * `CreateEventBus` carries no idempotency token, and a bus name is unique
+   * per account and region, so the SDK's own replay of a 5xx whose request
+   * EventBridge completed fails `ResourceAlreadyExistsException` against the
+   * bus the first request made -- inside one `send`, where the deploy engine
+   * cannot see it, so it credits the collision to another holder. Refused
+   * here, the 5xx reaches the engine's retry, which marks a later collision as
+   * possibly this create's own (`withRetry`, #3978).
+   *
+   * Built in the shared client's REGION (read from it, as `config.region()`
+   * resolves it). The PROMISE is cached, so two creates on a cold provider
+   * build one client; a rejected region read is not cached, so the next
+   * create retries it. A shared client that is not an `EventBridgeClient` --
+   * a unit-test double -- is used as is: `AwsClients` always supplies a real
+   * one.
+   */
+  private getCreateClient(): Promise<EventBridgeClient> {
+    const shared = this.eventBridgeClient;
+    if (!(shared instanceof EventBridgeClient)) return Promise.resolve(shared);
+    this.createClient ??= shared.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new EventBridgeClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
+  }
+
   async create(
     logicalId: string,
     resourceType: string,
@@ -132,7 +170,8 @@ export class EventBridgeBusProvider implements ResourceProvider {
         ] as import('@aws-sdk/client-eventbridge').LogConfig;
       }
 
-      const response = await this.eventBridgeClient.send(new CreateEventBusCommand(createParams));
+      const createClient = await this.getCreateClient();
+      const response = await createClient.send(new CreateEventBusCommand(createParams));
 
       // Apply Policy if specified (must be done after creation)
       if (properties['Policy']) {

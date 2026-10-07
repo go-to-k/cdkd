@@ -50,6 +50,7 @@ import {
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { LambdaCreateClientCache } from './lambda-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import {
   isRetryableTransientError,
@@ -470,6 +471,8 @@ export function inlineCodeFileNameForRuntime(runtime: string | undefined): strin
  */
 export class LambdaFunctionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  /** `CreateFunction` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new LambdaCreateClientCache(() => this.lambdaClient);
   private ec2Client: EC2Client;
   private logger = getLogger().child('LambdaFunctionProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -766,7 +769,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
         Tags: tags,
       };
 
-      const response = await this.lambdaClient.send(new CreateFunctionCommand(createParams));
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreateFunctionCommand(createParams));
       functionCreated = true;
       createdFunctionName = response.FunctionName || functionName;
 

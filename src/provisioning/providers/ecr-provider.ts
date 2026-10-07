@@ -43,6 +43,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -60,6 +61,7 @@ import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-fai
  */
 export class ECRProvider implements ResourceProvider {
   private client?: ECRClient;
+  private createClient?: ECRClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ECRProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -87,6 +89,31 @@ export class ECRProvider implements ResourceProvider {
       });
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateRepository` goes through (issue #4639): SDK retries on,
+   * except a 5xx (`withoutServerErrorRetries`). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * `CreateRepository` carries no idempotency token, and a repository name is
+   * unique per registry, so the SDK's own replay of a 5xx whose request ECR
+   * completed fails `RepositoryAlreadyExistsException` against the repository
+   * the first request made -- inside one `send`, where the deploy engine
+   * cannot see it, so it credits the collision to another holder. Refused
+   * here, the 5xx reaches the engine's retry, which marks a later collision as
+   * possibly this create's own (`withRetry`, #3978).
+   */
+  private getCreateClient(): ECRClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new ECRClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
   }
 
   /**
@@ -208,7 +235,7 @@ export class ECRProvider implements ResourceProvider {
         properties['ImageTagMutabilityExclusionFilters']
       );
 
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateRepositoryCommand({
           repositoryName,
           ...(scanningConfig ? { imageScanningConfiguration: scanningConfig } : {}),

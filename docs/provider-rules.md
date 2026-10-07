@@ -1254,7 +1254,10 @@ shared report is `orphan-report.ts`):
   `CreateRepository`, by name, and its seed `CreateCommit`, refused once the
   branch exists; EC2's `CreateSecurityGroup`, by group name in the VPC; IAM's
   `CreateRole`, `CreateUser`, `CreateGroup`, `CreateInstanceProfile` and
-  `CreatePolicy`, by entity name, through `iam-create-client.ts`)
+  `CreatePolicy`, by entity name, through `iam-create-client.ts`; Lambda's
+  `CreateFunction`, `CreateFunctionUrlConfig` and `AddPermission`, through
+  `lambda-create-client.ts`; EventBridge's `CreateEventBus` and ECR's
+  `CreateRepository`, by name)
   needs this client and no lookup: the surfaced 5xx lets
   `withRetry` mark the collision as possibly this create's own
   ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never

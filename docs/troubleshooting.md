@@ -69,6 +69,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan](#a-warning-that-a-dlm-lifecycle-policy-or-ecs-task-definition-revision-may-be-an-orphan)
   - [A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan](#a-warning-that-an-ec2-vpc-subnet-internet-gateway-or-elastic-ip-may-be-an-orphan)
   - [`EntityAlreadyExists` on an IAM create after a server error](#entityalreadyexists-on-an-iam-create-after-a-server-error)
+  - [An "already exists" on a Lambda, EventBridge bus or ECR create after a server error](#an-already-exists-on-a-lambda-eventbridge-bus-or-ecr-create-after-a-server-error)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
@@ -2805,6 +2806,23 @@ list yet is neither deleted nor reported, and the retry then mints a second
 one, so after such a failure compare `aws iam list-access-keys` with the key
 cdkd state records. A reset connection or a timeout after the request was
 sent is not covered, as for the creates above.
+
+### An "already exists" on a Lambda, EventBridge bus or ECR create after a server error
+
+`CreateFunction`, `CreateFunctionUrlConfig`, `AddPermission`,
+`CreateEventBus` and `CreateRepository` carry no idempotency token either, and
+cdkd turns off the AWS SDK's own retry of a 5xx for them too. When one fails
+with HTTP 500 / 502 / 503 / 504 and AWS had in fact created the resource,
+cdkd's retry fails against it (`ResourceConflictException` for the three
+Lambda calls, `ResourceAlreadyExistsException` for the bus,
+`RepositoryAlreadyExistsException` for the repository; for a name cdkd derived
+from the logical id, the error says it is most likely what this create's
+earlier attempt made). That resource is in no state file: delete it
+(`aws lambda delete-function`, `delete-function-url-config`,
+`remove-permission`, `aws events delete-event-bus`, `aws ecr
+delete-repository`) once you have confirmed it is this deploy's, or adopt it
+with `cdkd import`, and re-run the deploy. A reset connection or a timeout
+after the request was sent is not covered, as for the creates above.
 
 ### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 
