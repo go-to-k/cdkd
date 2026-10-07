@@ -12,7 +12,12 @@
 #   4. `cdkd destroy --remove-protection`: exits 0, the load balancer is gone,
 #      and so are the journal and the state. Before #4678 the sweep dropped the
 #      flag and this step failed exactly like step 3.
-#   5. Destroy the network stack.
+#   5. Inject the same orphan again (step 2's deploy).
+#   6. `cdkd rollback` WITHOUT the flag: non-zero, the orphan and its journal
+#      entry are kept.
+#   7. `cdkd rollback --remove-protection`: exits 0, the load balancer and the
+#      journal are gone.
+#   8. Destroy the network stack.
 #
 # Run via: /run-integ remove-protection-journaled-orphan
 #         or: bash tests/integration/remove-protection-journaled-orphan/verify.sh
@@ -171,9 +176,13 @@ ORPHAN_SUBNETS="${SUBNET_A},${SUBNET_B}"
 export ORPHAN_SUBNETS ORPHAN_SECURITY_GROUP
 echo "    OK: subnets ${ORPHAN_SUBNETS}, security group ${ORPHAN_SECURITY_GROUP}"
 
+# Steps 2 and 5: a `--no-rollback` deploy whose OrphanLb CREATE fails after
+# CreateLoadBalancer, journaling a deletion-protected load balancer.
+inject_orphan() { # usage: inject_orphan <step label>
 echo ""
-echo "==> Step 2: --no-rollback deploy of ${STACK} (OrphanLb fails after CreateLoadBalancer)"
-RUN_LOG="$(mktemp)"
+echo "==> Step $1: --no-rollback deploy of ${STACK} (OrphanLb fails after CreateLoadBalancer)"
+ORPHAN_LB_ARN=""
+JOURNALED_ARN=""
 DEPLOYED_ORPHAN=1
 set +e
 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" \
@@ -222,6 +231,10 @@ if [ "$(lb_protection "${ORPHAN_LB_ARN}")" != "true" ]; then
   exit 1
 fi
 echo "    OK: OrphanLb ${ORPHAN_LB_ARN} is journaled as a proven orphan, deletion-protected, with no state record"
+}
+
+RUN_LOG="$(mktemp)"
+inject_orphan 2
 
 echo ""
 echo "==> Step 3: cdkd destroy WITHOUT --remove-protection keeps the protected orphan"
@@ -278,8 +291,60 @@ assert_gone "state ${STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: the orphan, the journal and the state are gone"
 
+inject_orphan 5
+
 echo ""
-echo "==> Step 5: destroy ${NET_STACK}"
+echo "==> Step 6: cdkd rollback WITHOUT --remove-protection keeps the protected orphan"
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force >"${RUN_LOG}" 2>&1
+PLAIN_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${PLAIN_RC}" -eq 0 ]; then
+  echo "FAIL: the rollback without --remove-protection exited 0 with a deletion-protected orphan in the journal" >&2
+  exit 1
+fi
+if ! grep -q "deleting partially-created OrphanLb" "${RUN_LOG}"; then
+  echo "FAIL: the rollback did not attempt the journaled OrphanLb (output above)" >&2
+  exit 1
+fi
+if [ "$(lb_protection "${ORPHAN_LB_ARN}")" != "true" ]; then
+  echo "FAIL: the rollback without --remove-protection turned off deletion protection on ${ORPHAN_LB_ARN}" >&2
+  exit 1
+fi
+if ! ORPHAN_OP="$(journaled_orphan_op)" || [ "$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId // ""')" != "${ORPHAN_LB_ARN}" ]; then
+  echo "FAIL: the journal no longer holds OrphanLb ${ORPHAN_LB_ARN} after a rollback whose delete was refused" >&2
+  exit 1
+fi
+echo "    OK: exit ${PLAIN_RC}; the load balancer, its protection and its journal entry are kept"
+
+echo ""
+echo "==> Step 7: cdkd rollback --remove-protection clears it (go-to-k/cdkd#4678)"
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --remove-protection >"${RUN_LOG}" 2>&1
+RP_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${RP_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd rollback --remove-protection exited ${RP_RC} (expected 0: the flag reaches the journaled orphan's delete -- output above)" >&2
+  exit 1
+fi
+for _ in $(seq 1 24); do
+  gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${ORPHAN_LB_ARN}" --region "${REGION}" && break
+  sleep 5
+done
+assert_gone "${ORPHAN_LB_ARN} still exists after cdkd rollback --remove-protection (go-to-k/cdkd#4678)" \
+  aws elbv2 describe-load-balancers --load-balancer-arns "${ORPHAN_LB_ARN}" --region "${REGION}"
+assert_gone "rollback journal ${JOURNAL_KEY} still exists after the rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+# The rollback also undid Anchor's CREATE; a state record it left (empty) goes too.
+node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1 || true
+assert_gone "state ${STATE_KEY} still exists after the rollback and state destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    OK: the orphan and the journal are gone"
+
+echo ""
+echo "==> Step 8: destroy ${NET_STACK}"
 node "${LOCAL_DIST}" destroy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force
 assert_gone "state ${NET_STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}"
@@ -288,4 +353,4 @@ assert_gone "security group ${ORPHAN_SECURITY_GROUP} still exists after the dest
 
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
-echo "[verify] PASS — cdkd destroy --remove-protection cleared the protected journaled orphan (#4678)"
+echo "[verify] PASS — cdkd destroy / rollback --remove-protection cleared the protected journaled orphan (#4678)"

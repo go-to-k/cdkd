@@ -68,7 +68,11 @@ import {
   type FailedOpPlanItem,
 } from '../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../deployment/inline-policy-claims.js';
-import { dropFailedHint } from '../../deployment/rollback-executor/journaled-orphans.js';
+import {
+  dropFailedHint,
+  makeForeignHolderScan,
+} from '../../deployment/rollback-executor/journaled-orphans.js';
+import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   describeRegionValueKind,
@@ -173,6 +177,11 @@ interface RollbackOptions {
   /** go-to-k/cdkd#4633: drop this logical id's journaled failed-CREATE orphan entry. */
   dropFailed?: string;
   skipFinalSnapshot?: boolean;
+  /**
+   * go-to-k/cdkd#4678: turn protection off on a failed CREATE's resource
+   * before its delete, as `cdkd destroy --remove-protection` does.
+   */
+  removeProtection?: boolean;
   stackRegion?: string;
   stateBucket?: string;
   statePrefix: string;
@@ -1149,6 +1158,12 @@ export async function rollbackCommand(
         recordEvent: (e) => eventRecorder.record(maskEventTextWithBoundBags(e)),
         finalSnapshotClients,
         skipFinalSnapshot: options.skipFinalSnapshot === true,
+        // go-to-k/cdkd#4678: only on an explicit flag, and never on an orphan
+        // another stack's record holds now (the scan is lazy: no flag, no read).
+        ...(options.removeProtection === true && {
+          removeProtection: true,
+          foreignHolder: makeForeignHolderScan(setup.stateBackend)({ stackName, region }),
+        }),
         // Issue #2057: the producer regions this stack read across. A replayed
         // `{{resolve:...}}` expression that a cross-region read put in this
         // record carries no region of its own, so without this the replay
@@ -1869,6 +1884,15 @@ export function createRollbackCommand(): Command {
       )
     )
     .addOption(skipFinalSnapshotOption)
+    .addOption(
+      new Option(
+        '--remove-protection',
+        'Turn deletion protection off before deleting a resource a failed CREATE left behind ' +
+          '(a journaled orphan, or under --revert-failed the failed CREATE itself), when cdkd ' +
+          'can prove it is that resource and no other stack holds it. Covers ' +
+          `${removeProtectionTypeList()}.`
+      ).default(false)
+    )
     .addOption(stackRegionOption())
     .addHelpText(
       'after',
@@ -1881,6 +1905,7 @@ export function createRollbackCommand(): Command {
         '  cdkd rollback MyStack --orphan MyBucket --orphan MyTable',
         '  cdkd rollback MyStack --revert-failed   # also revert the failed in-flight resource',
         '  cdkd rollback MyStack --skip-final-snapshot  # DeletionPolicy Snapshot → delete without the snapshot',
+        '  cdkd rollback MyStack --remove-protection   # clear a protected resource a failed CREATE left',
         '  cdkd rollback MyStack --stack-region us-west-2',
         '  cdkd rollback MyStack --drop-failed MyQueuePolicy  # forget one undeletable failed CREATE',
         '',

@@ -373,7 +373,7 @@ describe('a name-keyed orphan gets the flag only when its identity is proven (go
   });
 });
 
-describe("no context but the destroy sweep's strips protection (go-to-k/cdkd#4678)", () => {
+describe("no context but an explicit --remove-protection's strips protection (go-to-k/cdkd#4678)", () => {
   // A deploy's automatic rollback and its success settle (its own and a nested
   // child's) take their context from `rollbackExecutorContext`.
   it('rollbackExecutorContext carries no removeProtection', () => {
@@ -399,12 +399,11 @@ describe("no context but the destroy sweep's strips protection (go-to-k/cdkd#467
     expect(ctx).not.toHaveProperty('removeProtection');
   });
 
-  // The other two constructors build their own literal: a nested child's
-  // journal revert (`nested-child-journal.ts`) and `cdkd rollback`
-  // (`cli/commands/rollback.ts`). Neither may name the field at all.
+  // A nested child's journal revert (`nested-child-journal.ts`) builds its
+  // own literal and may not name the field at all. `cdkd rollback` sets it
+  // only under its explicit flag (`tests/unit/cli/rollback-remove-protection-4678.test.ts`).
   it.each([
     'src/deployment/nested-child-journal.ts',
-    'src/cli/commands/rollback.ts',
     'src/deployment/deploy-engine/rollback.ts',
   ])('%s builds a RollbackExecutorContext with no removeProtection', (file) => {
     const text = readFileSync(join(REPO_ROOT, file), 'utf8');

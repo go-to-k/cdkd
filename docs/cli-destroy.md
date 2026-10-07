@@ -475,9 +475,11 @@ AWS exposes a synchronous "flip protection off" API call.
   DynamoDB table whose name another table may have taken since), or one
   another stack holds or whose holders cannot be read, keeps its protection,
   with a warning. Without the flag, or unproven, a protected one's delete is
-  refused and the journal keeps it for a re-run. A deploy's
-  automatic rollback, the settle a successful deploy runs, and `cdkd rollback`
-  never turn protection off.
+  refused and the journal keeps it for a re-run. `cdkd rollback
+  --remove-protection` does the same for the resources it deletes that a
+  failed CREATE left behind (a journaled orphan, or under `--revert-failed` the
+  failed CREATE itself). A deploy's automatic rollback and the settle a
+  successful deploy runs never turn protection off.
 - **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
   protected resource — a replacement is a delete plus a create — fails at the
   delete whatever replace flags were passed. Clear the protection flag first:
