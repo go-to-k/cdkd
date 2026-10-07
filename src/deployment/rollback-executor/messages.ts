@@ -6,7 +6,10 @@ import {
   quotedOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { SHORT_NAME_MAX_CODE_POINTS } from '../../state/malformed-resources-bag.js';
+import {
+  SHORT_NAME_MAX_CODE_POINTS,
+  hasAddressablePhysicalId,
+} from '../../state/malformed-resources-bag.js';
 import type { DeploymentEventError } from '../../types/deployment-events.js';
 import { extractDeploymentEventError } from '../../types/deployment-events.js';
 import type { ResourceState } from '../../types/state.js';
@@ -22,6 +25,7 @@ import {
   displayIdent,
   displaySafe,
   plainIdentOr,
+  safeMsg,
 } from '../../utils/display-safe.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { createSecretMasker, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
@@ -259,6 +263,98 @@ export function recordRollbackSkip(
 }
 
 /**
+ * Can a replay arm NOT address this resource in AWS by `physicalId`
+ * (go-to-k/cdkd#4628)? The deploy's verdict (go-to-k/cdkd#3211), for the ids
+ * the rollback replays against: a provider handed an absent, blank or
+ * non-string id fails, or answers `*NotFound`, which a delete reads as
+ * already deleted.
+ *
+ * A nested-stack row is exempt, keyed on the RECORD's type as `cdkd deploy`
+ * keys it: that provider finds its child by name and never addresses AWS by
+ * the id. The op must be one too, since the op's type picks the provider; and
+ * neither the record nor the route the arm takes may be Cloud Control, which
+ * addresses AWS by the id. No record, no exemption.
+ */
+export function rollbackCannotAddress(
+  record: Pick<ResourceState, 'resourceType' | 'provisionedBy'> | undefined,
+  opResourceType: string,
+  route: 'sdk' | 'cc-api' | undefined,
+  physicalId: unknown
+): boolean {
+  const byName =
+    record?.resourceType === 'AWS::CloudFormation::Stack' &&
+    opResourceType === 'AWS::CloudFormation::Stack' &&
+    record.provisionedBy !== 'cc-api' &&
+    route !== 'cc-api';
+  return !byName && !hasAddressablePhysicalId({ physicalId });
+}
+
+/**
+ * The id a replacement rollback names its retained NEW copy by
+ * (go-to-k/cdkd#4628): the record's when usable, else the journaled op's, else
+ * none. An unaddressable record reaches the `Retain` branches, which re-point
+ * state and pop the segment, so the op's id is then the copy's only trace.
+ */
+export function retainedSurvivorId(
+  record: { physicalId?: unknown },
+  op: { physicalId?: unknown }
+): string | undefined {
+  if (hasAddressablePhysicalId(record)) return record.physicalId as string;
+  if (hasAddressablePhysicalId(op)) return op.physicalId as string;
+  return undefined;
+}
+
+/** The `ROLLBACK_RESOURCE_SKIPPED` reason of {@link skipUnaddressableReplay}. */
+export const UNADDRESSABLE_SKIP_CAUSE =
+  "Its recorded 'physicalId' is not a non-empty string, so cdkd cannot address the resource " +
+  'in AWS and sent nothing for it; the rollback left it and its state record exactly as they are.';
+
+/** The reason when only the rollback journal records the resource. */
+export const UNADDRESSABLE_JOURNAL_SKIP_CAUSE =
+  "Its rollback-journal entry's 'physicalId' is not a non-empty string and no state record " +
+  'holds the resource, so cdkd cannot address it in AWS and sent nothing for it; if it was ' +
+  'created in AWS, delete it manually.';
+
+/**
+ * Decline an op {@link rollbackCannotAddress} answered `true` for: warned and
+ * recorded as a skip (exit 2), no provider call, state untouched. A skip, as
+ * this replay already declines an op it cannot address (`replayDelete`'s
+ * missing id, `skip-failed-unknown`) and as `cdkd deploy` skips such a DELETE.
+ * The id is never printed: it identifies nothing. `source` says where the id
+ * came from: a state record the user can repair, or a journal entry alone
+ * (a failed CREATE no record holds), which the skip removes, so the remedy is
+ * a manual check, as on `skip-failed-unknown`.
+ */
+export function skipUnaddressableReplay(
+  scope: Parameters<typeof recordRollbackSkip>[0],
+  logger: Pick<RollbackExecutorContext['logger'], 'warn'>,
+  op: Parameters<typeof recordRollbackSkip>[1],
+  what: string,
+  source: 'record' | 'journal' = 'record'
+): void {
+  // Described when not plain: the line names `cdkd` commands
+  // (go-to-k/cdkd#4214).
+  if (source === 'journal') {
+    logger.warn(
+      safeMsg`  Rollback: Cannot ${what} ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) ` +
+        `\u2014 its rollback journal entry has no non-empty string 'physicalId' and no state ` +
+        `record holds it, so cdkd cannot address it in AWS and sent nothing for it. If it was ` +
+        `created in AWS, delete it manually.`
+    );
+    recordRollbackSkip(scope, op, UNADDRESSABLE_JOURNAL_SKIP_CAUSE);
+    return;
+  }
+  logger.warn(
+    safeMsg`  Rollback: Cannot ${what} ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) ` +
+      `\u2014 its state record has no non-empty string 'physicalId', so cdkd cannot address it in ` +
+      `AWS and sent nothing for it. The resource and its state record are left exactly as they ` +
+      `are. Repair the record's 'physicalId' (inspect it with \`cdkd state show\`), then ` +
+      `re-converge it with \`cdkd deploy\`.`
+  );
+  recordRollbackSkip(scope, op, UNADDRESSABLE_SKIP_CAUSE);
+}
+
+/**
  * Which provisioning layer a delete must be judged against: the CURRENT
  * state record wins (it is what state says AWS holds right now), with the
  * journaled op's routing as the legacy-state fallback. Shared by both
@@ -348,8 +444,8 @@ export function ownRemedyError<E extends Error>(error: E): E {
  * Free-form text takes `displaySafe` on the WHOLE, which folds a newline into
  * a space: a newline in an AWS message is the line forgery that render exists
  * to remove (issue #3092). The exception is an error in
- * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the three refusals this
- * module builds are registered, and every value in them is sanitized at the
+ * {@link OWN_REMEDY_ERRORS}, bounded by IDENTITY: only the replay's own
+ * refusals registered through {@link ownRemedyError} qualify, and every value in them is sanitized at the
  * throw (described or `safe()` for identifiers, {@link collisionLine} for the
  * AWS text), so their line breaks are cdkd's own, and rendering them per LINE keeps the
  * `To orphan it:` remedy on a line of its own on the terminal (M1 of the

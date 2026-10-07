@@ -245,7 +245,7 @@ nested-stack	2026-10-07T06:44:03Z	PASS	95	verify.sh	PR #4645 (#1889 terminal res
 nested-stack-3level	2026-10-06T09:20:08Z	PASS	516	verify.sh	rc ok, orph clean (#4602 PR #4620)
 nested-stack-deep	2026-10-05T18:26:04Z	PASS	100	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
-nested-stack-rollback	2026-10-07T06:44:03Z	PASS	105	verify.sh	PR #4645 (#1889 terminal resolver throws + nested child failure non-retryable); rc 0, destroy clean, orph clean
+nested-stack-rollback	2026-10-07T06:58:06Z	PASS	110	verify.sh	rc ok, orph clean (#4628 PR #4638)
 nested-stack-secret	2026-10-07T05:04:27Z	PASS	250	verify.sh	PR #4643 (#2349 FallthroughPair arm); rc 0, destroy clean, 0 surviving state versions
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -279,13 +279,13 @@ replacement-immutable-name	2026-10-05T02:29:22Z	PASS	135	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-06T11:44:18Z	PASS	641	verify.sh	PR #4622 (NAMED_CREATE_COLLISION adopt command, rebased on #4614); rc 0, destroy clean, orph clean
 retain-orphan-redeploy	2026-10-06T05:42:35Z	PASS	200	verify.sh	rc ok, orph clean (#4602 PR #4609)
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-07T05:18:26Z	PASS	615	verify.sh	PR #4642 rebased on #4640 (#3978 Kinesis CreateStream no SDK 5xx replay); rc 0, destroy clean, orph clean
+rollback-command	2026-10-07T06:41:34Z	PASS	631	verify.sh	rc ok, orph clean (#4628 PR #4638)
 rollback-cross-region-secret	2026-10-05T10:27:06Z	PASS	195	verify.sh	rc ok, orph clean (#2624 PR #4572)
-rollback-deletion-policy-snapshot	2026-10-02T13:55:47Z	PASS	141	verify.sh	rc ok, orph clean (#4436)
+rollback-deletion-policy-snapshot	2026-10-07T07:00:14Z	PASS	126	verify.sh	rc ok, orph clean (#4628 PR #4638)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
-rollback-failure-injection	2026-10-05T02:29:22Z	PASS	411	verify.sh	rc ok, orph clean (#4569 @070626749)
+rollback-failure-injection	2026-10-07T06:56:13Z	PASS	877	verify.sh	rc ok, orph clean (#4628 PR #4638)
 rollback-nested-cross-region-secret	2026-10-02T13:40:55Z	PASS	245	verify.sh	rc ok, orph clean (#4436)
-rollback-replacement-retain	2026-10-05T02:29:22Z	PASS	65	verify.sh	rc ok, orph clean (#4569 @070626749)
+rollback-replacement-retain	2026-10-07T06:59:18Z	PASS	70	verify.sh	rc ok, orph clean (#4628 PR #4638)
 rollback-replay-cc-generated-name	2026-10-04T17:04:46Z	PASS	155	verify.sh	rc ok, orph clean (#4408)
 rollback-replay-effective-props	2026-10-04T03:41:19Z	PASS	246	verify.sh	rc ok, orph clean (#4484)
 rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean (#3338/#4356)

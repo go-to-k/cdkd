@@ -1,9 +1,15 @@
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { CdkdError } from '../../utils/error-handler.js';
+import {
+  STATE_RESOURCES_MALFORMED,
+  hasAddressablePhysicalId,
+} from '../../state/malformed-resources-bag.js';
 import {
   createSecretMasker,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
+  SECRET_MASK,
   STATE_DERIVED_RULES,
 } from '../secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
@@ -22,7 +28,17 @@ import {
   rollbackFinalSnapshotId,
   rerunRollbackPhrase,
   recordRollbackSkip,
+  rollbackCannotAddress,
+  skipUnaddressableReplay,
+  shownLogicalId,
+  refusalResourceType,
+  retainedSurvivorId,
+  orphanRemedy,
+  ownRemedyError,
+  refusalPhysicalId,
+  describedPhysicalIdPointer,
 } from './messages.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
@@ -37,6 +53,126 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
   // one — a true clean revert, no re-create needed.
   const current = stateResources[op.logicalId]!;
   const prev = op.previousState!;
+  // go-to-k/cdkd#4628: the delete below addresses the NEW resource by the
+  // record's id. Not on the `Retain` arm, which sends nothing. Above the
+  // announcement, and above the state re-point: a skipped delete must not
+  // leave state naming the old resource while the new one is still alive.
+  // REFUSED rather than skipped, unlike the other arms: the retained old
+  // resource is named only by this journal op, which a skip would pop. The
+  // remedy depends on the op's id: absent or usable, a record repaired to it
+  // re-adopts on the re-run; present but unusable, no repair can prove which
+  // resource is the new copy (the re-run would meet the refusal below), so it
+  // gets that refusal's remedy directly.
+  const oldShown = hasAddressablePhysicalId({ physicalId: prev.physicalId })
+    ? displaySafe(mask(prev.physicalId))
+    : 'no recorded id';
+  /**
+   * A refusal whose remedy is a manual check, or `--orphan` (which pops the
+   * segment and with it the retained old resource's only record). Its own
+   * lines (`ownRemedyError`): every value in it is masked or described here,
+   * and the pasteable `--orphan` command is its last line.
+   */
+  const unprovenCopyRefusal = (reason: string): Error => {
+    const remedy = orphanRemedy(op.logicalId, ctx);
+    return ownRemedyError(
+      markNonRetryable(
+        new CdkdError(
+          // Described when not plain: the message names `cdkd` commands
+          // (go-to-k/cdkd#4214).
+          safeMsg`Cannot reverse the replacement of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}): ` +
+            reason +
+            ` The retained old resource (${oldShown}) is named only by the rollback journal, ` +
+            `so the JOURNAL is kept. Check both resources by hand.` +
+            (remedy.offered
+              ? ` To leave this one as it is, re-run ` +
+                `${rerunRollbackPhrase(ctx, '`cdkd rollback`')} with the command below; that ` +
+                `also drops the journal's only record of the retained old resource ` +
+                `(${oldShown}), so note that id first.`
+              : // A nested child's revert: no state repair makes this op's re-run
+                // succeed, whatever the clause below says about re-running.
+                ` No repair of the state record makes this op succeed on a re-run.`) +
+            remedy.clause +
+            remedy.line,
+          STATE_RESOURCES_MALFORMED
+        )
+      )
+    );
+  };
+  const opIdUnusable = op.physicalId !== undefined && !hasAddressablePhysicalId(op);
+  if (
+    !rollbackRetainsNewResource(current) &&
+    rollbackCannotAddress(
+      current,
+      op.resourceType,
+      current.provisionedBy ?? op.provisionedBy,
+      current.physicalId
+    )
+  ) {
+    if (opIdUnusable) {
+      throw unprovenCopyRefusal(
+        `neither its state record nor its rollback journal entry has a non-empty string ` +
+          `'physicalId' for the replacement's new resource, so cdkd cannot address that ` +
+          `resource in AWS or tell which resource it is, and sent nothing.`
+      );
+    }
+    // The repair must name the replacement's NEW copy: the re-run deletes the
+    // resource the repaired record names. With the op's id usable, any other
+    // value is a mismatch on the re-run, which pops the segment; so the target
+    // is printed (masked, and shown only when plain: the line names a command).
+    // With no op id, nothing checks the repair, so the message says so.
+    const target =
+      op.physicalId === undefined ? undefined : refusalPhysicalId(mask(String(op.physicalId)));
+    const repair =
+      target === undefined
+        ? `Repair the record's 'physicalId' to the id of the replacement's NEW resource ` +
+          `(inspect it with \`cdkd state show\`): the journal does not record that id, and ` +
+          `the re-run DELETES the resource the repaired record names as the new copy, so ` +
+          `name the right one. Then re-run ${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.`
+        : `Repair the record's 'physicalId' to ${target}, the replacement's new resource the ` +
+          `journal records (inspect it with \`cdkd state show\`); the re-run deletes it and ` +
+          `re-adopts the old one. Any other id stops the revert and drops the journal's only ` +
+          `record of the retained old resource (${oldShown}). Then re-run ` +
+          `${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.` +
+          // Only the journal holds it: the state record is the damaged one.
+          (describedPhysicalIdPointer(target) !== ''
+            ? ` That id is left out of the prose above: it is not a plain identifier — read ` +
+              `it from the rollback journal.`
+            : target.includes(SECRET_MASK)
+              ? ` That id is shown masked — read the full value from the rollback journal.`
+              : '');
+    throw new CdkdError(
+      // Described when not plain: the message names `cdkd` commands
+      // (go-to-k/cdkd#4214). The old id is masked here and again by the
+      // shared catch.
+      safeMsg`Cannot reverse the replacement of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}): ` +
+        `its state record has no non-empty string 'physicalId', so cdkd cannot address the new ` +
+        `resource in AWS to delete it, and sent nothing. The retained old resource ` +
+        `(${oldShown}) is named only by the rollback journal, ` +
+        `so the JOURNAL is kept. ` +
+        repair,
+      STATE_RESOURCES_MALFORMED
+    );
+  }
+  // go-to-k/cdkd#4628: the journaled op names the replacement's new copy by an
+  // id that cannot name a resource, so nothing proves the record's resource IS
+  // that copy -- it may be a later attempt's. Not deleted on that guess; not
+  // skipped either, which would pop the only record of the retained old
+  // resource. The `Retain` arm deletes nothing and names the record's id as the
+  // survivor, so it proceeds. An ABSENT op id is the pre-#4628 reading
+  // (unrecorded), unchanged.
+  if (
+    !rollbackRetainsNewResource(current) &&
+    opIdUnusable &&
+    // The same value on both sides is the op's own record, as on `main`
+    // (an exempt nested-stack row; any other is refused by the guard above).
+    current.physicalId !== op.physicalId
+  ) {
+    throw unprovenCopyRefusal(
+      `its rollback journal entry has no non-empty string 'physicalId' for the replacement's ` +
+        `new resource, so cdkd cannot tell whether the resource state records under this id is ` +
+        `that one, and did not delete it; nothing was sent.`
+    );
+  }
   logger.info(
     `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
       `deleting the new resource and re-adopting the retained old one ` +
@@ -58,6 +194,8 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
    * and as the deploy engine's `RESOURCE_SKIPPED` twin.
    */
   let survivorReason: string | undefined;
+  // go-to-k/cdkd#4628: the record's id may be unaddressable here.
+  const survivorId = retainedSurvivorId(current, op);
   if (rollbackRetainsNewResource(current)) {
     // ON THIS ARM THIS IS THE ALWAYS-CASE, not an exception, and saying
     // so is the point (review of issue #2598). `oldResourceRetained` is
@@ -88,7 +226,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
     const survivorMessages = retainedSurvivorMessages(
       op.logicalId,
       op.resourceType,
-      current.physicalId,
+      survivorId ?? 'no recorded id',
       `State is restored to the old resource (${prev.physicalId}).`,
       mask
     );
@@ -195,7 +333,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
     // one datum a cleanup pass needs. Masked because the record is
     // durable, the same reason the survivor record below masks.
     ...(survivorReason !== undefined && {
-      physicalId: current.physicalId,
+      ...(survivorId !== undefined && { physicalId: survivorId }),
       reason: mask(survivorReason),
       // Overrides the op's layer spread above -- a later spread wins.
       // Gated with the other two, deliberately: on a non-retain revert
@@ -265,6 +403,12 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     })
   ) {
     recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);
+    return;
+  }
+  // go-to-k/cdkd#4628: the update below addresses AWS by the record's id.
+  // Above the announcement, as the baseline guard is.
+  if (rollbackCannotAddress(current, op.resourceType, op.provisionedBy, current.physicalId)) {
+    skipUnaddressableReplay(s, logger, op, 'restore');
     return;
   }
   logger.info(

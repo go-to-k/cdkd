@@ -1071,12 +1071,12 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain('const text = rollbackFailureText(error);');
     expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
     expect(src).toContain('.map((line) => displaySafe(line))');
-    // The per-line arm is keyed on IDENTITY, and all three of this module's
+    // The per-line arm is keyed on IDENTITY, and all four of this module's
     // refusals register through `ownRemedyError` (M7 of the go-to-k/cdkd#3764
-    // review; the unproven-holder refusal is #3979's); no code-keyed trust
-    // remains.
+    // review; the unproven-holder refusal is #3979's, the unproven-copy
+    // readopt refusal go-to-k/cdkd#4628's); no code-keyed trust remains.
     expect(src).toContain('OWN_REMEDY_ERRORS.has(error)');
-    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(3);
+    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(4);
     expect(src).not.toMatch(/OWN_REMEDY_LINE_CODES|\.has\(error\.code\)/);
     // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
     // it is not classified at all: the collision decision moved to the ERROR
@@ -1209,7 +1209,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // that escaped; a fourth is one of these being sanitized -- both wrong.
     expect(bareCount).toBe(5);
     // The one rendered bare id -- the pasted `--orphan` remedy -- lives in
-    // `orphanRemedy`, which the three refusals call (the cases above drive
+    // `orphanRemedy`, which the four refusals call (the cases above drive
     // both of its arms): the guard sits in that helper, on the id itself, and the
     // interpolation that names the id is keyed on the guard's verdict. No
     // `--orphan ${` render exists anywhere else in the file, so a refusal
@@ -1219,7 +1219,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain(
       "const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);"
     );
-    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(3);
+    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(4);
     // The fence sees its input: the wrapped form must be present in numbers.
     // Lowered from 40 by go-to-k/cdkd#4214, which moved the refusal renders
     // beside a command onto describing helpers.

@@ -99,6 +99,8 @@ import {
   shownChangeType,
   maskedRollbackEventError,
   recordRollbackSkip,
+  rollbackCannotAddress,
+  skipUnaddressableReplay,
 } from './rollback-executor/messages.js';
 import {
   resolveReplayProps,
@@ -806,6 +808,27 @@ async function replayFailedOperationsUnbound(
           // Retain arm above.
           const failedCreateRecord = failedOpOwnRecord(op, stateResources);
           const deleteProvisionedBy = effectiveProvisionedBy(failedCreateRecord, op.provisionedBy);
+          // go-to-k/cdkd#4628: `classifyFailedOp` already skipped a falsy id
+          // (`skip-failed-unknown`); a present one must also be addressable.
+          // Above the final-snapshot preparation, which names the snapshot
+          // after the id. A recovered orphan has no record: none is exempt.
+          if (
+            rollbackCannotAddress(
+              failedCreateRecord,
+              op.resourceType,
+              deleteProvisionedBy,
+              op.physicalId
+            )
+          ) {
+            skipUnaddressableReplay(
+              skipScope,
+              logger,
+              op,
+              'delete partially-created resource',
+              failedCreateRecord ? 'record' : 'journal'
+            );
+            break;
+          }
           createRollbackRoute = deleteProvisionedBy;
           // `DeletionPolicy: Snapshot` (issue #1362): snapshot BEFORE the
           // delete, through the same mechanism matrix as the completed-CREATE
@@ -961,6 +984,21 @@ async function replayFailedOperationsUnbound(
             })
           ) {
             recordRollbackSkip(skipScope, op, ABSENT_BASELINE_SKIP_CAUSE);
+            break;
+          }
+          // go-to-k/cdkd#4628: the force-revert below addresses AWS by the
+          // record's id. A refused UPDATE is still journaled (deploy's
+          // #3211 refusal), so this op reaches here over such a record. Above
+          // the `force-reverting ...` line, as the baseline guard is.
+          if (
+            rollbackCannotAddress(
+              current,
+              op.resourceType,
+              op.provisionedBy ?? current.provisionedBy,
+              current.physicalId
+            )
+          ) {
+            skipUnaddressableReplay(skipScope, logger, op, 'force-revert failed UPDATE of');
             break;
           }
           logger.info(

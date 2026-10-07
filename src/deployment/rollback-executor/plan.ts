@@ -23,7 +23,9 @@ import {
   refusalLogicalId,
   effectiveProvisionedBy,
   rollbackRetainsNewResource,
+  rollbackCannotAddress,
 } from './messages.js';
+import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 
 /** The two places a journal can name the old resource's type, each `undefined` when unusable. */
 function journaledOldTypes(op: OldTypeSources): {
@@ -207,6 +209,10 @@ export function classifyRollbackOp(
   if (op.changeType === 'CREATE') {
     const current = stateResources[op.logicalId];
     if (!current) return 'skip-already-done';
+    // The RAW id, unlike the replacement comparison below: an unusable one
+    // over a usable record is a mismatch, which sends nothing. Read as
+    // unrecorded it would reach `replayDelete`, where a nested-stack record
+    // is exempt and its provider deletes the child by NAME.
     if (op.physicalId !== undefined && current.physicalId !== op.physicalId) {
       return 'skip-mismatch';
     }
@@ -259,6 +265,37 @@ export function classifyRollbackOp(
       // State already points at the old physical id — a prior reverse-
       // replacement (or manual fix) already reverted this op.
       return 'skip-already-done';
+    }
+    // go-to-k/cdkd#4628: a record cdkd cannot address goes to the reverse
+    // arm whose guard declines it -- the readopt arm REFUSES, keeping the
+    // journal, which alone names the retained old resource; the re-create
+    // arm skips. Compared with the op's id below it would be `skip-mismatch`,
+    // a warning that pops the segment, worded as a later attempt's work.
+    const retainedOld =
+      op.oldResourceRetained ?? op.previousState!.updateReplacePolicy === 'Retain';
+    if (
+      rollbackCannotAddress(
+        current,
+        op.resourceType,
+        current.provisionedBy ?? op.provisionedBy,
+        current.physicalId
+      )
+    ) {
+      if (!resolveReplacementOldType(op).ok) return 'refuse-replacement-routing';
+      return retainedOld ? 'reverse-replacement-readopt' : 'reverse-replacement';
+    }
+    // An op id that is present but cannot name a resource proves nothing
+    // about the usable record. Compared raw below it would be
+    // `skip-mismatch`, which sends nothing -- right for the re-create arm, but
+    // on a retained replacement it pops the segment, the only record of the
+    // retained old resource. So the op goes to the readopt arm, whose guards
+    // decide: they refuse it (journal kept) unless the record holds that same
+    // value or the new copy is retained, neither of which deletes by the
+    // unproven id. An ABSENT op id is not routed here: it was never recorded
+    // (main's reading) and takes the comparison below.
+    if (retainedOld && op.physicalId !== undefined && !hasAddressablePhysicalId(op)) {
+      if (!resolveReplacementOldType(op).ok) return 'refuse-replacement-routing';
+      return 'reverse-replacement-readopt';
     }
     if (op.physicalId !== undefined && current.physicalId !== op.physicalId) {
       // Neither the old nor the recorded new id. An AUTO-NAMED resource

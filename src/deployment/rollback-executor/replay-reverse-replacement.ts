@@ -50,6 +50,9 @@ import {
   collisionLine,
   shownLogicalId,
   recordRollbackSkip,
+  rollbackCannotAddress,
+  skipUnaddressableReplay,
+  retainedSurvivorId,
 } from './messages.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
@@ -102,6 +105,22 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     })
   ) {
     recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);
+    return;
+  }
+  // go-to-k/cdkd#4628: both routes delete the NEW resource by the record's
+  // id, one of them before the re-create, which a `*NotFound` would then let
+  // run with the new resource still alive. Before ANY AWS call. Not when the
+  // new copy is retained: that arm never deletes it.
+  if (
+    !rollbackRetainsNewResource(current) &&
+    rollbackCannotAddress(
+      current,
+      op.resourceType,
+      current.provisionedBy ?? op.provisionedBy,
+      current.physicalId
+    )
+  ) {
+    skipUnaddressableReplay(s, logger, op, 'reverse the replacement of');
     return;
   }
   // Re-resolve the redacted secret expressions for the re-CREATE (GHSA
@@ -903,6 +922,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // in `reverse-replacement-readopt` above for why the EVENT, not the
   // warn, is what the user is left with.
   let survivorReason: string | undefined;
+  // go-to-k/cdkd#4628: the record's id may be unaddressable here.
+  const survivorId = retainedSurvivorId(current, op);
   if (!deletedNewFirst && !adoptedLiveNewResource && rollbackRetainsNewResource(current)) {
     // Issue #2598: the ordinary create-first path — the old resource is
     // already re-created and state already points at it, so honouring
@@ -914,7 +935,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     const survivorMessages = retainedSurvivorMessages(
       op.logicalId,
       op.resourceType,
-      current.physicalId,
+      survivorId ?? 'no recorded id',
       `State records the re-created old resource ` +
         `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`,
       mask
@@ -1023,7 +1044,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // is gated with them -- on those paths the event describes the OP,
     // whose own layer is the right one to report.
     ...(survivorReason !== undefined && {
-      physicalId: current.physicalId,
+      ...(survivorId !== undefined && { physicalId: survivorId }),
       reason: mask(survivorReason),
       ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
     }),

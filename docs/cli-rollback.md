@@ -105,6 +105,31 @@ roll back in the first place.
 Replay is idempotent: re-running after a partial rollback skips the resources
 that are already reverted.
 
+An operation whose resource cdkd cannot address is skipped with a warning
+(exit `2`): its state record's `physicalId` (for a rolled-back CREATE, the
+journaled one) is absent, empty, whitespace-only or not a string. Only a
+hand-edited or torn `state.json` or journal has that shape. Nothing is sent to
+AWS for it, and the resource and its record are left as they are; repair the
+record's `physicalId` (`cdkd state show`) and re-converge with `cdkd deploy`. A
+failed CREATE that no state record holds is named for manual attention
+instead, since the journal entry was its only record. A nested stack's record
+is exempt, since its child is found by name, unless it is recorded on Cloud
+Control. A replacement whose new copy is kept (`UpdateReplacePolicy: Retain`)
+sends nothing by that id and is reverted as usual. One case fails instead of
+skipping (exit `1`, journal kept): re-adopting a retained old resource, which
+only the journal names. When the journal holds a usable id for the
+replacement's new resource, the message prints it: repair the record to that id
+and re-run the rollback (any other id stops the revert and drops the journal's
+only record of the retained old resource). When the journal holds
+none, the re-run deletes whatever resource the repaired record names as the new
+copy, so name the right one. When the journal's id is present but unusable too, or the record
+holds a different id, nothing proves which resource is the new copy, so it is
+not deleted and no repair makes the re-run succeed. Check both resources by
+hand. Re-running with the `--orphan` command the message prints leaves it as it
+is, but also drops the journal's only record of the retained old resource, so
+note the old id the message names first. The same
+applies to `--revert-failed` and to the automatic rollback.
+
 ## `--revert-failed`: revert the resource whose operation failed mid-deploy
 
 By default the resource whose operation FAILED is left exactly as it is, because
@@ -120,6 +145,7 @@ flag (see [Failed CREATEs that made their resource](#failed-creates-that-made-th
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
 | UPDATE that was a replacement whose new resource was made and then failed (journaled beside it, see below) | Never force-reverted: the update applied nothing to the old resource. When the replacement created first, the old resource is untouched and nothing is done. When it deleted the old resource first, the rollback warns (exit `2`) that the resource state still records is gone; a deploy whose template still replaces it creates it again (one whose template was reverted to the old properties sees no change and does not), and a `cdkd destroy` drops the record. The new resource's own entry is acted on, and this one is cleared with it on every path, so a later `--revert-failed` never sees it alone. |
 | UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
+| UPDATE whose state record has no usable `physicalId` (a `cdkd deploy` refusal over a hand-edited record still journals the op) | Skipped with a warning (exit `2`); nothing is sent. See [above](#flow) for the remedy. |
 | CREATE that recorded a physical id, which state still records | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
 | CREATE that made its resource and then failed (the provider proved its create call returned, e.g. a Kinesis stream whose retention follow-up AWS rejected) | Deleted, honouring the template's `DeletionPolicy` as journaled — this entry is the only record of that resource. Under `Retain` it is left in AWS with no rollback-orphan record (it was never in state), so a later deploy cannot re-adopt it. Deleted only while nothing later can own it. It is skipped with a warning naming the physical id (exit `2`), since the resource may still exist untracked and need manual attention, when a NEWER journal segment holds an operation of its type naming its physical id or previous physical id, or a completed CREATE of its type; when a later segment's removal superseded its logical id; or when a rollback-orphan record holds its logical or physical id. Otherwise state decides: a state resource under its logical id with the same physical id, or one of its type holding that physical id under another logical id, tracks it and the skip is silent; a different physical id under its logical id warns (exit `2`), unless that record is the resource a replacement was replacing (see below). A redeploy whose create only collided with its name does not stop the delete. Roll the stack back before redeploying: a redeploy that re-creates the same name, or under `--no-rollback` completes any CREATE of its type, makes the newer entry decide, and this one is then only warned about. SDK providers whose create makes a follow-up call after their create call returned prove it where the id is known and the create made the resource (an adopted or pre-existing resource is never marked), unless their own cleanup already deleted it (`AWS::IAM::Policy` instead removes its own writes and warns when that fails). |
 | CREATE that recorded a physical id, with no state record left | Nothing to do — already cleaned up (a re-run). |
