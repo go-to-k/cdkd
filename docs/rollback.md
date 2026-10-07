@@ -79,7 +79,9 @@ journal records, is deleted per its `DeletionPolicy`
 by the automatic rollback, any `cdkd rollback`, `cdkd destroy` and a later
 successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource));
 a successful deploy that cannot act on one keeps the journal (reduced to that
-entry where it can), and one a state record may own is warned about and left
+entry where it can), and one a state record may own, or whose identity it cannot
+prove (a name-keyed resource that may have been deleted and its name reused),
+is warned about and left
 in AWS; either way it exits `2`. An automatic rollback that skipped an operation
 it could not revert keeps the whole journal. A nested stack's journal is the exception:
 its successful deploy keeps a record until the top-level stack's deploy

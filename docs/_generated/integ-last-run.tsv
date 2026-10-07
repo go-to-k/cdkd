@@ -279,7 +279,7 @@ replacement-immutable-name	2026-10-05T02:29:22Z	PASS	135	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-06T11:44:18Z	PASS	641	verify.sh	PR #4622 (NAMED_CREATE_COLLISION adopt command, rebased on #4614); rc 0, destroy clean, orph clean
 retain-orphan-redeploy	2026-10-06T05:42:35Z	PASS	200	verify.sh	rc ok, orph clean (#4602 PR #4609)
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-07T06:41:34Z	PASS	631	verify.sh	rc ok, orph clean (#4628 PR #4638)
+rollback-command	2026-10-07T14:26:55Z	PASS	682	verify.sh	PR #4660 (#4655 orphan identity, step O9); rc 0, destroy clean, orph clean; pre-fix probe red at O9 (no journaled identity), settle-half probe red at O9 (reused name deleted, exit 0)
 rollback-cross-region-secret	2026-10-05T10:27:06Z	PASS	195	verify.sh	rc ok, orph clean (#2624 PR #4572)
 rollback-deletion-policy-snapshot	2026-10-07T07:00:14Z	PASS	126	verify.sh	rc ok, orph clean (#4628 PR #4638)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
@@ -325,7 +325,7 @@ sns-event-source	2026-09-27T12:27:25Z	PASS	70	verify.sh	rc ok, orph clean (#3861
 sns-inline-subscription	2026-09-25T19:22:55Z	PASS	55	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 sns-pending-subscription	2026-09-17T17:36:20Z	PASS	163	verify.sh	issue 3329 gate pair: confirms Subscribe with ReturnSubscriptionArn=true returns a REAL ARN even for a pending-confirmation subscription (the premise the create-path shape gate rests on); delete-path pending skip fired, destroy 2 deleted 0 errors, 0 orphans
 sns-sqs-event	2026-10-06T20:08:39Z	PASS	211	verify.sh	PR #4626 (#4612 Phase 2b failed TopicPolicy reset only on topics still carrying its document); rc 0, destroy clean, orph clean; discrimination proof: pre-fix src RED at Phase 2b rollback exited 0, expected 2
-sns-subscription-filter	2026-10-06T20:08:39Z	PASS	305	verify.sh	PR #4626 (#4612 failed QueuePolicy cleared only from queues still carrying its document; SQS stores a raw account principal as its root ARN, folded); rc 0, destroy clean, orph clean; discrimination proof: pre-fix src RED at (a) overlapown deploy exited 0, expected 2
+sns-subscription-filter	2026-10-07T14:26:55Z	PASS	305	verify.sh	PR #4660 (#4655) regression: QueuePolicy success settle stays exempt; rc 0, destroy clean, orph clean
 sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixture armed with a Fn::GetAtt Arn Output + attributes.Arn assertions, phase 1 under --strict-getatt; both followed the phase-2 replacement (GUID changed). destroy 3 deleted 0 errors, 0 orphans (only deployments/ history remains, by design)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
@@ -350,6 +350,6 @@ update-replace	2026-10-05T02:29:22Z	PASS	90	verify.sh	rc ok, orph clean (#4569 @
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
-vpc-nat-gateway	2026-10-07T08:57:23Z	PASS	782	verify.sh	PR #4652 (#4606 NAT/EIP fix-forward Phases 1d/1e), on main incl. #4638; rc 0, destroy clean, orph clean; pre-fix probe red at Phase 1d (exit 2)
+vpc-nat-gateway	2026-10-07T14:26:55Z	PASS	761	verify.sh	PR #4660 (#4655) regression: NAT/EIP fix-forward through the unique-id set; rc 0, destroy clean, orph clean
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
