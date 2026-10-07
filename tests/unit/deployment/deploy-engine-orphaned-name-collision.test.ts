@@ -585,6 +585,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       // warning the import arm always carries.
       expect(advice).toContain(`${STACK}-${LOGICAL}`);
       expect(advice).toContain('ended without a clear verdict');
+      // #4639: a dropped connection may precede the request reaching AWS.
+      expect(advice).toContain('confirm it is yours before deleting or importing it');
       expect(advice).toContain('no rollback or cdkd destroy will remove it');
       expect(advice).toContain('CONFIRM IT IS YOURS FIRST');
       expect(advice!.split('\n').at(-1)).toBe(

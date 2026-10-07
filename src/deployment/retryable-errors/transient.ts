@@ -194,9 +194,10 @@ export function isAmbiguousCcHandlerErrorCode(code: string | undefined): boolean
  *  - a Cloud Control handler code in {@link AMBIGUOUS_CC_HANDLER_ERROR_CODES}
  *    -- the handler may have made the resource before failing.
  *
- * The socket and `TimeoutError` arms reach no replay today: no classifier
- * `withRetry` runs retries a socket error, so the error that armed the latch
- * is the one thrown. They are there for when one does.
+ * The socket and `TimeoutError` arms reach no ENGINE replay today: no
+ * classifier `withRetry` runs retries a socket error, so the error that armed
+ * the latch is the one thrown. The AWS SDK does replay them inside one
+ * `send`, which `withoutServerErrorRetries` stamps (issue #4639).
  *
  * NOT ambiguous, because the service declared it did nothing: an SDK-level
  * THROTTLE, i.e. a link named in {@link THROTTLING_ERROR_NAMES} (S3's
@@ -213,10 +214,11 @@ export function isAmbiguousCcHandlerErrorCode(code: string | undefined): boolean
  * attempt's own error included -- a false positive leaves a genuine collision
  * refused rather than deleted-first, while a false negative deletes a live
  * resource. The other readers (`AmbiguousCreateLatch`,
- * `withoutServerErrorRetries` -- 5xx only, the CodeCommit delete-target
- * check, the DynamoDB stream-member read) look before creating again, refuse
- * the SDK's silent replay of a tokenless create, rethrow instead of deleting
- * unconfirmed, or keep the declared value.
+ * `withoutServerErrorRetries`, the CodeCommit delete-target check, the
+ * DynamoDB stream-member read) look before creating again, refuse the SDK's
+ * silent replay of a 5xx on a tokenless create and mark what it replays after
+ * any other ambiguous attempt, rethrow instead of deleting unconfirmed, or
+ * keep the declared value.
  *
  * Never throws: it runs in a retry loop's `catch`, where an out-throw would
  * replace the error being handled; an unreadable link reads as not ambiguous.
