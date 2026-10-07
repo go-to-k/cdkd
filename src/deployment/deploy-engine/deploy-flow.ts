@@ -167,7 +167,7 @@ export async function doDeployWithPrefetch(
     // `repairMalformedResourcesForReadOnly`'s own note records: a per-walk
     // `?? {}` is inert for this class, since each flow dereferences the
     // container a line earlier.
-    refuseMalformedOutputs(currentState, stackName, this.stackRegion);
+    refuseMalformedOutputs(currentState, stackName, this.stackRegion, this.options.refusalRecovery);
     // And the `resources` bag, a SEPARATE container with a separate absence
     // rule, refused separately so the message names the one that is broken
     // (issue go-to-k/cdkd#3161).
@@ -186,7 +186,12 @@ export async function doDeployWithPrefetch(
     // immediately below — where a `null` bag raised the bare `TypeError`
     // go-to-k/cdkd#3018 exists to remove. `cdkd diff` keeps its repair-and-warn
     // half at its own load, so the preview this refusal points at still works.
-    refuseMalformedResourcesForDeploy(currentState, stackName, this.stackRegion);
+    refuseMalformedResourcesForDeploy(
+      currentState,
+      stackName,
+      this.stackRegion,
+      this.options.refusalRecovery
+    );
     // And each ROW of that bag (go-to-k/cdkd#3314). A `null` or typeless row
     // reads as absent in the diff and is planned as a CREATE of a resource
     // this stack already manages. `calculateDiff` refuses it too, but two
@@ -195,25 +200,40 @@ export async function doDeployWithPrefetch(
     // below) and the observed-state auto-refresh. The load dominates both.
     // It does not dominate the CLI's PRE-lock `--recreate-via-*` check, which
     // reads the named rows itself (go-to-k/cdkd#3202 owns that site).
-    refuseMalformedResourceEntriesForDeploy(currentState, stackName, this.stackRegion);
+    refuseMalformedResourceEntriesForDeploy(
+      currentState,
+      stackName,
+      this.stackRegion,
+      this.options.refusalRecovery
+    );
     // And each row's `properties` MAP (go-to-k/cdkd#3211), BELOW the row guard,
     // which names a typeless row with a torn map more precisely. `calculateDiff`
     // refuses it too, but the observed-state auto-refresh below hands the map
     // to `provider.readCurrentState` first, and the walks between here and the
     // diff read it. The load dominates every one of them.
-    refuseMalformedResourceProperties(currentState, stackName, this.stackRegion);
+    refuseMalformedResourceProperties(
+      currentState,
+      stackName,
+      this.stackRegion,
+      this.options.refusalRecovery
+    );
     // The `orphans` CONTAINER, beside it and for the same placement reason
     // (go-to-k/cdkd#3379): the adoption pass below reads it on a bare `?? []`
     // and ASSIGNS `currentState.orphans` from what it read, so an unreadable
     // container is rewritten by a writer. AFTER the lock, so the guarantee is
     // "before any resource operation" rather than "before any lock".
-    refuseMalformedOrphans(currentState, stackName, this.stackRegion);
+    refuseMalformedOrphans(currentState, stackName, this.stackRegion, this.options.refusalRecovery);
     // The ROWS of a readable list (go-to-k/cdkd#3500). Its own call because
     // the questions are independent: the adoption pass below dereferences
     // each row's `state`, and `orphansAfterRollback` keys its merge map on
     // each row's `logicalId`, so a list that IS a list can still abort the
     // run, or collapse the rows MISSING a `logicalId` into one saved survivor.
-    refuseMalformedOrphanRecords(currentState, stackName, this.stackRegion);
+    refuseMalformedOrphanRecords(
+      currentState,
+      stackName,
+      this.stackRegion,
+      this.options.refusalRecovery
+    );
     // Set when we loaded a `version: 1` legacy record. The next save
     // migrates it to the new key.
     const migrationPending = currentStateData?.migrationPending ?? false;
@@ -650,7 +670,9 @@ export async function doDeployWithPrefetch(
       // parameter or flipped condition behind unchanged template text diffs.
       // A layout-1 fingerprint whose text still matches is re-baselined to
       // layout 2 from these same inputs, stamped below without sending.
-      maskedInputs
+      maskedInputs,
+      // go-to-k/cdkd#4159: the account flags the load's refusals above carry.
+      this.options.refusalRecovery
     );
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the

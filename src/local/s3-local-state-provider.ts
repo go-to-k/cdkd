@@ -27,6 +27,7 @@ import {
   repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
@@ -97,6 +98,14 @@ export class S3LocalStateProvider implements LocalStateProvider {
     };
     const loaded = await loadStateForStack(stackName, synthRegion, loadOpts);
     if (!loaded) return undefined;
+    // The account flags each warning below prints on its `cdkd state show`
+    // pointer: the bucket the record was READ from, not the raw flag, so a
+    // pasted command reads the same record (go-to-k/cdkd#4159).
+    const refusalRecovery: LockRecoveryContext = {
+      profile: this.opts.profile,
+      stateBucket: loaded.stateBucket,
+      statePrefix: this.opts.statePrefix,
+    };
     // AT THE LOAD, above the coercion walk (issue #3207). `parseStateBody`
     // validates the root object and the schema version and nothing inside, so
     // `outputs` can hold a string, a list, a number, a boolean or `null` — and
@@ -115,7 +124,7 @@ export class S3LocalStateProvider implements LocalStateProvider {
     // `hasReadableOutputs` are one spelling of the absence rule, and a second
     // copy here could drift into warning about a record cdkd writes on purpose.
     if (repairMalformedOutputsForReadOnly(loaded.state)) {
-      getLogger().warn(malformedLocalOutputsWarning(stackName, loaded.region));
+      getLogger().warn(malformedLocalOutputsWarning(stackName, loaded.region, refusalRecovery));
     }
     // The `resources` bag, a separate container with a separate absence rule,
     // decided the same way (go-to-k/cdkd#3202). This is the ONE load every
@@ -128,11 +137,13 @@ export class S3LocalStateProvider implements LocalStateProvider {
     // `repairMalformedResourceEntriesForReadOnly` deliberately returns `[]` for
     // one. REPAIR-AND-WARN for the reason the outputs branch gives.
     if (repairMalformedResourcesForReadOnly(loaded.state)) {
-      getLogger().warn(malformedLocalResourcesWarning(stackName, loaded.region));
+      getLogger().warn(malformedLocalResourcesWarning(stackName, loaded.region, refusalRecovery));
     }
     const droppedRows = repairMalformedResourceEntriesForReadOnly(loaded.state);
     if (droppedRows.length > 0) {
-      getLogger().warn(malformedLocalResourceEntriesWarning(stackName, loaded.region, droppedRows));
+      getLogger().warn(
+        malformedLocalResourceEntriesWarning(stackName, loaded.region, droppedRows, refusalRecovery)
+      );
     }
     // Outputs are typed `Record<string, unknown>` on `StackState` but
     // every value cdkd ever writes is a string at the wire level —

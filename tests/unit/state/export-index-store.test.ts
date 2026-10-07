@@ -333,6 +333,52 @@ describe('ExportIndexStore', () => {
       });
     }
 
+    // go-to-k/cdkd#4159: the warning's `cdkd state show` pointer names the
+    // store's own bucket and prefix, and the `profile` it was constructed with.
+    it('the unreadable-producer warning carries the store\'s account, profile included when given', async () => {
+      const run = async (opts: { profile?: string }, prefix: string): Promise<string> => {
+        loggerSpies.warn.mockClear();
+        const s3 = mockS3(async (cmd) => {
+          if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+          if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"new-etag"' };
+          throw new Error(`unexpected command ${cmd.constructor.name}`);
+        });
+        const backend = mockBackend([
+          { stackName: 'Broken', region: 'us-east-1', outputs: 'abcdef' as never },
+        ]);
+        const store = new ExportIndexStore(s3, 'my-bucket', prefix, 'us-east-1', backend, opts);
+        await store.lookup('Anything');
+        return warnings().join('\n');
+      };
+      const show = 'cdkd state show Broken --stack-region us-east-1 --json';
+      expect(await run({ profile: 'prod' }, 'team-a')).toContain(
+        `${show} --profile prod --state-bucket my-bucket --state-prefix team-a`
+      );
+      // CONTROL: no profile, default prefix — only the bucket rides.
+      const bare = await run({}, 'cdkd');
+      expect(bare).toContain(`${show} --state-bucket my-bucket`);
+      expect(bare).not.toContain('--profile');
+      expect(bare).not.toContain('--state-prefix');
+    });
+
+    it('every command constructing a store hands it the run\'s --profile (go-to-k/cdkd#4159)', async () => {
+      const { readFileSync } = await import('node:fs');
+      const sites: Array<[string, string]> = [
+        ['src/cli/commands/deploy.ts', 'options.profile'],
+        ['src/cli/commands/destroy.ts', 'options.profile'],
+        ['src/cli/commands/scrub.ts', 'options.profile'],
+        ['src/cli/commands/state.ts', 'options.profile'],
+        ['src/cli/commands/local-state-loader.ts', 'opts.profile'],
+      ];
+      for (const [file, profile] of sites) {
+        const source = readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
+        const calls = source.split('new ExportIndexStore(').slice(1);
+        expect(calls, file).toHaveLength(1);
+        const args = calls[0]!.slice(0, calls[0]!.indexOf(');'));
+        expect(args, file).toMatch(new RegExp(`\\{ profile: ${profile.replace('.', '\\.')} \\}\\s*$`));
+      }
+    });
+
     it('FLOOR: a record with NO outputs contributes nothing and stays SILENT (#3192)', async () => {
       // The other side of the split the review forced. `absent` must keep the
       // silent skip — a record with no `outputs` is one cdkd writes on purpose

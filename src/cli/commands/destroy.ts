@@ -326,7 +326,8 @@ async function destroyCommand(
       stateBucket,
       options.statePrefix,
       region,
-      stateBackend
+      stateBackend,
+      { profile: options.profile }
     );
     const providerRegistry = new ProviderRegistry();
 

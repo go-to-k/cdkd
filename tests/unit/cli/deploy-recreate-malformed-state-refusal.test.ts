@@ -48,10 +48,10 @@ describe('deploy.ts refuses a malformed record on the pre-lock recreate check (g
     // Both calls, on `stateForRecreateCheck.state` specifically — a refusal on
     // some other record would satisfy a bare `includes`.
     expect(between).toMatch(
-      /refuseMalformedResourcesForDeploy\(\s*stateForRecreateCheck\.state,\s*stackInfo\.stackName,\s*stackRegion\s*\)/
+      /refuseMalformedResourcesForDeploy\(\s*stateForRecreateCheck\.state,\s*stackInfo\.stackName,\s*stackRegion,\s*refusalRecovery\s*\)/
     );
     expect(between).toMatch(
-      /refuseMalformedResourceEntriesForDeploy\(\s*stateForRecreateCheck\.state,\s*stackInfo\.stackName,\s*stackRegion\s*\)/
+      /refuseMalformedResourceEntriesForDeploy\(\s*stateForRecreateCheck\.state,\s*stackInfo\.stackName,\s*stackRegion,\s*refusalRecovery\s*\)/
     );
     // BAG first — the CONVENTION every call site of the pair takes, pinned as
     // one. It is not a correctness need: `unreadableResourceEntries` returns
@@ -99,8 +99,8 @@ describe('deploy.ts refuses a malformed record on the pre-lock recreate check (g
       .replace(/\(\s+/g, '(')
       .replace(/\s+\)/g, ')');
     expect(executable).toBe(
-      'refuseMalformedResourcesForDeploy(stateForRecreateCheck.state, stackInfo.stackName, stackRegion); ' +
-        'refuseMalformedResourceEntriesForDeploy(stateForRecreateCheck.state, stackInfo.stackName, stackRegion);'
+      'refuseMalformedResourcesForDeploy(stateForRecreateCheck.state, stackInfo.stackName, stackRegion, refusalRecovery); ' +
+        'refuseMalformedResourceEntriesForDeploy(stateForRecreateCheck.state, stackInfo.stackName, stackRegion, refusalRecovery);'
     );
     // And no THIRD occurrence of either call sits outside the block in this
     // span — the unconditional-duplicate shape.
@@ -126,6 +126,29 @@ describe('deploy.ts refuses a malformed record on the pre-lock recreate check (g
       .map((l) => l.trim())
       .filter((l) => l !== '' && !l.startsWith('//'));
     expect(tail, 'something executable sits between the guard block and the validator').toEqual([]);
+  });
+
+  /**
+   * go-to-k/cdkd#4159: the pre-lock pair and the engine's load refuse the SAME
+   * record, so they must print the same account flags. Both read ONE binding:
+   * the `refusalRecovery` built from `--profile`, the RESOLVED bucket and
+   * `--state-prefix`, which also rides into the engine's options.
+   */
+  it('carries the same account flags the engine refuses with — one binding for both', () => {
+    expect(source.split('const refusalRecovery: LockRecoveryContext = {').length - 1).toBe(1);
+    expect(source).toMatch(
+      /const refusalRecovery: LockRecoveryContext = \{\s*profile: options\.profile,\s*stateBucket,\s*statePrefix: options\.statePrefix,\s*\};/
+    );
+    // The engine's options carry that binding (the load refusals read it).
+    const optionsAt = source.indexOf('const deployEngineOptions: DeployEngineOptions = {');
+    expect(optionsAt).toBeGreaterThan(-1);
+    const optionsBody = source.slice(optionsAt, source.indexOf('\n        };', optionsAt));
+    expect(optionsBody).toMatch(/^\s*refusalRecovery,$/m);
+    // Built from the RESOLVED bucket, before either reader.
+    expect(source.indexOf('const refusalRecovery')).toBeLessThan(readAt);
+    expect(source.indexOf('const refusalRecovery')).toBeGreaterThan(
+      source.indexOf('const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;')
+    );
   });
 
   it('is the SAME pair the engine raises, imported from the module rather than re-spelled', () => {

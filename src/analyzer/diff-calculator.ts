@@ -35,6 +35,7 @@ import {
 import { AWS_NO_VALUE } from '../deployment/intrinsic-function-resolver.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../utils/display-safe.js';
+import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -310,7 +311,13 @@ export class DiffCalculator {
     maskedInputs?: {
       sources: MaskedInputSources;
       rebaselined?: Map<string, Record<string, string>>;
-    }
+    },
+    /**
+     * The run's account flags (go-to-k/cdkd#4159), carried on the two
+     * refusals' `cdkd state show` pointer. Trusted CLI values, unlike the
+     * record's own identity fields, so they ride where the identity does not.
+     */
+    refusalRecovery?: LockRecoveryContext
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -380,8 +387,8 @@ export class DiffCalculator {
     // so a typeless row with a torn map is reported as the row it is.
     // `DeployEngine` also refuses at its state load, which a deploy reaches
     // first: two walks between that load and this call died on such a row.
-    refuseMalformedResourceEntriesForDeploy(currentState, undefined, undefined);
-    refuseMalformedResourceProperties(currentState, undefined, undefined);
+    refuseMalformedResourceEntriesForDeploy(currentState, undefined, undefined, refusalRecovery);
+    refuseMalformedResourceProperties(currentState, undefined, undefined, refusalRecovery);
 
     const currentResources = currentState.resources;
     const desiredResources = desiredTemplate.Resources;

@@ -158,7 +158,9 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
     } as unknown as ResourceProvider;
   });
 
-  function run(): Promise<Awaited<ReturnType<DeployEngine['deploy']>>> {
+  function run(
+    extraOptions: Record<string, unknown> = {}
+  ): Promise<Awaited<ReturnType<DeployEngine['deploy']>>> {
     vi.clearAllMocks();
     const nested = new NestedStackProvider();
     const pick = (type: string) =>
@@ -199,7 +201,7 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
     };
     const dagBuilder = new DagBuilder();
     const diffCalculator = new DiffCalculator();
-    const options = { dryRun: false, concurrency: 1 };
+    const options = { dryRun: false, concurrency: 1, ...extraOptions };
     const engine = new DeployEngine(
       stateBackend as never,
       lockManager as never,
@@ -235,6 +237,37 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
     };
     return withNestedStackContext(ctx, () => engine.deploy(PARENT, parentTemplate));
   }
+
+  // go-to-k/cdkd#4159: the parent's `refusalRecovery` reaches the CHILD engine
+  // through `NestedStackProvider`'s option spread, so the child's own load-time
+  // refusal prints the run's account flags.
+  it("a child's load-time refusal carries the parent's account flags (the option spread)", async () => {
+    const chainOf = (e: unknown): string => {
+      const parts: string[] = [];
+      for (let c: unknown = e; c instanceof Error; c = (c as { cause?: unknown }).cause) {
+        parts.push(c.message);
+      }
+      return parts.join(' | ');
+    };
+    const malformChild = (): void => {
+      states.set(CHILD, { ...states.get(CHILD)!, orphans: 'x' as never });
+    };
+    malformChild();
+    const flagged = chainOf(
+      await run({
+        refusalRecovery: { profile: 'prod', stateBucket: 'my-bucket', statePrefix: 'team-a' },
+      }).catch((e: unknown) => e)
+    );
+    expect(flagged).toContain(
+      `cdkd state show '${CHILD}' --stack-region ${REGION} --json --profile prod ` +
+        '--state-bucket my-bucket --state-prefix team-a'
+    );
+    // CONTROL: the same refusal without the option carries no account flag.
+    malformChild();
+    const bare = chainOf(await run().catch((e: unknown) => e));
+    expect(bare).toContain(`cdkd state show '${CHILD}' --stack-region ${REGION} --json`);
+    expect(bare).not.toContain('--state-bucket');
+  });
 
   it("the child's skipped DELETE is the parent's deleteSkipped, and the child keeps the record", async () => {
     const result = await run();

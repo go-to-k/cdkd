@@ -2824,6 +2824,41 @@ describe('reportDriftBaselineGaps', () => {
     });
   }
 
+  // go-to-k/cdkd#4159: the warning's `cdkd state show` pointer carries the
+  // run's account flags, handed in by both `exportCommand` call sites.
+  it('the unreadable-bag warning carries the account flags it is handed, and none without them', async () => {
+    const { readFileSync } = await import('node:fs');
+    const run = (recovery?: { profile: string; stateBucket: string; statePrefix: string }) => {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        { version: 10, stackName: 'S', region: 'r', resources: 5 as never, outputs: {}, lastModified: 0 },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+        { stackName: 'S', region: 'us-east-1' },
+        undefined,
+        recovery
+      );
+      return String(logger.warn.mock.calls[0]?.[0] ?? '');
+    };
+    expect(
+      run({ profile: 'prod', stateBucket: 'my-bucket', statePrefix: 'team-a' }).endsWith(
+        'cdkd state show S --stack-region us-east-1 --json --profile prod --state-bucket my-bucket ' +
+          '--state-prefix team-a'
+      )
+    ).toBe(true);
+    expect(run().endsWith('cdkd state show S --stack-region us-east-1 --json')).toBe(true);
+    // Both command call sites hand over the command's own context.
+    const source = readFileSync(
+      new URL('../../../src/cli/commands/export.ts', import.meta.url),
+      'utf8'
+    );
+    const calls = source.split('reportDriftBaselineGaps(').slice(1);
+    // The definition plus two call sites.
+    expect(calls).toHaveLength(3);
+    for (const call of calls.slice(0, 2)) {
+      expect(call.slice(0, call.indexOf(');'))).toMatch(/template,\s*lockRecovery\s*$/);
+    }
+  });
+
   it('says NOTHING about an empty map — the guard is not a blanket warning', () => {
     // `{}` is what a deployed-nothing stack holds. With the bag guard moved
     // ahead of the empty-record return, a guard that tested emptiness rather

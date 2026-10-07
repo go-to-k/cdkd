@@ -56,6 +56,7 @@ const AUDITED_MEMBERS = [
   'parameters',
   'noRollback',
   'roleArn',
+  'refusalRecovery', // the run's account flags (profile / bucket / prefix), shared by every child (#4159)
   'resourceWarnAfterMs',
   'resourceTimeoutMs',
   'resourceWarnAfterByType',

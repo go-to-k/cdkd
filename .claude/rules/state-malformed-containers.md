@@ -219,13 +219,13 @@ it offers no read. Not the shape to copy for a message offering both. And the
 per-line shape is a property of the MESSAGE, not of every surface printing it —
 two readers flatten it back (go-to-k/cdkd#3518).
 
-**Account flags go through `accountArgs`** (go-to-k/cdkd#3909): each value is a
-shared-gate argument with `plainIdent`, and a refused one is a hole the prose
-DESCRIBES, never echoes. With any flag present, a destroy withhold arm prints its
-listing as a `Find the exact name:` line, since a value cannot ride in prose
-quotes. `orphanRefusal` qualifies through it too, and its legacy `State bucket:`
-line holds the bucket to the same predicate; `recoveryCommandFlags` (exactness
-only) is `cdkd force-unlock`'s, which suppresses its whole command instead.
+**Account flags go through `accountArgs`** (go-to-k/cdkd#3909): profile and
+bucket take `plainIdent`, the prefix the same test per `/` segment (#4159), and a
+refused value is a hole the prose DESCRIBES, never echoes. With any flag present,
+a destroy withhold arm prints its listing as a `Find the exact name:` line, since
+a value cannot ride in prose quotes. `orphanRefusal` qualifies through it too,
+and its `State bucket:` line holds the bucket to the same predicate;
+`recoveryCommandFlags` (exactness only) is `cdkd force-unlock`'s alone.
 
 ## Two exports here are not guards at all
 

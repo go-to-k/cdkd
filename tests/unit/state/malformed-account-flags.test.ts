@@ -25,6 +25,28 @@ import {
   malformedOutputsRefusalMessage,
   malformedResourceEntriesRefusalMessage,
   malformedStateRefusalMessage,
+  refuseMalformedNestedChildOutputs,
+  malformedDeployResourcesRefusalMessage,
+  malformedRenderedContainersWarning,
+  malformedResourcesWarning,
+  malformedOutputsWarning,
+  malformedExportSourceWarning,
+  malformedExportNamesWarning,
+  malformedOrphansWarning,
+  malformedNestedChildOutputsRefusalMessage,
+  malformedLocalOutputsWarning,
+  malformedResourcePropertiesRefusalMessage,
+  malformedResourcePropertiesWarning,
+  malformedDriftResourcePropertiesRefusalMessage,
+  malformedDriftResourcePropertiesWarning,
+  malformedResourceEntriesWarning,
+  malformedOrphanRecordsWarning,
+  malformedDeployResourceEntriesRefusalMessage,
+  malformedScrubResourceEntriesRefusalMessage,
+  malformedLocalResourcesWarning,
+  malformedLocalResourceEntriesWarning,
+  unaddressableUpdateRefusalMessage,
+  malformedOrphanRowsKeptWarning,
 } from '../../../src/state/malformed-resources-bag.js';
 import type { LockRecoveryContext } from '../../../src/state/lock-contention-message.js';
 
@@ -62,6 +84,68 @@ const INSPECT_BUILDERS: Array<[string, (s: string, r: string, rec?: LockRecovery
     [
       'malformedImportUnrepairedEntriesRefusalMessage',
       (s, r, rec) => malformedImportUnrepairedEntriesRefusalMessage(s, r, ['Bad'], rec),
+    ],
+    // go-to-k/cdkd#4159: the builders whose callers held no context before.
+    ['malformedDeployResourcesRefusalMessage', malformedDeployResourcesRefusalMessage],
+    [
+      'malformedRenderedContainersWarning',
+      (s, r, rec) => malformedRenderedContainersWarning(s, r, ['outputs'], rec),
+    ],
+    ['malformedResourcesWarning', malformedResourcesWarning],
+    ['malformedOutputsWarning', malformedOutputsWarning],
+    ['malformedExportSourceWarning', malformedExportSourceWarning],
+    ['malformedExportNamesWarning', malformedExportNamesWarning],
+    ['malformedOrphansWarning', malformedOrphansWarning],
+    ['malformedNestedChildOutputsRefusalMessage', malformedNestedChildOutputsRefusalMessage],
+    ['malformedLocalOutputsWarning', malformedLocalOutputsWarning],
+    [
+      'malformedResourcePropertiesRefusalMessage',
+      (s, r, rec) => malformedResourcePropertiesRefusalMessage(s, r, ['Bad'], rec),
+    ],
+    [
+      'malformedResourcePropertiesWarning',
+      (s, r, rec) => malformedResourcePropertiesWarning(s, r, ['Bad'], rec),
+    ],
+    [
+      'malformedDriftResourcePropertiesRefusalMessage',
+      (s, r, rec) => malformedDriftResourcePropertiesRefusalMessage(s, r, ['Bad'], rec),
+    ],
+    [
+      'malformedDriftResourcePropertiesWarning',
+      (s, r, rec) => malformedDriftResourcePropertiesWarning(s, r, ['Bad'], rec),
+    ],
+    [
+      'malformedResourceEntriesWarning',
+      (s, r, rec) => malformedResourceEntriesWarning(s, r, ['Bad'], rec),
+    ],
+    [
+      'malformedOrphanRecordsWarning (scrub)',
+      (s, r, rec) => malformedOrphanRecordsWarning(s, r, ['Bad'], true, rec),
+    ],
+    [
+      'malformedOrphanRecordsWarning (diff)',
+      (s, r, rec) => malformedOrphanRecordsWarning(s, r, ['Bad'], false, rec),
+    ],
+    [
+      'malformedDeployResourceEntriesRefusalMessage',
+      (s, r, rec) => malformedDeployResourceEntriesRefusalMessage(s, r, ['Bad'], rec),
+    ],
+    [
+      'malformedScrubResourceEntriesRefusalMessage',
+      (s, r, rec) => malformedScrubResourceEntriesRefusalMessage(s, r, ['Bad'], rec),
+    ],
+    ['malformedLocalResourcesWarning', malformedLocalResourcesWarning],
+    [
+      'malformedLocalResourceEntriesWarning',
+      (s, r, rec) => malformedLocalResourceEntriesWarning(s, r, ['Bad'], rec),
+    ],
+    [
+      'unaddressableUpdateRefusalMessage',
+      (s, r, rec) => unaddressableUpdateRefusalMessage(s, r, 'Bad', 'AWS::SQS::Queue', rec),
+    ],
+    [
+      'malformedOrphanRowsKeptWarning',
+      (s, r, rec) => malformedOrphanRowsKeptWarning(s, r, ['Bad'], rec),
     ],
   ];
 
@@ -146,6 +230,8 @@ describe('a refused account value is a described hole, never echoed (go-to-k/cdk
     ['an altered bucket', { stateBucket: 'b\u001bx' }, `--state-bucket '<bucket>'`, 'does not render exactly'],
     ['an option-shaped profile', { profile: '--all' }, `--profile '<profile>'`, "begins with a '-'"],
     ['a non-plain prefix', { statePrefix: 'pfx zq' }, `--state-prefix '<prefix>'`, 'is not a plain identifier'],
+    // A SLASH prefix is gated per `/`-separated part (go-to-k/cdkd#4159 review m1).
+    ['a slash prefix with a non-plain part', { statePrefix: 'pfx/a b' }, `--state-prefix '<prefix>'`, "has a '/'-separated part that is not a plain identifier"],
   ];
   const ALL = [
     ...PER_LINE.flatMap(([l, b]) => [
@@ -208,9 +294,11 @@ describe('a refused account value is a described hole, never echoed (go-to-k/cdk
     // Every account slot carries the payload at once, and the inspect family is
     // driven through ONE builder: they share `inspectGate` / `inspectClause`,
     // so more builders buy bash spawns, not coverage.
-    const sites = ALL.filter(
-      ([site]) => !site.startsWith('malformed') || site.startsWith('malformedStateRefusalMessage')
-    );
+    const inspectFamily = new Set(INSPECT_BUILDERS.map(([label]) => label));
+    const sites = ALL.filter(([site]) => {
+      const builder = site.replace(/ (named|no identity)$/, '');
+      return !inspectFamily.has(builder) || builder === 'malformedStateRefusalMessage';
+    });
     withPasteDir((dir) => {
       let messages = 0;
       for (const { value } of PASTE_PAYLOADS) {
@@ -257,6 +345,11 @@ describe('the inspect-command family carries the account too (go-to-k/cdkd#3909)
       )).toBe(true);
     });
 
+    it(`${label}: CONTROL — named, a context carrying no flag prints the unqualified text`, () => {
+      expect(build('S', 'us-east-1', {})).toBe(build('S', 'us-east-1'));
+      expect(build('S', 'us-east-1', { statePrefix: 'cdkd' })).toBe(build('S', 'us-east-1'));
+    });
+
     it(`${label}: a withheld name's listing pointer says to carry the same flags`, () => {
       const text = build('a b', 'us-east-1', RECOVERY);
       expect(text).toContain(
@@ -294,4 +387,80 @@ describe('the inspect-command family carries the account too (go-to-k/cdkd#3909)
     expect(text).not.toContain('--json');
     expect(text).toMatch(/^State bucket: my-bucket$/m);
   });
+});
+
+describe('refuseMalformedNestedChildOutputs forwards its context (go-to-k/cdkd#4159)', () => {
+  // Its one production caller (`nested-stack-provider.ts`) is not threaded yet,
+  // so the wrapper's own forwarding is pinned here, both polarities.
+  const refusal = (rec?: LockRecoveryContext): string => {
+    try {
+      refuseMalformedNestedChildOutputs({ outputs: 'abc' as never }, 'P~C', 'us-east-1', rec);
+    } catch (e) {
+      return (e as Error).message;
+    }
+    throw new Error('expected a refusal');
+  };
+  it('carries the flags it is handed, and none without them', () => {
+    expect(refusal(RECOVERY)).toContain(`--json ${FLAGS}`);
+    expect(refusal()).not.toContain('--state-bucket');
+  });
+});
+
+describe('a slash prefix is gated per segment, not whole-value (go-to-k/cdkd#4159 review m1)', () => {
+  // A #3909 site and a builder #4159 newly threads, through the same gate.
+  const SITES: Array<[string, (rec: LockRecoveryContext) => string]> = [
+    ['malformedDestroyResourcesRefusalMessage exact (#3909)', (rec) =>
+      malformedDestroyResourcesRefusalMessage('S', 'us-east-1', rec)],
+    ['malformedStateRefusalMessage (#3909)', (rec) => malformedStateRefusalMessage('S', 'us-east-1', rec)],
+    ['malformedResourcesWarning (#4159)', (rec) => malformedResourcesWarning('S', 'us-east-1', rec)],
+  ];
+
+  for (const [site, build] of SITES) {
+    it(`${site}: 'team/dev' is named, and no hole or reason is printed`, () => {
+      const text = build({ stateBucket: 'b', statePrefix: 'team/dev' });
+      expect(text).toContain('--state-bucket b --state-prefix team/dev');
+      expect(text).not.toContain("'<prefix>'");
+      expect(text).not.toContain('value this run was given');
+    });
+
+    for (const [label, prefix] of [
+      ['an empty segment', 'a//b'],
+      ['a leading empty segment', '/a'],
+      ['a segment that is not plain', 'a/b c'],
+      ['a shell-active segment', 'a/$(id)'],
+    ] as const) {
+      it(`${site}: ${label} still holes, described per segment`, () => {
+        const text = build({ statePrefix: prefix });
+        expect(text).toContain(`--state-prefix '<prefix>'`);
+        expect(text).not.toContain(prefix);
+        expect(text).toContain(
+          "The '--state-prefix' value this run was given has a '/'-separated part that is not a plain identifier"
+        );
+      });
+    }
+
+    it(`${site}: a leading '-' still holes as option-shaped`, () => {
+      const text = build({ statePrefix: '-x/y' });
+      expect(text).toContain(`--state-prefix '<prefix>'`);
+      expect(text).toContain("The '--state-prefix' value this run was given begins with a '-'");
+    });
+  }
+
+  it('the named slash prefix pastes as itself, and no span of any slash-prefix message RUNS', () => {
+    const line = malformedResourcesWarning('S', 'us-east-1', { statePrefix: 'team/dev' });
+    const command = line.slice(line.lastIndexOf('cdkd state show'));
+    const r = spawnSync('bash', ['-c', `cdkd() { printf '%s\\n' "$@"; }; ${command}`], {
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout.split('\n').slice(0, -1).slice(-2)).toEqual(['--state-prefix', 'team/dev']);
+    withPasteDir((dir) => {
+      for (const { value } of PASTE_PAYLOADS) {
+        for (const [site, build] of SITES) {
+          const rec = { statePrefix: `team/${value}` };
+          expect(spansThatRun(build(rec), dir), `${site} ${JSON.stringify(rec)}`).toEqual([]);
+        }
+      }
+    });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 });

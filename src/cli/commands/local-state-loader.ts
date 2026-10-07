@@ -24,6 +24,7 @@ import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import {
@@ -96,7 +97,19 @@ export async function loadStateForStack(
   stackName: string,
   synthRegion: string | undefined,
   opts: LoadStateForStackOptions
-): Promise<{ state: StackState; region: string } | undefined> {
+): Promise<
+  | {
+      state: StackState;
+      region: string;
+      /**
+       * The RESOLVED state bucket the record was read from, so a caller's
+       * malformed-record warning can name it on its pasteable command
+       * (go-to-k/cdkd#4159).
+       */
+      stateBucket: string;
+    }
+  | undefined
+> {
   const logger = getLogger();
   const prefix = opts.logPrefix ?? '--from-state';
 
@@ -297,7 +310,7 @@ export async function loadStateForStack(
       return undefined;
     }
     logger.debug(`${prefix}: loaded state for ${stackName} (${targetRegion})`);
-    return { state: stateData.state, region: targetRegion };
+    return { state: stateData.state, region: targetRegion, stateBucket };
   } finally {
     // `resetAwsClients()` destroys the underlying clients AND clears the
     // module-global `globalClients` reference. Bare `awsClients.destroy()`
@@ -632,8 +645,17 @@ export async function buildCrossStackResolver(
     stateBucket,
     opts.statePrefix,
     consumerRegion,
-    stateBackend
+    stateBackend,
+    { profile: opts.profile }
   );
+  // The account flags the malformed-producer warning below prints on its
+  // `cdkd state show` pointer, so a pasted command reads this bucket
+  // (go-to-k/cdkd#4159).
+  const refusalRecovery: LockRecoveryContext = {
+    profile: opts.profile,
+    stateBucket,
+    statePrefix: opts.statePrefix,
+  };
 
   const resolver: CrossStackResolver = {
     async resolveImport(exportName: string): Promise<string | undefined> {
@@ -740,7 +762,9 @@ export async function buildCrossStackResolver(
           const recordKey = producerRecordKey(producerStack, recordRegion);
           if (!warnedMalformedProducers.has(recordKey)) {
             warnedMalformedProducers.add(recordKey);
-            logger.warn(`${prefix}: ${malformedLocalOutputsWarning(producerStack, recordRegion)}`);
+            logger.warn(
+              `${prefix}: ${malformedLocalOutputsWarning(producerStack, recordRegion, refusalRecovery)}`
+            );
           }
           return undefined;
         }
