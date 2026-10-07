@@ -30,6 +30,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 import {
@@ -119,6 +120,7 @@ function instanceAttributes(
  */
 export class DocDBProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
+  private createClient?: DocDBClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DocDBProvider');
   /**
@@ -193,12 +195,39 @@ export class DocDBProvider implements ResourceProvider {
 
   private getClient(): DocDBClient {
     if (!this.docdbClient) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.docdbClient = new DocDBClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new DocDBClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.docdbClient;
+  }
+
+  /**
+   * The client `CreateDBCluster` / `CreateDBInstance` go through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * Neither carries an idempotency token, and each identifier is unique per
+   * account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): DocDBClient {
+    this.getClient();
+    return this.createClient as DocDBClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -304,7 +333,7 @@ export class DocDBProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
     try {
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateDBClusterCommand({
           DBClusterIdentifier: dbClusterIdentifier,
           // DocDB engine value is fixed: only `docdb` is accepted.
@@ -637,7 +666,7 @@ export class DocDBProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
     try {
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateDBInstanceCommand({
           DBInstanceIdentifier: dbInstanceIdentifier,
           DBInstanceClass: properties['DBInstanceClass'] as string,

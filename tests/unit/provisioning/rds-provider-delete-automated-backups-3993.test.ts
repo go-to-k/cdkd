@@ -165,7 +165,8 @@ describe.each(CASES)('$type delete', ({ type, del }) => {
       else process.env['AWS_REGION'] = saved;
     }
 
-    expect(rdsClientRegions).toEqual(['eu-west-1']);
+    // The shared client and the create client built with it (#4639).
+    expect(rdsClientRegions).toEqual(['eu-west-1', 'eu-west-1']);
     expect(deleteInputs(del)).toHaveLength(1);
   });
 });
