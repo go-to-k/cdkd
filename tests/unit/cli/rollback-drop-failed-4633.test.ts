@@ -578,11 +578,23 @@ describe('dropTargetLines (go-to-k/cdkd#4633)', () => {
 });
 
 describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
-  const stream = (logicalId: string) =>
-    orphan(logicalId, { resourceType: 'AWS::Kinesis::Stream', physicalId: `${logicalId}-stream`, attemptedProperties: {} });
+  const IDENTITY = 'arn:aws:kinesis:us-east-1:123456789012:stream/x|1700000000';
+  const stream = (logicalId: string, extra: Record<string, unknown> = {}) =>
+    orphan(logicalId, {
+      resourceType: 'AWS::Kinesis::Stream',
+      physicalId: `${logicalId}-stream`,
+      attemptedProperties: {},
+      createdResourceIdentity: IDENTITY,
+      ...extra,
+    });
 
   function ctxWith(deleteImpl: (logicalId: string) => Promise<unknown>) {
-    const provider = { delete: vi.fn((logicalId: string) => deleteImpl(logicalId)) };
+    // go-to-k/cdkd#4655: a name-keyed orphan's live identity, read before a
+    // successful deploy's delete; `IDENTITY` matches the one journaled below.
+    const provider = {
+      delete: vi.fn((logicalId: string) => deleteImpl(logicalId)),
+      resourceIdentity: vi.fn(async () => IDENTITY),
+    };
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => logger };
     const ctx = {
       providerRegistry: {
@@ -696,4 +708,40 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
     expect(text.match(/--drop-failed Stuck/g)).toHaveLength(1);
     expect(text).toContain('the next successful deploy retries.');
   });
+
+  it.each([
+    ['no identity was journaled', { createdResourceIdentity: undefined }],
+    ['the live identity differs', { createdResourceIdentity: 'another-identity' }],
+  ])(
+    'a successful deploy names nothing for an entry go-to-k/cdkd#4655 settles without a delete: %s',
+    async (_l, extra) => {
+      // Demoted and cleared with the journal (warned, exit 2): it blocks no
+      // later deploy or destroy, so there is nothing to drop.
+      const { ctx, logger, provider } = ctxWith(async () => undefined);
+      const journal = journalOf(seg([stream('Unproven', extra)]));
+      const stateBackend = {
+        loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
+        reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+        markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+        dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+      };
+      const left = await settleJournaledOrphansOnSuccess({
+        stateBackend: stateBackend as never,
+        stackName: 'S',
+        region: REGION,
+        stateResources: {},
+        rollbackOrphans: undefined,
+        newerOperations: [],
+        foreignHolder: async () => undefined,
+        ctx,
+        logger: logger as never,
+      });
+      // Premise: identity read, no delete, the entry not kept.
+      expect(provider.resourceIdentity).toHaveBeenCalled();
+      expect(provider.delete).not.toHaveBeenCalled();
+      expect(left.keepJournal).toBe(false);
+      expect(left.unaddressed).toBe(1);
+      expect(warned(logger)).not.toContain('--drop-failed');
+    }
+  );
 });
