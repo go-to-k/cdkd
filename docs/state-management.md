@@ -958,6 +958,10 @@ count as a change for `--fail`.
 
 #### What else changes
 
+- A nested stack's child treats each parameter its parent fills from a `NoEcho`
+  source (a `NoEcho` parameter, or an attribute declared `NoEcho`) as a
+  `NoEcho` parameter, whatever the child template declares: its records,
+  outputs and `cdkd diff` mask and compare that value as above.
 - A stack that reads another stack's output served by a `NoEcho` parameter gets
   the value only within ONE `cdkd deploy` run that also deploys the producer;
   a separate run reads `***` and is refused, as for a custom-resource `NoEcho`
@@ -1030,9 +1034,11 @@ reach is masked by the template's positions too, while the template still
 names it as the same logical id and type.
 
 A value that DID change since the last deploy is applied by that first deploy
-as before, a replacement included when it feeds a create-only property (the
-warning names the cause, "a NoEcho parameter's value changed since the last
-deploy", never the value): the recorded plaintext is exact evidence. Later
+as before, a replacement included when it feeds a create-only property. The
+warning names the cause, never the value: "a NoEcho parameter's value changed
+since the last deploy" where the property is the parameter itself, otherwise
+"the value at its NoEcho position changed since the last deploy". The recorded
+plaintext is exact evidence. Later
 deploys compare against `***`, and never replace a create-only property on a
 readback.
 
@@ -1046,9 +1052,10 @@ As with every bump, an OLDER cdkd binary refuses a `version: 11` blob with the
 "Upgrade cdkd" error, so upgrade every machine that deploys the stack together.
 A v11 binary stamps `version: 11` on every state file it writes, including by
 commands that hold no template (`cdkd state refresh-observed`, `cdkd drift
---accept`, `cdkd orphan`). Those mask a value only where a record already names
-its position in `noEchoLeaves` (`cdkd state refresh-observed` masks the
-baseline it captures there); they do not position a record that has none.
+--accept`, `cdkd orphan`). They do not position a record that has no
+`noEchoLeaves`. `cdkd state refresh-observed` masks the baseline it captures
+wherever the record names a position, and wherever the record's own property
+is already `***`.
 `version: 11` alone therefore does not mean a stack's values are masked, and
 only a `cdkd deploy` migrates it.
 

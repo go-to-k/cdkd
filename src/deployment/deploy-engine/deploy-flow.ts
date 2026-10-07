@@ -62,7 +62,7 @@ import { withProducerRegions } from '../producer-regions-scope.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
 import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
 import { markNonRetryable } from '../retryable-errors.js';
-import { hasMaskableValues } from '../secret-redaction.js';
+import { hasMaskableValues, passedNoEchoParametersOf } from '../secret-redaction.js';
 import {
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -368,6 +368,13 @@ export async function doDeployWithPrefetch(
     this.logger.debug(
       `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
     );
+    // go-to-k/cdkd#4043 (review round 9): a nested child positions each
+    // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
+    // here on (every save, the journal, the outputs pass).
+    this.inheritedNoEchoParameters = new Set([
+      ...(this.freshNoEchoParameters(parameterValues) ?? []),
+      ...(passedNoEchoParametersOf(this.options.inheritedSecrets) ?? []),
+    ]);
     // go-to-k/cdkd#4451: a masked property with no fingerprint (every one an
     // older cdkd recorded) takes today's template's, which is what this
     // deploy's unchanged comparison concludes AWS holds anyway, so the deploy
@@ -664,10 +671,9 @@ export async function doDeployWithPrefetch(
       // template, at every level. Its readers persist `***`, so the diff
       // cannot see a changed value; each is promoted and the engine decides
       // with the value in hand (a readback, or the migration witness).
-      freshNoEchoParametersWithDeclared(
-        this.freshNoEchoParameters(parameterValues),
-        effectiveTemplate
-      ),
+      // Review round 9: a nested child's parameters its parent fills from a
+      // `NoEcho` source too (`inheritedNoEchoParameters`, set above).
+      freshNoEchoParametersWithDeclared(this.inheritedNoEchoParameters, effectiveTemplate),
       // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
       // parameter to its plaintext and records it as a log-only needle of
       // THIS context's bag, so the calculator's replacement line masks with

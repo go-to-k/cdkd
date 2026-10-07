@@ -91,6 +91,7 @@ import {
   STATE_SOURCED_BASELINE_RULES,
   maskReadbackAtCoordinates,
   noEchoLeavesOf,
+  maskedLeafCoordinatesOf,
 } from '../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
 import { stripControlChars } from '../../utils/regexp.js';
@@ -4458,11 +4459,13 @@ async function refreshObservedForStack(
           // below, so the readback's live value there is masked FIRST (through
           // each list's identity field, the whole list where none pairs them).
           resource.observedProperties = redactSecretsForState(
-            maskReadbackAtCoordinates(
-              observed,
-              resource.properties ?? {},
-              noEchoLeavesOf(resource) ?? []
-            ),
+            maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
+              // A record naming no coordinate (pre-v11, imported, scrubbed)
+              // still holds `***` where the value stood: mask there too, as
+              // the deploy-start refresh does.
+              ...maskedLeafCoordinatesOf(resource.properties ?? {}),
+              ...(noEchoLeavesOf(resource) ?? []),
+            ]),
             await publicSsmProver.proofBagFor(resource.properties ?? {}),
             resource.properties ?? {},
             STATE_SOURCED_BASELINE_RULES

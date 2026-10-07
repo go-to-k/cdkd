@@ -953,8 +953,15 @@ describe('cdkd diff --recursive masks a parent NoEcho value in the child (#4049)
     });
 
     const child = root.children[0]!;
+    // go-to-k/cdkd#4043 round 9: the child positions the parameter its row
+    // fills from the parent's NoEcho one, so the stored plaintext reads as the
+    // top level's migration witness does.
     expect(child.changes.get('ChildRes')?.propertyChanges).toEqual([
-      expect.objectContaining({ path: 'Value', oldValue: '***', newValue: '***' }),
+      expect.objectContaining({
+        path: 'Value',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+      }),
     ]);
     expect(root.changes.get('Child')?.propertyChanges).toEqual([
       expect.objectContaining({ newValue: { referencetoParentPw: '***' } }),

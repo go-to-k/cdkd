@@ -1278,6 +1278,11 @@ export async function computeStackDiff(
      */
     inheritedSecrets?: RecordedSecretValues;
     /**
+     * go-to-k/cdkd#4043 (review round 9): parameters of this nested child the
+     * parent fills from a `NoEcho` source, positioned as `NoEcho` ones.
+     */
+    inheritedNoEchoParameters?: ReadonlySet<string>;
+    /**
      * The READ-ONLY stale-attribute healer (issue go-to-k/cdkd#3456), on every
      * resolver context below — condition evaluation, the resource diff and the
      * outputs pass — as `DeployEngine` puts its healer on every context it
@@ -1325,7 +1330,12 @@ export async function computeStackDiff(
     inheritedSecrets,
     attributeHealer,
     parentUnresolvedParameters,
+    inheritedNoEchoParameters,
   } = options;
+  // This template's `NoEcho` parameters, plus (in a nested child) the ones the
+  // parent fills from a `NoEcho` source (go-to-k/cdkd#4043 review round 9).
+  const noEchoParametersOf = (t: CloudFormationTemplate): Set<string> =>
+    new Set([...noEchoParameterNamesOf(t), ...(inheritedNoEchoParameters ?? [])]);
   // The parent's printing corpus (go-to-k/cdkd#4049), as the `inheritedSecrets`
   // of every resolver pass this node runs: parameter binding, condition
   // evaluation and the diff resolver each print debug lines, and a child's
@@ -2043,7 +2053,8 @@ export async function computeStackDiff(
           ),
       mergedParameters,
       stateForDiff.resources,
-      new Set([region, stackName])
+      new Set([region, stackName]),
+      inheritedNoEchoParameters
     )
   );
   // The deploy reads back every resource a `NoEcho` parameter feeds, since
@@ -2053,7 +2064,7 @@ export async function computeStackDiff(
     (logicalId) =>
       changes.get(logicalId)?.changeType === 'NO_CHANGE' &&
       readsNoEchoSource(effectiveTemplate.Resources?.[logicalId]?.Properties, {
-        parameters: noEchoParameterNamesOf(effectiveTemplate),
+        parameters: noEchoParametersOf(effectiveTemplate),
         // Only the verdicts this diff knows narrow an `Fn::If`.
         ...(conditions !== undefined && {
           conditions: Object.fromEntries(
@@ -2167,7 +2178,7 @@ export async function computeStackDiff(
     outputTemplateValues[name] = (definition as { Value?: unknown } | undefined)?.Value;
   }
   const compareNoEchoOutputs = noEchoOutputsComparison(outputTemplateValues, {
-    parameters: noEchoParameterNamesOf(effectiveTemplate),
+    parameters: noEchoParametersOf(effectiveTemplate),
     attributeIsNoEcho: (logicalId, attribute) => {
       const record = Object.hasOwn(stateForDiff.resources, logicalId)
         ? stateForDiff.resources[logicalId]
@@ -2754,6 +2765,43 @@ function rowValueTrusted(
 }
 
 /**
+ * go-to-k/cdkd#4043 (review round 9): the keys of a nested-stack row's
+ * `Parameters` whose value reads a `NoEcho` parameter of the parent (any
+ * position: a whole `Ref`, or one embedded in an `Fn::Sub` / `Fn::Join`). The
+ * deploy's child engine positions each as a `NoEcho` parameter, so the child's
+ * preview does too.
+ */
+function noEchoFedChildParameters(
+  parentStackRow: { Properties?: Record<string, unknown> },
+  parentNoEchoParameters: ReadonlySet<string>,
+  parentConditions: Record<string, boolean> | undefined,
+  parentResources: Record<string, ResourceState>
+): Set<string> {
+  const fed = new Set<string>();
+  const rawParams = parentStackRow.Properties?.['Parameters'];
+  if (rawParams === null || typeof rawParams !== 'object') return fed;
+  for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
+    if (
+      readsNoEchoSource(value, {
+        parameters: parentNoEchoParameters,
+        // An attribute the parent's record declares `NoEcho` (a custom
+        // resource's, a nested stack's output), as the deploy's fresh mark.
+        attributeIsNoEcho: (logicalId, attribute) => {
+          const names = (
+            Object.hasOwn(parentResources, logicalId) ? parentResources[logicalId] : undefined
+          )?.noEchoAttributeNames as unknown;
+          return Array.isArray(names) && names.includes(attribute);
+        },
+        ...(parentConditions !== undefined && { conditions: parentConditions }),
+      })
+    ) {
+      fed.add(name);
+    }
+  }
+  return fed;
+}
+
+/**
  * Resolve a nested-stack child's input `Parameters` (declared on the parent's
  * `AWS::CloudFormation::Stack` row under `Properties.Parameters`) to scalar
  * values against the PARENT's deployed state, its BOUND parameters and its
@@ -3059,6 +3107,12 @@ export async function buildDiffTree(args: {
    */
   inheritedSecrets?: RecordedSecretValues;
   /**
+   * go-to-k/cdkd#4043 (review round 9): this child's parameters the parent row
+   * fills from a `NoEcho` source; positioned as `NoEcho` ones, as the deploy's
+   * child engine does. Absent at the root.
+   */
+  inheritedNoEchoParameters?: ReadonlySet<string>;
+  /**
    * The run's account flags (go-to-k/cdkd#4159), carried on every
    * malformed-record warning's `cdkd state show` pointer at every node.
    */
@@ -3084,6 +3138,7 @@ export async function buildDiffTree(args: {
     ancestorTemplatePaths,
     isNestedChild,
     inheritedSecrets,
+    inheritedNoEchoParameters,
     refusalRecovery,
   } = args;
   const attributeHealer = attributeHealerFor?.(stackName, region);
@@ -3142,6 +3197,7 @@ export async function buildDiffTree(args: {
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
+        ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
         ...(attributeHealer && { attributeHealer }),
         ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
@@ -3297,6 +3353,14 @@ export async function buildDiffTree(args: {
     // the deploy path and would drop here, swallowed by the best-effort catch,
     // leaving the child preview degraded for a reason nothing prints.
     const childUnresolvedParameters = new Set<string>();
+    // go-to-k/cdkd#4043 (review round 9): the child parameters this row fills
+    // from a `NoEcho` source of THIS node, positioned as `NoEcho` in the child.
+    const childNoEchoParameters = noEchoFedChildParameters(
+      resource,
+      new Set([...noEchoParameterNamesOf(effectiveTemplate), ...(inheritedNoEchoParameters ?? [])]),
+      conditions,
+      stateAfterAdoption.resources
+    );
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -3333,6 +3397,7 @@ export async function buildDiffTree(args: {
         isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
+        ...(childNoEchoParameters.size > 0 && { inheritedNoEchoParameters: childNoEchoParameters }),
         ...(refusalRecovery && { refusalRecovery }),
       })
     );

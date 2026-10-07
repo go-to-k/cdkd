@@ -1018,7 +1018,12 @@ export class DiffCalculator {
       if (
         forcedReplacements.has(logicalId) ||
         (change.changeType === 'UPDATE' &&
-          change.propertyChanges?.some((pc) => pc.requiresReplacement))
+          // A `noEchoPromoted` ceiling (go-to-k/cdkd#4043) is a comparison
+          // the engine settles, never a replacement on its own word
+          // (maintainer decision 1), so it seeds no replacement propagation.
+          change.propertyChanges?.some(
+            (pc) => pc.requiresReplacement && pc.noEchoPromoted !== true
+          ))
       ) {
         queue.push(logicalId);
       }

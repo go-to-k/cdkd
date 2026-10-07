@@ -507,6 +507,15 @@ export class DeployEngine {
    */
   /** @internal */
   noEchoConditions: Record<string, boolean> | undefined;
+  /**
+   * go-to-k/cdkd#4043 (review round 9): a NESTED child's parameters whose value
+   * carries a `NoEcho` value its parent supplied. The child template declares
+   * them plain, so they are positioned as `NoEcho` parameters here: every
+   * surface the top level masks by position (records, `noEchoLeaves`,
+   * outputs, the journal, the custom-resource delete skip) covers the child.
+   */
+  /** @internal */
+  inheritedNoEchoParameters: ReadonlySet<string> = new Set();
   /** @internal */
   noEchoPhysicalIdWarned = new Set<string>();
   /**
@@ -906,6 +915,7 @@ export class DeployEngine {
     this.noEchoAttributeResources = new Map();
     this.persistedNoEchoAttributes = new Map();
     this.noEchoConditions = undefined;
+    this.inheritedNoEchoParameters = new Set();
     this.noEchoPhysicalIdWarned = new Set();
     this.noEchoPositionedValues = new Map();
     this.noEchoAttributeReads = new Map();

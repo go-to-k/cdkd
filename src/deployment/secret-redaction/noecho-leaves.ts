@@ -722,3 +722,55 @@ export function noEchoOutputsComparison(
     return { current: normalized, desired: maskedDesired, masked: [...maskedKeys] };
   };
 }
+
+/**
+ * Every coordinate of `bag` whose leaf is the whole mask `***`. A readback
+ * installed beside a record (an observed baseline) is masked at these AND at
+ * `noEchoLeaves`: a pre-v11, imported or scrubbed record names no coordinate
+ * for a value it holds only as the mask.
+ */
+export function maskedLeafCoordinatesOf(bag: unknown): NoEchoCoordinate[] {
+  const coordinates: NoEchoCoordinate[] = [];
+  const ancestors = new Set<object>();
+  const walk = (node: unknown, path: (string | number)[]): void => {
+    if (node === SECRET_MASK) {
+      coordinates.push(path);
+      return;
+    }
+    if (node === null || typeof node !== 'object' || ancestors.has(node)) return;
+    ancestors.add(node);
+    if (Array.isArray(node)) node.forEach((item, index) => walk(item, [...path, index]));
+    else for (const [key, child] of Object.entries(node)) walk(child, [...path, key]);
+    ancestors.delete(node);
+  };
+  walk(bag, []);
+  return coordinates;
+}
+
+const passedNoEchoParameters = new WeakMap<object, ReadonlySet<string>>();
+
+/**
+ * go-to-k/cdkd#4043 (review round 9): for a nested-stack row, the child
+ * parameters its `Parameters` fills from a `NoEcho` source, read off the
+ * PARENT's template and recorded on the bag the provider call is bound to
+ * (the child engine's `inheritedSecrets`). The child declares them plain, and
+ * a value under the needle floor carries no fresh mark, so this is how the
+ * child engine knows to position them.
+ */
+export function recordPassedNoEchoParameters(
+  bag: object,
+  parameters: unknown,
+  sources: NoEchoPositionSources | undefined
+): void {
+  if (sources === undefined || parameters === null || typeof parameters !== 'object') return;
+  const names = new Set<string>();
+  for (const [name, value] of Object.entries(parameters as Record<string, unknown>)) {
+    if (readsNoEchoSource(value, sources)) names.add(name);
+  }
+  if (names.size > 0) passedNoEchoParameters.set(bag, names);
+}
+
+/** The names {@link recordPassedNoEchoParameters} recorded on `bag`. */
+export function passedNoEchoParametersOf(bag: object | undefined): ReadonlySet<string> | undefined {
+  return bag === undefined ? undefined : passedNoEchoParameters.get(bag);
+}

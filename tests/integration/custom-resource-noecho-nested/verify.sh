@@ -240,6 +240,33 @@ PRODUCER_PLAIN="plain-producer-value-integ"
 SECRET_MASK="***"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# The schema version the LOCAL binary writes, read from the built dist/ (the
+# last entry of the readable list) as schema-v9-to-v10-migration does, so a
+# later bump does not need this fixture edited. An unparsable bundle fails.
+LOCAL_SCHEMA_VERSION="$(cat ../../../dist/*.js 2>/dev/null | awk '
+  !inside && !done && /STATE_SCHEMA_VERSIONS_READABLE = \[/ {
+    inside = 1
+    sub(/.*STATE_SCHEMA_VERSIONS_READABLE = \[/, "")
+  }
+  inside {
+    line = $0
+    closes = (line ~ /\]/)
+    sub(/\].*/, "", line)
+    n = split(line, parts, ",")
+    for (i = 1; i <= n; i++) {
+      gsub(/[^0-9]/, "", parts[i])
+      if (parts[i] != "") last = parts[i]
+    }
+    if (closes) { inside = 0; done = 1 }
+  }
+  END { if (done) print last }
+')"
+case "${LOCAL_SCHEMA_VERSION}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read the readable schema versions from the built dist/ (is it built?)" >&2
+    exit 1
+    ;;
+esac
 # Created after the pre-run cleanup, which removes it.
 DEPLOY_LOG=""
 
@@ -733,7 +760,7 @@ assert_paramvalue_arm() { # assert_paramvalue_arm <label>
     "$(ssm_value "${CONSUMER_PARAMVALUE_PARAM}")" "${PARAMVALUE_TOKEN}"
 
   echo "  -- ${label}: NoEcho-parameter arm, in cdkd state (non-disclosure)"
-  assert_eq "paramvalue state.version" "$(printf '%s' "${stack}" | jq -r '.version')" "11"
+  assert_eq "paramvalue state.version" "$(printf '%s' "${stack}" | jq -r '.version')" "${LOCAL_SCHEMA_VERSION}"
   assert_eq "paramvalue SameStackValue properties.Value" \
     "$(param_state_value "${stack}" "${PARAMVALUE_SAME_PARAM}")" "${SECRET_MASK}"
   assert_eq "paramvalue SameStackValue noEchoLeaves" \
@@ -746,9 +773,16 @@ assert_paramvalue_arm() { # assert_paramvalue_arm <label>
   assert_eq "paramvalue state.outputs[${NOECHO_PARAM_EXPORT_NAME}] (export alias)" \
     "$(printf '%s' "${stack}" | jq -r --arg e "${NOECHO_PARAM_EXPORT_NAME}" '.outputs[$e] // "<absent>"')" "${SECRET_MASK}"
   # The CDK child declares no NoEcho: its record masks the INHERITED value
-  # through the parent's fresh mask-only needle (the value arm).
+  # through the parent's fresh mask-only needle (the value arm) and, since
+  # review round 9, by position (the parent row records the parameter).
   assert_eq "paramvalue child ChildValue properties.Value (inherited)" \
     "$(param_state_value "${child}" "${PARAMVALUE_CHILD_PARAM}")" "${SECRET_MASK}"
+  # Review round 9: the child positions the inherited parameter too.
+  assert_eq "paramvalue child ChildValue noEchoLeaves (positioned in the child)" \
+    "$(printf '%s' "${child}" | jq -c --arg n "${PARAMVALUE_CHILD_PARAM}" '[.resources[] | select(.properties.Name == $n) | .noEchoLeaves][0]')" \
+    '[["Value"]]'
+  assert_eq "paramvalue child state.outputs.ChildEcho" \
+    "$(printf '%s' "${child}" | jq -r '.outputs.ChildEcho // "<absent>"')" "${SECRET_MASK}"
   assert_eq "consumer ImportedParamValue properties.Value" \
     "$(param_state_value "${consumer}" "${CONSUMER_PARAMVALUE_PARAM}")" "${SECRET_MASK}"
 
@@ -1004,6 +1038,14 @@ for needle in "Cannot resolve" "must deploy in ONE run"; do
     fail "Phase 7b: the refusal does not say '${needle}' — the deploy failed for another reason, or the wording drifted"
   fi
 done
+# The refusal names THIS read and THIS reader on one line (the export name in
+# the read's origin, the consumer's logical id after "for"), so the generic
+# needles above cannot be satisfied by another resource's refusal.
+REFUSE_LINE="$(printf '%s\n' "${REFUSE_OUT}" | grep -F "Cannot resolve Fn::ImportValue '${NOECHO_PARAM_EXPORT_NAME}'" | grep -F " for ImportedParamValue" || true)"
+if [ -z "${REFUSE_LINE}" ]; then
+  printf '%s\n' "${REFUSE_OUT}" >&2
+  fail "Phase 7b: no refusal line names Fn::ImportValue '${NOECHO_PARAM_EXPORT_NAME}' for ImportedParamValue — another resource was refused, or the wording drifted"
+fi
 pass "Phase 7b: the consumer-only deploy was refused as a cross-stack redacted read (exit ${REFUSE_RC})"
 # Nothing was sent: AWS keeps the real value, never the mask.
 assert_eq "Phase 7b: consumer ImportedParamValue on AWS after the refusal" \

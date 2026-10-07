@@ -957,8 +957,9 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    characters is still refused wholesale through its map entry.
 6. **Maintainer decision** (round 8 on #4043): a pre-v11 record's migration
    witness that DIFFERS on a create-only property keeps the replacement, and
-   the replacement's warning names the cause ("a NoEcho parameter's value
-   changed since the last deploy"), never the value. The witness is exact
+   the replacement's warning names the cause, never the value ("a NoEcho
+   parameter's value changed since the last deploy" for a bare `Ref`, "the
+   value at its NoEcho position changed" otherwise, round 9). The witness is exact
    EVIDENCE, the value cdkd last sent in its dynamic-reference form, not a
    readback through a provider that may normalize it, which is decision 1's
    reason. Declining would overwrite it with `***` and strand the pending
@@ -971,6 +972,13 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    through the keyed-identity array rule (the whole array on refusal);
    `Fn::If` / `Fn::Select` position only the branch the deploy selected (the
    diff masks the whole leaf for a verdict it does not know).
+
+8. Folded in from review round 9: a nested child positions each parameter its
+   parent's row fills from a `NoEcho` source as a `NoEcho` parameter. The parent
+   records those names on the row's bag (`recordPassedNoEchoParameters`, read
+   off the parent template, so a value under the needle floor counts), the
+   child engine unions them with the inherited fresh marks, and `cdkd diff`
+   derives the same set from the parent row.
 
 ### Design decisions (#4043 comments 5903984771, 5904913259)
 

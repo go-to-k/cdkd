@@ -35,7 +35,7 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 
 | Flag | Integ Fixture(s) |
 |---|---|
-| `--allow-unaddressed` | [`acm-certificate`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/acm-certificate/) |
+| `--allow-unaddressed` | [`acm-certificate`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/acm-certificate/)<br>[`schema-v10-to-v11-migration`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v10-to-v11-migration/) |
 | `--allow-unsupported-properties` | [`cc-api-fallback-transitions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-api-fallback-transitions/) |
 | `--app` | [`destroy-interrupt`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-interrupt/)<br>[`intrinsics-torture-2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/intrinsics-torture-2/)<br>[`nested-stack-deep`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/nested-stack-deep/)<br>[`stage-assets`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stage-assets/) |
 | `--concurrency` | [`throttle-wide-dag`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/throttle-wide-dag/) |

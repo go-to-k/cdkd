@@ -18,6 +18,12 @@ class ParamValueChild extends cdk.NestedStack {
       parameterName: '/cdkd-integ/cr-noecho-nested/paramvalue-child/value',
       stringValue: value.valueAsString,
     });
+    // go-to-k/cdkd#4043 review round 9: the child positions `ParentValue` as a
+    // `NoEcho` parameter (its parent fills it from one), so this output and
+    // `ChildValue` are masked by position and named in `noEchoLeaves`.
+    new cdk.CfnOutput(this, 'ChildEcho', { value: value.valueAsString }).overrideLogicalId(
+      'ChildEcho'
+    );
   }
 }
 

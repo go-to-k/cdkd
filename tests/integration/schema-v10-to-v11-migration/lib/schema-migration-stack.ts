@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -26,6 +27,10 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   CDKD_V11_CR_SEED        the NoEcho custom resource's Seed property
  *   CDKD_V11_ADD_DEPENDENT  `1` adds a dependent reading the custom resource's
  *                           declared-NoEcho attribute (#2449's refusal)
+ *   CDKD_V11_PARAM_CR       `1` adds ParamCr, a custom resource reading
+ *                           TokenParam (review round 9): removing it must SKIP
+ *                           the delete (its record holds `***`), so its
+ *                           handler never writes the delete marker
  *
  * The SSM parameters and the topic are L1 constructs so the property bags are
  * exactly what verify.sh asserts on, by coordinate.
@@ -99,6 +104,15 @@ export class SchemaV10ToV11MigrationStack extends cdk.Stack {
       code: lambda.Code.fromInline(`
 exports.handler = async (event) => {
   if (event.RequestType === 'Delete') {
+    // ParamCr only: a Delete that reaches the handler writes this marker,
+    // which verify.sh asserts is NEVER written (cdkd skips that delete).
+    const marker = (event.ResourceProperties || {}).MarkerName;
+    if (marker) {
+      const { SSMClient, PutParameterCommand } = require('@aws-sdk/client-ssm');
+      await new SSMClient({}).send(
+        new PutParameterCommand({ Name: marker, Value: 'delete-reached-handler', Type: 'String', Overwrite: true })
+      );
+    }
     return { Status: 'SUCCESS', PhysicalResourceId: event.PhysicalResourceId || 'cr-v11' };
   }
   const seed = (event.ResourceProperties || {}).Seed || 'noseed';
@@ -111,6 +125,19 @@ exports.handler = async (event) => {
 };
 `),
     });
+    const markerName = `${prefix}/param-cr-delete-marker`;
+    handler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:PutParameter'],
+        resources: [
+          cdk.Stack.of(this).formatArn({
+            service: 'ssm',
+            resource: 'parameter',
+            resourceName: markerName.slice(1),
+          }),
+        ],
+      })
+    );
     const cr = new cdk.CustomResource(this, 'NoEchoCr', {
       serviceToken: handler.functionArn,
       properties: { Seed: required('CDKD_V11_CR_SEED') },
@@ -124,6 +151,16 @@ exports.handler = async (event) => {
         name: `${prefix}/cr-dependent`,
         type: 'String',
         value: cr.getAttString('Secret'),
+      });
+    }
+
+    if (process.env.CDKD_V11_PARAM_CR === '1') {
+      // A custom resource reading the NoEcho parameter: its record holds `***`
+      // at `Token`, named in `noEchoLeaves`, so its Delete is skipped rather
+      // than sent the mask (maintainer decision, #4043 round 8).
+      new cdk.CustomResource(this, 'ParamCr', {
+        serviceToken: handler.functionArn,
+        properties: { Token: token.valueAsString, MarkerName: markerName },
       });
     }
   }

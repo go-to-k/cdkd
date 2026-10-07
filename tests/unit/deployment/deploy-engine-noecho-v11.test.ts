@@ -337,6 +337,35 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       }
     );
 
+    it.each(['any-change', 'destructive'] as const)(
+      'does not ask --require-approval=%s for a Ref reader of a create-only NoEcho-fed resource (review round 9 code B1)',
+      async (level) => {
+        const sub = {
+          Sub: {
+            Type: 'AWS::SNS::Subscription',
+            Properties: { TopicArn: { Ref: 'Topic' }, Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:1:q' },
+          },
+        };
+        const state = v11State();
+        state.resources['Sub'] = {
+          physicalId: `${TOPIC_ARN}:sub-1`,
+          resourceType: 'AWS::SNS::Subscription',
+          properties: { TopicArn: TOPIC_ARN, Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:1:q' },
+          attributes: {},
+          dependencies: ['Topic'],
+        };
+        stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+        const approveDeployment = vi.fn(async () => false);
+        await makeEngine({ requireApproval: level, approveDeployment }).deploy(STACK, template(TOKEN, sub));
+        expect(approveDeployment).not.toHaveBeenCalled();
+        expect(callsFor(provider.create, 'Sub')).toHaveLength(0);
+        expect(callsFor(provider.delete, 'Sub')).toHaveLength(0);
+        expect(lines(logger.info).some((l) => l.includes('No changes detected in the template'))).toBe(
+          true
+        );
+      }
+    );
+
     it('still asks --require-approval=any-change when the template really changed beside it', async () => {
       const approveDeployment = vi.fn(async () => true);
       const tpl = template();
@@ -961,6 +990,24 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const cause = lines(logger.warn).filter((l) => l.includes('Topic.TopicName'));
       expect(cause).toEqual([
         "Topic.TopicName is a create-only property, and a NoEcho parameter's value changed since the last deploy: Topic is replaced.",
+      ]);
+    });
+
+    it('names the POSITION, not the parameter, when only the template text around an unchanged value moved (review round 9 m4)', async () => {
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve({ physicalId: `${logicalId}-new-arn`, attributes: {} })
+      );
+      // Stored `a-<value>`; today's template spells `b-${TopicName}` with the
+      // same parameter value.
+      stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN, `a-${TOPIC}`), etag: 'etag-old' });
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['TopicName'] = {
+        'Fn::Sub': 'b-${TopicName}',
+      };
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).filter((l) => l.includes('Topic.TopicName'))).toEqual([
+        'Topic.TopicName is a create-only property, and the value at its NoEcho position changed since the last deploy: Topic is replaced.',
       ]);
     });
 

@@ -191,6 +191,20 @@ describe('cdkd diff --recursive resolves a child row against the parent bound pa
     expect(treeHasChanges(root)).toBe(false);
   });
 
+  it('compares a child reader of a parent NoEcho value as *** on both sides, a short value included (go-to-k/cdkd#4043 round 9)', async () => {
+    const root = await treeOf({
+      rootParameters: { Pw: { Type: 'String', NoEcho: true, Default: 'abc' } },
+      rowValue: { Ref: 'Pw' },
+      storedRowValue: '***',
+      childParameter: { Type: 'String' },
+      childValue: '***',
+    });
+
+    const child = root.children[0]!;
+    expect(child.changes.get('ChildRes')?.changeType).toBe('NO_CHANGE');
+    expect(printed(child)).not.toContain('abc');
+  });
+
   it('still reports a real change of the Default-bound value in the child', async () => {
     const root = await treeOf({
       rootParameters: { Stage: { Type: 'String', Default: 'prod' } },
@@ -374,8 +388,15 @@ describe('cdkd diff --recursive resolves a child row against the parent bound pa
     });
 
     const child = root.children[0]!;
+    // go-to-k/cdkd#4043 round 9: the child positions the parameter its row
+    // fills from the root's NoEcho one, so a stored plaintext reads as the
+    // top level's migration witness does.
     expect(child.changes.get('ChildRes')?.propertyChanges).toEqual([
-      expect.objectContaining({ path: 'Value', oldValue: '***', newValue: '***' }),
+      expect.objectContaining({
+        path: 'Value',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+      }),
     ]);
     expect(printed(root)).not.toContain(NOECHO);
     expect(printed(child)).not.toContain(NOECHO);

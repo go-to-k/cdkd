@@ -376,6 +376,26 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
   });
 
+  it("--revert-failed partially-created delete with NO record: the journal bag's *** positions reach the delete (go-to-k/cdkd#4043 round 9 n1)", async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'Cr',
+        changeType: 'CREATE',
+        resourceType: 'Custom::Thing',
+        physicalId: 'cr-1',
+        attemptedProperties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Cfg: { Pw: '***' } },
+        // The provider proved it made the resource: no record names it.
+        physicalIdRecoveredFromError: true,
+      },
+    ];
+
+    await replayFailedOperations(failed, {}, 'S', ctx, {});
+
+    expect(contextOf(del)['recordedNoEchoLeaves']).toEqual([['Cfg', 'Pw']]);
+  });
+
   it('--revert-failed partially-created delete: the record naming the op id', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ delete: del });

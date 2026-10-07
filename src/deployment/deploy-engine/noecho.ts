@@ -87,7 +87,7 @@ export function noEchoPositionSources(
   if (template === undefined) return undefined;
   const declared = this.noEchoAttributeResources;
   return {
-    parameters: noEchoParameterNamesOf(template),
+    parameters: new Set([...noEchoParameterNamesOf(template), ...this.inheritedNoEchoParameters]),
     attributeIsNoEcho: (logicalId, attribute) => {
       const live = declared.get(logicalId);
       if (live === true || (live !== undefined && live.has(attribute))) return true;
@@ -528,9 +528,14 @@ export function noEchoComparisonForTemplate(
   knownConditions: Record<string, boolean> | undefined,
   values: Record<string, unknown> | undefined,
   resources: Record<string, ResourceState>,
-  publicTokens?: ReadonlySet<string>
+  publicTokens?: ReadonlySet<string>,
+  /** A nested child's parameters its parent fills from a `NoEcho` source. */
+  inheritedNoEchoParameters?: ReadonlySet<string>
 ): NoEchoCompareFn | undefined {
-  const parameters = noEchoParameterNamesOf(template);
+  const parameters = new Set([
+    ...noEchoParameterNamesOf(template),
+    ...(inheritedNoEchoParameters ?? []),
+  ]);
   const sources: NoEchoPositionSources = {
     parameters,
     attributeIsNoEcho: (logicalId, attribute) =>

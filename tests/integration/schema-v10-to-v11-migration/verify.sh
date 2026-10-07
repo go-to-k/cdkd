@@ -46,6 +46,13 @@
 #   7  rotate the token and the topic name: SSM holds the new token, state
 #      `***`, the topic is NOT replaced and the deploy warns naming
 #      --recreate-via-cc-api.
+#   7b add ParamCr, a custom resource reading the NoEcho parameter: its record
+#      holds `***` at `Token`, named in `noEchoLeaves`.
+#   7c remove it: the delete is SKIPPED (exit 2), the record is kept with
+#      `***`, and the handler's delete marker is never written.
+#   7d the same deploy with --allow-unaddressed exits 0; still skipped.
+#   7e `cdkd state orphan --resource ParamCr` drops the record (it manages
+#      nothing beyond the marker it never wrote).
 #   8  destroy; every resource and the state file are gone.
 #   9  every object version written since phase 3 is scanned for the values,
 #      then every version under the stack prefix is purged and asserted gone.
@@ -108,6 +115,8 @@ TOKEN_PARAM_NAME="/cdkd-integ/schema-v10-to-v11/token"
 SHORT_PARAM_NAME="/cdkd-integ/schema-v10-to-v11/short"
 PLAIN_PARAM_NAME="/cdkd-integ/schema-v10-to-v11/plain"
 DEPENDENT_PARAM_NAME="/cdkd-integ/schema-v10-to-v11/cr-dependent"
+MARKER_PARAM_NAME="/cdkd-integ/schema-v10-to-v11/param-cr-delete-marker"
+PARAM_CR_ID="ParamCr"
 PLAIN_VALUE="schema-v11-plain-control"
 TOKEN_ID="TokenProbe"
 SHORT_ID="ShortProbe"
@@ -154,6 +163,7 @@ export CDKD_V11_SHORT="${SHORT_VALUE}"
 export CDKD_V11_TOPIC_NAME="${TOPIC_NAME}"
 export CDKD_V11_CR_SEED="${CR_SEED_A}"
 export CDKD_V11_ADD_DEPENDENT=""
+export CDKD_V11_PARAM_CR=""
 
 ASSERTIONS_RUN=0
 STATE_FILE=""
@@ -174,11 +184,15 @@ cleanup() {
   esac
 
   if [ -f "${LOCAL_DIST}" ]; then
+    # ParamCr's delete is skipped by design (its record holds `***`), so a
+    # failed run drops its record first; it manages nothing but the marker.
+    node "${LOCAL_DIST}" state orphan "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
+      --stack-region "${REGION}" --resource "${PARAM_CR_ID}" --yes >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # Direct-API fallback for the fixed-name objects.
-  for param in "${TOKEN_PARAM_NAME}" "${SHORT_PARAM_NAME}" "${PLAIN_PARAM_NAME}" "${DEPENDENT_PARAM_NAME}"; do
+  for param in "${TOKEN_PARAM_NAME}" "${SHORT_PARAM_NAME}" "${PLAIN_PARAM_NAME}" "${DEPENDENT_PARAM_NAME}" "${MARKER_PARAM_NAME}"; do
     aws ssm delete-parameter --name "${param}" --region "${REGION}" >/dev/null 2>&1
   done
   for name in "${TOPIC_NAME}" "${TOPIC_NAME_ROTATED}"; do
@@ -303,7 +317,8 @@ assert_no_tokens_in_state() { # <label>
     fi
   done
   if [ -n "${hits}" ]; then
-    printf '%s' "${hits}" >&2
+    # A jq PATH can spell a value too (an alias key holding it): redacted.
+    printf '%s' "${hits}" | redact_tokens >&2
     fail "$1: state.json carries a NoEcho value or a NoEcho-served name (needles and paths above, values withheld)"
   fi
   pass "$1: no NoEcho value anywhere in state.json (blob), and no short value / topic name as a whole scalar"
@@ -362,6 +377,22 @@ run_cdkd() { # <expect: ok|fail> <label> <binary> <args...>
     fail "${label}: exited 0, expected a refusal"
   fi
   pass "${label}: exited ${rc} (${expect})"
+}
+
+# Run a cdkd command expecting EXACTLY <rc>; the log is printed token-rewritten
+# on a mismatch.
+run_cdkd_rc() { # <rc> <label> <binary> <args...>
+  local want="$1" label="$2" bin="$3" rc
+  shift 3
+  set +e
+  AWS_REGION="${REGION}" node "${bin}" "$@" >"${DEPLOY_LOG}" 2>&1
+  rc=$?
+  set -e
+  if [ "${rc}" -ne "${want}" ]; then
+    redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
+    fail "${label}: exited ${rc}, expected ${want}"
+  fi
+  pass "${label}: exited ${rc}"
 }
 
 assert_log_has() { # <label> <fixed text>
@@ -475,7 +506,8 @@ assert_no_tokens_in_versions() { # <scope> <label> <own|shared>
     done
   done <<< "${rows}"
   if [ -n "${hits}" ]; then
-    printf '%s' "${hits}" >&2
+    # A jq PATH can spell a value too (an alias key holding it): redacted.
+    printf '%s' "${hits}" | redact_tokens >&2
     fail "${label}: object version(s) written since the migration carry a NoEcho value (needles, versions and paths above, values withheld)"
   fi
   if [ "${ownership}" = "own" ] && [ "${scanned}" -eq 0 ]; then
@@ -697,6 +729,65 @@ fi
 pass "v11 rotation deploy: one create-only warning line names ${TOPIC_ID}.TopicName and --recreate-via-cc-api"
 
 # ---------------------------------------------------------------------------
+echo "==> Phase 7b: add a custom resource reading the NoEcho parameter"
+# ---------------------------------------------------------------------------
+export CDKD_V11_PARAM_CR="1"
+run_cdkd ok "v11 deploy adding ParamCr" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_log_has_no_tokens "v11 deploy adding ParamCr"
+fetch_state "v11 deploy adding ParamCr"
+assert_no_tokens_in_state "v11 deploy adding ParamCr"
+assert_eq "v11 deploy adding ParamCr: ${PARAM_CR_ID}.properties.Token" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+assert_eq "v11 deploy adding ParamCr: ${PARAM_CR_ID}.noEchoLeaves" \
+  "$(jq -c ".resources[\"${PARAM_CR_ID}\"].noEchoLeaves" "${STATE_FILE}")" '[["Token"]]'
+assert_gone "the delete marker ${MARKER_PARAM_NAME} exists before any delete" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+pass "no delete marker before ParamCr is removed"
+
+# ---------------------------------------------------------------------------
+echo "==> Phase 7c: removing it skips the delete (exit 2), the record is kept"
+# ---------------------------------------------------------------------------
+export CDKD_V11_PARAM_CR=""
+run_cdkd_rc 2 "v11 deploy removing ParamCr" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Two independent markers: the provider's skip line, and the deploy's
+# unaddressed summary.
+assert_log_has "ParamCr delete skip" "Custom resource ${PARAM_CR_ID} is recorded in state with Token holding the '***' mask"
+assert_log_has "ParamCr delete skip (summary)" "unaddressed"
+assert_log_has_no_tokens "v11 deploy removing ParamCr"
+fetch_state "v11 deploy removing ParamCr"
+assert_eq "v11 deploy removing ParamCr: the record is KEPT with the mask" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+assert_gone "the handler received a Delete (marker ${MARKER_PARAM_NAME} written)" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+pass "the skipped delete never reached the handler"
+
+# ---------------------------------------------------------------------------
+echo "==> Phase 7d: --allow-unaddressed exits 0; the delete is skipped again"
+# ---------------------------------------------------------------------------
+run_cdkd_rc 0 "v11 deploy --allow-unaddressed" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --allow-unaddressed
+assert_log_has_no_tokens "v11 deploy --allow-unaddressed"
+fetch_state "v11 deploy --allow-unaddressed"
+assert_eq "v11 deploy --allow-unaddressed: the record is still kept" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+assert_gone "the handler received a Delete under --allow-unaddressed" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+pass "the delete still never reached the handler"
+
+# ---------------------------------------------------------------------------
+echo "==> Phase 7e: drop the record with cdkd state orphan --resource"
+# ---------------------------------------------------------------------------
+# ParamCr manages nothing beyond the marker it never wrote, so the manual
+# teardown the skip warning asks for is only the record.
+run_cdkd ok "state orphan --resource ${PARAM_CR_ID}" "${LOCAL_DIST}" state orphan "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --resource "${PARAM_CR_ID}" --yes
+fetch_state "after state orphan"
+assert_eq "after state orphan: ${PARAM_CR_ID} is no longer recorded" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"] // \"absent\"")" "absent"
+
+# ---------------------------------------------------------------------------
 echo "==> Phase 8: destroy"
 # ---------------------------------------------------------------------------
 # The custom-resource handler and its role, by TYPE (CDK hashes their ids).
@@ -758,11 +849,11 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 93 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 93 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 111 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 111 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi
 
 echo ""
-echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, rotation applied without replacing the create-only reader); ${ASSERTIONS_RUN} assertions executed"
+echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, rotation applied without replacing the create-only reader, a custom resource reading a NoEcho parameter never sent a Delete holding the mask); ${ASSERTIONS_RUN} assertions executed"

@@ -326,6 +326,27 @@ describe('cdkd state refresh-observed on a v11 record with NoEcho coordinates', 
     expect(observed['Name']).toBe('kept');
   });
 
+  it('masks a whole-*** leaf of a record that names NO coordinate (pre-v11 #2449 reader, import / scrub; review round 9 SECURITY)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        P: makeResource({
+          physicalId: '/app/p',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/app/p', Value: '***' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/p', Value: 'cr-generated-plaintext-r9' }),
+    });
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+    const [, , savedState] = mockSaveState.mock.calls[0] as unknown as [string, string, StackState];
+    expect(JSON.stringify(savedState)).not.toContain('cr-generated-plaintext-r9');
+    expect(savedState.resources['P']!.observedProperties).toEqual({ Name: '/app/p', Value: '***' });
+  });
+
   it('leaves a record with no coordinates as before (the control)', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(

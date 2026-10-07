@@ -25,6 +25,7 @@ import {
   createSecretMasker,
   maskSecretsInText,
   recordNestedStackParameterExpressions,
+  recordPassedNoEchoParameters,
 } from '../secret-redaction.js';
 import {
   classifyPassedParameters,
@@ -147,6 +148,15 @@ export async function provisionCreate(
   // enter the child's input fingerprints, read off THIS (the parent's)
   // template, recorded on the bag the provider call is bound to, where the
   // child engine reads it.
+  // go-to-k/cdkd#4043 (review round 9): and which of them carry a `NoEcho`
+  // value, so the child positions them as `NoEcho` parameters.
+  if (resourceType === 'AWS::CloudFormation::Stack') {
+    recordPassedNoEchoParameters(
+      createSecrets,
+      desiredProps['Parameters'],
+      this.noEchoPositionSources(stateResources)
+    );
+  }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
     recordPassedParameterClasses(
       createSecrets,

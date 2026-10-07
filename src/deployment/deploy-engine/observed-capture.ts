@@ -24,33 +24,14 @@ import {
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
 import {
-  SECRET_MASK,
   createUnionSecretMasker,
   markSameGenerationBag,
   maskReadbackAtCoordinates,
+  maskedLeafCoordinatesOf,
   noEchoLeavesOf,
   type NoEchoCoordinate,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
-
-/** Every coordinate of `bag` whose leaf is the whole mask `***`. */
-function maskedLeafCoordinatesOf(bag: unknown): NoEchoCoordinate[] {
-  const coordinates: NoEchoCoordinate[] = [];
-  const ancestors = new Set<object>();
-  const walk = (node: unknown, path: (string | number)[]): void => {
-    if (node === SECRET_MASK) {
-      coordinates.push(path);
-      return;
-    }
-    if (node === null || typeof node !== 'object' || ancestors.has(node)) return;
-    ancestors.add(node);
-    if (Array.isArray(node)) node.forEach((item, index) => walk(item, [...path, index]));
-    else for (const [key, child] of Object.entries(node)) walk(child, [...path, key]);
-    ancestors.delete(node);
-  };
-  walk(bag, []);
-  return coordinates;
-}
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {

@@ -52,6 +52,7 @@ import {
   valueAtCoordinate,
   witnessNormalize,
   withoutNoEchoParameterEntries,
+  recordPassedNoEchoParameters,
 } from '../secret-redaction.js';
 import {
   classifyPassedParameters,
@@ -447,6 +448,15 @@ export async function provisionUpdate(
   // enter the child's input fingerprints, read off THIS (the parent's)
   // template, recorded on the bag the provider call is bound to, where the
   // child engine reads it.
+  // go-to-k/cdkd#4043 (review round 9): and which of them carry a `NoEcho`
+  // value, so the child positions them as `NoEcho` parameters.
+  if (resourceType === 'AWS::CloudFormation::Stack') {
+    recordPassedNoEchoParameters(
+      updateSecrets,
+      desiredProps['Parameters'],
+      this.noEchoPositionSources(stateResources)
+    );
+  }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
     recordPassedParameterClasses(
       updateSecrets,
@@ -578,19 +588,41 @@ export async function provisionUpdate(
   // value this deploy supplies: exact evidence the value changed (maintainer
   // decision on #4043, design §9 item 6), so a create-only path it feeds is
   // replaced as before, and the replacement names that cause, never the value.
-  const witnessMovedParameterAt = (key: string): boolean =>
-    (witness?.differing ?? []).some((coordinate) => {
-      if (coordinate[0] !== key) return false;
+  // The cause a differing witness names (review round 9 m4): the PARAMETER's
+  // value only where the position is a bare `Ref` to a `NoEcho` parameter, so
+  // the stored value at it is exactly that parameter's last value. Any other
+  // form (an `Fn::Sub` around it) may have moved for its template text alone.
+  const witnessCauseAt = (key: string): 'parameter' | 'position' | undefined => {
+    let cause: 'parameter' | 'position' | undefined;
+    for (const coordinate of witness?.differing ?? []) {
+      if (coordinate[0] !== key) continue;
       const rest = coordinate.slice(1);
-      return (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
+      const pending = (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
         const shorter = rest.length <= leaf.path.length ? rest : leaf.path;
         const longer = shorter === rest ? leaf.path : rest;
         return shorter.every((segment, i) => segment === longer[i]);
       });
-    });
+      if (!pending) continue;
+      const node = valueAtCoordinate(desiredProps, coordinate);
+      const bareRef =
+        node !== null &&
+        typeof node === 'object' &&
+        !Array.isArray(node) &&
+        Object.keys(node).length === 1 &&
+        typeof (node as Record<string, unknown>)['Ref'] === 'string' &&
+        noEchoSources?.parameters.has((node as Record<string, string>)['Ref']!) === true;
+      if (bareRef) return 'parameter';
+      cause = 'position';
+    }
+    return cause;
+  };
   const warnWitnessReplacement = (key: string): void => {
+    const cause = witnessCauseAt(key);
+    if (cause === undefined) return;
     this.logger.warn(
-      safeMsg`${logicalId}.${key} is a create-only property, and a NoEcho parameter's value changed since the last deploy: ${logicalId} is replaced.`
+      cause === 'parameter'
+        ? safeMsg`${logicalId}.${key} is a create-only property, and a NoEcho parameter's value changed since the last deploy: ${logicalId} is replaced.`
+        : safeMsg`${logicalId}.${key} is a create-only property, and the value at its NoEcho position changed since the last deploy: ${logicalId} is replaced.`
     );
   };
   const suppliesFreshMaskOnlyValue =
@@ -803,7 +835,7 @@ export async function provisionUpdate(
             )
           : undefined;
       if (moved && conditionalVerdict !== false) {
-        if (witnessMovedParameterAt(pc.path)) warnWitnessReplacement(pc.path);
+        warnWitnessReplacement(pc.path);
         lowered.push(pc);
         continue;
       }
@@ -906,7 +938,7 @@ export async function provisionUpdate(
         keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
           keyOrderFreeJson(currentPropsAsWritten[pc.path]);
       if (moved) {
-        if (witnessMovedParameterAt(pc.path)) warnWitnessReplacement(pc.path);
+        warnWitnessReplacement(pc.path);
         lowered.push(pc);
         continue;
       }
