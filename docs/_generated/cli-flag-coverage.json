@@ -426,6 +426,7 @@
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
+        "emr-cluster",
         "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
@@ -1120,6 +1121,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "emr-cluster",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "remove-protection-compensation"
