@@ -461,6 +461,14 @@ AWS exposes a synchronous "flip protection off" API call.
   externally (console, AWS CLI) without `--remove-protection` surfaces AWS's
   `InvalidParameterCombination` / `InvalidParameterException` error rather than
   silently succeeding.
+- **It reaches a resource only the rollback journal records** too (a failed
+  CREATE's resource, see
+  [Resources only the rollback journal records](#resources-only-the-rollback-journal-records)):
+  a protected one is deleted with its protection turned off, and the prompt
+  counts it when its journaled properties turn protection on. Without the flag
+  its delete is refused, and the journal keeps it for a re-run. A deploy's
+  automatic rollback, the settle a successful deploy runs, and `cdkd rollback`
+  never turn protection off.
 - **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
   protected resource — a replacement is a delete plus a create — fails at the
   delete whatever replace flags were passed. Clear the protection flag first:
@@ -910,7 +918,7 @@ its only record, and destroying the stack removes the journal. Under
 | --- | --- |
 | Before the prompt | Listed with its physical id, also on a `--yes` / `--force` run and in a nested child's cascade. The prompt counts it. |
 | Under the lock | The journal is read again; any change to what it records, or a journal that can no longer be read, refuses the run before anything is deleted, so you re-run against what is there now. |
-| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
+| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`; `--remove-protection` turns its deletion protection off first. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
 | A delete fails | Counted separately in the summary; the state and the journal are kept, and the hint is to re-run the destroy, never to drop this stack's record. |
 | Only such resources remain | The stack is not empty: it takes the confirmed path, not the empty-stack fast path. |
 
