@@ -36,7 +36,11 @@ import {
   mergeNoChangeOutputs,
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
-import { requireDeploymentApproval, requireOutputsOnlyApproval } from '../deployment-approval.js';
+import {
+  isNoEchoPromotionOnly,
+  requireDeploymentApproval,
+  requireOutputsOnlyApproval,
+} from '../deployment-approval.js';
 import {
   buildConditionVerdictRecord,
   conditionInputsFrom,
@@ -1186,6 +1190,20 @@ export async function doDeployWithPrefetch(
         durationMs: Date.now() - startTime,
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
+    }
+
+    // go-to-k/cdkd#4043: a stack whose only "changes" are readers of a
+    // `NoEcho` parameter (state holds `***` there) has no template change; the
+    // engine compares each with AWS and skips it when unchanged. Said so, as
+    // the no-change path would, rather than reading as a pending update.
+    const nonNoEchoChanges = [...changes.values()].filter(
+      (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
+    );
+    if (nonNoEchoChanges.length === 0) {
+      const readers = [...changes.values()].filter(isNoEchoPromotionOnly).length;
+      this.logger.info(
+        safeMsg`No changes detected in the template. Comparing ${String(readers)} resource(s) that read a NoEcho parameter with AWS.`
+      );
     }
 
     // `--require-approval`: asked on the diff this deploy executes, before any

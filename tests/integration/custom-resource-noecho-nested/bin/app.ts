@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import { ImportConsumerStack, ImportProducerStack } from '../lib/import-stacks.ts';
 import { NestedParentStack } from '../lib/nested-parent-stack.ts';
 import { ParamParentStack } from '../lib/param-stack.ts';
+import { ParamValueStack } from '../lib/param-value-stack.ts';
 
 const app = new cdk.App();
 
@@ -23,6 +24,12 @@ new ParamParentStack(app, 'CdkdCrNoEchoParamExample', {
   env,
 });
 
+const paramValue = new ParamValueStack(app, 'CdkdCrNoEchoParamValueExample', {
+  description:
+    'cdkd integ (issue 4043) - a NoEcho template parameter passed to a nested child and exported',
+  env,
+});
+
 const producer = new ImportProducerStack(app, 'CdkdCrNoEchoProducerExample', {
   description: 'cdkd integ (issue 2460) - exports a NoEcho custom resource value',
   env,
@@ -38,3 +45,4 @@ const consumer = new ImportConsumerStack(app, 'CdkdCrNoEchoConsumerExample', {
 // this fixture specifically, against a recovery store the producer has not
 // filled yet.
 consumer.addDependency(producer);
+consumer.addDependency(paramValue);

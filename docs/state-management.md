@@ -926,8 +926,12 @@ re-resolved on every deploy, and:
 | --- | --- |
 | can be updated, and AWS reports it back | reads the resource back; an unchanged value is skipped, a changed one updated |
 | can be updated, but AWS does not report it (write-only, such as an RDS `MasterUserPassword`, or a type cdkd cannot read back) | sends it on every deploy, with one info line per resource saying why |
-| cannot change without a replacement (create-only) | never replaced on the readback's word: when the readback cannot confirm the value, every deploy warns, and `--recreate-via-cc-api` / `--recreate-via-sdk-provider` is how to apply a new value |
+| cannot change without a replacement (create-only), including a write-only one or one whose type schema cdkd could not look up | never replaced: when the readback cannot confirm the value, every deploy warns, and `--recreate-via-cc-api` / `--recreate-via-sdk-provider` is how to apply a new value |
 | create-only, and the readback FAILED | the resource fails with a message to re-run; it is never replaced on a failed read |
+
+A stack whose resources read a `NoEcho` parameter, with nothing else changed,
+is reported as `No changes`: those resources are compared as above and do not
+count as changes, or as destructive changes for the approval prompt.
 
 A provider can receive `***` as the PREVIOUS value of such a property on an
 update whose readback could not confirm it, since the record holds nothing
@@ -945,13 +949,15 @@ count as a change for `--fail`.
   output. Deploy producer and consumer together (`cdkd deploy --all`).
 - An `Export.Name` holding a `NoEcho` value is not published (the deploy warns),
   so no consumer can bind to it.
-- A resource that reads an attribute its producer declared `NoEcho`, out of a
-  record an EARLIER run wrote, is refused with the attribute named; cdkd does
-  not re-run the producer to recover the value. Change the producer in the same
-  deploy (for a custom resource, change one of its properties so its handler
-  runs again).
-- An attribute echoing a `NoEcho` value is read back from AWS for the readers
-  of an unchanged producer within one deploy, and is never written to state.
+- A resource that reads an attribute a custom resource or a nested stack
+  declared `NoEcho`, out of a record an EARLIER run wrote, is refused with the
+  attribute named; cdkd does not re-run the producer to recover the value.
+  Change the producer in the same deploy (for a custom resource, change one of
+  its properties so its handler runs again).
+- An attribute that echoes a `NoEcho` value (such as an SSM parameter's
+  `Value`) is not refused: when the deploy gave the producer that value, its
+  readers are served from an AWS readback of the producer, and the value is
+  never written to state.
 - `cdkd drift` reports a masked position in its own group, without printing
   either side and without affecting the exit code. `cdkd drift --accept` /
   `--revert`, `cdkd rollback` and `cdkd export` still refuse a masked value, as
@@ -990,6 +996,10 @@ count as a change for `--fail`.
   positions come from today's template.
 - Outputs saved after a failed outputs pass, and an output the template
   changed since an older cdkd wrote it.
+- An output of fewer than 4 characters, or a number, that a `NoEcho` parameter
+  serves in another stack and that a consumer imports (`Fn::ImportValue` /
+  `Fn::GetStackOutput`) in the same `cdkd deploy`: the consumer's record holds
+  it in the clear.
 
 #### Migration
 

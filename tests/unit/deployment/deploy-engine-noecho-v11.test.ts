@@ -15,6 +15,8 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
+import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -38,6 +40,13 @@ const renderer = {
 };
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
+// Per-test DescribeType knobs (review round 8): a type's write-only list, and
+// a lookup that fails outright (the snapshot fallback then answers).
+const describeType = vi.hoisted(() => ({
+  writeOnly: new Map<string, string[]>(),
+  fail: false,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', async () => {
   const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
     '../../../src/provisioning/create-only-snapshot.generated.js'
@@ -47,7 +56,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
       cloudFormation: {
         send: vi.fn((command: { input?: { TypeName?: string } }) => {
           const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
-          if (paths === undefined) {
+          if (paths === undefined || describeType.fail) {
             return Promise.reject(
               Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
                 name: 'AccessDeniedException',
@@ -58,7 +67,9 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
           return Promise.resolve({
             Schema: JSON.stringify({
               createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
-              writeOnlyProperties: [],
+              writeOnlyProperties: (describeType.writeOnly.get(command.input?.TypeName ?? '') ?? []).map(
+                (name) => `/properties/${name}`
+              ),
             }),
           });
         }),
@@ -167,6 +178,10 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
   const logger = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
+    describeType.writeOnly.clear();
+    describeType.fail = false;
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
     vi.clearAllMocks();
     provider = {
       create: vi.fn((logicalId: string) =>
@@ -309,6 +324,27 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       );
     });
 
+    it.each(['any-change', 'destructive'] as const)(
+      'does not ask --require-approval=%s for an unchanged stack reading a NoEcho parameter (review round 8 code B1)',
+      async (level) => {
+        const approveDeployment = vi.fn(async () => false);
+        await makeEngine({ requireApproval: level, approveDeployment }).deploy(STACK, template());
+        expect(approveDeployment).not.toHaveBeenCalled();
+        expect(callsFor(provider.update, 'Param')).toHaveLength(0);
+        expect(lines(logger.info).some((l) => l.includes('No changes detected in the template'))).toBe(
+          true
+        );
+      }
+    );
+
+    it('still asks --require-approval=any-change when the template really changed beside it', async () => {
+      const approveDeployment = vi.fn(async () => true);
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['DisplayName'] = 'd2';
+      await makeEngine({ requireApproval: 'any-change', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+    });
+
     it('UPDATES when AWS holds a different value', async () => {
       await makeEngine().deploy(STACK, template(TOKEN2));
       const updates = callsFor(provider.update, 'Param');
@@ -357,6 +393,58 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
       expect(lines(logger.warn).some((l) => l.includes('not-readable'))).toBe(true);
+    });
+
+    // A type the replacement-rules registry does not classify, so the diff's
+    // ceiling comes from the schema alone (review round 8 B1).
+    const ALIAS = 'alias/noecho-alias-v11';
+    const aliasSetup = (readback: Record<string, unknown>) => {
+      const state = v11State();
+      state.resources['Alias'] = {
+        physicalId: ALIAS,
+        resourceType: 'AWS::KMS::Alias',
+        properties: { AliasName: '***', TargetKeyId: 'key-1' },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['AliasName']],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === ALIAS
+            ? readback
+            : physicalId === TOPIC_ARN
+              ? { TopicName: TOPIC, DisplayName: 'd' }
+              : { Name: '/app/p', Value: TOKEN }
+        )
+      );
+      const tpl = template(TOKEN, {
+        Alias: {
+          Type: 'AWS::KMS::Alias',
+          Properties: { AliasName: { Ref: 'AliasParam' }, TargetKeyId: 'key-1' },
+        },
+      });
+      tpl.Parameters!['AliasParam'] = { Type: 'String', NoEcho: true, Default: ALIAS };
+      return tpl;
+    };
+
+    it('never sends an in-place update to a WRITE-ONLY create-only property (decision 1; review round 8 B1)', async () => {
+      describeType.writeOnly.set('AWS::KMS::Alias', ['AliasName']);
+      const tpl = aliasSetup({ TargetKeyId: 'key-1' });
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.update, 'Alias')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Alias')).toHaveLength(0);
+      expect(lines(logger.warn).some((l) => l.includes('--recreate-via-cc-api Alias'))).toBe(true);
+      expect(lines(logger.info).some((l) => l.includes('re-sending AliasName'))).toBe(false);
+    });
+
+    it('classifies a create-only property from the schema snapshot when DescribeType fails (review round 8 B1)', async () => {
+      describeType.fail = true;
+      const tpl = aliasSetup({ AliasName: 'alias/other', TargetKeyId: 'key-1' });
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.update, 'Alias')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Alias')).toHaveLength(0);
+      expect(lines(logger.warn).some((l) => l.includes('--recreate-via-cc-api Alias'))).toBe(true);
     });
 
     it('fails the resource, without a replacement, when the readback of a create-only property FAILS', async () => {
@@ -868,6 +956,11 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
       expect(provider.readCurrentState.mock.calls.some((c) => c[1] === 'Topic')).toBe(true);
+      // Review round 8 m2: AWS confirmed the value, so the record is rewritten
+      // with it and unmarked (no phantom `***` vs value diff on every run).
+      const topic = lastSaved().resources['Topic']!;
+      expect(topic.properties['TopicName']).toBe(TOPIC);
+      expect(topic.noEchoLeaves).toBeUndefined();
     });
 
     it('migrates a held producer echoing the value and its untouched same-stack reader (spec review)', async () => {

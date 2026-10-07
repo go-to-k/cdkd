@@ -245,6 +245,10 @@ export async function provisionResource(
                   counts.updated = Math.max(0, counts.updated - 1);
                   counts.updatePartial++;
                 }
+              } else {
+                // Already partial for another reason: both are reported, the
+                // count is unchanged.
+                updatePartial = `${updatePartial}; ${replacedSkip}`;
               }
             }
             nestedChildUnaddressed = unaddressed;

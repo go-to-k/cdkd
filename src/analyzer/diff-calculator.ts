@@ -1243,6 +1243,8 @@ export class DiffCalculator {
         if (existingPaths.has(propKey)) continue; // already diffed on its own
         // Which upstreams + attributes does this property read via GetAtt / Sub?
         let matched = false;
+        // Set when ONLY arm 5 (a `NoEcho` parameter) promoted the reader.
+        let matchedNoEcho = false;
         for (const [upstreamId, attrs] of getAttRefs) {
           if (upstreamId === dependentId) continue; // self-reference defense
           // Arm 1: the referenced attribute names a property that changed.
@@ -1309,16 +1311,19 @@ export class DiffCalculator {
           // `NoEcho` value supplied in this deploy. Its diff side is `***`
           // against a recorded `***`, so only this promotion reaches the
           // engine, which re-resolves the reader and compares for itself.
+          // go-to-k/cdkd#4043: noted, not matched yet, so a LATER upstream
+          // matching another arm still marks the reader an ordinary propagation.
           if (
             anyFreshParameter &&
             freshParameters.has(upstreamId) &&
             attrs.has(REF_READ) &&
             !Object.hasOwn(desiredTemplate.Resources, upstreamId)
           ) {
-            matched = true;
-            break;
+            matchedNoEcho = true;
           }
         }
+        const noEchoPromoted = !matched && matchedNoEcho;
+        if (noEchoPromoted) matched = true;
         if (!matched) continue;
 
         syntheticChanges.push({
@@ -1339,6 +1344,11 @@ export class DiffCalculator {
             syntheticCreateOnlyPaths
           ),
           inPlacePropagated: true,
+          // go-to-k/cdkd#4043: only a `NoEcho` parameter's value may have
+          // moved, which the engine settles by a readback and never replaces
+          // on (maintainer decision 1); approval and the destructive report
+          // do not count it.
+          ...(noEchoPromoted && { noEchoPromoted: true as const }),
         });
       }
 

@@ -1,3 +1,4 @@
+import { updatePartialMessage } from '../update-outcome.js';
 import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
@@ -985,7 +986,14 @@ export async function updateByReplacement(
   if (progress) progress.current++;
   const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  this.logger.info(
-    `${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`
-  );
+  // go-to-k/cdkd#4043 (review CODE m1): the old resource's delete was skipped
+  // (`provisionResource` turns the row into a partial update), so the line
+  // says so instead of a clean `replaced`.
+  const replacedSkip = this.replacedDeleteSkips.get(logicalId);
+  const replacedLine = `${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`;
+  if (replacedSkip !== undefined) {
+    this.logger.warn(replacedLine + ' ' + updatePartialMessage(replacedSkip));
+    return;
+  }
+  this.logger.info(replacedLine);
 }

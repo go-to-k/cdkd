@@ -1257,12 +1257,21 @@ export async function updateInPlace(
   if (progress) progress.current++;
   const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  if (updatePartial !== undefined) {
+  // go-to-k/cdkd#4043 (review CODE m1): an update-failure fallback's skipped
+  // old-resource delete makes the row partial too (`provisionResource` counts
+  // it); the line names every reason.
+  const replacedSkip = this.replacedDeleteSkips.get(logicalId);
+  const shownPartial =
+    updatePartial !== undefined && replacedSkip !== undefined
+      ? `${updatePartial}; ${replacedSkip}`
+      : (updatePartial ?? replacedSkip);
+  if (shownPartial !== undefined) {
     this.logger.warn(
       `${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
-        updatePartialMessage(updatePartial)
+        updatePartialMessage(shownPartial)
     );
-    return { updatePartial };
+    if (updatePartial !== undefined) return { updatePartial };
+    return;
   }
   this.logger.info(`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`);
 }

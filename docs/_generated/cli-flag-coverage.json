@@ -99,6 +99,7 @@
       "flag": "--exclusively",
       "integs": [
         "cross-stack-secret-import",
+        "custom-resource-noecho-nested",
         "importvalue-chain",
         "outputs-only-export"
       ]

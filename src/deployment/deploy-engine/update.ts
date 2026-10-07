@@ -13,6 +13,7 @@ import {
   unaddressableUpdateRefusalMessage,
 } from '../../state/malformed-resources-bag.js';
 import { CdkdError } from '../../utils/error-handler.js';
+import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
@@ -81,6 +82,29 @@ function isWhollyMask(value: unknown): boolean {
     return children.length > 0 && children.every(isWhollyMask);
   }
   return false;
+}
+
+/** A copy of `bag` with the leaf at `coordinate` set to `value` (containers copied on the path). */
+function setAtCoordinate(
+  bag: Record<string, unknown>,
+  coordinate: readonly (string | number)[],
+  value: unknown
+): Record<string, unknown> {
+  const write = (node: unknown, depth: number): unknown => {
+    if (depth === coordinate.length) return value;
+    const segment = coordinate[depth]!;
+    if (Array.isArray(node) && typeof segment === 'number') {
+      const copy = [...node];
+      copy[segment] = write(node[segment], depth + 1);
+      return copy;
+    }
+    if (node !== null && typeof node === 'object' && typeof segment === 'string') {
+      const record = node as Record<string, unknown>;
+      return { ...record, [segment]: write(record[segment], depth + 1) };
+    }
+    return node;
+  };
+  return write(bag, 0) as Record<string, unknown>;
 }
 
 /** The `UPDATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
@@ -691,11 +715,29 @@ export async function provisionUpdate(
   let readback: Promise<FreshNoEchoReadback> | undefined;
   // The create-only paths a `NoEcho` PARAMETER value feeds, taken before the
   // block below can lower them: the parameter block after it decides them.
+  // Create-only by the type's SCHEMA (the committed snapshot when DescribeType
+  // fails), not by the diff's replacement flag: a write-only create-only
+  // property raises no ceiling in the diff, nor does any whole-property path
+  // when the lookup fails, and maintainer decision 1 covers both (never sent
+  // as an in-place change, never replaced; warned).
+  const schemaCreateOnly =
+    pendingParameterLeaves.size === 0
+      ? []
+      : await getCreateOnlyPropertyPaths(resourceType).catch(
+          () => [] as ReadonlyArray<readonly string[]>
+        );
+  const isSchemaCreateOnly = (key: string): boolean =>
+    (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
+      const full = [key, ...leaf.path.map(String)];
+      return schemaCreateOnly.some(
+        (path) => path.length <= full.length && path.every((segment, i) => segment === full[i])
+      );
+    });
   const parameterCreateOnlyPaths = new Set(
     (change.propertyChanges ?? [])
       .filter(
         (pc) =>
-          pc.requiresReplacement &&
+          (pc.requiresReplacement || isSchemaCreateOnly(pc.path)) &&
           pendingParameterLeaves.has(pc.path) &&
           otherFreshAt(pc.path).length === 0
       )
@@ -809,6 +851,8 @@ export async function provisionUpdate(
   // decides between sending and skipping. Another moved leaf sends the update
   // anyway, with the value in hand.
   const parameterSettledPaths = new Set<string>();
+  // Keys whose every pending leaf AWS confirmed holding (`held`).
+  const parameterHeldKeys = new Set<string>();
   const parameterUnreadablePaths: string[] = [];
   if (pendingParameterLeaves.size > 0 && !typeChanged) {
     const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired;
@@ -854,6 +898,7 @@ export async function provisionUpdate(
         );
       }
       if (verdict === 'held') {
+        parameterHeldKeys.add(pc.path);
         this.logger.debug(
           safeMsg`${logicalId}.${pc.path} carries a NoEcho parameter value AWS already holds: not replaced.`
         );
@@ -879,8 +924,10 @@ export async function provisionUpdate(
         // path nobody read back for it is sent).
         if (otherFreshAt(key).length > 0) continue;
         const verdict = verdictAt(key);
-        if (verdict === 'held') parameterSettledPaths.add(key);
-        else if (verdict === 'not-readable') parameterUnreadablePaths.push(key);
+        if (verdict === 'held') {
+          parameterSettledPaths.add(key);
+          parameterHeldKeys.add(key);
+        } else if (verdict === 'not-readable') parameterUnreadablePaths.push(key);
       }
     }
   }
@@ -916,6 +963,33 @@ export async function provisionUpdate(
     this.logger.debug(
       safeMsg`Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
     );
+    // go-to-k/cdkd#4043 (review round 8 m2): a STALE coordinate (the record
+    // holds `***` where no NoEcho source serves the leaf any more) that AWS
+    // confirmed holding the resolved value is rewritten to that value and
+    // unmarked, so the diff stops comparing `***` with it on every run.
+    const staleHeld = staleCoordinates.filter(
+      (coordinate) => typeof coordinate[0] === 'string' && parameterHeldKeys.has(coordinate[0])
+    );
+    if (staleHeld.length > 0) {
+      let properties = currentResource.properties;
+      for (const coordinate of staleHeld) {
+        properties = setAtCoordinate(
+          properties,
+          coordinate,
+          valueAtCoordinate(resolvedProps, coordinate)
+        );
+      }
+      const remaining = (noEchoLeavesOf(currentResource) ?? []).filter(
+        (coordinate) =>
+          !staleHeld.some((stale) => keyOrderFreeJson(stale) === keyOrderFreeJson(coordinate))
+      );
+      const { noEchoLeaves: _dropped, ...rest } = currentResource;
+      stateResources[logicalId] = {
+        ...rest,
+        properties,
+        ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
+      };
+    }
     // Nothing was attempted, as on the skip above the refusal.
     this.attemptedResolvedProps.delete(logicalId);
     if (change.attributeChanges && change.attributeChanges.length > 0) {

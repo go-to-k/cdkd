@@ -755,8 +755,10 @@ the amendments in section 9 ("Phase B decisions"): no create-only replacement
 on a readback, the drift report bucket pulled in, and the `Export.Name`
 positional twin and the carried-alias verdict moved to #4657. A held
 producer's declared attribute is served to its readers by a per-resolution
-side map (`ResolverContext.noEchoAttributeOverrides`). The line references in
-this page predate it.
+side map (`ResolverContext.noEchoAttributeOverrides`). The Phase B PR also
+masks the coordinates `cdkd state refresh-observed` writes and the declared
+`NoEcho` attributes `cdkd import` records. The line references in this page
+predate it.
 
 **Phase B** covers:
 
@@ -785,7 +787,7 @@ Its files: `secret-redaction.ts`, `intrinsic-function-resolver.ts`,
 a new `schema-v10-to-v11-migration` fixture.
 
 **Phase C** covers the rollback replay readback, the drift bucket and writers,
-import and refresh-observed coordinate masking, the scrub migration rule, and
+`cdkd import` writing `noEchoLeaves`, the scrub migration rule, and
 the `cdkd export` allowance, plus the section 5 residuals marked Phase C (the
 scrub possible-alias keep and the nested-child rollback's re-persisted alias).
 Files: `rollback-executor.ts`, `src/deployment/nested-child-journal.ts`,

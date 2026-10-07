@@ -1384,6 +1384,15 @@ export interface PropertyChange {
   inPlacePropagated?: boolean;
 
   /**
+   * Set on an `inPlacePropagated` change whose ONLY cause is a `NoEcho`
+   * template parameter the property reads (go-to-k/cdkd#4043): state holds
+   * `***` there, so the diff cannot tell whether the value moved, and the
+   * engine settles it by a readback that never replaces the resource on its
+   * word. `--require-approval` and the destructive report do not count it.
+   */
+  noEchoPromoted?: true;
+
+  /**
    * Set on a change only the record's `maskedPropertyFingerprints` detects
    * (go-to-k/cdkd#4451): both sides read `***`, but the property's template
    * expression changed (the text around a secret reference, or its target),
