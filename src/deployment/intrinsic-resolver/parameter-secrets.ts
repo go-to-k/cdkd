@@ -211,12 +211,14 @@ function recordInheritedNoEchoListElements(
       .split(',')
       .map((piece) => piece.trim())
       .join(',');
-  if (!parameterValues.some((plaintext) => normalized(plaintext).includes(joined))) return;
+  // Whole pieces only (comma boundaries), so a one-element public list
+  // equal to a word INSIDE a piece is no match.
+  if (!parameterValues.some((plaintext) => `,${normalized(plaintext)},`.includes(`,${joined},`))) {
+    return;
+  }
   for (const element of value) {
     if (typeof element !== 'string' || element.length < MIN_NEEDLE_LENGTH) continue;
-    if (parameterValues.some((plaintext) => plaintext.includes(element))) {
-      recordNoEchoParameterFreshValue(element, recorded, resolver.publicNoEchoTokens(context));
-    }
+    recordNoEchoParameterFreshValue(element, recorded, resolver.publicNoEchoTokens(context));
   }
 }
 

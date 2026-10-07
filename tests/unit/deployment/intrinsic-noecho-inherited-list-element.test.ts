@@ -65,6 +65,13 @@ describe('a child list element of a parent NoEcho parameter value', () => {
     } as unknown as ResolverContext;
     await new IntrinsicFunctionResolver('us-east-1').resolve({ Ref: 'ListIn' }, context);
     expect(recorded.get('prod')).toBeUndefined();
+    // A one-element public list equal to a word inside the value: no piece either.
+    const single: RecordedSecretValues = new Map();
+    await new IntrinsicFunctionResolver('us-east-1').resolve({ Ref: 'ListIn' }, {
+      ...childContext(single, inherited),
+      parameters: { ListIn: ['prod'] },
+    } as unknown as ResolverContext);
+    expect(single.get('prod')).toBeUndefined();
   });
 
   it('matches a parent value spelled with spaces after its commas, as the coercion trims them', async () => {
