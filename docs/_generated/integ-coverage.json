@@ -3881,6 +3881,17 @@
       }
     },
     {
+      "resourceType": "AWS::Glue::Connection",
+      "integs": [
+        "glue-update-hardening"
+      ],
+      "signals": {
+        "glue-update-hardening": [
+          "l1"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Glue::Crawler",
       "integs": [
         "glue-update-hardening"
@@ -4704,6 +4715,18 @@
         ],
         "stream-delete-redeploy": [
           "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Kinesis::StreamConsumer",
+      "integs": [
+        "stream-delete-redeploy"
+      ],
+      "signals": {
+        "stream-delete-redeploy": [
+          "l1",
           "literal"
         ]
       }
@@ -7213,14 +7236,6 @@
   ],
   "orphans": [],
   "allowListed": [
-    {
-      "resourceType": "AWS::Glue::Connection",
-      "rationale": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise."
-    },
-    {
-      "resourceType": "AWS::Kinesis::StreamConsumer",
-      "rationale": "immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces."
-    },
     {
       "resourceType": "AWS::RDS::DBProxy",
       "rationale": "rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it."
