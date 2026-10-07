@@ -1251,6 +1251,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -1390,6 +1391,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-fix-forward-orphan": [
+          "l2"
+        ],
         "rds-full-stack": [
           "l2"
         ],
@@ -1465,6 +1469,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -1594,6 +1599,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-fix-forward-orphan": [
           "l2"
         ],
         "rds-full-stack": [
@@ -1698,6 +1706,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -1837,6 +1846,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-fix-forward-orphan": [
           "l2"
         ],
         "rds-full-stack": [
@@ -1916,6 +1928,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -2053,6 +2066,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-fix-forward-orphan": [
           "l2"
         ],
         "rds-full-stack": [
@@ -2341,6 +2357,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -2493,6 +2510,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-fix-forward-orphan": [
+          "l2"
+        ],
         "rds-full-stack": [
           "l2"
         ],
@@ -2588,6 +2608,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -2720,6 +2741,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-fix-forward-orphan": [
+          "l2"
+        ],
         "rds-full-stack": [
           "l2"
         ],
@@ -2798,6 +2822,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -2963,6 +2988,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-fix-forward-orphan": [
+          "l2"
+        ],
         "rds-full-stack": [
           "l2"
         ],
@@ -3057,6 +3085,7 @@
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
@@ -3195,6 +3224,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-fix-forward-orphan": [
           "l2"
         ],
         "rds-full-stack": [
@@ -5631,7 +5663,8 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "import-attribute-readback-final",
-        "rds-aurora"
+        "rds-aurora",
+        "rds-fix-forward-orphan"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
@@ -5644,6 +5677,9 @@
         "rds-aurora": [
           "l1",
           "l2"
+        ],
+        "rds-fix-forward-orphan": [
+          "l1"
         ]
       }
     },
@@ -5652,6 +5688,7 @@
       "integs": [
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack"
       ],
       "signals": {
@@ -5659,6 +5696,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l1"
+        ],
+        "rds-fix-forward-orphan": [
           "l1"
         ],
         "rds-full-stack": [
@@ -5685,6 +5725,7 @@
         "list-parameters",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack"
       ],
       "signals": {
@@ -5702,6 +5743,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-fix-forward-orphan": [
           "l2"
         ],
         "rds-full-stack": [

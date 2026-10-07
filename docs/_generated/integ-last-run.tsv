@@ -261,6 +261,7 @@ propagation-races-2	2026-10-06T02:22:44Z	PASS	110	verify.sh	PR #4598 (#4583/#459
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
 rds-aurora	2026-10-07T20:26:24Z	PASS	5296	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 rds-dbinstance-backfill	2026-10-07T20:26:24Z	PASS	787	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
+rds-fix-forward-orphan	2026-10-07T20:47:45Z	PASS	1167	verify.sh	PR #4653 (#4606 RDS fix-forward + #4655 identity), on main incl. #4681; rc 0, destroy clean, orph clean, dedicated state bucket; probes red: src reverted at step 2, isSameResource off at step 3 (exit 2)
 rds-full-stack	2026-10-07T20:26:24Z	PASS	1112	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 recreate-mixed-direction	2026-10-02T20:40:31Z	PASS	111	verify.sh	rc ok, orph clean (#4468)
 recreate-nested-logical-id-collision	2026-10-02T20:42:43Z	PASS	130	verify.sh	rc ok, orph clean (#4468)

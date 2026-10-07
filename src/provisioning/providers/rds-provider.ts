@@ -34,6 +34,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceIdentityVerdict,
   ResourceNotFound,
   UpdateContext,
 } from '../../types/resource.js';
@@ -106,6 +107,15 @@ const TRANSIENT_DETACH_FAULTS: ReadonlySet<string> = new Set([
   'Throttling',
   'RequestLimitExceeded',
 ]);
+
+/**
+ * A DB cluster or DB instance identifier: a letter, then letters, digits and
+ * single hyphens, not ending in one, at most 63 characters. Either case, as a
+ * template may spell it (RDS lower-cases it).
+ */
+function isDbIdentifier(id: string): boolean {
+  return id.length <= 63 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
+}
 
 function awsErrorName(error: unknown): string {
   return (error as { name?: string } | undefined)?.name ?? '';
@@ -652,6 +662,9 @@ export class RDSProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
     // (CreateDBCluster returned and the self-cleanup below did not delete it).
     let clusterLeftBehind = false;
+    // go-to-k/cdkd#4655: the `DbClusterResourceId` CreateDBCluster returned,
+    // carried on the failure's mark as the orphan's identity.
+    let createdResourceId: string | undefined;
     try {
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
         | { MinCapacity?: number; MaxCapacity?: number }
@@ -713,6 +726,7 @@ export class RDSProvider implements ResourceProvider {
         })
       );
       clusterLeftBehind = true;
+      createdResourceId = response.DBCluster?.DbClusterResourceId;
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -818,7 +832,13 @@ export class RDSProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: name the cluster still in AWS for the failed-CREATE
       // journal; never before CreateDBCluster returned (another owner's name).
       if (clusterLeftBehind) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbClusterIdentifier);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          dbClusterIdentifier,
+          createdResourceId
+        );
       }
       throw thrown;
     }
@@ -1137,7 +1157,15 @@ export class RDSProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DBCluster ${logicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  RDS DB cluster ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`DBCluster ${logicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1171,6 +1199,9 @@ export class RDSProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
+    // go-to-k/cdkd#4655: the `DbiResourceId` CreateDBInstance returned,
+    // carried on the failure's mark as the orphan's identity.
+    let createdResourceId: string | undefined;
     try {
       // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
       // `MasterUserSecretKmsKeyId` (same flip as the DBCluster path).
@@ -1253,6 +1284,7 @@ export class RDSProvider implements ResourceProvider {
         })
       );
       instanceCreated = true;
+      createdResourceId = response.DBInstance?.DbiResourceId;
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -1291,7 +1323,13 @@ export class RDSProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
       if (instanceCreated) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbInstanceIdentifier);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          dbInstanceIdentifier,
+          createdResourceId
+        );
       }
       throw thrown;
     }
@@ -1583,7 +1621,15 @@ export class RDSProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DBInstance ${logicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  RDS DB instance ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`DBInstance ${logicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1950,6 +1996,124 @@ export class RDSProvider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the DB cluster or DB instance a failed CREATE
+   * journaled is the one the record under the same logical id holds (a
+   * fix-forward that created a new one there under another identifier).
+   *
+   * Reached on the SDK route only (Cloud Control's provider has no
+   * `isSameResource`, so a Cloud Control-routed orphan is `'unknown'`). Both
+   * ids must be DB identifiers; an ARN or anything else is `'unknown'`, as
+   * is a DBSubnetGroup. An identifier names at most
+   * one cluster (or instance) per account and region at a time, and RDS
+   * compares identifiers case-insensitively (it stores them lower-cased), so
+   * two spellings equal modulo case are `'same'` without a read: whatever
+   * holds that identifier now is the record's resource. After the region
+   * check the record's resource must read back (else `'unknown'`); the
+   * journaled one is `'same'` when it reads back under the record's
+   * `DbClusterResourceId` / `DbiResourceId` (immutable, unique, unchanged by
+   * a rename), `'different'` under another, and `'different'` when AWS
+   * reports its identifier gone: the record's resource answers to its own,
+   * other, identifier, so the gone one cannot name it, and its delete
+   * settles as already gone.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::RDS::DBCluster' && resourceType !== 'AWS::RDS::DBInstance') {
+      return 'unknown';
+    }
+    if (!isDbIdentifier(journaledPhysicalId) || !isDbIdentifier(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordResourceId = await this.readDbResourceIdIfExists(resourceType, record.physicalId);
+    if (recordResourceId === undefined) return 'unknown';
+    const journaledResourceId = await this.readDbResourceIdIfExists(
+      resourceType,
+      journaledPhysicalId
+    );
+    if (journaledResourceId === undefined) return 'different';
+    return journaledResourceId === recordResourceId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655: the cluster's `DbClusterResourceId` or the instance's
+   * `DbiResourceId`, which AWS generates, never changes (a rename keeps it)
+   * and never gives a later resource. A cluster or instance re-created under
+   * the identifier, in any case spelling, answers with another id, so the
+   * settle keeps it rather than deleting it as the failed CREATE's orphan.
+   * A failed CREATE's own token comes from its create response, on the
+   * failure's mark (`markCreatedBeforeFailure`); this is the live read.
+   *
+   * `undefined` for another type, an id that is not a DB identifier, or a
+   * client in another region than `expectedRegion`. `RESOURCE_NOT_FOUND`
+   * only on the describe's not-found fault NAME (or an empty list); any
+   * other failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::RDS::DBCluster' && resourceType !== 'AWS::RDS::DBInstance') {
+      return undefined;
+    }
+    if (!isDbIdentifier(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const live = await this.readDbResourceIdIfExists(resourceType, physicalId);
+    return live === undefined ? RESOURCE_NOT_FOUND : live;
+  }
+
+  /**
+   * The cluster's `DbClusterResourceId` (or the instance's `DbiResourceId`),
+   * or `undefined` when AWS reports the identifier gone (its not-found fault
+   * NAME, or an empty describe list). Any other failure, a response naming
+   * another identifier and one naming no resource id throw: "could not read"
+   * never reads as "gone".
+   */
+  private async readDbResourceIdIfExists(
+    resourceType: 'AWS::RDS::DBCluster' | 'AWS::RDS::DBInstance',
+    identifier: string
+  ): Promise<string | undefined> {
+    const isCluster = resourceType === 'AWS::RDS::DBCluster';
+    let found: { identifier: string | undefined; resourceId: string | undefined } | undefined;
+    try {
+      if (isCluster) {
+        const cluster = await this.describeDBCluster(identifier);
+        found = cluster && {
+          identifier: cluster.DBClusterIdentifier,
+          resourceId: cluster.DbClusterResourceId,
+        };
+      } else {
+        const instance = await this.describeDBInstance(identifier);
+        found = instance && {
+          identifier: instance.DBInstanceIdentifier,
+          resourceId: instance.DbiResourceId,
+        };
+      }
+    } catch (error) {
+      const notFound = isCluster ? 'DBClusterNotFoundFault' : 'DBInstanceNotFoundFault';
+      if ((error as { name?: unknown } | null)?.name === notFound) return undefined;
+      throw error;
+    }
+    if (found === undefined) return undefined;
+    const api = isCluster ? 'DescribeDBClusters' : 'DescribeDBInstances';
+    if (found.identifier?.toLowerCase() !== identifier.toLowerCase()) {
+      throw new Error(`${api} answered for another identifier`);
+    }
+    if (typeof found.resourceId !== 'string' || found.resourceId === '') {
+      throw new Error(`${api} returned no resource id`);
+    }
+    return found.resourceId;
   }
 
   private async readCurrentStateDBInstance(

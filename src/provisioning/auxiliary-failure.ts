@@ -148,18 +148,31 @@ const CREATED_BEFORE_FAILURE = Symbol.for('cdkd.createdBeforeFailure');
  * returned. Stamped on `error` itself, non-enumerable and read-only like the
  * auxiliary mark; returns `error`. A primitive or non-extensible throw is left
  * unmarked, which loses only the recovery.
+ *
+ * `createdResourceIdentity` (optional, go-to-k/cdkd#4655): the provider's
+ * `resourceIdentity` token for the resource, taken from the create call's
+ * own response where that names an immutable id. The deploy engine journals
+ * it instead of reading the identity live, which the failure being marked
+ * (a describe that cannot run) often prevents.
  */
 export function markCreatedBeforeFailure<E>(
   error: E,
   ownerLogicalId: string,
   resourceType: string,
-  physicalId: string
+  physicalId: string,
+  createdResourceIdentity?: string
 ): E {
   try {
     if (typeof error !== 'object' || error === null || !Object.isExtensible(error)) return error;
     if (physicalId === '') return error;
     Object.defineProperty(error, CREATED_BEFORE_FAILURE, {
-      value: Object.freeze({ logicalId: ownerLogicalId, resourceType, physicalId }),
+      value: Object.freeze({
+        logicalId: ownerLogicalId,
+        resourceType,
+        physicalId,
+        ...(typeof createdResourceIdentity === 'string' &&
+          createdResourceIdentity !== '' && { createdResourceIdentity }),
+      }),
       enumerable: false,
       writable: false,
       configurable: true,
@@ -171,12 +184,20 @@ export function markCreatedBeforeFailure<E>(
 }
 
 /** The mark {@link markCreatedBeforeFailure} put on `link` itself, if any. */
-type CreatedMark = { logicalId: string; resourceType: string; physicalId: string };
+type CreatedMark = {
+  logicalId: string;
+  resourceType: string;
+  physicalId: string;
+  createdResourceIdentity?: string;
+};
 
 function createdMarkOn(link: object): CreatedMark | undefined {
   const value = (link as Record<symbol, unknown>)[CREATED_BEFORE_FAILURE];
   if (typeof value !== 'object' || value === null) return undefined;
-  const { logicalId, resourceType, physicalId } = value as Record<string, unknown>;
+  const { logicalId, resourceType, physicalId, createdResourceIdentity } = value as Record<
+    string,
+    unknown
+  >;
   if (
     typeof logicalId !== 'string' ||
     typeof resourceType !== 'string' ||
@@ -185,7 +206,10 @@ function createdMarkOn(link: object): CreatedMark | undefined {
   ) {
     return undefined;
   }
-  return { logicalId, resourceType, physicalId };
+  // An identity that is not a non-empty string is dropped; the mark stands.
+  return typeof createdResourceIdentity === 'string' && createdResourceIdentity !== ''
+    ? { logicalId, resourceType, physicalId, createdResourceIdentity }
+    : { logicalId, resourceType, physicalId };
 }
 
 /**
@@ -207,6 +231,27 @@ export function createdBeforeFailure(
   logicalId: string,
   resourceType: string
 ): string | undefined {
+  return anchoredCreatedMark(error, logicalId, resourceType)?.physicalId;
+}
+
+/**
+ * The `createdResourceIdentity` the {@link createdBeforeFailure} mark for
+ * `logicalId` and `resourceType` carries, or `undefined` (no mark, or a mark
+ * without one). Same anchoring. Never throws.
+ */
+export function createdResourceIdentityBeforeFailure(
+  error: unknown,
+  logicalId: string,
+  resourceType: string
+): string | undefined {
+  return anchoredCreatedMark(error, logicalId, resourceType)?.createdResourceIdentity;
+}
+
+function anchoredCreatedMark(
+  error: unknown,
+  logicalId: string,
+  resourceType: string
+): CreatedMark | undefined {
   try {
     let current: unknown = error;
     for (
@@ -217,7 +262,7 @@ export function createdBeforeFailure(
       const mark = createdMarkOn(current);
       if (mark) {
         return mark.logicalId === logicalId && mark.resourceType === resourceType
-          ? mark.physicalId
+          ? mark
           : undefined;
       }
       const own = Object.getOwnPropertyDescriptor(current, 'logicalId');
@@ -311,7 +356,13 @@ export function carryCreatedBeforeFailure<E>(from: unknown, to: E): E {
       if (createdMarkOn(probe)) return to;
       probe = (probe as { cause?: unknown }).cause;
     }
-    return markCreatedBeforeFailure(to, mark.logicalId, mark.resourceType, mark.physicalId);
+    return markCreatedBeforeFailure(
+      to,
+      mark.logicalId,
+      mark.resourceType,
+      mark.physicalId,
+      mark.createdResourceIdentity
+    );
   } catch {
     return to;
   }

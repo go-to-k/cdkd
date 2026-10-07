@@ -1888,6 +1888,11 @@
       "scenarios": []
     },
     {
+      "name": "rds-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rds-full-stack",
       "annotated": true,
       "scenarios": [
@@ -3261,6 +3266,7 @@
     "orphan-getatt-takeover",
     "partial-create-handback",
     "rds-dbinstance-backfill",
+    "rds-fix-forward-orphan",
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",
     "recreate-parent-child-permission",

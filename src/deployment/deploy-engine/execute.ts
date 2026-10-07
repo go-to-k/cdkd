@@ -35,7 +35,10 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
-import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
+import {
+  createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
+} from '../../provisioning/auxiliary-failure.js';
 import {
   orphanDeleteNeedsIdentity,
   readResourceIdentity,
@@ -441,23 +444,35 @@ export async function executeDeployment(
           // (`readResourceIdentity`'s timeout), skipped once the user has
           // interrupted the deploy, and skipped for an orphan no settle reads
           // a token for (an exempt type, or `Retain`, which deletes nothing).
+          // A provider that took the token from its create call's response
+          // carried it on the mark: that is journaled with no read, since the
+          // failure being journaled (a describe that cannot run) often fails
+          // the read too.
           const orphanOp = createdId !== undefined ? failedOp : replacementOrphanOp;
           if (
             orphanOp?.physicalId !== undefined &&
             orphanOp.deletionPolicy !== 'Retain' &&
-            orphanDeleteNeedsIdentity(orphanOp.resourceType) &&
-            this.interruptCause !== 'user'
+            orphanDeleteNeedsIdentity(orphanOp.resourceType)
           ) {
-            const identity = await readResourceIdentity(
-              this.providerRegistry,
-              {
-                resourceType: orphanOp.resourceType,
-                physicalId: orphanOp.physicalId,
-                provisionedBy: orphanOp.provisionedBy,
-              },
-              this.stackRegion
+            const markedIdentity = createdResourceIdentityBeforeFailure(
+              provisionError,
+              logicalId,
+              change.resourceType
             );
-            if (typeof identity === 'string') orphanOp.createdResourceIdentity = identity;
+            if (markedIdentity !== undefined) {
+              orphanOp.createdResourceIdentity = markedIdentity;
+            } else if (this.interruptCause !== 'user') {
+              const identity = await readResourceIdentity(
+                this.providerRegistry,
+                {
+                  resourceType: orphanOp.resourceType,
+                  physicalId: orphanOp.physicalId,
+                  provisionedBy: orphanOp.provisionedBy,
+                },
+                this.stackRegion
+              );
+              if (typeof identity === 'string') orphanOp.createdResourceIdentity = identity;
+            }
           }
           throw provisionError;
         }
