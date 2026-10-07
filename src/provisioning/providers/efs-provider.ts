@@ -77,6 +77,7 @@ import {
 } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
@@ -147,6 +148,7 @@ function sameRootDirectory(
  */
 export class EFSProvider implements ResourceProvider {
   private client: EFSClient | undefined;
+  private mountTargetCreateClient: EFSClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EFSProvider');
   /**
@@ -209,12 +211,42 @@ export class EFSProvider implements ResourceProvider {
 
   private getClient(): EFSClient {
     if (!this.client) {
+      // Built together with the mount target create client, so both capture
+      // the identity active at this ONE call (issue #4639).
       this.client = new EFSClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.mountTargetCreateClient = withoutServerErrorRetries(
+        new EFSClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateMountTarget` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry. `CreateFileSystem` and `CreateAccessPoint` stay
+   * on the shared client: each carries a cdkd-set idempotency token, so the
+   * SDK's replay of either is answered with the resource the first send made.
+   *
+   * `CreateMountTarget` carries no idempotency token and a file system holds
+   * at most one mount target per Availability Zone, so the SDK's own replay of
+   * a 5xx whose request had succeeded collides with the mount target the
+   * first send made, and that `MountTargetConflict` surfaced from the engine's
+   * FIRST attempt as a mount target somebody else holds. Refused here, the 5xx
+   * reaches the deploy engine's retry, which marks the create as possibly
+   * replayed (`withRetry`, #3978). Nothing is adopted on that collision: an
+   * Availability Zone is not attribution (`docs/provider-rules.md`, "Adopt
+   * only on EXACT attribution").
+   */
+  private getMountTargetCreateClient(): EFSClient {
+    this.getClient();
+    return this.mountTargetCreateClient as EFSClient;
   }
 
   /**
@@ -1207,7 +1239,7 @@ export class EFSProvider implements ResourceProvider {
     // deletes it, so a failed wait leaves it with no state record.
     let createdMountTargetId: string | undefined;
     try {
-      const response = await this.getClient().send(
+      const response = await this.getMountTargetCreateClient().send(
         new CreateMountTargetCommand({
           FileSystemId: fileSystemId,
           SubnetId: subnetId,

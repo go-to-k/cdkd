@@ -19,6 +19,7 @@ cdkd rollback MyStack --orphan MyBucket           # leave a resource out of the 
 cdkd rollback MyStack --revert-failed         # also revert the resource that failed mid-deploy
 cdkd rollback MyStack --skip-final-snapshot   # DeletionPolicy: Snapshot -> delete without the snapshot
 cdkd rollback MyStack --stack-region us-west-2 # disambiguate a multi-region stack
+cdkd rollback MyStack --drop-failed MyQueuePolicy # forget one failed CREATE cdkd can never delete
 ```
 
 ## Options
@@ -29,6 +30,7 @@ cdkd rollback MyStack --stack-region us-west-2 # disambiguate a multi-region sta
 | `--force` | off | Skip the confirmation prompt. `-y` / `--yes` does the same. |
 | `--orphan <logicalId>` | — | Skip the resource during replay, like `cdk rollback --orphan`. Repeatable. |
 | `--revert-failed` | off | Also attempt to revert the resource whose operation FAILED mid-deploy. |
+| `--drop-failed <logicalId>` | — | Remove one journaled failed CREATE that made its resource from the journal, after you check that resource by hand. Replays nothing and deletes nothing in AWS. See [below](#dropping-one-entry-cdkd-cannot-act-on). |
 | `--skip-final-snapshot` | off | Delete a rolled-back CREATE whose `DeletionPolicy` is `Snapshot` without the final snapshot (data loss). |
 | `--stack-region <region>` | — | Region of the target stack, when the same name has state in more than one. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state records and the journal. |
@@ -235,6 +237,33 @@ that failed, an interrupt, or a state record it could not read, or a legacy
 record with no region, anywhere under the state prefix); it keeps the
 journal (reduced to that entry where it can), warns, and exits `2`
 (`--allow-unaddressed` exits `0`), and the next successful deploy retries it.
+
+### Dropping one entry cdkd cannot act on
+
+When such a delete fails for a cause you cannot fix (a secret or KMS key you
+cannot read, a policy that denies the delete), every `cdkd deploy` keeps
+exiting `2` and every `cdkd destroy` keeps the state. Their warnings then
+print a command per entry whose delete failed:
+
+```bash
+cdkd rollback MyStack --stack-region us-east-1 --drop-failed MyQueuePolicy
+```
+
+It prints the entry (its physical id, and for a queue or topic policy the
+queues or topics it was attached to, with a name derived from a secret masked)
+and asks for confirmation (`--force` / `-y` skip it; without a terminal it is
+refused). On `y` it removes that entry from the journal, with the failed
+replacement UPDATE journaled beside it, under the stack lock, and keeps every
+other entry. It replays nothing and deletes nothing in AWS: check the resource
+by hand, and delete it yourself if it should not stay. After the drop no cdkd
+command acts on it. A state record that cannot be read refuses the drop, since
+it is what masks the printed names.
+
+It refuses, changing nothing, an id the journal does not hold, a completed
+operation (use `--orphan`), a failed operation of any other kind or one a
+newer journal entry may own (neither blocks `cdkd deploy` or `cdkd destroy`), an id with more than one such entry
+(remove the one you mean from `rollback-journal.json` by hand), and
+`--orphan`, `--revert-failed` or `--skip-final-snapshot` beside it.
 
 ## Known limitations
 

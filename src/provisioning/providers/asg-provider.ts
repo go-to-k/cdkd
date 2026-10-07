@@ -61,6 +61,7 @@ import {
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
@@ -558,6 +559,7 @@ const EC2_INSTANCE_TYPE = 'AWS::EC2::Instance';
 
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
+  private createClient?: AutoScalingClient;
   private ec2Client?: EC2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ASGProvider');
@@ -753,12 +755,39 @@ export class ASGProvider implements ResourceProvider {
 
   private getClient(): AutoScalingClient {
     if (!this.asgClient) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.asgClient = new AutoScalingClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new AutoScalingClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.asgClient;
+  }
+
+  /**
+   * The client `CreateAutoScalingGroup` goes through: SDK retries on, except
+   * a 5xx (`withoutServerErrorRetries`, issue #4639). Separate so every other
+   * call keeps the full SDK retry.
+   *
+   * `CreateAutoScalingGroup` carries no idempotency token and a group name is
+   * unique per account and region, so the SDK's own replay of a 5xx whose
+   * request had succeeded collides with the group the first send made, and
+   * that `AlreadyExists` fault surfaced from the engine's FIRST attempt as a
+   * name somebody else holds. Refused here, the 5xx reaches the deploy
+   * engine's retry, which marks the create as possibly replayed (`withRetry`,
+   * #3978). Nothing is adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): AutoScalingClient {
+    this.getClient();
+    return this.createClient as AutoScalingClient;
   }
 
   private getEc2Client(): EC2Client {
@@ -846,7 +875,7 @@ export class ASGProvider implements ResourceProvider {
       const minSize = properties['MinSize'] != null ? Number(properties['MinSize']) : 0;
       const maxSize = properties['MaxSize'] != null ? Number(properties['MaxSize']) : minSize;
 
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateAutoScalingGroupCommand({
           AutoScalingGroupName: groupName,
           MinSize: minSize,
@@ -999,13 +1028,20 @@ export class ASGProvider implements ResourceProvider {
       // dropping the survivor note — while the note's own AWS text (a missing
       // `autoscaling:DeleteAutoScalingGroup` grant reads as IAM propagation)
       // would otherwise classify as retryable.
-      const failure = new ProvisioningError(
-        `Failed to create AutoScalingGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
-          (survivorNote === undefined ? '' : ` ${survivorNote}`),
-        resourceType,
-        logicalId,
-        groupName,
-        cause
+      // The AWS text goes through the operation's masker: a 5xx or a refusal
+      // can quote a resolved secret-derived value (issue #2176).
+      const failure = wrapMaskedAwsError(
+        maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create AutoScalingGroup ${logicalId}: ${text}` +
+              (survivorNote === undefined ? '' : ` ${survivorNote}`),
+            resourceType,
+            logicalId,
+            groupName,
+            cause
+          )
       );
       if (survivorNote === undefined) throw failure;
       // go-to-k/cdkd#4583: the retire could not remove the group this call

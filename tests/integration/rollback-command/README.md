@@ -84,6 +84,13 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
 - **Phase 3**: a `--no-rollback` `INJECT_ORPHAN_CREATE` deploy leaves the
   stream recorded only in the journal; destroy stack 1 clean, the stream
   deleted ([#4584](https://github.com/go-to-k/cdkd/issues/4584)), 0 orphans.
+- **Phase D ([#4633](https://github.com/go-to-k/cdkd/issues/4633))**: the same
+  orphan stream; `cdkd destroy` run as a fixture-made role that may not call
+  `kinesis:DeleteStream` fails, keeps the stream and its journal entry, and
+  names `cdkd rollback --drop-failed OrphanStream` → refused drops (unknown id,
+  no terminal) leave the journal unchanged → the drop removes only that entry →
+  `cdkd destroy` exits 0 with the stream left in AWS → the fixture removes the
+  stream and the role.
 
 ## Failure injection
 

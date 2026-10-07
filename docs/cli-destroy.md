@@ -928,7 +928,7 @@ its only record, and destroying the stack removes the journal. Under
 | Before the prompt | Listed with its physical id, also on a `--yes` / `--force` run and in a nested child's cascade. The prompt counts it. |
 | Under the lock | The journal is read again; any change to what it records, or a journal that can no longer be read, refuses the run before anything is deleted, so you re-run against what is there now. |
 | Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`; `--remove-protection` turns its deletion protection off first when it is proven to be the resource the failed deploy created. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
-| A delete fails | Counted separately in the summary; the state and the journal are kept, and the hint is to re-run the destroy, never to drop this stack's record. |
+| A delete fails | Counted separately in the summary; the state and the journal are kept, and the hint is to re-run the destroy, never to drop this stack's record. A warning also prints `cdkd rollback <stack> --drop-failed <logicalId>` for each such resource: when the cause can never be fixed, check the resource by hand and drop just that entry ([details](cli-rollback.md#dropping-one-entry-cdkd-cannot-act-on)). |
 | Only such resources remain | The stack is not empty: it takes the confirmed path, not the empty-stack fast path. |
 
 A journal destroy cannot read is warned about and removed with the state, and
