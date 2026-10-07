@@ -428,6 +428,7 @@
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
+        "fsx-lustre",
         "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
@@ -1126,6 +1127,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "fsx-lustre",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "remove-protection-compensation",
