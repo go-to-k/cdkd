@@ -67,6 +67,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  * mirror the Custom Resource provider's 1-hour ceiling.
  */
 const DEFAULT_MAX_WAIT_MS = 60 * 60 * 1000;
+const DEFAULT_POLL_INTERVAL_MS = 15_000;
 
 /**
  * go-to-k/cdkd#4606: the physical id every path of this provider records — the
@@ -77,7 +78,6 @@ const FILE_SYSTEM_ID_PATTERN = /^fs-[0-9a-f]+$/;
 
 /** Lifecycles in which a file system is on its way out, not the record's live one. */
 const FILE_SYSTEM_NOT_LIVE_LIFECYCLES: ReadonlySet<string> = new Set(['DELETING', 'FAILED']);
-const DEFAULT_POLL_INTERVAL_MS = 15_000;
 
 /**
  * Lustre sub-properties that `UpdateFileSystem` accepts (the mutable

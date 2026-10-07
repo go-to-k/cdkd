@@ -548,14 +548,20 @@ as_deny_role env "${P2B_ENV[@]}" INJECT_FS_ORPHAN=true node "${LOCAL_DIST}" depl
 FS_FAIL_RC=$?
 set -e
 sed 's/^/  /' "${FF_LOG}"
-# The role's job is done: from here every call is the caller's.
-delete_deny_roles
+# The role's job is done: from here every call is the caller's. Only THIS
+# run's role; the prefix sweep is the exit trap's backstop.
+aws iam delete-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" >/dev/null
+aws iam delete-role --role-name "${DENY_ROLE}" >/dev/null
+echo "    deleted deny role ${DENY_ROLE}"
 if [ "${FS_FAIL_RC}" -eq 0 ]; then
   echo "FAIL: the OrphanFs injection deploy unexpectedly SUCCEEDED (the role is denied DescribeFileSystems)" >&2
   exit 1
 fi
-if [ "$(state_physical_id OrphanFs)" != "<absent>" ]; then
-  echo "FAIL: state records OrphanFs after a CREATE that threw (expected no record)" >&2
+# Assigned first: a failed read inside `[ ... ]` would escape `set -e` and
+# read as a record.
+INJECTED_FS_RECORD="$(state_physical_id OrphanFs)"
+if [ "${INJECTED_FS_RECORD}" != "<absent>" ]; then
+  echo "FAIL: state records OrphanFs as '${INJECTED_FS_RECORD}' after a CREATE that threw (expected no record)" >&2
   exit 1
 fi
 ORPHAN_OP="$(journal_op OrphanFs 'after the --no-rollback deploy of Phase 2c')"
