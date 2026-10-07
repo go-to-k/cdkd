@@ -303,6 +303,26 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'cc-to-sdk-reroute',
     },
   ],
+  [
+    'AWS::ElasticLoadBalancingV2::Listener',
+    {
+      // Pinned to cc-api: every listener first deployed while tagged, before
+      // the provider declared `Tags` handled. Cloud Control creates, reads,
+      // updates and deletes it, but a deploy dropping a `ListenerAttributes`
+      // key sends no `ModifyListenerAttributes` there, so the old value stays
+      // live (issue #4679, measured on the `alb` integ); the SDK provider
+      // resets it. Not 'cc-broken': that mode would also move an unflipped
+      // record's drift read to the SDK provider against its Cloud Control
+      // baseline. This one flips on the next deploy that changes the
+      // listener, which is the deploy that drops the key.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the listener ARN: the schema primaryIdentifier is ' +
+        'ListenerArn and ELBv2Provider.create records the CreateListener ListenerArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4679',
+      integFixture: 'alb',
+    },
+  ],
 ]);
 
 /** Why a `'cc-broken'` type cannot be routed to Cloud Control, as users read it. */

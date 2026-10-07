@@ -681,7 +681,11 @@ conditional the escape is:
   cdkd would silently drop. Reading the recorded bag too is what keeps a
   *removal* deploy correct — a property applied under Cloud Control and since
   deleted from the template still needs Cloud Control to unset it, so the flip
-  waits one deploy. `AWS::SNS::Topic` is the member today.
+  waits one deploy. `AWS::SNS::Topic` and
+  `AWS::ElasticLoadBalancingV2::Listener` are the members today. The listener
+  has one more reason to leave: Cloud Control leaves a `ListenerAttributes`
+  key removed from the template at its old value, and the SDK provider resets
+  it, on the same deploy that flips the record.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api
