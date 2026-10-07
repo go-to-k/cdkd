@@ -15,7 +15,8 @@
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { type RollbackJournalSegment, splitImportedOps } from '../../types/rollback-journal.js';
 import type { ResourceState, StackState } from '../../types/state.js';
-import type { ResourceIdentityVerdict } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND, type ResourceIdentityVerdict } from '../../types/resource.js';
+import { orphanDeleteNeedsIdentity, readResourceIdentity } from './orphan-identity.js';
 import {
   hasReadableOrphans,
   unreadableOrphanRecords,
@@ -523,8 +524,9 @@ export async function settleJournaledOrphansOnSuccess(args: {
 /**
  * The success-path rule (see {@link settleJournaledOrphansOnSuccess}): demote
  * every proven orphan this deploy's outcome may own, and return those whose
- * ownership could not be read (kept, not acted on) and those a record of this
- * stack tracks (settled, not acted on).
+ * ownership could not be read (kept, not acted on) and those settled without
+ * a delete: a record of this stack tracks them, or AWS reports them gone
+ * (go-to-k/cdkd#4655).
  */
 async function applySuccessRule(
   orphans: JournaledOrphans,
@@ -584,7 +586,36 @@ async function applySuccessRule(
         markProvenDistinctFromRecord(op, record!);
       }
       const holding = await foreignHolder(op.resourceType, op.physicalId);
-      if (holding === undefined) continue;
+      if (holding === undefined) {
+        // go-to-k/cdkd#4655: the last check before the delete. A name-keyed
+        // id may now name a resource made after the orphan was removed.
+        const created = await createdResourceStillThere(op, identityCtx);
+        if (created === 'gone') {
+          // Settled without a delete: one sent later, after the other
+          // orphans' reads and deletes, could reach a resource created under
+          // the name in between.
+          logger.info(
+            safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
+              safeMsg`of stack ${stack} created, is already gone: nothing to delete.`
+          );
+          tracked.add(op);
+        } else if (created === 'mismatch') {
+          logger.warn(
+            safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
+              safeMsg`of stack ${stack} created, is not deleted: the resource now under its physical id is another ` +
+              'one (its identity differs from the one that deploy recorded, so its name was reused).'
+          );
+          op.physicalIdRecoveredFromError = false;
+        } else if (created === 'unproven') {
+          logger.warn(
+            safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
+              safeMsg`of stack ${stack} created, is not deleted: nothing proves the resource now under its physical ` +
+              'id is the one that deploy created (it may have been deleted and its name reused).'
+          );
+          op.physicalIdRecoveredFromError = false;
+        }
+        continue;
+      }
       if (holding.kind === 'held') {
         logger.warn(
           safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
@@ -652,6 +683,41 @@ async function recordIdentity(
     );
     return 'unknown';
   }
+}
+
+/**
+ * go-to-k/cdkd#4655: whether the resource under the proven orphan `op`'s
+ * physical id is still the one its failed CREATE made. `'proven'` without a
+ * read for a `Retain` orphan (nothing is deleted) and for a type that needs
+ * no identity (`orphanDeleteNeedsIdentity`); otherwise `'proven'` only when
+ * the provider's live `resourceIdentity` equals the journaled
+ * `createdResourceIdentity`, `'mismatch'` when it reads another token, and
+ * `'gone'` when it reports the id gone. A legacy entry with no identity, a
+ * provider without the method, and any failed read are `'unproven'`. A match
+ * is read before the delete runs, not with it: no delete this settle sends is
+ * conditional on an identity.
+ */
+async function createdResourceStillThere(
+  op: FailedOperation,
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>
+): Promise<'proven' | 'mismatch' | 'gone' | 'unproven'> {
+  if (op.deletionPolicy === 'Retain') return 'proven';
+  if (!orphanDeleteNeedsIdentity(op.resourceType)) return 'proven';
+  // Unreachable from `applySuccessRule`, which skips an op without one; a
+  // guard for any other caller.
+  const physicalId = op.physicalId;
+  if (!physicalId) return 'unproven';
+  const live = await readResourceIdentity(
+    ctx.providerRegistry,
+    { resourceType: op.resourceType, physicalId, provisionedBy: op.provisionedBy },
+    ctx.region
+  );
+  if (live === RESOURCE_NOT_FOUND) return 'gone';
+  const journaled = op.createdResourceIdentity;
+  if (typeof journaled !== 'string' || journaled === '' || typeof live !== 'string') {
+    return 'unproven';
+  }
+  return live === journaled ? 'proven' : 'mismatch';
 }
 
 /**

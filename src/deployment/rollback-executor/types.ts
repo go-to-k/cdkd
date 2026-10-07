@@ -140,6 +140,14 @@ export interface FailedOperation {
    */
   physicalIdRecoveredFromError?: boolean | undefined;
   /**
+   * go-to-k/cdkd#4655: the provider's `resourceIdentity` token for
+   * {@link physicalId}, read right after the failed CREATE (best-effort;
+   * absent when the provider has none or the read failed). A successful
+   * deploy deletes a name-keyed orphan only when the live token still equals
+   * it. ADDITIVE, no `journalVersion` bump: an older binary ignores it.
+   */
+  createdResourceIdentity?: string | undefined;
+  /**
    * The template's `DeletionPolicy`, journaled with
    * {@link physicalIdRecoveredFromError} (go-to-k/cdkd#1710): the orphan has
    * no state record to read the policy off, and a plain delete would destroy

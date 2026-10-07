@@ -135,6 +135,7 @@ function build(opts: {
       return Promise.resolve({ physicalId: `phys-${logicalId}`, wasReplaced: false });
     }),
     delete: vi.fn().mockResolvedValue(undefined),
+    resourceIdentity: vi.fn().mockResolvedValue('created-token'),
   };
   const currentState: StackState = {
     version: 8,
@@ -723,6 +724,8 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       physicalId: 'child-orphan-stream',
       provisionedBy: 'sdk',
       physicalIdRecoveredFromError: true,
+      // go-to-k/cdkd#4655: the provider's live read answers the same token.
+      createdResourceIdentity: 'created-token',
       attemptedProperties: {},
     };
     const harness = () =>
