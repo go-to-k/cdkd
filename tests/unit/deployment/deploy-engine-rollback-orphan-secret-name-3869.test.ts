@@ -366,3 +366,109 @@ describe("a deploy's automatic rollback judges a journaled orphan WITH its recov
     expect(lines[0]!.includes(PATH)).toBe(shown);
   });
 });
+
+describe("a deploy's automatic rollback masks a COMPLETED CREATE's name this deploy resolved (go-to-k/cdkd#3869)", () => {
+  // The queue is created; a sibling then fails, and the rollback deletes the
+  // queue it made, whose provider line names it.
+  async function completedRollback(queueName: string) {
+    const lines: string[] = [];
+    const provider = {
+      create: vi.fn((logicalId: string) =>
+        logicalId === 'Queue'
+          ? Promise.resolve({ physicalId: URL, attributes: {} })
+          : Promise.reject(new Error('sibling create failed'))
+      ),
+      update: vi.fn(),
+      delete: vi.fn((logicalId: string, physicalId: string) => {
+        const line = `Deleting ${logicalId}: ${physicalId}`;
+        lines.push(currentLogLineMasker()?.(line) ?? line);
+        return Promise.resolve(undefined);
+      }),
+    };
+    const changes = new Map<string, ResourceChange>([
+      [
+        'Queue',
+        {
+          logicalId: 'Queue',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: { QueueName: queueName },
+          propertyChanges: [],
+        } as unknown as ResourceChange,
+      ],
+      [
+        'Other',
+        {
+          logicalId: 'Other',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SNS::Topic',
+          desiredProperties: {},
+          propertyChanges: [],
+        } as unknown as ResourceChange,
+      ],
+    ]);
+    const engine = new DeployEngine(
+      {
+        getState: vi.fn().mockResolvedValue({
+          state: { version: 8, stackName: STACK, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+          etag: 'e0',
+        }),
+        saveState: vi.fn().mockResolvedValue('etag-1'),
+        listStacks: vi.fn().mockResolvedValue([]),
+        appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+        deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        loadRollbackJournal: vi.fn().mockResolvedValue(null),
+        markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+        popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+        reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+        dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+      } as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        // The queue first, so it completes before the sibling fails.
+        getExecutionLevels: vi.fn().mockReturnValue([['Queue'], ['Other']]),
+        getDirectDependencies: vi.fn((_d: unknown, id: string) => (id === 'Other' ? ['Queue'] : [])),
+      } as never,
+      {
+        calculateDiff: vi.fn().mockResolvedValue(changes),
+        hasChanges: vi.fn().mockReturnValue(true),
+        filterByType: vi.fn((c: Map<string, ResourceChange>, type: string) =>
+          [...c.values()].filter((x) => x.changeType === type)
+        ),
+      } as never,
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        getCloudControlProvider: vi.fn(),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+      } as never,
+      { concurrency: 4, noRollback: false, roleArn: 'arn:aws:iam::1:role/r' },
+      'us-east-1'
+    );
+    await engine
+      .deploy(STACK, {
+        Resources: {
+          Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: queueName } },
+          Other: { Type: 'AWS::SNS::Topic', Properties: {}, DependsOn: 'Queue' },
+        },
+      } as unknown as CloudFormationTemplate)
+      .catch(() => undefined);
+    return { lines, provider };
+  }
+
+  it.each([
+    ['a name resolved from a secret', QUEUE_REF, false],
+    ['negative control, a literal name', QUEUE, true],
+  ])("on the rollback's delete line: %s", async (_l, queueName, shown) => {
+    const { lines, provider } = await completedRollback(queueName);
+    // Premise: the rollback deleted the queue the deploy created.
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
+    expect(lines[0]!.includes(QUEUE)).toBe(shown);
+  });
+});

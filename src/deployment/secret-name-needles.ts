@@ -259,6 +259,71 @@ export function journaledOrphanPrintingBag(
 }
 
 /**
+ * The records a completed op's revert names (go-to-k/cdkd#3869), as entries a
+ * printing-bag judge reads: the op's own (the resource it made or wrote, its
+ * properties) and the one it replaced (`previousState`, which an UPDATE or
+ * DELETE revert writes back and whose id it prints).
+ */
+export function completedReplayEntries(
+  ops: readonly {
+    logicalId: string;
+    resourceType: string;
+    physicalId?: string | undefined;
+    properties?: Record<string, unknown> | undefined;
+    previousState?: ResourceState | undefined;
+  }[]
+): Array<{
+  logicalId: string;
+  resourceType: string;
+  physicalId?: string | undefined;
+  properties?: Record<string, unknown> | undefined;
+  attemptedProperties?: Record<string, unknown> | undefined;
+}> {
+  return ops.flatMap((op) => [
+    {
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      physicalId: op.physicalId,
+      properties: op.properties,
+      attemptedProperties: op.properties,
+    },
+    ...(op.previousState === undefined
+      ? []
+      : [
+          {
+            logicalId: op.logicalId,
+            resourceType: op.previousState.resourceType,
+            physicalId: op.previousState.physicalId,
+            properties: op.previousState.properties,
+            attemptedProperties: op.previousState.properties,
+          },
+        ]),
+  ]);
+}
+
+/**
+ * The log-only bag over a stack's orphan records (`state.orphans`, what an
+ * earlier rollback kept in AWS; go-to-k/cdkd#3869): each record's own name
+ * spellings, judged from the record, which still spells a secret-derived name
+ * as its `{{resolve:` reference. One bag for every record: a line names one
+ * record, and a sibling's needle only over-masks. Malformed entries are
+ * skipped (their own refusal reports them). For the adoption pre-pass's lines
+ * and refusal, on `cdkd deploy` and `cdkd diff` alike.
+ */
+export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  for (const entry of records) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { logicalId, state } = entry as { logicalId?: unknown; state?: unknown };
+    if (typeof logicalId !== 'string' || state === null || typeof state !== 'object') continue;
+    for (const needle of secretNameNeedlesOf(logicalId, state, undefined) ?? []) {
+      recordLogOnlyValue(bag, needle);
+    }
+  }
+  return bag;
+}
+
+/**
  * An event with its human-authored text (`error.message`, `reason`) masked by
  * the printing bags bound where it is recorded (go-to-k/cdkd#3869): the events
  * store is DURABLE, so a name the log lines beside it withhold must not land

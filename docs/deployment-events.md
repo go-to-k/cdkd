@@ -143,7 +143,8 @@ delete's event `reason` and error message are masked with that name's spellings
 and with those of the secret-named resources its record holds, the same needles
 that mask the delete's log lines. Every other path that deletes such a journaled
 resource masks its events the same way: a successful `cdkd deploy` removing its
-journal, a failed deploy's automatic rollback, and `cdkd rollback`.
+journal, a failed deploy's automatic rollback, and `cdkd rollback`. Both rollbacks
+also revert the deploy's completed operations under such needles.
 
 The `name`, `awsErrorCode` and `requestId` fields are NOT masked — they are AWS
 enum-shaped identifiers that never carry a caller-supplied value.
