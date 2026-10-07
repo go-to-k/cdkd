@@ -125,6 +125,29 @@ export interface ResourceProvider {
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<'same' | 'different' | 'unknown'>;
+
+  /**
+   * A token naming THIS live resource and no later one created under the
+   * same physical id (issue #4655). A failed CREATE journals it beside a
+   * proven orphan, and a successful deploy deletes the orphan only when the
+   * live token is equal (one reported gone is dropped without a delete).
+   *
+   * Optional, but without it a successful deploy never deletes a proven
+   * orphan of a name-keyed type: it warns and exits 2. Not needed for a type
+   * listed in `UNIQUE_PHYSICAL_ID_TYPES`
+   * (src/deployment/rollback-executor/orphan-identity.ts), whose marked id
+   * AWS generates and never reuses; add a type there only after checking its
+   * `markCreatedBeforeFailure` site. Build the token from an immutable AWS id
+   * where one exists, else the ARN plus the creation time. Return
+   * `RESOURCE_NOT_FOUND` only on AWS's not-found answer, and `undefined` for
+   * an id form you do not recognise, a client region other than
+   * `context.expectedRegion`, or a response without the fields.
+   */
+  resourceIdentity?(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | typeof RESOURCE_NOT_FOUND | undefined>;
 }
 ```
 

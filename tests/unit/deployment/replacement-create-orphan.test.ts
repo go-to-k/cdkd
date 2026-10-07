@@ -74,11 +74,14 @@ const orphan = (over: Partial<FailedOperation> = {}): FailedOperation => ({
   physicalIdRecoveredFromError: true,
   replacedPhysicalId: 'stream-a',
   replacedResourceType: TYPE,
+  // go-to-k/cdkd#4655: the provider's live read answers the same token.
+  createdResourceIdentity: 'created-token',
   attemptedProperties: { Name: 'stream-b' },
   ...over,
 });
 
-function ctxWith(provider: Record<string, unknown>) {
+function ctxWith(given: Record<string, unknown>) {
+  const provider = { resourceIdentity: vi.fn(async () => 'created-token'), ...given };
   const getProviderFor = vi.fn(() => ({ provider, provisionedBy: 'sdk' }));
   const ctx: RollbackExecutorContext = {
     region: 'us-east-1',

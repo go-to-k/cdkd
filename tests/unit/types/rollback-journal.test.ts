@@ -464,6 +464,32 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     );
   });
 
+  // go-to-k/cdkd#4655: compared with the live identity before a settle's delete.
+  it('accepts a createdResourceIdentity string beside the proof and refuses any other shape', () => {
+    const orphan = {
+      ...op,
+      changeType: 'CREATE',
+      physicalId: 'stream',
+      physicalIdRecoveredFromError: true,
+      createdResourceIdentity: 'arn:aws:kinesis:us-east-1:1:stream/stream@1',
+    };
+    const parsed = parseRollbackJournal(journalWith([], [orphan]), 'S').segments[0]!.failedOperations!;
+    expect(parsed[0]!.createdResourceIdentity).toBe('arn:aws:kinesis:us-east-1:1:stream/stream@1');
+    expect(
+      parseRollbackJournal(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: false }]), 'S')
+        .segments[0]!.failedOperations
+    ).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...orphan, createdResourceIdentity: 7 }]))).toContain(
+      'createdResourceIdentity must be a non-empty string when present (got number).'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, createdResourceIdentity: '' }]))).toContain(
+      'createdResourceIdentity must be a non-empty string when present (got string).'
+    );
+    expect(
+      messageOf(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: undefined }]))
+    ).toContain('createdResourceIdentity is only valid on a CREATE carrying physicalIdRecoveredFromError.');
+  });
+
   // go-to-k/cdkd#4604: it turns the failed UPDATE's force-revert off.
   it('refuses a planted replacementOrphaned', () => {
     const update = { ...op, changeType: 'UPDATE', replacementOrphaned: 'delete-first' };

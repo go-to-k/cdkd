@@ -5,7 +5,7 @@ import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
-import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
@@ -84,6 +84,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       ),
       update: vi.fn().mockResolvedValue({ physicalId: 'phys-x', wasReplaced: false }),
       delete: vi.fn().mockResolvedValue(undefined),
+      resourceIdentity: vi.fn().mockResolvedValue('created-token'),
     };
 
     const currentState: StackState = {
@@ -997,6 +998,155 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(op.attemptedProperties).toEqual({ p: 'new' });
     });
 
+    // go-to-k/cdkd#4655: the provider's identity token, read once after the
+    // failure, so a later settle can tell the resource from a name reuse.
+    describe('the created resource identity (go-to-k/cdkd#4655)', () => {
+      const marked = () =>
+        markCreatedBeforeFailure(
+          new ProvisioningError('retention rejected', 'AWS::S3::Bucket', 'B', 'b-1'),
+          'B',
+          'AWS::S3::Bucket',
+          'b-1'
+        );
+      async function journaledWith(identity: (() => Promise<unknown>) | undefined) {
+        const { engine, tmpl } = failingCreateEngine(marked());
+        const internals = engine as unknown as {
+          providerRegistry: {
+            getProviderFor: ReturnType<typeof vi.fn> & (() => { provider: Record<string, unknown> });
+          };
+        };
+        const provider = internals.providerRegistry.getProviderFor().provider;
+        const read = vi.fn(identity ?? (async () => undefined));
+        if (identity === undefined) delete provider['resourceIdentity'];
+        else provider['resourceIdentity'] = read;
+        internals.providerRegistry.getProviderFor.mockClear();
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+        const op = seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B');
+        return { op, read, getProviderFor: internals.providerRegistry.getProviderFor };
+      }
+
+      it('journals the token beside the proven id, read once through the sdk route', async () => {
+        const { op, read, getProviderFor } = await journaledWith(async () => 'arn:x@1700000000000');
+        expect(op.physicalIdRecoveredFromError).toBe(true);
+        expect(op.createdResourceIdentity).toBe('arn:x@1700000000000');
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(read).toHaveBeenCalledWith('b-1', 'AWS::S3::Bucket', { expectedRegion: 'us-east-1' });
+        expect(getProviderFor).toHaveBeenCalledWith({ resourceType: 'AWS::S3::Bucket', provisionedBy: 'sdk' });
+      });
+
+      it.each([
+        ['a read that throws', async (): Promise<unknown> => {
+          throw new Error('AccessDenied');
+        }],
+        ['a resource AWS reports gone', async (): Promise<unknown> => RESOURCE_NOT_FOUND],
+        ['no token', async (): Promise<unknown> => undefined],
+        ['an empty token', async (): Promise<unknown> => ''],
+      ] as const)('journals no token for %s, and still journals the proven id', async (_label, identity) => {
+        const { op } = await journaledWith(identity);
+        expect(op.physicalId).toBe('b-1');
+        expect(op.physicalIdRecoveredFromError).toBe(true);
+        expect(op).not.toHaveProperty('createdResourceIdentity');
+      });
+
+      async function journaledFor(
+        type: string,
+        id: string,
+        opts: { policy?: 'Retain'; interruptByUser?: boolean; read?: () => Promise<unknown> } = {}
+      ) {
+        const failure = markCreatedBeforeFailure(new ProvisioningError('rejected', type, 'B', id), 'B', type, id);
+        const tmpl: CloudFormationTemplate = {
+          Resources: { B: { Type: type, Properties: {}, ...(opts.policy && { DeletionPolicy: opts.policy }) } },
+        };
+        const changes = new Map([
+          ['B', { ...makeChange('B'), resourceType: type, desiredProperties: { p: 'new' } } as ResourceChange],
+        ]);
+        const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+        const provider = (
+          engine as unknown as { providerRegistry: { getProviderFor: () => { provider: Record<string, unknown> } } }
+        ).providerRegistry.getProviderFor().provider;
+        const read = vi.fn(opts.read ?? (async (): Promise<unknown> => 'tok'));
+        provider['resourceIdentity'] = read;
+        (provider['create'] as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          // A Ctrl-C that lands while the create is in flight.
+          if (opts.interruptByUser) (engine as unknown as { interruptCause: string }).interruptCause = 'user';
+          throw failure;
+        });
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+        const op = seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B');
+        return { op, read };
+      }
+
+      it('reads no token for a type that needs none, or a Retain orphan; reads one for a name-keyed Delete orphan', async () => {
+        for (const [type, id, policy] of [
+          ['AWS::EC2::VPC', 'vpc-0123456789abcdef0', undefined],
+          ['AWS::SQS::QueuePolicy', 'https://sqs.us-east-1.amazonaws.com/1/q', undefined],
+          ['AWS::S3::Bucket', 'b-1', 'Retain'],
+        ] as const) {
+          journal.appendRollbackJournalSegment.mockClear();
+          const { op, read } = await journaledFor(type, id, policy ? { policy } : {});
+          expect(op.physicalIdRecoveredFromError).toBe(true);
+          expect(read).not.toHaveBeenCalled();
+          expect(op).not.toHaveProperty('createdResourceIdentity');
+        }
+        journal.appendRollbackJournalSegment.mockClear();
+        const named = await journaledFor('AWS::S3::Bucket', 'b-1');
+        expect(named.read).toHaveBeenCalledTimes(1);
+        expect(named.op.createdResourceIdentity).toBe('tok');
+      });
+
+      it('reads no token once the user has interrupted the deploy, and still journals the proven id', async () => {
+        const { op, read } = await journaledFor('AWS::S3::Bucket', 'b-1', { interruptByUser: true });
+        expect(op.physicalIdRecoveredFromError).toBe(true);
+        expect(op.physicalId).toBe('b-1');
+        expect(read).not.toHaveBeenCalled();
+        expect(op).not.toHaveProperty('createdResourceIdentity');
+      });
+
+      it('gives up on a read that never answers, journaling the proven id without a token', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const pending = journaledFor('AWS::S3::Bucket', 'b-1', { read: () => new Promise<never>(() => {}) });
+          // Advance past the read's bound; the deploy then journals and throws.
+          for (let i = 0; i < 40 && journal.appendRollbackJournalSegment.mock.calls.length === 0; i++) {
+            await vi.advanceTimersByTimeAsync(1_000);
+          }
+          const { op, read } = await pending;
+          expect(read).toHaveBeenCalledTimes(1);
+          expect(op.physicalIdRecoveredFromError).toBe(true);
+          expect(op).not.toHaveProperty('createdResourceIdentity');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('journals no token for a provider without resourceIdentity', async () => {
+        const { op } = await journaledWith(undefined);
+        expect(op.physicalIdRecoveredFromError).toBe(true);
+        expect(op).not.toHaveProperty('createdResourceIdentity');
+      });
+
+      it('reads nothing for a failed CREATE no provider proved', async () => {
+        const { op, read } = await journaledWith(async () => 'tok');
+        expect(op.createdResourceIdentity).toBe('tok');
+        read.mockClear();
+        journal.appendRollbackJournalSegment.mockClear();
+        const { engine, tmpl } = failingCreateEngine(new Error('plain failure'));
+        const provider = (
+          engine as unknown as { providerRegistry: { getProviderFor: () => { provider: Record<string, unknown> } } }
+        ).providerRegistry.getProviderFor().provider;
+        const plainRead = vi.fn(async () => 'tok');
+        provider['resourceIdentity'] = plainRead;
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        const plain = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations.find(
+          (o: { logicalId: string }) => o.logicalId === 'B'
+        );
+        expect(plain).not.toHaveProperty('createdResourceIdentity');
+        expect(plainRead).not.toHaveBeenCalled();
+      });
+    });
+
     // go-to-k/cdkd#3869 review: the error is MASKED before it reaches the
     // journal (`printingSecretsFor`, now with the derived-name registry), and
     // the mark's id spells the secret-derived name. It must survive exact, or
@@ -1445,6 +1595,26 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         Record<string, unknown>
       >;
     }
+
+    // go-to-k/cdkd#4655: the replacement's new resource carries its token too;
+    // the UPDATE naming the replaced record does not.
+    it('journals the identity token on the replacement orphan only', async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('follow-up rejected'), 'B', 'AWS::SQS::Queue', 'b-new')
+      );
+      const read = vi.fn(async () => 'queue-token');
+      (provider as unknown as Record<string, unknown>)['resourceIdentity'] = read;
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      const orphan = ops.find((o) => o['changeType'] === 'CREATE')!;
+      const update = ops.find((o) => o['changeType'] === 'UPDATE')!;
+      expect(orphan['createdResourceIdentity']).toBe('queue-token');
+      expect(update).not.toHaveProperty('createdResourceIdentity');
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith('b-new', 'AWS::SQS::Queue', { expectedRegion: 'us-east-1' });
+    });
 
     it('journals the new resource beside the UPDATE, naming the replaced record', async () => {
       const ops = await failedOpsOf(
@@ -2068,6 +2238,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       physicalId: 'orphan-stream',
       provisionedBy: 'sdk',
       physicalIdRecoveredFromError: true,
+      // go-to-k/cdkd#4655: the provider's live read answers the same token.
+      createdResourceIdentity: 'created-token',
       attemptedProperties: {},
       ...extra,
     });
@@ -2145,7 +2317,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const kept = warned.find((w) => w.includes('were not deleted'));
       expect(kept).toContain('is kept with just them; the next successful deploy retries.');
       // A plain rollback has none of the deploy's ownership evidence.
-      expect(warned.some((w) => w.includes('cdkd rollback'))).toBe(false);
+      // go-to-k/cdkd#4633: only the journal-only `--drop-failed` is named.
+      expect(warned.filter((w) => w.includes('cdkd rollback'))).toEqual([
+        expect.stringMatching(/^Drop with: cdkd rollback \S+ --stack-region us-east-1 --drop-failed Orphan\b/),
+      ]);
     });
 
     it('a journal rewrite that fails keeps the whole journal, marks the deploy ids superseded, and names no rollback', async () => {
@@ -2167,7 +2342,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const kept = warned.find((w) => w.includes('were not deleted'));
       expect(kept).toContain('is kept; the next successful deploy retries.');
       expect(kept).not.toContain('with just them');
-      expect(warned.some((w) => w.includes('cdkd rollback'))).toBe(false);
+      // go-to-k/cdkd#4633: only the journal-only `--drop-failed` is named.
+      expect(warned.filter((w) => w.includes('cdkd rollback'))).toEqual([
+        expect.stringMatching(/^Drop with: cdkd rollback \S+ --stack-region us-east-1 --drop-failed Orphan\b/),
+      ]);
     });
 
     it('an unexpected failure acting on the journal keeps it and counts one entry', async () => {

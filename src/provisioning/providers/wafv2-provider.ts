@@ -39,6 +39,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { parseWebACLArn } from './wafv2-arn.js';
 
 /**
@@ -456,6 +457,7 @@ function collectSdkUnsupportedRuleKeys(value: unknown, found: Set<string>): void
  */
 export class WAFv2WebACLProvider implements ResourceProvider {
   private wafv2Client?: WAFV2Client;
+  private createClient?: WAFV2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('WAFv2WebACLProvider');
 
@@ -481,12 +483,39 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
   private getClient(): WAFV2Client {
     if (!this.wafv2Client) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.wafv2Client = new WAFV2Client({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new WAFV2Client({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.wafv2Client;
+  }
+
+  /**
+   * The client `CreateWebACL` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * `CreateWebACL` carries no idempotency token and a web ACL name is unique
+   * per scope and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with the web ACL the first send made, and that
+   * `WAFDuplicateItemException` surfaced from the engine's FIRST attempt as a
+   * name somebody else holds. Refused here, the 5xx reaches the deploy
+   * engine's retry, which marks the create as possibly replayed (`withRetry`,
+   * #3978). Nothing is adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): WAFV2Client {
+    this.getClient();
+    return this.createClient as WAFV2Client;
   }
 
   /**
@@ -522,7 +551,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       // Build tags
       const tags: Tag[] = desiredTags.map((tag) => ({ Key: tag.Key, Value: tag.Value }));
 
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateWebACLCommand({
           Name: name,
           Scope: scope,

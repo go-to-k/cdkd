@@ -124,15 +124,15 @@ Index of every area: [code-layout.md](code-layout.md).
   emptying state deletes `state.json`. `--revert-failed` replays the journaled
   `failedOperations` BEFORE its completed ops (a failed CREATE is deleted only
   when a state record matches, or as a provider-proven orphan (#1710) no later
-  entry or record owns; then per its `DeletionPolicy`); it is off by default
-  (remote state unknown), but `isJournaledOrphan` ops replay without it: no
-  path may drop their only record unacted (#4584; auto-rollback, destroy). Exit
-  codes: 0 clean, 2 partial (journal kept, re-run is idempotent), 1 hard error.
+  entry or record owns; then per its `DeletionPolicy`); it is off by default,
+  but `isJournaledOrphan` ops replay without it: no path may drop their only
+  record unacted (#4584). Exits 0 clean, 2 partial, 1 hard error.
   Each segment replays inside `withNestedRevertRun(segment.runId)`, so a nested
   row reverts from its child's journal with no templates, and a popped segment
-  drops the child segments of its run
-  ([#3754](https://github.com/go-to-k/cdkd/issues/3754)); run without a stack,
-  a child journal its parent's covers is not offered.
+  drops the child segments of its run (#3754); run without a stack, a child
+  journal its parent's covers is not offered.
+- **src/cli/commands/rollback-drop-failed.ts** - `--drop-failed` (#4633): the
+  one confirmed exception, drops one orphan entry; never AWS.
 - **src/cli/commands/refused-baseline-remedy.ts** - a refused import baseline's
   remedy text; see [state-schema.md](state-schema.md).
 - **src/cli/commands/gc.ts** - `cdkd gc` garbage-collects unreferenced objects /
