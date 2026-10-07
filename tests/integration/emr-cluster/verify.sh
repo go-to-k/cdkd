@@ -35,6 +35,14 @@
 #      LIVE cluster by `readCurrentState` (this is the assertion that actually
 #      exercises PR #1080 against real AWS — it must reflect the Phase 2
 #      UPDATE values, not the template's).
+#   3b. Fix-forward of a failed cluster CREATE (issue #4606): a `--no-rollback`
+#      deploy, run as a role denied `SetTerminationProtection`, adds
+#      `OrphanCluster` with a bootstrap action that cannot be fetched; the
+#      cluster terminates with errors, the create's own cleanup is denied, and
+#      the journal holds it as a proven orphan. The fix-forward redeploy under
+#      the same logical id succeeds, names the earlier cluster as already
+#      terminated (deleted from the journal), keeps the new one and exits 0; a
+#      plain deploy then removes the new one.
 #   4. Destroy + assert the cluster is TERMINATED (an EMR cluster bills per
 #      instance-hour, so a leftover is never acceptable) with no ACTIVE
 #      cluster carrying the fixture tag, and the cdkd state file is removed.
@@ -108,6 +116,13 @@ SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
 # cleanup on every exit path.
 PHASE2_LOG=""
 PHASE2B_LOG=""
+# Phase 3b (issue #4606): the rollback journal, the deploy log the phase greps,
+# and the role its injection deploy runs as: this run's own, deleted by name;
+# the stale sweep finds any run's by the literal prefix.
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
+FF_LOG=""
+DENY_ROLE="cdkd-emr-ff-deny-$(date +%s)-$$"
+DENY_POLICY_NAME="cdkd-emr-ff-deny"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -214,11 +229,52 @@ wait_cluster_terminated() {
   return 1
 }
 
+# Delete one Phase 3b deny role by name. Idempotent and soft-failing.
+delete_deny_role() { # usage: delete_deny_role <role-name>
+  (
+    # Best-effort, in a subshell: the caller's errexit is untouched.
+    set +eu
+    aws iam delete-role-policy --role-name "$1" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+    if aws iam delete-role --role-name "$1" >/dev/null 2>&1; then
+      echo "    deleted deny role $1"
+    elif aws iam get-role --role-name "$1" >/dev/null 2>&1; then
+      # Still there (a throttle, a failed delete): say so. A role that never
+      # existed (the pre-run cleanup) stays silent.
+      echo "    WARN: could not delete role $1; delete it by hand" >&2
+    fi
+  )
+}
+
+# Delete Phase 3b deny roles an earlier run left behind (a SIGKILL skips the
+# trap): only roles with the literal prefix, carrying the fixture's tag, and
+# created more than 2 hours ago -- their trust policy has expired by then
+# (`DateLessThan`), so a concurrent run's live role is never one of them.
+sweep_stale_deny_roles() {
+  (
+    set +eu
+    cutoff="$(node -e 'process.stdout.write(new Date(Date.now()-2*3600e3).toISOString().slice(0,19))')"
+    aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, 'cdkd-emr-ff-deny-')].[RoleName,CreateDate]" \
+      --output text 2>/dev/null | while read -r r created; do
+      [ -z "${r}" ] || [ "${r}" = "None" ] && continue
+      # ISO-8601 UTC sorts lexically; compare to the second.
+      [[ "${created:0:19}" < "${cutoff}" ]] || continue
+      tagged="$(aws iam list-role-tags --role-name "${r}" \
+        --query "Tags[?Key=='cdkd-integ' && Value=='emr-cluster'] | length(@)" --output text 2>/dev/null)"
+      [ "${tagged}" = "1" ] || continue
+      delete_deny_role "${r}"
+    done
+  )
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
+  [ -n "${FF_LOG:-}" ] && rm -f "${FF_LOG}"
+  # Only THIS run's role: another run's may be live.
+  delete_deny_role "${DENY_ROLE}"
   # ORDER MATTERS — the tag-scoped cluster sweep MUST run before
   # `state destroy`. The sweep finds the cluster by NAME + TAG, so it works
   # whether or not the cluster is still tracked in cdkd state; `state destroy`
@@ -314,8 +370,8 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
 
-  # state.json is NOT safe to drop blindly. There is no IAM-role sweep in this
-  # cleanup, so if `state destroy` failed partway the state file is the only
+  # state.json is NOT safe to drop blindly. Nothing in this cleanup sweeps the
+  # fixture's own IAM roles, so if `state destroy` failed partway the state file is the only
   # record of what actually leaked — deleting it destroys the evidence and
   # leaves orphans nothing points at. Keep it whenever the teardown was not
   # confirmed clean.
@@ -365,6 +421,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+sweep_stale_deny_roles
 
 state_json() {
   node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -897,6 +954,221 @@ echo "      discriminating: StepConcurrencyLevel=5 (tmpl 1), env=changed (tmpl t
 echo "                      dropme absent (tmpl present), VisibleToAllUsers=true (tmpl absent)"
 echo "      shape:          ReleaseLabel=emr-7.9.0, MasterInstanceGroup.InstanceType=m5.xlarge"
 
+# --- Phase 3b: the fix-forward of a failed cluster CREATE (issue #4606) ---
+# A `--no-rollback` deploy whose CREATE fails after AWS made the resource
+# journals it as a proven orphan. The fix-forward redeploy keeps the logical id
+# with a valid shape, so the CREATE succeeds and a record under that id holds a
+# NEW cluster. `EMRClusterProvider.isSameResource` proves the earlier one is
+# another cluster: the deploy settles it (already terminated, so named and
+# cleared), keeps the new one, exits 0 and drops the journal. Before #4606 it
+# warned, named the earlier one and exited 2.
+#
+# Every deploy here synths BASELINE (no CDKD_TEST_UPDATE), the mode Phase 3's
+# import recorded, so `Cluster` itself diffs NO_CHANGE throughout.
+
+# The journal's failed operation for a logical id (compact JSON, empty if none).
+journal_op() { # usage: journal_op <logical-id> <when>
+  local body
+  if ! body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"; then
+    echo "FAIL: no rollback journal $2" >&2
+    exit 1
+  fi
+  printf '%s' "${body}" | jq -c --arg id "$1" \
+    '[.segments[]?.failedOperations[]? | select(.logicalId == $id)] | last // empty'
+}
+
+# The journaled proven orphan's physical id for a logical id, or a FAIL.
+journaled_orphan_id() { # usage: journaled_orphan_id <logical-id> <when>
+  local op
+  op="$(journal_op "$1" "$2")"
+  if [ -z "${op}" ] || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ]; then
+    echo "FAIL: the journal does not carry $1 as a proven orphan $2 (op: ${op:-<none>})" >&2
+    exit 1
+  fi
+  printf '%s' "${op}" | jq -r '.physicalId // ""'
+}
+
+FF_LOG="$(mktemp)"
+
+echo "==> Phase 3b: a role that may not call SetTerminationProtection / TerminateJobFlows"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+CALLER_USERID="$(aws sts get-caller-identity --query UserId --output text)"
+# RunJobFlow passes both fixture roles; their names are the state records'
+# physical ids (CDK roles live at path `/`).
+PASS_ROLE_NAMES="$(state_query 'Object.values(st.resources).filter((r) => r.resourceType === "AWS::IAM::Role").map((r) => r.physicalId).join(" ")')"
+if [ -z "${ACCOUNT_ID}" ] || [ -z "${CALLER_USERID}" ] || [ "$(printf '%s\n' ${PASS_ROLE_NAMES} | grep -c .)" != "2" ]; then
+  echo "FAIL: precondition — account '${ACCOUNT_ID}', caller '${CALLER_USERID}' or the two fixture roles '${PASS_ROLE_NAMES}' are missing" >&2
+  exit 1
+fi
+# Assumable by THIS caller identity only, not by the whole account, and only
+# for 2 hours: a role a SIGKILL leaves behind (no trap) expires on its own.
+TRUST="$(node -e 'const until=new Date(Date.now()+2*3600e3).toISOString().replace(/\.\d{3}Z$/,"Z");process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]},DateLessThan:{"aws:CurrentTime":until}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
+# Scoped to what the injection deploy calls, never `*`: the role is assumable
+# by the caller for minutes, and an inline `Allow *` would hand it more than
+# the caller may have. The stack publishes no assets, so S3 is the state
+# bucket only. The Deny makes the create's cleanup fail.
+DENY_POLICY="$(node -e 'const [acct,bucket,...roles]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:*",Resource:[`arn:aws:s3:::${bucket}`,`arn:aws:s3:::${bucket}/*`]},{Effect:"Allow",Action:["elasticmapreduce:*","ec2:Describe*","iam:Get*","iam:List*","cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Allow",Action:"iam:PassRole",Resource:roles.map((r)=>`arn:aws:iam::${acct}:role/${r}`)},{Effect:"Deny",Action:["elasticmapreduce:SetTerminationProtection","elasticmapreduce:TerminateJobFlows"],Resource:"*"}]}))' "${ACCOUNT_ID}" "${STATE_BUCKET}" ${PASS_ROLE_NAMES})"
+aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
+  --tags Key=cdkd-integ,Value=emr-cluster >/dev/null
+aws iam put-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" \
+  --policy-document "${DENY_POLICY}"
+# A new role is assumable only once IAM has propagated it.
+DENY_CREDS=""
+for _ in $(seq 1 24); do
+  if DENY_CREDS="$(aws sts assume-role --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${DENY_ROLE}" \
+    --role-session-name cdkd-emr-ff \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>/dev/null)"; then
+    break
+  fi
+  DENY_CREDS=""
+  sleep 5
+done
+if [ -z "${DENY_CREDS}" ]; then
+  echo "FAIL: precondition — could not assume ${DENY_ROLE} within 2 minutes" >&2
+  exit 1
+fi
+# Process substitution, not a here-string: bash 3.2 backs a here-string with a
+# temp file, and these are live credentials.
+read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
+unset DENY_CREDS
+# Run a command as the deny role, in a subshell that EXPORTS the keys: on an
+# `env` argv they would be readable in `ps`. A profile in the environment would
+# win over the key variables in the SDK's credential chain, so it is dropped.
+as_deny_role() {
+  (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE
+    export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
+    "$@"
+  )
+}
+# Fresh role credentials can be refused for a while: poll until STS takes them.
+DENY_ARN=""
+for _ in $(seq 1 24); do
+  if DENY_ARN="$(as_deny_role aws sts get-caller-identity --query Arn --output text 2>/dev/null)"; then
+    break
+  fi
+  DENY_ARN=""
+  sleep 5
+done
+case "${DENY_ARN}" in
+  *":assumed-role/${DENY_ROLE}/"*) ;;
+  *)
+    echo "FAIL: precondition — the injection deploy would run as '${DENY_ARN:-<STS never accepted the role>}', not ${DENY_ROLE}" >&2
+    exit 1
+    ;;
+esac
+# STS needs no permission: poll a call only the inline policy grants, so a
+# policy not yet in effect fails here rather than as a missing journal below.
+DENY_POLICY_LIVE=false
+for _ in $(seq 1 24); do
+  if as_deny_role aws s3api head-bucket --bucket "${STATE_BUCKET}" >/dev/null 2>&1; then
+    DENY_POLICY_LIVE=true
+    break
+  fi
+  sleep 5
+done
+if [ "${DENY_POLICY_LIVE}" != "true" ]; then
+  echo "FAIL: precondition — ${DENY_ROLE}'s inline policy never let it read ${STATE_BUCKET} within 2 minutes" >&2
+  exit 1
+fi
+
+echo "==> Phase 3b: --no-rollback deploy whose OrphanCluster bootstrap fails (as ${DENY_ROLE}; ~10 min)"
+set +e
+as_deny_role env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL INJECT_CLUSTER_ORPHAN=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback >"${FF_LOG}" 2>&1
+CLUSTER_FAIL_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+delete_deny_role "${DENY_ROLE}"
+if [ "${CLUSTER_FAIL_RC}" -eq 0 ]; then
+  echo "FAIL: the OrphanCluster injection deploy unexpectedly SUCCEEDED (its bootstrap action names a missing script)" >&2
+  exit 1
+fi
+ORPHAN_RECORD="$(state_query 'st.resources["OrphanCluster"]?.physicalId')" || {
+  echo "FAIL: could not read the state record after the injection deploy" >&2
+  exit 1
+}
+if [ -n "${ORPHAN_RECORD}" ]; then
+  echo "FAIL: state records OrphanCluster after a CREATE that threw (expected no record)" >&2
+  exit 1
+fi
+ORPHAN_CID="$(journaled_orphan_id OrphanCluster 'after the --no-rollback deploy of Phase 3b')"
+case "${ORPHAN_CID}" in j-*) ;; *) echo "FAIL: journaled OrphanCluster id is not a cluster id: '${ORPHAN_CID}'" >&2; exit 1;; esac
+# Pinned to the injection's mechanism: the bootstrap failure terminated it, and
+# its create's cleanup then failed (denied to this role; EMR may also refuse
+# the calls on a terminated cluster), which is what journaled it.
+ORPHAN_STATE="$(strict_cluster_state "${ORPHAN_CID}")" || { echo "FAIL: could not read the journaled cluster ${ORPHAN_CID} (DescribeCluster failed)" >&2; exit 1; }
+if [ "${ORPHAN_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
+  echo "FAIL: the journaled ${ORPHAN_CID} is '${ORPHAN_STATE}' before the fix-forward, expected TERMINATED_WITH_ERRORS (the missing-bootstrap injection did not fire as designed)" >&2
+  exit 1
+fi
+if ! grep -q "Failed to roll back partially-created EMR Cluster ${ORPHAN_CID}" "${FF_LOG}"; then
+  echo "FAIL: the injection deploy did not report its failed cleanup of ${ORPHAN_CID} (output above)" >&2
+  exit 1
+fi
+echo "    OK: OrphanCluster ${ORPHAN_CID} (${ORPHAN_STATE}) is journaled as a proven orphan, no state record"
+
+echo "==> Phase 3b: the fix-forward deploy (same logical id, no bootstrap action; ~10 min)"
+set +e
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL INJECT_CLUSTER_ORPHAN=true CLUSTER_FIX_FORWARD=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FF_LOG}" 2>&1
+CLUSTER_FF_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+if [ "${CLUSTER_FF_RC}" -ne 0 ]; then
+  echo "FAIL: the OrphanCluster fix-forward deploy exited ${CLUSTER_FF_RC} (expected 0: the earlier cluster is proven another one and settled -- output above)" >&2
+  echo "      (before go-to-k/cdkd#4606 it exited 2 and warned about the earlier OrphanCluster)" >&2
+  exit 1
+fi
+if ! grep -q "deleting partially-created OrphanCluster" "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanCluster (output above)" >&2
+  exit 1
+fi
+if grep -q "Skipping failed CREATE of OrphanCluster" "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy still warned about the earlier OrphanCluster instead of deleting it (output above)" >&2
+  exit 1
+fi
+# Sentinel for that negative grep, independent of its wording: the skip warning
+# names the earlier cluster id and tells you to act on it by hand.
+# One process: under pipefail, `grep | grep -q` fails open on SIGPIPE.
+if awk -v id="${ORPHAN_CID}" 'index($0, id) && tolower($0) ~ /skipping|manual/ { f = 1 } END { exit !f }' "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy printed a skip / manual-action line naming ${ORPHAN_CID} (output above) -- reworded skip warning?" >&2
+  exit 1
+fi
+if ! grep -q "EMR cluster ${ORPHAN_CID} (OrphanCluster), which a failed deploy created, is already TERMINATED_WITH_ERRORS" "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy did not name ${ORPHAN_CID} as already terminated (output above)" >&2
+  exit 1
+fi
+assert_gone "rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY} still present after the OrphanCluster fix-forward deploy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+FF_CID="$(state_query 'st.resources["OrphanCluster"]?.physicalId')"
+case "${FF_CID}" in j-*) ;; *) echo "FAIL: state records OrphanCluster as '${FF_CID}' after the fix-forward (expected a cluster id)" >&2; exit 1;; esac
+if [ "${FF_CID}" = "${ORPHAN_CID}" ]; then
+  echo "FAIL: state records OrphanCluster as the earlier attempt's ${ORPHAN_CID}" >&2
+  exit 1
+fi
+# The new cluster is the record's: settling the earlier one must not touch it.
+FF_STATE="$(strict_cluster_state "${FF_CID}")" || { echo "FAIL: could not read the fix-forward cluster ${FF_CID} (DescribeCluster failed)" >&2; exit 1; }
+if [ "${FF_STATE}" != "WAITING" ] && [ "${FF_STATE}" != "RUNNING" ]; then
+  echo "FAIL: the fix-forward cluster ${FF_CID} is '${FF_STATE}' (expected WAITING/RUNNING -- the settle must not terminate the record's cluster)" >&2
+  exit 1
+fi
+echo "    OK: the fix-forward settled ${ORPHAN_CID}, kept ${FF_CID} (${FF_STATE}), exited 0 and dropped the journal"
+
+# The fix-forward cluster is a normal state resource: the next plain deploy
+# removes it from the template and terminates it.
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+FF_FINAL_STATE="$(strict_cluster_state "${FF_CID}")" || { echo "FAIL: could not read the fix-forward cluster ${FF_CID} (DescribeCluster failed)" >&2; exit 1; }
+if [ "${FF_FINAL_STATE}" != "TERMINATED" ] && [ "${FF_FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
+  echo "FAIL: the fix-forward cluster ${FF_CID} is '${FF_FINAL_STATE}' after the deploy that removed it" >&2
+  exit 1
+fi
+rm -f "${FF_LOG}"
+echo "    OK: Phase 3b passed"
+
 # --- Phase 4: destroy ----------------------------------------------------
 # Runs THROUGH the state record Phase 3 re-adopted — a broken import would
 # surface here as a cluster that never terminates.
@@ -959,4 +1231,4 @@ if ! printf '%s' "${HEAD_ERR}" | grep -qiE '404|Not Found'; then
 fi
 echo "    cdkd state removed (confirmed via a 404, not an ambiguous error)"
 
-echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + destroy (TERMINATED) all passed"
+echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + destroy (TERMINATED) all passed"
