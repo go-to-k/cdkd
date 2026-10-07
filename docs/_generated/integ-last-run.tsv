@@ -245,7 +245,6 @@ nested-stack	2026-10-07T06:44:03Z	PASS	95	verify.sh	PR #4645 (#1889 terminal res
 nested-stack-3level	2026-10-06T09:20:08Z	PASS	516	verify.sh	rc ok, orph clean (#4602 PR #4620)
 nested-stack-deep	2026-10-05T18:26:04Z	PASS	100	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
-nested-stack-rollback	2026-10-07T06:44:03Z	PASS	105	verify.sh	PR #4645 (#1889 terminal resolver throws + nested child failure non-retryable); rc 0, destroy clean, orph clean
 nested-stack-rollback	2026-10-07T06:58:06Z	PASS	110	verify.sh	rc ok, orph clean (#4628 PR #4638)
 nested-stack-secret	2026-10-07T05:04:27Z	PASS	250	verify.sh	PR #4643 (#2349 FallthroughPair arm); rc 0, destroy clean, 0 surviving state versions
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
