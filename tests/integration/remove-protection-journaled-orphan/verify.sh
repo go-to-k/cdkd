@@ -73,6 +73,9 @@ fi
 
 # Set only from what THIS run's AWS calls returned; the trap acts on nothing else.
 ORPHAN_LB_ARN=""
+# What the journal records for OrphanLb: the trap deletes it too, so cleanup
+# does not hang on the warning cdkd printed (the code under test) alone.
+JOURNALED_ARN=""
 ORPHAN_SUBNETS=""
 ORPHAN_SECURITY_GROUP=""
 RUN_LOG=""
@@ -100,17 +103,19 @@ cleanup() {
   echo ""
   echo "==> Cleanup (errors tolerated)"
   rm -f "${RUN_LOG:-}"
-  # Only the ARN THIS run captured, never one found by name: clear its
-  # protection and delete it BEFORE the network stack, whose subnets and
+  # Only the ARNs THIS run captured, never one found by name: clear the
+  # protection and delete each BEFORE the network stack, whose subnets and
   # security group it holds.
-  case "${ORPHAN_LB_ARN:-}" in
-    arn:*:loadbalancer/app/*)
-      aws elbv2 modify-load-balancer-attributes --load-balancer-arn "${ORPHAN_LB_ARN}" \
-        --attributes Key=deletion_protection.enabled,Value=false --region "${REGION}" >/dev/null 2>&1
-      aws elbv2 delete-load-balancer --load-balancer-arn "${ORPHAN_LB_ARN}" --region "${REGION}" >/dev/null 2>&1
-      aws elbv2 wait load-balancers-deleted --load-balancer-arns "${ORPHAN_LB_ARN}" --region "${REGION}" >/dev/null 2>&1
-      ;;
-  esac
+  for arn in "${ORPHAN_LB_ARN:-}" "${JOURNALED_ARN:-}"; do
+    case "${arn}" in
+      arn:*:loadbalancer/app/*)
+        aws elbv2 modify-load-balancer-attributes --load-balancer-arn "${arn}" \
+          --attributes Key=deletion_protection.enabled,Value=false --region "${REGION}" >/dev/null 2>&1
+        aws elbv2 delete-load-balancer --load-balancer-arn "${arn}" --region "${REGION}" >/dev/null 2>&1
+        aws elbv2 wait load-balancers-deleted --load-balancer-arns "${arn}" --region "${REGION}" >/dev/null 2>&1
+        ;;
+    esac
+  done
   if [ "${DEPLOYED_ORPHAN:-}" = "1" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
       --remove-protection --yes >/dev/null 2>&1
@@ -190,7 +195,7 @@ fi
 # orphan and exercises nothing below.
 if ! grep -q "Failed to clean up partially-created LoadBalancer OrphanLb" "${RUN_LOG}"; then
   # A reworded warning still journals the ARN: hand that to the trap.
-  ORPHAN_LB_ARN="$( (journaled_orphan_op || true) | jq -r '.physicalId // ""' 2>/dev/null || true)"
+  JOURNALED_ARN="$( (journaled_orphan_op || true) | jq -r '.physicalId // ""' 2>/dev/null || true)"
   echo "FAIL: the OrphanLb deploy failed, but not by a cleanup that could not delete the load balancer (output above)" >&2
   exit 1
 fi
@@ -198,12 +203,13 @@ if ! ORPHAN_OP="$(journaled_orphan_op)"; then
   echo "FAIL: no rollback journal after the --no-rollback deploy" >&2
   exit 1
 fi
+# Before any FAIL below: the trap deletes what the journal names too.
+JOURNALED_ARN="$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId // ""' 2>/dev/null || true)"
 if [ -z "${ORPHAN_OP}" ] || [ "$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ]; then
   echo "FAIL: the journal does not carry OrphanLb as a proven orphan (op: ${ORPHAN_OP:-<none>})" >&2
   exit 1
 fi
-JOURNALED_ARN="$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId // ""')"
-if [ "${JOURNALED_ARN}" != "${ORPHAN_LB_ARN}" ]; then
+if [ -z "${ORPHAN_LB_ARN}" ] || [ "${JOURNALED_ARN}" != "${ORPHAN_LB_ARN}" ]; then
   echo "FAIL: the journal holds OrphanLb as '${JOURNALED_ARN}', not the '${ORPHAN_LB_ARN}' the cleanup warning named" >&2
   exit 1
 fi

@@ -10,6 +10,11 @@ import { isTerminalDeleteFailure } from '../../../src/provisioning/providers/del
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { StackState } from '../../../src/types/state.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -133,6 +138,71 @@ describe('failed-CREATE orphan delete under --remove-protection (go-to-k/cdkd#46
     expect(del).toHaveBeenCalledOnce();
     expect(result.failures).toBe(1);
     expect(result.remainingFailedOps).toEqual([op]);
+  });
+});
+
+describe('an orphan another stack holds keeps its protection (go-to-k/cdkd#4678)', () => {
+  function heldCtx(del: ReturnType<typeof vi.fn>, holding: unknown) {
+    const warn = vi.fn();
+    const foreignHolder = vi.fn(async () => holding);
+    const ctx = ctxWith(del, {
+      removeProtection: true,
+      foreignHolder: foreignHolder as unknown as RollbackExecutorContext['foreignHolder'],
+      logger: { ...logger, warn } as unknown as RollbackExecutorContext['logger'],
+    });
+    const warned = (): string => warn.mock.calls.map((c) => String(c[0])).join('\n');
+    return { ctx, warned, foreignHolder };
+  }
+
+  // E.g. a later `cdkd import` adopted the instance into stack B: destroying A
+  // must not strip B's protection.
+  it('withholds the flag, and warns, when another stack holds it', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned, foreignHolder } = heldCtx(del, {
+      kind: 'held',
+      by: 'the state record of stack B (us-east-1)',
+    });
+    await replayFailedOperations([orphan()], {}, 'Stack', ctx, {});
+    expect(foreignHolder).toHaveBeenCalledWith(orphan().resourceType, orphan().physicalId);
+    expect(del).toHaveBeenCalledOnce();
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(seen[0]!.throttleTerminal).toBe(false);
+    expect(warned()).toContain('leaving deletion protection on partially-created OrphanLb');
+    expect(warned()).toContain('the state record of stack B (us-east-1) holds it now');
+  });
+
+  it('withholds the flag, and warns, when a record cannot be read', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = heldCtx(del, { kind: 'unreadable', what: 'the state record of stack C' });
+    await replayFailedOperations([orphan()], {}, 'Stack', ctx, {});
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(warned()).toContain('the state record of stack C leaves open whether');
+  });
+
+  it('withholds the flag when the scan itself throws', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, foreignHolder } = heldCtx(del, undefined);
+    foreignHolder.mockRejectedValue(new Error('boom'));
+    await replayFailedOperations([orphan()], {}, 'Stack', ctx, {});
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+  });
+
+  it('passes the flag when no other stack holds it', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = heldCtx(del, undefined);
+    await replayFailedOperations([orphan()], {}, 'Stack', ctx, {});
+    expect(seen[0]!.context['removeProtection']).toBe(true);
+    expect(warned()).not.toContain('leaving deletion protection');
+  });
+
+  // Nothing to keep on: withheld silently.
+  it('withholds it without a warning when the attempt turned no protection on', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = heldCtx(del, { kind: 'held', by: 'stack B' });
+    const op = { ...orphan(), attemptedProperties: {} };
+    await replayFailedOperations([op], {}, 'Stack', ctx, {});
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(warned()).not.toContain('leaving deletion protection');
   });
 });
 
@@ -269,6 +339,25 @@ describe('a name-keyed orphan gets the flag only when its identity is proven (go
     expect(warned()).not.toContain('leaving deletion protection');
   });
 
+  it('withholds it without a warning when the attempt turned protection off', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = tableCtx(del, 'tok-2');
+    await replayFailedOperations(
+      [
+        tableOrphan({
+          createdResourceIdentity: 'tok-1',
+          attemptedProperties: { TableName: 'orders', DeletionProtectionEnabled: false },
+        }),
+      ],
+      {},
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(warned()).not.toContain('leaving deletion protection');
+  });
+
   it('withholds it silently when the resource is gone', async () => {
     const { del, seen } = recordingDelete();
     const { ctx, warned } = tableCtx(del, RESOURCE_NOT_FOUND);
@@ -284,9 +373,9 @@ describe('a name-keyed orphan gets the flag only when its identity is proven (go
   });
 });
 
-describe("a deploy's own rollback context never strips protection (go-to-k/cdkd#4678)", () => {
-  // The automatic rollback, the success settle and a nested child's rollback
-  // all take their context from this one builder.
+describe("no context but the destroy sweep's strips protection (go-to-k/cdkd#4678)", () => {
+  // A deploy's automatic rollback and its success settle (its own and a nested
+  // child's) take their context from `rollbackExecutorContext`.
   it('rollbackExecutorContext carries no removeProtection', () => {
     const engine = {
       producerRegionEvidence: () => ({ regions: [], complete: true }),
@@ -308,5 +397,18 @@ describe("a deploy's own rollback context never strips protection (go-to-k/cdkd#
     const ctx = rollbackExecutorContext.call(engine, state, 'Stack');
     expect(ctx.region).toBe('us-east-1');
     expect(ctx).not.toHaveProperty('removeProtection');
+  });
+
+  // The other two constructors build their own literal: a nested child's
+  // journal revert (`nested-child-journal.ts`) and `cdkd rollback`
+  // (`cli/commands/rollback.ts`). Neither may name the field at all.
+  it.each([
+    'src/deployment/nested-child-journal.ts',
+    'src/cli/commands/rollback.ts',
+    'src/deployment/deploy-engine/rollback.ts',
+  ])('%s builds a RollbackExecutorContext with no removeProtection', (file) => {
+    const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+    expect(text).toContain('RollbackExecutorContext');
+    expect(text).not.toContain('removeProtection');
   });
 });

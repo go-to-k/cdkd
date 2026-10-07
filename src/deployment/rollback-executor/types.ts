@@ -1,3 +1,4 @@
+import type { ForeignHolding } from './journaled-orphans.js';
 import type { DeploymentEvent } from '../../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
@@ -224,6 +225,15 @@ export interface RollbackExecutorContext {
    * strip a protection the user did not ask to remove.
    */
   removeProtection?: boolean | undefined;
+  /**
+   * go-to-k/cdkd#4678: who else holds a journaled orphan, asked before
+   * `removeProtection` strips one (`makeForeignHolderScan`, scoped to this
+   * stack). Supplied by the destroy sweep only when `removeProtection` is set;
+   * a `held` or `unreadable` answer keeps the protection on.
+   */
+  foreignHolder?:
+    | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
+    | undefined;
   /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,

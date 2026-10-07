@@ -129,15 +129,18 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
     });
   });
 
+  const mockListStacks = vi.fn();
+  const mockGetState = vi.fn();
+
   function makeCtx(extra: { removeProtection?: boolean; skipConfirmation?: boolean } = {}) {
     return {
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: mockDeleteState,
-        getState: vi.fn().mockResolvedValue(null),
+        getState: mockGetState,
         loadRollbackJournal: mockLoadJournal,
         dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(0),
-        listStacks: vi.fn().mockResolvedValue([]),
+        listStacks: mockListStacks,
       } as unknown as S3StateBackend,
       lockManager: {
         acquireLock: vi.fn().mockResolvedValue(true),
@@ -160,6 +163,8 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
     mockDeleteState.mockReset().mockResolvedValue(undefined);
     mockLoadJournal.mockReset().mockResolvedValue(journalOf([structuredClone(orphanOp)]));
     readlineQuestion.mockReset();
+    mockListStacks.mockReset().mockResolvedValue([]);
+    mockGetState.mockReset().mockResolvedValue(null);
     infoSpy.mockReset();
     warnSpy.mockReset();
   });
@@ -178,8 +183,40 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
     expect(mockDeleteState).toHaveBeenCalledOnce();
   });
 
+  // E.g. a later `cdkd import` adopted the load balancer into stack B.
+  it("keeps the protection of an orphan another stack's record holds", async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'B', region: REGION }]);
+    mockGetState.mockImplementation(async (name: string) =>
+      name === 'B'
+        ? {
+            state: {
+              ...makeState({
+                Adopted: {
+                  physicalId: LB_ARN,
+                  resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+                  properties: {},
+                  attributes: {},
+                  dependencies: [],
+                },
+              }),
+              stackName: 'B',
+            },
+          }
+        : null
+    );
+    await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx({ removeProtection: true }));
+    expect(seen.has('OrphanLb')).toBe(true);
+    expect(seen.get('OrphanLb')?.context).not.toHaveProperty('removeProtection');
+    expect(seen.get('R')?.context['removeProtection']).toBe(true);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'the state record of stack B'
+    );
+  });
+
   it('strips nothing without the flag', async () => {
     await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(seen.has('OrphanLb')).toBe(true);
+    expect(seen.has('R')).toBe(true);
     expect(seen.get('OrphanLb')?.context).not.toHaveProperty('removeProtection');
     expect(seen.get('R')?.context).not.toHaveProperty('removeProtection');
   });

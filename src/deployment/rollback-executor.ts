@@ -331,37 +331,82 @@ import {
 } from './rollback-executor/orphan-identity.js';
 import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 import { removeProtectionTypes } from '../provisioning/remove-protection-types.js';
+import {
+  PROTECTION_PROPERTY_BY_TYPE,
+  isProtectionValueActive,
+  perType,
+  readProtection,
+} from '../provisioning/protection-flags.js';
+import type { ForeignHolding } from './rollback-executor/journaled-orphans.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
 /**
  * go-to-k/cdkd#4678: whether `--remove-protection` may strip a failed
  * CREATE's resource. A state-recorded op is the record's own; a journaled
  * orphan must be the resource its CREATE made — a type whose id is never
- * reused, or a live `resourceIdentity` equal to the journaled one (#4655).
- * Otherwise warned and `false`: the delete runs without the flag.
+ * reused, or a live `resourceIdentity` equal to the journaled one (#4655) —
+ * and no other stack's record may hold it now (a later `cdkd import`, say).
+ * Otherwise `false`, warned when its attempted properties turned protection
+ * on: the delete runs without the flag, so AWS's refusal stays the guard.
  */
 async function protectionRemovalProven(
   op: FailedOperation,
   ctx: RollbackExecutorContext
 ): Promise<boolean> {
   if (op.physicalIdRecoveredFromError !== true) return true;
-  if (!orphanDeleteNeedsIdentity(op.resourceType)) return true;
-  // The flag strips nothing on a type with no protection: nothing to warn about.
-  if (!removeProtectionTypes().includes(op.resourceType)) return false;
-  const journaled = op.createdResourceIdentity;
-  if (typeof journaled === 'string' && journaled !== '' && op.physicalId) {
-    const live = await readResourceIdentity(
-      ctx.providerRegistry,
-      { resourceType: op.resourceType, physicalId: op.physicalId, provisionedBy: op.provisionedBy },
-      ctx.region
-    );
-    if (live === journaled) return true;
-    // Gone: the delete reads not-found as done, with nothing to strip.
-    if (live === RESOURCE_NOT_FOUND) return false;
+  let refusal: string | undefined;
+  if (orphanDeleteNeedsIdentity(op.resourceType)) {
+    // The flag strips nothing on a type with no protection: nothing to warn about.
+    if (!removeProtectionTypes().includes(op.resourceType)) return false;
+    const journaled = op.createdResourceIdentity;
+    let live: Awaited<ReturnType<typeof readResourceIdentity>>;
+    if (typeof journaled === 'string' && journaled !== '' && op.physicalId) {
+      // The identity is READ here and the delete runs after it, unconditioned
+      // on it: a name freed and reused between the two is not caught. A
+      // protection type that gains `resourceIdentity` must accept or close
+      // that window (the success settle makes the same trade, #4655).
+      live = await readResourceIdentity(
+        ctx.providerRegistry,
+        {
+          resourceType: op.resourceType,
+          physicalId: op.physicalId,
+          provisionedBy: op.provisionedBy,
+        },
+        ctx.region
+      );
+      // Gone: the delete reads not-found as done, with nothing to strip.
+      if (live === RESOURCE_NOT_FOUND) return false;
+    }
+    if (live === undefined || live !== journaled) {
+      refusal =
+        'it is not proven to be the one the failed deploy created, and its name could now belong to another resource';
+    }
   }
-  ctx.logger.warn(
-    safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection applies only to a resource proven to be the one the failed deploy created, and its name could now belong to another resource; if it is protected, its delete is refused and the journal keeps it`
-  );
+  if (refusal === undefined && ctx.foreignHolder !== undefined && op.physicalId) {
+    let holding: ForeignHolding;
+    try {
+      holding = await ctx.foreignHolder(op.resourceType, op.physicalId);
+    } catch {
+      holding = { kind: 'unreadable', what: "the other stacks' state records (the scan failed)" };
+    }
+    if (holding?.kind === 'held') refusal = `${holding.by} holds it now`;
+    else if (holding?.kind === 'unreadable') {
+      refusal = `${holding.what} leaves open whether another stack holds it now`;
+    }
+  }
+  if (refusal === undefined) return true;
+  const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
+  if (
+    locator &&
+    isProtectionValueActive(
+      op.resourceType,
+      readProtection(op.attemptedProperties, locator, ctx.region)
+    )
+  ) {
+    ctx.logger.warn(
+      safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection does not apply: ${refusal}. Its delete is refused while it is protected, and the journal keeps it`
+    );
+  }
   return false;
 }
 

@@ -96,6 +96,7 @@ import {
   isHandledOrphan,
   journaledOrphanLines,
   loadJournaledOrphans,
+  makeForeignHolderScan,
   sameJournaledOrphans,
   type JournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
@@ -1495,8 +1496,15 @@ export async function runDestroyForStack(
           }),
           finalSnapshotClients: destroyAwsClients ?? ctx.baseAwsClients,
           skipFinalSnapshot: ctx.skipFinalSnapshot === true,
-          // go-to-k/cdkd#4678: as the state-tracked deletes below take it.
-          ...(ctx.removeProtection === true && { removeProtection: true }),
+          // go-to-k/cdkd#4678: as the state-tracked deletes below take it,
+          // never on an orphan another stack's record holds now.
+          ...(ctx.removeProtection === true && {
+            removeProtection: true,
+            foreignHolder: makeForeignHolderScan(ctx.stateBackend)({
+              stackName,
+              region: regionForState,
+            }),
+          }),
           importedProducerRegions: producerRegionsFromState(state),
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
