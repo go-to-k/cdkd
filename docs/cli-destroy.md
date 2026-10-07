@@ -101,7 +101,9 @@ reference dangling.
 
 Under `--remove-protection` the per-stack prompt names the protected resources
 (`About to destroy N resources from stack X, REMOVING DELETION PROTECTION on
-K of them. Continue? (y/N)`) and its default flips from `Y/n` to `y/N`. A
+K of them. Continue? (y/N)`; a stack whose rollback journal records resources
+adds `and J recorded only in its rollback journal` after `N resources`, and K
+counts those too) and its default flips from `Y/n` to `y/N`. A
 stack name that is not a plain identifier is shown JSON-quoted with its control
 characters removed.
 
