@@ -119,13 +119,19 @@ journaled_orphan_op() {
 }
 
 # Delete this run's own prefix (its events, exports index, any leftover
-# object), only once neither stack's record is left: a record that survived a
-# failed teardown is the one way back to its resources. Never under `cdkd/`.
+# object), only once neither stack's record NOR the rollback journal is left: a
+# record or journal that survived a failed teardown is the one way back to its
+# resources. Only the default per-run shape is swept (an override naming
+# another run's prefix, or one carrying a `/`, is refused). Never under `cdkd/`.
 sweep_run_prefix() {
   case "${STATE_PREFIX:-}" in
-    cdkd-rpjo-?*)
+    */*)
+      echo "WARN: teardown sweep refused: STATE_PREFIX '${STATE_PREFIX}' contains '/'" >&2
+      ;;
+    cdkd-rpjo-[0-9]*-[0-9]*)
       if ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ) &&
-        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}" ); then
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}" ) &&
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" ); then
         aws s3 rm "s3://${STATE_BUCKET}/${STATE_PREFIX}/" --recursive >/dev/null 2>&1
       else
         echo "WARN: teardown incomplete; records kept under s3://${STATE_BUCKET:-}/${STATE_PREFIX}/ (pass --state-prefix ${STATE_PREFIX} to cdkd state destroy)" >&2
@@ -156,8 +162,10 @@ cleanup() {
         ;;
     esac
   done
-  # A record the run already destroyed is not there to destroy again.
-  if [ "${DEPLOYED_ORPHAN:-}" = "1" ] && ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ); then
+  # A record the run already destroyed is not there to destroy again; a journal
+  # left without its state record still needs the destroy's journal sweep.
+  if [ "${DEPLOYED_ORPHAN:-}" = "1" ] && { ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ) ||
+    ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" ); }; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" \
       --remove-protection --yes >/dev/null 2>&1
   fi
