@@ -131,6 +131,7 @@ echo "==> Phase 1: deploy (queue + single-metric anomaly detector)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --strict-getatt \
   --yes
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
@@ -155,6 +156,14 @@ if [ -z "${PHYS_ID_1}" ] || [ "${OUTPUT_ID}" != "${PHYS_ID_1}" ]; then
   exit 1
 fi
 echo "    OK: GetAtt Id output resolves to the physical id (${PHYS_ID_1})"
+# The current schema renamed the attribute to AnomalyDetectorId (#4668): it must
+# resolve from the cached attributes too, to the same value.
+OUTPUT_ADID=$(printf '%s' "${STATE}" | python3 -c "import json,sys; s=json.load(sys.stdin); print(s['outputs'].get('AnomalyDetectorId',''))")
+if [ "${OUTPUT_ADID}" != "${PHYS_ID_1}" ]; then
+  echo "FAIL: GetAtt AnomalyDetectorId output (${OUTPUT_ADID}) does not match the detector physical id (${PHYS_ID_1})" >&2
+  exit 1
+fi
+echo "    OK: GetAtt AnomalyDetectorId output resolves to the physical id (${PHYS_ID_1})"
 
 # --- Phase 2: update (add Configuration — the only mutable property) -------
 # NOTE: the Describe output field is `MetricTimezone` (lowercase z, the SDK /
@@ -165,6 +174,7 @@ echo "==> Phase 2: update (add Configuration: MetricTimeZone + ExcludedTimeRange
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --strict-getatt \
   --yes
 
 CONFIG_SET=$(aws cloudwatch describe-anomaly-detectors \

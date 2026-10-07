@@ -52,5 +52,9 @@ export class CloudWatchAnomalyDetectorStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DetectorId', {
       value: detector.getAtt('Id').toString(),
     });
+    // The current registry schema's name for the same attribute (#4668).
+    new cdk.CfnOutput(this, 'AnomalyDetectorId', {
+      value: detector.getAtt('AnomalyDetectorId').toString(),
+    });
   }
 }

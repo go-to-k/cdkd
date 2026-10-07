@@ -389,7 +389,9 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
         region: 'us-east-1',
         knownPhysicalId: 'NS:M:Sum',
       });
-      expect(result).toEqual({ physicalId: 'NS:M:Sum', attributes: { AnomalyDetectorId: 'NS:M:Sum', Id: 'NS:M:Sum' },
+      expect(result).toEqual({
+        physicalId: 'NS:M:Sum',
+        attributes: { AnomalyDetectorId: 'NS:M:Sum', Id: 'NS:M:Sum' },
       });
       expect(mockSend).not.toHaveBeenCalled();
     });

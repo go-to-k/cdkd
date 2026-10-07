@@ -309,7 +309,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('a Cloud Control fallback that throws UnsupportedActionException reports unsupported, and the sibling is still compared', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
+        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -319,7 +319,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     mockCcReadCurrentState.mockRejectedValue(
       awsError(
         'UnsupportedActionException',
-        'Resource type AWS::CloudWatch::AnomalyDetector does not support READ action'
+        'Resource type AWS::Budgets::Budget does not support READ action'
       )
     );
 
@@ -327,7 +327,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     // THE discriminator. Pre-fix the throw propagated out of the loop, so the
     // command produced no report at all and this string could not appear.
-    expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
+    expect(output).toContain('? Detector (AWS::Budgets::Budget)');
     expect(output).toContain('drift unknown');
     // The sibling was compared -- the whole point of the guard.
     expect(output).toContain('(1 resource checked, 1 unsupported)');
@@ -345,6 +345,38 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   });
 
   /**
+   * go-to-k/cdkd#4668: AWS gave AnomalyDetector Cloud Control handlers, but the
+   * SDK provider's physicalId is a cdkd-derived descriptor, so GetResource
+   * refuses it on every run. The deny-list keeps the row `unsupported` (exit 0)
+   * instead of a permanent `readFailed` (exit 2), and Cloud Control is never
+   * asked.
+   */
+  it('an AnomalyDetector row is deny-listed off the Cloud Control fallback and reports unsupported', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? SIBLING_PROVIDER : {}
+    );
+    // What GetResource answers for a descriptor physicalId today.
+    mockCcReadCurrentState.mockRejectedValue(
+      awsError('ValidationException', "Value '[AWS/SQS:M:Sum]' at 'anomalyDetectorIds' failed to satisfy constraint")
+    );
+
+    const { output, error } = await runDrift(ARGS);
+
+    expect(mockCcReadCurrentState).not.toHaveBeenCalled();
+    expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
+    expect(output).toContain('(1 resource checked, 1 unsupported)');
+    expect(output).not.toContain('NOT fully compared');
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
    * The same site, but an error a RE-RUN CAN CLEAR. This is the half that must
    * NOT be reported `unsupported`: saying "cdkd cannot read this type" about a
    * type it reads fine on every other run is a false statement, and it would
@@ -353,7 +385,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('a Cloud Control fallback that throws AccessDenied reports readFailed and exits 2, and the sibling is still compared', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
+        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -368,7 +400,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     expect(output).toContain('NOT fully compared');
     expect(output).toContain('not compared AT ALL (the read or comparison failed)');
-    expect(output).toContain('! Detector (AWS::CloudWatch::AnomalyDetector)');
+    expect(output).toContain('! Detector (AWS::Budgets::Budget)');
     // The SUMMARY line's conditional arm, which is a different string from the
     // block heading above and was unfenced: `not fully compared` appeared
     // nowhere under tests/, so swapping the ternary's two arms left the suite
@@ -473,7 +505,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('an UnsupportedActionException wrapped in another error is still recognized through the cause chain', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
+        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -490,7 +522,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     const { output, error } = await runDrift(ARGS);
 
-    expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
+    expect(output).toContain('? Detector (AWS::Budgets::Budget)');
     expect(error).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
   });
@@ -537,7 +569,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('an error that lost its name and cause is still recognized by its message', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
+        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -547,12 +579,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     // Deliberately a bare `Error`: `name` is 'Error' and there is no `cause`, so
     // the name walk cannot match and only the phrase can.
     mockCcReadCurrentState.mockRejectedValue(
-      new Error('Resource type AWS::CloudWatch::AnomalyDetector does not support READ action')
+      new Error('Resource type AWS::Budgets::Budget does not support READ action')
     );
 
     const { output, error } = await runDrift(ARGS);
 
-    expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
+    expect(output).toContain('? Detector (AWS::Budgets::Budget)');
     expect(exitSpy).not.toHaveBeenCalled();
     void error;
   });
@@ -1571,7 +1603,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
         // `U` takes the fallback, which needs a type with no SDK read.
         resourceType:
           role === 'U'
-            ? 'AWS::CloudWatch::AnomalyDetector'
+            ? 'AWS::Budgets::Budget'
             : role === 'Q' || role === 'X'
               ? CC_READ_TYPE
               : role === 'K' || role === 'R'
@@ -1648,7 +1680,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
       }
       throw awsError(
         'UnsupportedActionException',
-        'Resource type AWS::CloudWatch::AnomalyDetector does not support READ action'
+        'Resource type AWS::Budgets::Budget does not support READ action'
       );
     });
   }

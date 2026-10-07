@@ -45,7 +45,7 @@ ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-10-06T12:30:56Z	PASS	185	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-cloudwatch-anomaly-detector	2026-10-06T07:02:26Z	PASS	65	verify.sh	rc ok, orph clean (#2207 PR #4613)
+cloudwatch-anomaly-detector	2026-10-07T11:48:17Z	FAIL	61	verify.sh	phase 2b drift: AWS added CC handlers to the type, CC read of descriptor id fails; orph clean
 codebuild-project	2026-10-03T04:24:03Z	PASS	97	verify.sh	rc ok, orph clean (#4283 PR #4449)
 codecommit	2026-10-06T12:30:56Z	PASS	170	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)

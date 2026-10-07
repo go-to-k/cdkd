@@ -52,8 +52,10 @@ const ID_ATTRIBUTES = ['AnomalyDetectorId', 'Id'] as const;
  * API mapping: `PutAnomalyDetector` is an UPSERT keyed by the metric
  * descriptor (the single-metric tuple or the metric-math query set), and
  * `DeleteAnomalyDetector` takes the same descriptor. There is no
- * server-generated identifier; the registry schema's read-only `Id`
- * primaryIdentifier has no Cloud Control handler to mint it. cdkd therefore
+ * server-generated identifier in the API cdkd calls; the registry schema's
+ * read-only `AnomalyDetectorId` (formerly `Id`) primaryIdentifier is minted
+ * only by the Cloud Control handlers, which cdkd does not use for this type
+ * (`cdkd drift` deny-lists its CC read for that reason, #4668). cdkd therefore
  * derives a DETERMINISTIC physical id from the descriptor (see
  * {@link derivePhysicalId}) — every descriptor field is createOnly in the
  * registry schema, so the id is stable across in-place updates

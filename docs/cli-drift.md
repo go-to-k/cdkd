@@ -814,9 +814,11 @@ Five SDK-provider types have no first-class read-back yet and take the Cloud
 Control fallback described below, exactly as a type with no SDK provider does:
 `AWS::Budgets::Budget`, `AWS::CloudFormation::Stack`,
 `AWS::CloudWatch::AnomalyDetector`, `AWS::EMR::InstanceFleetConfig` and
-`AWS::EMR::InstanceGroupConfig`. `AWS::CloudFormation::Stack` is deny-listed
-on that fallback; a nested stack's row is reported as described under
-[Nested stacks](#nested-stacks).
+`AWS::EMR::InstanceGroupConfig`. `AWS::CloudFormation::Stack` and
+`AWS::CloudWatch::AnomalyDetector` are deny-listed on that fallback. An
+anomaly detector's physicalId is a cdkd-derived metric descriptor that Cloud
+Control cannot address, so its row reports drift unknown. A nested stack's row
+is reported as described under [Nested stacks](#nested-stacks).
 
 > [!NOTE]
 > **physicalId formats.** Several types above
