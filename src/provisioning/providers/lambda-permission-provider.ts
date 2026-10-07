@@ -10,6 +10,7 @@ import { getLogger } from '../../utils/logger.js';
 import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { LambdaCreateClientCache } from './lambda-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -97,6 +98,8 @@ function functionNamePairs(value: unknown): Array<readonly [unknown, string | un
  */
 export class LambdaPermissionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  /** `AddPermission` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new LambdaCreateClientCache(() => this.lambdaClient);
   private logger = getLogger().child('LambdaPermissionProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -234,7 +237,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
       if (properties['InvokedViaFunctionUrl'] !== undefined)
         addParams.InvokedViaFunctionUrl = properties['InvokedViaFunctionUrl'] as boolean;
 
-      await this.lambdaClient.send(new AddPermissionCommand(addParams));
+      const createClient = await this.createClient.get();
+      await createClient.send(new AddPermissionCommand(addParams));
 
       log.debug(`Successfully created Lambda permission ${logicalId}: ${statementId}`);
 

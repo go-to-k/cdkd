@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { LambdaCreateClientCache } from './lambda-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -44,6 +45,8 @@ import {
  */
 export class LambdaUrlProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  /** `CreateFunctionUrlConfig` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new LambdaCreateClientCache(() => this.lambdaClient);
   private logger = getLogger().child('LambdaUrlProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -174,9 +177,8 @@ export class LambdaUrlProvider implements ResourceProvider {
         createParams.Cors = this.buildCorsConfig(cors);
       }
 
-      const response = await this.lambdaClient.send(
-        new CreateFunctionUrlConfigCommand(createParams)
-      );
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreateFunctionUrlConfigCommand(createParams));
 
       const functionUrl = response.FunctionUrl;
       const functionArn = response.FunctionArn;
