@@ -125,6 +125,29 @@ describe('DiffCalculator - NoEcho comparison (schema v11)', () => {
     expect(out?.current).toEqual({ V: PREVIOUS_NOECHO_VALUE });
   });
 
+  it('takes the witness over a leaf mixing a NoEcho Ref with a secret reference, and detects a changed NoEcho part (review MEDIUM-4)', async () => {
+    const { noEchoComparison } = await import('../../../src/deployment/secret-redaction.js');
+    const SM = '{{resolve:secretsmanager:app/db:SecretString:pw}}';
+    const compare = noEchoComparison({
+      sources: { parameters: new Set(['Token']) },
+      values: { Token: TOKEN },
+      minNeedleLength: 4,
+    });
+    const templateProperties = { V: { 'Fn::Join': ['', [{ Ref: 'Token' }, '-', SM]] } };
+    // The diff resolves with secret references left as written.
+    const desired = { V: `${TOKEN}-${SM}` };
+    expect(
+      compare({ templateProperties, desired, current: { V: `${TOKEN}-${SM}` }, record: {} })
+    ).toEqual({ desired: { V: '***' }, current: { V: '***' } });
+    const changed = compare({
+      templateProperties,
+      desired,
+      current: { V: `old-token-value-x-${SM}` },
+      record: {},
+    });
+    expect(changed?.current).toEqual({ V: PREVIOUS_NOECHO_VALUE });
+  });
+
   it('without the comparison, a v11 record diffs against the plaintext (the defect it closes)', async () => {
     const current = state({ noEchoLeaves: [['Value']] });
     const resolver = new IntrinsicFunctionResolver('us-east-1');

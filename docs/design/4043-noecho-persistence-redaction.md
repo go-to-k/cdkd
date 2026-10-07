@@ -316,54 +316,46 @@ REDACTED bags. It refuses any bag for which `carriesFreshNoEchoValue` is true
 (`:7163`). The diff calculator has no mask awareness: `***` equals `***`, and
 never equals a plaintext (`diff-calculator.ts:1349-1439`).
 
-**Change.** The diff must compare what the persist side would write, or every
-masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
-(`diff-recursive.ts:1561`, plaintext parameters, no promotion).
+**Change, as built.** The diff must compare what the persist side would
+write, or every masked resource diffs as UPDATE forever. `cdkd diff` had the
+same gap.
 
-1. The diff resolver context redacts each resolved property through the same
-   walk the persist side runs. Both arms apply, with the parameter values
-   registered as fresh mask-only needles. A positioned leaf then diffs `***`
-   against `***`. The nested-child precedent is `redactParametersForDiff`
-   (`deploy-engine/masking.ts`, wired from `deploy-engine.ts`). It redacts the parameter bag
-   instead of the resolved property, which cannot flatten an embedding leaf.
-   The resolved-property form is the one that matches the persist side.
-2. `calculateDiff`'s `freshParameters` (`diff-calculator.ts:261-268`) is today
-   passed only by a nested child (`deploy-engine.ts:4222`, from
-   `freshNoEchoParameters` in `deploy-engine/masking.ts`). It becomes EVERY `NoEcho: true`
-   parameter, at every level. Arm 5 (`diff-calculator.ts:1136-1148`) then
-   promotes each reader to a speculative UPDATE, so the engine re-resolves it
-   and decides.
-3. In the engine, the resolved bag carries a fresh leaf, so the first skip is
-   not taken (unchanged). Then comes the readback (section 4.2). The second
-   skip (`deploy-engine.ts:7370-7393`) applies when AWS holds every fresh leaf
-   and nothing else moved. Its gate becomes "every fresh leaf is confirmed
-   held", not "a ceiling was lowered".
-4. **Migration witness.** A leaf at a position the positional arm names,
-   in a record that carries no `noEchoLeaves`, and that still holds a
-   non-mask value, is a pre-v11 plaintext. It is the exact value last sent, so
-   it is compared directly and needs no readback. The witness must sit BEFORE
-   anything classifies the leaf as moved, or the migration deploy replaces a
-   create-only reader:
-   - In the diff, `compareProperties` (`diff-calculator.ts:1389-1415`) would
-     see `***` against the recorded plaintext and set `requiresReplacement`.
-     For a witness leaf, the diff compares the RESOLVED value against the
-     recorded plaintext instead. It redacts only the stored copy.
-   - In the engine, the ceiling block's `moved` test
-     (`deploy-engine.ts:7291-7293`) keeps a replacement on `***` vs plaintext
-     (`:7308-7310`). A witness leaf is resolved there first: equal means
-     `held`, different means `differs`, and the verdict table in section 4.2
-     applies.
+1. The comparison is an injected `NoEchoCompareFn` (`calculateDiff`'s last
+   argument), built by `noEchoComparison` in
+   `secret-redaction/noecho-leaves.ts` for the deploy (`noEchoDiffComparison`)
+   and `cdkd diff` (`noEchoComparisonForTemplate`). It masks the resolved
+   desired bag at every `NoEcho` position, and every string leaf equal to or
+   containing (from 4 characters, outside a `{{resolve:...}}` span, never for
+   a public token) the value of a `NoEcho` parameter the resource reads. A
+   positioned leaf then diffs `***` against `***`. There is no separate
+   `redactDesired` hook.
+2. `calculateDiff`'s `freshParameters` becomes EVERY `NoEcho: true`
+   parameter, at every level, plus a nested child's inherited ones (arm 5).
+   Each reader is promoted to a speculative UPDATE, so the engine re-resolves
+   it and decides (section 4.2).
+3. In the engine, a parameter-class fresh leaf blocks the first skip; the
+   readback (section 4.2) decides, and the second skip applies when every
+   fresh leaf is settled and nothing else moved.
+4. **Migration witness.** A record with no `noEchoLeaves` that still holds a
+   non-mask value where the desired side is masked is compared against the
+   dynamic-reference persist form (`witnessNormalize`): an equal value is
+   unchanged with no readback, and a differing one is a change, shown as
+   `(previous NoEcho value)`; a value whose shape changed (a list of another
+   length) is compared whole. The engine applies the same witness, for the
+   parameter and the declared-attribute classes alike.
 
-   This makes the migration deploy skip an unchanged resource, and never
-   replace one because of the migration.
+`cdkd diff` uses the same comparison. It has no readback, so a reader that is
+not a witness compares `***` with `***`; the preview prints ONE note per stack
+counting the unchanged resources that read a `NoEcho` parameter (not counted
+toward `--fail`). There is no per-reader `~ (NoEcho parameter, compared on
+deploy)` row, and the create-only ceiling is not widened for a property the
+readback cannot serve: the engine's verdict table decides instead.
 
-`cdkd diff` takes steps 1 and 4 with the same helpers. It has no readback, so
-a reader that is not a witness compares `***` with `***`; as built, the
-preview prints ONE note per stack counting the unchanged resources that read
-a `NoEcho` parameter (not counted toward `--fail`), in place of a per-reader
-`~ (NoEcho parameter, compared on deploy)` row. A witness leaf is compared
-exactly, so an unmigrated stack diffs as it does today, a differing one
-showing `(previous NoEcho value)`. Its printing masker (#4126) is unchanged.
+**Outputs.** The Outputs section compares an output a `NoEcho` parameter
+serves as the persisted `***` on both sides; a record a pre-v11 binary wrote
+is the witness there too (equal: unchanged; different: a change shown as
+`(previous NoEcho value)`). An unchanged such output is not a change, so
+`cdkd diff --fail` stays green on an unchanged stack.
 
 ### 4.2 Update vs replace
 
@@ -440,37 +432,22 @@ change, every migrated stack would drift forever.
 
 ### 4.4 Rollback replay
 
-Today `refuseMaskedReplayBaseline` (`rollback-executor.ts:2294`) throws
-`ROLLBACK_REDACTED_BASELINE` on any written bag that carries `***`
-(`:3423` reverse-replacement re-create, `:4306` revert, `:4878` revert-failed).
-`resolveReplayProps` (`:2218`) re-resolves only `{{resolve:...}}` leaves.
+**As built (Phase B):** the replay does not read a marked leaf back yet.
+`refuseMaskedReplayBaseline` refuses any written bag that carries `***` with
+`ROLLBACK_REDACTED_BASELINE`, now naming a `NoEcho` template parameter as one
+of its causes, with the remedy "restore the property with `cdkd deploy`". The
+readback substitution below is Phase C.
 
-- **Marked leaf of an existing resource** (revert and revert-failed). This
-  applies in process and in `cdkd rollback` alike. The replay reads the
-  resource back with the #3729 helper shape: routed by the record, and handed
-  the masked record. It substitutes the live value at each marked coordinate.
-  - A live value that is absent, or that itself carries the mask (a provider
-    echoing the masked record it was handed, the reason
-    `deploy-engine.ts:3049-3054` hands it that record), is `not-readable` and
-    keeps `ROLLBACK_REDACTED_BASELINE`. So `***` is never substituted.
-  - Each substituted value is recorded as a mask-only needle in the op's bag,
-    AND as a log-only needle (`recordLogOnlyParameterValue`, no length floor,
-    every printed spelling), so a short or numeric value is masked in lines
-    and events too.
-  - The provider masker, the re-redacted record and an event's
-    `error.message` (`maskedRollbackEventError`,
-    `rollback-executor.ts:249-261`) then mask it.
-  - An event's `reason` / `survivorReason` is persisted RAW (the note above
-    `rollback-executor.ts:295`). Phase C routes both through the same op
-    masker before `ctx.recordEvent`, which closes the #4043 rollback-events
-    item.
-  - The leaf is left exactly as AWS holds it.
-  - A parameter change made by the reverted op is therefore not reverted.
-    The next deploy with the old value restores it.
-  - An unreadable leaf keeps the refusal, with a parameter-specific remedy.
+- **Marked leaf of an existing resource** (revert and revert-failed, Phase C).
+  The replay reads the resource back with the #3729 helper shape (routed by
+  the record, handed the masked record) and substitutes the live value at each
+  marked coordinate. A live value that is absent, or itself carries the mask,
+  is `not-readable` and keeps the refusal; a substituted value is recorded as
+  a mask-only and a log-only needle of the op's bag, so lines, events and the
+  re-redacted record mask it. A parameter change made by the reverted op is not
+  reverted; the next deploy with the old value restores it.
 - **A resource the replay must re-CREATE** (reverse-replacement). There is no
-  live resource to read. Out of process there are no parameters either. The
-  refusal stays, with a parameter-specific remedy: re-deploy.
+  live resource to read, so the refusal stays, with the remedy: re-deploy.
 - **An unmarked `***`** is the custom-resource class, unchanged.
 
 ### 4.5 `cdkd import`

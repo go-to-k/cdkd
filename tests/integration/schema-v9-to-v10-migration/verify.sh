@@ -160,12 +160,34 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The schema version the LOCAL binary writes. It was 10 when this fixture was
 # written; a later bump (v11, issue #4043) moves it, and the local-binary
 # phases below assert "the current version", not a literal, so this fixture
-# keeps proving the v9 -> current migration. Read from the source of the
-# binary under test; an unparsable line fails the run rather than defaulting.
-LOCAL_SCHEMA_VERSION="$(sed -n 's/^export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = \([0-9][0-9]*\);$/\1/p' ../../../src/types/state.ts)"
+# keeps proving the v9 -> current migration. Read from the BUILT binary under
+# test (dist/), not from src/: a stale dist would otherwise be asserted against
+# a version it does not write. The bundler inlines the current-version
+# constant as a bare number but keeps the readable list as a named array, and
+# the current version is by construction its LAST entry (writers emit the
+# newest version a binary reads). An unparsable bundle fails the run rather
+# than defaulting.
+LOCAL_SCHEMA_VERSION="$(cat ../../../dist/*.js 2>/dev/null | awk '
+  !inside && !done && /STATE_SCHEMA_VERSIONS_READABLE = \[/ {
+    inside = 1
+    sub(/.*STATE_SCHEMA_VERSIONS_READABLE = \[/, "")
+  }
+  inside {
+    line = $0
+    closes = (line ~ /\]/)
+    sub(/\].*/, "", line)
+    n = split(line, parts, ",")
+    for (i = 1; i <= n; i++) {
+      gsub(/[^0-9]/, "", parts[i])
+      if (parts[i] != "") last = parts[i]
+    }
+    if (closes) { inside = 0; done = 1 }
+  }
+  END { if (done) print last }
+')"
 case "${LOCAL_SCHEMA_VERSION}" in
   '' | *[!0-9]*)
-    echo "FAIL: could not read STATE_SCHEMA_VERSION_CURRENT from src/types/state.ts" >&2
+    echo "FAIL: could not read the readable schema versions from the built dist/ (is it built?)" >&2
     exit 1
     ;;
 esac

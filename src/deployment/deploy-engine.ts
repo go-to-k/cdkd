@@ -520,6 +520,16 @@ export class DeployEngine {
   /** @internal */
   noEchoAttributeReads = new Map<string, Promise<Record<string, unknown> | undefined>>();
   /**
+   * go-to-k/cdkd#4043 (review MEDIUM-3): per logical id, why a create-first
+   * replacement's delete of the OLD resource was skipped (its delete address
+   * is a redacted `***`, or a provider otherwise declined), leaving it alive
+   * and untracked. `provisionResource` turns it into the row's
+   * `updatePartial`, so the deploy exits 2 like any survivor
+   * (`--allow-unaddressed` opts out).
+   */
+  /** @internal */
+  replacedDeleteSkips = new Map<string, string>();
+  /**
    * The deploy-wide DERIVED-NAME registry (go-to-k/cdkd#3869): per logical
    * id, an EMPTY map whose LOG-ONLY needles are what its physical ids print as
    * when its name came from a secret (`noteSecretNamedRecord` in
@@ -899,6 +909,7 @@ export class DeployEngine {
     this.noEchoPhysicalIdWarned = new Set();
     this.noEchoPositionedValues = new Map();
     this.noEchoAttributeReads = new Map();
+    this.replacedDeleteSkips = new Map();
     this.secretNameNeedles = new Map();
     this.perResourceTemplateProps = new Map();
     this.constructPathTemplate = undefined;

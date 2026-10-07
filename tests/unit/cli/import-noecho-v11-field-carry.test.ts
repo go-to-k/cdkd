@@ -67,8 +67,15 @@ describe('v11 NoEcho fields survive the record writers', () => {
     expect(record.noEchoAttributeNames).toEqual(['Secret']);
   });
 
-  it('cdkd import drops a declared name whose attribute the re-import replaced with a value', () => {
-    expect(reimport('cr-1', { Secret: 'fresh', Plain: 'p' }).noEchoAttributeNames).toBeUndefined();
+  it('cdkd import keeps a declared name masked when the re-import reads its live value back (review MEDIUM-2)', () => {
+    // An SSM parameter's `Value` echoes a value deployed from a `NoEcho`
+    // parameter: the re-import must not write it in the clear.
+    const record = reimport('cr-1', { Secret: 'live-plaintext-1234', Plain: 'p2' });
+    expect(record.attributes?.['Secret']).toBe(SECRET_MASK);
+    expect(record.attributes?.['Plain']).toBe('p2');
+    expect(record.noEchoAttributeNames).toEqual(['Secret']);
+    // A Number value too, which no needle keys.
+    expect(reimport('cr-1', { Secret: 5432 }).attributes?.['Secret']).toBe(SECRET_MASK);
   });
 
   it('cdkd import carries nothing onto a different physical id', () => {
@@ -113,6 +120,7 @@ describe('replacement delete of an old record whose address is the NoEcho mask',
       options: {},
       logger: { warn: (m: string) => lines.push(m), info: () => undefined, debug: () => undefined },
       replacementDeleteContext: () => ({}),
+      replacedDeleteSkips: new Map<string, string>(),
     } as unknown as DeployEngine;
     const provider = {
       delete: vi.fn().mockResolvedValue({
@@ -142,5 +150,10 @@ describe('replacement delete of an old record whose address is the NoEcho mask',
     ).resolves.toBeUndefined();
     expect(provider.delete).toHaveBeenCalledTimes(1);
     expect(lines.some((line) => line.includes('it is no longer tracked in state'))).toBe(true);
+    // Review MEDIUM-3: recorded as a survivor, so the row is a partial update
+    // and the deploy exits 2 unless --allow-unaddressed.
+    const skips = (engine as unknown as { replacedDeleteSkips: Map<string, string> })
+      .replacedDeleteSkips;
+    expect(skips.get('Perm')).toContain('was not deleted');
   });
 });

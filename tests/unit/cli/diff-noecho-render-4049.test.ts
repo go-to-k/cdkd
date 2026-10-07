@@ -254,12 +254,43 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
       noEchoTemplate({ Value: 'x' }, { Out: { Value: { Ref: 'DbUser' } } })
     );
 
+    // go-to-k/cdkd#4043: compared as the persisted `***`; the pre-v11 stored
+    // plaintext is the witness, so a different one shows a placeholder.
     expect(result.outputChanges).toEqual([
-      { name: 'Out', changeType: 'MODIFY', oldValue: '***', newValue: '***', isExport: false },
+      {
+        name: 'Out',
+        changeType: 'MODIFY',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+        isExport: false,
+      },
     ]);
     const out = printed(nodeOf(result));
     expect(out).not.toContain(NOECHO);
     expect(out).not.toContain(OLD_NOECHO);
+  });
+
+  it('reports NO change for an unchanged NoEcho-served output, v11 (***) or pre-v11 (same plaintext) record (schema v11)', async () => {
+    for (const stored of ['***', NOECHO]) {
+      const { result } = await diffOf(
+        st({ A: res({ Value: 'x' }) }, { Out: stored }),
+        noEchoTemplate({ Value: 'x' }, { Out: { Value: { Ref: 'DbUser' } } })
+      );
+      expect(result.outputChanges).toEqual([]);
+    }
+  });
+
+  it('still reports an ordinary output that changed beside it', async () => {
+    const { result } = await diffOf(
+      st({ A: res({ Value: 'x' }) }, { Out: '***', Plain: 'old' }),
+      noEchoTemplate(
+        { Value: 'x' },
+        { Out: { Value: { Ref: 'DbUser' } }, Plain: { Value: 'new' } }
+      )
+    );
+    expect(result.outputChanges).toEqual([
+      expect.objectContaining({ name: 'Plain', changeType: 'MODIFY', newValue: 'new' }),
+    ]);
   });
 
   // An intrinsic name, which the template type spells as a string.

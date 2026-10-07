@@ -969,7 +969,12 @@ count as a change for `--fail`.
   keep the record and exit non-zero (a deploy exits zero with
   `--allow-unaddressed`); delete the resource by hand. When a REPLACEMENT creates the new resource first, the
   delete of the old one is skipped with a warning that it is no longer
-  tracked, and it is left in AWS.
+  tracked, and it is left in AWS; the resource's row is reported as a partial
+  update, and the deploy exits non-zero for it unless `--allow-unaddressed`.
+- A `Number` parameter whose resource reports the value back as its STRING
+  spelling (`"5432"` for `5432`) never reads as held: an updatable property is
+  re-sent on every deploy, and a create-only one is warned about on every
+  deploy, with no replacement.
 
 #### What stays in plain text
 
@@ -1006,8 +1011,11 @@ As with every bump, an OLDER cdkd binary refuses a `version: 11` blob with the
 "Upgrade cdkd" error, so upgrade every machine that deploys the stack together.
 A v11 binary stamps `version: 11` on every state file it writes, including by
 commands that hold no template (`cdkd state refresh-observed`, `cdkd drift
---accept`, `cdkd orphan`), which mask nothing; `version: 11` alone therefore
-does not mean a stack's values are masked, and only a `cdkd deploy` migrates it.
+--accept`, `cdkd orphan`). Those mask a value only where a record already names
+its position in `noEchoLeaves` (`cdkd state refresh-observed` masks the
+baseline it captures there); they do not position a record that has none.
+`version: 11` alone therefore does not mean a stack's values are masked, and
+only a `cdkd deploy` migrates it.
 
 ### `skippedOutputs` (informational, no version bump)
 

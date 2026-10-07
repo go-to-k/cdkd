@@ -128,6 +128,7 @@ import {
   isUncertifiedBaselineMaskPosition,
   isMarkedCoordinate,
   liveMatchesUnresolvedTokenFrame,
+  maskWholeValue,
   noEchoLeavesOf,
   pathCrossesDottedKey,
   maskSecretsInError,
@@ -143,6 +144,7 @@ import {
   STATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
+import { noEchoAttributeNamesOf } from '../../deployment/deploy-engine/noecho.js';
 import {
   RESOURCE_NOT_FOUND,
   type ReadCurrentStateContext,
@@ -2731,6 +2733,24 @@ function noEchoPathsClause(record: ResourceState | undefined): string {
 }
 
 /**
+ * The segments of a `--revert` walk path (`a.b[0].c`), the shape
+ * {@link isMarkedCoordinate} compares against a record's `noEchoLeaves`.
+ */
+function revertPathSegments(path: string): (string | number)[] {
+  const segments: (string | number)[] = [];
+  for (const part of path.split('.')) {
+    const match = /^([^[]*)((?:\[\d+\])*)$/.exec(part);
+    if (match === null) {
+      segments.push(part);
+      continue;
+    }
+    if (match[1] !== '') segments.push(match[1]!);
+    for (const index of match[2]!.matchAll(/\[(\d+)\]/g)) segments.push(Number(index[1]));
+  }
+  return segments;
+}
+
+/**
  * Split off the changes whose ONLY difference is a `NoEcho` parameter's mask
  * at a coordinate the record's `noEchoLeaves` names (go-to-k/cdkd#4043, schema
  * v11). State holds such a value only as `***`, whatever its type, so the
@@ -2753,8 +2773,17 @@ function partitionNoEchoParameterChanges(
     return { kept: changes, noEchoParameterPaths: [] };
   }
   const properties = record.properties ?? {};
+  // Marked, or an ANCESTOR of a marked coordinate: a readback the save could
+  // not pair by identity is masked as a whole list, so a wholly masked
+  // subtree that holds a marked coordinate accepts any present live value
+  // (review LOW-5); a partly masked one is still compared leaf by leaf.
   const isMarked = (coordinate: readonly (string | number)[]): boolean =>
-    isMarkedCoordinate(coordinate, marked);
+    isMarkedCoordinate(coordinate, marked) ||
+    marked.some(
+      (leaf) =>
+        leaf.length > coordinate.length &&
+        coordinate.every((segment, i) => String(segment) === String(leaf[i]))
+    );
   const kept: PropertyDrift[] = [];
   const noEchoParameterPaths: string[] = [];
   for (const change of changes) {
@@ -7083,6 +7112,26 @@ async function runRevert(
                     // name the `Fn::Base64` writer with a remedy of their own (issue
                     // #2881).
                     totalUnresolvable++;
+                    // go-to-k/cdkd#4043 (schema v11): when the record's
+                    // `noEchoLeaves` names every refused position, the cause IS
+                    // known — a `NoEcho` template parameter — and only its
+                    // remedy applies.
+                    const marked = noEchoLeavesOf(stateResource);
+                    if (
+                      marked !== undefined &&
+                      maskPreserved.unpreservablePaths.every((path) =>
+                        isMarkedCoordinate(revertPathSegments(path), marked)
+                      )
+                    ) {
+                      const refusedPaths = maskSecretsInText(
+                        maskPreserved.unpreservablePaths.join(', '),
+                        secrets
+                      );
+                      logger.error(
+                        safeMsg`  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): refused to revert ${refusedPaths} — a NoEcho template parameter feeds it, the recorded baseline holds only the redaction mask there, and AWS reports nothing to preserve, so cdkd has no value it may write. Deploy the stack with the parameter's value to set it.`
+                      );
+                      return;
+                    }
                     logger.error(
                       `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                         `refused to revert ` +
@@ -7421,7 +7470,7 @@ async function runRevert(
                       // revert's resolved secrets — `scrubResourceRecord`'s
                       // `attributes` arm. The rest of the record is the one state
                       // already holds, redacted when it was written.
-                      const attributes =
+                      const keptAttributes =
                         next.attributes === undefined
                           ? undefined
                           : keepRecordedAttributesOverMask(
@@ -7429,6 +7478,21 @@ async function runRevert(
                               next.attributes,
                               stateResource.attributes,
                               noEchoDeclared
+                            );
+                      // go-to-k/cdkd#4043 (review LOW-7): an attribute the record
+                      // declares `NoEcho` (`noEchoAttributeNames`) is kept `***`
+                      // whatever its type or length, as the deploy's save keeps
+                      // it; the value scan above cannot key a number or a short
+                      // value.
+                      const declaredNames = noEchoAttributeNamesOf(stateResource) ?? [];
+                      const attributes =
+                        keptAttributes === undefined || declaredNames.length === 0
+                          ? keptAttributes
+                          : Object.fromEntries(
+                              Object.entries(keptAttributes).map(([name, value]) => [
+                                name,
+                                declaredNames.includes(name) ? maskWholeValue(value) : value,
+                              ])
                             );
                       if (
                         next.physicalId !== stateResource.physicalId ||

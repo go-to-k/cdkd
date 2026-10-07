@@ -177,6 +177,13 @@ function noEchoAttributeNamesFor(
     if (value === undefined || carriesSecretMask(value)) continue;
     for (const [name, attribute] of Object.entries(attributes)) {
       if (carriesSecretMask(attribute)) continue;
+      // An ARN or the physical id only names the resource (kept in the clear).
+      if (
+        typeof attribute === 'string' &&
+        (attribute.startsWith('arn:') || attribute === record.physicalId)
+      ) {
+        continue;
+      }
       const sameName =
         coordinate[0] === name && keyOrderFreeJson(attribute) === keyOrderFreeJson(value);
       const embeds =

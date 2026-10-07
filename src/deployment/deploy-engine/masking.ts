@@ -444,7 +444,14 @@ export function registerNoEchoAttributes(
   // resource was given (`AWS::SSM::Parameter`'s `Value`) is declared too, so a
   // same-stack `Fn::GetAtt` reader masks it and its record persists `***`
   // there whatever the value's type or length.
-  const echoed = echoedNoEchoAttributes(this, logicalId, result.attributes, secrets, ownProperties);
+  const echoed = echoedNoEchoAttributes(
+    this,
+    logicalId,
+    result.attributes,
+    secrets,
+    ownProperties,
+    (result as { physicalId?: unknown }).physicalId
+  );
   if (declared === true) {
     this.noEchoAttributeResources.set(logicalId, true);
   } else if (declared !== undefined || echoed.size > 0) {
@@ -463,7 +470,8 @@ function echoedNoEchoAttributes(
   logicalId: string,
   attributes: Record<string, unknown> | undefined,
   secrets: RecordedSecretValues,
-  ownProperties: Record<string, unknown> | undefined
+  ownProperties: Record<string, unknown> | undefined,
+  physicalId?: unknown
 ): Set<string> {
   const echoed = new Set<string>();
   if (attributes === undefined) return echoed;
@@ -498,6 +506,9 @@ function echoedNoEchoAttributes(
     if (value === undefined || value === null) return false;
     if (typeof value === 'string') {
       if (value === SECRET_MASK) return false;
+      // An ARN (or the physical id) only NAMES the resource: AWS publishes
+      // it, and it stays in the clear like the physical id (design §3.3).
+      if (value.startsWith('arn:') || value === physicalId) return false;
       if (fresh.some((needle) => value === needle || value.includes(needle))) return true;
     }
     return positioned.get(name)?.has(keyOrderFreeJson(value)) === true;

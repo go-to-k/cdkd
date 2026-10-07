@@ -978,6 +978,12 @@ echo "    OK: AWS holds the real name and the old topic is gone"
 
 # --- Phase 3b: the same renamed TopicName again: not replaced (#4043) --------
 echo "==> Phase 3b: redeploy with the same NoEcho-fed TopicName"
+# The ARN is a function of the (unchanged) name, so a replacement keeps it:
+# an OUT-OF-BAND marker the template never sets (DisplayName) is what a
+# replacement loses, and what proves the topic is the same resource.
+P3B_MARKER="cdkd-noecho-p3b-${RANDOM}${RANDOM}"
+aws sns set-topic-attributes --region "${REGION}" --topic-arn "${RENAME_NEW_ARN}" \
+  --attribute-name DisplayName --attribute-value "${P3B_MARKER}" >/dev/null
 if ! DEPLOY_OUT_P3B=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT \
   node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -1000,6 +1006,12 @@ if grep -F 'NoEchoRenamed.TopicName' <<< "${DEPLOY_OUT_P3B}" | grep -qF -- '--re
 fi
 if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"; then
   echo "FAIL: the value-named topic is gone after Phase 3b -- it was replaced (issue #4043)" >&2
+  exit 1
+fi
+P3B_DISPLAY=$(aws sns get-topic-attributes --region "${REGION}" --topic-arn "${RENAME_NEW_ARN}" \
+  --query 'Attributes.DisplayName' --output text)
+if [ "${P3B_DISPLAY}" != "${P3B_MARKER}" ]; then
+  echo "FAIL: the out-of-band DisplayName marker is gone after Phase 3b -- the topic was replaced under the same name (issue #4043)" >&2
   exit 1
 fi
 P3B_STATE=$(mktemp)

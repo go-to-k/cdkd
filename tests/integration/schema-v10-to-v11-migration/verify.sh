@@ -307,6 +307,20 @@ ssm_modified() { # <name> — strict
 topic_arn() { # the physical id the record names
   state_field ".resources[\"${TOPIC_ID}\"].physicalId // \"<absent>\""
 }
+# The ARN is a function of the topic's NAME, so a replacement under the same
+# name keeps it: an out-of-band DisplayName (the template sets none) is what a
+# replacement loses.
+TOPIC_MARKER="cdkd-v11-marker-$(openssl rand -hex 6)"
+topic_display() { # <arn> — strict
+  aws sns get-topic-attributes --region "${REGION}" --topic-arn "$1" \
+    --query 'Attributes.DisplayName' --output text
+}
+# Exact-scalar occurrences of <value> in a JSON (or JSON-lines) body on stdin:
+# a short value (3 characters) or a name cannot be blob-grepped meaningfully,
+# but no scalar of the record may EQUAL it.
+exact_scalar_count() { # <value> < body
+  jq -s --arg v "$1" '[.. | scalars | select(. == $v)] | length'
+}
 
 # Run a cdkd command, its output into DEPLOY_LOG; echo the rc. The log is
 # printed token-rewritten on failure.
@@ -404,12 +418,24 @@ assert_no_tokens_in_versions() { # <scope> <label> <own|shared>
         fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} carries a NoEcho value (value withheld)"
       fi
     done
+    # The short value and the topic names cannot be blob-grepped (a short
+    # needle, and a name AWS publishes inside the physical id), but no SCALAR
+    # of a cdkd document may EQUAL one of them.
+    for t in "${SHORT_VALUE}" "${TOPIC_NAME}" "${TOPIC_NAME_ROTATED}"; do
+      local hits
+      if ! hits="$(printf '%s' "${body}" | exact_scalar_count "${t}" 2>/dev/null)"; then
+        fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} is not JSON / JSON lines — the exact-scalar scan cannot read it"
+      fi
+      if [ "${hits}" != "0" ]; then
+        fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} holds a short NoEcho value or topic name as a whole scalar (value withheld)"
+      fi
+    done
     scanned=$((scanned + 1))
   done <<< "${rows}"
   if [ "${ownership}" = "own" ] && [ "${scanned}" -eq 0 ]; then
     fail "${label}: no object version written since the migration was found under ${scope} — the scan looked at nothing"
   fi
-  pass "${label}: ${scanned} object version(s) written since the migration scanned, none carries a NoEcho value"
+  pass "${label}: ${scanned} object version(s) written since the migration scanned, none carries a NoEcho value (blob) or a short value / topic name (exact scalar)"
 }
 
 # ---------------------------------------------------------------------------
@@ -435,6 +461,19 @@ case "${TOPIC_ARN_1}" in
   arn:aws*:sns:*) pass "v10 deploy: the topic's physical id is an SNS ARN" ;;
   *) fail "v10 deploy: the topic's physical id is not an SNS ARN" ;;
 esac
+# The migration's other inputs, by coordinate: the 3-character value in the
+# clear, and the custom resource's value ALREADY masked by v10 (#2274) but
+# with no declaration (#2449's premise: the v10 record names nothing).
+assert_eq "v10 deploy: ${SHORT_ID}.properties.Value holds the short value in the clear" \
+  "$(state_field ".resources[\"${SHORT_ID}\"].properties.Value")" "${SHORT_VALUE}"
+assert_eq "v10 deploy: ${CR_ID}.attributes.Secret is masked by v10 already" \
+  "$(state_field ".resources[\"${CR_ID}\"].attributes.Secret // \"<absent>\"")" "${SECRET_MASK}"
+assert_eq "v10 deploy: ${CR_ID} declares no noEchoAttributeNames" \
+  "$(state_field ".resources[\"${CR_ID}\"].noEchoAttributeNames // \"absent\"")" "absent"
+aws sns set-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}" \
+  --attribute-name DisplayName --attribute-value "${TOPIC_MARKER}" >/dev/null
+assert_eq "v10 deploy: the out-of-band topic marker is set" \
+  "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 2: the local v11 binary READS the v10 record (no rewrite)"
@@ -498,7 +537,8 @@ assert_eq "v11 migration deploy: ${TOKEN_PARAM_NAME} was not re-sent" \
   "$(ssm_modified "${TOKEN_PARAM_NAME}")" "${TOKEN_MODIFIED_1}"
 assert_eq "v11 migration deploy: ${SHORT_PARAM_NAME} was not re-sent" \
   "$(ssm_modified "${SHORT_PARAM_NAME}")" "${SHORT_MODIFIED_1}"
-assert_eq "v11 migration deploy: the topic was not replaced" "$(topic_arn)" "${TOPIC_ARN_1}"
+assert_eq "v11 migration deploy: the topic was not replaced (out-of-band marker kept)" \
+  "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
 assert_eq "v11 migration deploy: AWS still holds the token" "$(ssm_value "${TOKEN_PARAM_NAME}")" "${TOKEN}"
 assert_eq "v11 migration deploy: AWS still holds the short value" \
   "$(ssm_value "${SHORT_PARAM_NAME}")" "${SHORT_VALUE}"
@@ -513,7 +553,8 @@ assert_eq "v11 unchanged redeploy: ${TOKEN_PARAM_NAME} was not re-sent" \
   "$(ssm_modified "${TOKEN_PARAM_NAME}")" "${TOKEN_MODIFIED_1}"
 assert_eq "v11 unchanged redeploy: ${SHORT_PARAM_NAME} was not re-sent" \
   "$(ssm_modified "${SHORT_PARAM_NAME}")" "${SHORT_MODIFIED_1}"
-assert_eq "v11 unchanged redeploy: the topic was not replaced" "$(topic_arn)" "${TOPIC_ARN_1}"
+assert_eq "v11 unchanged redeploy: the topic was not replaced (out-of-band marker kept)" \
+  "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
 fetch_state "v11 unchanged redeploy"
 assert_no_tokens_in_state "v11 unchanged redeploy"
 run_cdkd ok "v11 diff --fail on an unchanged stack" "${LOCAL_DIST}" diff "${STACK}" \
@@ -563,8 +604,24 @@ fetch_state "v11 rotation deploy"
 assert_no_tokens_in_state "v11 rotation deploy"
 assert_eq "v11 rotation deploy: ${TOKEN_ID}.properties.Value" \
   "$(state_field ".resources[\"${TOKEN_ID}\"].properties.Value")" "${SECRET_MASK}"
-# Maintainer decision 1 on #4043: never replaced on a readback's word.
+# Every NoEcho coordinate still holds the mask after the rotation.
+for id in "${TOKEN_ID}" "${SHORT_ID}"; do
+  assert_eq "v11 rotation deploy: ${id}.attributes.Value" \
+    "$(state_field ".resources[\"${id}\"].attributes.Value // \"<absent>\"")" "${SECRET_MASK}"
+done
+assert_eq "v11 rotation deploy: ${SHORT_ID}.properties.Value" \
+  "$(state_field ".resources[\"${SHORT_ID}\"].properties.Value")" "${SECRET_MASK}"
+assert_eq "v11 rotation deploy: ${TOPIC_ID}.properties.TopicName" \
+  "$(state_field ".resources[\"${TOPIC_ID}\"].properties.TopicName")" "${SECRET_MASK}"
+assert_eq "v11 rotation deploy: outputs.TokenOut" "$(state_field '.outputs.TokenOut')" "${SECRET_MASK}"
+assert_eq "v11 rotation deploy: ${CR_ID}.attributes.Secret" \
+  "$(state_field ".resources[\"${CR_ID}\"].attributes.Secret")" "${SECRET_MASK}"
+# Maintainer decision 1 on #4043: never replaced on a readback's word. The
+# rotated name would give a replacement a new ARN; the marker covers a
+# replacement under any name.
 assert_eq "v11 rotation deploy: the topic was NOT replaced" "$(topic_arn)" "${TOPIC_ARN_1}"
+assert_eq "v11 rotation deploy: the topic kept its out-of-band marker" \
+  "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
 assert_log_has "v11 rotation deploy: create-only warning" "--recreate-via-cc-api"
 assert_log_has "v11 rotation deploy: create-only warning names the property" "${TOPIC_ID}.TopicName"
 
@@ -625,7 +682,7 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
 if [ "${ASSERTIONS_RUN:-0}" -ne 75 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 75 — a block was skipped," >&2
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 86 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

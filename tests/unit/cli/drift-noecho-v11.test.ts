@@ -226,6 +226,99 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     expect(exitSpy).not.toHaveBeenCalledWith(1);
   });
 
+  it('accepts a wholly masked list that holds a marked coordinate, whatever its unmarked leaves (review LOW-5)', async () => {
+    // The save could not pair the readback list by identity, so it masked the
+    // whole list; drift compares by index and must not report the unmarked
+    // number beside the marked one as drift forever.
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Token: param({
+          properties: {
+            Name: '/app/token',
+            Type: 'String',
+            Rules: [
+              { From: 80, Secret: 'open' },
+              { From: 443, Secret: SECRET_MASK },
+            ],
+          },
+          observedProperties: {
+            Name: '/app/token',
+            Type: 'String',
+            Rules: [
+              { From: SECRET_MASK, Secret: SECRET_MASK },
+              { From: SECRET_MASK, Secret: SECRET_MASK },
+            ],
+          },
+          noEchoLeaves: [['Rules', 1, 'Secret']],
+        }),
+      })
+    );
+    readsBack({
+      Name: '/app/token',
+      Type: 'String',
+      Rules: [
+        { From: 443, Secret: LIVE_SECRET },
+        { From: 80, Secret: 'open' },
+      ],
+    });
+    const { output } = await runDrift(['TestStack', '--json']);
+    expect(output).not.toContain(LIVE_SECRET);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      expect.objectContaining({ logicalId: 'Token', cause: 'noEchoParameter' }),
+    ]);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it('--revert names the NoEcho parameter as THE cause when the refused position is marked (review LOW-6)', async () => {
+    const update = vi.fn();
+    mockGetState.mockResolvedValueOnce(
+      makeState({ Token: param({ properties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK, Description: 'from-template' }, observedProperties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK, Description: 'from-template' } }) })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Type: 'String', Description: 'edited' }),
+      update,
+    });
+    await runDrift(['TestStack', '--revert', '--yes']);
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Value');
+    expect(errored).toContain('a NoEcho template parameter feeds it');
+    expect(errored).not.toContain('Three causes');
+  });
+
+  it('--revert keeps a declared NoEcho attribute masked when the update echoes a number (review LOW-7)', async () => {
+    const update = vi.fn(async () => ({
+      physicalId: '/app/token',
+      attributes: { Value: 5432, Arn: 'arn:aws:ssm:us-east-1:1:parameter/app/token' },
+    }));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: {
+          physicalId: '/app/token',
+          resourceType: SSM_TYPE,
+          properties: { Name: '/app/token', Type: 'String', Description: 'from-template' },
+          observedProperties: { Name: '/app/token', Type: 'String', Description: 'from-template' },
+          attributes: { Value: SECRET_MASK, Arn: 'arn:aws:ssm:us-east-1:1:parameter/app/token' },
+          noEchoAttributeNames: ['Value'],
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Type: 'String', Description: 'edited' }),
+      update,
+    });
+    await runDrift(['TestStack', '--revert', '--yes']);
+    expect(update).toHaveBeenCalledTimes(1);
+    // The re-recorded attributes equal the record (`***` kept), so nothing is
+    // re-saved for them; any save that happens holds the mask, never 5432.
+    expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain('5432');
+    for (const call of mockSaveState.mock.calls) {
+      expect((call[2] as StackState).resources['Token']!.attributes?.['Value']).toBe(SECRET_MASK);
+    }
+  });
+
   it('names the position, never a value, in the human report', async () => {
     mockGetState.mockResolvedValueOnce(makeState({ Token: param() }));
     readsBack({ Name: '/app/token', Type: 'String', Value: LIVE_SECRET });

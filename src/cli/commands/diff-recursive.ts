@@ -73,6 +73,7 @@ import {
   maskSecretsInText,
   type RecordedSecretValues,
   readsNoEchoSource,
+  noEchoOutputsComparison,
 } from '../../deployment/secret-redaction.js';
 import {
   noEchoComparisonForTemplate,
@@ -2155,12 +2156,41 @@ export async function computeStackDiff(
     resolved.templateHasSecretReference ||
     inheritSecretBearingTemplate === true ||
     (!everyConditionKnown && templateHasSecretDynamicReference(template));
+  // go-to-k/cdkd#4043: an output a `NoEcho` source serves persists `***`, so
+  // it is compared as `***` on both sides (a pre-v11 stored plaintext is the
+  // migration witness); an unchanged one is no change, as for a resource.
+  const outputTemplateValues: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
+  for (const [name, definition] of Object.entries(effectiveTemplate.Outputs ?? {})) {
+    outputTemplateValues[name] = (definition as { Value?: unknown } | undefined)?.Value;
+  }
+  const compareNoEchoOutputs = noEchoOutputsComparison(outputTemplateValues, {
+    parameters: noEchoParameterNamesOf(effectiveTemplate),
+    attributeIsNoEcho: (logicalId, attribute) => {
+      const record = Object.hasOwn(stateForDiff.resources, logicalId)
+        ? stateForDiff.resources[logicalId]
+        : undefined;
+      const names = record?.noEchoAttributeNames as unknown;
+      return Array.isArray(names) && names.includes(attribute);
+    },
+    ...(conditions !== undefined && {
+      conditions: Object.fromEntries(
+        Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+      ),
+    }),
+  });
   const diffOutputsAgainst = (
-    desired: Record<string, unknown>,
+    rawDesired: Record<string, unknown>,
     exportNames: ReadonlySet<string>,
     forceLegacyRecord = false
-  ): OutputChange[] =>
-    computeOutputsDiff(currentState.outputs, desired, exportNames, resolved.secretSourceKeys, {
+  ): OutputChange[] => {
+    const { current: storedOutputs, desired } = compareNoEchoOutputs(
+      currentState.outputs,
+      rawDesired
+    );
+    return computeOutputsDiff(storedOutputs, desired, exportNames, resolved.secretSourceKeys, {
       declaredKeys: resolved.declaredKeys,
       templateHasSecretReference,
       forceLegacyRecord,
@@ -2171,6 +2201,7 @@ export async function computeStackDiff(
         ? currentState.exportNames.filter((name): name is string => typeof name === 'string')
         : undefined,
     });
+  };
 
   // A partially-resolved bag previews the deploy's NO-CHANGE merge when the
   // deploy will take that branch, and reports NO delta otherwise.

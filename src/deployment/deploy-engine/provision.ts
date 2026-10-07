@@ -234,6 +234,19 @@ export async function provisionResource(
             );
             deleteSkipped = bodyResult?.deleteSkipped;
             updatePartial = bodyResult?.updatePartial;
+            // go-to-k/cdkd#4043 (review MEDIUM-3): a replacement whose old
+            // resource's delete was skipped left a survivor: a partial update.
+            const replacedSkip = this.replacedDeleteSkips.get(logicalId);
+            if (replacedSkip !== undefined) {
+              this.replacedDeleteSkips.delete(logicalId);
+              if (updatePartial === undefined) {
+                updatePartial = replacedSkip;
+                if (counts) {
+                  counts.updated = Math.max(0, counts.updated - 1);
+                  counts.updatePartial++;
+                }
+              }
+            }
             nestedChildUnaddressed = unaddressed;
           } finally {
             // The ONE emission site for the deploy path's guard rows, in a

@@ -159,6 +159,7 @@ export {
   isMarkedCoordinate,
   witnessNormalize,
   noEchoComparison,
+  noEchoOutputsComparison,
   PREVIOUS_NOECHO_VALUE,
 } from './secret-redaction/noecho-leaves.js';
 export {

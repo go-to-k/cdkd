@@ -64,6 +64,11 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
         }),
       },
       sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+      secretsManager: {
+        send: vi
+          .fn()
+          .mockResolvedValue({ SecretString: JSON.stringify({ pw: 'sm-secret-plaintext-value' }) }),
+      },
     }),
   };
 });
@@ -294,6 +299,14 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.update, 'Param')).toHaveLength(0);
       expect(callsFor(provider.create, 'Param')).toHaveLength(0);
       expect(provider.readCurrentState.mock.calls.filter((c) => c[1] === 'Param')).toHaveLength(1);
+      // Review MEDIUM-4 (1): the readback is handed the MASKED record, never
+      // the resolved bag, so an echoing provider cannot confirm the value.
+      expect(provider.readCurrentState).toHaveBeenCalledWith(
+        '/app/p',
+        'Param',
+        'AWS::SSM::Parameter',
+        { Name: '/app/p', Type: 'String', Value: '***' }
+      );
     });
 
     it('UPDATES when AWS holds a different value', async () => {
@@ -483,6 +496,27 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(saved.resources['Reader']!.properties['Value']).toBe('***');
       expect(saved.resources['Reader']!.noEchoLeaves).toEqual([['Value']]);
       expect(allSaved()).not.toContain(TOKEN);
+    });
+
+    it('never declares an ARN attribute that merely names the resource with the value (review round 6)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Param'
+            ? {
+                physicalId: '/app/p',
+                attributes: {
+                  Value: TOKEN,
+                  Arn: `arn:aws:ssm:us-east-1:123456789012:parameter/${TOKEN}`,
+                },
+              }
+            : { physicalId: `${logicalId}-phys`, attributes: {} }
+        )
+      );
+      await makeEngine().deploy(STACK, template());
+      const param = lastSaved().resources['Param']!;
+      expect(param.noEchoAttributeNames).toEqual(['Value']);
+      expect(param.attributes?.['Value']).toBe('***');
     });
 
     it('refuses a later-added reader of a declared attribute with the exact remedy, and never re-runs the producer', async () => {
@@ -747,6 +781,21 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(lines(logger.warn).some((l) => l.includes('Topic.TopicName'))).toBe(false);
     });
 
+    it('counts a replacement whose old resource could not be deleted (delete address is ***) as a partial update (review MEDIUM-3)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN, 'old-topic-name'), etag: 'etag-old' });
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve({ physicalId: `${logicalId}-new-arn`, attributes: {} })
+      );
+      provider.delete.mockImplementation((logicalId: string) =>
+        logicalId === 'Topic'
+          ? Promise.resolve({ outcome: 'skipped', reason: 'its delete address is redacted' })
+          : Promise.resolve(undefined)
+      );
+      const result = await makeEngine().deploy(STACK, template());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(result.updatePartial).toBe(1);
+    });
+
     it('hands the provider the SENT value as the previous side of a held create-only path when another property changed (review: no *** to a provider)', async () => {
       const tpl = template();
       (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['DisplayName'] = 'd2';
@@ -828,6 +877,113 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const saved = lastSaved();
       expect(saved.resources['Later']!.properties['Value']).toBe('***');
       expect(saved.resources['Later']!.noEchoLeaves).toEqual([['Value']]);
+    });
+  });
+
+  describe('review MEDIUM-4', () => {
+    const SM = '{{resolve:secretsmanager:app/db:SecretString:pw}}';
+    const mixed = (token: string) =>
+      template(token, {
+        Mixed: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/app/mixed',
+            Type: 'String',
+            Value: { 'Fn::Join': ['', [{ Ref: 'Token' }, '-', SM]] },
+          },
+        },
+      });
+    const mixedState = (stored: string) => {
+      const state = v10State();
+      state.resources['Mixed'] = {
+        physicalId: '/app/mixed',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '/app/mixed', Type: 'String', Value: stored },
+        attributes: {},
+        dependencies: [],
+      };
+      return state;
+    };
+
+    it('(2) the witness confirms an unchanged leaf mixing a NoEcho Ref with a secret reference', async () => {
+      stateBackend.getState.mockResolvedValue({ state: mixedState(`${TOKEN}-${SM}`), etag: 'e' });
+      await makeEngine().deploy(STACK, mixed(TOKEN));
+      expect(callsFor(provider.update, 'Mixed')).toHaveLength(0);
+      expect(provider.readCurrentState.mock.calls.some((c) => c[1] === 'Mixed')).toBe(false);
+      expect(lastSaved().resources['Mixed']!.properties['Value']).toBe('***');
+      expect(allSaved()).not.toContain(TOKEN);
+      expect(allSaved()).not.toContain('sm-secret-plaintext-value');
+    });
+
+    it('(2) a changed NoEcho part of the same mixed leaf is sent', async () => {
+      stateBackend.getState.mockResolvedValue({ state: mixedState(`${TOKEN}-${SM}`), etag: 'e' });
+      await makeEngine().deploy(STACK, mixed(TOKEN2));
+      const updates = callsFor(provider.update, 'Mixed');
+      expect(updates).toHaveLength(1);
+      expect((updates[0]![3] as Record<string, unknown>)['Value']).toBe(
+        `${TOKEN2}-sm-secret-plaintext-value`
+      );
+      expect(allSaved()).not.toContain(TOKEN2);
+    });
+
+    it('(3) a nested segment\'s previousOutputs are masked by position in the journal', async () => {
+      const engine = makeEngine() as unknown as Record<string, unknown> & {
+        writeRollbackJournalSegment: (...args: unknown[]) => Promise<boolean>;
+      };
+      engine['constructPathTemplate'] = template();
+      engine['outputsTemplateSource'] = Object.assign(Object.create(null), {
+        Out: { Ref: 'Token' },
+        Plain: { Ref: 'Plain' },
+      });
+      engine['outputsSourceUsable'] = true;
+      await engine.writeRollbackJournalSegment(STACK, [], [], 'nested-pending-parent', false, {
+        previousOutputs: { outputs: { Out: TOKEN, Plain: 'plain-value' } },
+      });
+      const segment = stateBackend.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
+        previousOutputs: { outputs: Record<string, unknown> };
+      };
+      expect(segment.previousOutputs.outputs).toEqual({ Out: '***', Plain: 'plain-value' });
+    });
+
+    it('(3) an orphan record is masked by today\'s template positions', () => {
+      const engine = makeEngine() as unknown as Record<string, unknown> & {
+        redactStateForPersist: (state: StackState) => StackState;
+      };
+      engine['constructPathTemplate'] = template();
+      const state = v11State();
+      state.orphans = [
+        {
+          logicalId: 'Param',
+          state: {
+            physicalId: '/app/p-old',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Name: '/app/p', Type: 'String', Value: TOKEN },
+            attributes: {},
+          },
+        },
+      ] as unknown as StackState['orphans'];
+      const saved = engine.redactStateForPersist(state);
+      expect(saved.orphans![0]!.state.properties['Value']).toBe('***');
+      expect(saved.orphans![0]!.state.noEchoLeaves).toEqual([['Value']]);
+    });
+
+    it('(3) noEchoAttributeNames keeps a prior name still masked, drops one now public, and adds this run\'s', () => {
+      const engine = makeEngine() as unknown as Record<string, unknown> & {
+        applyNoEchoPersist: (...args: unknown[]) => ResourceState;
+        noEchoAttributeResources: Map<string, true | ReadonlySet<string>>;
+      };
+      engine['constructPathTemplate'] = template();
+      engine.noEchoAttributeResources.set('Cr', new Set(['Fresh']));
+      const record: ResourceState = {
+        physicalId: 'cr-1',
+        resourceType: 'Custom::Thing',
+        properties: {},
+        attributes: { Kept: '***', Public: 'now-public', Fresh: 'fresh-value-1234' },
+        noEchoAttributeNames: ['Kept', 'Public'],
+      };
+      const out = engine.applyNoEchoPersist('Cr', record, record, undefined, {});
+      expect(out.noEchoAttributeNames).toEqual(['Fresh', 'Kept']);
+      expect(out.attributes).toEqual({ Kept: '***', Public: 'now-public', Fresh: '***' });
     });
   });
 });

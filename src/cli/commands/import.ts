@@ -39,6 +39,7 @@ import {
   carriesSecretMask,
   markSameGenerationBag,
   maskSecretsInText,
+  maskWholeValue,
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
   type RecordedSecretValues,
@@ -1951,6 +1952,36 @@ export function reimportedAttributes(
 }
 
 /**
+ * `attributes` with every name `declared` lists (a prior record's
+ * `noEchoAttributeNames`) replaced by its whole-value mask, so a re-import
+ * never writes a declared `NoEcho` attribute in the clear (go-to-k/cdkd#4043).
+ * Returns the bag itself when nothing changes.
+ */
+export function withDeclaredNoEchoMasked(
+  attributes: Record<string, unknown>,
+  declared: unknown
+): Record<string, unknown> {
+  if (!Array.isArray(declared)) return attributes;
+  const names = declared.filter(
+    (name): name is string =>
+      typeof name === 'string' &&
+      hasOwnKey(attributes, name) &&
+      !carriesSecretMask(attributes[name]) &&
+      attributes[name] !== undefined &&
+      attributes[name] !== null
+  );
+  if (names.length === 0) return attributes;
+  const masked = Object.create(Object.getPrototypeOf(attributes) as object | null) as Record<
+    string,
+    unknown
+  >;
+  for (const [key, value] of Object.entries(attributes)) {
+    defineOwnKey(masked, key, names.includes(key) ? maskWholeValue(value) : value);
+  }
+  return masked;
+}
+
+/**
  * The `noEchoAttributeNames` field a rebuilt record carries (go-to-k/cdkd#2449):
  * each prior declared name whose attribute in `attributes` still holds the
  * mask. Empty or absent carries nothing, so the field stays omitted.
@@ -2027,9 +2058,15 @@ export function buildStackState(
     const prior = existingState?.resources[row.logicalId];
     const priorAttributes =
       prior && prior.physicalId === row.physicalId ? prior.attributes : undefined;
-    const { attributes, stillMaskedKeys, keptRecordedKeys } = reimportedAttributes(
-      row.attributes,
-      priorAttributes
+    const reimported = reimportedAttributes(row.attributes, priorAttributes);
+    const { stillMaskedKeys, keptRecordedKeys } = reimported;
+    // go-to-k/cdkd#4043 (schema v11): an attribute the prior record DECLARED
+    // `NoEcho` (same physical id) stays the mask, whatever this re-import read
+    // back from AWS: an SSM parameter's `Value` echoes a value deployed from a
+    // `NoEcho` parameter that the import cannot classify.
+    const attributes = withDeclaredNoEchoMasked(
+      reimported.attributes,
+      prior && prior.physicalId === row.physicalId ? prior.noEchoAttributeNames : undefined
     );
     if (keptRecordedKeys.length > 0) {
       // Not silent (issue #2927 review): the kept value is the one the last

@@ -328,7 +328,10 @@ export async function provisionUpdate(
   // its same-stack readers position it. A provider result re-declares below.
   this.registerNoEchoAttributes(
     logicalId,
-    currentResource.attributes === undefined ? {} : { attributes: currentResource.attributes },
+    Object.assign(
+      currentResource.attributes === undefined ? {} : { attributes: currentResource.attributes },
+      { physicalId: currentResource.physicalId }
+    ),
     updateSecrets,
     resolvedProps
   );
