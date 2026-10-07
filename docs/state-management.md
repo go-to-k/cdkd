@@ -896,8 +896,8 @@ Where a `NoEcho` parameter supplied a value, cdkd now stores `***`:
 
 | surface | what is stored |
 | --- | --- |
-| `properties`, `observedProperties` | `***` at every position the parameter fills, whatever the value's type or length |
-| `attributes` | `***` for an attribute that echoes the value back (an `AWS::SSM::Parameter`'s `Value`) |
+| `properties`, `observedProperties` | `***` at every position the parameter fills, whatever the value's type or length (a value embedded in a longer string from 4 characters) |
+| `attributes` | `***` for an attribute DECLARED `NoEcho`, whatever its type or length, including one that echoes the value back (an `AWS::SSM::Parameter`'s `Value`); another attribute holding the value is masked from 4 characters |
 | `outputs`, the exports index | `***` for an output whose value reads the parameter |
 | `rollback-journal.json` | the same masks, for the records and outputs it saves |
 
@@ -963,6 +963,26 @@ count as a change for `--fail`.
   masks every position and writes the field.
 - A resource's physical id is never masked. A `NoEcho` value used as a NAME is
   published by AWS, and the deploy warns once per such resource.
+- A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
+  a policy target) cannot be addressed from its record, which holds `***`.
+  `cdkd destroy`, and a deploy that removes the resource, skip that delete,
+  keep the record and exit non-zero unless `--allow-unaddressed`; delete the
+  resource by hand. When a REPLACEMENT creates the new resource first, the
+  delete of the old one is skipped with a warning that it is no longer
+  tracked, and it is left in AWS.
+
+#### What stays in plain text
+
+- A value shorter than 4 characters, or a number, that reaches state other
+  than at a position the template names: embedded in a longer string read
+  through a declared attribute, or inherited by a CDK nested stack's child
+  (whose parameters are never `NoEcho`).
+- A record the template no longer names (as the same logical id and type),
+  such as a resource being deleted, an orphan record, or the previous copy of
+  a resource whose type changed, which the rollback journal saves: the
+  positions come from today's template.
+- Outputs saved after a failed outputs pass, and an output the template
+  changed since an older cdkd wrote it.
 
 #### Migration
 
@@ -971,7 +991,8 @@ Nothing to do. A `version: 10` record is read unchanged, and the first
 compared with the plaintext the record still holds, which is exactly what cdkd
 last sent, so the migration deploy neither updates nor replaces a resource for
 it, and its save stores `***` and the new fields. A record that deploy did not
-reach is masked by the template's positions too.
+reach is masked by the template's positions too, while the template still
+names it as the same logical id and type.
 
 **Rotate any `NoEcho` value a stack ever held in the clear.** Earlier object
 versions of `state.json` written before the upgrade still contain it, and cdkd

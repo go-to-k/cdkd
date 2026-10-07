@@ -693,7 +693,8 @@ export async function doDeployWithPrefetch(
         currentState.resources,
         effectiveTemplate,
         conditions,
-        parameterValues
+        parameterValues,
+        stackName
       )
     );
     // The diff was the prefetch's only consumer: withdraw what it did not

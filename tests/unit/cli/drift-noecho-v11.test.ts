@@ -271,5 +271,13 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
 
     const payload = JSON.parse(output) as DriftJson[];
     expect(payload[0]!.notCompared).toEqual([]);
+    // A property AWS no longer reports is real drift (a removal), reported with
+    // the masked baseline only.
+    expect(payload[0]!.drifted).toEqual([
+      expect.objectContaining({
+        logicalId: 'Token',
+        changes: [{ path: 'Value', stateValue: '***' }],
+      }),
+    ]);
   });
 });

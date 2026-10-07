@@ -2041,7 +2041,8 @@ export async function computeStackDiff(
             Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
           ),
       mergedParameters,
-      stateForDiff.resources
+      stateForDiff.resources,
+      new Set([region, stackName])
     )
   );
   // The deploy reads back every resource a `NoEcho` parameter feeds, since
@@ -2052,6 +2053,12 @@ export async function computeStackDiff(
       changes.get(logicalId)?.changeType === 'NO_CHANGE' &&
       readsNoEchoSource(effectiveTemplate.Resources?.[logicalId]?.Properties, {
         parameters: noEchoParameterNamesOf(effectiveTemplate),
+        // Only the verdicts this diff knows narrow an `Fn::If`.
+        ...(conditions !== undefined && {
+          conditions: Object.fromEntries(
+            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+          ),
+        }),
       })
   );
   if (noEchoReaders.length > 0) {

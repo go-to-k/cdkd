@@ -357,11 +357,13 @@ masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
    This makes the migration deploy skip an unchanged resource, and never
    replace one because of the migration.
 
-`cdkd diff` takes steps 1, 2 and 4 with the same helpers. It has no readback,
-so a promoted reader that is not a witness renders as
-`~ (NoEcho parameter, compared on deploy)` and does not count toward `--fail`.
-A witness leaf is compared exactly, so an unmigrated stack diffs as it does
-today. Its printing masker (#4126) is unchanged.
+`cdkd diff` takes steps 1 and 4 with the same helpers. It has no readback, so
+a reader that is not a witness compares `***` with `***`; as built, the
+preview prints ONE note per stack counting the unchanged resources that read
+a `NoEcho` parameter (not counted toward `--fail`), in place of a per-reader
+`~ (NoEcho parameter, compared on deploy)` row. A witness leaf is compared
+exactly, so an unmigrated stack diffs as it does today, a differing one
+showing `(previous NoEcho value)`. Its printing masker (#4126) is unchanged.
 
 ### 4.2 Update vs replace
 
@@ -379,7 +381,7 @@ Verdicts for a leaf a parameter served:
 | Verdict | Updatable path | Create-only path |
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
-| `differs` | UPDATE | REPLACEMENT |
+| `differs` | UPDATE | not replaced; warns on every deploy and names `--recreate-via-*` (decision 1 as amended, §9) |
 | `not-readable` (write-only, or the provider has no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (maintainer decision 4, §9) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (maintainer decision 1, §9) |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
 
@@ -860,7 +862,7 @@ lanes once B merges.
     per resource (maintainer decision 4, §9);
   - write-only create-only (`not-readable`): no replacement, and a warning
     naming `--recreate-via-*` on every deploy (maintainer decision 1, §9);
-  - create-only `differs`: REPLACEMENT;
+  - create-only `differs`: no replacement, the decision 1 warning (§9);
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
   - pre-v11 witness different: UPDATE;
@@ -958,9 +960,8 @@ review. Item 1 is the maintainer's; the rest are lane decisions.
    readback `differs`** either, only warned about on every deploy naming
    `--recreate-via-*`, as for `not-readable`: a provider that normalizes what
    it echoes (case-folded identifiers, reordered lists) reads `differs` on an
-   unchanged value. A `read-failed` fails the resource. A pre-v11 record's
-   witness that differs is an EXACT change and keeps the replacement. The
-   custom-resource (#3729) class keeps its own table. Restoring the
+   unchanged value. A `read-failed` fails the resource. The custom-resource
+   (#3729) class keeps its own table. Restoring the
    auto-replacement where a masked-record readback proves the provider echoes
    exactly is follow-up #4656.
 2. One coordinate field, `noEchoLeaves` (section 3.2).
@@ -971,7 +972,12 @@ review. Item 1 is the maintainer's; the rest are lane decisions.
 5. The `Export.Name` positional twin and the no-change merge's carried-alias
    verdict (section 5) moved to follow-up #4657. A value of 4 or more
    characters is still refused wholesale through its map entry.
-6. Folded in from the review: the migration witness compares against the
+6. **Lane amendment, awaiting the maintainer's confirmation** (not part of
+   decision 1): a pre-v11 record's migration witness that DIFFERS on a
+   create-only property keeps the replacement. The stored value is exactly
+   what was last sent, so the difference is proven rather than read back
+   through a provider that may normalize it, which is decision 1's reason.
+7. Folded in from the review: the migration witness compares against the
    dynamic-reference persist form (the `NoEcho` arms suppressed); the rollback
    journal's `previousState` / `previousOutputs` take the positional arm; a
    pre-v11 `observedProperties` baseline is masked at marked coordinates

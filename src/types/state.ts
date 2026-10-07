@@ -807,8 +807,8 @@ export interface ResourceState {
    * a reader then treats a `***` as before (the custom-resource class), and a
    * deploy reads a non-mask leaf at a position the template names as the
    * MIGRATION WITNESS, the exact value last sent. Every writer that rebuilds
-   * `properties` from a template recomputes it (a deploy writes `[]` for a
-   * record with none); every writer that carries a record forward keeps it.
+   * `properties` from a template recomputes it (and omits the field when the
+   * record has none); every writer that carries a record forward keeps it.
    * Read through `noEchoLeavesOf` (malformed reads as absent).
    */
   noEchoLeaves?: (string | number)[][] | undefined;

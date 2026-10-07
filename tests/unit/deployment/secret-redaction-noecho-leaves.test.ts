@@ -186,6 +186,8 @@ describe('witnessNormalize (the migration witness, review B2)', () => {
       { N: SECRET_MASK, L: [SECRET_MASK, SECRET_MASK] }
     );
     expect(result.current).toEqual({ N: SECRET_MASK, L: [SECRET_MASK, 'b'] });
+    expect(result.confirmed).toEqual([['N'], ['L', 0]]);
+    expect(result.differing).toEqual([['L', 1]]);
   });
 });
 

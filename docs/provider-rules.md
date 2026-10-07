@@ -492,8 +492,9 @@ implementation. Three details are worth copying:
     dynamic-reference secrets, and since issue
     [#1998](https://github.com/go-to-k/cdkd/issues/1998) the value of a
     `NoEcho: true` template PARAMETER that a `Ref` or `Fn::Sub` variable served,
-    recorded as a LOG-ONLY needle that the masker reads and nothing persisted
-    does. No provider change was needed for that, which is the point of
+    recorded as a LOG-ONLY needle that the masker reads and, since state schema
+    v11, also as a mask-only needle, so state persists `***` where the value
+    stood. No provider change was needed for either, which is the point of
     handing providers a function. A DIFFERENT `NoEcho`
     — the custom-resource RESPONSE field of the same name — IS covered since
     issue [#2274](https://github.com/go-to-k/cdkd/issues/2274), through

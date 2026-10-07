@@ -472,23 +472,38 @@ function echoedNoEchoAttributes(
   );
   const templateProps = engine.perResourceTemplateProps.get(logicalId);
   const sources = engine.noEchoPositionSources();
-  const positioned =
-    templateProps === undefined || ownProperties === undefined || sources === undefined
-      ? []
-      : noEchoCoordinatesOf(templateProps, ownProperties, {
-          parameters: sources.parameters,
-          ...(sources.conditions !== undefined && { conditions: sources.conditions }),
-        }).map((coordinate) => keyOrderFreeJson(valueAtCoordinate(ownProperties, coordinate)));
-  const holds = (value: unknown): boolean => {
+  // A POSITIONED value (a `Number`, one under the needle floor) counts only
+  // for the attribute named like the property it was given through
+  // (`AWS::SSM::Parameter`'s `Value`): a short value equals unrelated
+  // attributes too often to declare them on equality alone. A number may come
+  // back as its string spelling.
+  const positioned = new Map<string, Set<string>>();
+  if (templateProps !== undefined && ownProperties !== undefined && sources !== undefined) {
+    for (const coordinate of noEchoCoordinatesOf(templateProps, ownProperties, {
+      parameters: sources.parameters,
+      ...(sources.conditions !== undefined && { conditions: sources.conditions }),
+    })) {
+      const name = coordinate[0];
+      if (typeof name !== 'string') continue;
+      const value = valueAtCoordinate(ownProperties, coordinate);
+      const spellings = positioned.get(name) ?? new Set<string>();
+      spellings.add(keyOrderFreeJson(value));
+      if (typeof value === 'number' || typeof value === 'boolean') {
+        spellings.add(keyOrderFreeJson(String(value)));
+      }
+      positioned.set(name, spellings);
+    }
+  }
+  const holds = (name: string, value: unknown): boolean => {
     if (value === undefined || value === null) return false;
     if (typeof value === 'string') {
       if (value === SECRET_MASK) return false;
       if (fresh.some((needle) => value === needle || value.includes(needle))) return true;
     }
-    return positioned.includes(keyOrderFreeJson(value));
+    return positioned.get(name)?.has(keyOrderFreeJson(value)) === true;
   };
   for (const [name, value] of Object.entries(attributes)) {
-    if (holds(value)) echoed.add(name);
+    if (holds(name, value)) echoed.add(name);
   }
   return echoed;
 }

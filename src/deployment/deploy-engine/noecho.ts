@@ -13,6 +13,7 @@ import {
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   noEchoParameterValuesOf,
+  valueAtCoordinate,
   type NoEchoCoordinate,
   type NoEchoPositionSources,
   type RecordedSecretValues,
@@ -124,7 +125,12 @@ export function noEchoLeavesFor(
   }
   const existing = noEchoLeavesOf(record);
   if (existing !== undefined) return canonicalCoordinates(existing);
-  const source = templateProps ?? templatePropertiesFor(this, logicalId, record.resourceType);
+  // The bag THIS deploy resolved describes the record only when it was
+  // resolved as the record's own type (a failed Type change did not write it).
+  const resolvedAsSame = this.perResourceResolvedType.get(logicalId) === record.resourceType;
+  const source =
+    (templateProps !== undefined && resolvedAsSame ? templateProps : undefined) ??
+    templatePropertiesFor(this, logicalId, record.resourceType);
   if (source === undefined) return undefined;
   return canonicalCoordinates(noEchoCoordinatesOf(source, record.properties, sources));
 }
@@ -154,10 +160,36 @@ function noEchoAttributeNamesFor(
   engine: DeployEngine,
   logicalId: string,
   record: ResourceState,
-  carried: boolean
+  carried: boolean,
+  leaves: readonly NoEchoCoordinate[] | undefined
 ): string[] | undefined {
   const attributes = record.attributes ?? {};
   const names = new Set<string>();
+  // An attribute that ECHOES the value the record holds at one of its own
+  // `NoEcho` positions (a pre-v11 record still holds it in `properties`): a
+  // record no provider call re-declared this deploy (held, untouched)
+  // otherwise keeps the echo in the clear. Same rule as the producer-site
+  // declaration: a positioned value counts for the attribute of the same
+  // name, a string of needle length wherever it is embedded.
+  let echoed = false;
+  for (const coordinate of leaves ?? []) {
+    const value = valueAtCoordinate(record.properties, coordinate);
+    if (value === undefined || carriesSecretMask(value)) continue;
+    for (const [name, attribute] of Object.entries(attributes)) {
+      if (carriesSecretMask(attribute)) continue;
+      const sameName =
+        coordinate[0] === name && keyOrderFreeJson(attribute) === keyOrderFreeJson(value);
+      const embeds =
+        typeof value === 'string' &&
+        value.length >= MIN_NEEDLE_LENGTH &&
+        typeof attribute === 'string' &&
+        attribute.includes(value);
+      if (sameName || embeds) {
+        names.add(name);
+        echoed = true;
+      }
+    }
+  }
   // A CARRIED record (a journal's previous state) predates this run's
   // declaration, which describes the record the run wrote.
   const declared = carried ? undefined : engine.noEchoAttributeResources.get(logicalId);
@@ -170,7 +202,7 @@ function noEchoAttributeNamesFor(
   for (const name of prior ?? []) {
     if (Object.hasOwn(attributes, name) && carriesSecretMask(attributes[name])) names.add(name);
   }
-  if (declared === undefined && prior === undefined) return undefined;
+  if (declared === undefined && prior === undefined && !echoed) return undefined;
   return [...names].sort();
 }
 
@@ -198,7 +230,7 @@ export function applyNoEchoPersist(
   const sources = this.noEchoPositionSources(resources);
   if (sources === undefined) return scrubbed;
   const leaves = this.noEchoLeavesFor(logicalId, record, templateProps, sources);
-  const names = noEchoAttributeNamesFor(this, logicalId, record, carried);
+  const names = noEchoAttributeNamesFor(this, logicalId, record, carried, leaves);
   if (leaves === undefined && names === undefined) return scrubbed;
   const next: ResourceState = { ...scrubbed };
   if (leaves !== undefined) {
@@ -427,7 +459,8 @@ export function noEchoDiffComparison(
   resources: Record<string, ResourceState>,
   template: CloudFormationTemplate,
   conditions: Record<string, boolean>,
-  parameterValues: Record<string, unknown>
+  parameterValues: Record<string, unknown>,
+  stackName?: string
 ): NoEchoCompareFn | undefined {
   const sources = this.noEchoPositionSources(resources, template, conditions);
   if (sources === undefined) return undefined;
@@ -435,6 +468,7 @@ export function noEchoDiffComparison(
     sources,
     values: parameterValues,
     minNeedleLength: MIN_NEEDLE_LENGTH,
+    publicTokens: new Set([this.stackRegion, ...(stackName === undefined ? [] : [stackName])]),
   });
   return (input) => compare(input);
 }
@@ -462,7 +496,8 @@ export function noEchoComparisonForTemplate(
   template: CloudFormationTemplate,
   knownConditions: Record<string, boolean> | undefined,
   values: Record<string, unknown> | undefined,
-  resources: Record<string, ResourceState>
+  resources: Record<string, ResourceState>,
+  publicTokens?: ReadonlySet<string>
 ): NoEchoCompareFn | undefined {
   const parameters = noEchoParameterNamesOf(template);
   const sources: NoEchoPositionSources = {
@@ -477,6 +512,7 @@ export function noEchoComparisonForTemplate(
     sources,
     values: values ?? {},
     minNeedleLength: MIN_NEEDLE_LENGTH,
+    ...(publicTokens !== undefined && { publicTokens }),
   });
   return (input) => compare(input);
 }

@@ -1,6 +1,7 @@
 import { SECRET_MASK } from './pairs.js';
 import { isPlainObject, isSingleDynamicReferenceToken } from './rules.js';
 import { identityKeyFor } from './identity-keys.js';
+import { DYNAMIC_REFERENCE_TOKEN_SCAN } from './redact-path.js';
 
 /**
  * The POSITIONAL arm of `NoEcho` redaction (go-to-k/cdkd#4043, Phase B): which
@@ -165,6 +166,10 @@ export function noEchoCoordinatesOf(
     parameters: sources.parameters,
     ...(sources.conditions !== undefined && { conditions: sources.conditions }),
   };
+  const isBareDeclaredGetAtt = (node: unknown): boolean =>
+    isPlainObject(node) &&
+    intrinsicKeyOf(node) === 'Fn::GetAtt' &&
+    getAttReadsNoEcho(node['Fn::GetAtt'], sources);
   const walk = (source: unknown, value: unknown, path: (string | number)[]): void => {
     if (value === undefined) return;
     if (source === null || typeof source !== 'object') return;
@@ -175,7 +180,7 @@ export function noEchoCoordinatesOf(
         if (!readsNoEchoSource(source, sources)) return;
         if (Array.isArray(value) && value.length === source.length) {
           source.forEach((item, index) => walk(item, value[index], [...path, index]));
-        } else if (readsNoEchoSource(source, parametersOnly)) {
+        } else if (readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt)) {
           coordinates.push(path);
         }
         return;
@@ -198,6 +203,12 @@ export function noEchoCoordinatesOf(
           const verdict = conditionVerdict(sources, argument[0]);
           if (verdict !== undefined) {
             walk(verdict ? argument[1] : argument[2], value, path);
+            return;
+          }
+          // Unknown verdict: either branch being a bare declared GetAtt
+          // positions the leaf.
+          if (isBareDeclaredGetAtt(argument[1]) || isBareDeclaredGetAtt(argument[2])) {
+            coordinates.push(path);
             return;
           }
         }
@@ -354,7 +365,8 @@ function readbackPathFor(
       if (key === undefined || !isPlainObject(element)) return path;
       const identity = element[key];
       const index = live.findIndex((item) => isPlainObject(item) && item[key] === identity);
-      if (index < 0) return undefined;
+      // Not found (AWS may normalize the identity value): mask the whole list.
+      if (index < 0) return path;
       path.push(index);
       live = live[index];
       desired = element;
@@ -444,6 +456,26 @@ export function witnessNormalize(
   const confirmed: NoEchoCoordinate[] = [];
   const differing: NoEchoCoordinate[] = [];
   const walk = (s: unknown, t: unknown, v: unknown, path: (string | number)[]): unknown => {
+    // A shape the mask no longer lines up with (a list that changed length, a
+    // list where a string stood) is compared WHOLE, so a differing stored
+    // value is reported as differing and never shown leaf by leaf.
+    const shapeMoved =
+      v !== SECRET_MASK &&
+      containsMask(v) &&
+      (Array.isArray(v)
+        ? !Array.isArray(s) || s.length !== v.length
+        : isPlainObject(v)
+          ? !isPlainObject(s)
+          : false);
+    if (shapeMoved) {
+      if (s === undefined || containsMask(s)) return s;
+      if (jsonEqual(s, t)) {
+        confirmed.push(path);
+        return v;
+      }
+      differing.push(path);
+      return s;
+    }
     if (v === SECRET_MASK) {
       // Absent, or already the mask (a v11 write, or the custom-resource
       // class): no witness here.
@@ -542,13 +574,18 @@ export function noEchoComparison(options: {
   /** The bound value of each `NoEcho` parameter, by name. */
   values: Readonly<Record<string, unknown>>;
   minNeedleLength: number;
+  /**
+   * Values state holds in the clear (the region, the stack name): the
+   * persist side keeps them out of the CONTAINMENT arm, so does this.
+   */
+  publicTokens?: ReadonlySet<string>;
 }): (input: {
   templateProperties: Record<string, unknown>;
   desired: Record<string, unknown>;
   current: Record<string, unknown>;
   record: { noEchoLeaves?: unknown };
 }) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined {
-  const { sources, values, minNeedleLength } = options;
+  const { sources, values, minNeedleLength, publicTokens } = options;
   return ({ templateProperties, desired, current, record }) => {
     const coordinates = noEchoCoordinatesOf(templateProperties, desired, sources);
     const needles: string[] = [];
@@ -570,7 +607,15 @@ export function noEchoComparison(options: {
     if (needles.length > 0) {
       const walk = (node: unknown): unknown => {
         if (typeof node === 'string') {
-          return node !== SECRET_MASK && needles.some((needle) => node.includes(needle))
+          if (node === SECRET_MASK) return node;
+          // As the persist side: a whole equal leaf, or one CONTAINING a
+          // needle outside every `{{resolve:...}}` span, where the needle is
+          // not a public token.
+          const outside = node.replace(DYNAMIC_REFERENCE_TOKEN_SCAN, '');
+          return needles.some(
+            (needle) =>
+              node === needle || (publicTokens?.has(needle) !== true && outside.includes(needle))
+          )
             ? SECRET_MASK
             : node;
         }

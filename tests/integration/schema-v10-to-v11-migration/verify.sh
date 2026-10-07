@@ -153,7 +153,7 @@ export CDKD_V11_ADD_DEPENDENT=""
 ASSERTIONS_RUN=0
 STATE_FILE=""
 DEPLOY_LOG=""
-MIGRATION_START=""
+PRE_MIGRATION_VERSIONS=""
 
 cleanup() {
   rc=$?
@@ -188,7 +188,7 @@ cleanup() {
   if [ -n "${V10_TMPDIR}" ] && [ -d "${V10_TMPDIR}" ]; then
     rm -rf "${V10_TMPDIR}"
   fi
-  rm -f "${STATE_FILE:-}" "${DEPLOY_LOG:-}"
+  rm -f "${STATE_FILE:-}" "${DEPLOY_LOG:-}" "${PRE_MIGRATION_VERSIONS:-}"
   set -eu
 }
 
@@ -216,6 +216,7 @@ cleanup || true
 
 STATE_FILE="$(mktemp)"
 DEPLOY_LOG="$(mktemp)"
+PRE_MIGRATION_VERSIONS="$(mktemp)"
 
 # --- helpers ----------------------------------------------------------------
 # NOTHING BELOW PRINTS A TOKEN. Failure paths print key-only summaries or
@@ -365,19 +366,31 @@ list_versions() { # <prefix> <query>
   printf '%s' "${out}"
 }
 
-# Read every object version under <scope> written AFTER MIGRATION_START and
-# fail if any carries a value. `shared` scopes (the exports index, the
-# custom-resource responses) tolerate a version another run removed between
-# the listing and the read; this fixture's own prefix does not.
+# Record every object version that exists under <scope> BEFORE the migration
+# deploy, as `<key>\t<versionId>` lines. A version id, not a clock: the v10
+# deploy's own writes land seconds before Phase 3, inside any time window.
+snapshot_versions() { # <scope> <label>
+  local rows
+  rows="$(list_versions "$1" 'Versions[].[Key,VersionId]')" \
+    || fail "$2: could not list object versions under s3://${STATE_BUCKET}/$1"
+  printf '%s\n' "${rows}" >>"${PRE_MIGRATION_VERSIONS}"
+}
+
+# Read every object version under <scope> that was NOT in the pre-migration
+# snapshot and fail if any carries a value. `shared` scopes (the exports
+# index, the custom-resource responses) tolerate a version another run removed
+# between the listing and the read; this fixture's own prefix does not.
 assert_no_tokens_in_versions() { # <scope> <label> <own|shared>
-  local scope="$1" label="$2" ownership="$3" rows key vid lm body scanned=0 t
-  rows="$(list_versions "${scope}" 'Versions[].[Key,VersionId,LastModified]')" \
+  local scope="$1" label="$2" ownership="$3" rows key vid body scanned=0 t
+  rows="$(list_versions "${scope}" 'Versions[].[Key,VersionId]')" \
     || fail "${label}: could not list object versions under s3://${STATE_BUCKET}/${scope}"
-  while IFS=$'\t' read -r key vid lm || [ -n "${key}" ]; do
+  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
     [ -n "${key}" ] || continue
     [ -n "${vid}" ] || continue
     [ "${vid}" != "None" ] || continue
-    [[ "${lm}" > "${MIGRATION_START}" ]] || continue
+    if grep -qxF -- "${key}"$'\t'"${vid}" "${PRE_MIGRATION_VERSIONS}"; then
+      continue
+    fi
     if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
         --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
       if [ "${ownership}" = "shared" ] \
@@ -436,9 +449,11 @@ assert_eq "v11 state show wrote no new state.json version" "$(state_versions)" "
 # ---------------------------------------------------------------------------
 echo "==> Phase 3: the MIGRATION deploy under the local v11 binary"
 # ---------------------------------------------------------------------------
-# Every version from here on is scanned in Phase 9. Taken a minute early: S3's
-# LastModified and this host's clock are not the same clock.
-MIGRATION_START="$(perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%S+00:00", gmtime(time - 60))')"
+# Every version NOT listed here is scanned in Phase 9.
+snapshot_versions "${STATE_PREFIX}" "pre-migration snapshot (stack prefix)"
+snapshot_versions "${INDEX_KEY}" "pre-migration snapshot (exports index)"
+snapshot_versions "${CR_RESPONSE_PREFIX}" "pre-migration snapshot (custom-resource responses)"
+pass "the pre-migration object versions are recorded ($(grep -c . "${PRE_MIGRATION_VERSIONS}" || true) row(s))"
 # The custom resource's seed rotates, so its handler runs under v11 and
 # declares its attributes (`noEchoAttributeNames`, #2449). Nothing else moves.
 export CDKD_V11_CR_SEED="${CR_SEED_B}"
@@ -455,6 +470,13 @@ for id in "${TOKEN_ID}" "${SHORT_ID}"; do
     "$(jq -c ".resources[\"${id}\"].noEchoLeaves" "${STATE_FILE}")" '[["Value"]]'
   assert_eq "v11 migration deploy: ${id}.observedProperties.Value is not in the clear" \
     "$(state_field ".resources[\"${id}\"].observedProperties.Value // \"${SECRET_MASK}\"")" "${SECRET_MASK}"
+  # The SSM provider echoes the value as `attributes.Value`; v11 declares that
+  # attribute NoEcho and masks it whatever its length (the 3-character value
+  # is in no blob scan, so only this coordinate can see it).
+  assert_eq "v11 migration deploy: ${id}.attributes.Value" \
+    "$(state_field ".resources[\"${id}\"].attributes.Value // \"<absent>\"")" "${SECRET_MASK}"
+  assert_eq "v11 migration deploy: ${id}.noEchoAttributeNames" \
+    "$(jq -c ".resources[\"${id}\"].noEchoAttributeNames" "${STATE_FILE}")" '["Value"]'
 done
 assert_eq "v11 migration deploy: ${TOPIC_ID}.properties.TopicName" \
   "$(state_field ".resources[\"${TOPIC_ID}\"].properties.TopicName")" "${SECRET_MASK}"
@@ -489,6 +511,8 @@ run_cdkd ok "v11 unchanged redeploy" "${LOCAL_DIST}" deploy "${STACK}" \
 assert_log_has_no_tokens "v11 unchanged redeploy"
 assert_eq "v11 unchanged redeploy: ${TOKEN_PARAM_NAME} was not re-sent" \
   "$(ssm_modified "${TOKEN_PARAM_NAME}")" "${TOKEN_MODIFIED_1}"
+assert_eq "v11 unchanged redeploy: ${SHORT_PARAM_NAME} was not re-sent" \
+  "$(ssm_modified "${SHORT_PARAM_NAME}")" "${SHORT_MODIFIED_1}"
 assert_eq "v11 unchanged redeploy: the topic was not replaced" "$(topic_arn)" "${TOPIC_ARN_1}"
 fetch_state "v11 unchanged redeploy"
 assert_no_tokens_in_state "v11 unchanged redeploy"
@@ -519,7 +543,9 @@ pass "the refused dependent was never created"
 export CDKD_V11_ADD_DEPENDENT=""
 run_cdkd ok "v11 redeploy without the dependent" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_log_has_no_tokens "v11 redeploy without the dependent"
 fetch_state "after the refusal"
+assert_no_tokens_in_state "v11 redeploy without the dependent"
 assert_eq "the refused dependent is not in state" \
   "$(state_field '.resources.CrDependent // "absent"')" "absent"
 
@@ -545,6 +571,12 @@ assert_log_has "v11 rotation deploy: create-only warning names the property" "${
 # ---------------------------------------------------------------------------
 echo "==> Phase 8: destroy"
 # ---------------------------------------------------------------------------
+# The custom-resource handler and its role, by TYPE (CDK hashes their ids).
+CR_HANDLER_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .physicalId][0] // ""')"
+CR_ROLE_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::IAM::Role") | .physicalId][0] // ""')"
+[ -n "${CR_HANDLER_NAME}" ] || fail "no AWS::Lambda::Function record before destroy"
+[ -n "${CR_ROLE_NAME}" ] || fail "no AWS::IAM::Role record before destroy"
+pass "the custom-resource handler and its role are recorded before destroy"
 run_cdkd ok "v11 destroy" "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
@@ -558,6 +590,12 @@ pass "every SSM parameter is gone"
 assert_gone "the topic still exists after destroy" \
   aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}"
 pass "the topic is gone"
+assert_gone "the custom-resource handler ${CR_HANDLER_NAME} still exists after destroy" \
+  aws lambda get-function --region "${REGION}" --function-name "${CR_HANDLER_NAME}"
+pass "the custom-resource handler is gone"
+assert_gone "the handler role ${CR_ROLE_NAME} still exists after destroy" \
+  aws iam get-role --role-name "${CR_ROLE_NAME}"
+pass "the handler role is gone"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 9: no object version written since the migration carries a value; sweep"
@@ -583,9 +621,11 @@ s3_assert_key_versions_swept "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent \
   "schema-v10-to-v11-migration exports index"
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 
-# THE EXECUTED-ASSERTION FLOOR, a literal maintained by hand.
-if [ "${ASSERTIONS_RUN:-0}" -lt 60 ]; then
-  echo "FAIL: only ${ASSERTIONS_RUN:-0} of 60 assertions executed — a block was skipped," >&2
+# THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
+# assertion on the success path runs once, so any other count means a block
+# was skipped (or one was added without updating this line).
+if [ "${ASSERTIONS_RUN:-0}" -ne 75 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 75 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

@@ -107,6 +107,23 @@ describe('DiffCalculator - NoEcho comparison (schema v11)', () => {
     expect(JSON.stringify(change?.propertyChanges)).not.toContain('old-token-value');
   });
 
+  it('never prints a pre-v11 list whose length changed (security review F1)', async () => {
+    const { noEchoComparison } = await import('../../../src/deployment/secret-redaction.js');
+    const compare = noEchoComparison({
+      sources: { parameters: new Set(['L']) },
+      values: { L: ['newv'] },
+      minNeedleLength: 4,
+    });
+    const out = compare({
+      templateProperties: { V: { Ref: 'L' } },
+      desired: { V: ['newv'] },
+      current: { V: ['oldsecret1', 'oldsecret2'] },
+      record: {},
+    });
+    expect(JSON.stringify(out)).not.toContain('oldsecret');
+    expect(out?.current).toEqual({ V: PREVIOUS_NOECHO_VALUE });
+  });
+
   it('without the comparison, a v11 record diffs against the plaintext (the defect it closes)', async () => {
     const current = state({ noEchoLeaves: [['Value']] });
     const resolver = new IntrinsicFunctionResolver('us-east-1');

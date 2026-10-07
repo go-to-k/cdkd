@@ -1951,6 +1951,23 @@ export function reimportedAttributes(
 }
 
 /**
+ * The `noEchoAttributeNames` field a rebuilt record carries (go-to-k/cdkd#2449):
+ * each prior declared name whose attribute in `attributes` still holds the
+ * mask. Empty or absent carries nothing, so the field stays omitted.
+ */
+export function noEchoAttributeNamesCarried(
+  prior: unknown,
+  attributes: Record<string, unknown> | undefined
+): { noEchoAttributeNames?: string[] } {
+  if (!Array.isArray(prior) || attributes === undefined) return {};
+  const kept = prior.filter(
+    (name): name is string =>
+      typeof name === 'string' && hasOwnKey(attributes, name) && carriesSecretMask(attributes[name])
+  );
+  return kept.length > 0 ? { noEchoAttributeNames: kept } : {};
+}
+
+/**
  * Compose a `StackState` from the per-resource import outcomes plus
  * dependency info recovered from the template.
  *
@@ -1971,22 +1988,6 @@ export function reimportedAttributes(
  *
  * Exported for unit testing — internal to the command flow otherwise.
  */
-/**
- * The `noEchoAttributeNames` field a rebuilt record carries (go-to-k/cdkd#2449):
- * each prior declared name whose attribute in `attributes` still holds the
- * mask. Empty or absent carries nothing, so the field stays omitted.
- */
-export function noEchoAttributeNamesCarried(
-  prior: unknown,
-  attributes: Record<string, unknown> | undefined
-): { noEchoAttributeNames?: string[] } {
-  if (!Array.isArray(prior) || attributes === undefined) return {};
-  const kept = prior.filter(
-    (name): name is string =>
-      typeof name === 'string' && hasOwnKey(attributes, name) && carriesSecretMask(attributes[name])
-  );
-  return kept.length > 0 ? { noEchoAttributeNames: kept } : {};
-}
 
 export function buildStackState(
   stackName: string,

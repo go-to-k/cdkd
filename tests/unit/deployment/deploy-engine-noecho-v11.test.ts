@@ -352,9 +352,18 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
           ? Promise.reject(new Error('throttled'))
           : Promise.resolve({ Name: '/app/p', Value: TOKEN })
       );
-      await expect(makeEngine().deploy(STACK, template())).rejects.toThrow();
+      const error = await makeEngine()
+        .deploy(STACK, template())
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(error).toBeDefined();
+      const text = String(error) + JSON.stringify(stateBackend.saveState.mock.calls) + lines(logger.error).join('\n');
+      expect(text).toContain('reading the resource back from AWS to compare it failed');
       expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Topic')).toHaveLength(0);
     });
 
     it('UPDATES a Number value that rotated, which no needle can key', async () => {
@@ -551,10 +560,18 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
     tpl.Parameters!['Port'] = { Type: 'Number', NoEcho: true, Default: 846 };
     await expect(makeEngine({ noRollback: true }).deploy(STACK, tpl)).rejects.toThrow();
-    const journal = JSON.stringify(stateBackend.appendRollbackJournalSegment.mock.calls);
-    expect(journal).toContain('attemptedProperties');
-    expect(journal).not.toContain('846');
-    expect(journal).not.toContain('731');
+    // By coordinate, not by substring: the segment's timestamp can hold any
+    // three digits.
+    const segment = stateBackend.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
+      failedOperations?: Array<{
+        logicalId: string;
+        attemptedProperties?: Record<string, unknown>;
+        previousState?: { properties: Record<string, unknown> };
+      }>;
+    };
+    const failed = segment.failedOperations?.find((op) => op.logicalId === 'Queue');
+    expect(failed?.attemptedProperties?.['DelaySeconds']).toBe('***');
+    expect(failed?.previousState?.properties['DelaySeconds']).toBe('***');
   });
 
   describe('a HELD producer serves its declared attribute to a changed reader (design 3.3)', () => {
@@ -636,6 +653,168 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         );
       expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
       expect(outcome).not.toBe('ok');
+      const text = outcome + JSON.stringify(stateBackend.saveState.mock.calls) + lines(logger.error).join('\n');
+      expect(text).toContain('declared that attribute NoEcho');
+      expect(JSON.stringify(stateBackend.saveState.mock.calls)).not.toContain('some-other-value');
+      expect(lines(logger.debug).join('\n')).not.toContain('some-other-value');
+    });
+
+    it('refuses the reader when the producer cannot report the attribute (not readable)', async () => {
+      const state = v11State({
+        Param: { attributes: { Value: '***' }, noEchoAttributeNames: ['Value'] },
+      });
+      state.resources['Reader'] = {
+        physicalId: '/app/r',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '/app/r', Type: 'String', Value: '***', Description: 'old' },
+        attributes: {},
+        dependencies: ['Param'],
+        noEchoLeaves: [['Value']],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.import = vi.fn().mockResolvedValue({ physicalId: '/app/p', attributes: {} });
+      const outcome = await makeEngine()
+        .deploy(
+          STACK,
+          template(TOKEN, {
+            Reader: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: {
+                Name: '/app/r',
+                Type: 'String',
+                Value: { 'Fn::GetAtt': ['Param', 'Value'] },
+                Description: 'new',
+              },
+            },
+          })
+        )
+        .then(
+          () => 'ok',
+          (e: unknown) => String(e)
+        );
+      expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(outcome + lines(logger.error).join('\n')).toContain('declared that attribute NoEcho');
+    });
+  });
+
+  describe('review round 1', () => {
+    it('UPDATES a 3-character value that rotated, which no needle can key', async () => {
+      const state = v11State();
+      state.resources['Short1'] = {
+        physicalId: '/app/short',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '/app/short', Type: 'String', Value: '***' },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['Value']],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === '/app/short'
+            ? { Name: '/app/short', Value: 'abc' }
+            : physicalId === TOPIC_ARN
+              ? { TopicName: TOPIC, DisplayName: 'd' }
+              : { Name: '/app/p', Value: TOKEN }
+        )
+      );
+      const tpl = template(TOKEN, {
+        Short1: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/short', Type: 'String', Value: { Ref: 'Short' } },
+        },
+      });
+      (tpl.Parameters!['Short'] as unknown as Record<string, unknown>)['Default'] = 'xyz';
+      await makeEngine().deploy(STACK, tpl);
+      const updates = callsFor(provider.update, 'Short1');
+      expect(updates).toHaveLength(1);
+      expect((updates[0]![3] as Record<string, unknown>)['Value']).toBe('xyz');
+      expect(lastSaved().resources['Short1']!.properties['Value']).toBe('***');
+    });
+
+    it('keeps the REPLACEMENT for a create-only property whose pre-v11 witness differs (an exact change)', async () => {
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve({ physicalId: `${logicalId}-new-arn`, attributes: {} })
+      );
+      stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN, 'old-topic-name'), etag: 'etag-old' });
+      await makeEngine().deploy(STACK, template());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('Topic.TopicName'))).toBe(false);
+    });
+
+    it('hands the provider the SENT value as the previous side of a held create-only path when another property changed (review: no *** to a provider)', async () => {
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['DisplayName'] = 'd2';
+      await makeEngine().deploy(STACK, tpl);
+      const updates = callsFor(provider.update, 'Topic');
+      expect(updates).toHaveLength(1);
+      expect((updates[0]![3] as Record<string, unknown>)['TopicName']).toBe(TOPIC);
+      expect((updates[0]![4] as Record<string, unknown>)['TopicName']).toBe(TOPIC);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+    });
+
+    it('never replaces on a marked *** once NoEcho is removed from the parameter (value unchanged)', async () => {
+      const tpl = template();
+      (tpl.Parameters!['TopicName'] as unknown as Record<string, unknown>)['NoEcho'] = false;
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+      expect(provider.readCurrentState.mock.calls.some((c) => c[1] === 'Topic')).toBe(true);
+    });
+
+    it('migrates a held producer echoing the value and its untouched same-stack reader (spec review)', async () => {
+      const state = v10State();
+      state.resources['Param']!.attributes = { Value: TOKEN, Type: 'String' };
+      state.resources['Consumer'] = {
+        physicalId: '/app/c',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '/app/c', Type: 'String', Value: TOKEN },
+        attributes: { Value: TOKEN },
+        dependencies: ['Param'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      await makeEngine().deploy(
+        STACK,
+        template(TOKEN, {
+          Consumer: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Name: '/app/c', Type: 'String', Value: { 'Fn::GetAtt': ['Param', 'Value'] } },
+          },
+        })
+      );
+      const saved = lastSaved();
+      expect(saved.resources['Param']!.noEchoAttributeNames).toEqual(['Value']);
+      expect(saved.resources['Param']!.attributes?.['Value']).toBe('***');
+      expect(saved.resources['Consumer']!.properties['Value']).toBe('***');
+      expect(saved.resources['Consumer']!.attributes?.['Value']).toBe('***');
+      expect(allSaved()).not.toContain(TOKEN);
+    });
+
+    it('migrates a record the failed deploy never reached, by today\'s template positions', async () => {
+      const state = v10State();
+      state.resources['Later'] = {
+        physicalId: '/app/later',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '/app/later', Type: 'String', Value: 'xy' },
+        attributes: {},
+        dependencies: ['Param'],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.update.mockImplementation((logicalId: string) =>
+        logicalId === 'Param' ? Promise.reject(new Error('boom')) : Promise.resolve({ physicalId: 'x' })
+      );
+      const tpl = template(TOKEN2, {
+        Later: {
+          Type: 'AWS::SSM::Parameter',
+          DependsOn: 'Param',
+          Properties: { Name: '/app/later', Type: 'String', Value: { Ref: 'Short' } },
+        },
+      });
+      (tpl.Parameters!['Short'] as unknown as Record<string, unknown>)['Default'] = 'xy';
+      await expect(makeEngine({ noRollback: true }).deploy(STACK, tpl)).rejects.toThrow();
+      const saved = lastSaved();
+      expect(saved.resources['Later']!.properties['Value']).toBe('***');
+      expect(saved.resources['Later']!.noEchoLeaves).toEqual([['Value']]);
     });
   });
 });

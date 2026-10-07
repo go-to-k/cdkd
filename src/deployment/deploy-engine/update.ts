@@ -37,6 +37,7 @@ import {
   liveHoldsFreshLeaves,
 } from '../deploy-value-equality.js';
 import {
+  SECRET_MASK,
   canonicalCoordinates,
   carriesSecretMask,
   freshNoEchoLeafPositions,
@@ -307,6 +308,16 @@ export async function provisionUpdate(
       ? lostCandidate
       : undefined;
   const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
+  // go-to-k/cdkd#4043 §3.3: an attribute the RECORD holds that echoes a
+  // `NoEcho` value this resource was given is declared now, before any skip,
+  // so a held (or witness-confirmed) producer still masks it on the save and
+  // its same-stack readers position it. A provider result re-declares below.
+  this.registerNoEchoAttributes(
+    logicalId,
+    currentResource.attributes === undefined ? {} : { attributes: currentResource.attributes },
+    updateSecrets,
+    resolvedProps
+  );
   // go-to-k/cdkd#4043: where a `NoEcho` PARAMETER (or an attribute declared
   // `NoEcho`) served this bag, by template position. The persisted bag holds
   // `***` at each, so the comparison side does too.
@@ -337,6 +348,19 @@ export async function provisionUpdate(
     ...parameterCoordinates,
     ...attributeCoordinates,
   ]);
+  // go-to-k/cdkd#4043: a coordinate the RECORD marks, where it holds `***`,
+  // that no `NoEcho` source serves any more (`NoEcho` removed from the
+  // parameter, or the reference replaced by an equal literal). The mask
+  // proves nothing about the value, so the leaf is read back like a
+  // parameter's, never replaced on the mask's word.
+  const staleCoordinates = (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) => {
+    if (noEchoCoordinates.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
+      return false;
+    if (valueAtCoordinate(currentProps, coordinate) !== SECRET_MASK) return false;
+    const resolved = valueAtCoordinate(resolvedProps, coordinate);
+    return resolved !== undefined && !carriesSecretMask(resolved);
+  });
+  const comparisonCoordinates = canonicalCoordinates([...noEchoCoordinates, ...staleCoordinates]);
   if (parameterCoordinates.length > 0) {
     this.noEchoPositionedValues.set(
       logicalId,
@@ -390,7 +414,7 @@ export async function provisionUpdate(
   }
   const desiredForSkipCheck = maskAtCoordinates(
     redactSecretsForState(markSameGenerationBag({ ...resolvedProps }), updateSecrets, desiredProps),
-    noEchoCoordinates
+    comparisonCoordinates
   );
   const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
@@ -493,6 +517,7 @@ export async function provisionUpdate(
     // A redacted read (the mask itself, out of a previous run's record) is
     // no value supplied in this deploy, which `positionalLeavesAt` skips.
     for (const leaf of positionalLeavesAt(parameterCoordinates, key)) addParameterLeaf(key, leaf);
+    for (const leaf of positionalLeavesAt(staleCoordinates, key)) addParameterLeaf(key, leaf);
     for (const leaf of freshNoEchoLeafPositions(resolvedProps[key], updateSecrets, 'parameter')) {
       const covered = parameterCoordinates.some(
         (coordinate) =>
@@ -662,7 +687,12 @@ export async function provisionUpdate(
         lowered.push(pc);
         continue;
       }
-      const freshLeaves = otherFreshAt(pc.path);
+      // A path carrying BOTH classes is confirmed only when every leaf holds:
+      // the parameter leaves join the custom-resource ones here.
+      const freshLeaves = [
+        ...otherFreshAt(pc.path),
+        ...(pendingParameterLeaves.get(pc.path) ?? []),
+      ];
       if (!isReplacementCeiling(pc) && freshLeaves.length === 0) {
         lowered.push(pc);
         continue;
@@ -803,6 +833,9 @@ export async function provisionUpdate(
     if (read !== undefined) {
       for (const key of pendingParameterLeaves.keys()) {
         if (parameterCreateOnlyPaths.has(key)) continue;
+        // A custom-resource leaf beside it keeps the #3729 rule (an updatable
+        // path nobody read back for it is sent).
+        if (otherFreshAt(key).length > 0) continue;
         const verdict = verdictAt(key);
         if (verdict === 'held') parameterSettledPaths.add(key);
         else if (verdict === 'not-readable') parameterUnreadablePaths.push(key);
@@ -1076,7 +1109,10 @@ export async function provisionUpdate(
       dependencies,
       desiredForSkipCheckAsWritten,
       logicalId,
-      noEchoHeldPaths,
+      // go-to-k/cdkd#4043: the parameter-class paths settled above too, so a
+      // provider never diffs `***` against the value it is sent (a create-only
+      // path cdkd said it will not replace included).
+      noEchoHeldPaths: confirmedPaths,
       parameterValues,
       progress,
       renderer,
