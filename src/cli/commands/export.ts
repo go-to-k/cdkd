@@ -3026,7 +3026,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             // legacy probe can run, and a command carrying it matches no record.
             region: migrationPending ? undefined : targetRegion,
           },
-          options.template ? undefined : template
+          options.template ? undefined : template,
+          lockRecovery
         );
         if (allSynthStacks.length > 0) {
           const crossRefs = scanCrossStackReferences(allSynthStacks, resolvedStackName);
@@ -3263,7 +3264,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           // See the nested-tree call above: a legacy record's key has no region.
           region: migrationPending ? undefined : targetRegion,
         },
-        options.template ? undefined : template
+        options.template ? undefined : template,
+        lockRecovery
       );
 
       // Cross-stack consumer scan. After this stack moves to CFn, its
@@ -6823,7 +6825,14 @@ export function reportDriftBaselineGaps(
    * never a `--template` file. It classifies a REASON-LESS refused baseline
    * exactly (issue #3465); without it that class keeps the hedged remedy.
    */
-  template?: Record<string, unknown>
+  template?: Record<string, unknown>,
+  /**
+   * The run's account flags (go-to-k/cdkd#4159), carried on the unreadable-bag
+   * warning's `cdkd state show` pointer. The baseline-gap commands below stay
+   * unqualified: they are this report's own remedies, not the malformed-record
+   * pointer, and the warning returns before any of them prints.
+   */
+  recovery?: LockRecoveryContext
 ): void {
   const stackName = loaded?.stackName ?? state.stackName;
   // A region is only a region if it is a NON-EMPTY string, and the guard is
@@ -6850,7 +6859,7 @@ export function reportDriftBaselineGaps(
   // this site partitions rather than delegating, so it makes the same test
   // itself.
   if (!hasReadableResources(state)) {
-    logger.warn(malformedResourcesWarning(stackName, region));
+    logger.warn(malformedResourcesWarning(stackName, region, recovery));
     return;
   }
   const entries = Object.entries(state.resources);

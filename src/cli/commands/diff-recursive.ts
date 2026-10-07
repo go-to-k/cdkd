@@ -134,6 +134,7 @@ import {
   UNREADABLE_ORPHANS_CONTAINER_ROW,
   UNREADABLE_RESOURCES_MAP_ROW,
 } from '../../state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 
 /**
  * The one spelling of the routing token for a resource leaving Cloud Control
@@ -616,7 +617,10 @@ export function indexNestedChildTemplates(
 async function loadStateOrEmpty(
   stackName: string,
   region: string,
-  stateBackend: S3StateBackend
+  stateBackend: S3StateBackend,
+  // go-to-k/cdkd#4159: the run's account flags, carried on each warning's
+  // `cdkd state show` pointer.
+  refusalRecovery: LockRecoveryContext | undefined
 ): Promise<{
   state: StackState;
   unreadable: string[];
@@ -645,7 +649,7 @@ async function loadStateOrEmpty(
     // passed over a record the next deploy stops on.
     const deployRefusals: string[] = [];
     if (repairMalformedResourcesForReadOnly(result.state)) {
-      logger.warn(malformedResourcesWarning(stackName, region));
+      logger.warn(malformedResourcesWarning(stackName, region, refusalRecovery));
       // BOTH lists (go-to-k/cdkd#3512): the container entry says the diff dropped the bag,
       // which `--fail` counts, and the reason says the deploy refuses the
       // record (`refuseMalformedResourcesForDeploy`), which exit 3 reports —
@@ -667,7 +671,7 @@ async function loadStateOrEmpty(
     // both this file and `diff.ts` rather than leaving to argument.
     const dropped = repairMalformedResourceEntriesForReadOnly(result.state);
     if (dropped.length > 0) {
-      logger.warn(malformedResourceEntriesWarning(stackName, region, dropped));
+      logger.warn(malformedResourceEntriesWarning(stackName, region, dropped, refusalRecovery));
       // One at a time, never spread: `push(...ids)` passes each id as an
       // ARGUMENT and throws a bare `RangeError` past the engine's argument
       // limit — the orphan-row twin below records the measurement.
@@ -700,7 +704,9 @@ async function loadStateOrEmpty(
     // previews the record and says how the preview is wrong instead.
     const unreadableProps = repairMalformedResourcePropertiesForReadOnly(result.state);
     if (unreadableProps.length > 0) {
-      logger.warn(malformedResourcePropertiesWarning(stackName, region, unreadableProps));
+      logger.warn(
+        malformedResourcePropertiesWarning(stackName, region, unreadableProps, refusalRecovery)
+      );
       deployRefusals.push(deployRefusesPropertiesReason(unreadableProps));
     }
     // The SAME treatment for the `outputs` BAG (go-to-k/cdkd#3189). Every
@@ -724,7 +730,7 @@ async function loadStateOrEmpty(
     // Separate warnings rather than one: they name different containers with
     // different consequences, and a record can be malformed in any one alone.
     if (repairMalformedOutputsForReadOnly(result.state)) {
-      logger.warn(malformedOutputsWarning(stackName, region));
+      logger.warn(malformedOutputsWarning(stackName, region, refusalRecovery));
       deployRefusals.push(DEPLOY_REFUSES_OUTPUTS_REASON);
     }
     // The `orphans` CONTAINER, decided the same way and reported separately
@@ -733,7 +739,7 @@ async function loadStateOrEmpty(
     // gate PASSES — `'abc'.length` is 3 — so the walk below it would render one
     // adoption row per character.
     if (repairMalformedOrphansForReadOnly(result.state)) {
-      logger.warn(malformedOrphansWarning(stackName, region));
+      logger.warn(malformedOrphansWarning(stackName, region, refusalRecovery));
       unreadableContainers.push('orphans');
       // `refuseMalformedOrphans` refuses the deploy over it (go-to-k/cdkd#3512).
       deployRefusals.push(DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON);
@@ -759,7 +765,7 @@ async function loadStateOrEmpty(
     // FIRES. Until review round 10 only the first direction was covered, so
     // `if (false)` here was a zero-red mutation.
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
-      logger.warn(malformedExportNamesWarning(stackName, region));
+      logger.warn(malformedExportNamesWarning(stackName, region, refusalRecovery));
     }
     return { state: result.state, unreadable, unreadableContainers, deployRefusals };
   }
@@ -1297,6 +1303,12 @@ export async function computeStackDiff(
      * {@link previewMaskedInputs}.
      */
     nestedTemplates?: Readonly<Record<string, string>>;
+    /**
+     * The run's account flags (go-to-k/cdkd#4159), carried on the
+     * `cdkd state show` pointer of each malformed-record warning this node
+     * prints and on `calculateDiff`'s refusals.
+     */
+    refusalRecovery?: LockRecoveryContext;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1823,7 +1835,8 @@ export async function computeStackDiff(
           stackName,
           region,
           unreadableOrphans.map((id) => id ?? ''),
-          false
+          false,
+          options.refusalRecovery
         )
       );
       // Every row dropped here is one `refuseMalformedOrphanRecords` refuses
@@ -1871,7 +1884,14 @@ export async function computeStackDiff(
       const tornAdopted = repairMalformedResourcePropertiesForReadOnly(stateForDiff);
       reportedByTheAdoptedPropertiesArm = tornAdopted;
       if (tornAdopted.length > 0) {
-        logger.warn(malformedResourcePropertiesWarning(stackName, region, tornAdopted));
+        logger.warn(
+          malformedResourcePropertiesWarning(
+            stackName,
+            region,
+            tornAdopted,
+            options.refusalRecovery
+          )
+        );
         // The same deploy refusal the load's arm reports (go-to-k/cdkd#3335),
         // and it belongs here rather than beside the load because these
         // records never passed through it.
@@ -1935,7 +1955,14 @@ export async function computeStackDiff(
       // because every other class still warns at every node. This one did not:
       // the row is KEPT, so the drop warning above never speaks for it, and a
       // changed nested child printed nothing while its own deploy refused.
-      logger.warn(malformedOrphanRowsKeptWarning(stackName, region, previewedRowsTheDeployRefuses));
+      logger.warn(
+        malformedOrphanRowsKeptWarning(
+          stackName,
+          region,
+          previewedRowsTheDeployRefuses,
+          options.refusalRecovery
+        )
+      );
       deployRefusals.push(deployRefusesOrphanRowsReason(previewedRowsTheDeployRefuses));
     }
   }
@@ -1995,7 +2022,8 @@ export async function computeStackDiff(
     // resolved values (go-to-k/cdkd#4049).
     maskForLog,
     undefined,
-    maskedInputs
+    maskedInputs,
+    options.refusalRecovery
   );
 
   // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
@@ -2958,6 +2986,11 @@ export async function buildDiffTree(args: {
    * {@link StackDiffResult.printingSecrets}. Absent at the root.
    */
   inheritedSecrets?: RecordedSecretValues;
+  /**
+   * The run's account flags (go-to-k/cdkd#4159), carried on every
+   * malformed-record warning's `cdkd state show` pointer at every node.
+   */
+  refusalRecovery?: LockRecoveryContext;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -2979,13 +3012,15 @@ export async function buildDiffTree(args: {
     ancestorTemplatePaths,
     isNestedChild,
     inheritedSecrets,
+    refusalRecovery,
   } = args;
   const attributeHealer = attributeHealerFor?.(stackName, region);
 
   const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
     stackName,
     region,
-    stateBackend
+    stateBackend,
+    refusalRecovery
   );
   // Warm the create-only DescribeType cache while the preprocessing below
   // runs, as `cdkd deploy` does (issue #3718). Without it `calculateDiff`
@@ -3036,6 +3071,7 @@ export async function buildDiffTree(args: {
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
         ...(attributeHealer && { attributeHealer }),
+        ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
@@ -3225,6 +3261,7 @@ export async function buildDiffTree(args: {
         isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
+        ...(refusalRecovery && { refusalRecovery }),
       })
     );
   }
@@ -3257,7 +3294,8 @@ export async function buildDiffTree(args: {
         // values. Accumulated from above, so an intermediate template that
         // happens to carry no reference cannot break the chain.
         secretBearingAbove,
-        printingSecrets
+        printingSecrets,
+        refusalRecovery
       )
     );
   }
@@ -3279,12 +3317,15 @@ async function buildDeletedSubtree(
   parentHasSecretReference: boolean,
   // The nearest live node's printing corpus (go-to-k/cdkd#4049): a REMOVE
   // row's stored value can hold a `NoEcho` value that node passed down.
-  inheritedSecrets: RecordedSecretValues
+  inheritedSecrets: RecordedSecretValues,
+  // go-to-k/cdkd#4159: the run's account flags, as at a live node.
+  refusalRecovery: LockRecoveryContext | undefined
 ): Promise<DiffTreeNode> {
   const { state, unreadable, unreadableContainers } = await loadStateOrEmpty(
     stackName,
     region,
-    stateBackend
+    stateBackend,
+    refusalRecovery
   );
   const { changes, outputChanges } = await computeStackDiff(
     state,
@@ -3293,7 +3334,11 @@ async function buildDeletedSubtree(
     stackName,
     stateBackend,
     diffCalculator,
-    { inheritSecretBearingTemplate: parentHasSecretReference, inheritedSecrets }
+    {
+      inheritSecretBearingTemplate: parentHasSecretReference,
+      inheritedSecrets,
+      ...(refusalRecovery && { refusalRecovery }),
+    }
   );
   const node: DiffTreeNode = {
     stackName,
@@ -3346,7 +3391,8 @@ async function buildDeletedSubtree(
         stateBackend,
         diffCalculator,
         parentHasSecretReference,
-        inheritedSecrets
+        inheritedSecrets,
+        refusalRecovery
       )
     );
   }

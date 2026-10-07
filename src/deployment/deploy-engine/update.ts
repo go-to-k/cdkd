@@ -457,7 +457,8 @@ export async function provisionUpdate(
             stackName,
             this.stackRegion,
             logicalId,
-            oldResourceType
+            oldResourceType,
+            this.options.refusalRecovery
           ),
           STATE_RESOURCES_MALFORMED
         )

@@ -20,6 +20,7 @@ import type { CloudFormationTemplate, ResourceProvider } from '../../../src/type
 import type { ResourceChange } from '../../../src/types/state.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../../../src/state/lock-contention-message.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -142,7 +143,9 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
     } as unknown as ResourceProvider;
   });
 
-  function makeEngine(): InstanceType<typeof DeployEngine> {
+  function makeEngine(
+    extra: { refusalRecovery?: LockRecoveryContext } = {}
+  ): InstanceType<typeof DeployEngine> {
     return new DeployEngine(
       { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag') } as never,
       {
@@ -173,6 +176,7 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
           record: (event: Omit<DeploymentEvent, 'timestamp'>) =>
             events.push(event as DeploymentEvent),
         },
+        ...extra,
       },
       'us-east-1'
     );
@@ -409,6 +413,30 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
         expect(provider.delete).not.toHaveBeenCalled();
       });
     }
+
+    // go-to-k/cdkd#4159: the refusal's `cdkd state show` pointer carries the
+    // engine's account flags, so a pasted command reads the bucket the deploy
+    // read; with none handed in, the command is the unqualified one.
+    it('the refusal carries the engine options\' account flags on its inspect command', async () => {
+      const refuse = (extra: { refusalRecovery?: LockRecoveryContext }) =>
+        provision(makeEngine(extra), updateChange('b'), record(''), templateWith('b'), freshCounts())
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          )
+          .then((e) => cdkdErrorIn(e)?.message ?? '');
+      const flagged = await refuse({
+        refusalRecovery: { profile: 'prod', stateBucket: 'my-bucket', statePrefix: 'team-a' },
+      });
+      expect(
+        flagged.endsWith(
+          'cdkd state show MyStack --stack-region us-east-1 --json --profile prod ' +
+            '--state-bucket my-bucket --state-prefix team-a'
+        )
+      ).toBe(true);
+      const bare = await refuse({});
+      expect(bare.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(true);
+    });
 
     it('control: a usable physicalId is updated', async () => {
       await provision(

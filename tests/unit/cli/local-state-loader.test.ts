@@ -132,6 +132,9 @@ describe('loadStateForStack — globalClients lifecycle', () => {
     });
 
     expect(result?.region).toBe('us-east-1');
+    // The RESOLVED bucket rides back, for the caller's malformed-record
+    // warnings (go-to-k/cdkd#4159).
+    expect(result?.stateBucket).toBe('test-bucket');
     // After loadStateForStack returns, globalClients must be null —
     // getAwsClients() should construct a fresh instance, not return the
     // destroyed one set inside the helper.

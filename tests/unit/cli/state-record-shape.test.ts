@@ -145,13 +145,26 @@ import {
  * path, not a glob: it is a claim about ONE function in ONE file, and a walk
  * that silently matched nothing would be green.
  */
+/**
+ * The account a run of these cases reads from (go-to-k/cdkd#4159): the mocked
+ * resolved bucket and the default prefix, which every malformed-record warning
+ * carries on its `cdkd state show` pointer.
+ */
+const RUN_ACCOUNT = { stateBucket: 'test-bucket', statePrefix: 'cdkd' };
+
 const STATE_TS = fileURLToPath(new URL('../../../src/cli/commands/state.ts', import.meta.url));
 
 /** Answer each command the real read path issues, by name and key. */
-function route(command: { constructor: { name: string }; input: { Key?: string } }): unknown {
+function route(command: {
+  constructor: { name: string };
+  input: { Key?: string; Prefix?: string };
+}): unknown {
   const name = command.constructor.name;
   if (name === 'ListObjectsV2Command') {
-    return { Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }], IsTruncated: false };
+    // Under the run's own `--state-prefix` (go-to-k/cdkd#4159 drives a
+    // non-default one); every other case lists the default `cdkd/`.
+    const prefix = (command.input.Prefix ?? 'cdkd/').split('/')[0];
+    return { Contents: [{ Key: `${prefix}/MyStack/us-east-1/state.json` }], IsTruncated: false };
   }
   if (name === 'GetObjectCommand') {
     const key = command.input.Key ?? '';
@@ -559,7 +572,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     ];
 
     /** What the shared module says, for the one stack every case reads. */
-    const WARNING = malformedResourcesWarning('MyStack', 'us-east-1');
+    const WARNING = malformedResourcesWarning('MyStack', 'us-east-1', RUN_ACCOUNT);
 
     it('the fabricating shapes really do fabricate, so the cases below are not vacuous', () => {
       // Not a claim about cdkd: a claim about `Object.entries`, which is the
@@ -679,7 +692,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // Named by the CHILD's stack name, not the root's — one warning per
       // repaired record is what tells an operator which one is broken.
       expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([
-        malformedResourcesWarning('MyStack~Child', 'us-east-1'),
+        malformedResourcesWarning('MyStack~Child', 'us-east-1', RUN_ACCOUNT),
       ]);
     });
 
@@ -904,7 +917,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
           // only through `nodesWalked`'s arithmetic, which reports a wrong walk
           // count and points a reader at the walker instead of the warner.
           expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([
-            malformedResourcesWarning('MyStack~Child~Grand', 'us-east-1'),
+            malformedResourcesWarning('MyStack~Child~Grand', 'us-east-1', RUN_ACCOUNT),
           ]);
         }
       }
@@ -1204,7 +1217,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     function containerWarning(
       ...containers: Parameters<typeof malformedRenderedContainersWarning>[2]
     ): string {
-      return malformedRenderedContainersWarning('MyStack', 'us-east-1', containers);
+      return malformedRenderedContainersWarning('MyStack', 'us-east-1', containers, RUN_ACCOUNT);
     }
 
     /** Every warning the run emitted, in order. */
@@ -1495,7 +1508,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       expect(out).toContain('Nested stack: MyStack~Child');
       expect(out).not.toMatch(FABRICATED_ROW);
       expect(warnings()).toEqual([
-        malformedRenderedContainersWarning('MyStack~Child', 'us-east-1', ['outputs']),
+        malformedRenderedContainersWarning('MyStack~Child', 'us-east-1', ['outputs'], RUN_ACCOUNT),
       ]);
     });
 
@@ -1528,7 +1541,12 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       expect(out).toContain('Nested stack: MyStack~Child');
       expect(warnings()).toEqual([
         containerWarning('outputs'),
-        malformedRenderedContainersWarning('MyStack~Child', 'us-east-1', ['properties']),
+        malformedRenderedContainersWarning(
+          'MyStack~Child',
+          'us-east-1',
+          ['properties'],
+          RUN_ACCOUNT
+        ),
       ]);
     });
 
@@ -1773,4 +1791,90 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       expect(resourcesSet).toHaveLength(2);
     });
   });
+});
+
+describe("state.ts's read-only renders carry the account flags (go-to-k/cdkd#4159)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    childWarnSpy.mockReset();
+    walkSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+    bucket.state = record();
+    bucket.lock = undefined;
+    bucket.children = {};
+    s3Send.mockImplementation(async (command) => route(command));
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  const SHOW = (stack: string): string => `cdkd state show ${stack} --stack-region us-east-1 --json`;
+  // A NON-default prefix, so the `setup.prefix` leg is observable: the default
+  // `cdkd` is never printed.
+  const FLAGS = '--profile prod --state-bucket test-bucket --state-prefix team-a';
+  const warned = (): string => warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
+  const row = (extra: Record<string, unknown> = {}) => ({
+    resourceType: 'AWS::S3::Bucket',
+    physicalId: 'my-bucket',
+    properties: {},
+    ...extra,
+  });
+  const nestedParent = () =>
+    record({
+      resources: {
+        Child: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'c', properties: {} },
+      },
+    });
+
+  /** One case per helper call site: [label, argv, root record, child record?, stack named]. */
+  const SITES: Array<[string, string[], () => string, (() => string) | undefined, string]> = [
+    ['state resources: the bag', ['resources', 'MyStack'], () => record({ resources: 'abcdef' }), undefined, 'MyStack'],
+    [
+      'state resources --long: an attributes map (repairRenderedContainers)',
+      ['resources', 'MyStack', '--long'],
+      () => record({ resources: { R: row({ attributes: 42 }) } }),
+      undefined,
+      'MyStack',
+    ],
+    ['state show: the bag (repairRecordForTextRender)', ['show', 'MyStack'], () => record({ resources: 'abcdef' }), undefined, 'MyStack'],
+    ['state show: the outputs bag', ['show', 'MyStack'], () => record({ outputs: 'abcdef' }), undefined, 'MyStack'],
+    [
+      'state show --show-nested: a child bag (repairTreeForTextRender)',
+      ['show', 'MyStack', '--show-nested'],
+      nestedParent,
+      () => record({ stackName: 'MyStack~Child', resources: 'abcdef' }),
+      "'MyStack~Child'",
+    ],
+    [
+      'state show --show-nested --json: a root bag (warnUnreadableTreeNodes)',
+      ['show', 'MyStack', '--show-nested', '--json'],
+      () => record({ resources: 'abcdef' }),
+      undefined,
+      'MyStack',
+    ],
+  ];
+
+  for (const [label, argv, root, child, stack] of SITES) {
+    it(`${label}: the warning carries --profile, the resolved bucket and the prefix`, async () => {
+      bucket.state = root();
+      if (child) bucket.children['MyStack~Child'] = child();
+      const { error } = await runState([...argv, '--profile', 'prod', '--state-prefix', 'team-a']);
+      expectRendered(error);
+      expect(warned()).toContain(`${SHOW(stack)} ${FLAGS}`);
+    });
+
+    it(`${label}: CONTROL — with no --profile only the resolved bucket rides`, async () => {
+      bucket.state = root();
+      if (child) bucket.children['MyStack~Child'] = child();
+      const { error } = await runState(argv);
+      expectRendered(error);
+      expect(warned()).toContain(`${SHOW(stack)} --state-bucket test-bucket`);
+      expect(warned()).not.toContain('--profile');
+    });
+  }
 });

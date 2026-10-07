@@ -5,6 +5,7 @@ import type { StackState } from '../../types/state.js';
 import type { DestructiveChange } from '../../analyzer/destructive-changes.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 
 /**
  * Default per-resource warn threshold: warn the user when a single
@@ -41,6 +42,15 @@ export interface DeployEngineOptions {
    * with ambient credentials.
    */
   roleArn?: string;
+  /**
+   * The run's `--profile`, resolved state bucket and `--state-prefix`, which
+   * the malformed-record refusals at the state load (and the unaddressable
+   * UPDATE refusal) print on their `cdkd state show` / `cdkd state list`
+   * pointers, so a pasted command reads the bucket this deploy read
+   * (go-to-k/cdkd#4159). Account values, not stack identifiers, so a nested
+   * child engine inheriting it through the option spread is correct.
+   */
+  refusalRecovery?: LockRecoveryContext;
   /**
    * Per-resource warn threshold (ms). When a single CREATE / UPDATE /
    * DELETE has been running this long, the live renderer's task label

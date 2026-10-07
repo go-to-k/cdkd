@@ -1,5 +1,6 @@
 import { describe, it, expectTypeOf } from 'vite-plus/test';
 import { malformedOrphanRecordsWarning } from '../../../src/state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../../../src/state/lock-contention-message.js';
 
 /**
  * Issue [#3500](https://github.com/go-to-k/cdkd/issues/3500): the REQUIREDNESS of
@@ -25,9 +26,11 @@ describe('malformedOrphanRecordsWarning requires its predicate flag (issue #3500
     // written without deciding which predicate it took looks like, and with a
     // defaulted parameter it compiles and silently takes `cdkd diff`'s text.
     malformedOrphanRecordsWarning('MyStack', 'us-east-1', ['A']);
-    // ...and the four-argument form is the only way in, either value.
+    // ...and the four-argument form is the only way in, either value. The
+    // optional fifth is the caller's account flags (go-to-k/cdkd#4159), which
+    // carries no wording choice.
     expectTypeOf(malformedOrphanRecordsWarning).parameters.toEqualTypeOf<
-      [string, string, readonly string[], boolean]
+      [string, string, readonly string[], boolean, (LockRecoveryContext | undefined)?]
     >();
   });
 });

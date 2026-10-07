@@ -6939,7 +6939,11 @@ describe('the properties-container guards dominate their reads (issue go-to-k/cd
       `${CALCULATOR} passes an identity to the refusal. The only one in reach is ` +
         `\`currentState.stackName\` / \`.region\`, fields of the record being declared ` +
         `malformed — a planted pair names a different, healthy stack.`
-    ).toContain('refuseMalformedResourceProperties(currentState, undefined, undefined)');
+    ).toContain(
+      // The trailing account flags (go-to-k/cdkd#4159) are the run's trusted
+      // CLI values, not the record's; the IDENTITY slots stay empty.
+      'refuseMalformedResourceProperties(currentState, undefined, undefined, refusalRecovery)'
+    );
     // And it must not take the read-only helper instead: this module is
     // reached by cdkd deploy, which provisions.
     expect(

@@ -594,7 +594,8 @@ export async function setupStateBackend(options: {
     bucket,
     prefix,
     region,
-    stateBackend
+    stateBackend,
+    { profile: options.profile }
   );
 
   return {
@@ -607,6 +608,19 @@ export async function setupStateBackend(options: {
     exportIndexStore,
     dispose: () => awsClients.destroy(),
   };
+}
+
+/**
+ * The account flags a read-only render's malformed-record warnings print on
+ * their `cdkd state show` pointer: the run's `--profile` and the bucket and
+ * prefix {@link setupStateBackend} resolved, so a pasted command reads the
+ * record this run read (go-to-k/cdkd#4159).
+ */
+function renderRecovery(
+  options: { profile?: string | undefined },
+  setup: { bucket: string; prefix: string }
+): LockRecoveryContext {
+  return { profile: options.profile, stateBucket: setup.bucket, statePrefix: setup.prefix };
 }
 
 /**
@@ -1057,7 +1071,7 @@ async function stateResourcesCommand(
     // with a record is the opposite of useful, and `cdkd state list --long`
     // sends operators here for exactly that reason.
     if (repairMalformedResourcesForReadOnly(stateResult.state)) {
-      logger.warn(malformedResourcesWarning(stackName, ref.region));
+      logger.warn(malformedResourcesWarning(stackName, ref.region, renderRecovery(options, setup)));
     }
     // And the same for the one VALUE container this command renders — each
     // resource's `attributes` (issue go-to-k/cdkd#3187). `properties`,
@@ -1088,7 +1102,8 @@ async function stateResourcesCommand(
         RESOURCES_RENDERED_CONTAINERS,
         stackName,
         ref.region,
-        logger
+        logger,
+        renderRecovery(options, setup)
       );
     }
     // No `?? {}`: the repair above leaves a plain object behind whatever the
@@ -1464,12 +1479,12 @@ async function stateShowCommand(
         // `children: []`, which is exactly what a leaf looks like, so a consumer
         // enumerating the tree concludes it is complete when a subtree was cut.
         // The record itself is still emitted verbatim, so the evidence survives.
-        warnUnreadableTreeNodes(treeWithLocks, logger);
+        warnUnreadableTreeNodes(treeWithLocks, logger, renderRecovery(options, setup));
         process.stdout.write(`${stringifyJsonPayload(treeToShowJson(treeWithLocks))}\n`);
         return;
       }
 
-      repairTreeForTextRender(treeWithLocks, logger);
+      repairTreeForTextRender(treeWithLocks, logger, renderRecovery(options, setup));
       const lines = renderTreeWithChildren(treeWithLocks);
       process.stdout.write(`${lines.join('\n')}\n`);
       return;
@@ -1482,7 +1497,13 @@ async function stateShowCommand(
       return;
     }
 
-    repairRecordForTextRender(stateResult.state, stackName, ref.region, logger);
+    repairRecordForTextRender(
+      stateResult.state,
+      stackName,
+      ref.region,
+      logger,
+      renderRecovery(options, setup)
+    );
     process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
   } finally {
     setup.dispose();
@@ -1639,7 +1660,8 @@ function repairRenderedContainers(
   walked: ReadonlySet<RenderedStateContainer>,
   stackName: string,
   region: string,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  recovery: LockRecoveryContext
 ): void {
   const repaired = new Set<RenderedStateContainer>();
   const emptyIfUnwalkable = (
@@ -1675,7 +1697,8 @@ function repairRenderedContainers(
     malformedRenderedContainersWarning(
       stackName,
       region,
-      RENDERED_CONTAINER_ORDER.filter((name) => repaired.has(name))
+      RENDERED_CONTAINER_ORDER.filter((name) => repaired.has(name)),
+      recovery
     )
   );
 }
@@ -1722,12 +1745,13 @@ function repairRecordForTextRender(
   state: StackState,
   stackName: string,
   region: string,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  recovery: LockRecoveryContext
 ): void {
   if (repairMalformedResourcesForReadOnly(state)) {
-    logger.warn(malformedResourcesWarning(stackName, region));
+    logger.warn(malformedResourcesWarning(stackName, region, recovery));
   }
-  repairRenderedContainers(state, SHOW_RENDERED_CONTAINERS, stackName, region, logger);
+  repairRenderedContainers(state, SHOW_RENDERED_CONTAINERS, stackName, region, logger, recovery);
 }
 
 /**
@@ -1743,10 +1767,11 @@ function repairRecordForTextRender(
  */
 function repairTreeForTextRender(
   node: CdkdStateStackTreeWithLock,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  recovery: LockRecoveryContext
 ): void {
-  repairRecordForTextRender(node.state, node.stackName, node.region, logger);
-  for (const child of node.children) repairTreeForTextRender(child, logger);
+  repairRecordForTextRender(node.state, node.stackName, node.region, logger, recovery);
+  for (const child of node.children) repairTreeForTextRender(child, logger, recovery);
 }
 
 /**
@@ -1765,12 +1790,13 @@ function repairTreeForTextRender(
  */
 function warnUnreadableTreeNodes(
   node: CdkdStateStackTreeWithLock,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  recovery: LockRecoveryContext
 ): void {
   if (!hasReadableResources(node.state)) {
-    logger.warn(malformedResourcesWarning(node.stackName, node.region));
+    logger.warn(malformedResourcesWarning(node.stackName, node.region, recovery));
   }
-  for (const child of node.children) warnUnreadableTreeNodes(child, logger);
+  for (const child of node.children) warnUnreadableTreeNodes(child, logger, recovery);
 }
 
 /**

@@ -1129,6 +1129,14 @@ async function driftCommand(
     const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
     const prefix = options.statePrefix;
     const stateConfig = { bucket, prefix };
+    // The account flags a malformed-record refusal or warning prints on its
+    // `cdkd state show` / `cdkd state list` pointers, so a pasted command reads
+    // the bucket this run read (go-to-k/cdkd#4159).
+    const refusalRecovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket: bucket,
+      statePrefix: prefix,
+    };
 
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
       region,
@@ -1263,7 +1271,8 @@ async function driftCommand(
           // two flags are mutually exclusive (checked above), so either one alone
           // makes the run write-capable.
           options.accept || options.revert ? 'refuse' : 'repair',
-          nestedChildRecord
+          nestedChildRecord,
+          refusalRecovery
         )
       );
       reports.push(report);
@@ -3091,7 +3100,10 @@ async function runDriftForStack(
   malformedRecordMode: 'repair' | 'refuse',
   // go-to-k/cdkd#4533: what this stack's nested rows' own records are in the
   // run — decided by the driver, the one place that holds the selection.
-  nestedChildRecord: (childStackName: string, region: string) => NestedChildRecord
+  nestedChildRecord: (childStackName: string, region: string) => NestedChildRecord,
+  // go-to-k/cdkd#4159: the run's account flags, carried on the pasteable
+  // commands both modes' malformed-record messages print.
+  refusalRecovery: LockRecoveryContext
 ): Promise<StackDriftReport> {
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -3137,14 +3149,14 @@ async function runDriftForStack(
     // because a `{}` baseline walks no keys and would read as CLEAN.
     let unreadablePropertyBags: ReadonlySet<string> = new Set();
     if (malformedRecordMode === 'refuse') {
-      refuseMalformedState(state, stackName, region);
-      refuseMalformedResourceEntries(state, stackName, region);
+      refuseMalformedState(state, stackName, region, refusalRecovery);
+      refuseMalformedResourceEntries(state, stackName, region, refusalRecovery);
       // After the entry refusal: a typeless object with a torn map is named by
       // both, and the entry text is the more precise diagnosis.
-      refuseMalformedResourcePropertiesForDrift(state, stackName, region);
+      refuseMalformedResourcePropertiesForDrift(state, stackName, region, refusalRecovery);
     } else {
       if (repairMalformedResourcesForReadOnly(state)) {
-        logger.warn(malformedResourcesWarning(stackName, region));
+        logger.warn(malformedResourcesWarning(stackName, region, refusalRecovery));
         // ONE outcome for the whole record, for the reason the entry arm below
         // gives per row: the warning goes to stderr, so without an outcome an
         // unreadable BAG produced no `notCompared` row, an empty `--json`
@@ -3163,7 +3175,7 @@ async function runDriftForStack(
       }
       const dropped = repairMalformedResourceEntriesForReadOnly(state);
       if (dropped.length > 0) {
-        logger.warn(malformedResourceEntriesWarning(stackName, region, dropped));
+        logger.warn(malformedResourceEntriesWarning(stackName, region, dropped, refusalRecovery));
         // One OUTCOME per dropped row, not just the warning. The warning goes to
         // stderr, which a `cdkd drift --json > report.json` gate discards; the
         // outcome joins the roll-up, the `--json` payload and `outcomeExitSignal`,
@@ -3188,7 +3200,9 @@ async function runDriftForStack(
       // walk below reports it instead of comparing it.
       const repaired = repairMalformedResourcePropertiesForReadOnly(state);
       if (repaired.length > 0) {
-        logger.warn(malformedDriftResourcePropertiesWarning(stackName, region, repaired));
+        logger.warn(
+          malformedDriftResourcePropertiesWarning(stackName, region, repaired, refusalRecovery)
+        );
         unreadablePropertyBags = new Set(repaired);
       }
     }

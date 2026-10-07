@@ -199,9 +199,18 @@ export interface ExportIndexStoreOptions {
   initialBackoffMs?: number;
   /** Cap (ms) for retry backoff. */
   maxBackoffMs?: number;
+  /**
+   * The caller's `--profile` (go-to-k/cdkd#4159). With the store's own bucket
+   * and prefix it qualifies the `cdkd state show` pointer of the warning a
+   * rebuild prints for a producer record it could not read, so a pasted
+   * command reads this bucket.
+   */
+  profile?: string | undefined;
 }
 
-const DEFAULT_OPTIONS: Required<ExportIndexStoreOptions> = {
+type RetryOptions = Omit<ExportIndexStoreOptions, 'profile'>;
+
+const DEFAULT_OPTIONS: Required<RetryOptions> = {
   maxWriteRetries: 5,
   initialBackoffMs: 100,
   maxBackoffMs: 1000,
@@ -215,7 +224,8 @@ export class ExportIndexStore {
   private region: string;
   private stateBackend: S3StateBackend;
   private loadState: LoadState = { kind: 'unloaded' };
-  private opts: Required<ExportIndexStoreOptions>;
+  private opts: Required<RetryOptions>;
+  private profile: string | undefined;
   /**
    * In-process serializer for write paths (`updateForStack`,
    * `patchEntry`, `removeStack`). The S3 `If-Match` etag prevents
@@ -247,7 +257,9 @@ export class ExportIndexStore {
     this.prefix = prefix;
     this.region = region;
     this.stateBackend = stateBackend;
-    this.opts = { ...DEFAULT_OPTIONS, ...opts };
+    const { profile, ...retry } = opts;
+    this.profile = profile;
+    this.opts = { ...DEFAULT_OPTIONS, ...retry };
   }
 
   /** S3 key for this region's index file. */
@@ -667,7 +679,13 @@ export class ExportIndexStore {
       // index's `Fn::ImportValue` resolution down. The record itself is left
       // exactly as it is, for the write-capable commands to refuse by name.
       if (!hasReadableExportSet(state)) {
-        this.logger.warn(malformedExportSourceWarning(ref.stackName, region));
+        this.logger.warn(
+          malformedExportSourceWarning(ref.stackName, region, {
+            profile: this.profile,
+            stateBucket: this.bucket,
+            statePrefix: this.prefix,
+          })
+        );
         continue;
       }
       const stateModified = state.lastModified ?? 0;

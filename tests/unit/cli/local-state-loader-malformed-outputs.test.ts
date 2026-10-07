@@ -120,6 +120,34 @@ describe('cdkd local Fn::GetStackOutput over a malformed producer bag (go-to-k/c
     });
   }
 
+  // go-to-k/cdkd#4159: the warning's `cdkd state show` pointer carries the
+  // run's `--profile`, the RESOLVED bucket and a non-default prefix, and the
+  // store this resolver builds is handed the same profile.
+  it('the warning carries the account flags; with none passed, only the resolved bucket', async () => {
+    const run = async (opts: { statePrefix: string; profile?: string }): Promise<string> => {
+      for (const m of Object.values(mocks)) m.mockReset();
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.verifyBucketExistsMock.mockResolvedValue(undefined);
+      mocks.listStacksMock.mockResolvedValue([]);
+      mocks.getStateMock.mockResolvedValue({
+        state: { stackName: 'Producer', resources: {}, outputs: 'abcdef' },
+        etag: 'e',
+      });
+      const built = await buildCrossStackResolver('us-east-1', opts);
+      if (!built) throw new Error('expected resolver build to succeed');
+      await built.resolver.resolveGetStackOutput('Producer', 'us-east-1', '0');
+      built.dispose();
+      return warned();
+    };
+    const show = 'cdkd state show Producer --stack-region us-east-1 --json';
+    expect(await run({ statePrefix: 'team-a', profile: 'prod' })).toContain(
+      `${show} --profile prod --state-bucket test-bucket --state-prefix team-a`
+    );
+    const bare = await run({ statePrefix: 'cdkd' });
+    expect(bare).toContain(`${show} --state-bucket test-bucket`);
+    expect(bare).not.toContain('--profile');
+  });
+
   it('names the RECORD region on the case-variant recovery arm, not the caller spelling', async () => {
     // That arm reads a DIFFERENT key from the one the caller named, so a
     // warning carrying `producerRegion` would point at a record that does not

@@ -37,6 +37,7 @@ import {
   refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourcesForDeploy,
 } from '../../state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { analyzePinCcApiReachability } from './pin-cc-api-reachability.js';
 import { refuseMalformedNestedTemplateTrees } from './nested-template-preflight.js';
 import { promptYesNo } from './confirm-prompt.js';
@@ -358,7 +359,8 @@ async function deployCommand(
       stateBucket,
       options.statePrefix,
       region,
-      preflightStateBackend
+      preflightStateBackend,
+      { profile: options.profile }
     );
     return { stateBucket, preflightStateBackend, exportIndexStore };
   })();
@@ -429,6 +431,15 @@ async function deployCommand(
     // The deferred macro-expander (expandMacrosForStacks, below) needs the
     // resolved state bucket for its > 51,200-byte template upload path (#463).
     synthOptions.stateBucket = stateBucket;
+    // The account flags every malformed-record refusal of this run prints on
+    // its `cdkd state show` / `cdkd state list` pointers — the pre-lock
+    // `--recreate-via-*` read below and the engine's own state load alike, so
+    // the two render the same record identically (go-to-k/cdkd#4159).
+    const refusalRecovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket,
+      statePrefix: options.statePrefix,
+    };
 
     const { stacks: allStacks } = result;
 
@@ -927,12 +938,14 @@ async function deployCommand(
             refuseMalformedResourcesForDeploy(
               stateForRecreateCheck.state,
               stackInfo.stackName,
-              stackRegion
+              stackRegion,
+              refusalRecovery
             );
             refuseMalformedResourceEntriesForDeploy(
               stateForRecreateCheck.state,
               stackInfo.stackName,
-              stackRegion
+              stackRegion,
+              refusalRecovery
             );
           }
           const syncValidation = validateRecreateTargets({
@@ -1078,6 +1091,7 @@ async function deployCommand(
           dryRun: options.dryRun,
           noRollback: !options.rollback,
           ...(options.roleArn && { roleArn: options.roleArn }),
+          refusalRecovery,
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
           ...(migrationGate && { onCurrentStateLoaded: migrationGate }),

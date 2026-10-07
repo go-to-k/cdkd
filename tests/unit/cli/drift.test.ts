@@ -7679,3 +7679,111 @@ describe('site 1 prints its command on a labelled line and names no unsafe key (
   }, 30_000);
 
 });
+
+describe('cdkd drift carries the account flags on its malformed-record pointers (go-to-k/cdkd#4159)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  const healthy = () => ({
+    physicalId: 'b',
+    resourceType: 'AWS::S3::Bucket',
+    properties: { BucketName: 'b' },
+  });
+  /**
+   * One record per site of `runDriftForStack`, each malformed where that site
+   * looks. FACTORIES: the repair mode mutates the record it is handed, so a
+   * shared literal would reach the next case already repaired.
+   */
+  const SITES: ReadonlyArray<readonly [string, () => unknown]> = [
+    ['the resources bag', () => 'abcdef'],
+    ['a resource row', () => ({ HealthyBucket: healthy(), BrokenRow: null })],
+    [
+      "a row's properties map",
+      () => ({ HealthyBucket: healthy(), Torn: { ...healthy(), properties: 'x' } }),
+    ],
+  ];
+  const SHOW = 'cdkd state show TestStack --stack-region us-east-1 --json';
+  // `test-bucket` is the module mock's resolved bucket: the RESOLVED value
+  // rides, not the raw flag (which these runs do not pass).
+  const FLAGS = '--profile prod --state-bucket test-bucket --state-prefix team-a';
+
+  function load(make: () => unknown): void {
+    const resources = make();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce({
+      state: {
+        version: 2,
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        resources: resources as StackState['resources'],
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"etag-1"',
+    });
+  }
+  const warned = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+  const refused = (): string => errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  for (const [site, resources] of SITES) {
+    it(`repair mode, ${site}: the warning's inspect command carries the flags`, async () => {
+      load(resources);
+      await runDrift(['TestStack', '--profile', 'prod', '--state-prefix', 'team-a']);
+      expect(warned()).toContain(`${SHOW} ${FLAGS}`);
+    });
+
+    it(`refuse mode, ${site}: the refusal's inspect command carries the flags`, async () => {
+      load(resources);
+      const { error } = await runDrift([
+        'TestStack',
+        '--accept',
+        '--yes',
+        '--profile',
+        'prod',
+        '--state-prefix',
+        'team-a',
+      ]);
+      expect(error).toBeDefined();
+      expect(refused()).toContain(`${SHOW} ${FLAGS}`);
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it(`refuse-mode CONTROL, ${site}: with no --profile / --state-prefix only the resolved bucket rides`, async () => {
+      load(resources);
+      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+      expect(error).toBeDefined();
+      expect(refused()).toContain(`${SHOW} --state-bucket test-bucket`);
+      expect(refused()).not.toContain('--profile');
+      expect(refused()).not.toContain('--state-prefix');
+    });
+
+    it(`CONTROL, ${site}: with no --profile / --state-prefix only the resolved bucket rides`, async () => {
+      load(resources);
+      await runDrift(['TestStack']);
+      expect(warned()).toContain(`${SHOW} --state-bucket test-bucket`);
+      expect(warned()).not.toContain('--profile');
+      expect(warned()).not.toContain('--state-prefix');
+    });
+  }
+});

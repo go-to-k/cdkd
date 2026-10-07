@@ -23,6 +23,7 @@ import {
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import {
   createAssetRedirectResolver,
@@ -328,6 +329,14 @@ async function diffCommand(
       ...(options.profile && { profile: options.profile }),
     });
     const diffCalculator = new DiffCalculator();
+    // The account flags each malformed-record warning prints on its
+    // `cdkd state show` pointer, so a pasted command reads the bucket this
+    // preview read (go-to-k/cdkd#4159).
+    const refusalRecovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket,
+      statePrefix: options.statePrefix,
+    };
     // Providers are registered here so the diff can consult the SAME per-type
     // property normalization the deploy engine applies (issue #1591). The
     // provider READS this preview makes — the rollback-orphan pre-pass
@@ -505,6 +514,7 @@ async function diffCommand(
           // This IS the stack the user named, so it is the one node that
           // carries the repaired-container refusals (go-to-k/cdkd#3335).
           isNestedChild: false,
+          refusalRecovery,
         })
       );
     }

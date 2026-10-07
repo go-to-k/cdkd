@@ -650,10 +650,25 @@ function accountArgs(recovery: LockRecoveryContext | undefined): CommandArg[] {
     args.push(
       prefix === ''
         ? { literal: `--state-prefix ''` }
-        : { flag: '--state-prefix', value: prefix, hole: 'prefix', opts: { plainIdent: true } }
+        : { flag: '--state-prefix', value: prefix, hole: 'prefix', opts: prefixGate(prefix) }
     );
   }
   return args;
+}
+
+/**
+ * The PREFIX is held per `/`-separated SEGMENT, not whole-value
+ * (go-to-k/cdkd#4159 review m1): an S3 prefix legitimately spells `team/dev`,
+ * which whole-value `plainIdent` holed — and since the flag is then present,
+ * `pasteableCommand`'s run-context flags (#4177) skip the typed value too. The
+ * same per-segment rule the legacy `Object key:` line applies
+ * ({@link orphanInspectClause}). A prefix whose every segment passes
+ * `isPasteableIdent` takes the default gate (still refusing a leading `-` and
+ * anything not inert unquoted); any other keeps `plainIdent`, so it holes and is
+ * described as before.
+ */
+function prefixGate(prefix: string): { plainIdent?: true } {
+  return prefix.split('/').every((seg) => isPasteableIdent(seg)) ? {} : { plainIdent: true };
 }
 
 /** The flag each {@link accountArgs} hole stands in for. */
@@ -669,13 +684,20 @@ const ACCOUNT_FLAG_BY_HOLE: Readonly<Record<string, string>> = {
  * value, which the operator already holds — it is their own argv — so no
  * listing would help and the value is not repeated here (go-to-k/cdkd#3909).
  * `where` is the subject and verb of the command(s) the hole is printed in.
+ * Takes the context rather than the gate's verdicts so a held prefix's reason
+ * can say whether it is about a `/`-separated part ({@link prefixGate}).
  */
-function withheldAccountClause(withheld: readonly WithheldValue[], where: string): string {
-  const parts = withheld
+function withheldAccountClause(recovery: LockRecoveryContext | undefined, where: string): string {
+  const slashPrefix = recovery?.statePrefix?.includes('/') === true;
+  const parts = withheldAccountValues(recovery)
     .filter((w) => ACCOUNT_FLAG_BY_HOLE[w.hole] !== undefined)
     .map(
       (w) =>
-        `the '${ACCOUNT_FLAG_BY_HOLE[w.hole]}' value this run was given ${accountReason(w.reason)}`
+        `the '${ACCOUNT_FLAG_BY_HOLE[w.hole]}' value this run was given ${
+          w.hole === 'prefix' && w.reason === 'not-plain' && slashPrefix
+            ? PREFIX_NOT_PLAIN_WHY
+            : accountReason(w.reason)
+        }`
     );
   if (parts.length === 0) return '';
   const sentence = parts.join(', and ');
@@ -685,6 +707,14 @@ function withheldAccountClause(withheld: readonly WithheldValue[], where: string
     `each such hole whole, quotes included, with the shell-quoted value you passed this run. `
   );
 }
+
+/**
+ * A SLASH prefix's `not-plain` reason: it is gated per segment
+ * ({@link prefixGate}). A prefix with no `/` keeps the ordinary sentence.
+ */
+const PREFIX_NOT_PLAIN_WHY =
+  `has a '/'-separated part that is not a plain identifier (a letter or digit, then letters, ` +
+  `digits, '~', '_', '.' or '-'), the only shape printed in a command beside a labelled line`;
 
 /** Why {@link accountArgs} withheld a value, for {@link withheldAccountClause}. */
 function accountReason(reason: WithholdReason): string {
@@ -943,10 +973,7 @@ function confirmKeyListing(recovery: LockRecoveryContext | undefined): string {
  * leading space that joins it to the prose; `''` when nothing was withheld.
  */
 function destroyAccountClause(recovery: LockRecoveryContext | undefined): string {
-  const clause = withheldAccountClause(
-    withheldAccountValues(recovery),
-    'the command lines below print'
-  );
+  const clause = withheldAccountClause(recovery, 'the command lines below print');
   return clause === '' ? '' : ` ${clause.trimEnd()}`;
 }
 
@@ -1120,12 +1147,11 @@ export function divergentRecordRegionRefusalMessage(
   // where that command is: the exact arm ends on its template, the withhold arm
   // puts its commands on lines of their own once any account flag rides on them.
   const listing = withheldListingPointer(recovery);
-  const withheldAccounts = withheldAccountValues(recovery);
   const remedy = exact
     ? `Re-run with --verbose to see what the record's region field holds, then either destroy ` +
       `against the region the resources are really in, or repair that field to match the key it ` +
       `is stored under and re-run. ` +
-      withheldAccountClause(withheldAccounts, 'the command at the end of this message prints') +
+      withheldAccountClause(recovery, 'the command at the end of this message prints') +
       `To drop the record and leave the live resources standing, ` +
       `spelled out rather than pasteable because that command DELETES a record: ` +
       dropRecordTemplate(recovery)
@@ -1243,7 +1269,9 @@ export function refuseDivergentRecordRegionForDestroy(
  */
 export function malformedDeployResourcesRefusalMessage(
   rawStackName: string,
-  rawRegion: string
+  rawRegion: string,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -1257,7 +1285,7 @@ export function malformedDeployResourcesRefusalMessage(
     `wrong. Reading the bag as EMPTY produces that same plan rather than avoiding it. Nothing ` +
     `was provisioned and no state was written FOR THIS STACK. Repair or remove the record ` +
     `first; 'cdkd diff' previews the stack with this map read as EMPTY and warns that it did. ` +
-    `${inspectClause(stackName, region)}Inspect it with: ${inspectCommand(stackName, region)}`
+    `${inspectClause(stackName, region, recovery)}Inspect it with: ${inspectCommand(stackName, region, recovery)}`
   );
 }
 
@@ -1284,7 +1312,9 @@ export function malformedDeployResourcesRefusalMessage(
 export function refuseMalformedResourcesForDeploy(
   state: StackState,
   stackName: string,
-  region: string
+  region: string,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableResources(state)) return;
   // `markNonRetryable` for the reason `refuseMalformedResourceProperties`
@@ -1294,7 +1324,7 @@ export function refuseMalformedResourcesForDeploy(
   // SUBSTRING-matching classifier can read as transient. Issue #1838.
   throw markNonRetryable(
     new CdkdError(
-      malformedDeployResourcesRefusalMessage(stackName, region),
+      malformedDeployResourcesRefusalMessage(stackName, region, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -1473,7 +1503,9 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
 export function malformedRenderedContainersWarning(
   rawStackName: string,
   rawRegion: string,
-  containers: readonly RenderedStateContainer[]
+  containers: readonly RenderedStateContainer[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -1486,8 +1518,8 @@ export function malformedRenderedContainersWarning(
     `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +
     `so rendering one INVENTS a row per character or element. Continuing with it EMPTY: this ` +
     `view shows no rows there, which is not the same as the record holding none. A per-resource ` +
-    `container is named once however many resources hold one. ${inspectClause(stackName, region)}See the stored values with: ` +
-    inspectCommand(stackName, region)
+    `container is named once however many resources hold one. ${inspectClause(stackName, region, recovery)}See the stored values with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -1540,14 +1572,16 @@ function absentIfEmpty(value: string | undefined): string | undefined {
 /** The warning a caller of {@link repairMalformedResourcesForReadOnly} emits. */
 export function malformedResourcesWarning(
   rawStackName: string,
-  rawRegion: string | undefined
+  rawRegion: string | undefined,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
   return (
     `${malformedStateDiagnosis(stackName, region)} Continuing with an EMPTY resource set: this ` +
     `command's output describes zero resources, which is not the same as the stack having none. ` +
-    `${inspectClause(stackName, region)}Inspect it with: ${inspectCommand(stackName, region)}`
+    `${inspectClause(stackName, region, recovery)}Inspect it with: ${inspectCommand(stackName, region, recovery)}`
   );
 }
 
@@ -1643,7 +1677,11 @@ const DEPLOY_REFUSES_OUTPUTS_SENTENCE =
  * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
  * for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOutputsWarning(rawStackName: string, rawRegion: string): string {
+export function malformedOutputsWarning(
+  rawStackName: string,
+  rawRegion: string,
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -1655,8 +1693,8 @@ export function malformedOutputsWarning(rawStackName: string, rawRegion: string)
     `or null, it yields no comparison at all. Continuing with it EMPTY: every output this diff ` +
     `resolves is reported as an ADD and no stored key is reported as a REMOVE, which is not the ` +
     `same as the record holding none. ${DEPLOY_REFUSES_OUTPUTS_SENTENCE} ` +
-    `${inspectClause(stackName, region)}See the stored value with: ` +
-    inspectCommand(stackName, region)
+    `${inspectClause(stackName, region, recovery)}See the stored value with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -1779,7 +1817,11 @@ export function malformedOutputsRefusalMessage(
  * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
  * for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedExportSourceWarning(rawStackName: string, rawRegion: string): string {
+export function malformedExportSourceWarning(
+  rawStackName: string,
+  rawRegion: string,
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -1790,8 +1832,8 @@ export function malformedExportSourceWarning(rawStackName: string, rawRegion: st
     `Fn::ImportValue of a name this stack really publishes will fail in the CONSUMER stack, ` +
     `naming that stack rather than this record. Continuing with the other producers — ` +
     `enumerating a string or a list here would instead publish one FABRICATED export per ` +
-    `character or element. ${inspectClause(stackName, region)}See the stored values with: ` +
-    inspectCommand(stackName, region)
+    `character or element. ${inspectClause(stackName, region, recovery)}See the stored values with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -1821,7 +1863,11 @@ export function malformedExportSourceWarning(rawStackName: string, rawRegion: st
  * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
  * for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedExportNamesWarning(rawStackName: string, rawRegion: string): string {
+export function malformedExportNamesWarning(
+  rawStackName: string,
+  rawRegion: string,
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -1830,9 +1876,9 @@ export function malformedExportNamesWarning(rawStackName: string, rawRegion: str
     `the record is malformed or truncated. It is read as an EMPTY export set, which is not the ` +
     `same as the record holding one: no stored key is reported as an export, so a row that ` +
     `should carry an '[export]' tag renders without it. Reading it as UNKNOWN instead would be ` +
-    `worse — that falls back to the pre-v9 rule where every output name is importable. ${inspectClause(stackName, region)}See the ` +
+    `worse — that falls back to the pre-v9 rule where every output name is importable. ${inspectClause(stackName, region, recovery)}See the ` +
     `stored value with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -1968,7 +2014,11 @@ export function repairMalformedOrphansForReadOnly(state: StackState): boolean {
  * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
  * for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedOrphansWarning(rawStackName: string, rawRegion: string): string {
+export function malformedOrphansWarning(
+  rawStackName: string,
+  rawRegion: string,
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -1978,9 +2028,9 @@ export function malformedOrphansWarning(rawStackName: string, rawRegion: string)
     `admits a string, a number, a plain object and null alike: a string is WALKED, one garbage ` +
     `orphan per character, and the others read as no orphans at all. Continuing with it EMPTY: ` +
     `this view previews no adoption and names no orphan, which is NOT the same as the record ` +
-    `holding none — resources from an earlier failed deploy may still be live in AWS. ${inspectClause(stackName, region)}See the ` +
+    `holding none — resources from an earlier failed deploy may still be live in AWS. ${inspectClause(stackName, region, recovery)}See the ` +
     `stored value with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -2253,7 +2303,9 @@ export function refuseMalformedOutputsForDestroy(
  */
 export function malformedNestedChildOutputsRefusalMessage(
   rawChildStackName: string,
-  rawRegion: string
+  rawRegion: string,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const childStackName = absentIfEmpty(rawChildStackName);
@@ -2265,8 +2317,8 @@ export function malformedNestedChildOutputsRefusalMessage(
     `'Object.entries' walks a string or a list as readily as a map — so a six-character value ` +
     `would become six fabricated parent attributes that every Fn::GetAtt against this nested ` +
     `stack then resolves into live AWS calls. The deploy refuses rather than fabricating them. ` +
-    `Repair or remove the child's record first. ${inspectClause(childStackName, region)}Inspect it with: ` +
-    inspectCommand(childStackName, region)
+    `Repair or remove the child's record first. ${inspectClause(childStackName, region, recovery)}Inspect it with: ` +
+    inspectCommand(childStackName, region, recovery)
   );
 }
 
@@ -2284,7 +2336,9 @@ export function malformedNestedChildOutputsRefusalMessage(
 export function refuseMalformedNestedChildOutputs(
   state: Pick<StackState, 'outputs'>,
   childStackName: string,
-  region: string
+  region: string,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): void {
   if (hasReadableOutputs(state)) return;
   // `markNonRetryable` because this decides from a PERSISTED record: a retry
@@ -2293,7 +2347,7 @@ export function refuseMalformedNestedChildOutputs(
   // (`does not exist` and `DependencyViolation` are live patterns). Issue #1838.
   throw markNonRetryable(
     new CdkdError(
-      malformedNestedChildOutputsRefusalMessage(childStackName, region),
+      malformedNestedChildOutputsRefusalMessage(childStackName, region, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -2332,7 +2386,11 @@ export function refuseMalformedNestedChildOutputs(
  * ({@link inspectCommand}) — and the command is emitted LAST and UNWRAPPED,
  * for the reasons {@link safeIdentifier}'s note gives.
  */
-export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: string): string {
+export function malformedLocalOutputsWarning(
+  rawStackName: string,
+  rawRegion: string,
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -2341,9 +2399,9 @@ export function malformedLocalOutputsWarning(rawStackName: string, rawRegion: st
     `record is malformed or truncated. 'Object.entries' walks a string or a list as readily as ` +
     `a map, so reading it would hand this local run one FABRICATED output per character or ` +
     `element. Continuing with it EMPTY: every reference to an output of this record resolves to ` +
-    `nothing and is dropped, which is not the same as the record holding none. ${inspectClause(stackName, region)}See the stored ` +
+    `nothing and is dropped, which is not the same as the record holding none. ${inspectClause(stackName, region, recovery)}See the stored ` +
     `value with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -2656,10 +2714,7 @@ function inspectClause(
    */
   recovery?: LockRecoveryContext
 ): string {
-  const accounts = withheldAccountClause(
-    withheldAccountValues(recovery),
-    'the command at the end of this line prints'
-  );
+  const accounts = withheldAccountClause(recovery, 'the command at the end of this line prints');
   // Subsumed, and kept for the type: `inspectGate` withholds no IDENTITY for an
   // absent name (its template arm), so the empty-`parts` return below would
   // answer the account clause alone too, but `stackName.startsWith` needs the
@@ -2897,7 +2952,9 @@ export function unreadableResourcePropertyBags(state: StackState): readonly stri
 export function refuseMalformedResourceProperties(
   state: StackState,
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableResourcePropertyBags(state);
   if (unreadable.length === 0) return;
@@ -2907,7 +2964,7 @@ export function refuseMalformedResourceProperties(
   // SUBSTRING-matching retry classifier can read as transient. Issue #1838.
   throw markNonRetryable(
     new CdkdError(
-      malformedResourcePropertiesRefusalMessage(stackName, region, unreadable),
+      malformedResourcePropertiesRefusalMessage(stackName, region, unreadable, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -3097,7 +3154,9 @@ function namedPropertyBagsClause(
 export function malformedResourcePropertiesRefusalMessage(
   rawStackName: string | undefined,
   rawRegion: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -3108,8 +3167,8 @@ export function malformedResourcePropertiesRefusalMessage(
     `template did not change, and reading the bag as empty produces that same verdict rather ` +
     `than avoiding it. Nothing was provisioned and no state was written FOR THIS STACK. Repair or ` +
     `remove the record first; 'cdkd diff' previews the rest of the stack with those maps read ` +
-    `as EMPTY and warns that it did. ${inspectClause(stackName, region)}Inspect the record with: ` +
-    `${inspectCommand(stackName, region)}`
+    `as EMPTY and warns that it did. ${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    `${inspectCommand(stackName, region, recovery)}`
   );
 }
 
@@ -3414,10 +3473,7 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
  * {@link withheldIdentityClause}'s own defect class, one fragment over.
  */
 function withheldRecoveryClause(recovery?: LockRecoveryContext): string {
-  const clause = withheldAccountClause(
-    withheldAccountValues(recovery),
-    'the command lines below print'
-  ).trimEnd();
+  const clause = withheldAccountClause(recovery, 'the command lines below print').trimEnd();
   if (clause === '') return '';
   // Spliced mid-sentence as a dash clause, so lower-cased and without its stop.
   return ` — ${clause.charAt(0).toLowerCase()}${clause.slice(1, -1)}`;
@@ -3728,7 +3784,9 @@ export function refuseMalformedResourcePropertiesForOrphan(
 export function malformedResourcePropertiesWarning(
   rawStackName: string | undefined,
   rawRegion: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -3739,7 +3797,7 @@ export function malformedResourcePropertiesWarning(
     `addition and a create-only one as a replacement; where it no longer declares it, the ` +
     `DELETE row shows an empty previous side instead of the stored one. ` +
     `Do NOT run 'cdkd deploy' against this record — it REFUSES on the same defect rather than ` +
-    `acting on this preview. ${inspectClause(stackName, region)}See the stored values with: ${inspectCommand(stackName, region)}`
+    `acting on this preview. ${inspectClause(stackName, region, recovery)}See the stored values with: ${inspectCommand(stackName, region, recovery)}`
   );
 }
 
@@ -3770,7 +3828,9 @@ const DRIFT_PROPERTIES_ROLE =
 export function malformedDriftResourcePropertiesRefusalMessage(
   rawStackName: string | undefined,
   rawRegion: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -3781,7 +3841,7 @@ export function malformedDriftResourcePropertiesRefusalMessage(
     `live resource, a verdict about properties this record does not hold. Nothing was written ` +
     `and no AWS resource was modified. Repair or remove the record first; plain 'cdkd drift' ` +
     `compares the rest of the stack and reports these resources as not compared. ` +
-    `${inspectClause(stackName, region)}Inspect the record with: ${inspectCommand(stackName, region)}`
+    `${inspectClause(stackName, region, recovery)}Inspect the record with: ${inspectCommand(stackName, region, recovery)}`
   );
 }
 
@@ -3802,7 +3862,9 @@ export function malformedDriftResourcePropertiesRefusalMessage(
 export function refuseMalformedResourcePropertiesForDrift(
   state: StackState,
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableResourcePropertyBags(state);
   if (unreadable.length === 0) return;
@@ -3810,7 +3872,7 @@ export function refuseMalformedResourcePropertiesForDrift(
   // the same caller: `cdkd drift` raises it from its own flow, outside any
   // `withRetry`. Named in the test file's UNMARKED table.
   throw new CdkdError(
-    malformedDriftResourcePropertiesRefusalMessage(stackName, region, unreadable),
+    malformedDriftResourcePropertiesRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
   );
 }
@@ -3824,7 +3886,9 @@ export function refuseMalformedResourcePropertiesForDrift(
 export function malformedDriftResourcePropertiesWarning(
   rawStackName: string | undefined,
   rawRegion: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -3833,8 +3897,8 @@ export function malformedDriftResourcePropertiesWarning(
     `'cdkd drift' does NOT compare these resources: each is reported as not compared, and the ` +
     `run does not exit clean. The rest of the stack is compared as usual. ` +
     `'cdkd drift --accept' / '--revert' and 'cdkd deploy' REFUSE this record. ` +
-    `${inspectClause(stackName, region)}See the stored values with: ` +
-    `${inspectCommand(stackName, region)}`
+    `${inspectClause(stackName, region, recovery)}See the stored values with: ` +
+    `${inspectCommand(stackName, region, recovery)}`
   );
 }
 
@@ -4074,7 +4138,9 @@ export function repairMalformedResourceEntriesForReadOnly(state: StackState): re
 export function malformedResourceEntriesWarning(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -4082,8 +4148,8 @@ export function malformedResourceEntriesWarning(
   return (
     `${namedEntriesClause(stackName, region, logicalIds)} Continuing WITHOUT them: this ` +
     `command's output describes the remaining resources only, which is not the same as the ` +
-    `stack holding none of these. ${inspectClause(stackName, region)}See the stored values with: ` +
-    inspectCommand(stackName, region)
+    `stack holding none of these. ${inspectClause(stackName, region, recovery)}See the stored values with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4128,7 +4194,9 @@ export function malformedOrphanRecordsWarning(
    * not act on tells the operator to repair a map that was not why the row was
    * dropped.
    */
-  alsoRejectsTornMaps: boolean
+  alsoRejectsTornMaps: boolean,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -4149,9 +4217,9 @@ export function malformedOrphanRecordsWarning(
         : `they are not previewed for adoption, and 'cdkd deploy' refuses the record over them ` +
           `rather than dropping them as this command does`
     }. These ids were read from 'orphans'; ` +
-    `the 'resources' map carries its own warning when it is damaged too. ${inspectClause(stackName, region)}See the ` +
+    `the 'resources' map carries its own warning when it is damaged too. ${inspectClause(stackName, region, recovery)}See the ` +
     `stored values with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4246,7 +4314,9 @@ export function malformedResourceEntriesRefusalMessage(
 export function refuseMalformedResourceEntriesForDeploy(
   state: StackState,
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): void {
   const unreadable = unreadableResourceEntries(state);
   if (unreadable.length === 0) return;
@@ -4254,7 +4324,7 @@ export function refuseMalformedResourceEntriesForDeploy(
   // carries it: a nested child's deploy runs inside the parent's `withRetry`.
   throw markNonRetryable(
     new CdkdError(
-      malformedDeployResourceEntriesRefusalMessage(stackName, region, unreadable),
+      malformedDeployResourceEntriesRefusalMessage(stackName, region, unreadable, recovery),
       STATE_RESOURCES_MALFORMED
     )
   );
@@ -4268,7 +4338,9 @@ export function refuseMalformedResourceEntriesForDeploy(
 export function malformedDeployResourceEntriesRefusalMessage(
   rawStackName: string | undefined,
   rawRegion: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -4280,8 +4352,8 @@ export function malformedDeployResourceEntriesRefusalMessage(
     `second copy of a live resource, or a name collision), and a row with no resource type is ` +
     `planned as a TYPE CHANGE, which replaces the live resource. Nothing was provisioned and no ` +
     `state was written FOR THIS STACK. Repair or remove the record first; 'cdkd diff' previews ` +
-    `the rest of the stack without those rows and warns that it did. ${inspectClause(stackName, region)}Inspect the record with: ` +
-    inspectCommand(stackName, region)
+    `the rest of the stack without those rows and warns that it did. ${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4585,7 +4657,9 @@ export function malformedImportUnrepairedEntriesRefusalMessage(
 export function malformedScrubResourceEntriesRefusalMessage(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -4600,8 +4674,8 @@ export function malformedScrubResourceEntriesRefusalMessage(
     `saved as one; and a row with no resource type is rewritten and saved still without one. ` +
     `Nothing was written FOR THIS STACK. Repair or ` +
     `remove the row first; '--dry-run' audits the rest of the record without it and warns ` +
-    `that it did. ${inspectClause(stackName, region)}Inspect the record with: ` +
-    inspectCommand(stackName, region)
+    `that it did. ${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4618,7 +4692,11 @@ export function malformedScrubResourceEntriesRefusalMessage(
  * genuinely holds no resources. Read-only for the reason its `outputs` twin
  * records: `cdkd local` writes no `state.json`.
  */
-export function malformedLocalResourcesWarning(rawStackName: string, rawRegion: string): string {
+export function malformedLocalResourcesWarning(
+  rawStackName: string,
+  rawRegion: string,
+  recovery?: LockRecoveryContext
+): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -4627,9 +4705,9 @@ export function malformedLocalResourcesWarning(rawStackName: string, rawRegion: 
     `'Fn::GetAtt' in this run's environment that names a resource of this record resolves to ` +
     `nothing and is dropped, and a bare '--assume-role' falls back to the developer's ` +
     `credentials — which is not the same as the record holding no resources. Nothing is ` +
-    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. ${inspectClause(stackName, region)}See the stored ` +
+    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. ${inspectClause(stackName, region, recovery)}See the stored ` +
     `value with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4645,7 +4723,9 @@ export function malformedLocalResourcesWarning(rawStackName: string, rawRegion: 
 export function malformedLocalResourceEntriesWarning(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   // {@link absentIfEmpty} at the boundary, then the shared clause and command.
   const stackName = absentIfEmpty(rawStackName);
@@ -4655,9 +4735,9 @@ export function malformedLocalResourceEntriesWarning(
     `'Fn::GetAtt' in this run's environment that names one of these ids resolves to nothing and ` +
     `is dropped, and a bare '--assume-role' read through one falls back to the developer's ` +
     `credentials — which is not the same as the record holding no such resource. Nothing is ` +
-    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. ${inspectClause(stackName, region)}See the stored ` +
+    `written; 'cdkd deploy' and 'cdkd destroy' refuse this record instead. ${inspectClause(stackName, region, recovery)}See the stored ` +
     `values with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -4925,7 +5005,9 @@ export function unaddressableUpdateRefusalMessage(
   rawStackName: string,
   rawRegion: string,
   logicalId: string,
-  resourceType: string
+  resourceType: string,
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -4935,8 +5017,8 @@ export function unaddressableUpdateRefusalMessage(
     `address that resource in AWS and did not try to update it. 'cdkd deploy' fails on it ` +
     `rather than skipping it, since a skipped update would end the deploy without the ` +
     `template's change. Nothing was sent for this resource. Repair the record's ` +
-    `'physicalId' and re-run. ${inspectClause(stackName, region)}Inspect the record with: ` +
-    inspectCommand(stackName, region)
+    `'physicalId' and re-run. ${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
   );
 }
 
@@ -5401,7 +5483,9 @@ export function deployRefusesOrphanRowsReason(logicalIds: readonly string[]): st
 export function malformedOrphanRowsKeptWarning(
   rawStackName: string,
   rawRegion: string,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried on the inspect command (go-to-k/cdkd#4159). */
+  recovery?: LockRecoveryContext
 ): string {
   const stackName = absentIfEmpty(rawStackName);
   const region = absentIfEmpty(rawRegion);
@@ -5409,9 +5493,9 @@ export function malformedOrphanRowsKeptWarning(
     `${stackClause(stackName, region)} holds ${logicalIds.length} rollback-orphan record(s) in ` +
     `'orphans' — ${namedOrphanRows(logicalIds)} — whose 'properties' or 'attributes' map is not ` +
     `an object. This preview KEEPS them. 'cdkd deploy' of THIS stack does NOT: it refuses the ` +
-    `whole record over these rows and will not start until they are repaired. ${inspectClause(stackName, region)}See the stored ` +
+    `whole record over these rows and will not start until they are repaired. ${inspectClause(stackName, region, recovery)}See the stored ` +
     `values with: ` +
-    inspectCommand(stackName, region)
+    inspectCommand(stackName, region, recovery)
   );
 }
 

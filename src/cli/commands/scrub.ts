@@ -47,6 +47,7 @@ import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { isAmbiguousOutcomeError } from '../../deployment/retryable-errors.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { ExportIndexStore, type ExportIndexEntry } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1302,6 +1303,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   targetStacks = orderScrubTargets(targetStacks);
 
   const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
+  // The account flags each malformed-record refusal or warning prints on its
+  // `cdkd state show` / `cdkd state list` pointers, so a pasted command reads
+  // the bucket this run read (go-to-k/cdkd#4159).
+  const refusalRecovery: LockRecoveryContext = {
+    profile: options.profile,
+    stateBucket,
+    statePrefix: options.statePrefix,
+  };
   const stateS3 = new AwsClients({
     region,
     ...(options.profile && { profile: options.profile }),
@@ -1427,7 +1436,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       stateBucket,
       options.statePrefix,
       indexRegion,
-      stateBackend
+      stateBackend,
+      { profile: options.profile }
     );
     exportIndexStores.set(indexRegion, store);
     return store;
@@ -1506,6 +1516,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         appStacks: allStacks,
         ...(nestedChild && { nestedChild }),
         readConsumerRecords: loadConsumerRecords,
+        refusalRecovery,
       });
     } catch (err) {
       // EVERY error, not only a `CdkdError` refusal. A stack whose state could
@@ -6542,6 +6553,11 @@ export async function scrubStack(
      * to a fresh {@link readConsumerRecords}.
      */
     readConsumerRecords?: (() => Promise<ConsumerRecord[]>) | undefined;
+    /**
+     * The run's account flags (go-to-k/cdkd#4159), carried on the pasteable
+     * commands of this record's malformed-container refusals and warnings.
+     */
+    refusalRecovery?: LockRecoveryContext | undefined;
   }
 ): Promise<ScrubStackResult> {
   const { logger } = opts;
@@ -6762,14 +6778,14 @@ export async function scrubStack(
     if (opts.dryRun) {
       if (repairMalformedResourcesForReadOnly(state)) {
         malformedResources = true;
-        logger.warn(malformedResourcesWarning(stack.stackName, region));
+        logger.warn(malformedResourcesWarning(stack.stackName, region, opts.refusalRecovery));
       }
     } else if (!hasReadableResources(state)) {
       // scrub's own class, NOT `refuseMalformedState`: exit 1 is spoken for
       // here ("--fail found plaintext"), and a CI gate reading the code alone
       // must be able to tell that from "scrub refused to look".
       throw new ScrubRefusalError(
-        malformedStateRefusalMessage(stack.stackName, region),
+        malformedStateRefusalMessage(stack.stackName, region, opts.refusalRecovery),
         STATE_RESOURCES_MALFORMED
       );
     }
@@ -6787,13 +6803,25 @@ export async function scrubStack(
       const droppedRows = repairMalformedResourceEntriesForReadOnly(state);
       if (droppedRows.length > 0) {
         malformedResourceRows = true;
-        logger.warn(malformedResourceEntriesWarning(stack.stackName, region, droppedRows));
+        logger.warn(
+          malformedResourceEntriesWarning(
+            stack.stackName,
+            region,
+            droppedRows,
+            opts.refusalRecovery
+          )
+        );
       }
     } else {
       const unreadableRows = unreadableResourceEntries(state);
       if (unreadableRows.length > 0) {
         throw new ScrubRefusalError(
-          malformedScrubResourceEntriesRefusalMessage(stack.stackName, region, unreadableRows),
+          malformedScrubResourceEntriesRefusalMessage(
+            stack.stackName,
+            region,
+            unreadableRows,
+            opts.refusalRecovery
+          ),
           STATE_RESOURCES_MALFORMED
         );
       }
@@ -6824,11 +6852,11 @@ export async function scrubStack(
     if (opts.dryRun) {
       if (repairMalformedOutputsForReadOnly(state)) {
         malformedOutputs = true;
-        logger.warn(malformedOutputsWarning(stack.stackName, region));
+        logger.warn(malformedOutputsWarning(stack.stackName, region, opts.refusalRecovery));
       }
     } else if (!hasReadableOutputs(state)) {
       throw new ScrubRefusalError(
-        malformedOutputsRefusalMessage(stack.stackName, region),
+        malformedOutputsRefusalMessage(stack.stackName, region, opts.refusalRecovery),
         STATE_RESOURCES_MALFORMED
       );
     }
@@ -6846,7 +6874,7 @@ export async function scrubStack(
     if (opts.dryRun) {
       if (repairMalformedOrphansForReadOnly(state)) {
         malformedOrphans = true;
-        logger.warn(malformedOrphansWarning(stack.stackName, region));
+        logger.warn(malformedOrphansWarning(stack.stackName, region, opts.refusalRecovery));
       }
       // The ROWS of a readable list, dropped and reported on the same arm
       // (go-to-k/cdkd#3500). A SEPARATE finding from the container one because a
@@ -6857,11 +6885,19 @@ export async function scrubStack(
       const droppedRows = repairMalformedOrphanRecordsForReadOnly(state);
       if (droppedRows.length > 0) {
         malformedOrphanRows = true;
-        logger.warn(malformedOrphanRecordsWarning(stack.stackName, region, droppedRows, true));
+        logger.warn(
+          malformedOrphanRecordsWarning(
+            stack.stackName,
+            region,
+            droppedRows,
+            true,
+            opts.refusalRecovery
+          )
+        );
       }
     } else if (!hasReadableOrphans(state)) {
       throw new ScrubRefusalError(
-        malformedOrphansRefusalMessage(stack.stackName, region),
+        malformedOrphansRefusalMessage(stack.stackName, region, opts.refusalRecovery),
         STATE_RESOURCES_MALFORMED
       );
     } else {
@@ -6871,7 +6907,12 @@ export async function scrubStack(
       const unreadableRows = unreadableOrphanRecords(state);
       if (unreadableRows.length > 0) {
         throw new ScrubRefusalError(
-          malformedOrphanRecordsRefusalMessage(stack.stackName, region, unreadableRows),
+          malformedOrphanRecordsRefusalMessage(
+            stack.stackName,
+            region,
+            unreadableRows,
+            opts.refusalRecovery
+          ),
           STATE_RESOURCES_MALFORMED
         );
       }
