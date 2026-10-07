@@ -36,6 +36,10 @@ import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
+import {
+  orphanDeleteNeedsIdentity,
+  readResourceIdentity,
+} from '../rollback-executor/orphan-identity.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
@@ -368,7 +372,7 @@ export async function executeDeployment(
             replacementCreatedId !== replaced.physicalId
               ? { record: replaced, createdId: replacementCreatedId }
               : undefined;
-          failedOperations.push({
+          const failedOp: FailedOperation = {
             logicalId,
             changeType: change.changeType as 'CREATE' | 'UPDATE',
             resourceType: change.resourceType,
@@ -402,9 +406,11 @@ export async function executeDeployment(
             ...(!refused && {
               attemptedProperties: this.attemptedResolvedProps.get(logicalId),
             }),
-          });
+          };
+          failedOperations.push(failedOp);
+          let replacementOrphanOp: FailedOperation | undefined;
           if (orphanedBy !== undefined) {
-            failedOperations.push({
+            replacementOrphanOp = {
               logicalId,
               changeType: 'CREATE',
               resourceType: change.resourceType,
@@ -424,7 +430,34 @@ export async function executeDeployment(
               ...(!refused && {
                 attemptedProperties: this.attemptedResolvedProps.get(logicalId),
               }),
-            });
+            };
+            failedOperations.push(replacementOrphanOp);
+          }
+          // go-to-k/cdkd#4655: the token naming the resource just made, so a
+          // later settle can tell it from one that reused its name. Read once,
+          // best-effort, after the entry is pushed: a failed read only leaves
+          // the token out, never the entry. The read delays this failure's
+          // throw, and with it the journal write, so it is bounded
+          // (`readResourceIdentity`'s timeout), skipped once the user has
+          // interrupted the deploy, and skipped for an orphan no settle reads
+          // a token for (an exempt type, or `Retain`, which deletes nothing).
+          const orphanOp = createdId !== undefined ? failedOp : replacementOrphanOp;
+          if (
+            orphanOp?.physicalId !== undefined &&
+            orphanOp.deletionPolicy !== 'Retain' &&
+            orphanDeleteNeedsIdentity(orphanOp.resourceType) &&
+            this.interruptCause !== 'user'
+          ) {
+            const identity = await readResourceIdentity(
+              this.providerRegistry,
+              {
+                resourceType: orphanOp.resourceType,
+                physicalId: orphanOp.physicalId,
+                provisionedBy: orphanOp.provisionedBy,
+              },
+              this.stackRegion
+            );
+            if (typeof identity === 'string') orphanOp.createdResourceIdentity = identity;
           }
           throw provisionError;
         }
