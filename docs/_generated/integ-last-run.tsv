@@ -101,7 +101,7 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-03T04:20:39Z	PASS	279	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-03T04:28:29Z	PASS	68	verify.sh	rc ok, orph clean (#4283 PR #4449)
-ec2-instance	2026-10-07T18:02:37Z	PASS	0	verify.sh	#4606 Phase 1b isSameResource live probe ALL 9 PASSED (8-hex never-existed id); destroy 0 errors, 0 orphans
+ec2-instance	2026-10-07T19:43:02Z	PASS	0	verify.sh	#4606 Phase 1c VPC/Subnet/SG isSameResource live probe ALL 23 + ALL 9 PASSED; Phase 1b ALL 9 PASSED; destroy 0 errors, 0 orphans
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-10-05T14:42:45Z	PASS	606	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
