@@ -103,6 +103,19 @@
 #     6b. Deploy stack 1 with INJECT_ORPHAN_CREATE under --no-rollback: the
 #         stream exists and only the journal records it (go-to-k/cdkd#4584).
 #     6. Destroy stack 1: clean, state gone, the stream deleted, 0 orphans.
+#   PHASE D (an orphan cdkd can never delete, go-to-k/cdkd#4633):
+#     D1. A fresh --no-rollback deploy with INJECT_ORPHAN_CREATE journals the
+#         stream as a proven orphan.
+#     D2. A role scoped to this destroy, which may not call kinesis:DeleteStream.
+#     D3. `cdkd destroy` as that role fails, keeps the stream and its entry, and its
+#         warning names `cdkd rollback <stack> --drop-failed OrphanStream`.
+#     D4. `--drop-failed` of an unknown id, and one without a terminal or
+#         --force, are refused and leave the journal byte-identical.
+#     D5. `cdkd rollback --drop-failed OrphanStream --force` (the operator's own
+#         credentials from here on): exit 0, the entry is gone, every other
+#         segment and completed op kept, the stream untouched.
+#     D6. `cdkd destroy` now exits 0: state and journal gone, the stream left.
+#     D7. The fixture removes the stream and the role.
 #   Cleanup (EXIT trap) aggressively removes any orphan SSM params / SQS queues /
 #   the Kinesis stream
 #   + the events sidecars for BOTH stacks — this test INTENTIONALLY fails a
@@ -194,6 +207,10 @@ INIT_JOURNAL_KEY="cdkd/${INIT_STACK}/${REGION}/rollback-journal.json"
 # lower-cases its own name into it.
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 SKIP_BUCKET_NAME="$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]')-skip-${ACCOUNT_ID}-${REGION}"
+# PHASE D runs one destroy as a role that may not call kinesis:DeleteStream.
+DENY_ROLE_PREFIX="cdkd-rollback-drop-deny-"
+DENY_ROLE="${DENY_ROLE_PREFIX}$(date +%s)-$$"
+DENY_POLICY_NAME="cdkd-rollback-drop-deny"
 
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
@@ -290,8 +307,33 @@ assert_orphan_stream_journaled() { # usage: assert_orphan_stream_journaled "<whe
   echo "[verify] ${ORPHAN_STREAM_NAME} (${status}) is journaled with its proven id ${when}"
 }
 
+# Delete PHASE D's deny role: this run's own, plus any a past run left behind
+# more than an hour ago (the name carries its creation epoch), never a
+# concurrent run's. Idempotent and soft-failing.
+delete_deny_roles() {
+  (
+    set +eu
+    now="$(date +%s)"
+    roles="$(aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, '${DENY_ROLE_PREFIX}')].RoleName" --output text 2>/dev/null)"
+    for r in ${roles}; do
+      [ "${r}" = "None" ] && continue
+      created="${r#"${DENY_ROLE_PREFIX}"}"
+      created="${created%%-*}"
+      if [ "${r}" != "${DENY_ROLE}" ]; then
+        case "${created}" in '' | *[!0-9]*) continue ;; esac
+        [ $((now - created)) -gt 3600 ] || continue
+      fi
+      aws iam delete-role-policy --role-name "${r}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+      aws iam delete-role --role-name "${r}" >/dev/null 2>&1 \
+        || echo "[verify] cleanup: could not delete role ${r}; delete it by hand" >&2
+    done
+  )
+}
+
 aggressive_cleanup() {
   echo "[verify] aggressive cleanup: sweeping any fixture orphans"
+  delete_deny_roles
   (
   set +eu
   local name q_url
@@ -1489,6 +1531,211 @@ assert_gone "SkipDoomed ${SKIP_DOOMED_NAME} still exists after destroy" aws ssm 
 assert_gone "OrphanStream ${ORPHAN_STREAM_NAME} still exists after destroy" aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
 assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
 echo "[verify] step 7a ok: destroy clean"
+
+# ---------------------------------------------------------------------------
+# PHASE D: a journaled orphan cdkd can never delete blocks destroy until
+# `cdkd rollback --drop-failed` drops that one entry (go-to-k/cdkd#4633)
+# ---------------------------------------------------------------------------
+echo "[verify] step D1: deploy ${STACK} with INJECT_ORPHAN_CREATE --no-rollback (only the journal records the stream)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-drop-deploy.log 2>&1
+D1_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-drop-deploy.log || true
+if [ "${D1_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step D1"
+
+echo "[verify] step D2: a role that may not call kinesis:DeleteStream (a cause cdkd cannot fix)"
+CALLER_USERID="$(aws sts get-caller-identity --query UserId --output text)"
+if [ -z "${CALLER_USERID}" ]; then
+  echo "[verify] FAIL: precondition -- the caller's user id is empty"
+  exit 1
+fi
+# Assumable by THIS caller identity only.
+TRUST="$(jq -cn --arg acct "${ACCOUNT_ID}" --arg uid "${CALLER_USERID}" \
+  '{Version: "2012-10-17", Statement: [{Effect: "Allow", Principal: {AWS: ("arn:aws:iam::" + $acct + ":root")},
+    Action: "sts:AssumeRole", Condition: {StringEquals: {"aws:userid": $uid}}}]}')"
+# Scoped to the reads and deletes this stack's destroy sends (the SSM, SQS and
+# Kinesis providers' delete paths) on this fixture's own names, the state
+# bucket, and the one deny. A missing action fails D3 loudly at its grep.
+DENY_POLICY="$(jq -cn --arg bucket "${STATE_BUCKET}" --arg r "${REGION}" --arg a "${ACCOUNT_ID}" --arg s "${STACK}" \
+  '{Version: "2012-10-17", Statement: [
+    {Effect: "Allow", Action: "s3:*", Resource: [("arn:aws:s3:::" + $bucket), ("arn:aws:s3:::" + $bucket + "/*")]},
+    {Effect: "Allow", Action: ["ssm:GetParameter", "ssm:GetParameters", "ssm:DeleteParameter", "ssm:ListTagsForResource"],
+      Resource: ("arn:aws:ssm:" + $r + ":" + $a + ":parameter/" + $s + "-*")},
+    {Effect: "Allow", Action: ["sqs:GetQueueUrl", "sqs:GetQueueAttributes", "sqs:ListQueueTags", "sqs:DeleteQueue"],
+      Resource: ("arn:aws:sqs:" + $r + ":" + $a + ":" + $s + "-*")},
+    {Effect: "Allow", Action: ["kinesis:DescribeStream", "kinesis:DescribeStreamSummary", "kinesis:ListTagsForStream", "kinesis:DeleteStream"],
+      Resource: ("arn:aws:kinesis:" + $r + ":" + $a + ":stream/" + $s + "-*")},
+    {Effect: "Allow", Action: ["ssm:DescribeParameters", "kms:Decrypt", "kms:GenerateDataKey", "sts:GetCallerIdentity"], Resource: "*"},
+    {Effect: "Deny", Action: "kinesis:DeleteStream", Resource: "*"}]}')"
+aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
+  --tags Key=cdkd-integ,Value=rollback-command >/dev/null
+aws iam put-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" \
+  --policy-document "${DENY_POLICY}"
+# A new role is assumable only once IAM has propagated it.
+DENY_CREDS=""
+for _ in $(seq 1 24); do
+  if DENY_CREDS="$(aws sts assume-role --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${DENY_ROLE}" \
+    --role-session-name cdkd-rollback-drop \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>/dev/null)"; then
+    break
+  fi
+  DENY_CREDS=""
+  sleep 5
+done
+if [ -z "${DENY_CREDS}" ]; then
+  echo "[verify] FAIL: precondition -- could not assume ${DENY_ROLE} within 2 minutes"
+  exit 1
+fi
+# Process substitution, not a here-string: these are live credentials.
+read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
+unset DENY_CREDS
+# A profile in the environment would win over the key variables, so it is dropped.
+as_deny_role() {
+  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE \
+    AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}" "$@"
+}
+# Fresh role credentials can be refused for a while; poll until STS accepts them.
+DENY_ARN=""
+for _ in $(seq 1 24); do
+  DENY_ARN="$(as_deny_role aws sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
+  [ -n "${DENY_ARN}" ] && break
+  sleep 5
+done
+case "${DENY_ARN}" in
+  *":assumed-role/${DENY_ROLE}/"*) ;;
+  *)
+    echo "[verify] FAIL: precondition -- the deny-role commands run as '${DENY_ARN}', not ${DENY_ROLE}"
+    exit 1
+    ;;
+esac
+
+echo "[verify] step D3: cdkd destroy ${STACK} --force, as the deny role, must fail and keep the journal entry"
+set +e
+as_deny_role ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-drop-destroy1.log 2>&1
+D3_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-drop-destroy1.log || true
+if [ "${D3_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: destroy SUCCEEDED -- the DeleteStream deny did not hold, so this phase tests nothing (premise)"
+  exit 1
+fi
+if ! aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is gone after the failed destroy (premise)"
+  exit 1
+fi
+journal_orphan_entries() { # echoes how many failed OrphanStream entries the journal holds; 'gone' without one
+  local body
+  if ! body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - 2>/dev/null)"; then
+    echo "gone"
+    return 0
+  fi
+  printf '%s' "${body}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "OrphanStream")] | length'
+}
+if [ "$(journal_orphan_entries)" != "1" ]; then
+  echo "[verify] FAIL: the journal does not keep exactly one OrphanStream entry after the failed destroy ($(journal_orphan_entries))"
+  exit 1
+fi
+# The premise is the DeleteStream deny itself: an action the narrowed Allow
+# lacks would fail the orphan delete too, naming another action.
+if ! grep -qF 'kinesis:DeleteStream' /tmp/rollback-cmd-drop-destroy1.log; then
+  echo "[verify] FAIL: the failed destroy's error does not name kinesis:DeleteStream -- it failed for another reason, not the deny (output above)"
+  exit 1
+fi
+# The way out, named by the retry warning (go-to-k/cdkd#4633).
+if ! grep -qF "Drop with: cdkd rollback ${STACK} --stack-region ${REGION} --drop-failed OrphanStream" /tmp/rollback-cmd-drop-destroy1.log; then
+  echo "[verify] FAIL: the failed destroy did not name 'cdkd rollback ${STACK} --stack-region ${REGION} --drop-failed OrphanStream' (output above)"
+  exit 1
+fi
+echo "[verify] step D3 ok: destroy failed (rc ${D3_RC}), the stream and its journal entry are kept, and the warning names --drop-failed"
+
+echo "[verify] step D4: refusals change nothing (unknown id; no terminal and no --force)"
+JOURNAL_ETAG_BEFORE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --query ETag --output text)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed NoSuchResource --force > /tmp/rollback-cmd-drop-unknown.log 2>&1
+D4A_RC=$?
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed OrphanStream < /dev/null > /tmp/rollback-cmd-drop-noforce.log 2>&1
+D4B_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-drop-unknown.log /tmp/rollback-cmd-drop-noforce.log || true
+if [ "${D4A_RC}" -eq 0 ] || ! grep -q 'has no entry for NoSuchResource' /tmp/rollback-cmd-drop-unknown.log; then
+  echo "[verify] FAIL: --drop-failed of an unknown id exited ${D4A_RC} without its refusal (output above)"
+  exit 1
+fi
+if [ "${D4B_RC}" -eq 0 ] || ! grep -q 'confirmation prompt cannot run in a non-interactive' /tmp/rollback-cmd-drop-noforce.log; then
+  echo "[verify] FAIL: --drop-failed without a terminal or --force exited ${D4B_RC} without its refusal (output above)"
+  exit 1
+fi
+if [ "$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --query ETag --output text)" != "${JOURNAL_ETAG_BEFORE}" ]; then
+  echo "[verify] FAIL: a refused --drop-failed rewrote the rollback journal"
+  exit 1
+fi
+echo "[verify] step D4 ok: both refused, journal untouched"
+
+echo "[verify] step D5: cdkd rollback ${STACK} --drop-failed OrphanStream --force"
+journal_shape() { # per segment: its completed-op count and its failed ops other than OrphanStream; aborts when unreadable
+  aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - \
+    | jq -c '[.segments[] | [(.operations | length), ([.failedOperations[]? | select(.logicalId != "OrphanStream")] | length)]]'
+}
+SHAPE_BEFORE="$(journal_shape)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed OrphanStream --force > /tmp/rollback-cmd-drop.log 2>&1
+D5_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-drop.log || true
+if [ "${D5_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: --drop-failed exited ${D5_RC} (output above)"
+  exit 1
+fi
+# Every other entry is kept: the journal is still there, with the same
+# segments and completed operations, and only the OrphanStream entry gone.
+if [ "$(journal_orphan_entries)" != "0" ]; then
+  echo "[verify] FAIL: after --drop-failed the journal holds $(journal_orphan_entries) OrphanStream entries (expected 0, and the journal kept)"
+  exit 1
+fi
+if [ "$(journal_shape)" != "${SHAPE_BEFORE}" ]; then
+  echo "[verify] FAIL: --drop-failed changed the journal's segments or completed operations ($(journal_shape), was ${SHAPE_BEFORE})"
+  exit 1
+fi
+if ! aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: --drop-failed deleted ${ORPHAN_STREAM_NAME} -- it must act on the journal only"
+  exit 1
+fi
+echo "[verify] step D5 ok: the entry is dropped and the stream is untouched"
+
+echo "[verify] step D6: cdkd destroy ${STACK} --force now succeeds (the stack is no longer undestroyable)"
+set +e
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-drop-destroy2.log 2>&1
+D6_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-drop-destroy2.log || true
+if [ "${D6_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: destroy after --drop-failed exited ${D6_RC} (output above)"
+  exit 1
+fi
+assert_gone "state.json still present after the destroy of step D6" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+assert_gone "rollback-journal.json still present after the destroy of step D6" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+assert_gone "Marker ${MARKER_NAME} still exists after the destroy of step D6" aws ssm get-parameter --name "${MARKER_NAME}" --region "${REGION}"
+if ! aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is gone after step D6 -- nothing cdkd ran may have deleted it"
+  exit 1
+fi
+echo "[verify] step D6 ok: destroy clean, the stream left for the operator"
+
+echo "[verify] step D7: the operator removes the stream and the deny role"
+delete_deny_roles
+assert_gone "deny role ${DENY_ROLE} still exists after step D7" aws iam get-role --role-name "${DENY_ROLE}"
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} could not be removed after step D6"
+  exit 1
+fi
+assert_gone "OrphanStream ${ORPHAN_STREAM_NAME} still exists after step D7" aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+echo "[verify] step D7 ok"
 
 echo "[verify] step 8: cleanup — remove the events sidecars so the integ leaves nothing behind"
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
