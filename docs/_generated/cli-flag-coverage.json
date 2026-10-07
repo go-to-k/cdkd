@@ -1122,7 +1122,8 @@
       "integs": [
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
-        "remove-protection-compensation"
+        "remove-protection-compensation",
+        "rollback-command"
       ]
     },
     {
@@ -1894,6 +1895,7 @@
     "--disable-api-stop",
     "--distribution-config",
     "--domain",
+    "--drop-failed",
     "--duration-seconds",
     "--email-identity",
     "--enforce-consumer-deletion",
