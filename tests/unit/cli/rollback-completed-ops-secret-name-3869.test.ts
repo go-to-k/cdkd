@@ -72,6 +72,10 @@ const REF = '{{resolve:secretsmanager:team:SecretString:name::}}';
 const NAME = 'team-secret-name';
 SECRETS[REF] = NAME;
 const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${NAME}`;
+const PATH_REF = '{{resolve:secretsmanager:team:SecretString:path::}}';
+const PATH = '/team-secret-path/';
+SECRETS[PATH_REF] = PATH;
+const POLICY_ARN = `arn:aws:iam::123456789012:policy${PATH}CompletedPolicy`;
 
 function install(resources: Record<string, unknown>, segments: unknown[]): void {
   setupMock.mockResolvedValue({
@@ -165,6 +169,49 @@ describe("cdkd rollback masks a secret-derived name on its completed-op replay (
     // Premise: the completed CREATE was reverted by deleting it.
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
     expect(lines[0]!.includes(NAME)).toBe(shown);
+  });
+
+  it.each([
+    ['a Path spelled as its reference', PATH_REF, false],
+    ['negative control, a literal Path', PATH, true],
+  ])("on a completed CREATE's delete line, judged WITH its physical id: %s", async (_l, path, shown) => {
+    // An IAM managed policy's `Path` is no name key: only the WHOLE id
+    // carries it, so the judge needs an id: the op's own entry and the state
+    // record it is replayed against each carry one.
+    install(
+      {
+        Policy: {
+          physicalId: POLICY_ARN,
+          resourceType: 'AWS::IAM::ManagedPolicy',
+          properties: { Path: path, PolicyDocument: {} },
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+        },
+      },
+      [
+        {
+          timestamp: 1,
+          reason: 'no-rollback-failure',
+          initialDeploy: false,
+          operations: [
+            {
+              logicalId: 'Policy',
+              changeType: 'CREATE',
+              resourceType: 'AWS::IAM::ManagedPolicy',
+              provisionedBy: 'sdk',
+              physicalId: POLICY_ARN,
+              properties: { Path: path, PolicyDocument: {} },
+            },
+          ],
+        },
+      ]
+    );
+    await run();
+    // Premise: the completed CREATE was reverted by deleting it.
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([POLICY_ARN]);
+    expect(lines).toEqual([expect.stringContaining('Deleting Policy: ')]);
+    expect(lines[0]!.includes(PATH)).toBe(shown);
   });
 
   it.each([
