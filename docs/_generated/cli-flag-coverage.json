@@ -1739,6 +1739,7 @@
         "raw-cfn-conditions-params",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
