@@ -42,7 +42,53 @@ describe('a child list element of a parent NoEcho parameter value', () => {
     expect(redactSecretsForState({ Value: element }, recorded)).toEqual({ Value: SECRET_MASK });
   });
 
-  it('leaves an element of an ordinary (not NoEcho) parent value alone', async () => {
+  it('honours the needle floor: a 3-character element is not recorded, a 4-character one is', async () => {
+    const inherited: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue('abc,abcd', inherited);
+    const recorded: RecordedSecretValues = new Map();
+    const context = {
+      ...childContext(recorded, inherited),
+      parameters: { ListIn: ['abc', 'abcd'] },
+    } as unknown as ResolverContext;
+    await new IntrinsicFunctionResolver('us-east-1').resolve({ Ref: 'ListIn' }, context);
+    expect(recorded.get('abc')).toBeUndefined();
+    expect(recorded.get('abcd')).toBe(SECRET_MASK);
+  });
+
+  it('records nothing for a PUBLIC list whose element merely occurs inside a parent NoEcho value', async () => {
+    const inherited: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue('myprod2024-password', inherited);
+    const recorded: RecordedSecretValues = new Map();
+    const context = {
+      ...childContext(recorded, inherited),
+      parameters: { ListIn: ['prod', 'staging'] },
+    } as unknown as ResolverContext;
+    await new IntrinsicFunctionResolver('us-east-1').resolve({ Ref: 'ListIn' }, context);
+    expect(recorded.get('prod')).toBeUndefined();
+  });
+
+  it('matches a parent value spelled with spaces after its commas, as the coercion trims them', async () => {
+    const inherited: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue(`${ELEMENT_A}, ${ELEMENT_B}`, inherited);
+    const recorded: RecordedSecretValues = new Map();
+    await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { Ref: 'ListIn' },
+      childContext(recorded, inherited)
+    );
+    expect(recorded.get(ELEMENT_A)).toBe(SECRET_MASK);
+    expect(recorded.get(ELEMENT_B)).toBe(SECRET_MASK);
+  });
+
+  it('records nothing when nothing is inherited', async () => {
+    const recorded: RecordedSecretValues = new Map();
+    await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { Ref: 'ListIn' },
+      childContext(recorded, new Map())
+    );
+    expect(recorded.size).toBe(0);
+  });
+
+  it('leaves an element of a parent dynamic-reference secret (not a NoEcho parameter) to the expression arms', async () => {
     const inherited: RecordedSecretValues = new Map([
       [`${ELEMENT_A},${ELEMENT_B}`, '{{resolve:ssm:/x}}'],
     ]);

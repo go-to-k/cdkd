@@ -201,6 +201,17 @@ function recordInheritedNoEchoListElements(
     isNoEchoParameterPlaintext(inherited, plaintext)
   );
   if (parameterValues.length === 0) return;
+  // The LIST as a whole must be (a part of) such a value, as the parent
+  // supplied it and the coercion split and trimmed it: an element of a
+  // public list that merely occurs inside a parent's NoEcho value is no
+  // piece of it.
+  const joined = value.map((element) => String(element)).join(',');
+  const normalized = (plaintext: string): string =>
+    plaintext
+      .split(',')
+      .map((piece) => piece.trim())
+      .join(',');
+  if (!parameterValues.some((plaintext) => normalized(plaintext).includes(joined))) return;
   for (const element of value) {
     if (typeof element !== 'string' || element.length < MIN_NEEDLE_LENGTH) continue;
     if (parameterValues.some((plaintext) => plaintext.includes(element))) {
