@@ -291,4 +291,32 @@ describe('ELBv2Provider.delete of a journaled resource already gone (go-to-k/cdk
       `${type.split('::')[2]} ${id} does not exist, skipping deletion`
     );
   });
+
+  // Settling a journaled orphan as gone clears its only record, so only the
+  // type's own not-found error NAME counts there, never message text or
+  // another type's not-found name.
+  it.each([
+    [LB, LB_A, DeleteLoadBalancerCommand, 'TargetGroupNotFoundException'],
+    [TG, TG_A, DeleteTargetGroupCommand, 'ListenerNotFoundException'],
+    [LISTENER, L_A, DeleteListenerCommand, 'LoadBalancerNotFoundException'],
+    [LB, LB_A, DeleteLoadBalancerCommand, 'ValidationError'],
+  ] as const)(
+    '%s under failedCreateOrphan rethrows a %s whose message says not found',
+    async (type, id, cmdClass, name) => {
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof cmdClass) throw awsError(name, 'Something was not found');
+        throw new Error('unexpected command');
+      });
+      await expect(
+        provider.delete('Orphan', id, type, {}, {
+          expectedRegion: 'us-east-1',
+          failedCreateOrphan: true,
+        })
+      ).rejects.toThrow('Something was not found');
+      expect(providerLogger.info).not.toHaveBeenCalled();
+
+      // A record's own delete keeps the looser match (unchanged).
+      await provider.delete('Orphan', id, type, {}, { expectedRegion: 'us-east-1' });
+    }
+  );
 });

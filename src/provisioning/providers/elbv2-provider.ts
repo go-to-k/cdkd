@@ -736,6 +736,19 @@ export class ELBv2Provider implements ResourceProvider {
    * (masked by the caller's printing bag); a record's own delete keeps the
    * quiet `debugText`.
    */
+  private isDeleteTargetGone(
+    error: unknown,
+    context: DeleteContext | undefined,
+    notFoundName: string
+  ): boolean {
+    // go-to-k/cdkd#4606: a journaled orphan's delete settles as done when it
+    // is gone, clearing its only record, so only the type's own not-found
+    // error NAME counts there; a record's own delete keeps the looser match.
+    return context?.failedCreateOrphan === true
+      ? hasErrorName(error, [notFoundName])
+      : this.isNotFoundError(error);
+  }
+
   private logDeleteTargetGone(
     context: DeleteContext | undefined,
     what: string,
@@ -1825,7 +1838,7 @@ export class ELBv2Provider implements ResourceProvider {
       flip.deleteAccepted = true;
       this.logger.debug(`Successfully deleted LoadBalancer ${logicalId}`);
     } catch (error) {
-      if (this.isNotFoundError(error)) {
+      if (this.isDeleteTargetGone(error, context, 'LoadBalancerNotFoundException')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
           clientRegion,
@@ -2319,7 +2332,7 @@ export class ELBv2Provider implements ResourceProvider {
       await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: physicalId }));
       this.logger.debug(`Successfully deleted TargetGroup ${logicalId}`);
     } catch (error) {
-      if (this.isNotFoundError(error)) {
+      if (this.isDeleteTargetGone(error, context, 'TargetGroupNotFoundException')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
           clientRegion,
@@ -2736,7 +2749,7 @@ export class ELBv2Provider implements ResourceProvider {
       await this.getClient().send(new DeleteListenerCommand({ ListenerArn: physicalId }));
       this.logger.debug(`Successfully deleted Listener ${logicalId}`);
     } catch (error) {
-      if (this.isNotFoundError(error)) {
+      if (this.isDeleteTargetGone(error, context, 'ListenerNotFoundException')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
           clientRegion,

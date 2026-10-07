@@ -354,6 +354,9 @@ CDKD_TEST_REMOVAL=true INJECT_LB_ORPHAN=true ${CDKD} deploy ${STACK} --region "$
 LB_FAIL_RC=$?
 set -e
 sed 's/^/  /' "${FF_LOG}"
+# Captured BEFORE any FAIL below, from the cleanup warning, so the trap can
+# clear the protection on and delete a load balancer no later check reached.
+ORPHAN_LB_ARN="$(sed -n 's/.*Failed to clean up partially-created LoadBalancer OrphanLb (\(arn:[^)]*\)).*/\1/p' "${FF_LOG}" | head -1)"
 if [ "${LB_FAIL_RC}" -eq 0 ]; then
   echo "FAIL: the OrphanLb injection deploy unexpectedly SUCCEEDED (SetSecurityGroups should reject the malformed enforce flag)" >&2
   exit 1
@@ -379,11 +382,15 @@ if [ -z "${ORPHAN_OP}" ] || [ "$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId
   echo "FAIL: the journal does not carry OrphanLb as a proven orphan (op: ${ORPHAN_OP:-<none>})" >&2
   exit 1
 fi
-ORPHAN_LB_ARN="$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId // ""')"
-case "${ORPHAN_LB_ARN}" in
+JOURNALED_LB_ARN="$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId // ""')"
+case "${JOURNALED_LB_ARN}" in
   arn:*:loadbalancer/app/*) ;;
-  *) echo "FAIL: journaled OrphanLb id is not a load balancer ARN: '${ORPHAN_LB_ARN}'" >&2; exit 1;;
+  *) echo "FAIL: journaled OrphanLb id is not a load balancer ARN: '${JOURNALED_LB_ARN}'" >&2; exit 1;;
 esac
+if [ "${JOURNALED_LB_ARN}" != "${ORPHAN_LB_ARN}" ]; then
+  echo "FAIL: the journal holds OrphanLb as '${JOURNALED_LB_ARN}', not the '${ORPHAN_LB_ARN}' the cleanup warning named" >&2
+  exit 1
+fi
 if [ "$(lb_attr "${ORPHAN_LB_ARN}" deletion_protection.enabled)" != "true" ]; then
   echo "FAIL: the journaled ${ORPHAN_LB_ARN} is not deletion-protected (the injection did not fire as designed)" >&2
   exit 1
