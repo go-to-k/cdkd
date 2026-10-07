@@ -60,6 +60,11 @@
 #         exits 0, deletes the first stream (proven another stream by a live
 #         read), keeps the fix-forward one ACTIVE in state, and drops the
 #         journal; a plain deploy then removes the fix-forward one.
+#     O9. --no-rollback (the journal carries the stream's ARN + creation time,
+#         go-to-k/cdkd#4655), the stream deleted by hand and its name re-created
+#         with the AWS CLI, then a successful deploy: it exits 2, warns that
+#         the live identity differs, keeps the new stream ACTIVE and drops the
+#         journal; the fixture deletes it.
 #   PHASE P (a replacement whose NEW resource was created, then failed,
 #   go-to-k/cdkd#4604):
 #     P0. Deploy with WITH_REPLACE_STREAM=true: ReplaceStream `-replace-stream-a`.
@@ -1038,6 +1043,97 @@ wait_orphan_stream_gone "${FIX_FORWARD_STREAM_NAME}"
 assert_gone "${FIX_FORWARD_STREAM_NAME} still exists after the deploy that removed it" \
   aws kinesis describe-stream-summary --stream-name "${FIX_FORWARD_STREAM_NAME}" --region "${REGION}"
 echo "[verify] step O8 ok: the fix-forward deleted the earlier stream, kept its own, exited 0 and dropped the journal"
+
+# go-to-k/cdkd#4655: the orphan is deleted by hand and ANOTHER stream reuses
+# its name before the next successful deploy. The journal carries the failed
+# CREATE's identity (ARN + creation time), which the new stream's differs from:
+# the deploy must keep it, warn, and exit 2. Before #4655 it deleted it.
+echo "[verify] step O9: --no-rollback, delete the stream by hand, re-create its name, then a successful deploy (the new stream KEPT)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-reuse.log 2>&1
+O9_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse.log || true
+if [ "${O9_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O9"
+O9_IDENTITY="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - \
+  | jq -r '[.segments[-1].failedOperations[]? | select(.logicalId == "OrphanStream")] | first | .createdResourceIdentity // "<absent>"')"
+case "${O9_IDENTITY}" in
+  arn:aws*:kinesis:*":stream/${ORPHAN_STREAM_NAME}@"[0-9]*) ;;
+  *)
+    echo "[verify] FAIL: the journal carries no Kinesis identity for OrphanStream (createdResourceIdentity=${O9_IDENTITY})"
+    exit 1
+    ;;
+esac
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} could not be deleted by hand in step O9"
+  exit 1
+fi
+aws kinesis create-stream --stream-name "${ORPHAN_STREAM_NAME}" --shard-count 1 --region "${REGION}"
+aws kinesis wait stream-exists --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+# The ARN is built from the name, so only the creation time tells this stream
+# from the one the failed CREATE made.
+O9_CREATED="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)"
+set +e
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-reuse-2.log 2>&1
+O9_DEPLOY_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse-2.log || true
+if [ "${O9_DEPLOY_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the deploy after the name reuse exited ${O9_DEPLOY_RC} (expected 2: the stream under the name is not the one the failed CREATE made -- output above)"
+  exit 1
+fi
+# The MISMATCH line, printed only when the live identity was read and differs
+# from the journaled one. The "nothing proves" line (no token, no read) would
+# pass the exit-2 and kept-stream checks too without proving the comparison.
+if ! grep -q 'OrphanStream.*is not deleted: the resource now under its physical id is another one' \
+  /tmp/rollback-cmd-orphan-reuse-2.log; then
+  echo "[verify] FAIL: the deploy did not report that the stream under OrphanStream's name has another identity (output above)"
+  if grep -q 'OrphanStream.*nothing proves the resource now under its physical id' /tmp/rollback-cmd-orphan-reuse-2.log; then
+    echo "         (it kept the stream without reading a live identity to compare)"
+  fi
+  exit 1
+fi
+if ! grep -q 'Skipping failed CREATE of OrphanStream' /tmp/rollback-cmd-orphan-reuse-2.log; then
+  echo "[verify] FAIL: the deploy did not name the kept OrphanStream for manual attention (output above)"
+  exit 1
+fi
+if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-reuse-2.log; then
+  echo "[verify] FAIL: the deploy deleted the stream that reused OrphanStream's name (output above)"
+  exit 1
+fi
+if ! O9_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+  echo "[verify] FAIL: the stream that reused ${ORPHAN_STREAM_NAME} is gone -- the successful deploy deleted a resource it never created"
+  exit 1
+fi
+if [ "${O9_STATUS}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: the stream that reused ${ORPHAN_STREAM_NAME} is ${O9_STATUS} (expected ACTIVE -- a delete was started)"
+  exit 1
+fi
+if [ "$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)" != "${O9_CREATED}" ]; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is not the stream step O9 created by hand (creation time differs from ${O9_CREATED})"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the deploy warned about the reused name"
+  exit 1
+fi
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream after step O9 (expected no record)"
+  exit 1
+fi
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: the stream that reused ${ORPHAN_STREAM_NAME} could not be removed after step O9"
+  exit 1
+fi
+echo "[verify] step O9 ok: the stream that reused the name was kept and warned about (exit 2), journal gone"
 
 # ---------------------------------------------------------------------------
 # PHASE P: a replacement whose NEW resource was created, then failed

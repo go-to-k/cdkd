@@ -2118,6 +2118,7 @@
     "--service-namespace",
     "--services",
     "--session-id",
+    "--shard-count",
     "--show-error",
     "--show-nested",
     "--show-toplevel",
