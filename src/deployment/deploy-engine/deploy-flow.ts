@@ -1,3 +1,4 @@
+import { freshNoEchoParametersWithDeclared } from './noecho.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -35,7 +36,11 @@ import {
   mergeNoChangeOutputs,
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
-import { requireDeploymentApproval, requireOutputsOnlyApproval } from '../deployment-approval.js';
+import {
+  isNoEchoPromotionOnly,
+  requireDeploymentApproval,
+  requireOutputsOnlyApproval,
+} from '../deployment-approval.js';
 import {
   buildConditionVerdictRecord,
   conditionInputsFrom,
@@ -363,6 +368,13 @@ export async function doDeployWithPrefetch(
     this.logger.debug(
       `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
     );
+    // go-to-k/cdkd#4043 (review round 9): a nested child positions each
+    // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
+    // here on (every save, the journal, the outputs pass).
+    this.inheritedNoEchoParameters = new Set([
+      ...(this.freshNoEchoParameters(parameterValues) ?? []),
+      ...(this.options.passedNoEchoParameters ?? []),
+    ]);
     // go-to-k/cdkd#4451: a masked property with no fingerprint (every one an
     // older cdkd recorded) takes today's template's, which is what this
     // deploy's unchanged comparison concludes AWS holds anyway, so the deploy
@@ -466,6 +478,11 @@ export async function doDeployWithPrefetch(
     const effectiveTemplate = this.templateParser.filterResourcesByCondition(template, conditions);
     // Every save from here on stamps each record's construct path from it.
     this.constructPathTemplate = effectiveTemplate;
+    // go-to-k/cdkd#4043: the positional `NoEcho` arm opens only the `Fn::If`
+    // branch this deploy selected, and reads the previous records' declared
+    // `NoEcho` attributes (go-to-k/cdkd#2449).
+    this.noEchoConditions = conditions;
+    this.seedPersistedNoEchoAttributes(currentState.resources);
 
     // 2b. Re-adopt anything a previous rollback left in AWS (issue #2934).
     //
@@ -650,7 +667,13 @@ export async function doDeployWithPrefetch(
       // value the parent supplied in THIS deploy. The diff side binds the
       // redacted bag above, where such a value is `***` like its record, so
       // the calculator promotes each reader instead.
-      this.freshNoEchoParameters(parameterValues),
+      // go-to-k/cdkd#4043: and EVERY `NoEcho: true` parameter of this
+      // template, at every level. Its readers persist `***`, so the diff
+      // cannot see a changed value; each is promoted and the engine decides
+      // with the value in hand (a readback, or the migration witness).
+      // Review round 9: a nested child's parameters its parent fills from a
+      // `NoEcho` source too (`inheritedNoEchoParameters`, set above).
+      freshNoEchoParametersWithDeclared(this.inheritedNoEchoParameters, effectiveTemplate),
       // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
       // parameter to its plaintext and records it as a log-only needle of
       // THIS context's bag, so the calculator's replacement line masks with
@@ -672,7 +695,17 @@ export async function doDeployWithPrefetch(
       // layout 2 from these same inputs, stamped below without sending.
       maskedInputs,
       // go-to-k/cdkd#4159: the account flags the load's refusals above carry.
-      this.options.refusalRecovery
+      this.options.refusalRecovery,
+      // go-to-k/cdkd#4043: compare what the persist side writes for a value
+      // a `NoEcho` source served, and read a pre-v11 record's plaintext as
+      // the migration witness.
+      this.noEchoDiffComparison(
+        currentState.resources,
+        effectiveTemplate,
+        conditions,
+        parameterValues,
+        stackName
+      )
     );
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
@@ -1163,6 +1196,20 @@ export async function doDeployWithPrefetch(
         durationMs: Date.now() - startTime,
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
+    }
+
+    // go-to-k/cdkd#4043: a stack whose only "changes" are readers of a
+    // `NoEcho` parameter (state holds `***` there) has no template change; the
+    // engine compares each with AWS and skips it when unchanged. Said so, as
+    // the no-change path would, rather than reading as a pending update.
+    const nonNoEchoChanges = [...changes.values()].filter(
+      (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
+    );
+    if (nonNoEchoChanges.length === 0) {
+      const readers = [...changes.values()].filter(isNoEchoPromotionOnly).length;
+      this.logger.info(
+        safeMsg`No changes detected in the template. Comparing ${String(readers)} resource(s) that read a NoEcho parameter with AWS.`
+      );
     }
 
     // `--require-approval`: asked on the diff this deploy executes, before any

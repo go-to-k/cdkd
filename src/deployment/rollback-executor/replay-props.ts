@@ -230,7 +230,7 @@ export function refuseMaskedReplayBaseline(
     // `cdkd orphan` and `cdkd import` (go-to-k/cdkd#4214).
     `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
-      `three ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
+      `four ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
       `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
@@ -247,7 +247,9 @@ export function refuseMaskedReplayBaseline(
       `record that HOLDS the mask ('cdkd import <stack> ` +
       `--resource <logicalId>=<physicalId> --force', granting cloudformation:DescribeType ` +
       `first if the import warned that it could not read the schema), then re-run whichever ` +
-      `command wrote this property. See https://github.com/go-to-k/cdkd/issues/2449.`,
+      `command wrote this property. (4) A NoEcho template parameter's value, which cdkd ` +
+      `stores only as the mask: restore the property with 'cdkd deploy', which sends the ` +
+      `parameter's value again. See https://github.com/go-to-k/cdkd/issues/2449.`,
     'ROLLBACK_REDACTED_BASELINE'
   );
 }

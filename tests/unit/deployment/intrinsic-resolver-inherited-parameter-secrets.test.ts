@@ -29,6 +29,7 @@ import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   redactSecretsForState,
+  recordNoEchoParameterFreshValue,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -588,6 +589,82 @@ describe('IntrinsicFunctionResolver.resolveParameters — the inherited-secret s
     expect(message).not.toContain(JSON_SECRET);
     expect(message).not.toContain('hunter2');
     expect(message).not.toContain('"user":"root"');
+  });
+
+  it('does NOT refuse a CommaDelimitedList or Number fed a parent NoEcho PARAMETER value (go-to-k/cdkd#4043 round 11)', async () => {
+    // The value arm's mask-only entry is no secret dynamic reference: the
+    // child positions the parameter, so each element and a number are masked
+    // by template position.
+    const list = 'alpha-piece-r11,bravo-piece-r11';
+    const listBag: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue(list, listBag);
+    await expect(
+      resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: list }, {
+        inheritedSecrets: listBag,
+      })
+    ).resolves.toEqual({ [PARAM]: ['alpha-piece-r11', 'bravo-piece-r11'] });
+    const portBag: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue('5432', portBag);
+    await expect(
+      resolver.resolveParameters(tpl('Number'), { [PARAM]: '5432' }, { inheritedSecrets: portBag })
+    ).resolves.toEqual({ [PARAM]: 5432 });
+  });
+
+  describe('a NoEcho parameter value and a secret reference resolving to the SAME plaintext (round 12)', () => {
+    // The resolver's dynamic-reference seam OVERWRITES the map entry with the
+    // reference (`recorded.set(resolved, fullMatch)` in dynamic-refs.ts),
+    // while the mask-only recorder never overwrites one; the NoEcho
+    // parameter-class side set keeps its mark either way. A stale mark must
+    // not hide the secret pair from the coercion refusal.
+    const SHARED = 'shared-secret-piece-1,shared-secret-piece-2';
+    const REF = '{{resolve:secretsmanager:prod/db:SecretString:::}}';
+
+    it('refuses when the NoEcho value was recorded FIRST and the reference overwrote it', async () => {
+      const bag: RecordedSecretValues = new Map();
+      recordNoEchoParameterFreshValue(SHARED, bag);
+      bag.set(SHARED, REF); // the seam's unconditional write
+      recordResolvedPair(bag, REF, SHARED);
+      await expect(
+        resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: SHARED }, {
+          inheritedSecrets: bag,
+        })
+      ).rejects.toThrow(/declared 'Type: CommaDelimitedList'/);
+    });
+
+    it('refuses when the reference was recorded FIRST and the NoEcho value after it', async () => {
+      const bag: RecordedSecretValues = new Map([[SHARED, REF]]);
+      recordResolvedPair(bag, REF, SHARED);
+      recordNoEchoParameterFreshValue(SHARED, bag);
+      expect(bag.get(SHARED)).toBe(REF); // the mask-only recorder never overwrites
+      await expect(
+        resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: SHARED }, {
+          inheritedSecrets: bag,
+        })
+      ).rejects.toThrow(/declared 'Type: CommaDelimitedList'/);
+    });
+
+    it('does not refuse the NoEcho value alone (the control)', async () => {
+      const bag: RecordedSecretValues = new Map();
+      recordNoEchoParameterFreshValue(SHARED, bag);
+      await expect(
+        resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: SHARED }, {
+          inheritedSecrets: bag,
+        })
+      ).resolves.toEqual({ [PARAM]: SHARED.split(',') });
+    });
+  });
+
+  it('still refuses a secret pair beside a NoEcho parameter entry in the same bag', async () => {
+    const JSON_SECRET = '{"user":"root","pass":"hunter2"}';
+    const bag: RecordedSecretValues = new Map([
+      [JSON_SECRET, '{{resolve:secretsmanager:prod/db:SecretString:::}}'],
+    ]);
+    recordNoEchoParameterFreshValue('alpha-piece-r11,bravo-piece-r11', bag);
+    await expect(
+      resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: JSON_SECRET }, {
+        inheritedSecrets: bag,
+      })
+    ).rejects.toThrow(/declared 'Type: CommaDelimitedList'/);
   });
 
   it('does NOT refuse a Number parameter when NOTHING was inherited (a top-level stack)', async () => {

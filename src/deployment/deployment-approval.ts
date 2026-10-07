@@ -43,7 +43,12 @@ export async function requireDeploymentApproval(args: {
   const approve = args.options.approveDeployment;
   if (level === 'never' || approve === undefined) return;
 
-  const changes = [...args.changes].filter((c) => c.changeType !== 'NO_CHANGE');
+  // go-to-k/cdkd#4043: a reader promoted ONLY because a `NoEcho` parameter's
+  // value may have moved is no template change (the engine compares it with
+  // AWS and skips it when unchanged), so it is not asked about.
+  const changes = [...args.changes].filter(
+    (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
+  );
   const destructiveChanges = findDestructiveChanges(
     args.stackName,
     changes,
@@ -135,4 +140,17 @@ export async function requireOutputsOnlyApproval(args: {
       )
     );
   }
+}
+
+/**
+ * An UPDATE whose every property change is a `NoEcho` promotion and that
+ * carries no attribute change (go-to-k/cdkd#4043).
+ */
+export function isNoEchoPromotionOnly(change: ResourceChange): boolean {
+  return (
+    change.changeType === 'UPDATE' &&
+    (change.attributeChanges?.length ?? 0) === 0 &&
+    (change.propertyChanges?.length ?? 0) > 0 &&
+    change.propertyChanges!.every((pc) => pc.noEchoPromoted === true)
+  );
 }

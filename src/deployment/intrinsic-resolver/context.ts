@@ -552,6 +552,13 @@ export interface RedactedAttributeRead {
    * `display` rendering stays derivable from the entry.
    */
   readonly key?: string;
+  /**
+   * `true` when the record's `noEchoAttributeNames` (schema v11,
+   * go-to-k/cdkd#2449) names the attribute: its producer DECLARED it
+   * `NoEcho`, so the refusal names that one cause instead of listing every
+   * way a record can come to hold the mask. Absent on a pre-v11 record.
+   */
+  readonly declaredNoEcho?: true;
   /** The user-facing rendering, built where the structure is still known. */
   readonly display: string;
 }
@@ -687,6 +694,14 @@ export interface ResolverContext {
    * ordinary and masking them would degrade unrelated parent resources).
    */
   noEchoAttributeResources?: ReadonlyMap<string, true | ReadonlySet<string>>;
+  /**
+   * go-to-k/cdkd#4043 §3.3: attribute values a producer HELD in this deploy
+   * (unchanged, so its record keeps `***`) serves for this resolution only,
+   * read back from AWS and matched against a `NoEcho` value the producer was
+   * given in this deploy. Consulted only where the record holds the mask, and
+   * never written into any record.
+   */
+  noEchoAttributeOverrides?: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
   /**
    * The needles of a resource in this stack NAMED from a secret, or
    * `undefined` when it is not (go-to-k/cdkd#3869); the deploy engine answers

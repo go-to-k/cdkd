@@ -120,7 +120,7 @@ import {
   stringifyCfnTemplate,
   type TemplateFormat,
 } from '../yaml-cfn.js';
-import { carriesSecretMask } from '../../deployment/secret-redaction.js';
+import { carriesSecretMask, noEchoLeavesOf } from '../../deployment/secret-redaction.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -5237,6 +5237,27 @@ export async function buildImportPlan(
     // it sits at the identifier choke point below, scoped to the one position
     // the export reads — `maskedIdentifierAttributeReason` says why the whole
     // bag must not be.
+    // go-to-k/cdkd#4043 (schema v11): a property a `NoEcho` template
+    // parameter fed holds `***` by design, and its record names the position
+    // in `noEchoLeaves`. None of the three remedies below applies to it, so
+    // it gets its own reason: the export has no value to declare there.
+    const noEchoLeaves = noEchoLeavesOf(stateEntry);
+    if (
+      noEchoLeaves !== undefined &&
+      noEchoLeaves.length > 0 &&
+      carriesSecretMask(stateEntry.properties) &&
+      !carriesSecretMask(withoutCoordinates(stateEntry.properties, noEchoLeaves))
+    ) {
+      blocked.push({
+        logicalId,
+        resourceType,
+        reason:
+          "a NoEcho template parameter feeds at least one property, and cdkd state holds only the redaction mask ('***') there, " +
+          'so the export has no value to declare for it. Export this stack without that resource and adopt it into ' +
+          'CloudFormation by hand, passing the parameter value yourself.',
+      });
+      continue;
+    }
     if (carriesSecretMask(stateEntry.properties)) {
       blocked.push({
         logicalId,
@@ -9852,4 +9873,47 @@ export function createExportCommand(): Command {
   cmd.addOption(deprecatedRegionOption);
 
   return cmd;
+}
+
+/**
+ * A copy of `bag` with every coordinate in `coordinates` removed, so a mask
+ * test sees only what lies OUTSIDE them (go-to-k/cdkd#4043).
+ */
+function withoutCoordinates(
+  bag: Record<string, unknown>,
+  coordinates: readonly (readonly (string | number)[])[]
+): Record<string, unknown> {
+  const placeholder = Symbol('noecho-leaf');
+  const marked = coordinates.reduce<unknown>(
+    (current, coordinate) => replaceAtCoordinate(current, coordinate, placeholder),
+    bag
+  );
+  return JSON.parse(
+    JSON.stringify(marked, (_key, value: unknown) => (value === placeholder ? null : value))
+  ) as Record<string, unknown>;
+}
+
+function replaceAtCoordinate(
+  node: unknown,
+  coordinate: readonly (string | number)[],
+  replacement: unknown
+): unknown {
+  if (coordinate.length === 0) return replacement;
+  const [head, ...rest] = coordinate;
+  if (Array.isArray(node) && typeof head === 'number' && head < node.length) {
+    const copy = [...node];
+    copy[head] = replaceAtCoordinate(node[head], rest, replacement);
+    return copy;
+  }
+  if (
+    node !== null &&
+    typeof node === 'object' &&
+    !Array.isArray(node) &&
+    typeof head === 'string'
+  ) {
+    const record = node as Record<string, unknown>;
+    if (!Object.hasOwn(record, head)) return node;
+    return { ...record, [head]: replaceAtCoordinate(record[head], rest, replacement) };
+  }
+  return node;
 }

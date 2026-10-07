@@ -83,7 +83,7 @@ offending resource is named in one message so you can fix them in one pass.
 | Blocked | Why | Remedy |
 | --- | --- | --- |
 | A template resource with no cdkd state entry | Nothing to hand over — cdkd does not know its physical id. | Import it first, or remove it from the stack. |
-| A resource whose recorded properties hold the redaction mask `***` | A value cdkd cannot re-derive: a `NoEcho` Custom Resource value, the `Fn::Base64` encoding of a secret, or a mask copied from another record. | See below. |
+| A resource whose recorded properties hold the redaction mask `***` | A value cdkd cannot re-derive: a `NoEcho` template parameter's value, a `NoEcho` Custom Resource value, the `Fn::Base64` encoding of a secret, or a mask copied from another record. | See below. |
 | A resource whose CloudFormation import identifier would be the redaction mask `***` | The recorded attribute cdkd reads as the identifier (an `AWS::S3Tables::Table` `TableARN`, an `AWS::EC2::SecurityGroupIngress` `Id`, ...) was masked by a Cloud Control import, or the physical id itself is masked. | Re-import the resource with `cloudformation:DescribeType` granted, or export without it. See below. |
 | An `AWS::CloudFormation::Stack` row with no matching nested-stack entry in cdkd state | The child's state record is missing, so its resources cannot be imported. | Repair or re-import the child's state. |
 | A resource type CloudFormation cannot import | See [Resource types CloudFormation cannot import](#resource-types-cloudformation-cannot-import). | Remove the resource, or destroy it and let CloudFormation create it fresh. |
@@ -109,8 +109,14 @@ unblock the export: without the root record there is nothing to migrate, and
 without a nested child's record the export refuses the tree as missing that
 child.
 
-**About the `***` mask.** The remedy depends on what put the mask there, and
-the record does not say which:
+**About the `***` mask.** The remedy depends on what put the mask there:
+
+- **A `NoEcho` template parameter's value.** cdkd stores only `***` where such
+  a parameter fills a property (the record names those positions), so the
+  export has no value to declare. Export the stack without that resource and
+  adopt it into CloudFormation by hand.
+
+For the other three the record does not say which put the mask there:
 
 - **A `NoEcho` Custom Resource value.** Forcing the Custom Resource to update
   does not clear the block: the handler supplies the value to the *deploy*, and

@@ -2143,6 +2143,13 @@
       "scenarios": []
     },
     {
+      "name": "schema-v10-to-v11-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -3111,6 +3118,7 @@
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
       "fixtures": [
         "legacy-state-migration",
+        "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"

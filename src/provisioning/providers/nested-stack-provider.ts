@@ -61,6 +61,7 @@ import {
   carriesSecretMask,
   hasMaskableValues,
   markSameGenerationBag,
+  passedNoEchoParametersOf,
   recoverMaskedOutput,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -892,6 +893,11 @@ export class NestedStackProvider implements ResourceProvider {
         // (recorded on the same bag), so the child hashes a clean one into a
         // masked property's input fingerprint and keeps the rest as written.
         ...(passedClasses && { passedParameterClasses: passedClasses }),
+        // go-to-k/cdkd#4043 (review round 10): which child parameters the row
+        // fills from a `NoEcho` source, read off the same bag but NOT gated
+        // on `hasMaskableValues`: a short value or a Number leaves the bag
+        // otherwise empty. Always set, so a grandchild never inherits it.
+        passedNoEchoParameters: passedNoEchoParametersOf(inheritedSecrets),
         // go-to-k/cdkd#4174: the parent engine's producer regions, for the
         // child's own in-process rollback. Always overwritten: none bound
         // (no parent engine on the stack) reads as incomplete in the child.

@@ -89,6 +89,9 @@ import { withStackName } from '../../provisioning/resource-name.js';
 import {
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
+  maskReadbackAtCoordinates,
+  noEchoLeavesOf,
+  maskedLeafCoordinatesOf,
 } from '../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
 import { stripControlChars } from '../../utils/regexp.js';
@@ -4451,8 +4454,18 @@ async function refreshObservedForStack(
           // leaf keeps the value AWS holds instead of the expression; with no
           // proof (a `SecureString`, a missing `ssm:GetParameter` grant, any
           // error) it is refused exactly as before. See `PublicSsmProver`.
+          // go-to-k/cdkd#4043: a coordinate the record marks in `noEchoLeaves`
+          // holds `***` in `properties`, which positions nothing for the walk
+          // below, so the readback's live value there is masked FIRST (through
+          // each list's identity field, the whole list where none pairs them).
           resource.observedProperties = redactSecretsForState(
-            observed,
+            maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
+              // A record naming no coordinate (pre-v11, imported, scrubbed)
+              // still holds `***` where the value stood: mask there too, as
+              // the deploy-start refresh does.
+              ...maskedLeafCoordinatesOf(resource.properties ?? {}),
+              ...(noEchoLeavesOf(resource) ?? []),
+            ]),
             await publicSsmProver.proofBagFor(resource.properties ?? {}),
             resource.properties ?? {},
             STATE_SOURCED_BASELINE_RULES

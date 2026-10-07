@@ -656,6 +656,8 @@ export async function updateInPlace(
               }),
               ...this.replacementDeleteContext(fallbackUpdateReplacePolicy),
               recordedAttributes: currentResource.attributes,
+              // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+              recordedNoEchoLeaves: currentResource.noEchoLeaves,
             }
           );
         } catch (deleteError) {
@@ -1184,6 +1186,15 @@ export async function updateInPlace(
       currentResource
     ),
     ...(carriedAttributes && { attributes: carriedAttributes }),
+    // go-to-k/cdkd#2449: the previous declared `NoEcho` attribute names, which
+    // the save unions with this run's declaration (an in-place update keeps
+    // the resource, and a name whose attribute still holds the mask stays
+    // declared). Not on a replacement: the new resource's create result is
+    // authoritative, as for `attributes` above.
+    ...(!result.wasReplaced &&
+      currentResource.noEchoAttributeNames !== undefined && {
+        noEchoAttributeNames: currentResource.noEchoAttributeNames,
+      }),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...this.extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,
@@ -1248,12 +1259,21 @@ export async function updateInPlace(
   if (progress) progress.current++;
   const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  if (updatePartial !== undefined) {
+  // go-to-k/cdkd#4043 (review CODE m1): an update-failure fallback's skipped
+  // old-resource delete makes the row partial too (`provisionResource` counts
+  // it); the line names every reason.
+  const replacedSkip = this.replacedDeleteSkips.get(logicalId);
+  const shownPartial =
+    updatePartial !== undefined && replacedSkip !== undefined
+      ? `${updatePartial}; ${replacedSkip}`
+      : (updatePartial ?? replacedSkip);
+  if (shownPartial !== undefined) {
     this.logger.warn(
       `${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
-        updatePartialMessage(updatePartial)
+        updatePartialMessage(shownPartial)
     );
-    return { updatePartial };
+    if (updatePartial !== undefined) return { updatePartial };
+    return;
   }
   this.logger.info(`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`);
 }

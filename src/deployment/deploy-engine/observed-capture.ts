@@ -23,7 +23,15 @@ import {
 } from '../masked-baseline-recapture.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
-import { markSameGenerationBag, type RecordedSecretValues } from '../secret-redaction.js';
+import {
+  createUnionSecretMasker,
+  markSameGenerationBag,
+  maskReadbackAtCoordinates,
+  maskedLeafCoordinatesOf,
+  noEchoLeavesOf,
+  type NoEchoCoordinate,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -67,7 +75,13 @@ export function kickOffObservedCapture(
   resourceType: string,
   resolvedProps: Record<string, unknown>,
   context?: import('../../types/resource.js').ReadCurrentStateContext,
-  secrets?: RecordedSecretValues
+  secrets?: RecordedSecretValues,
+  /**
+   * go-to-k/cdkd#4043 / #2449: coordinates whose readback value is masked
+   * before it is installed, paired through `properties` (the deploy-start
+   * refresh of a record that holds `***` there and has no needle bag).
+   */
+  maskAt?: { properties: Record<string, unknown>; coordinates: readonly NoEchoCoordinate[] }
 ): void {
   if (this.options.captureObservedState !== true) return;
   // A capture that cannot run still SUPERSEDES the deploy-start refresh task
@@ -82,10 +96,25 @@ export function kickOffObservedCapture(
       // A resource AWS reports gone has no baseline to capture
       // (go-to-k/cdkd#4283): the same "no observedProperties" a failed read
       // leaves, never the sentinel installed as a property bag.
-      (observed) => (observed === RESOURCE_NOT_FOUND ? undefined : observed),
+      (observed) =>
+        observed === RESOURCE_NOT_FOUND
+          ? undefined
+          : maskAt === undefined || observed === undefined || maskAt.coordinates.length === 0
+            ? observed
+            : maskReadbackAtCoordinates(observed, maskAt.properties, maskAt.coordinates),
       (err: unknown) => {
+        // go-to-k/cdkd#4043 (review M6): masked with the resource's bag, its
+        // derived-name needles and the stack's `NoEcho` values, since the
+        // deploy-start refresh runs with NO bag and AWS may echo a value.
+        const mask = createUnionSecretMasker([
+          secrets,
+          this.printingSecretsFor(logicalId),
+          this.fingerprintNoEchoValues,
+        ]);
         this.logger.debug(
-          `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+          mask(
+            `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+          )
         );
         return undefined;
       }
@@ -531,13 +560,29 @@ export function kickOffAutoRefreshObservedProperties(
     if (!provider.readCurrentState) continue;
     const siblings = { ...allSiblings };
     delete siblings[logicalId];
+    // go-to-k/cdkd#4043 / #2449 (review SECURITY 4): this read has NO needle
+    // bag, and a `***` source leaf positions nothing in the persist walk, so a
+    // value the record holds only as the mask (a reader of a custom
+    // resource's `NoEcho` attribute, whose producer did not run; a pre-v11
+    // record names no coordinate) would be installed in the clear. Every
+    // whole-`***` leaf of `properties`, and every coordinate the record marks,
+    // is masked in the readback before it is installed.
+    const recordProperties = resource.properties ?? {};
+    const maskCoordinates = [
+      ...maskedLeafCoordinatesOf(recordProperties),
+      ...(noEchoLeavesOf(resource) ?? []),
+    ];
     this.kickOffObservedCapture(
       provider,
       logicalId,
       resource.physicalId,
       resource.resourceType,
-      resource.properties ?? {},
-      { siblings }
+      recordProperties,
+      { siblings },
+      undefined,
+      maskCoordinates.length > 0
+        ? { properties: recordProperties, coordinates: maskCoordinates }
+        : undefined
     );
     toRefresh++;
   }

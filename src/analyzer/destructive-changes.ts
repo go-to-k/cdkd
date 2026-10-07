@@ -98,6 +98,9 @@ function destructiveImpactOf(
       let mayReplace = false;
       for (const pc of change.propertyChanges ?? []) {
         if (!pc.requiresReplacement) continue;
+        // go-to-k/cdkd#4043: a reader promoted only because a `NoEcho`
+        // parameter's value may have moved is never replaced on it.
+        if (pc.noEchoPromoted === true) continue;
         if (pc.inPlacePropagated === true || pc.replacementPropagated === true) {
           mayReplace = true;
         } else {

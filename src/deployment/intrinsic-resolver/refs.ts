@@ -214,8 +214,8 @@ export async function resolveRef(
     ) as ParameterDefinition | undefined;
     // go-to-k/cdkd#1998: a `NoEcho` value becomes a LOG-ONLY needle of the
     // pass that consumes it, so the provider's masker, the engine's error and
-    // event masking and this resolver's own lines mask it. Never a map entry:
-    // persistence is unchanged.
+    // event masking and this resolver's own lines mask it, and (go-to-k/cdkd#4043)
+    // also a fresh MASK-ONLY entry of the map, so persistence stores `***`.
     this.recordNoEchoParameterValue(paramDef, value, context);
     // Issue #1903 / #2087: a nested-stack child records the parent's
     // already-resolved secret HERE, at the point a resource actually

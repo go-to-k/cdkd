@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { crHandler, noEchoLayer, noEchoNonce, valueResource } from './shared.ts';
+import { NOECHO_PARAM_EXPORT_NAME } from './param-value-stack.ts';
 
 export const NOECHO_EXPORT_NAME = 'CdkdCrNoEchoNestedToken';
 export const PLAIN_EXPORT_NAME = 'CdkdCrNoEchoNestedPlain';
@@ -93,6 +94,15 @@ export class ImportConsumerStack extends cdk.Stack {
     new ssm.StringParameter(this, 'PlainParam', {
       parameterName: '/cdkd-integ/cr-noecho-nested/consumer/plain',
       stringValue: cdk.Fn.importValue(PLAIN_EXPORT_NAME),
+    });
+    // go-to-k/cdkd#4043: the export a NoEcho PARAMETER serves. verify.sh's
+    // `consumer-edit` mode changes its description, so a consumer-only deploy
+    // (no producer in the run) must resolve the import and is refused.
+    const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
+    new ssm.StringParameter(this, 'ImportedParamValue', {
+      parameterName: '/cdkd-integ/cr-noecho-nested/consumer/paramvalue',
+      stringValue: cdk.Fn.importValue(NOECHO_PARAM_EXPORT_NAME),
+      description: modes.includes('consumer-edit') ? 'edited' : 'imported',
     });
   }
 }

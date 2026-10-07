@@ -191,6 +191,44 @@ describe('cdkd diff --recursive resolves a child row against the parent bound pa
     expect(treeHasChanges(root)).toBe(false);
   });
 
+  it('compares a child reader of a parent NoEcho value as *** on both sides, a short value included (go-to-k/cdkd#4043 round 9)', async () => {
+    const root = await treeOf({
+      rootParameters: { Pw: { Type: 'String', NoEcho: true, Default: 'abc' } },
+      rowValue: { Ref: 'Pw' },
+      storedRowValue: '***',
+      childParameter: { Type: 'String' },
+      childValue: '***',
+    });
+
+    const child = root.children[0]!;
+    expect(child.changes.get('ChildRes')?.changeType).toBe('NO_CHANGE');
+    expect(printed(child)).not.toContain('abc');
+  });
+
+  // A contract pin, not a regression test: an unknown verdict never enters the
+  // diff's condition map, so this held before round 10 too. Forcing `IsProd:
+  // false` into the map handed to `noEchoFedChildParameters` turns it red.
+  it('positions a child parameter fed a NoEcho value through an Fn::If on an UNKNOWN condition: both branches count (go-to-k/cdkd#4043)', async () => {
+    const root = await treeOf({
+      rootParameters: {
+        Pw: { Type: 'String', NoEcho: true, Default: 'abc' },
+        // No Default and no input: the diff cannot bind it.
+        Stage: { Type: 'String' },
+      },
+      rootConditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+      rowValue: { 'Fn::If': ['IsProd', { Ref: 'Pw' }, 'plain-branch'] },
+      storedRowValue: '***',
+      childParameter: { Type: 'String' },
+      childValue: '***',
+    });
+
+    const child = root.children[0]!;
+    // Both branches count while the verdict is unknown, so the child's
+    // reader compares `***` to `***` instead of the FALSE branch's text.
+    expect(child.changes.get('ChildRes')?.changeType).toBe('NO_CHANGE');
+    expect(treeHasChanges(child)).toBe(false);
+  });
+
   it('still reports a real change of the Default-bound value in the child', async () => {
     const root = await treeOf({
       rootParameters: { Stage: { Type: 'String', Default: 'prod' } },
@@ -374,8 +412,15 @@ describe('cdkd diff --recursive resolves a child row against the parent bound pa
     });
 
     const child = root.children[0]!;
+    // go-to-k/cdkd#4043 round 9: the child positions the parameter its row
+    // fills from the root's NoEcho one, so a stored plaintext reads as the
+    // top level's migration witness does.
     expect(child.changes.get('ChildRes')?.propertyChanges).toEqual([
-      expect.objectContaining({ path: 'Value', oldValue: '***', newValue: '***' }),
+      expect.objectContaining({
+        path: 'Value',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+      }),
     ]);
     expect(printed(root)).not.toContain(NOECHO);
     expect(printed(child)).not.toContain(NOECHO);

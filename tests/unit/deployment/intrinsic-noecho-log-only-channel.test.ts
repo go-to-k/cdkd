@@ -79,11 +79,12 @@ describe('Ref to a NoEcho parameter records a log-only needle (go-to-k/cdkd#1998
     resolver = new IntrinsicFunctionResolver();
   });
 
-  it('feeds the masker built from the pass bag, with no map entry', async () => {
+  it('feeds the masker built from the pass bag, and (since go-to-k/cdkd#4043) a mask-only map entry', async () => {
     const bag: RecordedSecretValues = new Map();
     const mask = createSecretMasker(bag);
     expect(await resolver.resolve({ Ref: 'Secret' }, context(true, bag))).toBe(NOECHO);
-    expect(bag.size).toBe(0);
+    // The value arm of #4043: persistence stores `***` for it.
+    expect([...bag.entries()]).toEqual([[NOECHO, SECRET_MASK]]);
     expect(mask(`AWS rejected '${NOECHO}'`)).toBe(`AWS rejected '${SECRET_MASK}'`);
   });
 
@@ -130,13 +131,12 @@ describe('Ref to a NoEcho parameter records a log-only needle (go-to-k/cdkd#1998
     expect(logs).toContain('Resolved Fn::Join');
     expect(logs).toContain('Resolved Fn::Sub');
     expect(logs).not.toContain(NOECHO);
-    // No over-masking of the public text around it. The frame is shell-inert
-    // (`pw-` / `.end`), so the line prints the masked value rather than the
-    // description a `=` or `;` frame takes (go-to-k/cdkd#4161).
-    expect(logs).toContain(`pw-${SECRET_MASK}.end`);
+    // Since go-to-k/cdkd#4043 the value is a containment needle of the map, so
+    // the line masks the assembled leaf WHOLE, as persistence does.
+    expect(logs).toContain(`Resolved Fn::Join: ${SECRET_MASK}`);
   });
 
-  it("masks the Fn::Base64 encoding in the log, and records it LOG-ONLY", async () => {
+  it('masks the Fn::Base64 encoding in the log, and (since go-to-k/cdkd#4043) persists it as the mask', async () => {
     // A recorded secret beside it, so the persist DETECTOR (which skips an
     // empty map) really runs: it must not read the log-only needle.
     const bag: RecordedSecretValues = new Map([[OTHER_SECRET, OTHER_EXPR]]);
@@ -148,15 +148,16 @@ describe('Ref to a NoEcho parameter records a log-only needle (go-to-k/cdkd#1998
       context(true, bag)
     );
     expect(value).toBe(encoded);
-    // POSITIVE: the line printed the masked input and the masked encoding,
-    // so the negative cannot pass on a description.
-    expect(logLines()).toContain('Resolved Fn::Base64: pw-*** resolved to ***');
+    // POSITIVE: the line printed the masked encoding, so the negative cannot
+    // pass on a description.
+    expect(logLines()).toContain(`resolved to ${SECRET_MASK}`);
     expect(logLines()).not.toContain(encoded);
+    expect(logLines()).not.toContain(NOECHO);
     expect(maskSecretsInText(encoded, bag)).toBe(SECRET_MASK);
-    // PERSISTENCE UNCHANGED: the encoding is no map entry, so state keeps it.
-    expect(bag.size).toBe(1);
-    expect(bag.has(encoded)).toBe(false);
-    expect(redactSecretsForState({ UserData: encoded }, bag)).toEqual({ UserData: encoded });
+    // go-to-k/cdkd#4043: the value is a map entry now, so its encoding is a
+    // DERIVED needle and state persists the mask.
+    expect(bag.get(encoded)).toBe(SECRET_MASK);
+    expect(redactSecretsForState({ UserData: encoded }, bag)).toEqual({ UserData: SECRET_MASK });
   });
 
   it('masks a lookup error quoting the value with a bag holding ONLY log-only needles', async () => {
@@ -180,19 +181,19 @@ describe('Ref to a NoEcho parameter records a log-only needle (go-to-k/cdkd#1998
     expect(text).not.toContain(NOECHO);
   });
 
-  it('keeps warning, not refusing, an unsupported-service token built from the value', async () => {
-    // The refusal's detector reads the RECORDED needles only: a log-only one
-    // would turn a deploy that succeeds today into a refusal. A recorded
-    // secret beside it, so the detector's empty-map guard is passed.
+  it('refuses (since go-to-k/cdkd#4043) an unsupported-service token built from the value', async () => {
+    // The value is a map entry now, so the refusal's detector sees it: leaving
+    // the token as written would send the value to AWS and persist it.
     const bag: RecordedSecretValues = new Map([[OTHER_SECRET, OTHER_EXPR]]);
-    const value = await resolver.resolve(
-      { 'Fn::Sub': '{{resolve:unknownsvc:${Secret}}}' },
-      context(true, bag)
-    );
-    expect(value).toBe(`{{resolve:unknownsvc:${NOECHO}}}`);
-    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(warned).toContain('Unsupported dynamic reference service');
-    expect(warned).not.toContain(NOECHO);
+    const caught = await resolver
+      .resolve({ 'Fn::Sub': '{{resolve:unknownsvc:${Secret}}}' }, context(true, bag))
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(caught).toBeInstanceOf(Error);
+    expect(String((caught as Error).message)).toContain('its service is not one cdkd resolves');
+    expect(String((caught as Error).message)).not.toContain(NOECHO);
   });
 });
 

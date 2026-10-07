@@ -74,7 +74,14 @@ export function liveHoldsFreshLeaves(live: unknown, leaves: readonly FreshNoEcho
       if (!Object.prototype.hasOwnProperty.call(node, segment)) return false;
       node = (node as Record<string, unknown>)[segment];
     }
-    if (typeof node !== 'string' || node !== leaf.plaintext) return false;
+    // A value-arm leaf is a string and compares strictly; a POSITIONAL leaf
+    // (a `Number`, a list, a short value; go-to-k/cdkd#4043) compares by
+    // key-order-free JSON, so `1` never equals `"1"`.
+    if (typeof leaf.plaintext === 'string') {
+      if (typeof node !== 'string' || node !== leaf.plaintext) return false;
+    } else if (node === undefined || keyOrderFreeJson(node) !== keyOrderFreeJson(leaf.plaintext)) {
+      return false;
+    }
   }
   return true;
 }

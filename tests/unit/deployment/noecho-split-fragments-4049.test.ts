@@ -86,7 +86,7 @@ function splitContext(
 }
 
 describe('(b) Fn::Split over a NoEcho value records its pieces as log-only needles', () => {
-  it('masks every piece on the Resolved Fn::Split line and in the pass masker, with no map entry', async () => {
+  it('masks every piece on the Resolved Fn::Split line and in the pass masker; only the whole value is a map entry', async () => {
     const bag: RecordedSecretValues = new Map();
     const pieces = await new IntrinsicFunctionResolver().resolve(
       { 'Fn::Split': [',', { Ref: 'Secret' }] },
@@ -100,12 +100,16 @@ describe('(b) Fn::Split over a NoEcho value records its pieces as log-only needl
     expect(maskSecretsInText(`rejected '${FIRST}' and '${SECOND}'`, bag)).toBe(
       `rejected '${SECRET_MASK}' and '${SECRET_MASK}'`
     );
-    // LOG-ONLY: nothing the persist path reads moved.
-    expect(bag.size).toBe(0);
+    // go-to-k/cdkd#4043: the WHOLE value is a mask-only map entry (the value
+    // arm); the pieces stay LOG-ONLY, so a bare piece is not a needle of the
+    // persist walk. The engine masks a split leaf by template POSITION
+    // instead (the positional arm, pinned through the engine below).
+    expect([...bag.entries()]).toEqual([[NOECHO, SECRET_MASK]]);
     expect(redactSecretsForState({ A: FIRST, B: [FIRST, SECOND] }, bag)).toEqual({
       A: FIRST,
       B: [FIRST, SECOND],
     });
+    expect(redactSecretsForState({ W: NOECHO }, bag)).toEqual({ W: SECRET_MASK });
   });
 
   it('masks a piece consumed through Fn::Select on the Select line too', async () => {
@@ -119,7 +123,7 @@ describe('(b) Fn::Split over a NoEcho value records its pieces as log-only needl
     expect(lines()).not.toContain(SECOND);
   });
 
-  it("records only a piece's SHARE of the value, keeping the literal around it printed", async () => {
+  it('masks each piece of a split over a leaf embedding the value whole on its line', async () => {
     const bag: RecordedSecretValues = new Map();
     const pieces = await new IntrinsicFunctionResolver().resolve(
       { 'Fn::Split': [',', { 'Fn::Join': ['', ['head-', { Ref: 'Secret' }, '-tail']] }] },
@@ -127,8 +131,11 @@ describe('(b) Fn::Split over a NoEcho value records its pieces as log-only needl
     );
     expect(pieces).toEqual([`head-${FIRST}`, `${SECOND}-tail`]);
     const logged = lines();
-    expect(logged).toContain(`head-${SECRET_MASK}`);
-    expect(logged).toContain(`${SECRET_MASK}-tail`);
+    // Since go-to-k/cdkd#4043 the value is a containment needle of the map, so
+    // the leaf embedding it and each piece of it print as the mask whole
+    // (over-masking a log line is the safe direction).
+    expect(logged).toContain(`Resolved Fn::Join: ${SECRET_MASK}`);
+    expect(logged).toContain(`resolved to ["${SECRET_MASK}","${SECRET_MASK}"]`);
     expect(logged).not.toContain(FIRST);
     expect(logged).not.toContain(SECOND);
   });
@@ -145,9 +152,11 @@ describe('(b) Fn::Split over a NoEcho value records its pieces as log-only needl
     expect(maskSecretsInText('xabcx', bag)).toBe('xabcx');
     expect(maskSecretsInText('pre-abc', bag)).toBe('pre-abc');
     expect(maskSecretsInText('v=defghij', bag)).toBe(`v=${SECRET_MASK}`);
-    // So the `pre-abc` piece prints, as a 1-3 character NoEcho value embedded
-    // in a longer string always has.
-    expect(lines()).toContain('pre-abc');
+    // The resolver's own Split line now masks each piece of an input that
+    // embeds the whole value (go-to-k/cdkd#4043's containment needle), the
+    // short one included; the bag's floor above is unchanged.
+    expect(lines()).toContain(`resolved to ["${SECRET_MASK}","${SECRET_MASK}"]`);
+    expect(lines()).not.toContain('pre-abc');
     expect(lines()).not.toContain('defghij');
   });
 
@@ -668,7 +677,7 @@ describe('DeployEngine - a split piece of a NoEcho value is masked on the deploy
     expect(context.maskSecrets!(SECOND)).toBe(SECOND);
   });
 
-  it('saves byte-identical state with and without NoEcho on the parameter', async () => {
+  it('persists *** for a split piece of a NoEcho value by template position (go-to-k/cdkd#4043)', async () => {
     const saved = async (noEcho: boolean): Promise<string> => {
       const h = harness(SPLIT_PROPS, { Secret: NOECHO });
       await h.engine.deploy(
@@ -679,11 +688,16 @@ describe('DeployEngine - a split piece of a NoEcho value is masked on the deploy
       );
       return persisted(h.saveState);
     };
+    // Negative control: without NoEcho both pieces stay in the clear, so the
+    // positive half is not vacuous.
+    const without = await saved(false);
+    expect(without).toContain(`"Value":"${SECOND}"`);
+    expect(without).toContain(`"Piece":"${FIRST}"`);
     const withNoEcho = await saved(true);
-    // Non-vacuity: both pieces are in the persisted state in the clear.
-    expect(withNoEcho).toContain(`"Value":"${SECOND}"`);
-    expect(withNoEcho).toContain(`"Piece":"${FIRST}"`);
-    expect(withNoEcho).toBe(await saved(false));
+    expect(withNoEcho).not.toContain(FIRST);
+    expect(withNoEcho).not.toContain(SECOND);
+    expect(withNoEcho).toContain('"Value":"***"');
+    expect(withNoEcho).toContain('"Piece":"***"');
   });
 
   it("masks a nested child's list parameter split out of the parent's value", async () => {

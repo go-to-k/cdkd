@@ -49,7 +49,8 @@
     {
       "flag": "--allow-unaddressed",
       "integs": [
-        "acm-certificate"
+        "acm-certificate",
+        "schema-v10-to-v11-migration"
       ]
     },
     {
@@ -99,6 +100,7 @@
       "flag": "--exclusively",
       "integs": [
         "cross-stack-secret-import",
+        "custom-resource-noecho-nested",
         "importvalue-chain",
         "outputs-only-export"
       ]
@@ -324,6 +326,7 @@
         "s3-tables",
         "s3-vectors",
         "scheduler-custom-group",
+        "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -703,6 +706,7 @@
         "s3-tables",
         "s3-vectors",
         "scheduler-custom-group",
+        "schema-v10-to-v11-migration",
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration",
@@ -779,6 +783,7 @@
         "iam-recreate-reattach",
         "loggroup-never-expire-guard",
         "lost-child-after-failed-deploy",
+        "noecho-parameter-masking",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
         "recreate-parent-child-permission",
@@ -788,6 +793,7 @@
         "replacement-rename-onto-holder",
         "rollback-replay-cc-generated-name",
         "scheduler-custom-group",
+        "schema-v10-to-v11-migration",
         "sdk-ccapi-crossref",
         "sdk-to-cc-autoroute"
       ]
@@ -1043,6 +1049,7 @@
         "s3-tables",
         "s3-vectors",
         "scheduler-custom-group",
+        "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -1418,6 +1425,7 @@
         "s3-tables",
         "s3-vectors",
         "scheduler-custom-group",
+        "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -1761,6 +1769,7 @@
         "s3-tables",
         "s3-vectors",
         "scheduler-custom-group",
+        "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -2095,6 +2104,7 @@
     "--quiet",
     "--receipt-handle",
     "--record-resource-mapping",
+    "--recreate-via",
     "--recursive",
     "--replica-updates",
     "--replication-group-id",

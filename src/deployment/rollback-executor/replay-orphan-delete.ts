@@ -266,6 +266,8 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
       // Issue #4157. `classifyRollbackOp` reaches this arm only with a
       // record naming `op.physicalId`.
       recordedAttributes: stateResources[op.logicalId]?.attributes,
+      // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+      recordedNoEchoLeaves: stateResources[op.logicalId]?.noEchoLeaves,
     }
   );
   throwIfDeleteSkipped(

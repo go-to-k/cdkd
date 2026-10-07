@@ -267,6 +267,8 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
         // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
         deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
         recordedAttributes: current.attributes,
+        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+        recordedNoEchoLeaves: current.noEchoLeaves,
       }
     );
     // Issue #1762: BEFORE the state re-point, so a skip cannot leave

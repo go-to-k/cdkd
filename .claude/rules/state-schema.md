@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema - StackState v1-v10 and per-field semantics
+description: cdkd S3 state schema - StackState v1-v11 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -11,8 +11,8 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  // bumps: 2 region-prefixed key, 3 observedProperties, 4 imports, 5 deletion/updateReplace policy, 6 parent* (nested stacks), 7 provisionedBy, 8 outputReads, 9 exportNames, 10 observedBaselineRefused
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+  // bumps: 2 region-prefixed key, 3 observedProperties, 4 imports, 5 deletion/updateReplace policy, 6 parent* (nested stacks), 7 provisionedBy, 8 outputReads, 9 exportNames, 10 observedBaselineRefused, 11 noEchoLeaves/noEchoAttributeNames
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   stackName: string;
   region?: string;      // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
@@ -54,6 +54,8 @@ interface ResourceState {
   provisionedBy?: 'sdk' | 'cc-api';         // v7+: routing layer (absent = pre-v7 = SDK-managed; NOT pinned — routing re-decides)
   observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
+  noEchoLeaves?: (string | number)[][];     // v11+: coordinates in `properties` stored `***` for a NoEcho parameter / declared-NoEcho GetAtt
+  noEchoAttributeNames?: string[];          // v11+: own `attributes` declared NoEcho, each stored `***`
   acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
   constructPath?: string;                   // no bump: display only; stamped in `redactStateForPersist` on every deploy save (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
@@ -77,15 +79,15 @@ The verdict a deploy computed for each condition `cdkd diff` reads but cannot ev
 
 ## `outputs`
 
-Values are `unknown`, NOT `string`: `resolveOutputs` persists whatever the intrinsic resolver produced, so an `Fn::GetAtt` CloudFormation defines as a LIST persists a JSON **array**. Narrow before use; a type or doc spelling this `Record<string, string>` is wrong. Without `--strict-getatt` (which fails the deploy instead), an unresolvable output is stored as `undefined` and drops out of the JSON, so absence means "not resolved" and a no-change save keeps its old value.
+Values are `unknown`, NOT `string`: a LIST `Fn::GetAtt` persists a JSON **array**; narrow before use. Without `--strict-getatt` an unresolvable output is stored as `undefined` and drops out of the JSON, so absence means "not resolved" and a no-change save keeps its old value.
 
 ## `deletionPolicy` / `updateReplacePolicy` (v5+)
 
-The CFn template attributes recorded at deploy time, so the next `deploy` / `diff` detects attribute-only flips that have no AWS API impact: `DiffCalculator` walks both, an UPDATE fires when only they change, and the engine refreshes the record without calling a provider.
+Recorded at deploy time so an attribute-only flip diffs as an UPDATE that refreshes the record without calling a provider.
 
-Destroy paths read them through `shouldRetainResource(deletionPolicy)`. `cdkd destroy` uses `state.deletionPolicy ?? template.Resources[<id>].DeletionPolicy`, so state wins and the template is a fallback; `cdkd state destroy` is template-less and reads state only, so pre-v5 state there deletes every resource until a redeploy populates it.
+Destroy reads them through `shouldRetainResource(deletionPolicy)`: `cdkd destroy` takes `state.deletionPolicy ?? template...DeletionPolicy`; template-less `cdkd state destroy` reads state only, so pre-v5 state there deletes every resource.
 
-`Snapshot` is honored outside `shouldRetainResource` (which covers only the Retain variants), by final-snapshot gating at those two sites: the type sets are in `src/provisioning/final-snapshot.ts` (see [provider-delete-path.md](provider-delete-path.md)), a shape neither covers is refused, and `--skip-final-snapshot` is the opt-out. `UpdateReplacePolicy: Snapshot` is honored on the engine's replacement / recreate deletes.
+`Snapshot` is honored outside `shouldRetainResource` by final-snapshot gating at both sites (type sets in `src/provisioning/final-snapshot.ts`, [provider-delete-path.md](provider-delete-path.md)); an uncovered shape is refused, `--skip-final-snapshot` opts out. `UpdateReplacePolicy: Snapshot` is honored on replacement / recreate deletes.
 
 ## `provisionedBy` (v7+)
 
@@ -105,13 +107,17 @@ The field is **sticky by default**: an SDK Provider backfill does not migrate a 
 
 ## `outputReads` (v8+)
 
-The `imports` sibling for the weak-reference `Fn::GetStackOutput`: one entry per successful **same-account** resolution, omitted from JSON when empty. Unlike `imports` it is **informational only** — no destroy-time refusal, so the producer stays deletable independently of consumers. Cross-account `RoleArn` reads push NO entries (a match key would need a `sourceAccountId`); same-account cross-region reads ARE recorded. `undefined` reads as "no consumers known".
+The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-account** resolution (cross-region included, cross-account `RoleArn` reads never), omitted when empty. **Informational only** — no destroy-time refusal. `undefined` reads as "no consumers known".
 
 ## `observedBaselineRefused` (v10+)
 
-`cdkd import` DECLINED to capture an `observedProperties` baseline here, so no writer that refreshes observed state (deploy auto-refresh, `state refresh-observed`, `drift --accept` / `--revert`) may synthesize one from `properties`. `undefined` means NOT refused, which is every pre-v10 record and what those writers already assumed, so v9 -> v10 needs no migration code. The AUTHORITY is the field's JSDoc in `src/types/state.ts`.
+`cdkd import` DECLINED to capture an `observedProperties` baseline here, so no writer that refreshes observed state (deploy auto-refresh, `state refresh-observed`, `drift --accept` / `--revert`) may synthesize one from `properties`. `undefined` = NOT refused (every pre-v10 record). AUTHORITY: the field's JSDoc in `src/types/state.ts`.
 
-`observedBaselineRefusalReason` (optional, no bump, [#3462](https://github.com/go-to-k/cdkd/issues/3462)) is never present without the marker. `'unverifiable-parameter'` means the resource depends on a template parameter not provably deployed at the `Default` both `cdkd import` and `cdkd deploy` bind, so a deploy holds no more evidence than the import did: the in-place UPDATE rebuild in `updateInPlace` carries both fields and takes NO readback, whatever changed. Only a replacement / CREATE clears them, or an import that re-imported the row while it HAD a deployed-parameter source and ARM 4 did not name it; `buildStackState` carries both across a re-import on an unchanged physical id. Every writer records a reason (`'incomplete-resolution'` for the other arms; no reader branches on it). ABSENT means an older binary's record of unknown class ([#3468](https://github.com/go-to-k/cdkd/issues/3468)) and is read FAIL CLOSED through `resourcesNamingDeclaredParameter` (`src/analyzer/parameter-dependence.ts`, "yes" on an unreadable template): `stampReasonlessParameterRefusals` stamps it at deploy start, before any readback, and `buildStackState` carries it; a definition naming no declared parameter clears on UPDATE as before. Readers that only ask "is a baseline refused?" test the marker alone; read the pair through `hasUnverifiableParameterRefusal`. A template-less command naming the REMEDY words it through `refusedBaselineRemedy` ([#3465](https://github.com/go-to-k/cdkd/issues/3465)): "deploy a change" is true only for `'incomplete-resolution'`.
+`observedBaselineRefusalReason` (optional, no bump, [#3462](https://github.com/go-to-k/cdkd/issues/3462)) is never present without the marker. `'unverifiable-parameter'` means the resource depends on a template parameter not provably deployed at the `Default` both `cdkd import` and `cdkd deploy` bind, so a deploy holds no more evidence than the import did: the in-place UPDATE rebuild in `updateInPlace` carries both fields and takes NO readback, whatever changed. Only a replacement / CREATE clears them, or an import that re-imported the row while it HAD a deployed-parameter source and ARM 4 did not name it; `buildStackState` carries both across a re-import on an unchanged physical id. Every writer records a reason (`'incomplete-resolution'` for the other arms; no reader branches on it). ABSENT means an older binary's record of unknown class ([#3468](https://github.com/go-to-k/cdkd/issues/3468)) and is read FAIL CLOSED through `resourcesNamingDeclaredParameter` (`src/analyzer/parameter-dependence.ts`, "yes" on an unreadable template): `stampReasonlessParameterRefusals` stamps it at deploy start, before any readback, and `buildStackState` carries it; a definition naming no declared parameter clears on UPDATE as before. Readers asking "is a baseline refused?" test the marker alone; the pair goes through `hasUnverifiableParameterRefusal`, a template-less REMEDY through `refusedBaselineRemedy` (#3465).
+
+## `noEchoLeaves` / `noEchoAttributeNames` (v11+)
+
+Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/noecho.ts`); coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field, one with NONE (pre-v11) takes today's template positions. ABSENT = not known: a non-mask stored leaf there is the MIGRATION WITNESS (`witnessNormalize`), so `version` never certifies redaction. `noEchoAttributeNames` comes from the DECLARATION, never from which attributes hold `***`, unioned with earlier names still masked. Spreading writers carry both.
 
 ## `observedProperties` (v3+)
 

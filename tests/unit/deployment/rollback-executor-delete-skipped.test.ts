@@ -265,6 +265,8 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
 describe('rollback executor — recordedAttributes on every delete arm (#4157)', () => {
   const NEW_ATTRS = { RepositoryId: 'id-new-4157' };
   const OLD_ATTRS = { RepositoryId: 'id-old-4157' };
+  // go-to-k/cdkd#4043: the same record's NoEcho coordinates ride beside them.
+  const NEW_LEAVES = [['Password']];
 
   function contextOf(del: ReturnType<typeof vi.fn>): Record<string, unknown> {
     expect(del).toHaveBeenCalledOnce();
@@ -278,12 +280,14 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B' },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
 
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
   });
 
   it('reverse-replacement re-adopt: the NEW record deleted', async () => {
@@ -301,12 +305,14 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
 
     expect(contextOf(del)[`recordedAttributes`]).toEqual(NEW_ATTRS);
+
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
   });
 
@@ -332,7 +338,7 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'new-b', properties: { BucketName: 'b' }, attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'new-b', properties: { BucketName: 'b' }, attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
@@ -340,6 +346,7 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
     // Reached through the collision: the re-create ran twice.
     expect(create).toHaveBeenCalledTimes(2);
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
   });
 
@@ -358,14 +365,54 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
 
     expect(create).toHaveBeenCalledOnce();
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
+  });
+
+  it("--revert-failed partially-created delete with NO record: the journal bag's *** positions reach the delete (go-to-k/cdkd#4043 round 9 n1)", async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'Cr',
+        changeType: 'CREATE',
+        resourceType: 'Custom::Thing',
+        physicalId: 'cr-1',
+        attemptedProperties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Cfg: { Pw: '***' } },
+        // The provider proved it made the resource: no record names it.
+        physicalIdRecoveredFromError: true,
+      },
+    ];
+
+    await replayFailedOperations(failed, {}, 'S', ctx, {});
+
+    expect(contextOf(del)['recordedNoEchoLeaves']).toEqual([['Cfg', 'Pw']]);
+  });
+
+  it('--revert-failed partially-created delete with NO *** in the journal bag: no recordedNoEchoLeaves (round 10 negative)', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'Cr',
+        changeType: 'CREATE',
+        resourceType: 'Custom::Thing',
+        physicalId: 'cr-1',
+        attemptedProperties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Cfg: { Pw: 'x' } },
+        physicalIdRecoveredFromError: true,
+      },
+    ];
+
+    await replayFailedOperations(failed, {}, 'S', ctx, {});
+
+    expect(contextOf(del)['recordedNoEchoLeaves']).toBeUndefined();
   });
 
   it('--revert-failed partially-created delete: the record naming the op id', async () => {
@@ -381,11 +428,13 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayFailedOperations(failed, state, 'S', ctx, {});
 
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
   });
 });

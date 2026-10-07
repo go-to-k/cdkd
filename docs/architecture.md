@@ -516,7 +516,7 @@ interface S3StateBackend {
 ```
 
 **State Schema** (`types/state.ts`) — abbreviated; the full current-version
-shape (v10, incl. `region` / `imports` / `outputReads` / `exportNames` / the
+shape (v11, incl. `region` / `imports` / `outputReads` / `exportNames` / the
 nested-stack parent links) is in [State Management](state-management.md#state-schema):
 
 ```typescript
@@ -1163,7 +1163,7 @@ question.
   [`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
 - A **custom-resource `Data` value has no reference behind it**, so it takes a
   second channel: a handler that sets `NoEcho: true` on its cfn-response has
-  every string in its `Data` persisted as `***` — in the custom resource's own
+  every value in its `Data` persisted as `***` — in the custom resource's own
   `attributes`, in the resolved `properties` of everything that consumed it via
   `Fn::GetAtt`, and in `state.outputs` (a string EMBEDDING it is stored as `***`
   whole, issue [#2453](https://github.com/go-to-k/cdkd/issues/2453)) — while `Fn::GetAtt` keeps resolving to
@@ -1177,6 +1177,17 @@ question.
   refused. See
   [State Management](state-management.md#noecho-custom-resource-responses)
   and [Cross-stack reference internals](cross-stack-internals.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
+- A **`NoEcho: true` template parameter's value** is persisted as `***` too
+  (state schema `version: 11`): wherever it equals or is embedded in a stored
+  string, and at every position the template fills from the parameter, whatever
+  the value's type or length. Each such position is listed in the record's
+  `noEchoLeaves`, and an attribute a producer declares `NoEcho` in
+  `noEchoAttributeNames`. The deploy still sends the real value; to decide
+  whether it changed it reads the resource back from AWS (a record written
+  before `version: 11` is compared with the value it still holds). A create-only
+  property such a value feeds is never replaced on a readback's word; the
+  deploy warns and names `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+  See [State Management](state-management.md#version-11-stores-noecho-values-as-current-writers).
 
 ## Limitations and Future Extensions
 

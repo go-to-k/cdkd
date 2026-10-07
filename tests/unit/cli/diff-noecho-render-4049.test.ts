@@ -170,13 +170,18 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
 
     const change = result.changes.get('A');
     expect(change?.changeType).toBe('UPDATE');
+    // go-to-k/cdkd#4043: the pre-v11 record's plaintext is the migration
+    // witness; a different one shows a placeholder, never the old value.
     expect(change?.propertyChanges).toEqual([
-      expect.objectContaining({ path: 'Value', oldValue: '***', newValue: '***' }),
+      expect.objectContaining({
+        path: 'Value',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+      }),
     ]);
     const out = printed(nodeOf(result));
     expect(out).not.toContain(NOECHO);
     expect(out).not.toContain(OLD_NOECHO);
-    expect(out).toContain('old: "***"');
     expect(out).toContain('new: "***"');
   });
 
@@ -218,7 +223,9 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
     expect(out).not.toContain('31337');
     expect(result.changes.get('A')?.propertyChanges).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ path: 'Value', newValue: 'user=***' }),
+        // go-to-k/cdkd#4043: compared as the persist side writes it, the
+        // embedding leaf whole.
+        expect.objectContaining({ path: 'Value', newValue: '***' }),
         expect.objectContaining({ path: 'Tier', newValue: '***' }),
       ])
     );
@@ -235,7 +242,7 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
     );
 
     expect(result.changes.get('A')?.propertyChanges).toEqual([
-      expect.objectContaining({ oldValue: '***', newValue: '***' }),
+      expect.objectContaining({ oldValue: '(previous NoEcho value)', newValue: '***' }),
     ]);
     expect(printed(nodeOf(result))).not.toContain(encoded);
   });
@@ -247,12 +254,43 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
       noEchoTemplate({ Value: 'x' }, { Out: { Value: { Ref: 'DbUser' } } })
     );
 
+    // go-to-k/cdkd#4043: compared as the persisted `***`; the pre-v11 stored
+    // plaintext is the witness, so a different one shows a placeholder.
     expect(result.outputChanges).toEqual([
-      { name: 'Out', changeType: 'MODIFY', oldValue: '***', newValue: '***', isExport: false },
+      {
+        name: 'Out',
+        changeType: 'MODIFY',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+        isExport: false,
+      },
     ]);
     const out = printed(nodeOf(result));
     expect(out).not.toContain(NOECHO);
     expect(out).not.toContain(OLD_NOECHO);
+  });
+
+  it('reports NO change for an unchanged NoEcho-served output, v11 (***) or pre-v11 (same plaintext) record (schema v11)', async () => {
+    for (const stored of ['***', NOECHO]) {
+      const { result } = await diffOf(
+        st({ A: res({ Value: 'x' }) }, { Out: stored }),
+        noEchoTemplate({ Value: 'x' }, { Out: { Value: { Ref: 'DbUser' } } })
+      );
+      expect(result.outputChanges).toEqual([]);
+    }
+  });
+
+  it('still reports an ordinary output that changed beside it', async () => {
+    const { result } = await diffOf(
+      st({ A: res({ Value: 'x' }) }, { Out: '***', Plain: 'old' }),
+      noEchoTemplate(
+        { Value: 'x' },
+        { Out: { Value: { Ref: 'DbUser' } }, Plain: { Value: 'new' } }
+      )
+    );
+    expect(result.outputChanges).toEqual([
+      expect.objectContaining({ name: 'Plain', changeType: 'MODIFY', newValue: 'new' }),
+    ]);
   });
 
   // An intrinsic name, which the template type spells as a string.
@@ -915,8 +953,15 @@ describe('cdkd diff --recursive masks a parent NoEcho value in the child (#4049)
     });
 
     const child = root.children[0]!;
+    // go-to-k/cdkd#4043 round 9: the child positions the parameter its row
+    // fills from the parent's NoEcho one, so the stored plaintext reads as the
+    // top level's migration witness does.
     expect(child.changes.get('ChildRes')?.propertyChanges).toEqual([
-      expect.objectContaining({ path: 'Value', oldValue: '***', newValue: '***' }),
+      expect.objectContaining({
+        path: 'Value',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+      }),
     ]);
     expect(root.changes.get('Child')?.propertyChanges).toEqual([
       expect.objectContaining({ newValue: { referencetoParentPw: '***' } }),

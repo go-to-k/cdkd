@@ -452,7 +452,9 @@ The re-resolution above works because a secret-bearing output persists
 its EXPRESSION, which names
 a value cdkd can fetch again. A `NoEcho` custom resource's `Data` has no
 expression — the handler minted the value — so an output carrying one persists
-the literal mask `***` instead, and there is nothing to re-resolve.
+the literal mask `***` instead, and there is nothing to re-resolve. Since state
+schema `version: 11` the same holds for an output a `NoEcho: true` template
+parameter serves: it persists `***`, and the rules below apply to it alike.
 
 All three cross-stack reads land on that mask, plus a nested stack's
 `Fn::GetAtt [<Child>, 'Outputs.<Key>']`, which reads the child's persisted
@@ -474,7 +476,8 @@ exists:
   the way into its own state, so the consumer's next run reads the mask again.
   Deploy producer and consumer in ONE run with the producer's custom resource
   actually running (force it to update), or stop marking that response
-  `NoEcho`.
+  `NoEcho`. For a `NoEcho` parameter's output, deploying the two stacks in one
+  run is enough: the producer resolves the parameter on every deploy.
 
 The values themselves are still delivered to AWS in the clear on the runs that
 succeed; only what cdkd writes down changes. See

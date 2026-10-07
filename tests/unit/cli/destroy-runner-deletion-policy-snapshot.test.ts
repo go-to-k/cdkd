@@ -474,6 +474,13 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(deleteContextArg()['recordedAttributes']).toEqual(attributes);
   });
 
+  it("go-to-k/cdkd#4043: threads the deleted record's noEchoLeaves into the DeleteContext", async () => {
+    const noEchoLeaves = [['MasterUserPassword']];
+    const state = makeState({ Db: res({ deletionPolicy: 'Delete', noEchoLeaves }) });
+    await runDestroyForStack('TestStack', state, makeCtx());
+    expect(deleteContextArg()['recordedNoEchoLeaves']).toEqual(noEchoLeaves);
+  });
+
   it.each([
     // A standalone RDS instance: CloudFormation's absent default is Snapshot.
     ['AWS::RDS::DBInstance', 'Snapshot'],

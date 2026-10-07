@@ -39,6 +39,9 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { LockRecoveryContext } from '../../../src/state/lock-contention-message.js';
 
+/** `calculateDiff`'s `refusalRecovery` position (a NoEcho comparison follows it, go-to-k/cdkd#4043). */
+const REFUSAL_RECOVERY_ARG = 9;
+
 const STACK = 'S';
 const REGION = 'us-east-1';
 const RECOVERY: LockRecoveryContext = {
@@ -179,9 +182,9 @@ describe('cdkd diff carries the account flags on its malformed-record warnings (
   it('hands the context to calculateDiff, and nothing without it', async () => {
     const spy = vi.spyOn(DiffCalculator.prototype, 'calculateDiff');
     await diff(record(), RECOVERY);
-    expect(spy.mock.calls.at(-1)?.at(-1)).toBe(RECOVERY);
+    expect(spy.mock.calls.at(-1)?.[REFUSAL_RECOVERY_ARG]).toBe(RECOVERY);
     await diff(record(), undefined);
-    expect(spy.mock.calls.at(-1)?.at(-1)).toBeUndefined();
+    expect(spy.mock.calls.at(-1)?.[REFUSAL_RECOVERY_ARG]).toBeUndefined();
     spy.mockRestore();
   });
 
@@ -249,7 +252,7 @@ describe('cdkd diff carries the account flags on its malformed-record warnings (
       });
       const childCall = spy.mock.calls.find((call) => call[0].stackName === `${STACK}~Child`);
       expect(childCall, 'the deleted child was never diffed').toBeDefined();
-      expect(childCall!.at(-1)).toBe(RECOVERY);
+      expect(childCall![REFUSAL_RECOVERY_ARG]).toBe(RECOVERY);
       spy.mockRestore();
     });
   });

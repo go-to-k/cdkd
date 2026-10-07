@@ -207,6 +207,18 @@ export interface DeleteContext {
   recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
 
   /**
+   * The record's `noEchoLeaves` (go-to-k/cdkd#4043, schema v11): the
+   * coordinates at which its `properties` hold `***` for a `NoEcho` parameter
+   * value. Threaded beside `recordedAttributes` by every `delete()` caller.
+   * A custom resource reads it to refuse sending the mask to its handler as a
+   * `Delete` request's `ResourceProperties`. ABSENT means none recorded. The
+   * CALLER decides the coordinates: a record's own field, except a failed
+   * CREATE's rollback delete, whose journal bag has no list, so every
+   * whole-`***` leaf of it counts there.
+   */
+  recordedNoEchoLeaves?: readonly (readonly (string | number)[])[] | undefined;
+
+  /**
    * The delete is part of tearing the WHOLE stack down: set only by
    * `destroy-runner.ts`, i.e. `cdkd destroy` / `cdkd state destroy`. Absent on
    * every deploy-engine delete (template removal, replacement, rollback).

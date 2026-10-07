@@ -145,6 +145,8 @@ describe('recreate targets apply only to the stack they were validated against (
    * `--recreate-via-sdk-provider` is refused on one that is not `'cc-api'`
    * (`blockedAlreadySdk`).
    */
+  // go-to-k/cdkd#4043: extra record fields one case sets and resets.
+  let recordExtra: Record<string, unknown> = {};
   function stateFor(direction: 'to-cc-api' | 'to-sdk'): Record<string, StateRecord> {
     return {
       [SHARED_LOGICAL_ID]: {
@@ -154,6 +156,7 @@ describe('recreate targets apply only to the stack they were validated against (
         attributes: {},
         dependencies: [],
         provisionedBy: direction === 'to-cc-api' ? 'sdk' : 'cc-api',
+        ...recordExtra,
       } as unknown as StateRecord,
     };
   }
@@ -257,6 +260,21 @@ describe('recreate targets apply only to the stack they were validated against (
       expect((provider.delete as ReturnType<typeof vi.fn>).mock.calls[0]?.[4]).toEqual(
         expect.objectContaining({ deletionPolicy: 'Delete' })
       );
+    });
+
+    it(`${flag}: the recreate delete carries the record's noEchoLeaves (go-to-k/cdkd#4043)`, async () => {
+      recordExtra = { noEchoLeaves: [['VersioningConfiguration', 'Status']] };
+      try {
+        const engine = makeEngine({ targetsStack: PARENT_STACK, direction });
+        await invokeInPlaceUpdate(engine, PARENT_STACK, direction);
+        expect((provider.delete as ReturnType<typeof vi.fn>).mock.calls[0]?.[4]).toEqual(
+          expect.objectContaining({
+            recordedNoEchoLeaves: [['VersioningConfiguration', 'Status']],
+          })
+        );
+      } finally {
+        recordExtra = {};
+      }
     });
 
     it(`${flag}: the SAME id in a nested CHILD stack is not a target — the update stays in place`, async () => {

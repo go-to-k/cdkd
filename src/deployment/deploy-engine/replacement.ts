@@ -210,6 +210,8 @@ export async function replaceDeleteFirstAndRecreate(
         ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
         ...this.replacementDeleteContext(updateReplacePolicy),
         recordedAttributes: currentResource.attributes,
+        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+        recordedNoEchoLeaves: currentResource.noEchoLeaves,
       }
     );
   } catch (deleteError) {
@@ -724,6 +726,8 @@ export async function deleteReplacedAfterCreate(
         ...this.replacementDeleteContext(updateReplacePolicy),
         // Issue #4157: the identity evidence of the record deleted.
         recordedAttributes: currentResource.attributes,
+        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+        recordedNoEchoLeaves: currentResource.noEchoLeaves,
       }
     );
   } catch (deleteError) {
@@ -749,6 +753,13 @@ export async function deleteReplacedAfterCreate(
   });
   const skipReason = deleteSkipReason(deleteResult);
   if (skipReason !== undefined) {
+    // go-to-k/cdkd#4043 (review MEDIUM-3): the old resource survives
+    // untracked, so the row is a PARTIAL update and the deploy exits 2 unless
+    // `--allow-unaddressed` (the #1819 survivor contract), not a clean one.
+    this.replacedDeleteSkips.set(
+      logicalId,
+      `the replaced ${oldResourceType} (${currentResource.physicalId}) was not deleted (${skipReason}) and is no longer tracked by cdkd`
+    );
     this.logger.warn(
       `  ⚠ ${deleteSkippedMessage(
         logicalId,

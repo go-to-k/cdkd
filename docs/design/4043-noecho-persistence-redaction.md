@@ -89,7 +89,7 @@ Not affected:
    it, in addition to the log-only needle it is today.
 2. **A second, POSITIONAL arm masks by template position.** It is not bounded
    by the value's length. It also covers number and boolean leaves.
-3. **State schema v11 adds `ResourceState.noEchoParameterLeaves`.** This is the
+3. **State schema v11 adds `ResourceState.noEchoLeaves`.** This is the
    durable record of which leaves stand for a parameter. Readers that hold no
    template need it (`cdkd drift`, `cdkd rollback`, `cdkd export`, observed
    writers). The bump also locks out older binaries, which would replace a
@@ -143,7 +143,7 @@ references `P`.
 - A scalar leaf of any type becomes `***`.
 - A list-valued leaf (`CommaDelimitedList`, `List<Number>`) becomes a list of
   `***`, one per element, so array shape survives for `equalModuloMask`.
-- The arm writes each masked coordinate into `noEchoParameterLeaves`.
+- The arm writes each masked coordinate into `noEchoLeaves`.
 - **The arm also marks each coordinate FRESH, by position.** Freshness today
   is value-keyed and string-only: `freshNoEchoValuesOf` is a
   `Set<string>` per bag (`secret-redaction.ts:830`), `FreshNoEchoLeaf.plaintext`
@@ -162,15 +162,35 @@ migration. The value arm stays the backstop for flows the template cannot
 position: an attribute a provider echoes, an observed readback, and a
 cross-stack or nested hop.
 
-### 3.2 `ResourceState.noEchoParameterLeaves` (schema v11)
+### 3.2 `ResourceState.noEchoLeaves` (schema v11)
+
+Amended in the Phase B PR (maintainer decision 2 of #4043 comment
+6032677173): ONE field covers both populations a position can name, a
+`NoEcho` parameter AND an attribute declared `NoEcho` (served by
+`Fn::GetAtt`), beside `noEchoAttributeNames` (#2449).
 
 ```typescript
 interface ResourceState {
   // ...v10 fields...
-  /** v11+: coordinates within `properties` persisted as `***` because a NoEcho template parameter served them. */
-  noEchoParameterLeaves?: (string | number)[][];
+  /** v11+: coordinates within `properties` persisted as `***` because a NoEcho
+   *  template parameter, or an attribute its producer declared NoEcho, served them. */
+  noEchoLeaves?: (string | number)[][];
+  /** v11+: this record's own `attributes` its provider DECLARED NoEcho. */
+  noEchoAttributeNames?: string[];
 }
 ```
+
+- A declared attribute positions only a leaf that IS its `Fn::GetAtt`. A leaf
+  that embeds one (`Fn::Join`, `Fn::Sub`) stays with the value arm's
+  containment rule, which spares an echoed PUBLIC value (the region, the stack
+  name) that position cannot tell apart.
+- `noEchoAttributeNames` is sourced from the DECLARATION (a custom resource's
+  whole-bag `NoEcho` names every returned attribute; a nested stack's names as
+  given; an attribute echoing a fresh `NoEcho` value), unioned with every
+  earlier name whose attribute still holds the mask. Never from "which
+  attributes hold `***`", which would drop a 1-3 character or `Number` value.
+- An empty field is omitted: an unmarked record is read through the migration
+  witness, which is exact for a v11 record with no `NoEcho` position too.
 
 - **Coordinates are segment arrays, not dotted strings.** A dotted key is legal
   in a property bag, and `pathCrossesDottedKey` (`secret-redaction.ts:5524`)
@@ -189,7 +209,7 @@ interface ResourceState {
 | Surface | Marker | Written by |
 | --- | --- | --- |
 | `properties` | `***` at every positioned leaf, plus value-arm leaves | both arms |
-| `observedProperties` | `***` at every coordinate `noEchoParameterLeaves` names, plus value-arm leaves | every observed writer (deploy capture, import, refresh-observed, drift) |
+| `observedProperties` | `***` at every coordinate `noEchoLeaves` names, plus value-arm leaves | every observed writer (deploy capture, import, refresh-observed, drift) |
 | `attributes` | value arm only | the deploy's `scrubResourceRecord` |
 | a same-stack `Fn::GetAtt` consumer's `properties` | `***` via the value arm, once the producer declares the attribute (below) | both arms |
 | `outputs` values | `***` via the outputs position source (`outputsTemplateSource`), plus the value arm | `redactOutputs` |
@@ -296,52 +316,46 @@ REDACTED bags. It refuses any bag for which `carriesFreshNoEchoValue` is true
 (`:7163`). The diff calculator has no mask awareness: `***` equals `***`, and
 never equals a plaintext (`diff-calculator.ts:1349-1439`).
 
-**Change.** The diff must compare what the persist side would write, or every
-masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
-(`diff-recursive.ts:1561`, plaintext parameters, no promotion).
+**Change, as built.** The diff must compare what the persist side would
+write, or every masked resource diffs as UPDATE forever. `cdkd diff` had the
+same gap.
 
-1. The diff resolver context redacts each resolved property through the same
-   walk the persist side runs. Both arms apply, with the parameter values
-   registered as fresh mask-only needles. A positioned leaf then diffs `***`
-   against `***`. The nested-child precedent is `redactParametersForDiff`
-   (`deploy-engine/masking.ts`, wired from `deploy-engine.ts`). It redacts the parameter bag
-   instead of the resolved property, which cannot flatten an embedding leaf.
-   The resolved-property form is the one that matches the persist side.
-2. `calculateDiff`'s `freshParameters` (`diff-calculator.ts:261-268`) is today
-   passed only by a nested child (`deploy-engine.ts:4222`, from
-   `freshNoEchoParameters` in `deploy-engine/masking.ts`). It becomes EVERY `NoEcho: true`
-   parameter, at every level. Arm 5 (`diff-calculator.ts:1136-1148`) then
-   promotes each reader to a speculative UPDATE, so the engine re-resolves it
-   and decides.
-3. In the engine, the resolved bag carries a fresh leaf, so the first skip is
-   not taken (unchanged). Then comes the readback (section 4.2). The second
-   skip (`deploy-engine.ts:7370-7393`) applies when AWS holds every fresh leaf
-   and nothing else moved. Its gate becomes "every fresh leaf is confirmed
-   held", not "a ceiling was lowered".
-4. **Migration witness.** A leaf at a position the positional arm names,
-   in a record that carries no `noEchoParameterLeaves`, and that still holds a
-   non-mask value, is a pre-v11 plaintext. It is the exact value last sent, so
-   it is compared directly and needs no readback. The witness must sit BEFORE
-   anything classifies the leaf as moved, or the migration deploy replaces a
-   create-only reader:
-   - In the diff, `compareProperties` (`diff-calculator.ts:1389-1415`) would
-     see `***` against the recorded plaintext and set `requiresReplacement`.
-     For a witness leaf, the diff compares the RESOLVED value against the
-     recorded plaintext instead. It redacts only the stored copy.
-   - In the engine, the ceiling block's `moved` test
-     (`deploy-engine.ts:7291-7293`) keeps a replacement on `***` vs plaintext
-     (`:7308-7310`). A witness leaf is resolved there first: equal means
-     `held`, different means `differs`, and the verdict table in section 4.2
-     applies.
+1. The comparison is an injected `NoEchoCompareFn` (`calculateDiff`'s last
+   argument), built by `noEchoComparison` in
+   `secret-redaction/noecho-leaves.ts` for the deploy (`noEchoDiffComparison`)
+   and `cdkd diff` (`noEchoComparisonForTemplate`). It masks the resolved
+   desired bag at every `NoEcho` position, and every string leaf equal to or
+   containing (from 4 characters, outside a `{{resolve:...}}` span, never for
+   a public token) the value of a `NoEcho` parameter the resource reads. A
+   positioned leaf then diffs `***` against `***`. There is no separate
+   `redactDesired` hook.
+2. `calculateDiff`'s `freshParameters` becomes EVERY `NoEcho: true`
+   parameter, at every level, plus a nested child's inherited ones (arm 5).
+   Each reader is promoted to a speculative UPDATE, so the engine re-resolves
+   it and decides (section 4.2).
+3. In the engine, a parameter-class fresh leaf blocks the first skip; the
+   readback (section 4.2) decides, and the second skip applies when every
+   fresh leaf is settled and nothing else moved.
+4. **Migration witness.** A record with no `noEchoLeaves` that still holds a
+   non-mask value where the desired side is masked is compared against the
+   dynamic-reference persist form (`witnessNormalize`): an equal value is
+   unchanged with no readback, and a differing one is a change, shown as
+   `(previous NoEcho value)`; a value whose shape changed (a list of another
+   length) is compared whole. The engine applies the same witness, for the
+   parameter and the declared-attribute classes alike.
 
-   This makes the migration deploy skip an unchanged resource, and never
-   replace one because of the migration.
+`cdkd diff` uses the same comparison. It has no readback, so a reader that is
+not a witness compares `***` with `***`; the preview prints ONE note per stack
+counting the unchanged resources that read a `NoEcho` parameter (not counted
+toward `--fail`). There is no per-reader `~ (NoEcho parameter, compared on
+deploy)` row, and the create-only ceiling is not widened for a property the
+readback cannot serve: the engine's verdict table decides instead.
 
-`cdkd diff` takes steps 1, 2 and 4 with the same helpers. It has no readback,
-so a promoted reader that is not a witness renders as
-`~ (NoEcho parameter, compared on deploy)` and does not count toward `--fail`.
-A witness leaf is compared exactly, so an unmigrated stack diffs as it does
-today. Its printing masker (#4126) is unchanged.
+**Outputs.** The Outputs section compares an output a `NoEcho` parameter
+serves as the persisted `***` on both sides; a record a pre-v11 binary wrote
+is the witness there too (equal: unchanged; different: a change shown as
+`(previous NoEcho value)`). An unchanged such output is not a change, so
+`cdkd diff --fail` stays green on an unchanged stack.
 
 ### 4.2 Update vs replace
 
@@ -359,7 +373,7 @@ Verdicts for a leaf a parameter served:
 | Verdict | Updatable path | Create-only path |
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
-| `differs` | UPDATE | REPLACEMENT |
+| `differs` | UPDATE | not replaced; warns on every deploy and names `--recreate-via-*` (decision 1 as amended, §9) |
 | `not-readable` (write-only, or the provider has no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (maintainer decision 4, §9) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (maintainer decision 1, §9) |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
 
@@ -395,7 +409,7 @@ comparator has no mask logic, and `partitionUncertifiedBaselineChanges`
 (`isUncertifiedBaselineMaskPosition`, `secret-redaction.ts:5570`). Without a
 change, every migrated stack would drift forever.
 
-- **Report.** A change at a coordinate `noEchoParameterLeaves` names, where the
+- **Report.** A change at a coordinate `noEchoLeaves` names, where the
   two sides are equal modulo the mask (`equalModuloMask`), is split into a new
   `noEchoParameter` bucket. It prints the path only. `equalModuloMask`
   accepts a mask only against a STRING live value
@@ -418,37 +432,22 @@ change, every migrated stack would drift forever.
 
 ### 4.4 Rollback replay
 
-Today `refuseMaskedReplayBaseline` (`rollback-executor.ts:2294`) throws
-`ROLLBACK_REDACTED_BASELINE` on any written bag that carries `***`
-(`:3423` reverse-replacement re-create, `:4306` revert, `:4878` revert-failed).
-`resolveReplayProps` (`:2218`) re-resolves only `{{resolve:...}}` leaves.
+**As built (Phase B):** the replay does not read a marked leaf back yet.
+`refuseMaskedReplayBaseline` refuses any written bag that carries `***` with
+`ROLLBACK_REDACTED_BASELINE`, now naming a `NoEcho` template parameter as one
+of its causes, with the remedy "restore the property with `cdkd deploy`". The
+readback substitution below is Phase C.
 
-- **Marked leaf of an existing resource** (revert and revert-failed). This
-  applies in process and in `cdkd rollback` alike. The replay reads the
-  resource back with the #3729 helper shape: routed by the record, and handed
-  the masked record. It substitutes the live value at each marked coordinate.
-  - A live value that is absent, or that itself carries the mask (a provider
-    echoing the masked record it was handed, the reason
-    `deploy-engine.ts:3049-3054` hands it that record), is `not-readable` and
-    keeps `ROLLBACK_REDACTED_BASELINE`. So `***` is never substituted.
-  - Each substituted value is recorded as a mask-only needle in the op's bag,
-    AND as a log-only needle (`recordLogOnlyParameterValue`, no length floor,
-    every printed spelling), so a short or numeric value is masked in lines
-    and events too.
-  - The provider masker, the re-redacted record and an event's
-    `error.message` (`maskedRollbackEventError`,
-    `rollback-executor.ts:249-261`) then mask it.
-  - An event's `reason` / `survivorReason` is persisted RAW (the note above
-    `rollback-executor.ts:295`). Phase C routes both through the same op
-    masker before `ctx.recordEvent`, which closes the #4043 rollback-events
-    item.
-  - The leaf is left exactly as AWS holds it.
-  - A parameter change made by the reverted op is therefore not reverted.
-    The next deploy with the old value restores it.
-  - An unreadable leaf keeps the refusal, with a parameter-specific remedy.
+- **Marked leaf of an existing resource** (revert and revert-failed, Phase C).
+  The replay reads the resource back with the #3729 helper shape (routed by
+  the record, handed the masked record) and substitutes the live value at each
+  marked coordinate. A live value that is absent, or itself carries the mask,
+  is `not-readable` and keeps the refusal; a substituted value is recorded as
+  a mask-only and a log-only needle of the op's bag, so lines, events and the
+  re-redacted record mask it. A parameter change made by the reverted op is not
+  reverted; the next deploy with the old value restores it.
 - **A resource the replay must re-CREATE** (reverse-replacement). There is no
-  live resource to read. Out of process there are no parameters either. The
-  refusal stays, with a parameter-specific remedy: re-deploy.
+  live resource to read, so the refusal stays, with the remedy: re-deploy.
 - **An unmarked `***`** is the custom-resource class, unchanged.
 
 ### 4.5 `cdkd import`
@@ -501,10 +500,17 @@ inherits it through `redactOutputs`.
   (`intrinsic-function-resolver.ts:4567`) records it into each consuming child
   resource's bag, and `carryFreshNoEchoMark` (`secret-redaction.ts:941`) keeps
   it fresh. A CDK-synthesized child's parameter declaration never says
-  `NoEcho`, so that child has no positional arm. A hand-authored child that
-  declares `NoEcho: true` gets one. An inherited value
-  shorter than 4 characters therefore stays in the clear in the child's
-  record: the floor residual of section 3.3.
+  `NoEcho`, so the parent records which row parameters it fills from a
+  `NoEcho` source and hands the names to the child engine, which positions
+  them as `NoEcho` parameters (review round 9/10, section 9 decision 8). A
+  hand-authored child that declares `NoEcho: true` is positioned by its own
+  declaration. A child list parameter (`CommaDelimitedList`) receives the
+  value split, so no element equals the whole value: each element that is a
+  piece of a parent `NoEcho` PARAMETER value is also recorded as a fresh
+  mask-only needle of the parameter class in the consuming child resource's
+  bag, from 4 characters (added in the Phase B review). A value under 4
+  characters stays in the clear in the child's record only where no position
+  names it: the floor residual of section 3.3.
 
 ### 4.8 Other readers of `***`
 
@@ -656,7 +662,7 @@ refuses older binaries.
 over a record that may still hold plaintext. That is `refresh-observed`,
 `drift --accept`, `orphan`, a destroy partial snapshot, or a rollback restore.
 So readers never infer redaction from `version`. They read
-`noEchoParameterLeaves`, and absence means "treat as today".
+`noEchoLeaves`, and absence means "treat as today".
 
 **Migration, per record, with no user action:**
 
@@ -666,7 +672,7 @@ So readers never infer redaction from `version`. They read
    - Readers of a `NoEcho` parameter are promoted (section 4.1).
    - Each is compared against its own recorded plaintext: the witness, so no
      readback is needed.
-   - The final save masks by both arms and writes `noEchoParameterLeaves`.
+   - The final save masks by both arms and writes `noEchoLeaves`.
    - A record this deploy did not resolve has no needles in
      `perResourceSecrets`. That covers a resource a failed deploy never
      reached, and a partial save. For that case, `redactStateForPersist`
@@ -692,11 +698,14 @@ The only new refusals are these:
   producer was deployed in another run, or has no readback and is unchanged
   in this one (section 3.3); the remedy is to update the producer in the same
   run as the consumer;
-- a hand-authored nested child that declares a parameter `Number`, or a
-  comma-bearing `CommaDelimitedList`, and receives a parent's `NoEcho` value:
-  once that value is a map entry, `refuseCoercedInheritedSecret`
-  (`intrinsic-function-resolver.ts:4681`) refuses it;
 - a rollback re-create with no live resource.
+
+A nested child that declares a parameter `Number` or `CommaDelimitedList` and
+receives a parent's `NoEcho` PARAMETER value is NOT refused (review round 11
+reversed an earlier entry here): `refuseCoercedInheritedSecret` counts only a
+secret dynamic reference's pairs, not the value arm's mask-only entry, and the
+child positions the parameter (section 9 decision 8), so each element and a
+number are masked by template position.
 
 The costs that are not refusals are maintainer decisions 1 and 4 (§9): a create-only
 write-only leaf whose change is not detected (warned on every deploy), and an
@@ -747,9 +756,19 @@ the `noecho-parameter-masking` fixture, unit tests, and a changelog entry. The
 side-set doc comment in `src/deployment/secret-redaction.ts` moved to Phase B.
 Section 5 lists what Phase A leaves and which phase closes each item.
 
+**Phase B status.** Implemented in the Phase B PR together with #2449, with
+the amendments in section 9 ("Phase B decisions"): no create-only replacement
+on a readback, the drift report bucket pulled in, and the `Export.Name`
+positional twin and the carried-alias verdict moved to #4657. A held
+producer's declared attribute is served to its readers by a per-resolution
+side map (`ResolverContext.noEchoAttributeOverrides`). The Phase B PR also
+masks the coordinates `cdkd state refresh-observed` writes and the declared
+`NoEcho` attributes `cdkd import` records. The line references in this page
+predate it.
+
 **Phase B** covers:
 
-- both arms, `noEchoParameterLeaves`, and the v11 bump and migration;
+- both arms, `noEchoLeaves`, and the v11 bump and migration;
 - the diff and `cdkd diff` promotion;
 - the generalized readback, with the maintainer decision 1 warning and the
   decision 4 info line (§9);
@@ -774,7 +793,7 @@ Its files: `secret-redaction.ts`, `intrinsic-function-resolver.ts`,
 a new `schema-v10-to-v11-migration` fixture.
 
 **Phase C** covers the rollback replay readback, the drift bucket and writers,
-import and refresh-observed coordinate masking, the scrub migration rule, and
+`cdkd import` writing `noEchoLeaves`, the scrub migration rule, and
 the `cdkd export` allowance, plus the section 5 residuals marked Phase C (the
 scrub possible-alias keep and the nested-child rollback's re-persisted alias).
 Files: `rollback-executor.ts`, `src/deployment/nested-child-journal.ts`,
@@ -832,7 +851,7 @@ lanes once B merges.
     per resource (maintainer decision 4, §9);
   - write-only create-only (`not-readable`): no replacement, and a warning
     naming `--recreate-via-*` on every deploy (maintainer decision 1, §9);
-  - create-only `differs`: REPLACEMENT;
+  - create-only `differs`: no replacement, the decision 1 warning (§9);
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
   - pre-v11 witness different: UPDATE;
@@ -878,7 +897,7 @@ assertions:
 - **Flipped in Phase B.** Phase 1 asserts today that `state.json` holds the value in the
   clear. It becomes: no state blob, no object version written after the
   migration, and no exports-index version holds the token. Every positioned
-  leaf is `***`, and `noEchoParameterLeaves` names it.
+  leaf is `***`, and `noEchoLeaves` names it.
 - **Redeploy, same value.** SSM `Value` is readable, so there is no update:
   AWS's `LastModifiedDate` is unchanged across the redeploy. This fails if the
   readback is skipped, because the resource would update every deploy. The
@@ -921,6 +940,54 @@ consumer. The assertions:
 
 ## 9. Decisions
 
+### Phase B decisions (#4043 comment 6032677173)
+
+Recorded when Phase B's direction was frozen after a security-direction
+review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
+
+1. **A create-only property fed by a `NoEcho` parameter is not replaced on a
+   readback `differs`** either, only warned about on every deploy naming
+   `--recreate-via-*`, as for `not-readable`: a provider that normalizes what
+   it echoes (case-folded identifiers, reordered lists) reads `differs` on an
+   unchanged value. A `read-failed` fails the resource. The custom-resource
+   (#3729) class keeps its own table. Restoring the
+   auto-replacement where a masked-record readback proves the provider echoes
+   exactly is follow-up #4656.
+2. One coordinate field, `noEchoLeaves` (section 3.2).
+3. `noEchoAttributeNames` comes from the declaration (section 3.2).
+4. The drift REPORT bucket (section 4.3, "Report") moved into Phase B, exit
+   code unchanged, so a release between B and C does not fail every
+   `cdkd drift --fail` on a `NoEcho` stack. `--accept` / `--revert` stay in C.
+5. The `Export.Name` positional twin and the no-change merge's carried-alias
+   verdict (section 5) moved to follow-up #4657. A value of 4 or more
+   characters is still refused wholesale through its map entry.
+6. **Maintainer decision** (round 8 on #4043): a pre-v11 record's migration
+   witness that DIFFERS on a create-only property keeps the replacement, and
+   the replacement's warning names the cause, never the value ("a NoEcho
+   parameter's value changed since the last deploy" for a bare `Ref`, "the
+   value at its NoEcho position changed" otherwise, round 9). The witness is exact
+   EVIDENCE, the value cdkd last sent in its dynamic-reference form, not a
+   readback through a provider that may normalize it, which is decision 1's
+   reason. Declining would overwrite it with `***` and strand the pending
+   change forever. Only that first deploy after upgrading replaces this way;
+   later deploys compare against `***` and fall under decision 1.
+7. Folded in from the review: the migration witness compares against the
+   dynamic-reference persist form (the `NoEcho` arms suppressed); the rollback
+   journal's `previousState` / `previousOutputs` take the positional arm; a
+   pre-v11 `observedProperties` baseline is masked at marked coordinates
+   through the keyed-identity array rule (the whole array on refusal);
+   `Fn::If` / `Fn::Select` position only the branch the deploy selected (the
+   diff masks the whole leaf for a verdict it does not know).
+
+8. Folded in from review round 9: a nested child positions each parameter its
+   parent's row fills from a `NoEcho` source as a `NoEcho` parameter. The parent
+   records those names on the row's bag (`recordPassedNoEchoParameters`, read
+   off the parent template, so a value under the needle floor counts), the
+   child engine unions them with the inherited fresh marks, and `cdkd diff`
+   derives the same set from the parent row.
+
+### Design decisions (#4043 comments 5903984771, 5904913259)
+
 The maintainer answered the design's five open questions on #4043, each with
 the recommended default. The sections above follow them.
 
@@ -941,8 +1008,9 @@ the recommended default. The sections above follow them.
 3. **A `NoEcho` value in a delete-address property keeps the existing skip**
    (`redactedDeleteAddressSkip`). The resource is left in place and the record
    is kept, and every destroy, and every deploy that removes the resource,
-   exits 2 until it is cleaned up by hand, unless `--allow-unaddressed`. See
-   section 4.8.
+   exits non-zero until it is cleaned up by hand. `--allow-unaddressed` is a
+   deploy flag: a deploy given it exits zero, while `cdkd destroy` still exits
+   non-zero with the record kept. See section 4.8.
 4. **An updatable, write-only property is re-sent on every deploy**, with one
    info line per resource saying why it updated. This is the commonest use of
    `NoEcho`: `AWS::RDS::DBInstance.MasterUserPassword`,

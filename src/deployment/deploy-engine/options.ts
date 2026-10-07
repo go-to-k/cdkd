@@ -210,6 +210,15 @@ export interface DeployEngineOptions {
   passedParameterClasses?: ReadonlyMap<string, 'clean' | 'secret' | 'unknown'>;
 
   /**
+   * The child parameters the parent's row fills from a `NoEcho` source
+   * (go-to-k/cdkd#4043, review round 9/10): positioned as `NoEcho` parameters
+   * in this child. Set by `NestedStackProvider` from the parent's bag whatever
+   * else that bag holds (a value under the needle floor leaves it otherwise
+   * empty); always overwritten there, so a grandchild never inherits it.
+   */
+  passedNoEchoParameters?: ReadonlySet<string> | undefined;
+
+  /**
    * The PARENT engine's producer-region evidence, set by `NestedStackProvider`
    * on the child engine it builds (go-to-k/cdkd#4174). A child receives a
    * parent's cross-region value only as a Parameter and records the parent's

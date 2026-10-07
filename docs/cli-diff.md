@@ -341,9 +341,10 @@ either way; the alternative is hiding a row the deploy will publish.
 One template value is excluded from the digest on purpose: a `NoEcho: true`
 parameter's `Default` is hashed as a constant, so the record cannot become a
 confirm oracle for a low-entropy one. That is not a claim the value is
-otherwise absent from state — a parameter a resource reads can persist its
-resolved default in that resource's properties — only that this field does not
-add an oracle where there was none. Changing only such a default therefore
+otherwise absent from state — a record written before state schema
+`version: 11` can still hold it in a resource's properties (a current deploy
+stores `***` there) — only that this field does not add an oracle where there
+was none. Changing only such a default therefore
 does not un-bind the record.
 
 A repair the digest does not cover leaves the record binding. Four are
@@ -474,12 +475,24 @@ CloudFormation change set prints `****`. This covers a property's `old:` /
 encoding the diff derives from the value (an `Fn::Base64`), each piece of an
 `Fn::Split` over it, and a nested child that receives the parent's value through
 a parameter it does not itself declare `NoEcho`, a list parameter split out of
-it included. When the new side carries the value, the old side is shown whole as
-`***` too, because state keeps the previous value in the clear. For an object
-this hides the rest of its old side as well. The change is still reported. A
-`NoEcho` parameter fed a SECRET `{{resolve:...}}` reference
+it included. A `NoEcho` parameter fed a SECRET `{{resolve:...}}` reference
 (`secretsmanager`, `ssm-secure`, or `ssm` to a `SecureString`) prints as that
 expression, like every secret reference here.
+
+Since state schema `version: 11`, state stores `***` wherever a `NoEcho`
+parameter supplied a value, and `cdkd diff` compares the desired side masked the
+same way, so a changed `NoEcho` value is NOT shown as a change: `cdkd diff`
+cannot read AWS. Instead it prints one line per stack, `N unchanged
+resource(s) read a NoEcho parameter, whose value state holds only as ***: the
+deploy compares it with AWS, and updates a resource whose value changed.` That
+line is informational and never counts as a change for `--fail`; the deploy
+reads each such resource back and updates the ones whose value moved (see
+[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
+
+A record written before `version: 11` still holds the value it last sent in
+the clear. `cdkd diff` compares that value with the current one: an equal value
+is no change, and a different one is reported with the old side shown as
+`(previous NoEcho value)` and the new side as `***`, so neither value prints.
 
 Limits:
 - A value, `Fn::Split` piece or split-out list element of 1-3 characters is
@@ -501,8 +514,9 @@ Limits:
 - An `Fn::Split` by an EMPTY delimiter over a `NoEcho` value prints its pieces
   as `***` on its own line, but an `Fn::Join` or `Fn::Sub` putting them back
   together with a separator prints them character by character.
-- Only the CURRENT value is known. A previous value still in state prints
-  where the new side no longer carries the current one: a property or output
+- Only the CURRENT value is known. On a record written before state schema
+  `version: 11`, a previous value still in state prints where the new side no
+  longer carries the current one: a property or output
   REMOVED in the same deploy that rotated the value, or a property that
   switched away from a `NoEcho` parameter in that deploy. The stored previous
   plaintext prints as its `old:` side. Likewise a stored `Fn::Split` piece of

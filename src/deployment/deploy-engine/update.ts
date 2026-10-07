@@ -13,6 +13,7 @@ import {
   unaddressableUpdateRefusalMessage,
 } from '../../state/malformed-resources-bag.js';
 import { CdkdError } from '../../utils/error-handler.js';
+import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
@@ -37,11 +38,21 @@ import {
   liveHoldsFreshLeaves,
 } from '../deploy-value-equality.js';
 import {
-  carriesFreshNoEchoValue,
+  SECRET_MASK,
+  canonicalCoordinates,
+  carriesSecretMask,
   freshNoEchoLeafPositions,
+  type FreshNoEchoLeaf,
   markSameGenerationBag,
+  maskAtCoordinates,
+  noEchoCoordinatesOf,
+  noEchoLeavesOf,
   recordNestedStackParameterExpressions,
   redactSecretsForState,
+  valueAtCoordinate,
+  witnessNormalize,
+  withoutNoEchoParameterEntries,
+  recordPassedNoEchoParameters,
 } from '../secret-redaction.js';
 import {
   classifyPassedParameters,
@@ -58,6 +69,43 @@ declare module '../deploy-engine.js' {
     /** @internal */
     provisionUpdate: OmitThisParameter<typeof provisionUpdate>;
   }
+}
+
+/**
+ * Is `value` the mask at every leaf (a scalar `***`, or a list / object of
+ * nothing but masks, as `maskWholeValue` writes a list parameter)?
+ */
+function isWhollyMask(value: unknown): boolean {
+  if (value === SECRET_MASK) return true;
+  if (Array.isArray(value)) return value.length > 0 && value.every(isWhollyMask);
+  if (value !== null && typeof value === 'object') {
+    const children = Object.values(value as Record<string, unknown>);
+    return children.length > 0 && children.every(isWhollyMask);
+  }
+  return false;
+}
+
+/** A copy of `bag` with the leaf at `coordinate` set to `value` (containers copied on the path). */
+function setAtCoordinate(
+  bag: Record<string, unknown>,
+  coordinate: readonly (string | number)[],
+  value: unknown
+): Record<string, unknown> {
+  const write = (node: unknown, depth: number): unknown => {
+    if (depth === coordinate.length) return value;
+    const segment = coordinate[depth]!;
+    if (Array.isArray(node) && typeof segment === 'number') {
+      const copy = [...node];
+      copy[segment] = write(node[segment], depth + 1);
+      return copy;
+    }
+    if (node !== null && typeof node === 'object' && typeof segment === 'string') {
+      const record = node as Record<string, unknown>;
+      return { ...record, [segment]: write(record[segment], depth + 1) };
+    }
+    return node;
+  };
+  return write(bag, 0) as Record<string, unknown>;
 }
 
 /** The `UPDATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
@@ -144,6 +192,14 @@ export async function provisionUpdate(
   // shared catch with an empty bag.
   const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
   this.perResourceSecrets.set(logicalId, updateSecrets);
+  // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
+  // attributes serve this resolution, read back from AWS (never persisted).
+  const noEchoOverrides = await this.noEchoAttributeOverridesFor(
+    desiredProps,
+    stateResources,
+    stackName
+  );
+  if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
   printNestedStackReadsOnly(context, resourceType);
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,
@@ -291,7 +347,72 @@ export async function provisionUpdate(
       ? lostCandidate
       : undefined;
   const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
-  const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
+  // go-to-k/cdkd#4043 §3.3: an attribute the RECORD holds that echoes a
+  // `NoEcho` value this resource was given is declared now, before any skip,
+  // so a held (or witness-confirmed) producer still masks it on the save and
+  // its same-stack readers position it. A provider result re-declares below.
+  this.registerNoEchoAttributes(
+    logicalId,
+    Object.assign(
+      currentResource.attributes === undefined ? {} : { attributes: currentResource.attributes },
+      { physicalId: currentResource.physicalId }
+    ),
+    updateSecrets,
+    resolvedProps
+  );
+  // go-to-k/cdkd#4043: where a `NoEcho` PARAMETER (or an attribute declared
+  // `NoEcho`) served this bag, by template position. The persisted bag holds
+  // `***` at each, so the comparison side does too.
+  const noEchoSources = this.noEchoPositionSources(stateResources, template, conditions);
+  // Two classes, positioned separately: a PARAMETER's value, and an attribute
+  // a producer declared `NoEcho` (the custom-resource class of #3729).
+  const parameterCoordinates =
+    noEchoSources === undefined
+      ? []
+      : canonicalCoordinates(
+          noEchoCoordinatesOf(desiredProps, resolvedProps, {
+            parameters: noEchoSources.parameters,
+            ...(noEchoSources.conditions !== undefined && {
+              conditions: noEchoSources.conditions,
+            }),
+          })
+        );
+  const attributeCoordinates =
+    noEchoSources?.attributeIsNoEcho === undefined
+      ? []
+      : canonicalCoordinates(
+          noEchoCoordinatesOf(desiredProps, resolvedProps, {
+            parameters: new Set(),
+            attributeIsNoEcho: noEchoSources.attributeIsNoEcho,
+          })
+        );
+  const noEchoCoordinates = canonicalCoordinates([
+    ...parameterCoordinates,
+    ...attributeCoordinates,
+  ]);
+  // go-to-k/cdkd#4043: a coordinate the RECORD marks, where it holds `***`,
+  // that no `NoEcho` source serves any more (`NoEcho` removed from the
+  // parameter, or the reference replaced by an equal literal). The mask
+  // proves nothing about the value, so the leaf is read back like a
+  // parameter's, never replaced on the mask's word.
+  const staleCoordinates = (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) => {
+    if (noEchoCoordinates.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
+      return false;
+    if (!isWhollyMask(valueAtCoordinate(currentProps, coordinate))) return false;
+    const resolved = valueAtCoordinate(resolvedProps, coordinate);
+    return resolved !== undefined && !carriesSecretMask(resolved);
+  });
+  const comparisonCoordinates = canonicalCoordinates([...noEchoCoordinates, ...staleCoordinates]);
+  if (parameterCoordinates.length > 0) {
+    this.noEchoPositionedValues.set(
+      logicalId,
+      new Set(
+        parameterCoordinates.map((coordinate) =>
+          keyOrderFreeJson(valueAtCoordinate(resolvedProps, coordinate))
+        )
+      )
+    );
+  }
   // go-to-k/cdkd#4451: a property the record holds as `***` whose UNRESOLVED
   // template value moved since it was written. Its redacted value compares
   // `***` with `***` whatever the edit (the text around a secret reference
@@ -327,16 +448,24 @@ export async function provisionUpdate(
   // enter the child's input fingerprints, read off THIS (the parent's)
   // template, recorded on the bag the provider call is bound to, where the
   // child engine reads it.
+  // go-to-k/cdkd#4043 (review round 9): and which of them carry a `NoEcho`
+  // value, so the child positions them as `NoEcho` parameters.
+  if (resourceType === 'AWS::CloudFormation::Stack') {
+    recordPassedNoEchoParameters(
+      updateSecrets,
+      desiredProps['Parameters'],
+      this.noEchoPositionSources(stateResources)
+    );
+  }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
     recordPassedParameterClasses(
       updateSecrets,
       await classifyPassedParameters(desiredProps['Parameters'], fingerprintSources)
     );
   }
-  const desiredForSkipCheck = redactSecretsForState(
-    markSameGenerationBag({ ...resolvedProps }),
-    updateSecrets,
-    desiredProps
+  const desiredForSkipCheck = maskAtCoordinates(
+    redactSecretsForState(markSameGenerationBag({ ...resolvedProps }), updateSecrets, desiredProps),
+    comparisonCoordinates
   );
   const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
@@ -359,7 +488,7 @@ export async function provisionUpdate(
   // The create-only drops this record PROVES were never sent (#2790); the
   // diff reads the same field, so both decide on the same evidence.
   const createOnlyEvidence = acceptedCreateOnlyDropsOf(currentResource);
-  const currentPropsAsWritten =
+  const recordedAsWritten =
     currentResource.provisionedBy === 'cc-api'
       ? currentProps
       : withoutUnwrittenSilentDropProperties(
@@ -369,6 +498,136 @@ export async function provisionUpdate(
           allowedForRecord,
           createOnlyEvidence
         );
+  // go-to-k/cdkd#4043 (the MIGRATION WITNESS, review B2): a record no v11
+  // binary wrote carries no `noEchoLeaves`, and where this deploy persists
+  // `***` it may still hold the plaintext it last SENT. Compared with what the
+  // persist walk writes WITHOUT the `NoEcho` arms (the dynamic-reference
+  // form), an equal leaf is an unchanged value with no readback, and a
+  // different one a change the comparison below sees as moved.
+  const unmarkedRecord = noEchoLeavesOf(currentResource) === undefined;
+  const todayAsWritten = unmarkedRecord
+    ? redactSecretsForState(
+        markSameGenerationBag({ ...resolvedProps }),
+        withoutNoEchoParameterEntries(updateSecrets),
+        desiredProps
+      )
+    : undefined;
+  const witness =
+    todayAsWritten === undefined
+      ? undefined
+      : witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten);
+  const currentPropsAsWritten =
+    witness === undefined ? recordedAsWritten : (witness.current as Record<string, unknown>);
+  // The fresh `NoEcho` leaves, by class. The custom-resource class (a
+  // handler's `Data`, a recovered output) keeps the go-to-k/cdkd#3729 table;
+  // the PARAMETER class is read back whatever the property's replacement
+  // class, and a create-only property it feeds is never replaced on a
+  // readback's word (maintainer decision on #4043).
+  // A positional leaf of the attribute class: a value supplied in this run
+  // that no needle keys (a `Number`, a value under the floor).
+  const positionalLeavesAt = (
+    coordinates: readonly (readonly (string | number)[])[],
+    key: string
+  ): FreshNoEchoLeaf[] =>
+    coordinates
+      .filter((coordinate) => coordinate[0] === key)
+      .flatMap((coordinate) => {
+        const plaintext = valueAtCoordinate(resolvedProps, coordinate);
+        return plaintext === undefined || carriesSecretMask(plaintext)
+          ? []
+          : [{ path: coordinate.slice(1), plaintext }];
+      });
+  // The migration witness, per leaf: a pre-v11 record's stored plaintext at
+  // the leaf equals what the dynamic-reference persist form holds there.
+  const witnessConfirms = (key: string, leaf: FreshNoEchoLeaf): boolean => {
+    if (todayAsWritten === undefined) return false;
+    const full = [key, ...leaf.path];
+    const stored = valueAtCoordinate(recordedAsWritten, full);
+    return (
+      stored !== undefined &&
+      !carriesSecretMask(stored) &&
+      keyOrderFreeJson(stored) === keyOrderFreeJson(valueAtCoordinate(todayAsWritten, full))
+    );
+  };
+  const otherFreshAt = (key: string): FreshNoEchoLeaf[] => {
+    const leaves = freshNoEchoLeafPositions(resolvedProps[key], updateSecrets, 'other');
+    for (const leaf of positionalLeavesAt(attributeCoordinates, key)) {
+      if (!leaves.some((known) => keyOrderFreeJson(known.path) === keyOrderFreeJson(leaf.path))) {
+        leaves.push(leaf);
+      }
+    }
+    // A pre-v11 reader of a declared attribute whose stored value is the
+    // same is unchanged too (the witness covers both classes).
+    return leaves.filter((leaf) => !witnessConfirms(key, leaf));
+  };
+  const pendingParameterLeaves = new Map<string, FreshNoEchoLeaf[]>();
+  const addParameterLeaf = (key: string, leaf: FreshNoEchoLeaf): void => {
+    if (witnessConfirms(key, leaf)) return; // the witness confirmed it
+    const list = pendingParameterLeaves.get(key) ?? [];
+    if (!list.some((known) => keyOrderFreeJson(known.path) === keyOrderFreeJson(leaf.path))) {
+      list.push(leaf);
+    }
+    pendingParameterLeaves.set(key, list);
+  };
+  for (const key of Object.keys(resolvedProps)) {
+    // A redacted read (the mask itself, out of a previous run's record) is
+    // no value supplied in this deploy, which `positionalLeavesAt` skips.
+    for (const leaf of positionalLeavesAt(parameterCoordinates, key)) addParameterLeaf(key, leaf);
+    for (const leaf of positionalLeavesAt(staleCoordinates, key)) addParameterLeaf(key, leaf);
+    for (const leaf of freshNoEchoLeafPositions(resolvedProps[key], updateSecrets, 'parameter')) {
+      const covered = parameterCoordinates.some(
+        (coordinate) =>
+          coordinate[0] === key &&
+          coordinate.length - 1 <= leaf.path.length &&
+          coordinate.slice(1).every((segment, i) => segment === leaf.path[i])
+      );
+      if (!covered) addParameterLeaf(key, leaf);
+    }
+  }
+  // A pre-v11 record whose stored plaintext DIFFERS from a `NoEcho` parameter
+  // value this deploy supplies: exact evidence the value changed (maintainer
+  // decision on #4043, design §9 item 6), so a create-only path it feeds is
+  // replaced as before, and the replacement names that cause, never the value.
+  // The cause a differing witness names (review round 9 m4): the PARAMETER's
+  // value only where the position is a bare `Ref` to a `NoEcho` parameter, so
+  // the stored value at it is exactly that parameter's last value. Any other
+  // form (an `Fn::Sub` around it) may have moved for its template text alone.
+  const witnessCauseAt = (key: string): 'parameter' | 'position' | undefined => {
+    let cause: 'parameter' | 'position' | undefined;
+    for (const coordinate of witness?.differing ?? []) {
+      if (coordinate[0] !== key) continue;
+      const rest = coordinate.slice(1);
+      const pending = (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
+        const shorter = rest.length <= leaf.path.length ? rest : leaf.path;
+        const longer = shorter === rest ? leaf.path : rest;
+        return shorter.every((segment, i) => segment === longer[i]);
+      });
+      if (!pending) continue;
+      const node = valueAtCoordinate(desiredProps, coordinate);
+      const bareRef =
+        node !== null &&
+        typeof node === 'object' &&
+        !Array.isArray(node) &&
+        Object.keys(node).length === 1 &&
+        typeof (node as Record<string, unknown>)['Ref'] === 'string' &&
+        noEchoSources?.parameters.has((node as Record<string, string>)['Ref']!) === true;
+      if (bareRef) return 'parameter';
+      cause = 'position';
+    }
+    return cause;
+  };
+  const warnWitnessReplacement = (key: string): void => {
+    const cause = witnessCauseAt(key);
+    if (cause === undefined) return;
+    this.logger.warn(
+      cause === 'parameter'
+        ? safeMsg`${logicalId}.${key} is a create-only property, and a NoEcho parameter's value changed since the last deploy: ${logicalId} is replaced.`
+        : safeMsg`${logicalId}.${key} is a create-only property, and the value at its NoEcho position changed since the last deploy: ${logicalId} is replaced.`
+    );
+  };
+  const suppliesFreshMaskOnlyValue =
+    pendingParameterLeaves.size > 0 ||
+    Object.keys(resolvedProps).some((key) => otherFreshAt(key).length > 0);
   // What both no-change skips require of the bags: equal redacted values, and
   // no masked property whose template expression moved (go-to-k/cdkd#4451),
   // since `***` equals `***` whatever the edit. ONE predicate, so the two
@@ -505,15 +764,50 @@ export async function provisionUpdate(
   // The paths whose fresh `NoEcho` leaves AWS confirmed, for the skip
   // below the block.
   const noEchoHeldPaths = new Set<string>();
+  let readback: Promise<FreshNoEchoReadback> | undefined;
+  // The create-only paths a `NoEcho` PARAMETER value feeds, taken before the
+  // block below can lower them: the parameter block after it decides them.
+  // Create-only by the type's SCHEMA (the committed snapshot when DescribeType
+  // fails), not by the diff's replacement flag: a write-only create-only
+  // property raises no ceiling in the diff, nor does any whole-property path
+  // when the lookup fails, and maintainer decision 1 covers both (never sent
+  // as an in-place change, never replaced; warned).
+  const schemaCreateOnly =
+    pendingParameterLeaves.size === 0
+      ? []
+      : await getCreateOnlyPropertyPaths(resourceType).catch(
+          () => [] as ReadonlyArray<readonly string[]>
+        );
+  const isSchemaCreateOnly = (key: string): boolean =>
+    (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
+      const full = [key, ...leaf.path.map(String)];
+      return schemaCreateOnly.some(
+        (path) => path.length <= full.length && path.every((segment, i) => segment === full[i])
+      );
+    });
+  const parameterCreateOnlyPaths = new Set(
+    (change.propertyChanges ?? [])
+      .filter(
+        (pc) =>
+          (pc.requiresReplacement || isSchemaCreateOnly(pc.path)) &&
+          pendingParameterLeaves.has(pc.path) &&
+          otherFreshAt(pc.path).length === 0
+      )
+      .map((pc) => pc.path)
+  );
   if (change.propertyChanges?.some((pc) => pc.requiresReplacement) === true) {
-    let readback: Promise<FreshNoEchoReadback> | undefined;
     const lowered: PropertyChange[] = [];
     for (const pc of change.propertyChanges) {
-      if (!pc.requiresReplacement) {
+      if (!pc.requiresReplacement || parameterCreateOnlyPaths.has(pc.path)) {
         lowered.push(pc);
         continue;
       }
-      const freshLeaves = freshNoEchoLeafPositions(resolvedProps[pc.path], updateSecrets);
+      // A path carrying BOTH classes is confirmed only when every leaf holds:
+      // the parameter leaves join the custom-resource ones here.
+      const freshLeaves = [
+        ...otherFreshAt(pc.path),
+        ...(pendingParameterLeaves.get(pc.path) ?? []),
+      ];
       if (!isReplacementCeiling(pc) && freshLeaves.length === 0) {
         lowered.push(pc);
         continue;
@@ -541,6 +835,7 @@ export async function provisionUpdate(
             )
           : undefined;
       if (moved && conditionalVerdict !== false) {
+        warnWitnessReplacement(pc.path);
         lowered.push(pc);
         continue;
       }
@@ -565,6 +860,24 @@ export async function provisionUpdate(
         } else {
           verdict = liveHoldsFreshLeaves(read.live[pc.path], freshLeaves) ? 'held' : 'differs';
         }
+        // A mixed path whose custom-resource leaves AWS holds, and whose only
+        // unconfirmed leaves are a `NoEcho` PARAMETER's: the parameter class's
+        // rule (maintainer decision 1 on #4043) — never replaced on a
+        // readback's word, warned on every deploy.
+        const parameterLeaves = pendingParameterLeaves.get(pc.path) ?? [];
+        if (
+          verdict === 'differs' &&
+          parameterLeaves.length > 0 &&
+          !('failure' in read) &&
+          liveHoldsFreshLeaves(read.live[pc.path], otherFreshAt(pc.path))
+        ) {
+          this.logger.warn(
+            safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (differs). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+          );
+          noEchoHeldPaths.add(pc.path);
+          lowered.push({ ...pc, requiresReplacement: false });
+          continue;
+        }
         if (verdict !== 'held') {
           // WARN, not debug: this is what turns the update into a
           // replacement, and a `Replacing` label must never be
@@ -585,6 +898,94 @@ export async function provisionUpdate(
     change.propertyChanges = lowered;
   }
 
+  // go-to-k/cdkd#4043 §4.2: the PARAMETER class. The resource is read back
+  // (once, shared with the block above) when a create-only path carries such
+  // a value, or when nothing else moved, which is when the readback alone
+  // decides between sending and skipping. Another moved leaf sends the update
+  // anyway, with the value in hand.
+  const parameterSettledPaths = new Set<string>();
+  // Keys whose every pending leaf AWS confirmed holding (`held`).
+  const parameterHeldKeys = new Set<string>();
+  const parameterUnreadablePaths: string[] = [];
+  if (pendingParameterLeaves.size > 0 && !typeChanged) {
+    const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired;
+    const read = mustRead
+      ? await (readback ??= this.readReaderForFreshNoEchoCeiling(
+          logicalId,
+          currentResource,
+          updateSecrets
+        ))
+      : undefined;
+    const verdictAt = (key: string): FreshNoEchoCeilingVerdict => {
+      if (read === undefined) return 'not-readable';
+      if ('failure' in read) return read.failure;
+      if (!Object.prototype.hasOwnProperty.call(read.live, key)) return 'not-readable';
+      return liveHoldsFreshLeaves(read.live[key], pendingParameterLeaves.get(key) ?? [])
+        ? 'held'
+        : 'differs';
+    };
+    const lowered: PropertyChange[] = [];
+    for (const pc of change.propertyChanges ?? []) {
+      if (!parameterCreateOnlyPaths.has(pc.path)) {
+        lowered.push(pc);
+        continue;
+      }
+      // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
+      // pre-v11 record's witness that differs, an exact change): the
+      // replacement stands, as CloudFormation would replace.
+      const moved =
+        movedMasked.has(pc.path) ||
+        keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
+          keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+      if (moved) {
+        warnWitnessReplacement(pc.path);
+        lowered.push(pc);
+        continue;
+      }
+      const verdict = verdictAt(pc.path);
+      if (verdict === 'read-failed') {
+        throw markNonRetryable(
+          new CdkdError(
+            safeMsg`${logicalId}.${pc.path} is a create-only property a NoEcho parameter feeds, and reading the resource back from AWS to compare it failed. cdkd does not replace a resource on a failed read: re-run the deploy.`,
+            'NOECHO_READBACK_FAILED'
+          )
+        );
+      }
+      if (verdict === 'held') {
+        parameterHeldKeys.add(pc.path);
+        this.logger.debug(
+          safeMsg`${logicalId}.${pc.path} carries a NoEcho parameter value AWS already holds: not replaced.`
+        );
+      } else {
+        // Maintainer decision 1 on #4043: never replaced on a readback's
+        // word, whether it could not read the property or read a different
+        // value (a provider may normalize what it echoes). Every deploy says so.
+        const staleOnly = staleCoordinates.some((coordinate) => coordinate[0] === pc.path);
+        this.logger.warn(
+          staleOnly
+            ? safeMsg`${logicalId}.${pc.path} is a create-only property whose recorded value is only the NoEcho mask, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+            : safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+        );
+      }
+      parameterSettledPaths.add(pc.path);
+      lowered.push({ ...pc, requiresReplacement: false });
+    }
+    if (change.propertyChanges !== undefined) change.propertyChanges = lowered;
+    if (read !== undefined) {
+      for (const key of pendingParameterLeaves.keys()) {
+        if (parameterCreateOnlyPaths.has(key)) continue;
+        // A custom-resource leaf beside it keeps the #3729 rule (an updatable
+        // path nobody read back for it is sent).
+        if (otherFreshAt(key).length > 0) continue;
+        const verdict = verdictAt(key);
+        if (verdict === 'held') {
+          parameterSettledPaths.add(key);
+          parameterHeldKeys.add(key);
+        } else if (verdict === 'not-readable') parameterUnreadablePaths.push(key);
+      }
+    }
+  }
+
   // The no-change skip above could not trust the mask. Once AWS has
   // confirmed every fresh `NoEcho` leaf the bag carries, and every other
   // leaf equals the record, there is nothing to send, so the same skip
@@ -600,20 +1001,49 @@ export async function provisionUpdate(
   // recreate must not be dropped because a value turned out unchanged.
   // An attribute-only change (`DeletionPolicy`, ...) takes the same
   // metadata arm as the skip above, for the same no-update-API reason.
+  const confirmedPaths = new Set([...noEchoHeldPaths, ...parameterSettledPaths]);
   if (
-    noEchoHeldPaths.size > 0 &&
+    confirmedPaths.size > 0 &&
     !typeChanged &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
     recordMatchesDesired &&
-    Object.entries(resolvedProps).every(
-      ([key, value]) =>
-        noEchoHeldPaths.has(key) || freshNoEchoLeafPositions(value, updateSecrets).length === 0
+    Object.keys(resolvedProps).every(
+      (key) =>
+        confirmedPaths.has(key) ||
+        (otherFreshAt(key).length === 0 && !pendingParameterLeaves.has(key))
     )
   ) {
     this.logger.debug(
       safeMsg`Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
     );
+    // go-to-k/cdkd#4043 (review round 8 m2): a STALE coordinate (the record
+    // holds `***` where no NoEcho source serves the leaf any more) that AWS
+    // confirmed holding the resolved value is rewritten to that value and
+    // unmarked, so the diff stops comparing `***` with it on every run.
+    const staleHeld = staleCoordinates.filter(
+      (coordinate) => typeof coordinate[0] === 'string' && parameterHeldKeys.has(coordinate[0])
+    );
+    if (staleHeld.length > 0) {
+      let properties = currentResource.properties;
+      for (const coordinate of staleHeld) {
+        properties = setAtCoordinate(
+          properties,
+          coordinate,
+          valueAtCoordinate(resolvedProps, coordinate)
+        );
+      }
+      const remaining = (noEchoLeavesOf(currentResource) ?? []).filter(
+        (coordinate) =>
+          !staleHeld.some((stale) => keyOrderFreeJson(stale) === keyOrderFreeJson(coordinate))
+      );
+      const { noEchoLeaves: _dropped, ...rest } = currentResource;
+      stateResources[logicalId] = {
+        ...rest,
+        properties,
+        ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
+      };
+    }
     // Nothing was attempted, as on the skip above the refusal.
     this.attemptedResolvedProps.delete(logicalId);
     if (change.attributeChanges && change.attributeChanges.length > 0) {
@@ -622,6 +1052,15 @@ export async function provisionUpdate(
     }
     if (counts) counts.skipped++;
     return;
+  }
+
+  // Maintainer decision 4 on #4043: an updatable property AWS does not report
+  // (write-only, or a type with no readback) is re-sent on every deploy, and
+  // one line per resource says why the update ran.
+  if (recordMatchesDesired && parameterUnreadablePaths.length > 0) {
+    this.logger.info(
+      safeMsg`  ${logicalId}: re-sending ${parameterUnreadablePaths.join(', ')}, fed by a NoEcho parameter. AWS does not report the value back, so cdkd cannot tell whether it changed.`
+    );
   }
 
   // Check if this update requires resource replacement (immutable property changed)
@@ -840,7 +1279,10 @@ export async function provisionUpdate(
       dependencies,
       desiredForSkipCheckAsWritten,
       logicalId,
-      noEchoHeldPaths,
+      // go-to-k/cdkd#4043: the parameter-class paths settled above too, so a
+      // provider never diffs `***` against the value it is sent (a create-only
+      // path cdkd said it will not replace included).
+      noEchoHeldPaths: confirmedPaths,
       parameterValues,
       progress,
       renderer,

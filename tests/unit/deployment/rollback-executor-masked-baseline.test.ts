@@ -185,7 +185,8 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     expect(update).not.toHaveBeenCalled();
     expect(result.failures).toBe(1);
     const refusal = warnLines.join('\n');
-    expect(refusal).toContain('three ways a baseline comes to hold it');
+    expect(refusal).toContain('four ways a baseline comes to hold it');
+    expect(refusal).toContain("(4) A NoEcho template parameter's value");
     expect(refusal).toContain('(2) The Fn::Base64 encoding of a secret value');
     // The restore: a deploy that CHANGES the resource sends the encoding
     // again; an unchanged re-deploy sends nothing (the encoding of an ordinary

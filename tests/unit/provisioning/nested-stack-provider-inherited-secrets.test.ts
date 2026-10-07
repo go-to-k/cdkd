@@ -60,7 +60,10 @@ import {
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
-import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
+import {
+  recordLogOnlyValue,
+  recordPassedNoEchoParameters,
+} from '../../../src/deployment/secret-redaction.js';
 import { recordPassedParameterClasses } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { DeployEngineOptions } from '../../../src/deployment/deploy-engine.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -191,6 +194,37 @@ describe('NestedStackProvider — inherited secrets + child-region provenance', 
       withNestedStackContext(makeContext(), () => provider.create('Child', NESTED, {}))
     );
     expect(childOptions()).not.toHaveProperty('inheritedSecrets');
+  });
+
+  it('forwards the NoEcho-fed parameter names even when the bag holds nothing maskable (go-to-k/cdkd#4043 round 10)', async () => {
+    const provider = new NestedStackProvider();
+    // What the parent records for a row passing `Fn::GetAtt Cr.Pin` (a
+    // declared-NoEcho attribute) whose value is under the needle floor: the
+    // names, and nothing else, on the bag.
+    const parentSecrets = new Map<string, string>();
+    recordPassedNoEchoParameters(
+      parentSecrets,
+      { Pin: { 'Fn::GetAtt': ['Cr', 'Pin'] }, Plain: 'x' },
+      { parameters: new Set(), attributeIsNoEcho: (id, attr) => id === 'Cr' && attr === 'Pin' }
+    );
+    for (const run of [
+      () => provider.create('Child', NESTED, { Parameters: { Pin: '42', Plain: 'x' } }),
+      () =>
+        provider.update(
+          'Child',
+          'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
+          NESTED,
+          { Parameters: { Pin: '42', Plain: 'x' } },
+          {}
+        ),
+    ]) {
+      ctorCalls.length = 0;
+      await withCurrentResourceSecrets(parentSecrets, () =>
+        withNestedStackContext(makeContext(), run)
+      );
+      expect(childOptions()).not.toHaveProperty('inheritedSecrets');
+      expect([...(childOptions().passedNoEchoParameters ?? [])]).toEqual(['Pin']);
+    }
   });
 
   it('forwards the classes the parent recorded on the same bag, on both paths, and nothing else (go-to-k/cdkd#4543)', async () => {

@@ -50,6 +50,7 @@ import type { ResourceState, StackOrphanRecord } from '../types/state.js';
 import {
   createSecretMasker,
   carryLogOnlyValues,
+  maskedLeafCoordinatesOf,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
   STATE_DERIVED_RULES,
@@ -120,6 +121,12 @@ import {
 } from './rollback-executor/replay-orphan-delete.js';
 import { replayReadopt, replayRevert } from './rollback-executor/replay-revert.js';
 import { replayReverseReplacement } from './rollback-executor/replay-reverse-replacement.js';
+
+/** `undefined` for an empty list, so an absent field stays absent. */
+function nonEmptyOrUndefined<T>(items: T[]): T[] | undefined {
+  return items.length > 0 ? items : undefined;
+}
+
 export {
   rollbackFinalSnapshotId,
   rollbackRetainsNewResource,
@@ -989,6 +996,19 @@ async function replayFailedOperationsUnbound(
               // Issue #4157; as on the completed-CREATE arm, the record names
               // `op.physicalId` here.
               recordedAttributes: failedCreateRecord?.attributes,
+              // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
+              // journal records no coordinates, and its bag is masked by
+              // position, so every whole-`***` leaf of it counts (review
+              // round 9 n1): the caller decides the coordinates, and this
+              // caller has no list. Only `CustomResourceProvider` reads the
+              // field, and a custom resource reaches this arm only through a
+              // record naming the op's physical id (it never marks
+              // `createdBeforeFailure`), so this is a fail-safe, not a path
+              // a handler is known to take (review round 10).
+              recordedNoEchoLeaves: nonEmptyOrUndefined([
+                ...maskedLeafCoordinatesOf(op.attemptedProperties ?? {}),
+                ...(failedCreateRecord?.noEchoLeaves ?? []),
+              ]),
               // go-to-k/cdkd#4612: a proven orphan, never a record's own delete.
               // The bag is the journal's, secrets redacted: a provider that
               // compares it with AWS re-resolves it through this, lazily.

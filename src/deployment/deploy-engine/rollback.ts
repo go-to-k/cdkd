@@ -53,6 +53,8 @@ import {
   recordLogOnlyValue,
   redactSecretsForState,
   scrubResourceRecord,
+  maskAtCoordinates,
+  noEchoCoordinatesOf,
   unionOfSecretBags,
 } from '../secret-redaction.js';
 
@@ -95,11 +97,21 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
     // `previousState` is redactable with NO secrets map at all (#1900), so the
     // early return has to let that case through or the whole state-sourced
     // half is dead code.
-    if ((!secrets || secrets.size === 0) && !op.previousState) return op;
+    // go-to-k/cdkd#4043 (review B3): the positional `NoEcho` arm needs no
+    // secrets, so a bag positioned by this deploy's template is masked even
+    // when the resource recorded none.
+    const sources = templateProps === undefined ? undefined : this.noEchoPositionSources();
+    const byPosition = <B>(bag: B): B =>
+      sources === undefined || templateProps === undefined
+        ? bag
+        : maskAtCoordinates(bag, noEchoCoordinatesOf(templateProps, bag, sources));
+    if ((!secrets || secrets.size === 0) && !op.previousState && sources === undefined) return op;
     const ownSecrets = secrets ?? new Map<string, string>();
     const next = { ...op } as CompletedOperation & FailedOperation;
     if (next.properties) {
-      next.properties = redactSecretsForState(next.properties, ownSecrets, templateProps);
+      next.properties = byPosition(
+        redactSecretsForState(next.properties, ownSecrets, templateProps)
+      );
     }
     if (next.attemptedProperties) {
       // Issue #2516: a FAILED op's attempted bag is the resolver's own
@@ -111,10 +123,12 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // bag into a new object), so the copy guards a future reader rather
       // than a present one — stated so the choice is not mistaken for a
       // pinned behaviour.
-      next.attemptedProperties = redactSecretsForState(
-        markSameGenerationBag({ ...next.attemptedProperties }),
-        ownSecrets,
-        templateProps
+      next.attemptedProperties = byPosition(
+        redactSecretsForState(
+          markSameGenerationBag({ ...next.attemptedProperties }),
+          ownSecrets,
+          templateProps
+        )
       );
     }
     if (next.previousState) {
@@ -132,11 +146,19 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // REPLAYED baseline, not a fresh readback: its bag already sits in
       // `state.json`, so a mask here protects nothing a reader could still
       // be protected from and poisons the record a rollback rebuilds.
-      next.previousState = scrubResourceRecord(
-        next.previousState,
-        ownSecrets,
+      const previous = next.previousState;
+      // The `NoEcho` arms over the PREVIOUS record (review B3): its own
+      // `noEchoLeaves` when it has them, else today's template positions for
+      // the same logical id and type, so a pre-v11 record's plaintext does not
+      // reach this journal on a failed migration deploy.
+      next.previousState = this.applyNoEchoPersist(
+        op.logicalId,
+        previous,
+        scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
         undefined,
-        STATE_SOURCED_READBACK_RULES
+        {},
+        undefined,
+        true
       );
     }
     return next as unknown as T;
@@ -842,7 +864,14 @@ export async function writeRollbackJournalSegment(
       skipPrefix: getCurrentSkipPrefix(),
       operations: redactedCompleted,
       ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
-      ...(nestedPending?.previousOutputs && { previousOutputs: nestedPending.previousOutputs }),
+      // go-to-k/cdkd#4043 (review B3): the pre-deploy outputs a pre-v11
+      // record held in the clear go through the same positional arm.
+      ...(nestedPending?.previousOutputs && {
+        previousOutputs: {
+          ...nestedPending.previousOutputs,
+          outputs: this.maskOutputsByPosition(nestedPending.previousOutputs.outputs),
+        },
+      }),
       ...(nestedPending?.previousCrossStackReads && {
         previousCrossStackReads: nestedPending.previousCrossStackReads,
       }),

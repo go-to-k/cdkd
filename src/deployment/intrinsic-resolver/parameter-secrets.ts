@@ -7,6 +7,9 @@ import {
   inheritedParameterExpression,
   carryFreshNoEchoMark,
   recordInheritedParameterRead,
+  recordNoEchoParameterFreshValue,
+  isNoEchoParameterPlaintext,
+  MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import {
@@ -134,6 +137,8 @@ export function recordInheritedParameterSecrets(
   // BEFORE the size test below, which reads a bag holding only log-only
   // needles as empty.
   if (inherited && recorded) carryLogOnlyValuesCarriedBy(inherited, recorded, value);
+  if (inherited && recorded)
+    recordInheritedNoEchoListElements(this, inherited, recorded, value, context);
   if (!inherited || inherited.size === 0 || !recorded) return;
   // Issue #2291 round 2. THIS parameter's own expression, when the parent
   // certified one, rather than the collapsed map's survivor. See the
@@ -177,6 +182,47 @@ export function recordInheritedParameterSecrets(
 }
 
 /**
+ * go-to-k/cdkd#4043: a child `CommaDelimitedList` / `List<...>` parameter fed
+ * a parent's `NoEcho` PARAMETER value arrives split, and no element equals the
+ * parent's whole value, so the value arm would leave each element in the
+ * clear in the child's record. An element that is a piece of such a value
+ * (from `MIN_NEEDLE_LENGTH`, the value arm's floor) is recorded as a fresh
+ * mask-only needle of the parameter class in the child resource's bag.
+ */
+function recordInheritedNoEchoListElements(
+  resolver: IntrinsicFunctionResolver,
+  inherited: RecordedSecretValues,
+  recorded: RecordedSecretValues,
+  value: unknown,
+  context: ResolverContext
+): void {
+  if (!Array.isArray(value)) return;
+  const parameterValues = [...inherited.keys()].filter((plaintext) =>
+    isNoEchoParameterPlaintext(inherited, plaintext)
+  );
+  if (parameterValues.length === 0) return;
+  // The LIST as a whole must be (a part of) such a value, as the parent
+  // supplied it and the coercion split and trimmed it: an element of a
+  // public list that merely occurs inside a parent's NoEcho value is no
+  // piece of it.
+  const joined = value.map((element) => String(element)).join(',');
+  const normalized = (plaintext: string): string =>
+    plaintext
+      .split(',')
+      .map((piece) => piece.trim())
+      .join(',');
+  // Whole pieces only (comma boundaries), so a one-element public list
+  // equal to a word INSIDE a piece is no match.
+  if (!parameterValues.some((plaintext) => `,${normalized(plaintext)},`.includes(`,${joined},`))) {
+    return;
+  }
+  for (const element of value) {
+    if (typeof element !== 'string' || element.length < MIN_NEEDLE_LENGTH) continue;
+    recordNoEchoParameterFreshValue(element, recorded, resolver.publicNoEchoTokens(context));
+  }
+}
+
+/**
  * Record the value of a `NoEcho: true` PARAMETER as a LOG-ONLY needle of the
  * pass that consumed it (go-to-k/cdkd#1998). `NoEcho` is the template
  * author's declaration that the value is sensitive, and CloudFormation masks
@@ -185,8 +231,9 @@ export function recordInheritedParameterSecrets(
  * Every leaf a log line can spell is recorded: a string leaf, the
  * `String()` form of a number (a `Number` parameter is coerced before this
  * runs), and a list's comma-joined form, the spelling the user supplied and
- * the one `String()` renders. Log-only, so over-covering costs a masked log
- * line and nothing else. Recorded into the pass's own bag and nowhere else:
+ * the one `String()` renders. The log-only record over-covers at the cost of
+ * a masked log line; the mask-only record (go-to-k/cdkd#4043) is what
+ * persistence reads. Recorded into the pass's own bag and nowhere else:
  * a pass without one (the parameter pass's log context) has no masker to
  * feed.
  */
@@ -201,6 +248,14 @@ export function recordNoEchoParameterValue(
   // One spelling rule, shared with the deploy's diff log masker, which
   // records every `NoEcho` value up front (go-to-k/cdkd#4049).
   recordLogOnlyParameterValue(bag, value);
+  // go-to-k/cdkd#4043 (the value arm): also a FRESH mask-only needle of the
+  // pass, so everything that persists from this bag stores `***` where a
+  // leaf equals or embeds the value, and the engine knows the bag carries a
+  // value supplied in this deploy. A value under the needle floor, or a
+  // number, registers nothing here; the positional arm masks it by template
+  // position. The public tokens (region, stack name) stay out of the
+  // containment arm, as for a custom resource's echo.
+  recordNoEchoParameterFreshValue(value, bag, this.publicNoEchoTokens(context));
 }
 
 /**
@@ -266,11 +321,23 @@ export function refuseCoercedInheritedSecret(
   // `.trim()` whitespace variant, keeps a comma-FREE `CommaDelimitedList`
   // secret working, and cannot go stale when a new `Type` is added to
   // `coerceParameterValue`.
-  const carriedBefore = inheritedSecretsCarriedBy(userValue, inherited).length;
+  //
+  // A parent `NoEcho` PARAMETER's value is not such a pair (go-to-k/cdkd#4043
+  // review round 11): the value arm records it as a mask-only entry, but the
+  // child positions the parameter the parent fills from it
+  // (`passedNoEchoParameters`), so a split or coerced value is masked by
+  // template position, each element and a number included. Counting it here
+  // refused every CommaDelimitedList / Number child parameter fed a NoEcho
+  // value, naming a secret dynamic reference the template never had.
+  const secretPairs: RecordedSecretValues = new Map(
+    [...inherited].filter(([plaintext]) => !isNoEchoParameterPlaintext(inherited, plaintext))
+  );
+  if (secretPairs.size === 0) return;
+  const carriedBefore = inheritedSecretsCarriedBy(userValue, secretPairs).length;
   if (carriedBefore === 0) return;
   const carriedAfter = inheritedSecretsCarriedBy(
     this.coerceParameterValue(userValue, paramDef.Type),
-    inherited
+    secretPairs
   ).length;
   if (carriedAfter >= carriedBefore) return;
   // `markNonRetryable` for the same reason the `Fn::GetAtt` refusals (`getatt.ts`)

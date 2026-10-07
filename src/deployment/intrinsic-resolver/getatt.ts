@@ -596,10 +596,17 @@ export function noteAttributeSecrecy(
   value: unknown,
   context: ResolverContext
 ): unknown {
+  // go-to-k/cdkd#4043 §3.3: a held producer's declared attribute, read back
+  // from AWS for this resolution, in place of the mask its record holds.
+  const override = carriesSecretMask(value)
+    ? context.noEchoAttributeOverrides?.get(logicalId)
+    : undefined;
+  const served = override !== undefined && Object.hasOwn(override, attributeName);
+  if (served) value = override[attributeName];
   recordSecretNamedRead(logicalId, value, context);
   const declared = context.noEchoAttributeResources?.get(logicalId);
   const attributeIsDeclared =
-    declared === true || (declared !== undefined && declared.has(attributeName));
+    served || declared === true || (declared !== undefined && declared.has(attributeName));
   if (attributeIsDeclared && context.recordedSecretValues) {
     // FRESH (go-to-k/cdkd#3662): declared by a provider in THIS deploy.
     recordFreshNoEchoValuesIn(
@@ -646,10 +653,19 @@ export function noteAttributeSecrecy(
     //    two `.join(', ')` message builders in `deploy-engine.ts`. Nothing
     //    re-parses it.
     const maskedAttributeName = this.displayMasked(attributeName, context);
+    // go-to-k/cdkd#2449: the record says whether its producer DECLARED this
+    // attribute `NoEcho`, which makes the refusal exact. Still refused: cdkd
+    // never re-runs the producer to recover the value.
+    const record = Object.hasOwn(context.resources, logicalId)
+      ? context.resources[logicalId]
+      : undefined;
+    const names = record?.noEchoAttributeNames as unknown;
+    const declaredNoEcho = Array.isArray(names) && names.includes(attributeName);
     this.pushRedactedAttributeRead(context, {
       kind: 'attribute',
       logicalId,
       key: maskedAttributeName,
+      ...(declaredNoEcho && { declaredNoEcho: true as const }),
       display: `${this.displayMasked(logicalId, context)}.${maskedAttributeName}`,
     });
   }

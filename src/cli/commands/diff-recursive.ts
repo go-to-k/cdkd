@@ -72,7 +72,13 @@ import {
   recordLogOnlyValue,
   maskSecretsInText,
   type RecordedSecretValues,
+  readsNoEchoSource,
+  noEchoOutputsComparison,
 } from '../../deployment/secret-redaction.js';
+import {
+  noEchoComparisonForTemplate,
+  noEchoParameterNamesOf,
+} from '../../deployment/deploy-engine/noecho.js';
 import {
   orphanRecordsPrintingBag,
   stateSecretNameNeedles,
@@ -871,6 +877,12 @@ export interface StackDiffResult {
   resolvedParameters: Record<string, unknown> | undefined;
   conditions: Record<string, boolean> | undefined;
   /**
+   * {@link conditions} without the ones this diff could not decide (a FALSE
+   * fallback), the verdicts a `NoEcho` position may narrow an `Fn::If` by
+   * (go-to-k/cdkd#4043): an unknown one is read as both branches.
+   */
+  knownConditions: Record<string, boolean> | undefined;
+  /**
    * What this node knows for certain (go-to-k/cdkd#4479): the parameters whose
    * bound value the next deploy binds too, and the conditions whose verdict
    * comes from those alone. A nested child's row is classified against it
@@ -1272,6 +1284,11 @@ export async function computeStackDiff(
      */
     inheritedSecrets?: RecordedSecretValues;
     /**
+     * go-to-k/cdkd#4043 (review round 9): parameters of this nested child the
+     * parent fills from a `NoEcho` source, positioned as `NoEcho` ones.
+     */
+    inheritedNoEchoParameters?: ReadonlySet<string>;
+    /**
      * The READ-ONLY stale-attribute healer (issue go-to-k/cdkd#3456), on every
      * resolver context below — condition evaluation, the resource diff and the
      * outputs pass — as `DeployEngine` puts its healer on every context it
@@ -1319,7 +1336,12 @@ export async function computeStackDiff(
     inheritedSecrets,
     attributeHealer,
     parentUnresolvedParameters,
+    inheritedNoEchoParameters,
   } = options;
+  // This template's `NoEcho` parameters, plus (in a nested child) the ones the
+  // parent fills from a `NoEcho` source (go-to-k/cdkd#4043 review round 9).
+  const noEchoParametersOf = (t: CloudFormationTemplate): Set<string> =>
+    new Set([...noEchoParameterNamesOf(t), ...(inheritedNoEchoParameters ?? [])]);
   // The parent's printing corpus (go-to-k/cdkd#4049), as the `inheritedSecrets`
   // of every resolver pass this node runs: parameter binding, condition
   // evaluation and the diff resolver each print debug lines, and a child's
@@ -2023,8 +2045,45 @@ export async function computeStackDiff(
     maskForLog,
     undefined,
     maskedInputs,
-    options.refusalRecovery
+    options.refusalRecovery,
+    // go-to-k/cdkd#4043: compare what the deploy persists for a value a
+    // `NoEcho` source served (`***`), reading a pre-v11 record's plaintext as
+    // the migration witness. Only the verdicts this diff knows position an
+    // `Fn::If`; an unknown one masks the whole leaf.
+    noEchoComparisonForTemplate(
+      effectiveTemplate,
+      conditions === undefined
+        ? undefined
+        : Object.fromEntries(
+            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+          ),
+      mergedParameters,
+      stateForDiff.resources,
+      new Set([region, stackName]),
+      inheritedNoEchoParameters
+    )
   );
+  // The deploy reads back every resource a `NoEcho` parameter feeds, since
+  // state holds only `***` there; this preview cannot, so it says so once.
+  // Informational: it never counts as a change for `--fail`.
+  const noEchoReaders = Object.keys(effectiveTemplate.Resources ?? {}).filter(
+    (logicalId) =>
+      changes.get(logicalId)?.changeType === 'NO_CHANGE' &&
+      readsNoEchoSource(effectiveTemplate.Resources?.[logicalId]?.Properties, {
+        parameters: noEchoParametersOf(effectiveTemplate),
+        // Only the verdicts this diff knows narrow an `Fn::If`.
+        ...(conditions !== undefined && {
+          conditions: Object.fromEntries(
+            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+          ),
+        }),
+      })
+  );
+  if (noEchoReaders.length > 0) {
+    logger.info(
+      safeMsg`Stack ${displayStackName(stackName)}: ${String(noEchoReaders.length)} unchanged resource(s) read a NoEcho parameter, whose value state holds only as ***: the deploy compares it with AWS, and updates a resource whose value changed.`
+    );
+  }
 
   // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
   // through the SAME finder over the same two inputs the engine hands it —
@@ -2114,12 +2173,41 @@ export async function computeStackDiff(
     resolved.templateHasSecretReference ||
     inheritSecretBearingTemplate === true ||
     (!everyConditionKnown && templateHasSecretDynamicReference(template));
+  // go-to-k/cdkd#4043: an output a `NoEcho` source serves persists `***`, so
+  // it is compared as `***` on both sides (a pre-v11 stored plaintext is the
+  // migration witness); an unchanged one is no change, as for a resource.
+  const outputTemplateValues: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
+  for (const [name, definition] of Object.entries(effectiveTemplate.Outputs ?? {})) {
+    outputTemplateValues[name] = (definition as { Value?: unknown } | undefined)?.Value;
+  }
+  const compareNoEchoOutputs = noEchoOutputsComparison(outputTemplateValues, {
+    parameters: noEchoParametersOf(effectiveTemplate),
+    attributeIsNoEcho: (logicalId, attribute) => {
+      const record = Object.hasOwn(stateForDiff.resources, logicalId)
+        ? stateForDiff.resources[logicalId]
+        : undefined;
+      const names = record?.noEchoAttributeNames as unknown;
+      return Array.isArray(names) && names.includes(attribute);
+    },
+    ...(conditions !== undefined && {
+      conditions: Object.fromEntries(
+        Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+      ),
+    }),
+  });
   const diffOutputsAgainst = (
-    desired: Record<string, unknown>,
+    rawDesired: Record<string, unknown>,
     exportNames: ReadonlySet<string>,
     forceLegacyRecord = false
-  ): OutputChange[] =>
-    computeOutputsDiff(currentState.outputs, desired, exportNames, resolved.secretSourceKeys, {
+  ): OutputChange[] => {
+    const { current: storedOutputs, desired } = compareNoEchoOutputs(
+      currentState.outputs,
+      rawDesired
+    );
+    return computeOutputsDiff(storedOutputs, desired, exportNames, resolved.secretSourceKeys, {
       declaredKeys: resolved.declaredKeys,
       templateHasSecretReference,
       forceLegacyRecord,
@@ -2130,6 +2218,7 @@ export async function computeStackDiff(
         ? currentState.exportNames.filter((name): name is string => typeof name === 'string')
         : undefined,
     });
+  };
 
   // A partially-resolved bag previews the deploy's NO-CHANGE merge when the
   // deploy will take that branch, and reports NO delta otherwise.
@@ -2356,6 +2445,12 @@ export async function computeStackDiff(
     printingSecrets,
     resolvedParameters: mergedParameters,
     conditions,
+    knownConditions:
+      conditions === undefined
+        ? undefined
+        : Object.fromEntries(
+            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+          ),
     trust: {
       parameters: trustedParameters,
       conditions: trustedConditions,
@@ -2682,6 +2777,43 @@ function rowValueTrusted(
 }
 
 /**
+ * go-to-k/cdkd#4043 (review round 9): the keys of a nested-stack row's
+ * `Parameters` whose value reads a `NoEcho` parameter of the parent (any
+ * position: a whole `Ref`, or one embedded in an `Fn::Sub` / `Fn::Join`). The
+ * deploy's child engine positions each as a `NoEcho` parameter, so the child's
+ * preview does too.
+ */
+function noEchoFedChildParameters(
+  parentStackRow: { Properties?: Record<string, unknown> },
+  parentNoEchoParameters: ReadonlySet<string>,
+  parentConditions: Record<string, boolean> | undefined,
+  parentResources: Record<string, ResourceState>
+): Set<string> {
+  const fed = new Set<string>();
+  const rawParams = parentStackRow.Properties?.['Parameters'];
+  if (rawParams === null || typeof rawParams !== 'object') return fed;
+  for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
+    if (
+      readsNoEchoSource(value, {
+        parameters: parentNoEchoParameters,
+        // An attribute the parent's record declares `NoEcho` (a custom
+        // resource's, a nested stack's output), as the deploy's fresh mark.
+        attributeIsNoEcho: (logicalId, attribute) => {
+          const names = (
+            Object.hasOwn(parentResources, logicalId) ? parentResources[logicalId] : undefined
+          )?.noEchoAttributeNames as unknown;
+          return Array.isArray(names) && names.includes(attribute);
+        },
+        ...(parentConditions !== undefined && { conditions: parentConditions }),
+      })
+    ) {
+      fed.add(name);
+    }
+  }
+  return fed;
+}
+
+/**
  * Resolve a nested-stack child's input `Parameters` (declared on the parent's
  * `AWS::CloudFormation::Stack` row under `Properties.Parameters`) to scalar
  * values against the PARENT's deployed state, its BOUND parameters and its
@@ -2987,6 +3119,12 @@ export async function buildDiffTree(args: {
    */
   inheritedSecrets?: RecordedSecretValues;
   /**
+   * go-to-k/cdkd#4043 (review round 9): this child's parameters the parent row
+   * fills from a `NoEcho` source; positioned as `NoEcho` ones, as the deploy's
+   * child engine does. Absent at the root.
+   */
+  inheritedNoEchoParameters?: ReadonlySet<string>;
+  /**
    * The run's account flags (go-to-k/cdkd#4159), carried on every
    * malformed-record warning's `cdkd state show` pointer at every node.
    */
@@ -3012,6 +3150,7 @@ export async function buildDiffTree(args: {
     ancestorTemplatePaths,
     isNestedChild,
     inheritedSecrets,
+    inheritedNoEchoParameters,
     refusalRecovery,
   } = args;
   const attributeHealer = attributeHealerFor?.(stackName, region);
@@ -3070,6 +3209,7 @@ export async function buildDiffTree(args: {
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
+        ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
         ...(attributeHealer && { attributeHealer }),
         ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
@@ -3094,6 +3234,7 @@ export async function buildDiffTree(args: {
     printingSecrets,
     resolvedParameters,
     conditions,
+    knownConditions,
     trust,
   } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
@@ -3225,6 +3366,16 @@ export async function buildDiffTree(args: {
     // the deploy path and would drop here, swallowed by the best-effort catch,
     // leaving the child preview degraded for a reason nothing prints.
     const childUnresolvedParameters = new Set<string>();
+    // go-to-k/cdkd#4043 (review round 9): the child parameters this row fills
+    // from a `NoEcho` source of THIS node, positioned as `NoEcho` in the child.
+    const childNoEchoParameters = noEchoFedChildParameters(
+      resource,
+      new Set([...noEchoParameterNamesOf(effectiveTemplate), ...(inheritedNoEchoParameters ?? [])]),
+      // Only the verdicts this diff knows (review round 10): an `Fn::If` on an
+      // unknown one counts both branches, as at every other NoEcho site.
+      knownConditions,
+      stateAfterAdoption.resources
+    );
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -3261,6 +3412,7 @@ export async function buildDiffTree(args: {
         isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
+        ...(childNoEchoParameters.size > 0 && { inheritedNoEchoParameters: childNoEchoParameters }),
         ...(refusalRecovery && { refusalRecovery }),
       })
     );

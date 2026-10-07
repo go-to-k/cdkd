@@ -49,6 +49,7 @@ import {
 import {
   calculateResourceDrift,
   equalModuloMask,
+  equalModuloMarkedMask,
   undeclaredEmptyObservedKeys,
   type PropertyDrift,
 } from '../../analyzer/drift-calculator.js';
@@ -84,6 +85,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
   displayAwsMessage,
   displayIdent,
+  displaySafe,
   isPasteableIdent,
   safeMsg,
   stringifyJsonPayload,
@@ -124,7 +126,10 @@ import {
   identityKeyFor,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
   isUncertifiedBaselineMaskPosition,
+  isMarkedCoordinate,
   liveMatchesUnresolvedTokenFrame,
+  maskWholeValue,
+  noEchoLeavesOf,
   pathCrossesDottedKey,
   maskSecretsInError,
   maskSecretsInText,
@@ -139,6 +144,7 @@ import {
   STATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
+import { noEchoAttributeNamesOf } from '../../deployment/deploy-engine/noecho.js';
 import {
   RESOURCE_NOT_FOUND,
   type ReadCurrentStateContext,
@@ -234,6 +240,15 @@ export type NotComparedCause =
    * replaces each such mask its record's own references can certify.
    */
   | 'uncertifiedBaseline'
+  /**
+   * The record's `noEchoLeaves` (schema v11, go-to-k/cdkd#4043) names a
+   * position whose value a `NoEcho` template parameter served, so state holds
+   * it only as the mask, and the ONLY difference found there is that mask.
+   * Everything else about the resource was compared. Exit 0, like
+   * `unresolvedToken`: the position is masked by design, so no re-run can
+   * clear it, and gating CI on it would fail every such stack forever.
+   */
+  | 'noEchoParameter'
   /**
    * The record holds a row nothing can read as a resource (go-to-k/cdkd#3018),
    * or one whose `properties` map is not an object (go-to-k/cdkd#3315) — a
@@ -369,6 +384,14 @@ export type DriftOutcome =
        * nothing.
        */
       uncertifiedPaths: string[];
+      /**
+       * The comparator paths split off as `NoEcho` parameter positions
+       * (go-to-k/cdkd#4043): the record's `noEchoLeaves` names them and the
+       * mask is the ONLY difference from AWS. Never in `changes`. `runRevert`
+       * sends the LIVE subtree at each, as for `uncertifiedPaths`, so the mask
+       * never reaches AWS. Paths only. Optional: absent means none.
+       */
+      noEchoParameterPaths?: string[];
       /**
        * Can `secrets` NOT name every value this resource's positions hold? True
        * when resolution was refused or a token survived it — the two cases
@@ -720,7 +743,10 @@ function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplete' | 'n
     // CAUSE: an inclusion list would have let `readFailed` inherit `none` by
     // omission, which is the "report a resource cdkd never compared as a pass"
     // failure one level down.
-    notCompared: (n) => (n.notComparedCause === 'unresolvedToken' ? 'none' : 'incomplete'),
+    notCompared: (n) =>
+      n.notComparedCause === 'unresolvedToken' || n.notComparedCause === 'noEchoParameter'
+        ? 'none'
+        : 'incomplete',
     clean: () => 'none',
     // A provider that cannot read a resource back, and a type drift does not
     // apply to, are both pre-existing and permanent — same "unclearable in CI"
@@ -856,6 +882,12 @@ const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phras
       'only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd resolves ' +
       'for nobody, which no re-run can clear',
   },
+  noEchoParameter: {
+    kind: 'unknown',
+    phrase:
+      'only PARTIALLY compared: their state holds a NoEcho parameter value only as the ' +
+      'redaction mask, which no re-run can clear',
+  },
   unsupported: {
     kind: 'byDesign',
     phrase: 'not compared AT ALL: their provider does not support drift detection yet',
@@ -895,6 +927,7 @@ const ANY_OF_IT_COMPARED: Record<NotComparedCause, boolean> = {
   refused: true,
   unresolvedToken: true,
   uncertifiedBaseline: true,
+  noEchoParameter: true,
   readFailed: false,
   readAborted: false,
   baselineRefused: false,
@@ -2102,6 +2135,10 @@ function notComparedReason(cause: NotComparedCause, record?: ResourceState): str
       (refusedRemedy === undefined
         ? ' (deploy a change to this resource to restore one)'
         : `. ${refusedRemedy}`),
+    noEchoParameter:
+      `its state holds a NoEcho parameter's value only as the redaction mask${noEchoPathsClause(record)}, ` +
+      'so that value was not compared — every other property was (permanent by design; a ' +
+      'deploy compares it with AWS)',
     uncertifiedBaseline:
       'its recorded baseline holds the redaction mask at a position cdkd could not pair ' +
       'with the secret reference there, so that position was not compared — every other ' +
@@ -2675,6 +2712,100 @@ async function resolveStateSecretExpressions(
     return v;
   };
   return (await walk(props, '')) as Record<string, unknown>;
+}
+
+/**
+ * The marked coordinates of a record, rendered as the property paths the
+ * report names (`Key.Sub[0]`), for {@link notComparedReason}. Paths only,
+ * never a value.
+ */
+function noEchoPathsClause(record: ResourceState | undefined): string {
+  const marked = record === undefined ? undefined : noEchoLeavesOf(record);
+  if (marked === undefined || marked.length === 0) return '';
+  const paths = marked.map((coordinate) =>
+    coordinate
+      .map((segment, i) =>
+        typeof segment === 'number' ? `[${segment}]` : i === 0 ? segment : `.${segment}`
+      )
+      .join('')
+  );
+  return ` at ${paths.map((path) => displaySafe(path)).join(', ')}`;
+}
+
+/**
+ * The segments of a `--revert` walk path (`a.b[0].c`), the shape
+ * {@link isMarkedCoordinate} compares against a record's `noEchoLeaves`.
+ */
+function revertPathSegments(path: string): (string | number)[] {
+  const segments: (string | number)[] = [];
+  for (const part of path.split('.')) {
+    const match = /^([^[]*)((?:\[\d+\])*)$/.exec(part);
+    if (match === null) {
+      segments.push(part);
+      continue;
+    }
+    if (match[1] !== '') segments.push(match[1]!);
+    for (const index of match[2]!.matchAll(/\[(\d+)\]/g)) segments.push(Number(index[1]));
+  }
+  return segments;
+}
+
+/**
+ * Split off the changes whose ONLY difference is a `NoEcho` parameter's mask
+ * at a coordinate the record's `noEchoLeaves` names (go-to-k/cdkd#4043, schema
+ * v11). State holds such a value only as `***`, whatever its type, so the
+ * comparison cannot see it: the change is reported as `notCompared:
+ * noEchoParameter` by PATH, never drift, and neither side is printed. A
+ * difference anywhere else in the same subtree keeps the change.
+ *
+ * Runs on the COMPARISON values, before {@link redactDriftChanges}, as the
+ * uncertified-baseline partition does. A record with no `noEchoLeaves` (a
+ * pre-v11 one) splits off nothing. A path the comparator spells through a
+ * dotted key is ambiguous and is kept.
+ */
+function partitionNoEchoParameterChanges(
+  changes: PropertyDrift[],
+  record: ResourceState,
+  baseline: Record<string, unknown>
+): { kept: PropertyDrift[]; noEchoParameterPaths: string[] } {
+  const marked = noEchoLeavesOf(record);
+  if (marked === undefined || marked.length === 0) {
+    return { kept: changes, noEchoParameterPaths: [] };
+  }
+  const properties = record.properties ?? {};
+  // Marked, or an ANCESTOR of a marked coordinate: a readback the save could
+  // not pair by identity is masked as a whole list, so a wholly masked
+  // subtree that holds a marked coordinate accepts any present live value
+  // (review LOW-5); a partly masked one is still compared leaf by leaf.
+  const isMarked = (coordinate: readonly (string | number)[]): boolean =>
+    isMarkedCoordinate(coordinate, marked) ||
+    marked.some(
+      (leaf) =>
+        leaf.length > coordinate.length &&
+        coordinate.every((segment, i) => String(segment) === String(leaf[i]))
+    );
+  const kept: PropertyDrift[] = [];
+  const noEchoParameterPaths: string[] = [];
+  for (const change of changes) {
+    const coordinate = change.path.split('.');
+    const touchesMarked = marked.some((leaf) => {
+      const n = Math.min(leaf.length, coordinate.length);
+      for (let i = 0; i < n; i++) if (leaf[i] !== coordinate[i]) return false;
+      return true;
+    });
+    if (
+      touchesMarked &&
+      carriesSecretMask(change.stateValue) &&
+      !pathCrossesDottedKey(properties, change.path) &&
+      !pathCrossesDottedKey(baseline, change.path) &&
+      equalModuloMarkedMask(change.stateValue, change.awsValue, SECRET_MASK, coordinate, isMarked)
+    ) {
+      noEchoParameterPaths.push(change.path);
+      continue;
+    }
+    kept.push(change);
+  }
+  return { kept, noEchoParameterPaths };
 }
 
 /**
@@ -3921,8 +4052,11 @@ async function runDriftForStack(
         // Issue #3595: a change that exists only because the baseline holds an
         // uncertified-position mask is UNKNOWN, not drift. Split off before
         // redaction, which would turn the AWS side into the mask too.
+        // go-to-k/cdkd#4043: a `NoEcho` parameter's marked position first; what
+        // remains goes to the uncertified-baseline partition.
+        const noEchoPartitioned = partitionNoEchoParameterChanges(changes, resource, baseline);
         const partitioned = partitionUncertifiedBaselineChanges(
-          changes,
+          noEchoPartitioned.kept,
           resource.properties ?? {},
           baseline
         );
@@ -3946,7 +4080,9 @@ async function runDriftForStack(
             ? 'uncertifiedBaseline'
             : unresolvedTokens.size > 0
               ? 'unresolvedToken'
-              : undefined;
+              : noEchoPartitioned.noEchoParameterPaths.length > 0
+                ? 'noEchoParameter'
+                : undefined;
         if (reported.changes.length === 0) {
           if (notComparedCause !== undefined) {
             // Issue #2135: its OWN variant rather than a `clean` carrying a flag.
@@ -3975,6 +4111,7 @@ async function runDriftForStack(
             awsProperties: aws,
             secrets,
             uncertifiedPaths: partitioned.uncertifiedPaths,
+            noEchoParameterPaths: noEchoPartitioned.noEchoParameterPaths,
             secretsIncomplete: secretResolutionFailed || unresolvedTokens.size > 0,
             notComparedCause,
           });
@@ -6891,7 +7028,9 @@ async function runRevert(
                   // none.
                   const certifiedOverlay = overlayLiveAtUncertifiedPaths(
                     overlaid,
-                    outcome.uncertifiedPaths,
+                    // go-to-k/cdkd#4043: a `NoEcho` parameter's marked position
+                    // likewise sends AWS's own value back, never the mask.
+                    [...outcome.uncertifiedPaths, ...(outcome.noEchoParameterPaths ?? [])],
                     outcome.awsProperties,
                     desiredProperties,
                     secrets,
@@ -6973,12 +7112,41 @@ async function runRevert(
                     // name the `Fn::Base64` writer with a remedy of their own (issue
                     // #2881).
                     totalUnresolvable++;
+                    // go-to-k/cdkd#4043 (schema v11): when the record's
+                    // `noEchoLeaves` names every refused position, the cause IS
+                    // known — a `NoEcho` template parameter — and only its
+                    // remedy applies.
+                    const marked = noEchoLeavesOf(stateResource);
+                    if (
+                      marked !== undefined &&
+                      maskPreserved.unpreservablePaths.every((path) =>
+                        isMarkedCoordinate(revertPathSegments(path), marked)
+                      )
+                    ) {
+                      const refusedPaths = maskSecretsInText(
+                        maskPreserved.unpreservablePaths.join(', '),
+                        secrets
+                      );
+                      logger.error(
+                        safeMsg`  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): refused to revert ${refusedPaths} — a NoEcho template parameter feeds it, the recorded baseline holds only the redaction mask there, and AWS reports nothing to preserve, so cdkd has no value it may write. Deploy the stack with the parameter's value to set it.`
+                      );
+                      return;
+                    }
+                    const markedRefused =
+                      marked === undefined
+                        ? []
+                        : maskPreserved.unpreservablePaths.filter((path) =>
+                            isMarkedCoordinate(revertPathSegments(path), marked)
+                          );
+                    const markedAmong = markedRefused.length > 0;
+                    const markedPaths = maskSecretsInText(markedRefused.join(', '), secrets);
                     logger.error(
                       `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                         `refused to revert ` +
                         `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
                         `baseline holds only the redaction mask there, and AWS reports nothing to ` +
-                        `preserve, so cdkd has no value it may write. Three causes leave such a mask, and ` +
+                        `preserve, so cdkd has no value it may write. ` +
+                        `${markedAmong ? `Where a NoEcho template parameter feeds a path (${markedPaths}), deploy the stack with the parameter's value to set it. For the other paths, three` : 'Three'} causes leave such a mask, and ` +
                         `the record does not say which: a NoEcho custom-resource value (force that ` +
                         `custom resource to update — change one of its properties, e.g. a nonce — and ` +
                         `re-deploy, so its handler runs again and supplies the value); the Fn::Base64 ` +
@@ -7269,7 +7437,7 @@ async function runRevert(
                                 ? STATE_SOURCED_BASELINE_RULES
                                 : STATE_SOURCED_READBACK_RULES
                             ),
-                            outcome.uncertifiedPaths,
+                            [...outcome.uncertifiedPaths, ...(outcome.noEchoParameterPaths ?? [])],
                             revertBaseline
                           )
                         );
@@ -7311,7 +7479,7 @@ async function runRevert(
                       // revert's resolved secrets — `scrubResourceRecord`'s
                       // `attributes` arm. The rest of the record is the one state
                       // already holds, redacted when it was written.
-                      const attributes =
+                      const keptAttributes =
                         next.attributes === undefined
                           ? undefined
                           : keepRecordedAttributesOverMask(
@@ -7319,6 +7487,21 @@ async function runRevert(
                               next.attributes,
                               stateResource.attributes,
                               noEchoDeclared
+                            );
+                      // go-to-k/cdkd#4043 (review LOW-7): an attribute the record
+                      // declares `NoEcho` (`noEchoAttributeNames`) is kept `***`
+                      // whatever its type or length, as the deploy's save keeps
+                      // it; the value scan above cannot key a number or a short
+                      // value.
+                      const declaredNames = noEchoAttributeNamesOf(stateResource) ?? [];
+                      const attributes =
+                        keptAttributes === undefined || declaredNames.length === 0
+                          ? keptAttributes
+                          : Object.fromEntries(
+                              Object.entries(keptAttributes).map(([name, value]) => [
+                                name,
+                                declaredNames.includes(name) ? maskWholeValue(value) : value,
+                              ])
                             );
                       if (
                         next.physicalId !== stateResource.physicalId ||
