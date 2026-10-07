@@ -378,6 +378,81 @@ describe('the created-before-failure mark of a CacheCluster (go-to-k/cdkd#4655)'
     expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
   });
 
+  /**
+   * CreateCacheCluster answers with no creation time; the available-wait's
+   * polls then answer `polls` in turn (a cluster object, or an error thrown).
+   */
+  function awsPolls(polls: Array<Record<string, unknown> | Error>): ElastiCacheProvider {
+    let poll = 0;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateCacheClusterCommand) {
+        return { CacheCluster: { CacheClusterId: 'orphan-cache', ARN: ARN('orphan-cache') } };
+      }
+      if (cmd instanceof DescribeCacheClustersCommand) {
+        const answer = polls[Math.min(poll++, polls.length - 1)]!;
+        if (answer instanceof Error) throw answer;
+        return { CacheClusters: [answer] };
+      }
+      throw new Error('unexpected command');
+    });
+    const provider = new ElastiCacheProvider();
+    vi.spyOn(provider as unknown as { sleep: () => Promise<void> }, 'sleep').mockResolvedValue();
+    return provider;
+  }
+  const denied = (): Error =>
+    Object.assign(new Error('not authorized to perform: DescribeCacheClusters'), {
+      name: 'AccessDenied',
+    });
+  const creating = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    CacheClusterId: 'orphan-cache',
+    ARN: ARN('orphan-cache'),
+    CacheClusterStatus: 'creating',
+    ...extra,
+  });
+
+  it('a wait poll naming the creation time puts the token on the mark when a later poll fails', async () => {
+    const provider = awsPolls([creating(), creating({ CacheClusterCreateTime: T1 }), denied()]);
+    const error = await failureOf(provider.create('Orphan', TYPE, PROPS));
+    expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('Orphan-Cache');
+    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe(
+      `${ARN('orphan-cache')}@${T1.getTime()}`
+    );
+  });
+
+  it('the first poll naming a token wins over a later one', async () => {
+    const provider = awsPolls([
+      creating({ CacheClusterCreateTime: T1 }),
+      creating({ CacheClusterCreateTime: T2 }),
+      denied(),
+    ]);
+    const error = await failureOf(provider.create('Orphan', TYPE, PROPS));
+    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe(
+      `${ARN('orphan-cache')}@${T1.getTime()}`
+    );
+  });
+
+  it('a poll answering for another cluster id gives no token', async () => {
+    const provider = awsPolls([
+      {
+        CacheClusterId: 'someone-else',
+        ARN: ARN('someone-else'),
+        CacheClusterStatus: 'creating',
+        CacheClusterCreateTime: T1,
+      },
+      denied(),
+    ]);
+    const error = await failureOf(provider.create('Orphan', TYPE, PROPS));
+    expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('Orphan-Cache');
+    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
+  });
+
+  it('polls that never name the creation time leave the mark without a token', async () => {
+    const provider = awsPolls([creating(), creating(), denied()]);
+    const error = await failureOf(provider.create('Orphan', TYPE, PROPS));
+    expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('Orphan-Cache');
+    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
+  });
+
   it('a create refused before AWS made the cluster is not marked', async () => {
     mockSend.mockImplementation(async () => {
       throw Object.assign(new Error('already exists'), { name: 'CacheClusterAlreadyExistsFault' });

@@ -480,9 +480,11 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateCacheCluster returned (no self-cleanup).
     let clusterCreated = false;
-    // go-to-k/cdkd#4655: the token CreateCacheCluster's answer names, carried
-    // on the failure's mark. Only when it holds both the ARN and the creation
-    // time; otherwise the deploy engine's write-side read tries.
+    // go-to-k/cdkd#4655: the token CreateCacheCluster's answer, or a later
+    // available-wait poll, names, carried on the failure's mark. Only from an
+    // answer holding both the ARN and the creation time (a cluster still
+    // being created may answer without the latter); with none, the deploy
+    // engine's write-side read tries.
     let createdIdentity: string | undefined;
     try {
       const createResponse = await this.getCreateClient().send(
@@ -529,7 +531,11 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       // Wait for cluster to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(cacheClusterId);
+        await this.waitForClusterAvailable(cacheClusterId, undefined, (cluster) => {
+          if (cluster?.CacheClusterId?.toLowerCase() !== cacheClusterId.toLowerCase()) return;
+          // The first answer naming one wins: a later one never replaces it.
+          createdIdentity ??= cacheClusterToken(cluster);
+        });
       }
 
       // Describe to get final attributes
@@ -961,17 +967,21 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a CacheCluster to become available
+   * Wait for a CacheCluster to become available. `onCluster` sees each
+   * poll's answer (go-to-k/cdkd#4655: the create path takes the identity
+   * token from it, so a later poll that fails still leaves the token).
    */
   private async waitForClusterAvailable(
     cacheClusterId: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 600_000,
+    onCluster?: (cluster: Awaited<ReturnType<ElastiCacheProvider['describeCacheCluster']>>) => void
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
 
     while (Date.now() - startTime < maxWaitMs) {
       const cluster = await this.describeCacheCluster(cacheClusterId);
+      onCluster?.(cluster);
       const status = cluster?.CacheClusterStatus;
 
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
