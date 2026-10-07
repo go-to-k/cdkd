@@ -177,17 +177,16 @@ function noEchoAttributeNamesFor(
     if (value === undefined || carriesSecretMask(value)) continue;
     for (const [name, attribute] of Object.entries(attributes)) {
       if (carriesSecretMask(attribute)) continue;
-      // An ARN or the physical id only names the resource (kept in the clear).
-      if (
-        typeof attribute === 'string' &&
-        (attribute.startsWith('arn:') || attribute === record.physicalId)
-      ) {
-        continue;
-      }
+      // The physical id only names the resource (kept in the clear); an ARN
+      // that merely CONTAINS the value names it too, but one EQUAL to the
+      // value is the value.
+      if (typeof attribute === 'string' && attribute === record.physicalId) continue;
       const sameName =
         coordinate[0] === name && keyOrderFreeJson(attribute) === keyOrderFreeJson(value);
       const embeds =
         typeof value === 'string' &&
+        typeof attribute === 'string' &&
+        !attribute.startsWith('arn:') &&
         value.length >= MIN_NEEDLE_LENGTH &&
         typeof attribute === 'string' &&
         attribute.includes(value);
@@ -323,15 +322,40 @@ export function maskOutputsByPosition(
   this: DeployEngine,
   outputs: Record<string, unknown>
 ): Record<string, unknown> {
-  if (!this.outputsSourceUsable) return outputs;
   const sources = this.noEchoPositionSources();
   if (sources === undefined) return outputs;
-  const coordinates: NoEchoCoordinate[] = noEchoCoordinatesOf(
-    this.outputsTemplateSource,
-    outputs,
-    sources
+  // The template's own `Outputs` values position every save, the partial
+  // saves BEFORE the outputs pass included: those carry the PREVIOUS
+  // record's bag, which a pre-v11 binary wrote in the clear. The outputs
+  // pass's source (aliases included) refines it once usable.
+  const templateValues: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [name, definition] of Object.entries(this.constructPathTemplate?.Outputs ?? {})) {
+    templateValues[name] = (definition as { Value?: unknown } | undefined)?.Value;
+  }
+  if (this.outputsSourceUsable) {
+    for (const [name, value] of Object.entries(this.outputsTemplateSource)) {
+      templateValues[name] = value;
+    }
+  }
+  const coordinates: NoEchoCoordinate[] = noEchoCoordinatesOf(templateValues, outputs, sources);
+  if (coordinates.length === 0) return outputs;
+  // An export ALIAS key the source does not name holds the same value as its
+  // output: masked with it.
+  const maskedValues = new Set(
+    coordinates
+      .filter((coordinate) => coordinate.length === 1 && typeof coordinate[0] === 'string')
+      .map((coordinate) => keyOrderFreeJson(outputs[coordinate[0] as string]))
   );
-  return maskAtCoordinates(outputs, coordinates);
+  const aliasCoordinates: NoEchoCoordinate[] = Object.keys(outputs)
+    .filter(
+      (key) =>
+        !Object.hasOwn(templateValues, key) &&
+        outputs[key] !== undefined &&
+        !carriesSecretMask(outputs[key]) &&
+        maskedValues.has(keyOrderFreeJson(outputs[key]))
+    )
+    .map((key) => [key]);
+  return maskAtCoordinates(outputs, [...coordinates, ...aliasCoordinates]);
 }
 
 /**

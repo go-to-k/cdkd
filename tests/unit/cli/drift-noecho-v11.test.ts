@@ -288,6 +288,30 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     expect(errored).not.toContain('Three causes');
   });
 
+  it('--revert words the refusal truthfully when a marked and an unmarked masked path are refused together', async () => {
+    const update = vi.fn();
+    const bag = {
+      Name: '/app/token',
+      Type: 'String',
+      Value: SECRET_MASK,
+      AllowedPattern: SECRET_MASK,
+      Description: 'from-template',
+    };
+    mockGetState.mockResolvedValueOnce(
+      makeState({ Token: param({ properties: bag, observedProperties: bag }) })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Type: 'String', Description: 'edited' }),
+      update,
+    });
+    await runDrift(['TestStack', '--revert', '--yes']);
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('Where a NoEcho template parameter feeds a path (Value)');
+    expect(errored).toContain('For the other paths, three causes');
+    expect(errored).not.toContain('Three causes');
+  });
+
   it('--revert keeps a declared NoEcho attribute masked when the update echoes a number (review LOW-7)', async () => {
     const update = vi.fn(async () => ({
       physicalId: '/app/token',

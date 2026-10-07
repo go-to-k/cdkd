@@ -7132,12 +7132,21 @@ async function runRevert(
                       );
                       return;
                     }
+                    const markedRefused =
+                      marked === undefined
+                        ? []
+                        : maskPreserved.unpreservablePaths.filter((path) =>
+                            isMarkedCoordinate(revertPathSegments(path), marked)
+                          );
+                    const markedAmong = markedRefused.length > 0;
+                    const markedPaths = maskSecretsInText(markedRefused.join(', '), secrets);
                     logger.error(
                       `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                         `refused to revert ` +
                         `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
                         `baseline holds only the redaction mask there, and AWS reports nothing to ` +
-                        `preserve, so cdkd has no value it may write. Three causes leave such a mask, and ` +
+                        `preserve, so cdkd has no value it may write. ` +
+                        `${markedAmong ? `Where a NoEcho template parameter feeds a path (${markedPaths}), deploy the stack with the parameter's value to set it. For the other paths, three` : 'Three'} causes leave such a mask, and ` +
                         `the record does not say which: a NoEcho custom-resource value (force that ` +
                         `custom resource to update — change one of its properties, e.g. a nonce — and ` +
                         `re-deploy, so its handler runs again and supplies the value); the Fn::Base64 ` +

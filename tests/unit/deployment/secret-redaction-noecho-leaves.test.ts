@@ -6,6 +6,7 @@ import {
   maskReadbackAtCoordinates,
   maskWholeValue,
   noEchoComparison,
+  noEchoOutputsComparison,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   PREVIOUS_NOECHO_VALUE,
@@ -241,5 +242,33 @@ describe('noEchoComparison', () => {
         record: {},
       })
     ).toBeUndefined();
+  });
+});
+
+describe('noEchoOutputsComparison', () => {
+  it('masks an export ALIAS key holding the value of a masked output', () => {
+    const compare = noEchoOutputsComparison(
+      { Out: { Ref: 'Token' }, Plain: 'x' },
+      { parameters: new Set(['Token']) }
+    );
+    const out = compare(
+      { Out: SECRET_MASK, 'exp-alias': SECRET_MASK, Plain: 'x' },
+      { Out: 'tok-1234', 'exp-alias': 'tok-1234', Plain: 'x' }
+    );
+    expect(out.desired).toEqual({ Out: SECRET_MASK, 'exp-alias': SECRET_MASK, Plain: 'x' });
+    expect(out.current).toEqual({ Out: SECRET_MASK, 'exp-alias': SECRET_MASK, Plain: 'x' });
+  });
+
+  it('masks an output served by a bare GetAtt of a declared NoEcho attribute', () => {
+    const compare = noEchoOutputsComparison(
+      { Out: { 'Fn::GetAtt': ['Cr', 'Secret'] } },
+      {
+        parameters: new Set(),
+        attributeIsNoEcho: (id, attribute) => id === 'Cr' && attribute === 'Secret',
+      }
+    );
+    const out = compare({ Out: SECRET_MASK }, { Out: 'handler-made-1' });
+    expect(out.desired).toEqual({ Out: SECRET_MASK });
+    expect(out.masked).toEqual(['Out']);
   });
 });

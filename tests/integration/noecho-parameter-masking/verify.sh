@@ -181,6 +181,34 @@ RENAME_OLD_ARN="${RENAME_TOPIC_PREFIX}-a"
 RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# The schema version the LOCAL binary writes, read from the BUILT binary
+# (dist/), as schema-v9-to-v10-migration does: the bundler inlines the current
+# constant but keeps the readable list as a named array, whose LAST entry is
+# the current version. An unparsable bundle fails the run.
+LOCAL_SCHEMA_VERSION="$(cat ../../../dist/*.js 2>/dev/null | awk '
+  !inside && !done && /STATE_SCHEMA_VERSIONS_READABLE = \[/ {
+    inside = 1
+    sub(/.*STATE_SCHEMA_VERSIONS_READABLE = \[/, "")
+  }
+  inside {
+    line = $0
+    closes = (line ~ /\]/)
+    sub(/\].*/, "", line)
+    n = split(line, parts, ",")
+    for (i = 1; i <= n; i++) {
+      gsub(/[^0-9]/, "", parts[i])
+      if (parts[i] != "") last = parts[i]
+    }
+    if (closes) { inside = 0; done = 1 }
+  }
+  END { if (done) print last }
+')"
+case "${LOCAL_SCHEMA_VERSION}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read the readable schema versions from the built dist/ (is it built?)" >&2
+    exit 1
+    ;;
+esac
 
 # Scratch files, swept by `cleanup` on every exit path.
 SCRATCH_FILES=()
@@ -390,8 +418,8 @@ P1_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1_STATE}" --quiet
 P1_VERSION=$(jq -r '.version' "${P1_STATE}")
-if [ "${P1_VERSION}" != "11" ]; then
-  echo "FAIL: state.json is version ${P1_VERSION}, not 11 (issue #4043)" >&2
+if [ "${P1_VERSION}" != "${LOCAL_SCHEMA_VERSION}" ]; then
+  echo "FAIL: state.json is version ${P1_VERSION}, not the local binary's ${LOCAL_SCHEMA_VERSION} (issue #4043)" >&2
   exit 1
 fi
 P1_PERSISTED=$(jq -r '.resources.NoEchoConsumer.properties.Value // "<absent>"' "${P1_STATE}")
@@ -400,8 +428,10 @@ if [ "${P1_PERSISTED}" != '***' ] || [ "${P1_LEAVES}" != '[["Value"]]' ]; then
   echo "FAIL: state.json does not hold NoEchoConsumer.Value as the mask named in noEchoLeaves (got leaves ${P1_LEAVES}; issue #4043)" >&2
   exit 1
 fi
+# The deploy captures an observed baseline (the default; this fixture never
+# passes --no-capture-observed-state), masked at the marked coordinate.
 P1_OBSERVED=$(jq -r '.resources.NoEchoConsumer.observedProperties.Value // "<absent>"' "${P1_STATE}")
-if [ "${P1_OBSERVED}" != '***' ] && [ "${P1_OBSERVED}" != '<absent>' ]; then
+if [ "${P1_OBSERVED}" != '***' ]; then
   echo "FAIL: NoEchoConsumer's observed baseline does not hold the mask at the marked coordinate (issue #4043)" >&2
   exit 1
 fi
@@ -687,6 +717,7 @@ if [[ "${DIFF_OUT_P1B}" == *"${TOKEN}"* ]]; then
   echo "FAIL: the Phase 1b 'cdkd diff' output carries the NoEcho value in plaintext" >&2
   exit 1
 fi
+assert_no_split_piece "the Phase 1b 'cdkd diff' output" "${DIFF_OUT_P1B}"
 if [ "${DIFF_RC_P1B}" -ne 0 ]; then
   echo "FAIL: 'cdkd diff --fail' exited ${DIFF_RC_P1B} on the unchanged stack -- a masked NoEcho reader diffs as a change (issue #4043)" >&2
   diag_output "${DIFF_OUT_P1B}"
@@ -998,7 +1029,16 @@ if [[ "${DEPLOY_OUT_P3B}" == *"Replacing NoEchoRenamed"* ]]; then
   exit 1
 fi
 # The readback confirmed the unchanged name: no create-only warning, which
-# would mean a false `differs` / `not-readable` verdict.
+# would mean a false `differs` / `not-readable` verdict. SENTINEL for this
+# negative grep: the warning it looks for must still exist in the built binary
+# with the same shape (one line naming `<Id>.<Property>` and
+# `--recreate-via-cc-api`; schema-v10-to-v11-migration Phase 7 asserts that
+# line positively on a real rotation), or the grep below could never match.
+if ! grep -qF -- 'is a create-only property fed by a NoEcho parameter' ../../../dist/*.js \
+    || ! grep -qF -- '--recreate-via-cc-api ${' ../../../dist/*.js; then
+  echo "FAIL: sentinel: the built binary no longer carries the create-only NoEcho warning this phase greps for -- its wording drifted, so the negative check below is vacuous" >&2
+  exit 1
+fi
 if grep -F 'NoEchoRenamed.TopicName' <<< "${DEPLOY_OUT_P3B}" | grep -qF -- '--recreate-via'; then
   echo "FAIL: the Phase 3b deploy warned that NoEchoRenamed.TopicName cannot be confirmed -- the readback of an unchanged name did not hold (issue #4043)" >&2
   diag_output "$(grep -F 'NoEchoRenamed' <<< "${DEPLOY_OUT_P3B}" || true)"

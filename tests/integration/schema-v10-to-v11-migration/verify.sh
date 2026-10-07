@@ -143,6 +143,11 @@ CR_SECRET_B="cdkdv11crsecret${CR_SEED_B}"
 # name is NOT here: it names the resource, so it is in the physical id, which
 # stays in the clear by design (AWS publishes it); it is asserted by coordinate.
 TOKENS="${TOKEN} ${TOKEN_ROTATED} ${CR_SECRET_A} ${CR_SECRET_B}"
+# The same needles BY NAME, so a failure says which one leaked without printing
+# it (`${!name}` is bash 3.2 indirect expansion). The exact-scalar needles are
+# the values too short, or too public, for a blob scan.
+BLOB_NEEDLE_NAMES="TOKEN TOKEN_ROTATED CR_SECRET_A CR_SECRET_B"
+SCALAR_NEEDLE_NAMES="SHORT_VALUE TOPIC_NAME TOPIC_NAME_ROTATED"
 
 export CDKD_V11_TOKEN="${TOKEN}"
 export CDKD_V11_SHORT="${SHORT_VALUE}"
@@ -282,19 +287,26 @@ assert_state_has_token() { # <label> — the PREMISE half
 }
 
 assert_no_tokens_in_state() { # <label>
-  local body t n=0
+  local body name v hits=""
   body="$(cat "${STATE_FILE}")"
-  for t in ${TOKENS}; do
-    n=$((n + 1))
-    if [[ "${body}" == *"${t}"* ]]; then
-      # WHERE it leaked, never the value: the paths whose scalar holds it.
-      jq -r --arg t "${t}" \
-        '[paths(scalars) as $p | select(getpath($p) | tostring | contains($t)) | ($p | map(tostring) | join("."))] | .[]' \
-        "${STATE_FILE}" >&2
-      fail "$1: state.json carries NoEcho value #${n} of TOKENS (value withheld)"
+  for name in ${BLOB_NEEDLE_NAMES}; do
+    v="${!name}"
+    if [[ "${body}" == *"${v}"* ]]; then
+      # WHERE it leaked and WHICH needle, never the value.
+      hits="${hits}${name} (contained) at: $(paths_containing "${v}" <"${STATE_FILE}" | tr '\n' ' ')"$'\n'
     fi
   done
-  pass "$1: no NoEcho value anywhere in state.json"
+  for name in ${SCALAR_NEEDLE_NAMES}; do
+    v="${!name}"
+    if [ "$(exact_scalar_count "${v}" <"${STATE_FILE}")" != "0" ]; then
+      hits="${hits}${name} (whole scalar) at: $(paths_equal "${v}" <"${STATE_FILE}" | tr '\n' ' ')"$'\n'
+    fi
+  done
+  if [ -n "${hits}" ]; then
+    printf '%s' "${hits}" >&2
+    fail "$1: state.json carries a NoEcho value or a NoEcho-served name (needles and paths above, values withheld)"
+  fi
+  pass "$1: no NoEcho value anywhere in state.json (blob), and no short value / topic name as a whole scalar"
 }
 
 ssm_value() { # <name> — strict
@@ -320,6 +332,16 @@ topic_display() { # <arn> — strict
 # but no scalar of the record may EQUAL it.
 exact_scalar_count() { # <value> < body
   jq -s --arg v "$1" '[.. | scalars | select(. == $v)] | length'
+}
+# The jq paths (dotted) of every scalar that CONTAINS / EQUALS <value>, one per
+# line, over a JSON (or JSON-lines) body on stdin; the value is never printed.
+paths_containing() { # <value> < body
+  jq -r --arg v "$1" \
+    '[paths(scalars) as $p | select(getpath($p) | tostring | contains($v)) | ($p | map(tostring) | join("."))] | .[]'
+}
+paths_equal() { # <value> < body
+  jq -r --arg v "$1" \
+    '[paths(scalars) as $p | select(getpath($p) == $v) | ($p | map(tostring) | join("."))] | .[]'
 }
 
 # Run a cdkd command, its output into DEPLOY_LOG; echo the rc. The log is
@@ -394,11 +416,19 @@ snapshot_versions() { # <scope> <label>
 # snapshot and fail if any carries a value. `shared` scopes (the exports
 # index, the custom-resource responses) tolerate a version another run removed
 # between the listing and the read; this fixture's own prefix does not.
+# DIAGNOSABLE without printing a value: the new versions are walked oldest
+# first, each named by its ordinal after the Phase 3 boundary (overall and per
+# key) and its LastModified; a hit names the NEEDLE by its variable name and
+# the jq path(s) of every matching scalar, then all hits of the scope fail.
 assert_no_tokens_in_versions() { # <scope> <label> <own|shared>
-  local scope="$1" label="$2" ownership="$3" rows key vid body scanned=0 t
-  rows="$(list_versions "${scope}" 'Versions[].[Key,VersionId]')" \
+  local scope="$1" label="$2" ownership="$3" rows key vid modified body scanned=0
+  local name v ordinal_key prev_key="" key_ordinal=0 hits="" where
+  rows="$(list_versions "${scope}" 'Versions[].[LastModified,Key,VersionId]')" \
     || fail "${label}: could not list object versions under s3://${STATE_BUCKET}/${scope}"
-  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
+  # Oldest first (ISO-8601 sorts lexically), so an ordinal reads as "the Nth
+  # write after the migration started".
+  rows="$(printf '%s\n' "${rows}" | sort)"
+  while IFS=$'\t' read -r modified key vid || [ -n "${key}" ]; do
     [ -n "${key}" ] || continue
     [ -n "${vid}" ] || continue
     [ "${vid}" != "None" ] || continue
@@ -413,25 +443,41 @@ assert_no_tokens_in_versions() { # <scope> <label> <own|shared>
       fi
       fail "${label}: could not read s3://${STATE_BUCKET}/${key} version ${vid}"
     fi
-    for t in ${TOKENS}; do
-      if [[ "${body}" == *"${t}"* ]]; then
-        fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} carries a NoEcho value (value withheld)"
+    scanned=$((scanned + 1))
+    if [ "${key}" = "${prev_key}" ]; then
+      key_ordinal=$((key_ordinal + 1))
+    else
+      # Versions of one key are contiguous only per timestamp; count per key.
+      key_ordinal="$(printf '%s\n' "${rows}" | awk -F '\t' -v k="${key}" -v m="${modified}" \
+        '$2 == k && $1 <= m { n++ } END { print n + 0 }')"
+    fi
+    prev_key="${key}"
+    ordinal_key="post-Phase-3 write #${scanned} (#${key_ordinal} version of ${key} in the listing), LastModified ${modified}"
+    if ! printf '%s' "${body}" | jq -e . >/dev/null 2>&1 && ! printf '%s' "${body}" | jq -s . >/dev/null 2>&1; then
+      fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} is not JSON / JSON lines — the scan cannot read it"
+    fi
+    for name in ${BLOB_NEEDLE_NAMES}; do
+      v="${!name}"
+      if [[ "${body}" == *"${v}"* ]]; then
+        where="$(printf '%s' "${body}" | paths_containing "${v}" | tr '\n' ' ')"
+        hits="${hits}  ${ordinal_key}: s3://${STATE_BUCKET}/${key} version ${vid} carries ${name} at: ${where:-<not in a JSON scalar>}"$'\n'
       fi
     done
     # The short value and the topic names cannot be blob-grepped (a short
     # needle, and a name AWS publishes inside the physical id), but no SCALAR
     # of a cdkd document may EQUAL one of them.
-    for t in "${SHORT_VALUE}" "${TOPIC_NAME}" "${TOPIC_NAME_ROTATED}"; do
-      local hits
-      if ! hits="$(printf '%s' "${body}" | exact_scalar_count "${t}" 2>/dev/null)"; then
-        fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} is not JSON / JSON lines — the exact-scalar scan cannot read it"
-      fi
-      if [ "${hits}" != "0" ]; then
-        fail "${label}: s3://${STATE_BUCKET}/${key} version ${vid} holds a short NoEcho value or topic name as a whole scalar (value withheld)"
+    for name in ${SCALAR_NEEDLE_NAMES}; do
+      v="${!name}"
+      if [ "$(printf '%s' "${body}" | exact_scalar_count "${v}")" != "0" ]; then
+        where="$(printf '%s' "${body}" | paths_equal "${v}" | tr '\n' ' ')"
+        hits="${hits}  ${ordinal_key}: s3://${STATE_BUCKET}/${key} version ${vid} holds ${name} as a whole scalar at: ${where}"$'\n'
       fi
     done
-    scanned=$((scanned + 1))
   done <<< "${rows}"
+  if [ -n "${hits}" ]; then
+    printf '%s' "${hits}" >&2
+    fail "${label}: object version(s) written since the migration carry a NoEcho value (needles, versions and paths above, values withheld)"
+  fi
   if [ "${ownership}" = "own" ] && [ "${scanned}" -eq 0 ]; then
     fail "${label}: no object version written since the migration was found under ${scope} — the scan looked at nothing"
   fi
@@ -470,6 +516,12 @@ assert_eq "v10 deploy: ${CR_ID}.attributes.Secret is masked by v10 already" \
   "$(state_field ".resources[\"${CR_ID}\"].attributes.Secret // \"<absent>\"")" "${SECRET_MASK}"
 assert_eq "v10 deploy: ${CR_ID} declares no noEchoAttributeNames" \
   "$(state_field ".resources[\"${CR_ID}\"].noEchoAttributeNames // \"absent\"")" "absent"
+# The v10 binary captured an observed baseline in the clear too: the input the
+# migration's observed masking (P3) acts on.
+assert_eq "v10 deploy: ${TOKEN_ID}.observedProperties.Value holds the token in the clear" \
+  "$(state_field ".resources[\"${TOKEN_ID}\"].observedProperties.Value // \"<absent>\"")" "${TOKEN}"
+assert_eq "v10 deploy: ${SHORT_ID}.observedProperties.Value holds the short value in the clear" \
+  "$(state_field ".resources[\"${SHORT_ID}\"].observedProperties.Value // \"<absent>\"")" "${SHORT_VALUE}"
 aws sns set-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}" \
   --attribute-name DisplayName --attribute-value "${TOPIC_MARKER}" >/dev/null
 assert_eq "v10 deploy: the out-of-band topic marker is set" \
@@ -507,8 +559,8 @@ for id in "${TOKEN_ID}" "${SHORT_ID}"; do
     "$(state_field ".resources[\"${id}\"].properties.Value")" "${SECRET_MASK}"
   assert_eq "v11 migration deploy: ${id}.noEchoLeaves" \
     "$(jq -c ".resources[\"${id}\"].noEchoLeaves" "${STATE_FILE}")" '[["Value"]]'
-  assert_eq "v11 migration deploy: ${id}.observedProperties.Value is not in the clear" \
-    "$(state_field ".resources[\"${id}\"].observedProperties.Value // \"${SECRET_MASK}\"")" "${SECRET_MASK}"
+  assert_eq "v11 migration deploy: ${id}.observedProperties.Value is the mask" \
+    "$(state_field ".resources[\"${id}\"].observedProperties.Value // \"<absent>\"")" "${SECRET_MASK}"
   # The SSM provider echoes the value as `attributes.Value`; v11 declares that
   # attribute NoEcho and masks it whatever its length (the 3-character value
   # is in no blob scan, so only this coordinate can see it).
@@ -527,6 +579,16 @@ assert_eq "v11 migration deploy: ${PLAIN_ID}.properties.Value (ordinary paramete
   "$(state_field ".resources[\"${PLAIN_ID}\"].properties.Value")" "${PLAIN_VALUE}"
 assert_eq "v11 migration deploy: ${PLAIN_ID} has no noEchoLeaves" \
   "$(state_field ".resources[\"${PLAIN_ID}\"].noEchoLeaves // \"absent\"")" "absent"
+assert_eq "v11 migration deploy: ${PLAIN_ID}.attributes.Value (ordinary echo stays readable)" \
+  "$(state_field ".resources[\"${PLAIN_ID}\"].attributes.Value // \"<absent>\"")" "${PLAIN_VALUE}"
+assert_eq "v11 migration deploy: ${PLAIN_ID} declares no noEchoAttributeNames" \
+  "$(state_field ".resources[\"${PLAIN_ID}\"].noEchoAttributeNames // \"absent\"")" "absent"
+# The SNS provider echoes the name as `attributes.TopicName`: declared NoEcho
+# and masked. (`TopicArn` names the resource, like the physical id, and stays.)
+assert_eq "v11 migration deploy: ${TOPIC_ID}.attributes.TopicName" \
+  "$(state_field ".resources[\"${TOPIC_ID}\"].attributes.TopicName // \"<absent>\"")" "${SECRET_MASK}"
+assert_eq "v11 migration deploy: ${TOPIC_ID}.noEchoAttributeNames" \
+  "$(jq -c ".resources[\"${TOPIC_ID}\"].noEchoAttributeNames" "${STATE_FILE}")" '["TopicName"]'
 # #2449: the custom resource's declaration is persisted by name.
 assert_eq "v11 migration deploy: ${CR_ID}.noEchoAttributeNames" \
   "$(jq -c ".resources[\"${CR_ID}\"].noEchoAttributeNames" "${STATE_FILE}")" '["Secret"]'
@@ -616,14 +678,23 @@ assert_eq "v11 rotation deploy: ${TOPIC_ID}.properties.TopicName" \
 assert_eq "v11 rotation deploy: outputs.TokenOut" "$(state_field '.outputs.TokenOut')" "${SECRET_MASK}"
 assert_eq "v11 rotation deploy: ${CR_ID}.attributes.Secret" \
   "$(state_field ".resources[\"${CR_ID}\"].attributes.Secret")" "${SECRET_MASK}"
+assert_eq "v11 rotation deploy: ${TOPIC_ID}.attributes.TopicName" \
+  "$(state_field ".resources[\"${TOPIC_ID}\"].attributes.TopicName // \"<absent>\"")" "${SECRET_MASK}"
+assert_eq "v11 rotation deploy: ${TOPIC_ID}.noEchoAttributeNames" \
+  "$(jq -c ".resources[\"${TOPIC_ID}\"].noEchoAttributeNames" "${STATE_FILE}")" '["TopicName"]'
 # Maintainer decision 1 on #4043: never replaced on a readback's word. The
 # rotated name would give a replacement a new ARN; the marker covers a
 # replacement under any name.
 assert_eq "v11 rotation deploy: the topic was NOT replaced" "$(topic_arn)" "${TOPIC_ARN_1}"
 assert_eq "v11 rotation deploy: the topic kept its out-of-band marker" \
   "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
-assert_log_has "v11 rotation deploy: create-only warning" "--recreate-via-cc-api"
-assert_log_has "v11 rotation deploy: create-only warning names the property" "${TOPIC_ID}.TopicName"
+# ONE line names both the property and the remedy (the wording
+# noecho-parameter-masking's Phase 3b negative grep relies on).
+if ! grep -F -- "${TOPIC_ID}.TopicName" "${DEPLOY_LOG}" | grep -qF -- "--recreate-via-cc-api"; then
+  redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
+  fail "v11 rotation deploy: no single line names both ${TOPIC_ID}.TopicName and --recreate-via-cc-api — the create-only warning did not fire, or its wording drifted"
+fi
+pass "v11 rotation deploy: one create-only warning line names ${TOPIC_ID}.TopicName and --recreate-via-cc-api"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 8: destroy"
@@ -646,7 +717,11 @@ done
 pass "every SSM parameter is gone"
 assert_gone "the topic still exists after destroy" \
   aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}"
-pass "the topic is gone"
+# The rotated name was never applied (no replacement): no topic under it.
+assert_gone "a topic under the ROTATED name exists" \
+  aws sns get-topic-attributes --region "${REGION}" \
+  --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME_ROTATED}"
+pass "the topic is gone, and none exists under the rotated name"
 assert_gone "the custom-resource handler ${CR_HANDLER_NAME} still exists after destroy" \
   aws lambda get-function --region "${REGION}" --function-name "${CR_HANDLER_NAME}"
 pass "the custom-resource handler is gone"
@@ -657,6 +732,8 @@ pass "the handler role is gone"
 # ---------------------------------------------------------------------------
 echo "==> Phase 9: no object version written since the migration carries a value; sweep"
 # ---------------------------------------------------------------------------
+# Includes the per-resource saves of the migration deploy, written before its
+# outputs pass: those once carried the v10 outputs bag in the clear.
 # The stack prefix holds state.json, lock.json, rollback-journal.json and
 # deployments/*.jsonl; this stack has no nested child, so no `<Stack>~<Child>`
 # sibling prefix exists. The exports index and the custom-resource responses
@@ -681,8 +758,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 75 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 86 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 93 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 93 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

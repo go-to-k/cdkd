@@ -781,6 +781,7 @@
         "iam-recreate-reattach",
         "loggroup-never-expire-guard",
         "lost-child-after-failed-deploy",
+        "noecho-parameter-masking",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
         "recreate-parent-child-permission",

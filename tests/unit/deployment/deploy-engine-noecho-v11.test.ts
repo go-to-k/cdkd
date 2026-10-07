@@ -438,6 +438,32 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(allSaved()).not.toContain(TOKEN2);
     });
 
+    it('never writes a pre-v11 output plaintext in ANY save of the migration deploy, the per-resource saves before the outputs pass included (P9 leak)', async () => {
+      const state = v10State();
+      state.outputs = { TokenOut: TOKEN, ExportedAlias: TOKEN, PlainOut: 'plain-value' };
+      state.exportNames = ['ExportedAlias'];
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      await makeEngine().deploy(
+        STACK,
+        template(
+          TOKEN2,
+          {},
+          {
+            TokenOut: { Value: { Ref: 'Token' }, Export: { Name: 'ExportedAlias' } },
+            PlainOut: { Value: { Ref: 'Plain' } },
+          }
+        )
+      );
+      // More than one save: the per-resource saves ran before the final one.
+      expect(stateBackend.saveState.mock.calls.length).toBeGreaterThan(1);
+      for (const [index, call] of stateBackend.saveState.mock.calls.entries()) {
+        const saved = JSON.stringify(call[2]);
+        expect(saved, `save #${index}`).not.toContain(TOKEN);
+        expect(saved, `save #${index}`).not.toContain(TOKEN2);
+      }
+      expect(lastSaved().outputs['PlainOut']).toBe('plain-value');
+    });
+
     it('masks a pre-v11 observed baseline of an UNTOUCHED record at its marked coordinates (review B4)', async () => {
       const state = v10State();
       state.resources['Param']!.observedProperties = { Name: '/app/p', Value: TOKEN };
@@ -517,6 +543,34 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const param = lastSaved().resources['Param']!;
       expect(param.noEchoAttributeNames).toEqual(['Value']);
       expect(param.attributes?.['Value']).toBe('***');
+    });
+
+    it('declares an ARN attribute that IS a NoEcho value (only one merely containing it names the resource)', async () => {
+      const ARN_TOKEN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:noecho-arn-value';
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Param'
+            ? { physicalId: '/app/p', attributes: { SecretArn: ARN_TOKEN } }
+            : { physicalId: `${logicalId}-phys`, attributes: {} }
+        )
+      );
+      await makeEngine().deploy(STACK, template(ARN_TOKEN));
+      const param = lastSaved().resources['Param']!;
+      expect(param.noEchoAttributeNames).toEqual(['SecretArn']);
+      expect(allSaved()).not.toContain(ARN_TOKEN);
+    });
+
+    it('never declares an attribute equal to the physical id, even when the id IS the NoEcho value', async () => {
+      const state = v10State();
+      state.resources['Param']!.physicalId = TOKEN;
+      state.resources['Param']!.attributes = { Name: TOKEN };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      await makeEngine().deploy(STACK, template());
+      // An attribute equal to the physical id (which AWS publishes) is not
+      // DECLARED; the value arm still masks it in this record.
+      expect(lastSaved().resources['Param']!.noEchoAttributeNames).toBeUndefined();
+      expect(lastSaved().resources['Param']!.physicalId).toBe(TOKEN);
     });
 
     it('refuses a later-added reader of a declared attribute with the exact remedy, and never re-runs the producer', async () => {

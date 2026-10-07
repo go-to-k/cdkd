@@ -506,10 +506,12 @@ function echoedNoEchoAttributes(
     if (value === undefined || value === null) return false;
     if (typeof value === 'string') {
       if (value === SECRET_MASK) return false;
-      // An ARN (or the physical id) only NAMES the resource: AWS publishes
-      // it, and it stays in the clear like the physical id (design §3.3).
-      if (value.startsWith('arn:') || value === physicalId) return false;
-      if (fresh.some((needle) => value === needle || value.includes(needle))) return true;
+      // The physical id only NAMES the resource: AWS publishes it, and it
+      // stays in the clear (design §3.3). So does an ARN that merely CONTAINS
+      // a value; one EQUAL to a value is the value.
+      if (value === physicalId) return false;
+      if (fresh.includes(value)) return true;
+      if (!value.startsWith('arn:') && fresh.some((needle) => value.includes(needle))) return true;
     }
     return positioned.get(name)?.has(keyOrderFreeJson(value)) === true;
   };
