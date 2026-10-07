@@ -20,6 +20,14 @@ Application Load Balancer deployment example for cdkd.
   removal phase drops the list), and registered IP `Targets` (10.0.0.100 →
   10.0.0.101 on update, exercising RegisterTargets + DeregisterTargets)
 - **Listener** - HTTP listener on port 80 forwarding to target group
+- **OrphanLb** (verify.sh Phase 4 only, issue #4606) - `INJECT_LB_ORPHAN=true`
+  adds an internal load balancer whose CREATE fails after AWS made it
+  (deletion protection on, then a malformed
+  `EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic`), so the cleanup
+  cannot delete it and the `--no-rollback` deploy journals it as a proven
+  orphan. The `LB_FIX_FORWARD=true` redeploy creates a valid one under the
+  same logical id and another name; that successful deploy must delete the
+  earlier load balancer and exit 0
 
 `MinimumLoadBalancerCapacity` / `EnableCapacityReservationProvisionStabilize`
 are deliberately NOT exercised: the integ account lacks the LCU

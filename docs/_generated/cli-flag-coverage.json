@@ -423,6 +423,7 @@
     {
       "flag": "--no-rollback",
       "integs": [
+        "alb",
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
@@ -1532,6 +1533,7 @@
       "flag": "--yes",
       "integs": [
         "agentcore-tools",
+        "alb",
         "apigateway",
         "apigatewayv2-update-removal",
         "apigw-gateway-response",

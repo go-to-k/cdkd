@@ -27,6 +27,11 @@
 # MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
 # capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
+# PLUS issue #4606 (Phase 4): a `--no-rollback` deploy whose load balancer
+# CREATE fails after AWS made it (and whose cleanup cannot delete it), then a
+# fix-forward under the same logical id: that successful deploy deletes the
+# earlier load balancer and exits 0.
+#
 # Run via: /run-integ alb
 #         or: bash tests/integration/alb/verify.sh
 
@@ -78,6 +83,19 @@ cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors tolerated)"
+  rm -f "${FF_LOG:-}"
+  # go-to-k/cdkd#4606: the Phase 4 injection's load balancer is created with
+  # deletion protection on, and unfixed, the fix-forward settle drops it from
+  # the rollback journal, so nothing else reaches it. Clear the protection and
+  # delete it BEFORE the destroy (it holds the stack's security group). Only
+  # the ARN THIS run captured, never one found by name.
+  case "${ORPHAN_LB_ARN:-}" in
+    arn:*:loadbalancer/*)
+      aws elbv2 modify-load-balancer-attributes --load-balancer-arn "${ORPHAN_LB_ARN}" \
+        --attributes Key=deletion_protection.enabled,Value=false --region "${AWS_REGION}" >/dev/null 2>&1 || true
+      aws elbv2 delete-load-balancer --load-balancer-arn "${ORPHAN_LB_ARN}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+      ;;
+  esac
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   exit ${rc}
 }
@@ -305,6 +323,149 @@ if [[ "${LISTENER_ATTR_P3}" != "true" ]]; then
   exit 1
 fi
 echo "    ${EXPECTED_ATTR_KEY} reset to true (✓)"
+
+# --- Phase 4: the fix-forward of a failed CREATE (go-to-k/cdkd#4606) ---------
+# A `--no-rollback` deploy whose OrphanLb CREATE fails after CreateLoadBalancer,
+# with a cleanup that cannot delete it, journals it as a proven orphan. The
+# fix-forward redeploy keeps the logical id with a valid shape under another
+# name, so the CREATE succeeds and the record under that id holds a NEW load
+# balancer. `ELBv2Provider.isSameResource` proves the earlier one is another
+# resource: the deploy deletes it, keeps the new one, exits 0 and drops the
+# journal. Before #4606 it warned, named the earlier one, exited 2 and left it.
+# Every Phase 4 deploy keeps CDKD_TEST_REMOVAL=true, so OrphanLb is the only
+# difference from the deployed template.
+JOURNAL_KEY="cdkd/${STACK}/${AWS_REGION}/rollback-journal.json"
+FF_LOG=$(mktemp)
+
+state_physical_id() { # usage: state_physical_id <logical-id>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "$1" '.resources[$id].physicalId // "<absent>"'
+}
+
+lb_attr() { # usage: lb_attr <arn> <key>
+  aws elbv2 describe-load-balancer-attributes --load-balancer-arn "$1" --region "${AWS_REGION}" \
+    --query "Attributes[?Key=='$2'].Value | [0]" --output text
+}
+
+echo ""
+echo "==> Phase 4: --no-rollback deploy whose OrphanLb CREATE fails after CreateLoadBalancer (#4606)"
+set +e
+CDKD_TEST_REMOVAL=true INJECT_LB_ORPHAN=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" \
+  --state-bucket "${STATE_BUCKET}" --yes --no-rollback >"${FF_LOG}" 2>&1
+LB_FAIL_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+# Captured BEFORE any FAIL below, from the cleanup warning, so the trap can
+# clear the protection on and delete a load balancer no later check reached.
+ORPHAN_LB_ARN="$(sed -n 's/.*Failed to clean up partially-created LoadBalancer OrphanLb (\(arn:[^)]*\)).*/\1/p' "${FF_LOG}" | head -1)"
+if [ "${LB_FAIL_RC}" -eq 0 ]; then
+  # Then state holds a deletion-protected OrphanLb, which the trap's destroy
+  # (no --remove-protection) cannot delete: hand its ARN to the trap first.
+  ORPHAN_LB_ARN="$(state_physical_id OrphanLb || true)"
+  echo "FAIL: the OrphanLb injection deploy unexpectedly SUCCEEDED (SetSecurityGroups should reject the malformed enforce flag)" >&2
+  exit 1
+fi
+# The injection's mechanism: the cleanup's DeleteLoadBalancer was refused, so
+# the create marked the ARN for the journal. Any other failure would not
+# exercise the fix-forward at all.
+if ! grep -q "Failed to clean up partially-created LoadBalancer OrphanLb" "${FF_LOG}"; then
+  echo "FAIL: the OrphanLb deploy failed, but not by a cleanup that could not delete the load balancer (output above)" >&2
+  exit 1
+fi
+if [ "$(state_physical_id OrphanLb)" != "<absent>" ]; then
+  echo "FAIL: state records OrphanLb after a CREATE that threw (expected no record)" >&2
+  exit 1
+fi
+if ! JOURNAL_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"; then
+  echo "FAIL: no rollback journal after the --no-rollback deploy of Phase 4" >&2
+  exit 1
+fi
+ORPHAN_OP="$(printf '%s' "${JOURNAL_BODY}" | jq -c \
+  '[.segments[]?.failedOperations[]? | select(.logicalId == "OrphanLb")] | last // empty')"
+if [ -z "${ORPHAN_OP}" ] || [ "$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ]; then
+  echo "FAIL: the journal does not carry OrphanLb as a proven orphan (op: ${ORPHAN_OP:-<none>})" >&2
+  exit 1
+fi
+JOURNALED_LB_ARN="$(printf '%s' "${ORPHAN_OP}" | jq -r '.physicalId // ""')"
+case "${JOURNALED_LB_ARN}" in
+  arn:*:loadbalancer/app/*) ;;
+  *) echo "FAIL: journaled OrphanLb id is not a load balancer ARN: '${JOURNALED_LB_ARN}'" >&2; exit 1;;
+esac
+if [ "${JOURNALED_LB_ARN}" != "${ORPHAN_LB_ARN}" ]; then
+  echo "FAIL: the journal holds OrphanLb as '${JOURNALED_LB_ARN}', not the '${ORPHAN_LB_ARN}' the cleanup warning named" >&2
+  exit 1
+fi
+if [ "$(lb_attr "${ORPHAN_LB_ARN}" deletion_protection.enabled)" != "true" ]; then
+  echo "FAIL: the journaled ${ORPHAN_LB_ARN} is not deletion-protected (the injection did not fire as designed)" >&2
+  exit 1
+fi
+echo "    OK: OrphanLb ${ORPHAN_LB_ARN} is journaled as a proven orphan, no state record"
+
+# The settle's delete passes no --remove-protection, so a protected orphan
+# stays journaled whatever the identity read says. Clear it out of band (the
+# user's own fix), leaving the identity read as the one thing deciding.
+aws elbv2 modify-load-balancer-attributes --load-balancer-arn "${ORPHAN_LB_ARN}" \
+  --attributes Key=deletion_protection.enabled,Value=false --region "${AWS_REGION}" >/dev/null
+if [ "$(lb_attr "${ORPHAN_LB_ARN}" deletion_protection.enabled)" != "false" ]; then
+  echo "FAIL: could not clear deletion protection on ${ORPHAN_LB_ARN}" >&2
+  exit 1
+fi
+
+echo "==> Phase 4: the fix-forward deploy (same logical id, another name, valid shape)"
+set +e
+CDKD_TEST_REMOVAL=true INJECT_LB_ORPHAN=true LB_FIX_FORWARD=true ${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes >"${FF_LOG}" 2>&1
+LB_FF_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+if [ "${LB_FF_RC}" -ne 0 ]; then
+  echo "FAIL: the OrphanLb fix-forward deploy exited ${LB_FF_RC} (expected 0: the earlier load balancer is proven another resource and deleted -- output above)" >&2
+  echo "      (before go-to-k/cdkd#4606 it exited 2 and left the earlier OrphanLb)" >&2
+  exit 1
+fi
+if ! grep -q "deleting partially-created OrphanLb" "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanLb (output above)" >&2
+  exit 1
+fi
+if grep -q "Skipping failed CREATE of OrphanLb" "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy still warned about the earlier OrphanLb instead of deleting it (output above)" >&2
+  exit 1
+fi
+assert_gone "rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY} still present after the OrphanLb fix-forward deploy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+# DeleteLoadBalancer returns before the load balancer leaves the describe list.
+for _ in $(seq 1 24); do
+  gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${ORPHAN_LB_ARN}" --region "${AWS_REGION}" && break
+  sleep 5
+done
+assert_gone "the earlier attempt's ${ORPHAN_LB_ARN} still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
+  aws elbv2 describe-load-balancers --load-balancer-arns "${ORPHAN_LB_ARN}" --region "${AWS_REGION}"
+FF_LB_ARN="$(state_physical_id OrphanLb)"
+case "${FF_LB_ARN}" in
+  arn:*:loadbalancer/app/*) ;;
+  *) echo "FAIL: state records OrphanLb as '${FF_LB_ARN}' after the fix-forward (expected a load balancer ARN)" >&2; exit 1;;
+esac
+if [ "${FF_LB_ARN}" = "${ORPHAN_LB_ARN}" ]; then
+  echo "FAIL: state records OrphanLb as the earlier attempt's ${ORPHAN_LB_ARN}" >&2
+  exit 1
+fi
+# The new load balancer is the record's: deleting the earlier one must not touch it.
+if gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${FF_LB_ARN}" --region "${AWS_REGION}"; then
+  echo "FAIL: the fix-forward load balancer ${FF_LB_ARN} is gone (the settle must not delete the record's load balancer)" >&2
+  exit 1
+fi
+echo "    OK: the fix-forward deleted ${ORPHAN_LB_ARN}, kept ${FF_LB_ARN}, exited 0 and dropped the journal"
+
+# The fix-forward load balancer is a normal state resource: the next plain
+# deploy removes it from the template and deletes it.
+CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes
+for _ in $(seq 1 24); do
+  gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${FF_LB_ARN}" --region "${AWS_REGION}" && break
+  sleep 5
+done
+assert_gone "the fix-forward ${FF_LB_ARN} still exists after the deploy that removed it" \
+  aws elbv2 describe-load-balancers --load-balancer-arns "${FF_LB_ARN}" --region "${AWS_REGION}"
+rm -f "${FF_LOG}"
+echo "    OK: Phase 4 passed"
 
 echo ""
 echo "==> Destroy ${STACK}"

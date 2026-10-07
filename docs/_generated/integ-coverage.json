@@ -3677,6 +3677,7 @@
       ],
       "signals": {
         "alb": [
+          "l1",
           "l2",
           "literal"
         ],
