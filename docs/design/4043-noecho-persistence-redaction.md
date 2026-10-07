@@ -851,7 +851,8 @@ lanes once B merges.
     per resource (maintainer decision 4, §9);
   - write-only create-only (`not-readable`): no replacement, and a warning
     naming `--recreate-via-*` on every deploy (maintainer decision 1, §9);
-  - create-only `differs`: no replacement, the decision 1 warning (§9);
+  - create-only `differs`: no replacement, the decision 1 warning (§9),
+    unless `noEchoExactEchoLeaves` names the leaf (decision 9);
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
   - pre-v11 witness different: UPDATE;
@@ -996,9 +997,13 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    it absent. Only a whole string leaf under a create-only path, reached by
    object keys, is eligible. Flag set and `differs`: the existing create-first
    replacement and its guards. Flag absent: decision 1, the warning naming
-   the reason. A path that also carries a custom-resource leaf keeps
-   decision 1; under `--require-approval` with an approver the replacement is
-   not taken either, since the prompt saw none.
+   the reason. Lane decisions (not the maintainer's), recorded in PR #4699:
+   a path that also carries a custom-resource leaf keeps decision 1; under
+   `--require-approval=destructive` / `any-change` the deploy asks again
+   before such a replacement, since the up-front prompt saw none (a "no" keeps
+   decision 1). Residual: a provider that reports a value exactly right after
+   create but normalizes it later would replace on every deploy; nothing
+   value-derived is stored to tell that from a change.
 
 ### Design decisions (#4043 comments 5903984771, 5904913259)
 

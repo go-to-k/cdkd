@@ -1419,16 +1419,18 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     it('a create or replacement verdict REPLACES what the deploy noted of the old resource', () => {
       const engine = makeEngine() as unknown as {
         noteNoEchoExactEchoes: (...args: unknown[]) => void;
-        noEchoExactEchoes: Map<string, string[][]>;
+        noEchoExactEchoes: Map<string, { physicalId: string; coordinates: string[][] }>;
       };
       const candidates = [{ coordinate: ['TopicName'], plaintext: TOPIC }];
       const handed = { TopicName: '***' };
-      engine.noteNoEchoExactEchoes('Topic', { live: { TopicName: TOPIC } }, handed, candidates, 'add');
-      expect(engine.noEchoExactEchoes.get('Topic')).toEqual([['TopicName']]);
-      engine.noteNoEchoExactEchoes('Topic', { failure: 'read-failed' }, handed, candidates, 'add');
-      expect(engine.noEchoExactEchoes.get('Topic')).toEqual([['TopicName']]);
-      engine.noteNoEchoExactEchoes('Topic', { failure: 'read-failed' }, handed, candidates, 'set');
-      expect(engine.noEchoExactEchoes.get('Topic')).toEqual([]);
+      const ok = { live: { TopicName: TOPIC } };
+      const failed = { failure: 'read-failed' };
+      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, ok, handed, candidates, 'add');
+      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
+      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, failed, handed, candidates, 'add');
+      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
+      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, failed, handed, candidates, 'set');
+      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([]);
     });
 
     it('never replaces on a report that is the mask itself (a projected read), flag or not', async () => {
@@ -1445,22 +1447,109 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
 
     it.each(['destructive', 'any-change'] as const)(
-      'does not replace under --require-approval=%s, which never asked about it, and keeps the flag',
+      'asks again under --require-approval=%s, whose up-front prompt saw no replacement; a "no" keeps the resource and the flag',
       async (level) => {
         stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
-        const approveDeployment = vi.fn(async () => true);
+        const approveDeployment = vi.fn(async () => false);
         await makeEngine({ requireApproval: level, approveDeployment }).deploy(
           STACK,
           rotatedTemplate()
         );
+        // The up-front prompt saw a promotion only; the late one names the replacement.
+        expect(approveDeployment).toHaveBeenCalledTimes(1);
+        const request = approveDeployment.mock.calls[0]![0] as {
+          level: string;
+          destructiveChanges: { logicalId: string }[];
+        };
+        expect(request.level).toBe(level);
+        expect(request.destructiveChanges.map((c) => c.logicalId)).toEqual(['Topic']);
         expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
         expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
         const warned = lines(logger.warn).filter((l) => l.includes('Topic.TopicName'));
         expect(warned).toHaveLength(1);
-        expect(warned[0]).toContain(`(differs; --require-approval=${level} did not ask about a replacement)`);
+        expect(warned[0]).toContain(
+          `(differs; the replacement was not approved (--require-approval=${level}))`
+        );
+        expect(warned[0]).not.toContain(ROTATED);
         expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
       }
     );
+
+    it('replaces once the late prompt approves (what --yes answers)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const approveDeployment = vi.fn(async () => true);
+      await makeEngine({ requireApproval: 'any-change', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
+    });
+
+    it('keeps the resource when the late prompt cannot be asked (no terminal), and the deploy goes on', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const approveDeployment = vi.fn(async () => {
+        throw new Error('stdin is not interactive');
+      });
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        true
+      );
+    });
+
+    it('never applies a verdict on one physical resource to a record of another (a rollback restoring the old record)', () => {
+      const engine = makeEngine() as unknown as {
+        noteNoEchoExactEchoes: (...args: unknown[]) => void;
+        withNoEchoExactEchoes: (id: string, record: ResourceState) => ResourceState;
+      };
+      engine.noteNoEchoExactEchoes(
+        'Topic',
+        `${TOPIC_ARN}-new`,
+        { live: { TopicName: TOPIC } },
+        { TopicName: '***' },
+        [{ coordinate: ['TopicName'], plaintext: TOPIC }],
+        'set'
+      );
+      const old = v11State().resources['Topic']!;
+      expect(engine.withNoEchoExactEchoes('Topic', old).noEchoExactEchoLeaves).toBeUndefined();
+      expect(
+        engine.withNoEchoExactEchoes('Topic', { ...old, physicalId: `${TOPIC_ARN}-new` })
+          .noEchoExactEchoLeaves
+      ).toEqual([['TopicName']]);
+    });
+
+    it('a replacement whose own readback fails keeps no flag, though the migration read of the old resource was exact', async () => {
+      const state = v10State();
+      state.resources['Topic']!.properties['FifoTopic'] = false;
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      let topicRead = 0;
+      provider.readCurrentState.mockImplementation((physicalId: string) => {
+        if (!physicalId.startsWith('arn:aws:sns:')) {
+          return Promise.resolve({ Name: '/app/p', Type: 'String', Value: TOKEN });
+        }
+        topicRead++;
+        return topicRead === 1
+          ? Promise.resolve({ TopicName: TOPIC, DisplayName: 'd' })
+          : Promise.reject(new Error('throttled'));
+      });
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve({
+          physicalId: logicalId === 'Topic' ? `${TOPIC_ARN}-v2` : `${logicalId}-phys`,
+          attributes: {},
+        })
+      );
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = true;
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(topicRead).toBe(2);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
 
     it('a replacement the flag proves still meets the stateful guard', async () => {
       const state = v11State();

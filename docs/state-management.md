@@ -953,10 +953,17 @@ property exactly.
 
 The replacement goes through the same create-first path, stateful-resource
 guard (`--force-stateful-recreation`) and name-collision checks as any other.
-The approval prompt sees no replacement in a diff that cannot read AWS, so
-under `--require-approval=destructive` or `any-change` cdkd does not replace
-on its own: it warns, naming the flag, and `--recreate-via-*` applies the
-value.
+The approval prompt before the deploy sees no replacement in a diff that
+cannot read AWS, so under `--require-approval=destructive` or `any-change` the
+deploy asks again when it reaches such a replacement (`--yes` approves it). A
+"no", or a terminal that cannot be asked, keeps the resource and warns, and
+`--recreate-via-*` applies the value.
+
+One case the flag cannot catch: a provider whose readback right after a create
+reports exactly what was sent, while AWS normalizes the value later. Each
+rotation-free deploy then reads a different value and replaces the resource.
+cdkd stores nothing derived from the value, so it cannot tell this from a
+change; the stateful-resource guard still stops a stateful type.
 
 A stack whose resources read a `NoEcho` parameter, with nothing else changed,
 is reported as `No changes`: those resources are compared as above and do not

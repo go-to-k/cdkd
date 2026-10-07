@@ -159,13 +159,17 @@ export function provesEchoChangeAt(
  * Record what one NoEcho readback proved about the provider's echo
  * (go-to-k/cdkd#4656): each candidate it echoed exactly. `set` replaces what
  * this deploy noted before for the resource (a create or replacement: a new
- * resource), `add` unions (a later readback that holds the value). A failed
+ * resource), `add` unions (a later readback that holds the value). Each
+ * verdict is bound to the physical id it judged (`physicalId`): one of
+ * another resource is replaced, never unioned, and the save applies it only
+ * to a record of that id (a rollback restoring the old record). A failed
  * or unreadable read proves nothing: `set` leaves the resource with none,
  * `add` changes nothing. A `differs` never removes an entry.
  */
 export function noteNoEchoExactEchoes(
   this: DeployEngine,
   logicalId: string,
+  physicalId: string,
   read: FreshNoEchoReadback,
   handed: Record<string, unknown>,
   candidates: readonly EchoFidelityCandidate[],
@@ -177,8 +181,12 @@ export function noteNoEchoExactEchoes(
       : candidates
           .filter((candidate) => echoesExactlyAt(read.live, handed, candidate))
           .map((candidate) => [...candidate.coordinate]);
-  const previous = mode === 'add' ? (this.noEchoExactEchoes.get(logicalId) ?? []) : [];
-  this.noEchoExactEchoes.set(logicalId, sortedCoordinates([...previous, ...exact]));
+  const noted = this.noEchoExactEchoes.get(logicalId);
+  const previous = mode === 'add' && noted?.physicalId === physicalId ? noted.coordinates : [];
+  this.noEchoExactEchoes.set(logicalId, {
+    physicalId,
+    coordinates: sortedCoordinates([...previous, ...exact]),
+  });
 }
 
 function sortedCoordinates(coordinates: readonly (readonly string[])[]): string[][] {
@@ -206,6 +214,7 @@ export async function establishNoEchoEchoFidelity(
   stateResources: Record<string, ResourceState>,
   secrets: RecordedSecretValues
 ): Promise<void> {
+  this.noEchoExactEchoes.delete(logicalId);
   const templateProps = this.perResourceTemplateProps.get(logicalId);
   const sources = this.noEchoPositionSources(stateResources);
   if (templateProps === undefined || sources === undefined || sources.parameters.size === 0) {
@@ -225,7 +234,14 @@ export async function establishNoEchoEchoFidelity(
   if (candidates.length === 0) return;
   const handed = { ...record, properties: maskAtCoordinates(record.properties, coordinates) };
   const read = await this.readReaderForFreshNoEchoCeiling(logicalId, handed, secrets);
-  this.noteNoEchoExactEchoes(logicalId, read, handed.properties, candidates, 'set');
+  this.noteNoEchoExactEchoes(
+    logicalId,
+    record.physicalId,
+    read,
+    handed.properties,
+    candidates,
+    'set'
+  );
 }
 
 /**
@@ -239,8 +255,14 @@ export function withNoEchoExactEchoes(
   record: ResourceState
 ): ResourceState {
   const noted = this.noEchoExactEchoes.get(logicalId);
-  if (noted === undefined || noted.length === 0) return record;
-  const merged = sortedCoordinates([...(noEchoExactEchoLeavesOf(record) ?? []), ...noted]);
+  if (noted === undefined || noted.coordinates.length === 0) return record;
+  // A verdict on another physical resource (a rollback restored the record a
+  // replacement superseded) says nothing about this one.
+  if (noted.physicalId !== record.physicalId) return record;
+  const merged = sortedCoordinates([
+    ...(noEchoExactEchoLeavesOf(record) ?? []),
+    ...noted.coordinates,
+  ]);
   return { ...record, noEchoExactEchoLeaves: merged };
 }
 

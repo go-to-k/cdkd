@@ -825,8 +825,8 @@ export interface ResourceState {
    * Set by the readback at the deploy that creates (or replaces) the
    * resource, at the deploy that migrates a pre-v11 record, and by any later
    * readback that holds the value. A readback that differs never changes it;
-   * one that fails or cannot report the property leaves it absent. The save
-   * keeps only entries still in `noEchoLeaves`.
+   * one that fails or cannot report the property leaves it absent. A save
+   * that writes `noEchoLeaves` keeps only entries still in it.
    *
    * Read by the UPDATE arm: a create-only coordinate named here whose
    * readback differs is a proven change and replaces the resource. ABSENT

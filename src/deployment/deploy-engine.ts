@@ -528,12 +528,13 @@ export class DeployEngine {
   noEchoPositionedValues = new Map<string, Set<string>>();
   /**
    * go-to-k/cdkd#4656: per resource, the `NoEcho` parameter coordinates a
-   * readback of THIS deploy proved its provider echoes exactly, unioned into
+   * readback of THIS deploy proved its provider echoes exactly, bound to the
+   * physical id that readback judged, unioned into
    * `noEchoExactEchoLeaves` at the save (`withNoEchoExactEchoes`). Coordinates
    * only, never a value.
    */
   /** @internal */
-  noEchoExactEchoes = new Map<string, string[][]>();
+  noEchoExactEchoes = new Map<string, { physicalId: string; coordinates: string[][] }>();
   /** @internal */
   noEchoAttributeReads = new Map<string, Promise<Record<string, unknown> | undefined>>();
   /**

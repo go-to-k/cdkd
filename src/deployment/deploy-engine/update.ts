@@ -64,6 +64,8 @@ import {
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
+import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
+import { enclosingDeadlineExpired, whileEnclosingDeadlinesPaused } from '../resource-deadline.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -694,7 +696,14 @@ export async function provisionUpdate(
     ).then((read) => {
       // Every coordinate this read echoed exactly gains the flag; a differing
       // or failed one changes nothing.
-      this.noteNoEchoExactEchoes(logicalId, read, readbackRecord.properties, echoCandidates, 'add');
+      this.noteNoEchoExactEchoes(
+        logicalId,
+        currentResource.physicalId,
+        read,
+        readbackRecord.properties,
+        echoCandidates,
+        'add'
+      );
       return read;
     }));
   // go-to-k/cdkd#4656: a create-only `NoEcho` parameter leaf this record's
@@ -719,17 +728,40 @@ export async function provisionUpdate(
     });
   };
   // A replacement the readback proves is decided here, after
-  // `--require-approval` asked about the diff, which showed none. Where the
-  // operator asked to approve a replacement, cdkd does not replace without
-  // asking: the never-replace rule applies, and the warning says why.
-  const approvalCoversReplacement =
-    this.options.approveDeployment !== undefined &&
-    (this.options.requireApproval === 'destructive' ||
-      this.options.requireApproval === 'any-change');
+  // `--require-approval` asked about the diff, which could not read AWS and
+  // showed none. So it is asked about now, as a destructive change of its own
+  // (`--yes` approves it). A "no", a refusal to ask (no terminal) or a
+  // deadline already past keeps the never-replace rule, and the warning says
+  // why; the rest of the deploy goes on.
+  const approveLateReplacement = async (pc: PropertyChange): Promise<boolean> => {
+    const approve = this.options.approveDeployment;
+    const level = this.options.requireApproval ?? 'never';
+    if (level === 'never' || approve === undefined) return true;
+    if (enclosingDeadlineExpired()) return false;
+    const { noEchoPromoted: _promoted, ...asReplacement } = pc;
+    const late: ResourceChange = {
+      ...change,
+      changeType: 'UPDATE',
+      propertyChanges: [{ ...asReplacement, requiresReplacement: true }],
+    };
+    try {
+      return await whileEnclosingDeadlinesPaused(() =>
+        approve({
+          stackName,
+          level,
+          counts: { create: 0, update: 1, delete: 0 },
+          destructiveChanges: findDestructiveChanges(stackName, [late], stateResources, template),
+        })
+      );
+    } catch {
+      return false;
+    }
+  };
+  const lateReplacementDeclined = new Set<string>();
   // Why a `differs` on such a path is not acted on: the warning names it.
-  const differsWhy = (key: string, read: FreshNoEchoReadback | undefined): string =>
-    provenChangedAt(key, read)
-      ? `differs; --require-approval=${this.options.requireApproval ?? 'never'} did not ask about a replacement`
+  const differsWhy = (key: string): string =>
+    lateReplacementDeclined.has(key)
+      ? `differs; the replacement was not approved (--require-approval=${this.options.requireApproval ?? 'never'})`
       : 'differs; the provider is not known to report this property exactly, so the difference may be its normalization';
   // go-to-k/cdkd#4656: the MIGRATION deploy of a pre-v11 record takes the
   // echo-fidelity readback even when its witness settles every value (so no
@@ -1027,7 +1059,7 @@ export async function provisionUpdate(
       } else if (
         verdict === 'differs' &&
         provenChangedAt(pc.path, read) &&
-        !approvalCoversReplacement
+        ((await approveLateReplacement(pc)) || (lateReplacementDeclined.add(pc.path), false))
       ) {
         // go-to-k/cdkd#4656: the provider echoes this leaf exactly, so the
         // difference is the value's. The id, the path and the cause only.
@@ -1042,7 +1074,7 @@ export async function provisionUpdate(
         // value (a provider may normalize what it echoes). Every deploy says so,
         // and a `differs` names why it is not trusted (#4656).
         const staleOnly = staleCoordinates.some((coordinate) => coordinate[0] === pc.path);
-        const why = verdict === 'differs' ? differsWhy(pc.path, read) : verdict;
+        const why = verdict === 'differs' ? differsWhy(pc.path) : verdict;
         this.logger.warn(
           staleOnly
             ? safeMsg`${logicalId}.${pc.path} is a create-only property whose recorded value is only the NoEcho mask, and cdkd cannot confirm AWS holds its current value (${why}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
