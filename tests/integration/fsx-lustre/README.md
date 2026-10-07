@@ -48,8 +48,9 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
      returning the earlier one. That deploy must succeed, delete the earlier
      file system, keep the new one and exit `0`. A plain deploy then removes
      `OrphanFs`. The caller needs `iam:CreateRole` / `PutRolePolicy` /
-     `DeleteRolePolicy` / `DeleteRole` / `ListRoles` and `sts:AssumeRole` on
-     the role.
+     `DeleteRolePolicy` / `DeleteRole` / `ListRoles` / `ListRoleTags` and
+     `sts:AssumeRole` on the role, whose trust policy expires 2 hours after
+     it is created.
 3. **Destroy** and assert the file system + VPC are gone from AWS and
    the cdkd state file is removed. A leftover FSx file system is never
    acceptable (per-hour billing) — the cleanup trap force-deletes any

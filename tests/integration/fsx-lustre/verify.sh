@@ -40,7 +40,8 @@
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
 # The caller also needs iam:CreateRole / PutRolePolicy / DeleteRolePolicy /
-# DeleteRole / ListRoles and sts:AssumeRole on the role Phase 2c creates.
+# DeleteRole / ListRoles / ListRoleTags and sts:AssumeRole on the role Phase 2c
+# creates.
 
 set -euo pipefail
 # Phase 2c's switches: set only by its own deploys.
@@ -115,40 +116,64 @@ tagged_fs_ids() {
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
-wait_fs_gone() {
+# Delete a file system and wait until it is gone, re-sending the delete until
+# FSx has it DELETING: a file system still CREATING (a Phase 2c OrphanFs, or
+# Phase 1's Fs when a FAIL fires early) can refuse the first delete, and one
+# send would then leave it billing.
+delete_fs_until_gone() {
   local fs_id="$1"
-  local out
+  local out lifecycle
   local deadline=$((SECONDS + 1800))
   while [ ${SECONDS} -lt ${deadline} ]; do
     if ! out="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
-      --region "${REGION}" 2>&1)"; then
+      --region "${REGION}" --query 'FileSystems[0].Lifecycle' --output text 2>&1)"; then
       # Strict gone-check (#1097 pattern 2): only a not-found error means the
       # file system is gone; on any other failure (throttle) keep waiting.
       if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
         return 0
       fi
+    else
+      lifecycle="${out}"
+      if [ "${lifecycle}" != "DELETING" ]; then
+        aws fsx delete-file-system --file-system-id "${fs_id}" --region "${REGION}" >/dev/null 2>&1
+      fi
     fi
     sleep 15
   done
+  echo "    WARN: FSx file system ${fs_id} is still not gone after 30 minutes; delete it by hand to stop billing" >&2
   return 1
 }
 
-# Delete every Phase 2c deny role any run of this fixture created, found by
-# the LITERAL prefix. Idempotent and soft-failing.
-delete_deny_roles() {
+# Delete one Phase 2c deny role by name. Idempotent and soft-failing.
+delete_deny_role() { # usage: delete_deny_role <role-name>
   (
     # Best-effort, in a subshell: the caller's errexit is untouched.
     set +eu
-    roles="$(aws iam list-roles \
-      --query "Roles[?starts_with(RoleName, 'cdkd-fsx-orphan-deny-')].RoleName" --output text 2>/dev/null)"
-    for r in ${roles}; do
-      [ "${r}" = "None" ] && continue
-      aws iam delete-role-policy --role-name "${r}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
-      if aws iam delete-role --role-name "${r}" >/dev/null 2>&1; then
-        echo "    deleted deny role ${r}"
-      else
-        echo "    WARN: could not delete role ${r}; delete it by hand" >&2
-      fi
+    aws iam delete-role-policy --role-name "$1" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+    if aws iam delete-role --role-name "$1" >/dev/null 2>&1; then
+      echo "    deleted deny role $1"
+    fi
+  )
+}
+
+# Delete Phase 2c deny roles an earlier run left behind (a SIGKILL skips the
+# trap): only roles with the literal prefix, carrying the fixture's tag, and
+# created more than 2 hours ago -- their trust policy has expired by then
+# (`DateLessThan`), so a concurrent run's live role is never one of them.
+sweep_stale_deny_roles() {
+  (
+    set +eu
+    cutoff="$(node -e 'process.stdout.write(new Date(Date.now()-2*3600e3).toISOString().slice(0,19))')"
+    aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, 'cdkd-fsx-orphan-deny-')].[RoleName,CreateDate]" \
+      --output text 2>/dev/null | while read -r r created; do
+      [ -z "${r}" ] || [ "${r}" = "None" ] && continue
+      # ISO-8601 UTC sorts lexically; compare to the second.
+      [[ "${created:0:19}" < "${cutoff}" ]] || continue
+      tagged="$(aws iam list-role-tags --role-name "${r}" \
+        --query "Tags[?Key=='cdkd-integ' && Value=='fsx-lustre'] | length(@)" --output text 2>/dev/null)"
+      [ "${tagged}" = "1" ] || continue
+      delete_deny_role "${r}"
     done
   )
 }
@@ -159,7 +184,8 @@ cleanup() {
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   [ -n "${FF_LOG:-}" ] && rm -f "${FF_LOG}" "${FF_LOG}.id-err"
-  delete_deny_roles
+  # Only THIS run's role: another run's may be live.
+  delete_deny_role "${DENY_ROLE}"
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -168,8 +194,7 @@ cleanup() {
   # wait until it is gone (its ENIs block the VPC teardown below).
   for fsid in $(tagged_fs_ids); do
     echo "    deleting leftover FSx file system ${fsid}"
-    aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" >/dev/null 2>&1
-    wait_fs_gone "${fsid}"
+    delete_fs_until_gone "${fsid}"
   done
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
@@ -228,6 +253,7 @@ if [ ! -d node_modules ]; then
 fi
 
 echo "==> Pre-run cleanup"
+sweep_stale_deny_roles
 cleanup
 
 state_json() {
@@ -450,8 +476,9 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${CALLER_USERID}" ]; then
   echo "FAIL: precondition — account '${ACCOUNT_ID}' or caller '${CALLER_USERID}' is empty" >&2
   exit 1
 fi
-# Assumable by THIS caller identity only, not by the whole account.
-TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
+# Assumable by THIS caller identity only, not by the whole account, and only
+# for 2 hours: a role a SIGKILL leaves behind (no trap) expires on its own.
+TRUST="$(node -e 'const until=new Date(Date.now()+2*3600e3).toISOString().replace(/\.\d{3}Z$/,"Z");process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]},DateLessThan:{"aws:CurrentTime":until}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
 # Scoped to what this stack's deploy calls, never `*`: the role is assumable by
 # the caller for minutes, and an inline `Allow *` would hand it more than the
 # caller may have (IAM included). The FSx service-linked role exists since
@@ -480,11 +507,15 @@ fi
 # temp file, and these are live credentials.
 read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
 unset DENY_CREDS
-# Run a command as the deny role. A profile in the environment would win over
-# the key variables in the SDK's credential chain, so it is dropped.
+# Run a command as the deny role, in a subshell that EXPORTS the keys: on an
+# `env` argv they would be readable in `ps`. A profile in the environment would
+# win over the key variables in the SDK's credential chain, so it is dropped.
 as_deny_role() {
-  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE \
-    AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}" "$@"
+  (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE
+    export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
+    "$@"
+  )
 }
 # Credentials from assuming a role created seconds ago can be refused for a
 # while, so poll until STS accepts them; the last refusal is named if it never
