@@ -169,10 +169,12 @@ cleanup() {
   fi
   if [ "${rc}" -ne 0 ] && [ -n "${CLEANUP_ARMED}" ]; then
     echo "[verify] FAIL (exit ${rc}) -- attempting cleanup"
-    delete_cluster_by_id "${ORPHAN_A}"
-    delete_cluster_by_id "${ORPHAN_B}"
-    delete_cluster_by_id "${KEPT_A}"
-    delete_cluster_by_id "${KEPT_B}"
+    for id in "${ORPHAN_A}" "${ORPHAN_B}" "${KEPT_A}" "${KEPT_B}"; do
+      delete_cluster_by_id "${id}"
+      if ! ( gone_probe aws elasticache describe-cache-clusters --cache-cluster-id "${id}" --region "${REGION}" ); then
+        echo "[verify] WARN: cache cluster ${id} could not be confirmed deleted; delete it by hand" >&2
+      fi
+    done
     # From the fixture directory: a failure before the script's own `cd`
     # would otherwise synthesize whatever app the caller's cwd holds. A
     # killed deploy may have left its lock.
@@ -242,14 +244,16 @@ echo "[verify] step 1: baseline deploy (VPC + cache subnet group)"
 env -u ORPHAN_ARM -u KEPT_ARM ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --state-prefix "${STATE_PREFIX}" "${TIMEOUT_OVERRIDES[@]}"
 
-# The role's policy, scoped to what these deploys call, never `*`. The S3
+# The role's policy, scoped to what these deploys call. The S3
 # verbs are the state path's (src/state/{s3-state-backend,lock-manager,
 # s3-noncurrent-version-purge,s3-replication-purge-gap}.ts,
 # src/utils/aws-region-resolver.ts): HeadBucket and ListObjectsV2
 # (ListBucket), ListObjectVersions, GetBucketLocation and GetBucketReplication
 # on the bucket; Get/Head/Put/DeleteObject and a versioned DeleteObjects on
 # this run's prefix only. The exports index is written on a successful deploy
-# only, which these are not. CreateCacheCluster sends the tags, so it needs
+# only, which these are not. The read-only EC2 / CloudFormation / SSM / KMS
+# grants are `*`, as in rds-fix-forward-orphan; the trust policy admits only
+# this script's caller. CreateCacheCluster sends the tags, so it needs
 # AddTagsToResource; the ElastiCache service-linked role is created on a
 # first cluster in an account. DeleteCacheCluster is always denied (cdkd's
 # ElastiCache create has no self-cleanup; the deny keeps it that way);
@@ -417,9 +421,17 @@ make_deny_role allow-describe
 wait_describe_allowed
 
 echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE} in the background (ORPHAN_ARM=inject)"
-as_deny_role env -u KEPT_ARM ORPHAN_ARM=inject ${CLI} deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --no-rollback \
-  "${TIMEOUT_OVERRIDES[@]}" > "${LOG_DIR}/inject.log" 2>&1 &
+# An inline subshell that execs, not `as_deny_role ... &`: backgrounding the
+# function forks twice, and `$!` would then name a wrapper whose kill leaves
+# the deploy running. Here the exec chain (subshell -> env -> node) keeps one
+# pid, so cleanup's kill reaches the deploy itself.
+(
+  unset AWS_PROFILE AWS_DEFAULT_PROFILE
+  export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
+  exec env -u KEPT_ARM ORPHAN_ARM=inject ${CLI} deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --no-rollback \
+    "${TIMEOUT_OVERRIDES[@]}"
+) > "${LOG_DIR}/inject.log" 2>&1 &
 DEPLOY_PID=$!
 
 # Wait, with this script's credentials, for the cluster to answer with its
@@ -520,7 +532,8 @@ if [ "${FF_RC}" -ne 0 ]; then
 fi
 assert_gone "the rollback journal is still present after the fix-forward deploy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
-aws elasticache wait cache-cluster-deleted --cache-cluster-id "${ORPHAN_A}" --region "${REGION}"
+# The waiter only waits: the assertion below decides, with its own message.
+aws elasticache wait cache-cluster-deleted --cache-cluster-id "${ORPHAN_A}" --region "${REGION}" || true
 assert_gone "the earlier attempt's cache cluster ${ORPHAN_A} still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
   aws elasticache describe-cache-clusters --cache-cluster-id "${ORPHAN_A}" --region "${REGION}"
 # The new cluster is the record's: deleting the earlier one must not touch it.
