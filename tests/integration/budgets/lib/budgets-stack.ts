@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Minimal AWS::Budgets::Budget fixture for the new BudgetsBudgetProvider
@@ -21,6 +22,10 @@ import * as budgets from 'aws-cdk-lib/aws-budgets';
  *   - ResourceTags env=dev, team=platform -> env=prod with team REMOVED
  *     (the tag diff: UntagResource for the dropped key, TagResource for the
  *     changed one; issue #3989)
+ *
+ * The SQS queue is the `cdkd drift` sibling (issue #2151): the budget's SDK
+ * provider has no `readCurrentState` and the type has no Cloud Control READ
+ * handler, so drift must report it unknown while still comparing the queue.
  */
 export class BudgetsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -63,6 +68,11 @@ export class BudgetsStack extends cdk.Stack {
             { key: 'env', value: 'dev' },
             { key: 'team', value: 'platform' },
           ],
+    });
+
+    new sqs.Queue(this, 'DriftSibling', {
+      queueName: 'cdkd-budgets-drift-sibling',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     new cdk.CfnOutput(this, 'BudgetName', {

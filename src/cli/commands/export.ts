@@ -5402,6 +5402,21 @@ export async function buildImportPlan(
       // row, and a fetch failure (permissions, throttle) would otherwise
       // report `could not resolve resource identifier` in place of the
       // refusal that actually applies.
+      // Not a pre-flight heuristic: cdkd holds no value the IMPORT changeset
+      // could address the resource by, so the skip flag does not bypass it.
+      const noIdentifier = physicalIdIsNotImportIdentifier(resourceType);
+      if (noIdentifier !== undefined) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `cdkd cannot export ${resourceType}: ${noIdentifier}, so an IMPORT changeset ` +
+            `addressed by it would fail after the stack was locked. Remove the resource from the ` +
+            `stack before exporting (it stays in AWS and can be re-declared in CloudFormation ` +
+            `afterwards), or destroy it first and let CloudFormation create it fresh.`,
+        });
+        continue;
+      }
       const measuredRefusal = cfnRefusesImportDespiteRegistry(resourceType);
       if (!options.skipImportSupportPreflight && measuredRefusal !== undefined) {
         blocked.push({
@@ -6005,6 +6020,28 @@ const CFN_IMPORT_REFUSED_DESPITE_REGISTRY: ReadonlyMap<string, string> = new Map
  */
 export function cfnRefusesImportDespiteRegistry(resourceType: string): string | undefined {
   return CFN_IMPORT_REFUSED_DESPITE_REGISTRY.get(resourceType);
+}
+
+/**
+ * Types whose cdkd physicalId is NOT the registry `primaryIdentifier` value,
+ * and for which cdkd records nothing that is. The single-key path would send
+ * the physicalId as the identifier and CreateChangeSet fails after the lock.
+ * `AWS::CloudWatch::AnomalyDetector`'s SDK provider derives a metric
+ * descriptor; Cloud Control's `AnomalyDetectorId` is an opaque
+ * `<hash>-<Stat>-<period>-<...>` value the CloudWatch API never returns
+ * (issue #4668).
+ */
+const PHYSICAL_ID_NOT_IMPORT_IDENTIFIER: ReadonlyMap<string, string> = new Map([
+  [
+    'AWS::CloudWatch::AnomalyDetector',
+    "its physicalId is a metric descriptor cdkd derives, not the registry's AnomalyDetectorId, " +
+      'and the CloudWatch API does not return that identifier',
+  ],
+]);
+
+/** The reason for a {@link PHYSICAL_ID_NOT_IMPORT_IDENTIFIER} entry. Exported for unit tests. */
+export function physicalIdIsNotImportIdentifier(resourceType: string): string | undefined {
+  return PHYSICAL_ID_NOT_IMPORT_IDENTIFIER.get(resourceType);
 }
 
 /**

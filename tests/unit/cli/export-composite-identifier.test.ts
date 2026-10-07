@@ -1707,6 +1707,45 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     expect(plan.blocked[0]!.reason).not.toMatch(/declares no 'read' handler/);
   });
 
+  it('blocks an AnomalyDetector up front, even with --skip-import-support-preflight: its physicalId is not the registry identifier (#4668)', async () => {
+    // The registry now declares a full handler set, so neither pre-flight
+    // fires; without the refusal the single-key path sends cdkd's descriptor
+    // as `AnomalyDetectorId`.
+    const state = stateWith({
+      Detector: {
+        resourceType: 'AWS::CloudWatch::AnomalyDetector',
+        physicalId: 'AWS/SQS:NumberOfMessagesSent:Sum:QueueName=q',
+      },
+    });
+    const template = {
+      Resources: {
+        Detector: {
+          Type: 'AWS::CloudWatch::AnomalyDetector',
+          Properties: { Namespace: 'AWS/SQS', MetricName: 'NumberOfMessagesSent', Stat: 'Sum' },
+        },
+      },
+    };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        ...SCHEMAS,
+        'AWS::CloudWatch::AnomalyDetector': {
+          primaryIdentifier: ['/properties/AnomalyDetectorId'],
+          handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack',
+      { skipImportSupportPreflight: true }
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.logicalId).toBe('Detector');
+    expect(plan.blocked[0]!.reason).toMatch(/cdkd cannot export AWS::CloudWatch::AnomalyDetector/);
+    expect(plan.blocked[0]!.reason).toMatch(/not the registry's AnomalyDetectorId/);
+  });
+
   it('takes the plain single-key path when the registry still reports the OLD `ApiId` identifier', async () => {
     // The tolerance the entry declares via `physicalIdIsIdentifierFor`: the two
     // AWS-published sources disagreed while the identifier moved (issue #3327),

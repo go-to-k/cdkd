@@ -1192,8 +1192,8 @@ A populated `notCompared`, showing the two per-entry keys:
     "cause": "refused"
   },
   {
-    "logicalId": "Detector1",
-    "type": "AWS::CloudWatch::AnomalyDetector",
+    "logicalId": "Budget1",
+    "type": "AWS::Budgets::Budget",
     "referencesUnresolved": false,
     "cause": "readFailed"
   }

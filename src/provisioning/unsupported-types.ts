@@ -38,6 +38,11 @@ export function isNonProvisionable(resourceType: string): boolean {
  * registered type is still in the generated set and missing here. Keep it
  * sorted, one `'AWS::...'` literal per line: the property-coverage generator
  * and the schema-refresh diagnosis read it as text.
+ *
+ * `AWS::CloudWatch::AnomalyDetector` stays although AWS has since given it
+ * Cloud Control handlers: its physicalId is a cdkd-derived descriptor the
+ * handlers cannot address, so the SDK provider must remain its only route
+ * (#4668).
  */
 export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::AppSync::GraphQLSchema',
