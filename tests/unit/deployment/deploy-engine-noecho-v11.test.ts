@@ -1450,7 +1450,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       'asks again under --require-approval=%s, whose up-front prompt saw no replacement; a "no" keeps the resource and the flag',
       async (level) => {
         stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
-        const approveDeployment = vi.fn(async () => false);
+        const approveDeployment = vi.fn(async (_request: unknown) => false);
         await makeEngine({ requireApproval: level, approveDeployment }).deploy(
           STACK,
           rotatedTemplate()
