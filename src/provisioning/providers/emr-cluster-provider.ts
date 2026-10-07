@@ -76,6 +76,7 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -173,6 +174,12 @@ const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSO
 
 /** Cluster states an orphan lookup reports: every state that still bills. */
 const LIVE_CLUSTER_STATES: ClusterState[] = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING'];
+
+/**
+ * go-to-k/cdkd#4606: the cluster id form `RunJobFlow` mints (`j-` and upper-case
+ * alphanumerics). Any other spelling is not compared as an identity.
+ */
+const CLUSTER_ID_PATTERN = /^j-[0-9A-Z]+$/;
 
 /**
  * Retry-safety state for `RunJobFlow`, which mints the cluster id and carries
@@ -1106,7 +1113,14 @@ export class EMRClusterProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`EMR Cluster ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone is named once.
+          this.logger.info(
+            safeMsg`  EMR cluster ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`EMR Cluster ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1121,7 +1135,15 @@ export class EMRClusterProvider implements ResourceProvider {
 
     const currentState = current?.Status?.State;
     if (currentState && TERMINAL_STATES.has(currentState)) {
-      this.logger.debug(`EMR Cluster ${physicalId} already ${currentState}, skipping deletion`);
+      if (context?.failedCreateOrphan === true) {
+        // go-to-k/cdkd#4606: the usual journaled cluster — its create's wait
+        // saw it terminate, then the cleanup call failed.
+        this.logger.info(
+          safeMsg`  EMR cluster ${physicalId} (${logicalId}), which a failed deploy created, is already ${currentState}; nothing to delete`
+        );
+      } else {
+        this.logger.debug(`EMR Cluster ${physicalId} already ${currentState}, skipping deletion`);
+      }
       return;
     }
 
@@ -1343,6 +1365,71 @@ export class EMRClusterProvider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  // ─── IDENTITY (go-to-k/cdkd#4606) ──────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the cluster a failed CREATE journaled (one whose
+   * own terminate failed) is the one the record under the same logical id holds
+   * — a fix-forward that created a new cluster there.
+   *
+   * The identity is the `j-…` id `RunJobFlow` mints: unique per account and
+   * region and never reassigned, so two distinct ids in the stack's region name
+   * two distinct clusters. Any other id form is `'unknown'`; equal ids are
+   * `'same'` without a read. After the region check, `DescribeCluster` must
+   * read the record's cluster back under its own id, in any state: the same
+   * client then proves it is in the stack's account and region, and a
+   * transient cluster (no `KeepJobFlowAliveWhenNoSteps`, an idle
+   * `AutoTerminationPolicy`) may already be terminating by the settle. A
+   * record cluster EMR does not know, or one reading back as another id, is
+   * `'unknown'`. The journaled cluster is then `'different'`, whether it reads back in any
+   * state (a `TERMINATED_WITH_ERRORS` one included: the settle's delete names
+   * it already terminated) or EMR answers `InvalidRequestException` for it;
+   * only a read naming the record's cluster makes it `'same'`. Any other
+   * failure throws, which the caller reads as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::EMR::Cluster') return 'unknown';
+    if (
+      !CLUSTER_ID_PATTERN.test(journaledPhysicalId) ||
+      !CLUSTER_ID_PATTERN.test(record.physicalId)
+    ) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recorded = await this.readClusterIdentity(record.physicalId);
+    if (recorded?.id !== record.physicalId) return 'unknown';
+    const journaled = await this.readClusterIdentity(journaledPhysicalId);
+    return journaled?.id === recorded.id ? 'same' : 'different';
+  }
+
+  /**
+   * The id `DescribeCluster` reports for `clusterId`, or `undefined`
+   * on `InvalidRequestException` (EMR's answer for an id it does not know).
+   * Any other failure, and a response naming no cluster, throws: "could not
+   * read" never reads as "gone".
+   */
+  private async readClusterIdentity(clusterId: string): Promise<{ id: string } | undefined> {
+    let response;
+    try {
+      response = await this.getClient().send(new DescribeClusterCommand({ ClusterId: clusterId }));
+    } catch (error) {
+      if (error instanceof InvalidRequestException) return undefined;
+      throw error;
+    }
+    const id = response.Cluster?.Id;
+    if (typeof id !== 'string') {
+      throw new Error('DescribeCluster did not return the cluster asked for');
+    }
+    return { id };
   }
 
   // ─── IMPORT ────────────────────────────────────────────────────────

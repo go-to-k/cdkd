@@ -131,6 +131,12 @@ export function resetEMRInstanceGroupCreateRetryStateForTests(): void {
  *    release its instances; MASTER/CORE groups cannot be scaled to 0 and are a
  *    pure no-op. Never blocks the destroy (warn-and-continue).
  *
+ * No `isSameResource` (go-to-k/cdkd#4606), deliberately: no EMR call reads a
+ * group by its `ig-…` id alone (`ListInstanceGroups` needs the cluster id, which
+ * that check is not given), and with no delete API a `'different'` would let a
+ * successful deploy drop a journaled group that stays in its cluster. A
+ * fix-forward's earlier group keeps the warning and exit 2.
+ *
  * `getMinResourceTimeoutMs()` lifts the deploy engine's per-resource deadline
  * to the polling ceiling (mirrors `EMRClusterProvider`) so a slow add/resize
  * does not require `--resource-timeout`.

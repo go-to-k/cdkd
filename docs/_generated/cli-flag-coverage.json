@@ -427,6 +427,7 @@
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
+        "emr-cluster",
         "fsx-lustre",
         "import-retain-destroy",
         "lambda-url-authtype-replay",
@@ -1122,6 +1123,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "emr-cluster",
         "fsx-lustre",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",

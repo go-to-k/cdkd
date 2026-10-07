@@ -185,6 +185,50 @@ export class EmrClusterStack extends cdk.Stack {
     // IAM must exist before RunJobFlow references the roles / instance profile.
     cluster.node.addDependency(serviceRole, ec2Role, instanceProfile);
 
+    // go-to-k/cdkd#4606: the fix-forward arm (Phase 3b of `verify.sh`). The
+    // first deploy adds a cluster whose bootstrap action cannot be fetched, so
+    // it terminates with errors after `RunJobFlow` made it, and runs as a role
+    // denied `SetTerminationProtection`, so the create's own cleanup fails and
+    // the journal holds the cluster as a proven orphan. The
+    // `CLUSTER_FIX_FORWARD` redeploy keeps the logical id without the bootstrap
+    // action, the CREATE succeeds, and that deploy must delete the earlier one.
+    // Same name and fixture tag as `Cluster`, so every cluster sweep covers it.
+    if (process.env.INJECT_CLUSTER_ORPHAN === 'true') {
+      const fixForward = process.env.CLUSTER_FIX_FORWARD === 'true';
+      const orphanCluster = new emr.CfnCluster(this, 'OrphanCluster', {
+        name: 'cdkd-integ-emr',
+        releaseLabel: 'emr-7.9.0',
+        serviceRole: serviceRole.roleArn,
+        jobFlowRole: instanceProfile.ref,
+        autoTerminationPolicy: { idleTimeout: 3600 },
+        ...(!fixForward && {
+          bootstrapActions: [
+            {
+              name: 'cdkd-integ-missing-script',
+              scriptBootstrapAction: {
+                path: 's3://elasticmapreduce/bootstrap-actions/cdkd-integ-4606-missing.sh',
+              },
+            },
+          ],
+        }),
+        instances: {
+          ec2SubnetId: vpc.publicSubnets[0].subnetId,
+          emrManagedMasterSecurityGroup: emrSg.securityGroupId,
+          emrManagedSlaveSecurityGroup: emrSg.securityGroupId,
+          keepJobFlowAliveWhenNoSteps: true,
+          terminationProtected: false,
+          masterInstanceGroup: {
+            instanceCount: 1,
+            instanceType: 'm5.xlarge',
+            market: 'ON_DEMAND',
+            name: 'Master',
+          },
+        },
+        tags: [{ key: 'cdkd-integ', value: 'emr-cluster' }],
+      });
+      orphanCluster.node.addDependency(serviceRole, ec2Role, instanceProfile);
+    }
+
     new cdk.CfnOutput(this, 'ClusterId', { value: cluster.ref });
     // Fn::GetAtt MasterPublicDNS — proves the provider's attribute wiring.
     new cdk.CfnOutput(this, 'MasterPublicDns', { value: cluster.attrMasterPublicDns });
