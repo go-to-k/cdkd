@@ -230,6 +230,45 @@ describe('a name-keyed orphan gets the flag only when its identity is proven (go
     expect(resourceIdentity).not.toHaveBeenCalled();
   });
 
+  it('withholds it, and warns, when the live read gives no answer', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned, resourceIdentity } = tableCtx(del, undefined);
+    await replayFailedOperations(
+      [tableOrphan({ createdResourceIdentity: 'tok-1' })],
+      {},
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(resourceIdentity).toHaveBeenCalledOnce();
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(warned()).toContain('leaving deletion protection on partially-created Table');
+  });
+
+  // A queue has no deletion protection: the flag would strip nothing.
+  it('withholds it silently on a name-keyed type with no protection', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned, resourceIdentity } = tableCtx(del, 'tok-1');
+    await replayFailedOperations(
+      [
+        tableOrphan({
+          logicalId: 'Queue',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/q',
+          attemptedProperties: { QueueName: 'q' },
+        }),
+      ],
+      {},
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(del).toHaveBeenCalledOnce();
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(resourceIdentity).not.toHaveBeenCalled();
+    expect(warned()).not.toContain('leaving deletion protection');
+  });
+
   it('withholds it silently when the resource is gone', async () => {
     const { del, seen } = recordingDelete();
     const { ctx, warned } = tableCtx(del, RESOURCE_NOT_FOUND);

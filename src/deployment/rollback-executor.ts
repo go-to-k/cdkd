@@ -330,6 +330,7 @@ import {
   readResourceIdentity,
 } from './rollback-executor/orphan-identity.js';
 import { RESOURCE_NOT_FOUND } from '../types/resource.js';
+import { removeProtectionTypes } from '../provisioning/remove-protection-types.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
 /**
@@ -345,6 +346,8 @@ async function protectionRemovalProven(
 ): Promise<boolean> {
   if (op.physicalIdRecoveredFromError !== true) return true;
   if (!orphanDeleteNeedsIdentity(op.resourceType)) return true;
+  // The flag strips nothing on a type with no protection: nothing to warn about.
+  if (!removeProtectionTypes().includes(op.resourceType)) return false;
   const journaled = op.createdResourceIdentity;
   if (typeof journaled === 'string' && journaled !== '' && op.physicalId) {
     const live = await readResourceIdentity(
