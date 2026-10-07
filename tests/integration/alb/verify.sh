@@ -680,15 +680,15 @@ esac
 assert_gone "#4689: the recreated listener's predecessor ${P5_OLD_LISTENER} still exists" \
   aws elbv2 describe-listeners --listener-arns "${P5_OLD_LISTENER}" --region "${AWS_REGION}"
 # The live rule on the NEW listener: the recorded ARN, priority 1, the
-# /health path condition and the fixed 200 response.
+# /health path condition and the whole fixed response (200, text/plain, OK).
 P5_RULE_JSON="$(aws elbv2 describe-rules --listener-arn "${P5_NEW_LISTENER}" --region "${AWS_REGION}" \
   --query "Rules[?IsDefault==\`false\`]" --output json)"
 P5_RULE_SHAPE="$(printf '%s' "${P5_RULE_JSON}" | jq -r '
   if length != 1 then "count=\(length)" else .[0] |
-    "\(.RuleArn) \(.Priority) \([.Conditions[] | select(.Field == "path-pattern") | (.PathPatternConfig.Values // .Values)[]] | join(",")) \(.Actions[0].Type) \(.Actions[0].FixedResponseConfig.StatusCode)"
+    "\(.RuleArn) \(.Priority) \([.Conditions[] | select(.Field == "path-pattern") | (.PathPatternConfig.Values // .Values)[]] | join(",")) \(.Actions[0].Type) \(.Actions[0].FixedResponseConfig.StatusCode) \(.Actions[0].FixedResponseConfig.ContentType) \(.Actions[0].FixedResponseConfig.MessageBody)"
   end')"
-if [ "${P5_RULE_SHAPE}" != "${P5_NEW_RULE} 1 /health fixed-response 200" ]; then
-  echo "FAIL: #4689: the new listener's rule is '${P5_RULE_SHAPE}', expected '${P5_NEW_RULE} 1 /health fixed-response 200'" >&2
+if [ "${P5_RULE_SHAPE}" != "${P5_NEW_RULE} 1 /health fixed-response 200 text/plain OK" ]; then
+  echo "FAIL: #4689: the new listener's rule is '${P5_RULE_SHAPE}', expected '${P5_NEW_RULE} 1 /health fixed-response 200 text/plain OK'" >&2
   exit 1
 fi
 # The record must hold the NEW listener: one keeping the old ARN would make
