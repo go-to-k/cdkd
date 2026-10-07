@@ -737,8 +737,10 @@ before the guard existed (issue
 also pre-flights the bucket NAME before `CreateBucket` when the target region is
 `us-east-1`, and shares one `assertStateBucketRegion` between `update()` and
 `delete()`. `.claude/rules/provider-resource-identity.md` carries the mechanism
-and the three rules worth reusing: the pre-flight informs the partial-create CLEANUP GATE only
-and never replaces `CreateBucket` (the ownership oracle), an unanswered probe is
+and the three rules worth reusing: the pre-flight informs the partial-create CLEANUP GATE (and,
+after an ambiguous attempt of the same create, a refusal that adopts nothing, issue
+[#4639](https://github.com/go-to-k/cdkd/issues/4639)) and never licenses an adoption in place of
+`CreateBucket` (the ownership oracle), an unanswered probe is
 kept distinct from a confirmed absence, and the state-record guard PROCEEDS on
 both rather than stranding every update and destroy for a least-privilege role.
 
