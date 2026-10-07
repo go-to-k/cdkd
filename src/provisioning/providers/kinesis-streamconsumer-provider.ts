@@ -32,6 +32,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import {
@@ -90,6 +91,7 @@ function consumerArnParts(
  */
 export class KinesisStreamConsumerProvider implements ResourceProvider {
   private client: KinesisClient | undefined;
+  private createClient: KinesisClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('KinesisStreamConsumerProvider');
 
@@ -103,8 +105,34 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new KinesisClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `RegisterStreamConsumer` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry; built in {@link getClient}'s step, so both
+   * capture the region and identity active at that ONE call.
+   *
+   * `RegisterStreamConsumer` carries no idempotency token, and a consumer name
+   * is unique per stream, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): KinesisClient {
+    this.getClient();
+    return this.createClient as KinesisClient;
   }
 
   /**
@@ -145,7 +173,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
 
     let createdArn: string | undefined;
     try {
-      const resp = await this.getClient().send(
+      const resp = await this.getCreateClient().send(
         new RegisterStreamConsumerCommand({
           StreamARN: streamArn,
           ConsumerName: consumerName,

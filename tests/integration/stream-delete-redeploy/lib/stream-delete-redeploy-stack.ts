@@ -16,6 +16,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *
  * covers: AWS::KinesisFirehose::DeliveryStream
  * covers: AWS::Kinesis::Stream
+ * covers: AWS::Kinesis::StreamConsumer
+ *
+ * The named consumer rides the stream so a live `RegisterStreamConsumer` goes
+ * through the provider's dedicated create client (issue #4639).
  *
  * The stream and role names are stable within a run (`CDKD_SRD_RUN_ID`) so the
  * redeploy re-creates the SAME names. The bucket name carries the phase
@@ -29,11 +33,16 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
     const runId = process.env.CDKD_SRD_RUN_ID ?? 'manual';
     const phase = process.env.CDKD_SRD_PHASE ?? 'a';
 
-    new kinesis.Stream(this, 'Stream', {
+    const stream = new kinesis.Stream(this, 'Stream', {
       streamName: `cdkd-stream-redeploy-${runId}`,
       streamMode: kinesis.StreamMode.PROVISIONED,
       shardCount: 1,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new kinesis.CfnStreamConsumer(this, 'Consumer', {
+      consumerName: `cdkd-stream-redeploy-${runId}`,
+      streamArn: stream.streamArn,
     });
 
     const bucket = new s3.Bucket(this, 'DeliveryBucket', {

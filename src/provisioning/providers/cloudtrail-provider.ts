@@ -42,6 +42,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
@@ -169,6 +170,7 @@ function describeValue(value: unknown): string {
  */
 export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
+  private createClient: CloudTrailClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CloudTrailProvider');
 
@@ -215,8 +217,34 @@ export class CloudTrailProvider implements ResourceProvider {
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new CloudTrailClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateTrail` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry; built in {@link getClient}'s step, so both
+   * capture the region and identity active at that ONE call.
+   *
+   * `CreateTrail` carries no idempotency token, and a trail name is unique
+   * per account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): CloudTrailClient {
+    this.getClient();
+    return this.createClient as CloudTrailClient;
   }
 
   async create(
@@ -270,7 +298,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: the created trail's ARN (delete()'s physical id).
     let createdTrailArn: string | undefined;
     try {
-      const result = await this.getClient().send(
+      const result = await this.getCreateClient().send(
         new CreateTrailCommand({
           Name: trailName ?? logicalId,
           S3BucketName: s3BucketName,
