@@ -699,12 +699,30 @@ export function markNoEchoParameterClass(secrets: RecordedSecretValues, plaintex
     sideSetOf(noEchoParameterValuesOf, secrets).add(plaintext);
 }
 
-/** Is `plaintext` a fresh value of `secrets` that a `NoEcho` PARAMETER supplied? */
+/**
+ * Is `plaintext` a fresh value of `secrets` that a `NoEcho` PARAMETER supplied?
+ *
+ * Only while its map entry is still the mask (go-to-k/cdkd#4043 review round
+ * 12): the resolver's dynamic-reference seam overwrites an entry with its
+ * secret expression (a `{{resolve:...}}` resolving to the same plaintext),
+ * while this side set keeps the mark. A stale mark must not make a secret
+ * pair read as a `NoEcho` parameter's value.
+ */
 export function isNoEchoParameterPlaintext(
   secrets: RecordedSecretValues,
   plaintext: string
 ): boolean {
-  return noEchoParameterValuesOf.get(secrets)?.has(plaintext) === true;
+  return (
+    noEchoParameterValuesOf.get(secrets)?.has(plaintext) === true &&
+    isMaskOnlyPlaintext(secrets, plaintext)
+  );
+}
+
+/** The `NoEcho` PARAMETER values of `secrets` whose map entry is still the mask. */
+export function noEchoParameterPlaintextsOf(secrets: RecordedSecretValues): string[] {
+  return [...(noEchoParameterValuesOf.get(secrets) ?? [])].filter((plaintext) =>
+    isMaskOnlyPlaintext(secrets, plaintext)
+  );
 }
 
 /**

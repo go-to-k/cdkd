@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
@@ -74,8 +74,11 @@ const LIST = 'alpha-piece-r11,bravo-piece-r11';
 const SHORT_LIST = 'ab,cd';
 const PORT = '5432';
 
+const tempDirs: string[] = [];
+
 function childTemplatePath(): string {
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-4043-r11-'));
+  tempDirs.push(dir);
   const path = join(dir, 'child.nested.template.json');
   const child = {
     Parameters: {
@@ -109,17 +112,30 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
   beforeEach(() => {
     vi.clearAllMocks();
     states = new Map<string, StackState>();
+    // What "AWS" holds per physical id: what the provider was last sent, so
+    // a readback answers it exactly (an unchanged redeploy sends nothing).
+    const live = new Map<string, Record<string, unknown>>();
     leaf = {
-      create: vi.fn((logicalId: string) =>
-        Promise.resolve({ physicalId: `${logicalId}-phys`, attributes: {} })
-      ),
-      update: vi.fn((_id: string, physicalId: string) =>
-        Promise.resolve({ physicalId, wasReplaced: false })
+      create: vi.fn((logicalId: string, _type: string, properties: Record<string, unknown>) => {
+        live.set(`${logicalId}-phys`, structuredClone(properties));
+        return Promise.resolve({ physicalId: `${logicalId}-phys`, attributes: {} });
+      }),
+      update: vi.fn(
+        (_id: string, physicalId: string, _type: string, properties: Record<string, unknown>) => {
+          live.set(physicalId, structuredClone(properties));
+          return Promise.resolve({ physicalId, wasReplaced: false });
+        }
       ),
       delete: vi.fn().mockResolvedValue(undefined),
       getAttribute: vi.fn(),
-      readCurrentState: vi.fn().mockResolvedValue(undefined),
+      readCurrentState: vi.fn((physicalId: string) =>
+        Promise.resolve(live.has(physicalId) ? structuredClone(live.get(physicalId)) : undefined)
+      ),
     } as unknown as ResourceProvider;
+  });
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
   function run(): Promise<Awaited<ReturnType<DeployEngine['deploy']>>> {
@@ -234,5 +250,25 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
     for (const needle of ['alpha-piece-r11', 'bravo-piece-r11', '"cd"', '"ab"', '5432']) {
       expect(everySave).not.toContain(needle);
     }
+  });
+
+  it('an unchanged second deploy sends nothing to the child resources and persists no value (review round 12)', async () => {
+    await run();
+    expect(vi.mocked(leaf.create)).toHaveBeenCalledTimes(3);
+    vi.mocked(leaf.create).mockClear();
+    vi.mocked(leaf.update).mockClear();
+    vi.mocked(leaf.readCurrentState!).mockClear();
+
+    await run();
+
+    // Premise: the second deploy reached the child and read its readers back.
+    expect(vi.mocked(leaf.readCurrentState!).mock.calls.length).toBeGreaterThan(0);
+    expect(vi.mocked(leaf.create)).not.toHaveBeenCalled();
+    expect(vi.mocked(leaf.update)).not.toHaveBeenCalled();
+    const everySave = JSON.stringify(saves.mock.calls);
+    for (const needle of ['alpha-piece-r11', 'bravo-piece-r11', '"cd"', '"ab"', '5432']) {
+      expect(everySave).not.toContain(needle);
+    }
+    expect(states.get(CHILD)!.resources['ListReader']!.properties['Value']).toBe('***');
   });
 });

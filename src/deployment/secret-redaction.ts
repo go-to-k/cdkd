@@ -78,6 +78,7 @@ export {
   isSecretExpressionByVerdictOrSpelling,
   recordNoEchoParameterFreshValue,
   isNoEchoParameterPlaintext,
+  noEchoParameterPlaintextsOf,
   noEchoParameterValuesOf,
   withoutNoEchoParameterEntries,
   markNoEchoParameterClass,

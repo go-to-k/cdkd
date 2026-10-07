@@ -14,7 +14,7 @@
 # to state or the exports index.
 #
 # Phases:
-#   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token-...` line
+#   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: ...` line
 #      prints the value masked, AWS holds the REAL value, and state.json holds
 #      `***` at the leaf, named in `noEchoLeaves` (schema v11, #4043), with no
 #      copy of the value anywhere in the blob.
@@ -391,11 +391,20 @@ if [ "${NOECHO_SHAPE}" != "true" ]; then
   exit 1
 fi
 # PREMISE: the resolver logged the line this phase reads, masked. Without it
-# the negative below passes for free on a resolver that stopped logging. The
-# frame is `token-` (inert) rather than `token=`: an assignment-shaped value is
-# DESCRIBED on that line (go-to-k/cdkd#4161), which would hide the mask.
-if [[ "${DEPLOY_OUT_P1}" != *'Resolved Fn::Sub: token-***'* ]]; then
-  echo "FAIL: premise: the Phase 1 --verbose log carries no masked 'Resolved Fn::Sub: token-***' line (issue #1998)" >&2
+# the negative below passes for free on a resolver that stopped logging.
+# Schema v11 (#4043): the value is also a recorded mask-only entry, so the
+# substitution's log twin (`token-***`) and the value's own needle mask BOTH
+# fire, and the line gives both up for a whole `***` (logTwinText, #3100):
+# it prints no part of the value, and none of the inert frame either.
+# SENTINEL: a `Resolved Fn::Sub:` line at all. Present without the masked
+# shape means the wording or the masking drifted, not that nothing logged.
+if [[ "${DEPLOY_OUT_P1}" != *'Resolved Fn::Sub:'* ]]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Sub:' line at all -- the resolver stopped logging it (issue #1998)" >&2
+  diag_output "${DEPLOY_OUT_P1}"
+  exit 1
+fi
+if ! grep -qE 'Resolved Fn::Sub: \*\*\*$' <<< "${DEPLOY_OUT_P1}"; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries 'Resolved Fn::Sub:' lines but none is the whole mask 'Resolved Fn::Sub: ***' -- the masking or its wording drifted (issue #1998 / #4043)" >&2
   diag_output "${DEPLOY_OUT_P1}"
   exit 1
 fi

@@ -12,7 +12,7 @@ import {
   maskWholeValue,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
-  noEchoParameterValuesOf,
+  noEchoParameterPlaintextsOf,
   valueAtCoordinate,
   type NoEchoCoordinate,
   type NoEchoPositionSources,
@@ -282,9 +282,9 @@ export function warnNoEchoPhysicalId(
   secrets: RecordedSecretValues | undefined
 ): void {
   if (secrets === undefined || this.noEchoPhysicalIdWarned.has(logicalId)) return;
-  const values = noEchoParameterValuesOf.get(secrets);
-  if (values === undefined || typeof record.physicalId !== 'string') return;
-  if (![...values].some((value) => record.physicalId.includes(value))) return;
+  const values = noEchoParameterPlaintextsOf(secrets);
+  if (values.length === 0 || typeof record.physicalId !== 'string') return;
+  if (!values.some((value) => record.physicalId.includes(value))) return;
   this.noEchoPhysicalIdWarned.add(logicalId);
   this.logger.warn(
     this.maskForResource(
@@ -463,7 +463,7 @@ export async function noEchoAttributeOverridesFor(
     const live = await read;
     if (live === undefined) continue;
     const secrets = this.perResourceSecrets.get(logicalId)!;
-    const fresh = [...(noEchoParameterValuesOf.get(secrets) ?? [])];
+    const fresh = noEchoParameterPlaintextsOf(secrets);
     const positioned = this.noEchoPositionedValues.get(logicalId) ?? new Set<string>();
     const served: Record<string, unknown> = {};
     for (const attribute of attributes) {

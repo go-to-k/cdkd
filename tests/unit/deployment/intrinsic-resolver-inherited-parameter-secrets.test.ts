@@ -610,6 +610,50 @@ describe('IntrinsicFunctionResolver.resolveParameters — the inherited-secret s
     ).resolves.toEqual({ [PARAM]: 5432 });
   });
 
+  describe('a NoEcho parameter value and a secret reference resolving to the SAME plaintext (round 12)', () => {
+    // The resolver's dynamic-reference seam OVERWRITES the map entry with the
+    // reference (`recorded.set(resolved, fullMatch)` in dynamic-refs.ts),
+    // while the mask-only recorder never overwrites one; the NoEcho
+    // parameter-class side set keeps its mark either way. A stale mark must
+    // not hide the secret pair from the coercion refusal.
+    const SHARED = 'shared-secret-piece-1,shared-secret-piece-2';
+    const REF = '{{resolve:secretsmanager:prod/db:SecretString:::}}';
+
+    it('refuses when the NoEcho value was recorded FIRST and the reference overwrote it', async () => {
+      const bag: RecordedSecretValues = new Map();
+      recordNoEchoParameterFreshValue(SHARED, bag);
+      bag.set(SHARED, REF); // the seam's unconditional write
+      recordResolvedPair(bag, REF, SHARED);
+      await expect(
+        resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: SHARED }, {
+          inheritedSecrets: bag,
+        })
+      ).rejects.toThrow(/declared 'Type: CommaDelimitedList'/);
+    });
+
+    it('refuses when the reference was recorded FIRST and the NoEcho value after it', async () => {
+      const bag: RecordedSecretValues = new Map([[SHARED, REF]]);
+      recordResolvedPair(bag, REF, SHARED);
+      recordNoEchoParameterFreshValue(SHARED, bag);
+      expect(bag.get(SHARED)).toBe(REF); // the mask-only recorder never overwrites
+      await expect(
+        resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: SHARED }, {
+          inheritedSecrets: bag,
+        })
+      ).rejects.toThrow(/declared 'Type: CommaDelimitedList'/);
+    });
+
+    it('does not refuse the NoEcho value alone (the control)', async () => {
+      const bag: RecordedSecretValues = new Map();
+      recordNoEchoParameterFreshValue(SHARED, bag);
+      await expect(
+        resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: SHARED }, {
+          inheritedSecrets: bag,
+        })
+      ).resolves.toEqual({ [PARAM]: SHARED.split(',') });
+    });
+  });
+
   it('still refuses a secret pair beside a NoEcho parameter entry in the same bag', async () => {
     const JSON_SECRET = '{"user":"root","pass":"hunter2"}';
     const bag: RecordedSecretValues = new Map([
