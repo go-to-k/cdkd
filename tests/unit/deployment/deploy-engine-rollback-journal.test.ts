@@ -2317,7 +2317,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const kept = warned.find((w) => w.includes('were not deleted'));
       expect(kept).toContain('is kept with just them; the next successful deploy retries.');
       // A plain rollback has none of the deploy's ownership evidence.
-      expect(warned.some((w) => w.includes('cdkd rollback'))).toBe(false);
+      // go-to-k/cdkd#4633: only the journal-only `--drop-failed` is named.
+      expect(warned.filter((w) => w.includes('cdkd rollback'))).toEqual([
+        expect.stringMatching(/^Drop with: cdkd rollback \S+ --stack-region us-east-1 --drop-failed Orphan\b/),
+      ]);
     });
 
     it('a journal rewrite that fails keeps the whole journal, marks the deploy ids superseded, and names no rollback', async () => {
@@ -2339,7 +2342,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const kept = warned.find((w) => w.includes('were not deleted'));
       expect(kept).toContain('is kept; the next successful deploy retries.');
       expect(kept).not.toContain('with just them');
-      expect(warned.some((w) => w.includes('cdkd rollback'))).toBe(false);
+      // go-to-k/cdkd#4633: only the journal-only `--drop-failed` is named.
+      expect(warned.filter((w) => w.includes('cdkd rollback'))).toEqual([
+        expect.stringMatching(/^Drop with: cdkd rollback \S+ --stack-region us-east-1 --drop-failed Orphan\b/),
+      ]);
     });
 
     it('an unexpected failure acting on the journal keeps it and counts one entry', async () => {

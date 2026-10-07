@@ -21,6 +21,8 @@ import {
 } from '../../utils/display-safe.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -62,6 +64,9 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
  */
 export class SSMParameterProvider implements ResourceProvider {
   private ssmClient: SSMClient;
+  private createClient: Promise<SSMClient> | undefined;
+  /** The credential half of the `AwsClients` `ssmClient` came from (#4639). */
+  private readonly credentialConfig: CredentialConfig;
   private logger = getLogger().child('SSMParameterProvider');
 
   /**
@@ -99,6 +104,50 @@ export class SSMParameterProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.ssmClient = awsClients.ssm;
+    // A test double may carry no `credentialConfig`: degrade to `{}`, as
+    // `ambientCredentialConfig` does.
+    this.credentialConfig =
+      (awsClients as { credentialConfig?: CredentialConfig }).credentialConfig ?? {};
+  }
+
+  /**
+   * The client `create`'s `PutParameter` (`Overwrite: false`) goes through:
+   * SDK retries on, except a 5xx (`withoutServerErrorRetries`, issue #4639).
+   * Separate so every other call -- `update`'s overwriting `PutParameter`
+   * included, and every other user of `getAwsClients().ssm` -- keeps the full
+   * SDK retry. Built in the shared client's REGION (read from it, as
+   * `config.region()` resolves it), and with the credentials of the SAME
+   * `AwsClients` that client came from, read at construction, so a later
+   * `setAwsClients` switch cannot give the create another identity. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it. A
+   * shared client that is not an `SSMClient` -- a unit-test double -- is used
+   * as is: `AwsClients` always supplies a real one.
+   *
+   * `PutParameter` carries no idempotency token, and with `Overwrite: false`
+   * a parameter name is unique per account and region, so the SDK's own
+   * replay of a 5xx whose request had succeeded collides with the parameter
+   * the first send made, and that `ParameterAlreadyExists` surfaced from the
+   * engine's FIRST attempt as a name somebody else holds. Refused here, the
+   * 5xx reaches the deploy engine's retry, which marks the create as possibly
+   * replayed (`withRetry`, #3978). Nothing is adopted on that collision: a
+   * name is not attribution (`docs/provider-rules.md`, "Adopt only on EXACT
+   * attribution").
+   */
+  private getCreateClient(): Promise<SSMClient> {
+    const shared = this.ssmClient;
+    if (!(shared instanceof SSMClient)) return Promise.resolve(shared);
+    this.createClient ??= shared.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(
+          new SSMClient({ ...clientDefaultsFor(this.credentialConfig), region })
+        ),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
   }
 
   /** `aws:`-prefixed keys are reserved: AWS rejects a user's attempt to set or remove them. */
@@ -356,7 +405,7 @@ export class SSMParameterProvider implements ResourceProvider {
         putParams.DataType = properties['DataType'] as string;
       }
 
-      await this.ssmClient.send(new PutParameterCommand(putParams));
+      await (await this.getCreateClient()).send(new PutParameterCommand(putParams));
       leftBehind = true;
 
       // PutParameter has succeeded (Overwrite: false, so AWS has committed
