@@ -36,6 +36,19 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+// The create goes through its own S3Client (issue #4639); answer it with the
+// same send double as the shared one.
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({
+      send: mockS3Send,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),

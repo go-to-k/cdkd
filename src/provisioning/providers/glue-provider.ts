@@ -133,6 +133,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -985,6 +986,36 @@ function makeCallerAccountResolver(region: string | undefined): () => Promise<st
 }
 
 /**
+ * A Glue provider's two clients, built in ONE synchronous step so both capture
+ * the region and identity active at that call: `client` for every call, and
+ * `createClient` for the provider's main create only -- SDK retries on, except
+ * a 5xx (`withoutServerErrorRetries`, issue #4639).
+ *
+ * None of `CreateDatabase`, `CreateTable`, `CreateWorkflow`,
+ * `CreateSecurityConfiguration`, `CreateJob`, `CreateCrawler`,
+ * `CreateConnection` or `CreateTrigger` carries an idempotency token, and each
+ * name is unique in its scope (catalog, database, account and region), so the
+ * SDK's own replay of a 5xx whose request had succeeded collides with what the
+ * first send made, and that `AlreadyExistsException` surfaced from the
+ * engine's FIRST attempt as a name somebody else holds. Refused here, the 5xx
+ * reaches the deploy engine's retry, which marks the create as possibly
+ * replayed (`withRetry`, #3978). Nothing is adopted on that collision: a name
+ * is not attribution (`docs/provider-rules.md`, "Adopt only on EXACT
+ * attribution").
+ */
+function newGlueClients(region: string | undefined): {
+  client: GlueClient;
+  createClient: GlueClient;
+} {
+  return {
+    client: new GlueClient({ ...ambientClientDefaults(), ...(region ? { region } : {}) }),
+    createClient: withoutServerErrorRetries(
+      new GlueClient({ ...ambientClientDefaults(), ...(region ? { region } : {}) })
+    ),
+  };
+}
+
+/**
  * SDK Provider for AWS Glue resources
  *
  * Supports:
@@ -996,6 +1027,7 @@ function makeCallerAccountResolver(region: string | undefined): () => Promise<st
  */
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueProvider');
@@ -1026,12 +1058,17 @@ export class GlueProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -1171,7 +1208,7 @@ export class GlueProvider implements ResourceProvider {
     const catalogId = properties['CatalogId'] as string | undefined;
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateDatabaseCommand({
           CatalogId: catalogId,
           // No `onUnusable` on an ordinary template-path create, so a
@@ -1541,7 +1578,7 @@ export class GlueProvider implements ResourceProvider {
     const physicalId = `${databaseName}|${tableName}`;
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateTableCommand({
           CatalogId: catalogId,
           DatabaseName: databaseName,
@@ -3159,6 +3196,7 @@ export class GlueProvider implements ResourceProvider {
  */
 export class GlueWorkflowProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
   private readonly providerRegion = ambientRegion();
@@ -3182,12 +3220,17 @@ export class GlueWorkflowProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   async create(
@@ -3220,7 +3263,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
     const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateWorkflowCommand({
           Name: name,
           ...(properties['Description'] !== undefined && {
@@ -3516,6 +3559,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
  */
 export class GlueSecurityConfigurationProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('GlueSecurityConfigurationProvider');
 
@@ -3534,12 +3578,17 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   async create(
@@ -3578,7 +3627,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     }
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateSecurityConfigurationCommand({
           Name: name,
           EncryptionConfiguration: buildEncryptionConfiguration(encryptionConfiguration),
@@ -4126,6 +4175,7 @@ async function fetchGlueTags(
  */
 export class GlueJobProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
   private readonly providerRegion = ambientRegion();
@@ -4174,12 +4224,17 @@ export class GlueJobProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   private getStsClient(): STSClient {
@@ -4226,7 +4281,7 @@ export class GlueJobProvider implements ResourceProvider {
     // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
     const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateJobCommand({
           Name: name,
           Role: role,
@@ -4750,6 +4805,7 @@ function pickDefined(obj: Record<string, unknown>): Record<string, unknown> {
  */
 export class GlueCrawlerProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
   private readonly providerRegion = ambientRegion();
@@ -4789,12 +4845,17 @@ export class GlueCrawlerProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   private getStsClient(): STSClient {
@@ -4841,7 +4902,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
     // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
     const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateCrawlerCommand({
           Name: name,
           Role: role,
@@ -5297,6 +5358,7 @@ function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, u
  */
 export class GlueConnectionProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueConnectionProvider');
@@ -5316,12 +5378,17 @@ export class GlueConnectionProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   async create(
@@ -5349,7 +5416,7 @@ export class GlueConnectionProvider implements ResourceProvider {
     const name = (connectionInput['Name'] as string | undefined) ?? logicalId;
     const catalogId = properties['CatalogId'] as string | undefined;
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateConnectionCommand({
           ...(catalogId && { CatalogId: catalogId }),
           ConnectionInput: buildConnectionInput(connectionInput, name),
@@ -5652,6 +5719,7 @@ function buildConnectionInput(ci: Record<string, unknown>, fallbackName: string)
  */
 export class GlueTriggerProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private createClient: GlueClient | undefined;
   private stsClient: STSClient | undefined;
   private cachedAccountId: string | undefined;
   private readonly providerRegion = ambientRegion();
@@ -5686,12 +5754,17 @@ export class GlueTriggerProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
+      ({ client: this.client, createClient: this.createClient } = newGlueClients(
+        this.providerRegion
+      ));
     }
     return this.client;
+  }
+
+  /** The main create's client (issue #4639); see {@link newGlueClients}. */
+  private getCreateClient(): GlueClient {
+    this.getClient();
+    return this.createClient as GlueClient;
   }
 
   private getStsClient(): STSClient {
@@ -5738,7 +5811,7 @@ export class GlueTriggerProvider implements ResourceProvider {
     // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
     const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateTriggerCommand({
           Name: name,
           Type: type as 'SCHEDULED' | 'CONDITIONAL' | 'ON_DEMAND' | 'EVENT',

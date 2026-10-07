@@ -49,6 +49,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
@@ -124,6 +125,7 @@ const FIREHOSE_DELETE_MAX_WAIT_MS = 10 * 60 * 1000;
  */
 export class FirehoseProvider implements ResourceProvider {
   private client: FirehoseClient | undefined;
+  private createClient: FirehoseClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('FirehoseProvider');
 
@@ -154,8 +156,34 @@ export class FirehoseProvider implements ResourceProvider {
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new FirehoseClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateDeliveryStream` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry; built in {@link getClient}'s step, so both
+   * capture the region and identity active at that ONE call.
+   *
+   * `CreateDeliveryStream` carries no idempotency token, and a delivery stream
+   * name is unique per account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): FirehoseClient {
+    this.getClient();
+    return this.createClient as FirehoseClient;
   }
 
   /**
@@ -440,7 +468,7 @@ export class FirehoseProvider implements ResourceProvider {
         input.Tags = tags.map((t) => ({ Key: t.Key, Value: t.Value })) as Tag[];
       }
 
-      const response = await this.getClient().send(new CreateDeliveryStreamCommand(input));
+      const response = await this.getCreateClient().send(new CreateDeliveryStreamCommand(input));
 
       const physicalId =
         deliveryStreamName ||

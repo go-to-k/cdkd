@@ -122,6 +122,7 @@ JOB_NAME_FALLBACK="${LOWER}-etl-job"
 WORKFLOW_NAME_FALLBACK="${LOWER}-workflow"
 CRAWLER_NAME_FALLBACK="${LOWER}-crawler"
 TRIGGER_NAME_FALLBACK="${LOWER}-trigger"
+CONNECTION_NAME="${LOWER}-connection"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -158,6 +159,8 @@ cleanup() {
   aws glue delete-table --database-name "${PIPE_DB_NAME}" --name "${PIPE_DB_TABLE_NAME}" \
     --region "${REGION}" >/dev/null 2>&1
   aws glue delete-database --name "${PIPE_DB_NAME}" --region "${REGION}" >/dev/null 2>&1
+  aws glue delete-connection --connection-name "${CONNECTION_NAME}" \
+    --region "${REGION}" >/dev/null 2>&1
   local destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
@@ -542,6 +545,14 @@ if aws glue get-trigger --name "${TRIGGER_NAME}" --region "${REGION}" >/dev/null
   echo "    OK: trigger ${TRIGGER_NAME} exists"
 else
   echo "FAIL: trigger ${TRIGGER_NAME} missing" >&2
+  exit 1
+fi
+
+# --- Sanity: connection exists (issue #4639) ---------------------------
+if aws glue get-connection --name "${CONNECTION_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "    OK: connection ${CONNECTION_NAME} exists"
+else
+  echo "FAIL: connection ${CONNECTION_NAME} missing" >&2
   exit 1
 fi
 
@@ -934,6 +945,7 @@ for chk in \
   "get-crawler --name ${CRAWLER_NAME}" \
   "get-trigger --name ${TRIGGER_NAME}" \
   "get-workflow --name ${WORKFLOW_NAME}" \
+  "get-connection --name ${CONNECTION_NAME}" \
   "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
   "get-table --database-name ${TABLE_DB_NAME} --name ${RENAME_TO}" \
   "get-table --database-name ${TABLE_DB_NAME} --name ${SEP_TABLE_NAME}" \

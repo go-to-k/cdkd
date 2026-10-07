@@ -46,6 +46,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 
@@ -151,6 +152,7 @@ function tableIdentityFromGetTable(
  */
 export class S3TablesProvider implements ResourceProvider {
   private client: S3TablesClient | undefined;
+  private createClient: S3TablesClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('S3TablesProvider');
 
@@ -180,8 +182,35 @@ export class S3TablesProvider implements ResourceProvider {
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new S3TablesClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateTableBucket` / `CreateNamespace` / `CreateTable` go through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry; built in {@link getClient}'s step, so both
+   * capture the region and identity active at that ONE call.
+   *
+   * None of `CreateTableBucket`, `CreateNamespace` or `CreateTable` carries an
+   * idempotency token, and each name is unique in its scope (account and
+   * region, table bucket, namespace), so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): S3TablesClient {
+    this.getClient();
+    return this.createClient as S3TablesClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -340,7 +369,7 @@ export class S3TablesProvider implements ResourceProvider {
     const tags = this.tagListToSdkMap(desiredTags);
 
     try {
-      const result = await this.getClient().send(
+      const result = await this.getCreateClient().send(
         new CreateTableBucketCommand({
           name: tableBucketName,
           ...(tags !== undefined && { tags }),
@@ -559,7 +588,7 @@ export class S3TablesProvider implements ResourceProvider {
     );
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateNamespaceCommand({
           tableBucketARN,
           namespace: [namespaceName],
@@ -726,7 +755,7 @@ export class S3TablesProvider implements ResourceProvider {
     // composite id delete() takes, whatever its response lacked.
     let tableCreated = false;
     try {
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateTableCommand({
           tableBucketARN,
           namespace,
