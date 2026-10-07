@@ -531,12 +531,21 @@ const EIP_ALLOCATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
   'InvalidAllocationID.NotFound',
 ]);
 
+/** `DescribeInstances`'s answer for an instance id EC2 no longer lists. */
+const INSTANCE_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidInstanceID.NotFound']);
+
 const NAT_GATEWAY_ID_PATTERN = /^nat-[0-9a-f]+$/;
 const EIP_ALLOCATION_ID_PATTERN = /^eipalloc-[0-9a-f]+$/;
+const INSTANCE_ID_PATTERN = /^i-[0-9a-f]+$/;
 
 /** go-to-k/cdkd#4606: a NAT gateway physical id's identity, or `undefined` for any other form. */
 function natGatewayIdentity(physicalId: string): string | undefined {
   return NAT_GATEWAY_ID_PATTERN.test(physicalId) ? physicalId : undefined;
+}
+
+/** go-to-k/cdkd#4606: an EC2 instance physical id's identity, or `undefined` for any other form. */
+function instanceIdentity(physicalId: string): string | undefined {
+  return INSTANCE_ID_PATTERN.test(physicalId) ? physicalId : undefined;
 }
 
 /**
@@ -1334,12 +1343,15 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#4606: whether the NAT gateway or Elastic IP a failed CREATE
-   * journaled is the one the record under the same logical id holds (a
-   * fix-forward that created a new one there). Every other type this provider
-   * serves is `'unknown'`.
+   * go-to-k/cdkd#4606: whether the NAT gateway, Elastic IP or EC2 instance a
+   * failed CREATE journaled is the one the record under the same logical id
+   * holds (a fix-forward that created a new one there). Every other type this
+   * provider serves is `'unknown'`.
    *
-   * The identity is the AWS-generated id: a NAT gateway's `nat-…` id, and an
+   * The identity is the AWS-generated id: a NAT gateway's `nat-…` id, an
+   * instance's `i-…` id (the physical id both the SDK create and Cloud
+   * Control record; an instance the create left behind is one whose
+   * wiring failed and whose cleanup terminate failed too), and an
    * Elastic IP's `eipalloc-…` allocation id (carried by the composite
    * `PublicIp|AllocationId` physical id or as a bare id, the fallback the
    * create journals only when the composite fence refused; a bare journaled
@@ -1352,7 +1364,9 @@ export class EC2Provider implements ResourceProvider {
    * else, is `'unknown'`. Equal ids are `'same'` without a read. After the
    * region check, the record's resource must read back live under its own id
    * (a NAT gateway `pending` or `available`; a `failed`, `deleting` or
-   * `deleted` one is gone), else `'unknown'`; the journaled one is then
+   * `deleted` one is gone; an instance in any state short of
+   * `shutting-down` / `terminated`, which EC2 keeps listing for about an
+   * hour), else `'unknown'`; the journaled one is then
    * `'different'` whether it reads back under its own id or AWS reports it
    * gone. A journaled NAT gateway left `failed` by its create is
    * `'different'` too: the settle's delete removes it.
@@ -1379,6 +1393,10 @@ export class EC2Provider implements ResourceProvider {
       journaledId = eipAllocationIdentity(journaledPhysicalId);
       recordId = eipAllocationIdentity(record.physicalId);
       read = (id) => this.readEipAllocationIdIfExists(id);
+    } else if (resourceType === 'AWS::EC2::Instance') {
+      journaledId = instanceIdentity(journaledPhysicalId);
+      recordId = instanceIdentity(record.physicalId);
+      read = (id) => this.readInstanceIdIfLive(id);
     } else {
       return 'unknown';
     }
@@ -1422,6 +1440,36 @@ export class EC2Provider implements ResourceProvider {
     return gateway.State === 'pending' || gateway.State === 'available'
       ? gateway.NatGatewayId
       : undefined;
+  }
+
+  /**
+   * go-to-k/cdkd#4606: the id `DescribeInstances` reports for `instanceId`
+   * while the instance is `pending`, `running`, `stopping` or `stopped`;
+   * `undefined` when EC2 reports it gone (`InvalidInstanceID.NotFound`, or a
+   * `shutting-down` / `terminated` instance). Any other failure, and a
+   * response naming anything but exactly that one instance, throws.
+   */
+  private async readInstanceIdIfLive(instanceId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.ec2Client.send(
+        new DescribeInstancesCommand({ InstanceIds: [instanceId] })
+      );
+    } catch (error) {
+      if (isNamedError(error, INSTANCE_NOT_FOUND_NAMES)) return undefined;
+      throw error;
+    }
+    const instances = (response.Reservations ?? []).flatMap((r) => r.Instances ?? []);
+    if (instances.length !== 1 || typeof instances[0]?.InstanceId !== 'string') {
+      throw new Error('DescribeInstances did not return exactly the instance asked for');
+    }
+    const instance = instances[0];
+    const state = instance.State?.Name;
+    if (state === 'shutting-down' || state === 'terminated') return undefined;
+    if (state === 'pending' || state === 'running' || state === 'stopping' || state === 'stopped') {
+      return instance.InstanceId;
+    }
+    throw new Error('DescribeInstances returned an instance in no known state');
   }
 
   /**
@@ -5879,9 +5927,17 @@ export class EC2Provider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(
-            `EC2 Instance ${physicalId} already terminated (not found), treating as success`
-          );
+          if (context?.failedCreateOrphan === true) {
+            // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+            // exit 0, so say so once. Masked by the caller's printing bag.
+            this.logger.info(
+              safeMsg`  EC2 instance ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+            );
+          } else {
+            this.logger.debug(
+              `EC2 Instance ${physicalId} already terminated (not found), treating as success`
+            );
+          }
           return;
         }
         // `.detail`, never `.summary`: the substring test below is what keeps this

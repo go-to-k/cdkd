@@ -36,6 +36,12 @@
 # resolver arm inside a join) or the group id. Negative control: the stack's
 # own `VpcId` Output still equals its own VPC, which is NOT the default one.
 #
+# Also the issue #4606 arm (Phase 1b): `same-resource-probe.mjs` drives the
+# built `EC2Provider.isSameResource` against live instances -- this stack's two,
+# a throwaway launched and terminated here (still described as `terminated`),
+# and a well-formed id that never existed -- asserting same / different /
+# unknown per case. Before #4606 every instance case answered `unknown`.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -119,6 +125,26 @@ DEFAULT_VPC_SG_NAME="CdkdEc2InstanceIntegDefaultVpcSg"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
   set +eu
+  if [ -n "${PROBE_TOKEN:-}" ]; then
+    # go-to-k/cdkd#4606: the throwaway instance the identity probe launches,
+    # swept by its per-run client token (set BEFORE the launch, so a kill
+    # between `run-instances` and the id capture still reaches it). First,
+    # and waited on: it sits in the stack's subnet, whose delete below fails
+    # while the instance's network interface is still attached.
+    LEAKED_PROBE=$(aws ec2 describe-instances \
+      --filters "Name=client-token,Values=${PROBE_TOKEN}" \
+      --region "${REGION}" \
+      --query 'Reservations[].Instances[?State.Name!=`terminated`].InstanceId[]' \
+      --output text 2>/dev/null)
+    for leaked in ${LEAKED_PROBE}; do
+      aws ec2 terminate-instances \
+        --instance-ids "${leaked}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+      aws ec2 wait instance-terminated \
+        --instance-ids "${leaked}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    done
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # state destroy with --remove-protection so a leftover protected instance
     # is still terminated. Do NOT silence stderr — a partial failure must be
@@ -756,6 +782,71 @@ if [ "${ACTUAL_AZ}" != "${EXPECTED_AZ}" ]; then
 fi
 echo "    OK: Placement.AvailabilityZone == ${ACTUAL_AZ} on AWS (AvailabilityZone silent-drop CLOSED by #1276, instance stayed on the SDK path)"
 
+# --- Phase 1b: the instance identity read (go-to-k/cdkd#4606) --------------
+# A successful deploy deletes a journaled failed-CREATE instance only when
+# `EC2Provider.isSameResource` answers 'different'. The fix-forward that
+# journals one cannot be driven here (the create marks an instance only when
+# its wiring AND its cleanup terminate both fail), so `same-resource-probe.mjs`
+# drives the built provider against live instances: the two this stack holds,
+# a throwaway launched and terminated below (EC2 keeps describing it as
+# `terminated` for about an hour, which no mock proves), and a well-formed id
+# that never existed. Before #4606 every case answered 'unknown'.
+echo "==> Phase 1b: EC2Provider.isSameResource against live instances (issue #4606)"
+# Per run, so the cleanup sweep cannot reach another run's instance.
+PROBE_TOKEN="cdkd-integ-4606-$$-$(date +%s)"
+PROBE_INSTANCE_ID=$(aws ec2 run-instances \
+  --no-cli-auto-prompt \
+  --client-token "${PROBE_TOKEN}" \
+  --image-id "${REPLAY_IMAGE_ID}" \
+  --instance-type t3.nano \
+  ${REPLAY_SUBNET_ID:+--subnet-id "${REPLAY_SUBNET_ID}"} \
+  --count 1 \
+  --region "${REGION}" \
+  --query 'Instances[0].InstanceId' \
+  --output text </dev/null)
+case "${PROBE_INSTANCE_ID}" in
+  i-*) ;;
+  *)
+    echo "FAIL: issue #4606 -- the throwaway probe instance launch answered '${PROBE_INSTANCE_ID}', not an instance id" >&2
+    exit 1
+    ;;
+esac
+aws ec2 terminate-instances --instance-ids "${PROBE_INSTANCE_ID}" --region "${REGION}" >/dev/null
+aws ec2 wait instance-terminated --instance-ids "${PROBE_INSTANCE_ID}" --region "${REGION}"
+# Premise of case (c): EC2 still describes it, as terminated.
+PROBE_STATE=$(aws ec2 describe-instances \
+  --instance-ids "${PROBE_INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].State.Name' \
+  --output text)
+if [ "${PROBE_STATE}" != "terminated" ]; then
+  echo "FAIL: issue #4606 premise not reached -- the throwaway ${PROBE_INSTANCE_ID} describes as '${PROBE_STATE}', expected terminated" >&2
+  exit 1
+fi
+# Premise of case (d): a well-formed id that never existed answers NotFound
+# (a Malformed answer would make the probe exercise the wrong error).
+NEVER_INSTANCE_ID="i-0000000000000000f"
+set +e
+NEVER_OUT=$(aws ec2 describe-instances --instance-ids "${NEVER_INSTANCE_ID}" --region "${REGION}" 2>&1)
+NEVER_RC=$?
+set -e
+if [ "${NEVER_RC}" -eq 0 ] || ! printf '%s' "${NEVER_OUT}" | grep -q 'InvalidInstanceID.NotFound'; then
+  echo "FAIL: issue #4606 premise not reached -- describe-instances ${NEVER_INSTANCE_ID} (rc=${NEVER_RC}) did not answer InvalidInstanceID.NotFound: $(sanitize_aws_output "${NEVER_OUT}")" >&2
+  exit 1
+fi
+set +e
+PROBE_OUT=$(node same-resource-probe.mjs "${REGION}" "${INSTANCE_ID}" "${PUBLIC_INSTANCE_ID}" \
+  "${PROBE_INSTANCE_ID}" "${NEVER_INSTANCE_ID}" 2>&1)
+PROBE_RC=$?
+set -e
+printf '%s\n' "${PROBE_OUT}" | sed 's/^/    /'
+# The rc AND the receipt line only a complete run prints: 8 cases.
+if [ "${PROBE_RC}" -ne 0 ] || ! printf '%s\n' "${PROBE_OUT}" | grep -qx '\[probe\] ALL 8 PASSED'; then
+  echo "FAIL: issue #4606 -- the isSameResource probe exited ${PROBE_RC} without '[probe] ALL 8 PASSED' (output above)" >&2
+  exit 1
+fi
+echo "    OK: isSameResource answers same / different / unknown against live instances (issue #4606)"
+
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -824,4 +915,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity read) ==="
