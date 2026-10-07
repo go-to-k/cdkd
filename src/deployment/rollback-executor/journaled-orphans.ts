@@ -25,6 +25,7 @@ import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import { journaledOrphanPrintingBag, maskEventTextWithBoundBags } from '../secret-name-needles.js';
@@ -179,6 +180,71 @@ export function journaledOrphanLines(orphans: JournaledOrphans, logger: Logger):
 }
 
 /**
+ * go-to-k/cdkd#4633: the way out for a journaled orphan whose delete keeps
+ * failing — `cdkd rollback <stack> --drop-failed <logicalId>` drops that one
+ * entry and keeps every other. `intro` is one line; `commands` holds one
+ * pasteable command per logical id, each named only when it is a plain
+ * identifier (a hole otherwise, which `intro` explains). Undefined for no ids.
+ */
+export function dropFailedCommands(
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): { intro: string; commands: string[] } | undefined {
+  const ids = [...new Set(logicalIds)];
+  if (ids.length === 0) return undefined;
+  const built = ids.map((id) =>
+    pasteableCommand('cdkd rollback', [
+      { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+      // The stack's own region, so a name with state in several regions
+      // addresses this one (as destroy's own hints do).
+      { flag: '--stack-region', value: region, hole: 'region', opts: { plainIdent: true } },
+      { flag: '--drop-failed', value: id, hole: 'logical-id', opts: { plainIdent: true } },
+    ])
+  );
+  const idWithheld = built.some((b) => b.withheld.some((w) => w.hole === 'logical-id'));
+  const intro =
+    `If cdkd can never delete ${ids.length === 1 ? 'it' : 'one of them'} (a cause you cannot fix), ` +
+    'check the resource by hand, then drop just its rollback-journal entry; every other entry is kept.' +
+    withheldTargetClause(built[0]!, 'stack', 'cdkd rollback', "This stack's name") +
+    withheldTargetClause(built[0]!, 'region', 'cdkd rollback', "This stack's region") +
+    // Not `withheldTargetClause`: its remedy reads state records, and this id
+    // is a journal entry's.
+    (idWithheld
+      ? ' A logical id that is not a plain identifier is not named in the command below; read it ' +
+        "from the stack's rollback-journal.json (next to its state.json)."
+      : '');
+  return { intro, commands: built.map((b) => b.command) };
+}
+
+/** {@link dropFailedCommands} as the tail of a thrown message; empty for no ids. */
+export function dropFailedHint(
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): string {
+  const hint = dropFailedCommands(stackName, region, logicalIds);
+  if (hint === undefined) return '';
+  return `\n${hint.intro}` + hint.commands.map((c) => `\nDrop with: ${c}`).join('');
+}
+
+/**
+ * {@link dropFailedCommands} as warnings, one call per line, so each line's
+ * value is flattened by `safeMsg` and none can forge another.
+ */
+export function warnDropFailed(
+  logger: Pick<Logger, 'warn'>,
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[]
+): void {
+  const hint = dropFailedCommands(stackName, region, logicalIds);
+  if (hint === undefined) return;
+  logger.warn(safeMsg`${hint.intro}`);
+  for (const command of hint.commands) logger.warn(safeMsg`Drop with: ${command}`);
+}
+
+/**
  * Replay every collected orphan, newest segment first, in the segment's own
  * prefix scope. Each op is classified as `--revert-failed` classifies it:
  * deleted, kept under `Retain`, snapshotted under `Snapshot`, or skipped with
@@ -190,7 +256,15 @@ export async function deleteJournaledOrphans(
   stateResources: Record<string, ResourceState>,
   stackName: string,
   ctx: RollbackExecutorContext,
-  options: { isInterrupted?: () => boolean } = {}
+  options: {
+    isInterrupted?: () => boolean;
+    /**
+     * go-to-k/cdkd#4633: warn, naming `--drop-failed`, about each orphan whose
+     * delete failed. On by default (`cdkd destroy`); a caller printing its own
+     * retry warning turns it off.
+     */
+    pointAtDrop?: boolean;
+  } = {}
 ): Promise<{
   failures: number;
   warnings: number;
@@ -202,6 +276,11 @@ export async function deleteJournaledOrphans(
    * (go-to-k/cdkd#4612). Counted in `warnings` too.
    */
   leftInPlace: number;
+  /**
+   * go-to-k/cdkd#4633: the logical ids of the orphans whose delete was tried
+   * and failed (never one an interrupt left unreached).
+   */
+  failedLogicalIds: string[];
 }> {
   const total = {
     failures: 0,
@@ -209,8 +288,10 @@ export async function deleteJournaledOrphans(
     interrupted: false,
     handled: [] as Array<{ segment: RollbackJournalSegment; op: FailedOperation }>,
     leftInPlace: 0,
+    failedLogicalIds: [] as string[],
   };
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
+  const failedIds = total.failedLogicalIds;
   // go-to-k/cdkd#3869: each event is masked by the batch's printing bag too,
   // as its log lines are. The op's own masker holds only the names the entry
   // spells, never one it read from a state record. Both callers (destroy, and
@@ -262,6 +343,15 @@ export async function deleteJournaledOrphans(
       total.interrupted = true;
       break;
     }
+    // Not interrupted, so every orphan still pending failed.
+    for (const op of orphanOps) if (pending.has(op)) failedIds.push(op.logicalId);
+  }
+  if (options.pointAtDrop !== false && failedIds.length > 0) {
+    ctx.logger.warn(
+      safeMsg`${failedIds.length} resource(s) a failed deploy of stack ${displayIdent(stackName)} created ` +
+        'could not be deleted (see above); the rollback journal, their only record, keeps them for a re-run.'
+    );
+    warnDropFailed(ctx.logger, stackName, ctx.region, failedIds);
   }
   return total;
 }
@@ -372,6 +462,9 @@ export async function settleJournaledOrphansOnSuccess(args: {
   if (orphans.count === 0) return { unaddressed: 0, keepJournal: false };
   const all = orphans.segments.flatMap(({ segment, ops }) => ops.map((op) => ({ segment, op })));
   let kept: typeof all = all;
+  // go-to-k/cdkd#4633: only an orphan whose delete was tried and failed is
+  // named for `--drop-failed`; one kept unread or unreached is retried.
+  let failedDeletes: string[] = [];
   // go-to-k/cdkd#4612: deleted, but a part left in AWS with a warning.
   let leftInPlace = 0;
   if (stateResources === undefined) {
@@ -419,9 +512,11 @@ export async function settleJournaledOrphansOnSuccess(args: {
         { ...stateResources },
         stackName,
         { ...ctx, writtenThisRun },
-        args.isInterrupted ? { isInterrupted: args.isInterrupted } : {}
+        // The warning below names `--drop-failed` itself.
+        { pointAtDrop: false, ...(args.isInterrupted && { isInterrupted: args.isInterrupted }) }
       );
       leftInPlace = outcome.leftInPlace;
+      failedDeletes = outcome.failedLogicalIds;
       kept = all.filter(
         ({ segment, op }) =>
           unreadable.has(op) || (!tracked.has(op) && !isHandledOrphan(outcome.handled, segment, op))
@@ -509,8 +604,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
     // The whole journal still holds what this settle cleared.
     await stripCleared?.();
   }
-  // No `cdkd rollback` pointer: a plain rollback has none of this deploy's
-  // ownership evidence.
+  // No plain `cdkd rollback` pointer: a plain rollback has none of this
+  // deploy's ownership evidence. `--drop-failed` acts on nothing in AWS.
   logger.warn(
     safeMsg`${kept.length} resource(s) a failed deploy of stack ${stack} created were not deleted ` +
       (reduced
@@ -518,6 +613,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
         : '(see above). The rollback journal, their only record, is kept; the next ') +
       'successful deploy retries.'
   );
+  warnDropFailed(logger, stackName, region, failedDeletes);
   return { unaddressed: kept.length + skipped + leftInPlace, keepJournal: true };
 }
 

@@ -42,6 +42,7 @@ import {
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
 import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
+import { dropFailedJournalEntry, refuseDropFailedConflicts } from './rollback-drop-failed.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
@@ -67,6 +68,7 @@ import {
   type FailedOpPlanItem,
 } from '../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../deployment/inline-policy-claims.js';
+import { dropFailedHint } from '../../deployment/rollback-executor/journaled-orphans.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   describeRegionValueKind,
@@ -168,6 +170,8 @@ interface RollbackOptions {
   yes?: boolean;
   orphan?: string[];
   revertFailed?: boolean;
+  /** go-to-k/cdkd#4633: drop this logical id's journaled failed-CREATE orphan entry. */
+  dropFailed?: string;
   skipFinalSnapshot?: boolean;
   stackRegion?: string;
   stateBucket?: string;
@@ -662,6 +666,8 @@ export async function rollbackCommand(
     process.env['CDKD_NO_LIVE'] = '1';
   }
   warnIfDeprecatedRegion(options);
+  // go-to-k/cdkd#4633: before any AWS call, so a bad combination costs nothing.
+  if (options.dropFailed !== undefined) refuseDropFailedConflicts(options);
 
   const setup = await setupStateBackend(options);
   const skipConfirmation = options.force === true || options.yes === true;
@@ -729,6 +735,20 @@ export async function rollbackCommand(
     }
     const stackName = ref.stackName;
     const region = ref.region ?? setup.region;
+
+    // go-to-k/cdkd#4633: journal only — no providers, no AWS clients, no replay.
+    if (options.dropFailed !== undefined) {
+      await dropFailedJournalEntry({
+        stateBackend: setup.stateBackend,
+        lockManager: setup.lockManager,
+        stackName,
+        region,
+        logicalId: options.dropFailed,
+        skipConfirmation,
+        logger,
+      });
+      return;
+    }
 
     // Region-pinned clients for the whole replay: the pre-delete final
     // snapshots a `DeletionPolicy: Snapshot` rolled-back CREATE takes (issue
@@ -1234,6 +1254,9 @@ export async function rollbackCommand(
       const oldestInitialDeploy = journal.segments[0]?.initialDeploy === true;
       let totalFailures = 0;
       let totalWarnings = 0;
+      // go-to-k/cdkd#4633: proven orphans whose delete failed, for the
+      // `--drop-failed` pointer on the exit below.
+      const failedOrphanIds: string[] = [];
       // go-to-k/cdkd#4225: ONE record of completed writes across every replay
       // below, all over `stateResources`, so a revert keeps an inline policy
       // name an earlier replay (a failed op, an earlier segment) put back.
@@ -1349,6 +1372,13 @@ export async function rollbackCommand(
                     );
                     failedOpFailures = failedResult.failures;
                     failedOpWarnings = failedResult.warnings;
+                    // Read only on the failures exit, never the interrupt one,
+                    // so an op an interrupt left unreached is never named.
+                    for (const op of failedResult.remainingFailedOps) {
+                      if (isJournaledOrphan(op) && op.physicalIdRecoveredFromError === true) {
+                        failedOrphanIds.push(op.logicalId);
+                      }
+                    }
 
                     // Idempotency: persist ONLY the still-pending failed ops
                     // (per-op strip). A handled op must never be re-issued on a
@@ -1514,6 +1544,7 @@ export async function rollbackCommand(
         throw new PartialFailureError(
           `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
             `re-run the rollback to retry.` +
+            dropFailedHint(stackName, region, failedOrphanIds) +
             rerunRollback(stackName)
         );
       }
@@ -1829,6 +1860,14 @@ export function createRollbackCommand(): Command {
           'its previous state is opt-in.'
       ).default(false)
     )
+    .addOption(
+      new Option(
+        '--drop-failed <logicalId>',
+        'Remove ONE journaled failed CREATE (a resource cdkd proved it made, journaled as its only ' +
+          'record) from the rollback journal, after checking that resource by hand. Replays nothing ' +
+          'and deletes nothing in AWS; every other entry is kept.'
+      )
+    )
     .addOption(skipFinalSnapshotOption)
     .addOption(stackRegionOption())
     .addHelpText(
@@ -1843,6 +1882,7 @@ export function createRollbackCommand(): Command {
         '  cdkd rollback MyStack --revert-failed   # also revert the failed in-flight resource',
         '  cdkd rollback MyStack --skip-final-snapshot  # DeletionPolicy Snapshot → delete without the snapshot',
         '  cdkd rollback MyStack --stack-region us-west-2',
+        '  cdkd rollback MyStack --drop-failed MyQueuePolicy  # forget one undeletable failed CREATE',
         '',
         'Exit codes: 0 = clean, 2 = partial (journal kept for re-run), 1 = hard error.',
       ].join('\n')

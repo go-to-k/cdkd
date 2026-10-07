@@ -39,7 +39,8 @@ import type {
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 
@@ -213,6 +214,7 @@ function removableRecorded(
  */
 export class BudgetsBudgetProvider implements ResourceProvider {
   private client: BudgetsClient | undefined;
+  private createClient: BudgetsClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('BudgetsBudgetProvider');
   private accountIdPromise: Promise<string> | undefined;
@@ -226,12 +228,67 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
   private getClient(): BudgetsClient {
     if (!this.client) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.client = new BudgetsClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new BudgetsClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateBudget` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * `CreateBudget` carries no idempotency token and a budget name is unique
+   * per account, so the SDK's own replay of a 5xx whose request had succeeded
+   * collides with the budget the first send made, and that
+   * `DuplicateRecordException` surfaced from the engine's FIRST attempt as a
+   * name somebody else holds. Refused here, the 5xx reaches the deploy
+   * engine's retry, which marks the create as possibly replayed (`withRetry`,
+   * #3978). Nothing is adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  /**
+   * The `ProvisioningError` a failed create / update throws, quoting AWS's
+   * text through the operation's masker (issue #2176): a refusal or a 5xx can
+   * quote a resolved secret-derived value.
+   */
+  private wrapBudgetError(
+    mask: MaskerFn,
+    error: unknown,
+    verb: 'create' | 'update',
+    logicalId: string,
+    resourceType: string,
+    physicalId: string | undefined
+  ): ProvisioningError {
+    const cause = error instanceof Error ? error : undefined;
+    return wrapMaskedAwsError(
+      mask,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to ${verb} budget ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
+    );
+  }
+
+  private getCreateClient(): BudgetsClient {
+    this.getClient();
+    return this.createClient as BudgetsClient;
   }
 
   /**
@@ -539,7 +596,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       // (go-to-k/cdkd#4583).
       const arn = await this.budgetArn(accountId, name);
 
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateBudgetCommand({
           AccountId: accountId,
           Budget: this.toSdkBudget(properties['Budget'], name, logicalId, resourceType, mask),
@@ -557,14 +614,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create budget ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      throw this.wrapBudgetError(mask, error, 'create', logicalId, resourceType, undefined);
     }
   }
 
@@ -690,14 +740,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update budget ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
+      throw this.wrapBudgetError(mask, error, 'update', logicalId, resourceType, physicalId);
     }
   }
 

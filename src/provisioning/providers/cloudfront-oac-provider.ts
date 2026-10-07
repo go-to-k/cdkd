@@ -9,6 +9,8 @@ import {
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
@@ -39,6 +41,9 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
  */
 export class CloudFrontOACProvider implements ResourceProvider {
   private cloudFrontClient: CloudFrontClient;
+  private createClient: Promise<CloudFrontClient> | undefined;
+  /** The credential half of the `AwsClients` `cloudFrontClient` came from (#4639). */
+  private readonly credentialConfig: CredentialConfig;
   private logger = getLogger().child('CloudFrontOACProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -48,6 +53,48 @@ export class CloudFrontOACProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.cloudFrontClient = awsClients.cloudFront;
+    // A test double may carry no `credentialConfig`: degrade to `{}`, as
+    // `ambientCredentialConfig` does.
+    this.credentialConfig =
+      (awsClients as { credentialConfig?: CredentialConfig }).credentialConfig ?? {};
+  }
+
+  /**
+   * The client `CreateOriginAccessControl` goes through: SDK retries on,
+   * except a 5xx (`withoutServerErrorRetries`, issue #4639). Separate so every
+   * other call -- and every other provider sharing `getAwsClients().cloudFront`
+   * -- keeps the full SDK retry. Built in the shared client's REGION (read
+   * from it, as `config.region()` resolves it), and with the credentials of
+   * the SAME `AwsClients` that client came from, read at construction, so a
+   * later `setAwsClients` switch cannot give the create another identity. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it. A
+   * shared client that is not a `CloudFrontClient` -- a unit-test double -- is
+   * used as is: `AwsClients` always supplies a real one.
+   *
+   * `CreateOriginAccessControl` carries no idempotency token and an OAC name
+   * is unique per account, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with the OAC the first send made, and that
+   * `OriginAccessControlAlreadyExists` surfaced from the engine's FIRST
+   * attempt as a name somebody else holds. Refused here, the 5xx reaches the
+   * deploy engine's retry, which marks the create as possibly replayed
+   * (`withRetry`, #3978). Nothing is adopted on that collision: a name is not
+   * attribution (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): Promise<CloudFrontClient> {
+    const shared = this.cloudFrontClient;
+    if (!(shared instanceof CloudFrontClient)) return Promise.resolve(shared);
+    this.createClient ??= shared.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(
+          new CloudFrontClient({ ...clientDefaultsFor(this.credentialConfig), region })
+        ),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
   }
 
   /**
@@ -64,7 +111,9 @@ export class CloudFrontOACProvider implements ResourceProvider {
     this.logger.debug(`Creating CloudFront Origin Access Control ${logicalId}`);
 
     try {
-      const response = await this.cloudFrontClient.send(
+      const response = await (
+        await this.getCreateClient()
+      ).send(
         new CreateOriginAccessControlCommand({
           OriginAccessControlConfig: this.toSdkConfig(
             properties['OriginAccessControlConfig'],
