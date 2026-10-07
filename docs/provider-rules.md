@@ -365,10 +365,13 @@ implementation. Three details are worth copying:
     issue [#1710](https://github.com/go-to-k/cdkd/issues/1710)). The resource
     then exists with no state record; the mark is what lets the failed-CREATE
     journal name it, so the automatic rollback, `cdkd rollback` and
-    `cdkd destroy` can delete it. When the create call's response carries an
-    immutable AWS-generated id for the resource (RDS's `DbClusterResourceId` /
-    `DbiResourceId`), pass it as the optional fifth argument,
-    `createdResourceIdentity`. It is journaled without a later read, and it must be the value the
+    `cdkd destroy` can delete it. When the create call's response (or a
+    describe the create path already made, such as an available-wait poll)
+    carries the resource's identity token, an immutable AWS-generated id (RDS's
+    `DbClusterResourceId` / `DbiResourceId`) or the ARN plus the creation time
+    (ElastiCache's `<ARN>@<CacheClusterCreateTime ms>`), pass it as the optional
+    fifth argument, `createdResourceIdentity`; keep the first one seen. It is
+    journaled without a later read, and it must be the value the
     provider's `resourceIdentity` returns for that resource, since a later
     successful deploy deletes a name-keyed orphan only when the two match. Set it
     only behind a flag the create call's success sets (Kinesis's
