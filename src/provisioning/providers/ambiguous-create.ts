@@ -35,8 +35,10 @@ import { getCurrentStackName } from '../resource-name.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
+  hasReplayMayCollide,
   isAmbiguousOutcomeError,
   isTransientServerError,
+  markReplayMayCollide,
 } from '../../deployment/retryable-errors.js';
 
 /**
@@ -87,8 +89,10 @@ export interface AmbiguousCreateWindow {
    * answered, so its resource is older than that; for a client timeout or a
    * reset the service may finish later than the margin allows, and that
    * resource falls outside the window -- missed (a duplicate, reported by
-   * nobody), never wrongly attributed. No classifier replays those today
-   * (`src/deployment/retry.ts`); one that starts to should revisit this bound.
+   * nobody), never wrongly attributed. Only the SDK replays those, inside the
+   * same `send` ({@link withoutServerErrorRetries} stamps it), so the end
+   * already follows its last attempt; the engine replays none
+   * (`src/deployment/retry.ts`), and should it start to, revisit this bound.
    */
   readonly ceilingMs: number;
 }
@@ -144,7 +148,9 @@ export class AmbiguousCreateLatch {
     attemptStartMs: number,
     carried?: AmbiguousCreateWindow
   ): void {
-    if (!isAmbiguousOutcomeError(error)) return;
+    // The stamp: an ambiguous attempt the SDK replayed inside the same `send`,
+    // ending in a definite error (a throttle, say) the predicate alone clears.
+    if (!isAmbiguousOutcomeError(error) && !hasReplayMayCollide(error)) return;
     const key = createAttemptKey(this.scope, logicalId);
     const now = Date.now();
     let entry = mergeWindow(
@@ -233,8 +239,20 @@ const isRetryStrategyV2 = (value: unknown): value is RetryStrategyV2Like =>
  * did nothing), a connection that never opened, a clock-skew correction, and a
  * socket reset or timeout -- the last two are ambiguous too, but the engine
  * does NOT retry them, so refusing them here would turn a flaky network into
- * a failed deploy instead of a (rare) duplicate. That residual is recorded in
- * `docs/troubleshooting.md`.
+ * a failed deploy instead of a (rare) duplicate.
+ *
+ * What the SDK replays after an AMBIGUOUS attempt (`isAmbiguousOutcomeError`,
+ * the predicate the engine's latch reads, so the two agree) is stamped
+ * instead: every later attempt's error in the same `send` carries
+ * `markReplayMayCollide`, so a name-unique create whose reset request DID
+ * succeed throws an "already exists" the engine reads as this create's own
+ * replay, not another holder's name (issue #4639), and
+ * {@link AmbiguousCreateLatch} arms on that stamp too. The predicate errs
+ * toward TRUE, so a reset on a stale pooled socket or a connect timeout,
+ * neither of which reached the service, stamps as well: a genuine collision
+ * then fails instead of being deleted first, the safe direction. A replay
+ * that SUCCEEDS after such an attempt is the residual: for a create that is
+ * not name-unique it is a second resource nobody reports (issue #4687).
  *
  * Works by wrapping the client's RESOLVED `config.retryStrategy` provider,
  * which the SDK's retry middleware re-reads on every `send`; a unit test runs
@@ -250,12 +268,22 @@ export function withoutServerErrorRetries<T extends object>(client: T): T {
   const base = config?.retryStrategy;
   if (config === undefined || typeof base !== 'function') return client;
   const resolveBase = base as () => Promise<unknown>;
+  // The retry tokens of a `send` that already had an ambiguous attempt. The
+  // middleware calls `refreshRetryTokenForRetry` on EVERY failed attempt, the
+  // last one included, and rethrows that attempt's error object when it
+  // rejects -- so stamping `errorInfo.error` here stamps what `send` throws.
+  const afterAmbiguous = new WeakSet<object>();
+  const isObject = (value: unknown): value is object => typeof value === 'object' && value !== null;
   config.retryStrategy = async (): Promise<unknown> => {
     const strategy = await resolveBase();
     if (!isRetryStrategyV2(strategy)) return strategy;
     const wrapped: RetryStrategyV2Like = {
       acquireInitialRetryToken: (scope) => strategy.acquireInitialRetryToken(scope),
-      refreshRetryTokenForRetry: (token, errorInfo) => {
+      refreshRetryTokenForRetry: async (token, errorInfo) => {
+        const ambiguous = isAmbiguousOutcomeError(errorInfo.error);
+        const replayed = isObject(token) && afterAmbiguous.has(token);
+        // Never throws, and leaves a non-extensible error as it is.
+        if (replayed) markReplayMayCollide(errorInfo.error);
         // Throwing refuses the retry: the middleware then rethrows the
         // ORIGINAL error, unchanged.
         // `isAmbiguousOutcomeError`, not `!isThrottlingError`: the latter
@@ -263,10 +291,12 @@ export function withoutServerErrorRetries<T extends object>(client: T): T {
         // leave a plain 503 (`ServiceUnavailableException`, KMS's documented
         // `DependencyTimeoutException`) to the SDK's silent replay. The
         // ambiguity check exempts only a throttle named as one.
-        if (isTransientServerError(errorInfo.error) && isAmbiguousOutcomeError(errorInfo.error)) {
-          return Promise.reject(new Error('cdkd: no SDK retry of a 5xx on a tokenless create'));
+        if (ambiguous && isTransientServerError(errorInfo.error)) {
+          throw new Error('cdkd: no SDK retry of a 5xx on a tokenless create');
         }
-        return strategy.refreshRetryTokenForRetry(token, errorInfo);
+        const next = await strategy.refreshRetryTokenForRetry(token, errorInfo);
+        if ((ambiguous || replayed) && isObject(next)) afterAmbiguous.add(next);
+        return next;
       },
       recordSuccess: (token) => strategy.recordSuccess(token),
     };

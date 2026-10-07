@@ -216,8 +216,10 @@ export function orphanedNameCollisionAdvice(
   const diagnosis = replayed
     ? `${shownLogicalId}: the name AWS reports as taken (${shownId}) is most likely held by a ` +
       `resource THIS create made. An earlier attempt of it ended without a clear verdict (a ` +
-      `server error, or a failure after the create call itself may have succeeded), and the ` +
-      `retry then found the name taken. cdkd records a resource only once its create ` +
+      `server error, a dropped connection or a timeout, or a failure after the create call ` +
+      `itself may have succeeded), and the retry then found the name taken. A dropped ` +
+      `connection can also happen before the request reached AWS, so the holder may be ` +
+      `another resource: confirm it is yours before deleting or importing it. cdkd records a resource only once its create ` +
       `succeeds, so this one is in no state file: no rollback or cdkd destroy will remove it, ` +
       `and re-running collides with it again.`
     : `${shownLogicalId}: the name AWS reports as taken (${shownId}) is one cdkd DERIVED from ` +

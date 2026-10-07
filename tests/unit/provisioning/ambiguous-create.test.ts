@@ -10,6 +10,13 @@ import {
 import { Readable } from 'node:stream';
 import { CreateKeyCommand, KMSClient } from '@aws-sdk/client-kms';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withRetry } from '../../../src/deployment/retry.js';
+import {
+  hasReplayMayCollide,
+  isNameCollisionErrorFrom,
+  markReplayMayCollide,
+} from '../../../src/deployment/retryable-errors.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /** Ambiguous: a 5xx (issue #2026). */
 const transient500 = (): Error =>
@@ -41,6 +48,16 @@ describe('AmbiguousCreateLatch (issue #2080)', () => {
   it('arms on an ambiguous failure with a window from attempt start to attempt end, skew-widened', () => {
     vi.setSystemTime(T0 + 3_000); // the attempt took 3 s
     latch.noteFailure('Res', transient500(), T0);
+
+    expect(latch.take('Res')).toEqual({
+      floorMs: T0 - CREATION_DATE_SKEW_MARGIN_MS,
+      ceilingMs: T0 + 3_000 + CREATION_DATE_SKEW_MARGIN_MS,
+    });
+  });
+
+  it('arms on a definite failure the SDK threw after replaying an ambiguous attempt (#4639)', () => {
+    vi.setSystemTime(T0 + 3_000);
+    latch.noteFailure('Res', markReplayMayCollide(client400()), T0);
 
     expect(latch.take('Res')).toEqual({
       floorMs: T0 - CREATION_DATE_SKEW_MARGIN_MS,
@@ -252,4 +269,159 @@ describe('withoutServerErrorRetries against a real SDK client', () => {
 
     expect(requests).toHaveLength(2);
   }, 20_000);
+
+  // Issue #4639: what the SDK replays after an ambiguous attempt is stamped, so
+  // a replay colliding with the resource its first request made is not
+  // credited to another holder.
+  const collide = {
+    status: 400,
+    body: '{"__type":"AlreadyExistsException","message":"Thing already exists"}',
+  };
+  const fails = (code: string, message: string): Stub => ({
+    throws: Object.assign(new Error(message), { code }),
+  });
+  const sendError = async (client: KMSClient): Promise<unknown> =>
+    client.send(new CreateKeyCommand({})).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+  it.each([
+    ['a reset after the send', fails('ECONNRESET', 'socket hang up')],
+    ['a broken pipe', fails('EPIPE', 'write EPIPE')],
+    ['a socket timeout', fails('ETIMEDOUT', 'read ETIMEDOUT')],
+    ['a client timeout', { throws: Object.assign(new Error('timed out'), { name: 'TimeoutError' }) }],
+  ])('stamps the replay collision that follows %s', async (_what, failure) => {
+    const { client, requests } = makeClient([failure as Stub, collide]);
+    withoutServerErrorRetries(client);
+
+    const error = await sendError(client);
+
+    expect(requests).toHaveLength(2);
+    expect((error as { name?: string }).name).toBe('AlreadyExistsException');
+    expect(hasReplayMayCollide(error)).toBe(true);
+  }, 20_000);
+
+  it('an unwrapped client throws the same replay collision UNSTAMPED (the #4639 shape)', async () => {
+    const { client, requests } = makeClient([fails('ECONNRESET', 'socket hang up'), collide]);
+
+    const error = await sendError(client);
+
+    expect(requests).toHaveLength(2);
+    expect((error as { name?: string }).name).toBe('AlreadyExistsException');
+    expect(hasReplayMayCollide(error)).toBe(false);
+  }, 20_000);
+
+  it.each([
+    ['a refused connection', fails('ECONNREFUSED', 'connect ECONNREFUSED')],
+    ['an unresolved host', fails('ENOTFOUND', 'getaddrinfo ENOTFOUND')],
+    ['an unreachable host', fails('EHOSTUNREACH', 'connect EHOSTUNREACH')],
+    ['a throttle', throttle],
+  ])('retries %s in the SDK and leaves the next collision unstamped', async (_what, failure) => {
+    // Never reached the service, or the service declared it did nothing: the
+    // collision is with a resource that already held the name.
+    const { client, requests } = makeClient([failure as Stub, collide]);
+    withoutServerErrorRetries(client);
+
+    const error = await sendError(client);
+
+    expect(requests).toHaveLength(2);
+    expect((error as { name?: string }).name).toBe('AlreadyExistsException');
+    expect(hasReplayMayCollide(error)).toBe(false);
+  }, 20_000);
+
+  it('keeps the stamp across a later unambiguous attempt in the same send', async () => {
+    const { client, requests } = makeClient([
+      fails('ECONNRESET', 'socket hang up'),
+      throttle,
+      collide,
+    ]);
+    withoutServerErrorRetries(client);
+
+    const error = await sendError(client);
+
+    expect(requests).toHaveLength(3);
+    expect(hasReplayMayCollide(error)).toBe(true);
+  }, 20_000);
+
+  it('does not carry the stamp into the next send on the same client', async () => {
+    const { client, requests } = makeClient([
+      fails('ECONNRESET', 'socket hang up'),
+      { status: 200, body: '{"KeyMetadata":{"KeyId":"k"}}' },
+      collide,
+    ]);
+    withoutServerErrorRetries(client);
+
+    await client.send(new CreateKeyCommand({}));
+    const error = await sendError(client);
+
+    expect(requests).toHaveLength(3);
+    expect(hasReplayMayCollide(error)).toBe(false);
+  }, 20_000);
+
+  it('stamps a 5xx it refuses when an earlier attempt of the send was ambiguous', async () => {
+    const { client, requests } = makeClient([fails('ECONNRESET', 'socket hang up'), serverError]);
+    withoutServerErrorRetries(client);
+
+    const error = await sendError(client);
+
+    expect(requests).toHaveLength(2);
+    expect((error as { name?: string }).name).toBe('KMSInternalException');
+    expect(hasReplayMayCollide(error)).toBe(true);
+  }, 20_000);
+
+  describe('through the engine retry', () => {
+    const LOGICAL_ID = 'Thing';
+    const createThroughRetry = (client: KMSClient): Promise<unknown> =>
+      withRetry(
+        async () => {
+          try {
+            return await client.send(new CreateKeyCommand({}));
+          } catch (e) {
+            throw new ProvisioningError(
+              `Failed to create ${LOGICAL_ID}: ${(e as Error).message}`,
+              'AWS::KMS::Key',
+              LOGICAL_ID,
+              'thing',
+              e as Error
+            );
+          }
+        },
+        LOGICAL_ID,
+        { sleep: () => Promise.resolve() }
+      ).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    it('a reset then a collision is this create own replay, not a name collision', async () => {
+      const { client, requests } = makeClient([fails('ECONNRESET', 'socket hang up'), collide]);
+      withoutServerErrorRetries(client);
+
+      const error = await createThroughRetry(client);
+
+      expect(requests).toHaveLength(2);
+      expect(hasReplayMayCollide(error)).toBe(true);
+      expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(false);
+    }, 20_000);
+
+    it('unwrapped, the same sequence is credited as a name collision (the #4639 failure)', async () => {
+      const { client } = makeClient([fails('ECONNRESET', 'socket hang up'), collide]);
+
+      const error = await createThroughRetry(client);
+
+      expect(hasReplayMayCollide(error)).toBe(false);
+      expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(true);
+    }, 20_000);
+
+    it('a refused connection then a collision stays a name collision', async () => {
+      const { client } = makeClient([fails('ECONNREFUSED', 'connect ECONNREFUSED'), collide]);
+      withoutServerErrorRetries(client);
+
+      const error = await createThroughRetry(client);
+
+      expect(hasReplayMayCollide(error)).toBe(false);
+      expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(true);
+    }, 20_000);
+  });
 });
