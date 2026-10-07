@@ -770,7 +770,6 @@
     {
       "flag": "--recreate-via-cc-api",
       "integs": [
-        "alb",
         "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute",
         "codebuild-project",

@@ -2514,7 +2514,8 @@ To admit a type:
    update from a replacement, which is the whole claim.
 4. Add the entry naming that fixture. `tests/unit/provisioning/sticky-exempt-registry.test.ts`
    refuses an entry whose fixture does not exist or has no row in the integ
-   ledger, so an entry cannot land before its parity arm has actually run.
+   ledger. A fixture that ran before your arm was added still passes that
+   check, so the arm's own run (step 5) is what the PR must wait for.
 5. Run the fixture and commit the ledger row.
 
 Use `mode: 'cc-broken'` **only** when Cloud Control genuinely cannot manage the

@@ -183,9 +183,11 @@ export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
  * The fields are not documentation. `tests/unit/provisioning/
  * sticky-exempt-registry.test.ts` requires `integFixture` to name a directory
  * that EXISTS under `tests/integration/` and to have at least one row in
- * `docs/_generated/integ-last-run.tsv` -- so an entry added before its parity
- * arm was ever run against real AWS fails the unit suite. That is the whole
- * mechanism behind "evidence rather than assumption": physicalId parity is an
+ * `docs/_generated/integ-last-run.tsv` -- so an entry naming a fixture that
+ * never ran fails the unit suite. A fixture that ran before its parity arm was
+ * added still passes, so that arm's real-AWS run is a merge condition of the
+ * PR adding the entry. That is the mechanism behind "evidence rather than
+ * assumption": physicalId parity is an
  * empirical per-type fact about what the CC handler mints as `Identifier`
  * versus what the SDK provider stores as `physicalId`, and it is FALSE in
  * general (composite ids, ARN-vs-name divergences). Asserting it from provider
