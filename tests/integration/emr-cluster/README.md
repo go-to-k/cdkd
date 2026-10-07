@@ -109,6 +109,18 @@ EMR clusters).
    group bucketing, and the `INSTANCE_FLEET` branch of
    `reverseInstancesToCfn` — this fixture is master-only, on purpose, for
    cost.
+3b. **Fix-forward of a failed cluster CREATE** (issue #4606). A
+   `--no-rollback` deploy with `INJECT_CLUSTER_ORPHAN=true` adds
+   `OrphanCluster`, whose bootstrap action names a missing script, so the
+   cluster terminates with errors after `RunJobFlow` made it. The deploy runs
+   as a temporary role (`cdkd-emr-ff-deny-<pid>`, deleted right after and by
+   `cleanup()`) denied `SetTerminationProtection` / `TerminateJobFlows`, so the
+   create's own cleanup fails and the rollback journal holds the cluster as a
+   proven orphan. The `CLUSTER_FIX_FORWARD=true` redeploy creates a new
+   cluster under the same logical id; it must settle the earlier one (named
+   as already `TERMINATED_WITH_ERRORS`), keep the new one, drop the journal
+   and exit `0` (before #4606: a warning and exit `2`). A plain deploy then
+   removes the new cluster.
 4. **Destroy** — runs **through the re-adopted state record**, so a broken
    import surfaces here as a cluster that never terminates. Asserts the
    cluster is `TERMINATED` and the VPC / state are gone. A leftover
@@ -151,8 +163,8 @@ Two properties of `verify.sh` are load-bearing and easy to break by
 - **Teardown failures preserve evidence.** If `state destroy` fails or a
   cluster's termination cannot be confirmed, cleanup skips the VPC sweep
   (its deletes would fail against live ENIs anyway) and **keeps**
-  `state.json` — there is no IAM-role sweep here, so that file is the
-  only record of what leaked. Both paths print a loud warning.
+  `state.json` — nothing here sweeps the fixture's own IAM roles, so that
+  file is the only record of what leaked. Both paths print a loud warning.
 
 ## Timing
 
@@ -160,6 +172,8 @@ EMR cluster creation to `WAITING` takes ~5-15 minutes and termination a
 few more; expect a total wall clock of 20-40 minutes. The import
 round-trip (phase 3) adds only a handful of API calls against the
 already-running cluster — about a minute, no extra instance-hours.
+Phase 3b launches two more single-node clusters (one fails in bootstrap,
+one reaches `WAITING` and is then terminated): about 25 more minutes.
 
 ## Run
 
