@@ -919,8 +919,15 @@ fi
 # NoEcho position there) shows as `(previous NoEcho value)`: neither side
 # prints a value.
 # Scoped to the NoEchoRenamed row block: from its header up to the next row
-# header (`  [` at the row indent), so another row cannot satisfy it.
+# header (`  [` at the row indent), so another row cannot satisfy it. Under
+# --verbose every line the diff prints goes through the logger, which prefixes
+# it with a colored timestamp and level (`<ts> INFO  `); both are stripped
+# first, so the row's own indent is what the anchors read.
 RENAMED_BLOCK=$(awk -v hdr="${RENAMED_ROW}" '
+  {
+    gsub(/\033\[[0-9;]*m/, "")
+    sub(/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]*Z (DEBUG|INFO |WARN |ERROR) /, "")
+  }
   index($0, hdr) == 1 { inside = 1; print; next }
   inside && /^  \[/ { exit }
   inside { print }
