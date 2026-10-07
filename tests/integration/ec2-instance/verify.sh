@@ -954,6 +954,16 @@ THROW_VPC_ID=$(aws ec2 create-vpc \
   --region "${REGION}" \
   --query 'Vpc.VpcId' \
   --output text)
+# The id shape first, as for the subnet and group below: a wait on a
+# non-id would fail under `set -e` before the clearer FAIL line.
+case "${THROW_VPC_ID}" in
+  vpc-*) ;;
+  *)
+    echo "FAIL: issue #4606 -- the throwaway create-vpc answered '${THROW_VPC_ID}'" >&2
+    exit 1
+    ;;
+esac
+# The subnet and group are created in it, so it must be available first.
 aws ec2 wait vpc-available --vpc-ids "${THROW_VPC_ID}" --region "${REGION}"
 THROW_SUBNET_ID=$(aws ec2 create-subnet \
   --vpc-id "${THROW_VPC_ID}" \
@@ -986,9 +996,11 @@ echo "    throwaway VPC ${THROW_VPC_ID}, subnet ${THROW_SUBNET_ID}, security gro
 # Premise of case (c): a well-formed id that never existed answers NotFound;
 # a Malformed answer would make the probe exercise the wrong error. EC2
 # answers a synthetic 17-hex INSTANCE id Malformed and an 8-hex one NotFound
-# (Phase 1b); for these types the form is measured here: the 8-hex form
-# first, then the 17-hex one. Random per run; one that happens to exist is
-# drawn again. Prints the id on stdout, the measurement on stderr.
+# (Phase 1b). For these types the 8-hex form is tried first and is the form
+# that answered NotFound for all three on real EC2; the 17-hex form is only a
+# fallback should EC2 ever answer the short form Malformed. Random per run;
+# one that happens to exist, or a throttled answer, is drawn again. Prints
+# the id on stdout, the measurement on stderr.
 draw_never_id() { # usage: draw_never_id <prefix> <describe-subcommand> <ids-flag> <notfound-code>
   local prefix="$1" list="$2" flag="$3" code="$4" len attempt candidate out rc
   for len in 8 17; do
@@ -1010,12 +1022,17 @@ draw_never_id() { # usage: draw_never_id <prefix> <describe-subcommand> <ids-fla
         echo "    NOTE: EC2 answers a ${len}-hex ${prefix} id Malformed: $(sanitize_aws_output "${out}")" >&2
         break
       fi
+      # Throttling is not an answer: wait and draw again (counts as an attempt).
+      if printf '%s' "${out}" | grep -qE 'RequestLimitExceeded|Throttling'; then
+        sleep 5
+        continue
+      fi
       # Not "exists, draw again" and not Malformed: a broken premise.
       echo "FAIL: issue #4606 premise not reached -- ${list} ${candidate} (rc=${rc}) did not answer ${code}: $(sanitize_aws_output "${out}")" >&2
       return 1
     done
   done
-  echo "FAIL: issue #4606 premise not reached -- no 8- or 17-hex ${prefix} id answered ${code} (Malformed, or existed in every draw)" >&2
+  echo "FAIL: issue #4606 premise not reached -- no 8- or 17-hex ${prefix} id answered ${code} (Malformed, or existed or was throttled in every draw)" >&2
   return 1
 }
 NEVER_VPC_ID=$(draw_never_id vpc describe-vpcs --vpc-ids InvalidVpcID.NotFound)

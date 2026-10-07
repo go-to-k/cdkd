@@ -191,6 +191,10 @@ describe.each(TYPES)('EC2Provider.isSameResource for $type (go-to-k/cdkd#4606)',
     ['an access denial', awsError('UnauthorizedOperation', 'denied')],
     ['a malformed-id error', awsError(t.malformed)],
     ['another resource kind not-found', awsError('InvalidInstanceID.NotFound')],
+    [
+      'another network type not-found',
+      awsError(TYPES.filter((x) => x.type !== t.type)[0]!.notFound),
+    ],
   ])('%s on the journaled read throws (the caller reads it as unknown)', async (_label, error) => {
     live(t, { [t.a]: error, [t.b]: live1(t) });
     await expect(provider.isSameResource(t.a, { physicalId: t.b }, t.type, CTX)).rejects.toThrow(
@@ -306,8 +310,33 @@ describe.each(TYPES)('EC2Provider.delete of a journaled $type already gone (go-t
     ).rejects.toThrow('does not exist yet');
     expect(providerLogger.info).not.toHaveBeenCalled();
 
-    // A record's own delete keeps the broad matcher (unchanged).
-    await provider.delete('Orphan', t.a, t.type, {}, { expectedRegion: 'us-east-1' });
+    // A record's own delete keeps the broad matcher (unchanged): it
+    // resolves, quietly, on the same error.
+    providerLogger.debug.mockClear();
+    await expect(
+      provider.delete('Orphan', t.a, t.type, {}, { expectedRegion: 'us-east-1' })
+    ).resolves.toBeUndefined();
+    expect(
+      providerLogger.debug.mock.calls.map(([m]) => String(m)).filter((m) => m.includes('does not exist, skipping deletion'))
+    ).toHaveLength(1);
+    expect(providerLogger.info).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ...TYPES.filter((x) => x.type !== t.type).map((x) => x.notFound),
+    'InvalidInstanceID.NotFound',
+  ])("another type's named %s is not gone for an orphan: the delete throws, no info line", async (name) => {
+    mockSend.mockImplementation(async (cmd: object) => {
+      if (cmd instanceof t.del) throw awsError(name);
+      throw new Error('unexpected command');
+    });
+    await expect(
+      provider.delete('Orphan', t.a, t.type, {}, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).rejects.toThrow(name);
+    expect(providerLogger.info).not.toHaveBeenCalled();
   });
 
   it('a live orphan is deleted by its id, with no already-gone line', async () => {
