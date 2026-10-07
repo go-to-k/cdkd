@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as elasticache from 'aws-cdk-lib/aws-elasticache';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
@@ -50,8 +51,15 @@ import { Construct } from 'constructs';
  *   elements on its `Resolved Ref to parameter: ListIn` line unless the
  *   inherited needle is carried element by element. Its SSM parameter holds
  *   the first element.
+ * - `NoEchoSnapshotGroup` (only under `CDKD_TEST_NOECHO_SNAPSHOT=true`,
+ *   go-to-k/cdkd#3869): a one-node Redis replication group whose id is
+ *   `rg-<token>` and whose `DeletionPolicy` is `Snapshot`. The redeploy that
+ *   removes it takes a final snapshot named after the id's first 28
+ *   characters, which end inside the token, so no literal needle matches the
+ *   snapshot name: only the derived-name judge's snapshot-prefix arm masks it.
  *
- * covers: AWS::SSM::Parameter, AWS::SNS::Topic, AWS::CloudFormation::Stack
+ * covers: AWS::SSM::Parameter, AWS::SNS::Topic, AWS::CloudFormation::Stack,
+ * AWS::ElastiCache::ReplicationGroup
  */
 /**
  * `SplitChild`: reads its list parameter's first element. A CDK-synthesized
@@ -151,6 +159,19 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
     new SplitChild(this, 'SplitChild', {
       parameters: { ListIn: splitToken.valueAsString },
     });
+
+    if (process.env['CDKD_TEST_NOECHO_SNAPSHOT'] === 'true') {
+      const group = new elasticache.CfnReplicationGroup(this, 'NoEchoSnapshotGroup', {
+        replicationGroupId: cdk.Fn.sub('rg-${NoEchoToken}'),
+        replicationGroupDescription: 'cdkd noecho-parameter-masking integ (go-to-k/cdkd#3869)',
+        engine: 'redis',
+        cacheNodeType: 'cache.t3.micro',
+        numCacheClusters: 1,
+        automaticFailoverEnabled: false,
+        tags: [{ key: 'cdkd-integ', value: 'noecho-parameter-masking-snapshot' }],
+      });
+      group.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.SNAPSHOT;
+    }
 
     if (process.env['CDKD_TEST_NOECHO_REJECT'] === 'true') {
       new ssm.CfnParameter(this, 'NoEchoReject', {

@@ -194,6 +194,21 @@ const FINAL_SNAPSHOT_TS_LENGTH = 15;
  * truncated generated name still matches its own prefix.
  */
 export function finalSnapshotNamePrefix(physicalId: string, resourceType?: string): string {
+  return finalSnapshotNameCut(physicalId, resourceType).prefix;
+}
+
+/**
+ * {@link finalSnapshotNamePrefix} with what it was cut from: `sanitized` is
+ * the whole sanitized physical id, and `kept` how many of its leading
+ * characters the prefix carries. `kept < sanitized.length` only where the
+ * per-service cap CUT the id (ElastiCache's 28 characters), so a value the id
+ * spells across that point appears in the snapshot name as a fragment, which
+ * no literal masker matches (go-to-k/cdkd#3869).
+ */
+export function finalSnapshotNameCut(
+  physicalId: string,
+  resourceType?: string
+): { prefix: string; sanitized: string; kept: number } {
   // RDS-family snapshot identifiers allow up to 255 chars; ElastiCache
   // snapshot names follow the ~50-char cluster-naming rules — a longer name
   // makes the snapshot call reject and the delete fail mid-run.
@@ -202,10 +217,11 @@ export function finalSnapshotNamePrefix(physicalId: string, resourceType?: strin
     resourceType === 'AWS::ElastiCache::ReplicationGroup'
       ? 50
       : 255;
-  const base = sanitizeSnapshotBase(physicalId)
+  const sanitized = sanitizeSnapshotBase(physicalId);
+  const base = sanitized
     .slice(0, maxLength - ('-final-'.length + FINAL_SNAPSHOT_TS_LENGTH))
     .replace(/-+$/, '');
-  return `${base}-final-`;
+  return { prefix: `${base}-final-`, sanitized, kept: base.length };
 }
 
 /**

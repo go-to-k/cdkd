@@ -11,6 +11,7 @@ import {
   createRedshiftFinalSnapshot,
   createReplicationGroupFinalSnapshot,
   finalSnapshotDelays,
+  finalSnapshotNameCut,
   finalSnapshotNamePrefix,
   isFinalSnapshotError,
   finalSnapshotMechanism,
@@ -344,6 +345,31 @@ describe('finalSnapshotNamePrefix', () => {
     );
     expect(id.startsWith(prefix)).toBe(true);
     expect(id.length).toBeLessThanOrEqual(50);
+  });
+});
+
+describe('finalSnapshotNameCut (go-to-k/cdkd#3869)', () => {
+  it('reports how much of the sanitized id an ElastiCache prefix keeps', () => {
+    const id = 'Rg-Cdkd-Noecho-0123456789abcdef-x';
+    const cut = finalSnapshotNameCut(id, 'AWS::ElastiCache::ReplicationGroup');
+    expect(cut.sanitized).toBe(id.toLowerCase());
+    expect(cut.kept).toBe(28);
+    expect(cut.prefix).toBe(`${id.toLowerCase().slice(0, 28)}-final-`);
+    expect(cut.prefix).toBe(finalSnapshotNamePrefix(id, 'AWS::ElastiCache::ReplicationGroup'));
+  });
+
+  it('counts a trailing hyphen the cut leaves as dropped, not kept', () => {
+    const id = `${'a'.repeat(27)}-tail`;
+    const cut = finalSnapshotNameCut(id, 'AWS::ElastiCache::CacheCluster');
+    expect(cut.kept).toBe(27);
+    expect(cut.prefix).toBe(`${'a'.repeat(27)}-final-`);
+  });
+
+  it('keeps the whole id where the cap does not cut it', () => {
+    const id = 'my-database-instance-with-a-long-name-0123456789';
+    const cut = finalSnapshotNameCut(id, 'AWS::RDS::DBInstance');
+    expect(cut.kept).toBe(cut.sanitized.length);
+    expect(cut.prefix).toBe(`${id}-final-`);
   });
 });
 
