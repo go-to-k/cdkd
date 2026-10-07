@@ -74,6 +74,17 @@ describe('a child list element of a parent NoEcho parameter value', () => {
     expect(single.get('prod')).toBeUndefined();
   });
 
+  it('records a child list that is a strict run of whole pieces from the middle of a parent NoEcho value', async () => {
+    const inherited: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue(`charlie-element-0,${ELEMENT_B},delta-element-3`, inherited);
+    const recorded: RecordedSecretValues = new Map();
+    await new IntrinsicFunctionResolver('us-east-1').resolve({ Ref: 'ListIn' }, {
+      ...childContext(recorded, inherited),
+      parameters: { ListIn: [ELEMENT_B] },
+    } as unknown as ResolverContext);
+    expect(recorded.get(ELEMENT_B)).toBe(SECRET_MASK);
+  });
+
   it('matches a parent value spelled with spaces after its commas, as the coercion trims them', async () => {
     const inherited: RecordedSecretValues = new Map();
     recordNoEchoParameterFreshValue(`${ELEMENT_A}, ${ELEMENT_B}`, inherited);
