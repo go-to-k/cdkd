@@ -297,6 +297,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -432,6 +433,7 @@
         "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
+        "remove-protection-journaled-orphan",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-explicit-name-rewrite",
@@ -667,6 +669,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1006,6 +1009,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1095,7 +1099,8 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "remove-protection",
-        "remove-protection-compensation"
+        "remove-protection-compensation",
+        "remove-protection-journaled-orphan"
       ]
     },
     {
@@ -1374,6 +1379,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",
@@ -1454,7 +1460,8 @@
       "flag": "--state-prefix",
       "integs": [
         "destroy-interrupt",
-        "importvalue-chain"
+        "importvalue-chain",
+        "remove-protection-journaled-orphan"
       ]
     },
     {
@@ -1718,6 +1725,7 @@
         "redacted-delete-address",
         "redshift-cluster-getatt",
         "remove-protection-compensation",
+        "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-squatter-refusal",
         "replacement-fanout",

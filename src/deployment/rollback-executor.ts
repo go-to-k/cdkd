@@ -324,7 +324,91 @@ export {
 
 import { withProducerRegions } from './producer-regions-scope.js';
 import { noteRetainedResource } from '../provisioning/providers/create-token-ledger.js';
+import { runDeleteAttempt } from '../provisioning/providers/deletion-protection-compensation.js';
+import {
+  orphanDeleteNeedsIdentity,
+  readResourceIdentity,
+} from './rollback-executor/orphan-identity.js';
+import { RESOURCE_NOT_FOUND } from '../types/resource.js';
+import { removeProtectionTypes } from '../provisioning/remove-protection-types.js';
+import {
+  PROTECTION_PROPERTY_BY_TYPE,
+  isProtectionValueActive,
+  perType,
+  readProtection,
+} from '../provisioning/protection-flags.js';
+import type { ForeignHolding } from './rollback-executor/journaled-orphans.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
+
+/**
+ * go-to-k/cdkd#4678: whether `--remove-protection` may strip a failed
+ * CREATE's resource. A state-recorded op is the record's own; a journaled
+ * orphan must be the resource its CREATE made — a type whose id is never
+ * reused, or a live `resourceIdentity` equal to the journaled one (#4655) —
+ * and no other stack's record may hold it now (a later `cdkd import`, say).
+ * Otherwise `false`, warned when its attempted properties turned protection
+ * on: the delete runs without the flag, so AWS's refusal stays the guard.
+ */
+async function protectionRemovalProven(
+  op: FailedOperation,
+  ctx: RollbackExecutorContext
+): Promise<boolean> {
+  if (op.physicalIdRecoveredFromError !== true) return true;
+  let refusal: string | undefined;
+  if (orphanDeleteNeedsIdentity(op.resourceType)) {
+    // The flag strips nothing on a type with no protection: nothing to warn about.
+    if (!removeProtectionTypes().includes(op.resourceType)) return false;
+    const journaled = op.createdResourceIdentity;
+    let live: Awaited<ReturnType<typeof readResourceIdentity>>;
+    if (typeof journaled === 'string' && journaled !== '' && op.physicalId) {
+      // The identity is READ here and the delete runs after it, unconditioned
+      // on it: a name freed and reused between the two is not caught. A
+      // protection type that gains `resourceIdentity` must accept or close
+      // that window (the success settle makes the same trade, #4655).
+      live = await readResourceIdentity(
+        ctx.providerRegistry,
+        {
+          resourceType: op.resourceType,
+          physicalId: op.physicalId,
+          provisionedBy: op.provisionedBy,
+        },
+        ctx.region
+      );
+      // Gone: the delete reads not-found as done, with nothing to strip.
+      if (live === RESOURCE_NOT_FOUND) return false;
+    }
+    if (live === undefined || live !== journaled) {
+      refusal =
+        'it is not proven to be the one the failed deploy created, and its name could now belong to another resource';
+    }
+  }
+  if (refusal === undefined && ctx.foreignHolder !== undefined && op.physicalId) {
+    let holding: ForeignHolding;
+    try {
+      holding = await ctx.foreignHolder(op.resourceType, op.physicalId);
+    } catch {
+      holding = { kind: 'unreadable', what: "the other stacks' state records (the scan failed)" };
+    }
+    if (holding?.kind === 'held') refusal = `${holding.by} holds it now`;
+    else if (holding?.kind === 'unreadable') {
+      refusal = `${holding.what} leaves open whether another stack holds it now`;
+    }
+  }
+  if (refusal === undefined) return true;
+  const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
+  if (
+    locator &&
+    isProtectionValueActive(
+      op.resourceType,
+      readProtection(op.attemptedProperties, locator, ctx.region)
+    )
+  ) {
+    ctx.logger.warn(
+      safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection does not apply: ${refusal}. Its delete is refused while it is protected, and the journal keeps it`
+    );
+  }
+  return false;
+}
 
 async function replaySingle(
   op: CompletedOperation,
@@ -884,13 +968,20 @@ async function replayFailedOperationsUnbound(
             op.logicalId,
             stateResources
           );
-          const failedCreateDelete = await provider.delete(
-            op.logicalId,
-            op.physicalId!,
-            op.resourceType,
-            op.attemptedProperties,
-            {
+          // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` and `cdkd
+          // rollback --remove-protection` (incl. `--revert-failed`) reach a
+          // protected resource here; a deploy, its settle and a nested
+          // in-process revert never set the flag. Only on a
+          // resource proven to be the one the failed CREATE made: AWS's refusal
+          // is the last guard on a name another resource reused. ONE attempt,
+          // no outer re-entry: the scope tells a protection flip's
+          // compensation that any failure is the last, so the guard is put back.
+          const removeProtection =
+            ctx.removeProtection === true && (await protectionRemovalProven(op, ctx));
+          const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
+            provider.delete(op.logicalId, op.physicalId!, op.resourceType, op.attemptedProperties, {
               expectedRegion: ctx.region,
+              ...(removeProtection && { removeProtection: true }),
               ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
@@ -907,8 +998,10 @@ async function replayFailedOperationsUnbound(
                   resolveReplayProps(op.attemptedProperties, resolver, secrets, ctx, op.logicalId),
                 ...(ctx.writtenThisRun !== undefined && { writtenThisRun: ctx.writtenThisRun }),
               }),
-            }
-          );
+            });
+          const failedCreateDelete = removeProtection
+            ? await runDeleteAttempt(true, deleteFailedCreate)
+            : await deleteFailedCreate();
           // Issue #1762: the partially-created resource is still there, so
           // the op did NOT happen — let the shared catch record the failure
           // and keep it in `remainingFailedOps` for a re-run.

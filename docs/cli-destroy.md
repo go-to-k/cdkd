@@ -101,7 +101,9 @@ reference dangling.
 
 Under `--remove-protection` the per-stack prompt names the protected resources
 (`About to destroy N resources from stack X, REMOVING DELETION PROTECTION on
-K of them. Continue? (y/N)`) and its default flips from `Y/n` to `y/N`. A
+K of them. Continue? (y/N)`; a stack whose rollback journal records resources
+adds `and J recorded only in its rollback journal` after `N resources`, and K
+counts those too) and its default flips from `Y/n` to `y/N`. A
 stack name that is not a plain identifier is shown JSON-quoted with its control
 characters removed.
 
@@ -461,6 +463,24 @@ AWS exposes a synchronous "flip protection off" API call.
   externally (console, AWS CLI) without `--remove-protection` surfaces AWS's
   `InvalidParameterCombination` / `InvalidParameterException` error rather than
   silently succeeding.
+- **It reaches a resource only the rollback journal records** too (a failed
+  CREATE's resource, see
+  [Resources only the rollback journal records](#resources-only-the-rollback-journal-records)):
+  a protected one is deleted with its protection turned off, and the prompt
+  counts it when its journaled properties turn protection on. Only when cdkd
+  can prove it is still the resource the failed deploy created — its type's id
+  is never reused (an EC2 instance, a load balancer), or a live read returns the
+  identity the journal recorded — and no other stack's state record holds it
+  now (a later `cdkd import` may have adopted it). One it cannot prove (a
+  DynamoDB table whose name another table may have taken since), or one
+  another stack holds or whose holders cannot be read, keeps its protection,
+  with a warning. Without the flag, or unproven, a protected one's delete is
+  refused and the journal keeps it for a re-run. `cdkd rollback
+  --remove-protection` does the same for the resources it deletes that a
+  failed CREATE left behind (a journaled orphan, or under `--revert-failed` the
+  failed CREATE itself). On a journaled failed nested stack, the flag
+  cascades to that child stack's resources. A deploy's automatic rollback and the settle a
+  successful deploy runs never turn protection off.
 - **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
   protected resource — a replacement is a delete plus a create — fails at the
   delete whatever replace flags were passed. Clear the protection flag first:
@@ -910,7 +930,7 @@ its only record, and destroying the stack removes the journal. Under
 | --- | --- |
 | Before the prompt | Listed with its physical id, also on a `--yes` / `--force` run and in a nested child's cascade. The prompt counts it. |
 | Under the lock | The journal is read again; any change to what it records, or a journal that can no longer be read, refuses the run before anything is deleted, so you re-run against what is there now. |
-| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
+| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`; `--remove-protection` turns its deletion protection off first when it is proven to be the resource the failed deploy created. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
 | A delete fails | Counted separately in the summary; the state and the journal are kept, and the hint is to re-run the destroy, never to drop this stack's record. A warning also prints `cdkd rollback <stack> --drop-failed <logicalId>` for each such resource: when the cause can never be fixed, check the resource by hand and drop just that entry ([details](cli-rollback.md#dropping-one-entry-cdkd-cannot-act-on)). |
 | Only such resources remain | The stack is not empty: it takes the confirmed path, not the empty-stack fast path. |
 

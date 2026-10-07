@@ -272,6 +272,7 @@ redacted-delete-address	2026-10-06T05:40:55Z	PASS	100	verify.sh	rc ok, orph clea
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-07T16:21:49Z	PASS	2124	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
+remove-protection-journaled-orphan	2026-10-07T19:09:03Z	PASS	0	verify.sh	#4678 destroy and rollback --remove-protection clear the protected journaled orphan, kept without the flag; per-run state prefix; 0 orphans
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-05T02:29:22Z	PASS	65	verify.sh	rc ok, orph clean (#4569 @480676155)
 replacement-fanout	2026-10-06T12:30:56Z	PASS	85	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
