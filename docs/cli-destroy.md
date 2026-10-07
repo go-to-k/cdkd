@@ -470,8 +470,10 @@ AWS exposes a synchronous "flip protection off" API call.
   counts it when its journaled properties turn protection on. Only when cdkd
   can prove it is still the resource the failed deploy created — its type's id
   is never reused (an EC2 instance, a load balancer), or a live read returns the
-  identity the journal recorded. A name-keyed one it cannot prove (a DynamoDB
-  table whose name another table may have taken since) keeps its protection,
+  identity the journal recorded — and no other stack's state record holds it
+  now (a later `cdkd import` may have adopted it). One it cannot prove (a
+  DynamoDB table whose name another table may have taken since), or one
+  another stack holds or whose holders cannot be read, keeps its protection,
   with a warning. Without the flag, or unproven, a protected one's delete is
   refused and the journal keeps it for a re-run. A deploy's
   automatic rollback, the settle a successful deploy runs, and `cdkd rollback`
