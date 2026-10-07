@@ -100,6 +100,7 @@ import {
   type JournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
+import { orphanDeleteNeedsIdentity } from '../../deployment/rollback-executor/orphan-identity.js';
 import {
   maskEventTextWithBoundBags,
   secretNamePrintingBag,
@@ -463,7 +464,11 @@ export function countProtectedResources(state: StackState): number {
 /**
  * The journaled failed-CREATE orphans whose ATTEMPTED properties turn deletion
  * protection on: `--remove-protection` strips theirs too (go-to-k/cdkd#4678),
- * so the prompt counts them beside {@link countProtectedResources}.
+ * so the prompt counts them beside {@link countProtectedResources}. Not one
+ * the sweep leaves alone (demoted, `Retain`), nor a name-keyed one with no
+ * journaled identity, whose protection the delete never strips; one whose
+ * identity a live read may yet disprove is counted (over-counting is the safe
+ * direction for a warning).
  */
 export function countProtectedJournaledOrphans(
   orphans: Pick<JournaledOrphans, 'segments'>,
@@ -472,6 +477,8 @@ export function countProtectedJournaledOrphans(
   let count = 0;
   for (const { ops } of orphans.segments) {
     for (const op of ops) {
+      if (op.physicalIdRecoveredFromError !== true || op.deletionPolicy === 'Retain') continue;
+      if (orphanDeleteNeedsIdentity(op.resourceType) && !op.createdResourceIdentity) continue;
       const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
       if (
         locator &&

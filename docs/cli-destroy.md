@@ -467,8 +467,13 @@ AWS exposes a synchronous "flip protection off" API call.
   CREATE's resource, see
   [Resources only the rollback journal records](#resources-only-the-rollback-journal-records)):
   a protected one is deleted with its protection turned off, and the prompt
-  counts it when its journaled properties turn protection on. Without the flag
-  its delete is refused, and the journal keeps it for a re-run. A deploy's
+  counts it when its journaled properties turn protection on. Only when cdkd
+  can prove it is still the resource the failed deploy created — its type's id
+  is never reused (an EC2 instance, a load balancer), or a live read returns the
+  identity the journal recorded. A name-keyed one it cannot prove (a DynamoDB
+  table whose name another table may have taken since) keeps its protection,
+  with a warning. Without the flag, or unproven, a protected one's delete is
+  refused and the journal keeps it for a re-run. A deploy's
   automatic rollback, the settle a successful deploy runs, and `cdkd rollback`
   never turn protection off.
 - **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
@@ -920,7 +925,7 @@ its only record, and destroying the stack removes the journal. Under
 | --- | --- |
 | Before the prompt | Listed with its physical id, also on a `--yes` / `--force` run and in a nested child's cascade. The prompt counts it. |
 | Under the lock | The journal is read again; any change to what it records, or a journal that can no longer be read, refuses the run before anything is deleted, so you re-run against what is there now. |
-| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`; `--remove-protection` turns its deletion protection off first. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
+| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`; `--remove-protection` turns its deletion protection off first when it is proven to be the resource the failed deploy created. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
 | A delete fails | Counted separately in the summary; the state and the journal are kept, and the hint is to re-run the destroy, never to drop this stack's record. |
 | Only such resources remain | The stack is not empty: it takes the confirmed path, not the empty-stack fast path. |
 

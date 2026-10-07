@@ -76,6 +76,10 @@ ORPHAN_LB_ARN=""
 ORPHAN_SUBNETS=""
 ORPHAN_SECURITY_GROUP=""
 RUN_LOG=""
+# Set just before this run's own deploy of each stack: a pre-flight FAIL (a
+# peer's run holding these keys) must leave the peer's stacks alone.
+DEPLOYED_NET=""
+DEPLOYED_ORPHAN=""
 
 lb_protection() { # usage: lb_protection <arn>
   aws elbv2 describe-load-balancer-attributes --load-balancer-arn "$1" --region "${REGION}" \
@@ -107,14 +111,18 @@ cleanup() {
       aws elbv2 wait load-balancers-deleted --load-balancer-arns "${ORPHAN_LB_ARN}" --region "${REGION}" >/dev/null 2>&1
       ;;
   esac
-  node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
-    --remove-protection --yes >/dev/null 2>&1
+  if [ "${DEPLOYED_ORPHAN:-}" = "1" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
+      --remove-protection --yes >/dev/null 2>&1
+  fi
   # A deleted load balancer's ENIs can outlive it for a few minutes.
-  for _ in 1 2 3; do
-    node "${LOCAL_DIST}" state destroy "${NET_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
-      --yes >/dev/null 2>&1 && break
-    sleep 30
-  done
+  if [ "${DEPLOYED_NET:-}" = "1" ]; then
+    for _ in 1 2 3; do
+      node "${LOCAL_DIST}" state destroy "${NET_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
+        --yes >/dev/null 2>&1 && break
+      sleep 30
+    done
+  fi
   exit ${rc}
 }
 trap cleanup EXIT
@@ -141,6 +149,7 @@ fi
 
 echo ""
 echo "==> Step 1: deploy ${NET_STACK}"
+DEPLOYED_NET=1
 node "${LOCAL_DIST}" deploy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --yes
 NET_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${NET_STATE_KEY}" -)"
 SUBNET_A="$(printf '%s' "${NET_STATE}" | jq -r '.outputs.SubnetAId // ""')"
@@ -160,6 +169,7 @@ echo "    OK: subnets ${ORPHAN_SUBNETS}, security group ${ORPHAN_SECURITY_GROUP}
 echo ""
 echo "==> Step 2: --no-rollback deploy of ${STACK} (OrphanLb fails after CreateLoadBalancer)"
 RUN_LOG="$(mktemp)"
+DEPLOYED_ORPHAN=1
 set +e
 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" \
   --yes --no-rollback >"${RUN_LOG}" 2>&1

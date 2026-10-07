@@ -325,7 +325,46 @@ export {
 import { withProducerRegions } from './producer-regions-scope.js';
 import { noteRetainedResource } from '../provisioning/providers/create-token-ledger.js';
 import { runDeleteAttempt } from '../provisioning/providers/deletion-protection-compensation.js';
+import {
+  orphanDeleteNeedsIdentity,
+  readResourceIdentity,
+} from './rollback-executor/orphan-identity.js';
+import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
+
+/**
+ * go-to-k/cdkd#4678: whether `--remove-protection` may strip a failed
+ * CREATE's resource. A state-recorded op is the record's own; a journaled
+ * orphan must be the resource its CREATE made — a type whose id is never
+ * reused, or a live `resourceIdentity` equal to the journaled one (#4655).
+ * Otherwise warned and `false`: the delete runs without the flag.
+ */
+async function protectionRemovalProven(
+  op: FailedOperation,
+  ctx: RollbackExecutorContext,
+  shownLogicalId: string,
+  shownType: string
+): Promise<boolean> {
+  if (op.physicalIdRecoveredFromError !== true) return true;
+  if (!orphanDeleteNeedsIdentity(op.resourceType)) return true;
+  const journaled = op.createdResourceIdentity;
+  if (typeof journaled === 'string' && journaled !== '' && op.physicalId) {
+    const live = await readResourceIdentity(
+      ctx.providerRegistry,
+      { resourceType: op.resourceType, physicalId: op.physicalId, provisionedBy: op.provisionedBy },
+      ctx.region
+    );
+    if (live === journaled) return true;
+    // Gone: the delete reads not-found as done, with nothing to strip.
+    if (live === RESOURCE_NOT_FOUND) return false;
+  }
+  ctx.logger.warn(
+    `  Rollback: leaving deletion protection on partially-created ${shownLogicalId} (${shownType}) — ` +
+      `--remove-protection applies only to a resource proven to be the one the failed deploy created, ` +
+      `and its name could now belong to another resource; if it is protected, its delete is refused and the journal keeps it`
+  );
+  return false;
+}
 
 async function replaySingle(
   op: CompletedOperation,
@@ -886,10 +925,14 @@ async function replayFailedOperationsUnbound(
             stateResources
           );
           // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` reaches a
-          // protected orphan here; nothing else sets the flag. ONE attempt, no
-          // outer re-entry: the scope tells a protection flip's compensation
-          // that any failure is the last, so the guard is put back.
-          const removeProtection = ctx.removeProtection === true;
+          // protected orphan here; nothing else sets the flag. Only on a
+          // resource proven to be the one the failed CREATE made: AWS's refusal
+          // is the last guard on a name another resource reused. ONE attempt,
+          // no outer re-entry: the scope tells a protection flip's
+          // compensation that any failure is the last, so the guard is put back.
+          const removeProtection =
+            ctx.removeProtection === true &&
+            (await protectionRemovalProven(op, ctx, safe(op.logicalId), safe(op.resourceType)));
           const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
             provider.delete(op.logicalId, op.physicalId!, op.resourceType, op.attemptedProperties, {
               expectedRegion: ctx.region,

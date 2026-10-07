@@ -209,38 +209,41 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
 describe('countProtectedJournaledOrphans (go-to-k/cdkd#4678)', () => {
   const orphansOf = (ops: Array<Record<string, unknown>>): Pick<JournaledOrphans, 'segments'> =>
     ({ segments: [{ segment: {}, ops }] }) as unknown as Pick<JournaledOrphans, 'segments'>;
-
-  it('reads each type through its protection locator in the attempted properties', () => {
-    expect(
-      countProtectedJournaledOrphans(
-        orphansOf([
-          orphanOp,
-          {
-            logicalId: 'I',
-            resourceType: 'AWS::EC2::Instance',
-            attemptedProperties: { DisableApiTermination: true },
-          },
-        ]),
-        REGION
-      )
-    ).toBe(2);
+  const instance = (extra: Record<string, unknown> = {}) => ({
+    logicalId: 'I',
+    resourceType: 'AWS::EC2::Instance',
+    physicalIdRecoveredFromError: true,
+    attemptedProperties: { DisableApiTermination: true },
+    ...extra,
+  });
+  const table = (extra: Record<string, unknown> = {}) => ({
+    logicalId: 'T',
+    resourceType: 'AWS::DynamoDB::Table',
+    physicalIdRecoveredFromError: true,
+    attemptedProperties: { DeletionProtectionEnabled: true },
+    ...extra,
   });
 
-  it('counts none whose protection is off, absent, or of a type with no flag', () => {
+  it('reads each type through its protection locator in the attempted properties', () => {
+    expect(countProtectedJournaledOrphans(orphansOf([orphanOp, instance()]), REGION)).toBe(2);
+  });
+
+  it('counts a name-keyed orphan only with a journaled identity to prove', () => {
+    expect(countProtectedJournaledOrphans(orphansOf([table()]), REGION)).toBe(0);
+    expect(
+      countProtectedJournaledOrphans(orphansOf([table({ createdResourceIdentity: 'tok' })]), REGION)
+    ).toBe(1);
+  });
+
+  it('counts none the sweep leaves alone, nor protection off, absent, or of a type with no flag', () => {
     expect(
       countProtectedJournaledOrphans(
         orphansOf([
-          {
-            logicalId: 'I',
-            resourceType: 'AWS::EC2::Instance',
-            attemptedProperties: { DisableApiTermination: false },
-          },
-          { logicalId: 'J', resourceType: 'AWS::EC2::Instance' },
-          {
-            logicalId: 'Q',
-            resourceType: 'AWS::SQS::Queue',
-            attemptedProperties: { DisableApiTermination: true },
-          },
+          instance({ physicalIdRecoveredFromError: false }),
+          instance({ deletionPolicy: 'Retain' }),
+          instance({ attemptedProperties: { DisableApiTermination: false } }),
+          instance({ attemptedProperties: undefined }),
+          instance({ resourceType: 'AWS::SQS::Queue' }),
         ]),
         REGION
       )

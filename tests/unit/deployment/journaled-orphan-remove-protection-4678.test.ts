@@ -9,6 +9,7 @@ import { rollbackExecutorContext } from '../../../src/deployment/deploy-engine/r
 import { isTerminalDeleteFailure } from '../../../src/provisioning/providers/deletion-protection-compensation.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { StackState } from '../../../src/types/state.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -118,16 +119,129 @@ describe('failed-CREATE orphan delete under --remove-protection (go-to-k/cdkd#46
     expect(seen[0]!.context).not.toHaveProperty('removeProtection');
   });
 
-  it('keeps the op for a re-run when the protected delete is refused', async () => {
+  it.each([
+    ['without', {}],
+    ['with', { removeProtection: true }],
+  ])('keeps the op for a re-run when the delete is refused %s the flag', async (_, extra) => {
     const del = vi.fn().mockRejectedValue(
       Object.assign(new Error('Load balancer cannot be deleted: deletion protection is enabled'), {
         name: 'OperationNotPermittedException',
       })
     );
     const op = orphan();
-    const result = await replayFailedOperations([op], {}, 'Stack', ctxWith(del), {});
+    const result = await replayFailedOperations([op], {}, 'Stack', ctxWith(del, extra), {});
+    expect(del).toHaveBeenCalledOnce();
     expect(result.failures).toBe(1);
     expect(result.remainingFailedOps).toEqual([op]);
+  });
+});
+
+describe('a name-keyed orphan gets the flag only when its identity is proven (go-to-k/cdkd#4678)', () => {
+  // A table's physical id is the name the user chose: after a hand delete,
+  // another table can take it, and AWS's protection refusal is then the last
+  // guard against deleting it.
+  const tableOrphan = (over: Partial<FailedOperation> = {}): FailedOperation => ({
+    logicalId: 'Table',
+    changeType: 'CREATE',
+    resourceType: 'AWS::DynamoDB::Table',
+    physicalId: 'orders',
+    provisionedBy: 'sdk',
+    physicalIdRecoveredFromError: true,
+    attemptedProperties: { TableName: 'orders', DeletionProtectionEnabled: true },
+    ...over,
+  });
+
+  function tableCtx(del: ReturnType<typeof vi.fn>, live: unknown) {
+    const warn = vi.fn();
+    const resourceIdentity = vi.fn(async () => live);
+    const ctx: RollbackExecutorContext = {
+      region: 'us-east-1',
+      logger: { ...logger, warn } as unknown as RollbackExecutorContext['logger'],
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { delete: del, resourceIdentity }, provisionedBy: 'sdk' }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+      removeProtection: true,
+    };
+    const warned = (): string => warn.mock.calls.map((c) => String(c[0])).join('\n');
+    return { ctx, warned, resourceIdentity };
+  }
+
+  it('passes it when the live identity equals the journaled one', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = tableCtx(del, 'tok-1');
+    await replayFailedOperations(
+      [tableOrphan({ createdResourceIdentity: 'tok-1' })],
+      {},
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(seen[0]!.context['removeProtection']).toBe(true);
+    expect(warned()).not.toContain('leaving deletion protection');
+  });
+
+  it('withholds it, and warns, when the live identity is another', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = tableCtx(del, 'tok-2');
+    await replayFailedOperations(
+      [tableOrphan({ createdResourceIdentity: 'tok-1' })],
+      {},
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(del).toHaveBeenCalledOnce();
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(seen[0]!.throttleTerminal).toBe(false);
+    expect(warned()).toContain('leaving deletion protection on partially-created Table');
+  });
+
+  it('withholds it, and warns, when no identity was journaled (no read is made)', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned, resourceIdentity } = tableCtx(del, 'tok-1');
+    await replayFailedOperations([tableOrphan()], {}, 'Stack', ctx, {});
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(resourceIdentity).not.toHaveBeenCalled();
+    expect(warned()).toContain('leaving deletion protection on partially-created Table');
+  });
+
+  // A partially-recorded CREATE: state holds the id, so the record owns it,
+  // as it would a state-tracked delete's.
+  it('passes it, with no identity read, for a state-recorded failed CREATE', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, resourceIdentity } = tableCtx(del, 'tok-2');
+    await replayFailedOperations(
+      [tableOrphan({ physicalIdRecoveredFromError: undefined })],
+      {
+        Table: {
+          physicalId: 'orders',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(del).toHaveBeenCalledOnce();
+    expect(seen[0]!.context['removeProtection']).toBe(true);
+    expect(resourceIdentity).not.toHaveBeenCalled();
+  });
+
+  it('withholds it silently when the resource is gone', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx, warned } = tableCtx(del, RESOURCE_NOT_FOUND);
+    await replayFailedOperations(
+      [tableOrphan({ createdResourceIdentity: 'tok-1' })],
+      {},
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(warned()).not.toContain('leaving deletion protection');
   });
 });
 
