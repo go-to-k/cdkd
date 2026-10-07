@@ -159,16 +159,15 @@ cleanup() {
       for leaked in ${LEAKED_NET}; do
         # Retried: a VPC delete right after its subnet / group delete can
         # still meet the dependency for a few seconds.
-        net_deleted=""
+        net_rc=1
         for net_attempt in 1 2 3 4 5 6; do
-          if aws ec2 "${net_del}" "${net_flag}" "${leaked}" --region "${REGION}" >/dev/null 2>&1; then
-            net_deleted=1
-            break
-          fi
+          net_out=$(aws ec2 "${net_del}" "${net_flag}" "${leaked}" --region "${REGION}" 2>&1)
+          net_rc=$?
+          [ "${net_rc}" -eq 0 ] && break
           sleep 5
         done
-        [ -n "${net_deleted}" ] \
-          || echo "    NOTE: could not delete the probe ${net_kind} ${leaked}; delete it by hand" >&2
+        [ "${net_rc}" -eq 0 ] \
+          || echo "    NOTE: could not delete the probe ${net_kind} ${leaked} ($(sanitize_aws_output "${net_out}")); delete it by hand" >&2
       done
     done
   fi
