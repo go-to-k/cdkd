@@ -1108,7 +1108,8 @@ if grep -q "Skipping failed CREATE of OrphanCluster" "${FF_LOG}"; then
 fi
 # Sentinel for that negative grep, independent of its wording: the skip warning
 # names the earlier cluster id and tells you to act on it by hand.
-if grep -F "${ORPHAN_CID}" "${FF_LOG}" | grep -qiE 'skipping|manual'; then
+# One process: under pipefail, `grep | grep -q` fails open on SIGPIPE.
+if awk -v id="${ORPHAN_CID}" 'index($0, id) && tolower($0) ~ /skipping|manual/ { f = 1 } END { exit !f }' "${FF_LOG}"; then
   echo "FAIL: the fix-forward deploy printed a skip / manual-action line naming ${ORPHAN_CID} (output above) -- reworded skip warning?" >&2
   exit 1
 fi
