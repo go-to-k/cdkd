@@ -103,6 +103,25 @@ export interface ResourceProvider {
    *   `null` as "skipped — not deployed yet", not as a failure).
    */
   import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
+
+  /**
+   * Whether a resource a failed CREATE proved it made (its journaled id) is
+   * the same live resource as the one the state record under the same
+   * logical id holds (issue #4606: the fix-forward).
+   *
+   * Optional. A successful deploy deletes the journaled resource only on
+   * `'different'`; absent, `'unknown'` or a throw keeps today's warning.
+   * Decide by a LIVE read of both (ARN, unique id), never by comparing the
+   * id strings alone, and answer `'unknown'` for an id form you do not
+   * recognise, a client region other than `context.expectedRegion`, or a
+   * record whose resource is not found.
+   */
+  isSameResource?(
+    journaledPhysicalId: string,
+    record: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<'same' | 'different' | 'unknown'>;
 }
 ```
 

@@ -51,8 +51,9 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   a deploy without `INJECT_ORPHAN_CREATE` (a changes deploy) succeeds and deletes
   the stream, with `ORPHAN_RETAIN=true` (a no-change deploy) keeps it, and a
   fix-forward keeping `OrphanStream` under another name (`ORPHAN_FIX_FORWARD=true`)
-  exits 2 and names the first stream without deleting it (the fixture deletes
-  it). Each asserts the journal gone.
+  deletes the first stream once the provider's live read proves it is not the
+  new one ([#4606](https://github.com/go-to-k/cdkd/issues/4606)), keeps the
+  new one and exits 0. Each asserts the journal gone.
 - **Phase P (a replacement whose new resource was created and then failed,
   issue [#4604](https://github.com/go-to-k/cdkd/issues/4604))**: deploy with
   `WITH_REPLACE_STREAM=true` (`ReplaceStream`, `-replace-stream-a`), then flip

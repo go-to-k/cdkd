@@ -79,7 +79,7 @@ import {
   deepEqual,
   classifyFailedOp,
   failedOpOwnRecord,
-  isReplacementOrphan,
+  recordUnderIdIsNotOwn,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -145,6 +145,7 @@ export {
   isJournaledOrphan,
   isReplacedRecord,
   isReplacementOrphan,
+  markProvenDistinctFromRecord,
   replacementNeverSwapped,
   planFailedOps,
   planRollback,
@@ -774,7 +775,7 @@ async function replayFailedOperationsUnbound(
             result.orphaned.push(orphaned);
             options.onOrphan?.(orphaned);
           }
-          if (!isReplacementOrphan(op)) delete stateResources[op.logicalId];
+          if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
           // go-to-k/cdkd#4438: as on the `orphan-retain` arm.
           await noteRetainedResource(op.resourceType, op.logicalId);
           logger.info(
@@ -912,7 +913,7 @@ async function replayFailedOperationsUnbound(
             result.warnings++;
             result.leftInPlace++;
           }
-          if (!isReplacementOrphan(op)) delete stateResources[op.logicalId];
+          if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1179,8 +1180,9 @@ async function replayFailedOperationsUnbound(
         ownRecord(stateResources, op.logicalId) !== recordBefore ||
         // go-to-k/cdkd#4604: a replacement orphan's arm acts on its resource
         // and leaves the record under its id, the replaced one, as it found
-        // it: completed when it did not throw.
-        (isReplacementOrphan(op) &&
+        // it: completed when it did not throw. go-to-k/cdkd#4606: as does an
+        // orphan proven distinct from the record under its id.
+        (recordUnderIdIsNotOwn(op, stateResources) &&
           !pending.has(op) &&
           (action === 'delete-failed-create' ||
             action === 'delete-failed-create-with-final-snapshot' ||

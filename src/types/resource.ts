@@ -936,6 +936,9 @@ export const RESOURCE_NOT_FOUND: unique symbol = Symbol('cdkd.resourceNotFound')
 /** The type of {@link RESOURCE_NOT_FOUND}. */
 export type ResourceNotFound = typeof RESOURCE_NOT_FOUND;
 
+/** `ResourceProvider.isSameResource`'s answer (go-to-k/cdkd#4606). */
+export type ResourceIdentityVerdict = 'same' | 'different' | 'unknown';
+
 /**
  * Cross-resource context passed to `ResourceProvider.readCurrentState`
  * for providers that need to inspect sibling resources in the same
@@ -1274,6 +1277,32 @@ export interface ResourceProvider {
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
+
+  /**
+   * go-to-k/cdkd#4606: whether `journaledPhysicalId` — the resource a failed
+   * CREATE proved it made (a journaled `physicalIdRecoveredFromError` entry)
+   * — is the same live AWS resource as the one `record` holds under the same
+   * logical id. A successful deploy deletes that journaled resource when, and
+   * only when, this answers `'different'` (the fix-forward that created a new
+   * resource under the logical id).
+   *
+   * Decide by a LIVE read of both (an ARN, a unique id, a creation identity),
+   * never by comparing the two id strings alone: providers record ids in
+   * different forms and an idempotent create can return the same resource
+   * under another spelling. Answer `'unknown'` whenever the read cannot prove
+   * either way (an error, a region the client is not in, an id form the
+   * provider does not recognise, the record's resource not found), and
+   * `'different'` for a journaled id AWS reports gone only when the record's
+   * resource was read and the type's namespace makes it impossible for the
+   * gone id to name it. Absent (most providers) means `'unknown'`, which keeps
+   * the journaled resource and warns about it.
+   */
+  isSameResource?(
+    journaledPhysicalId: string,
+    record: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' | undefined },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict>;
 
   /**
    * State property paths this provider deliberately cannot (or chooses
