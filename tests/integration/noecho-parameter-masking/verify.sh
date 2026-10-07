@@ -66,8 +66,8 @@
 #      `Creating final snapshot` line prints that name masked, the output
 #      holds no fragment of it, and AWS holds the snapshot, which is deleted.
 #   5. Destroy, gone-probes, and the S3 version sweep (a physical id named
-#      from the value stays in the clear, as AWS publishes it, and the child's
-#      pinned element too, so every version is purged).
+#      from the value stays in the clear, as AWS publishes it, so every
+#      version is purged).
 #
 # The value is generated per run and never printed.
 #
@@ -633,15 +633,20 @@ fi
 P1_CHILD_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_CHILD_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" "${P1_CHILD_STATE}" --quiet
-# A PINNED BOUND (#4043, documented): the CDK child declares no NoEcho, and an
-# element of the parent's value is a log-only piece, so the child's record
-# holds it as deployed. Asserted so a change to it is a visible decision.
+# The CDK child declares no NoEcho, but a list element that is a piece of the
+# parent's NoEcho PARAMETER value is a fresh mask-only needle of the child
+# resource's bag (#4043), so the child's record holds the mask. By coordinate:
+# the child declares no position, so no noEchoLeaves is required there.
 P1_CHILD_PERSISTED=$(jq -r '.resources.SplitChildConsumer.properties.Value // "<absent>"' "${P1_CHILD_STATE}")
-if [ "${P1_CHILD_PERSISTED}" != "${SPLIT_A}" ]; then
-  echo "FAIL: SplitChild's state.json no longer holds the list element as deployed -- the pinned bound moved; update the fixture and the docs together (issue #4043)" >&2
+if [ "${P1_CHILD_PERSISTED}" != '***' ]; then
+  echo "FAIL: SplitChild's state.json does not hold the list element as the mask (issue #4043)" >&2
   exit 1
 fi
-echo "    OK: the nested child's list line masks both elements; AWS and its state.json hold the real one (pinned bound)"
+if grep -qF -- "${SPLIT_A}" "${P1_CHILD_STATE}" || grep -qF -- "${SPLIT_B}" "${P1_CHILD_STATE}"; then
+  echo "FAIL: SplitChild's state.json carries a split piece of the NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
+echo "    OK: the nested child's list line masks both elements; AWS holds the real one, the child's state.json the mask"
 
 # --- Phase 1b: an unchanged redeploy reads the value back (#4043 Phase B) ---
 echo "==> Phase 1b: redeploy unchanged; cdkd diff --fail; cdkd drift --json"
@@ -689,25 +694,29 @@ if [ "${DIFF_RC_P1B}" -ne 0 ]; then
 fi
 echo "    OK: cdkd diff --fail exits 0 on the unchanged stack"
 DRIFT_JSON_P1B=$(mktemp)
-SCRATCH_FILES+=("${DRIFT_JSON_P1B}")
+DRIFT_ERR_P1B=$(mktemp)
+SCRATCH_FILES+=("${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}")
 set +e
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON_P1B}" 2>&1
+# stdout alone is the JSON; stderr goes to its own file, so a warning line
+# cannot make the document unparsable. Both are scanned for a leak.
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON_P1B}" 2>"${DRIFT_ERR_P1B}"
 DRIFT_RC_P1B=$?
 set -e
-if grep -qF -- "${TOKEN}" "${DRIFT_JSON_P1B}"; then
+if grep -qF -- "${TOKEN}" "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}"; then
   echo "FAIL: the Phase 1b 'cdkd drift' output carries the NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
+assert_no_split_piece "the Phase 1b 'cdkd drift' output" "$(cat "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}")"
 P1B_BUCKET=$(jq -r '[.[] | .notCompared[]? | select(.logicalId == "NoEchoConsumer" and .cause == "noEchoParameter")] | length' "${DRIFT_JSON_P1B}" 2>/dev/null || echo "unparsable")
 P1B_DRIFTED=$(jq -r '[.[] | .drifted[]? | select(.logicalId == "NoEchoConsumer")] | length' "${DRIFT_JSON_P1B}" 2>/dev/null || echo "unparsable")
 if [ "${P1B_BUCKET}" != "1" ] || [ "${P1B_DRIFTED}" != "0" ]; then
   echo "FAIL: cdkd drift does not report NoEchoConsumer under noEchoParameter (bucketed ${P1B_BUCKET}, drifted ${P1B_DRIFTED}; issue #4043)" >&2
-  diag_output "$(cat "${DRIFT_JSON_P1B}")"
+  diag_output "$(cat "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}")"
   exit 1
 fi
 if [ "${DRIFT_RC_P1B}" -ne 0 ]; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC_P1B}, not 0, on the unchanged stack (issue #4043)" >&2
-  diag_output "$(cat "${DRIFT_JSON_P1B}")"
+  diag_output "$(cat "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}")"
   exit 1
 fi
 echo "    OK: cdkd drift exits 0 and reports NoEchoConsumer's marked leaf under noEchoParameter"
@@ -864,10 +873,17 @@ fi
 # it, the whole leaf `***`, and the stored literal (a record written without a
 # NoEcho position there) shows as `(previous NoEcho value)`: neither side
 # prints a value.
-if [[ "${DIFF_OUT_P3A}" != *'(previous NoEcho value)'* ]] \
-  || [[ "${DIFF_OUT_P3A}" != *'new: "***"'* ]]; then
+# Scoped to the NoEchoRenamed row block: from its header up to the next row
+# header (`  [` at the row indent), so another row cannot satisfy it.
+RENAMED_BLOCK=$(awk -v hdr="${RENAMED_ROW}" '
+  index($0, hdr) == 1 { inside = 1; print; next }
+  inside && /^  \[/ { exit }
+  inside { print }
+' <<< "${DIFF_OUT_P3A}")
+if [[ "${RENAMED_BLOCK}" != *'(previous NoEcho value)'* ]] \
+  || [[ "${RENAMED_BLOCK}" != *'new: "***"'* ]]; then
   echo "FAIL: the NoEchoRenamed row does not print its old side as the placeholder and its new side as the mask (issue #4043)" >&2
-  diag_output "${DIFF_OUT_P3A}"
+  diag_output "${RENAMED_BLOCK:-<no NoEchoRenamed row block>}"
   exit 1
 fi
 # The diff's own --verbose replacement line, which Phase 3 checks on the deploy.
@@ -973,6 +989,13 @@ if ! DEPLOY_OUT_P3B=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJEC
 fi
 if [[ "${DEPLOY_OUT_P3B}" == *"Replacing NoEchoRenamed"* ]]; then
   echo "FAIL: an unchanged NoEcho-fed create-only TopicName REPLACED the topic -- the readback did not confirm it (issue #4043)" >&2
+  exit 1
+fi
+# The readback confirmed the unchanged name: no create-only warning, which
+# would mean a false `differs` / `not-readable` verdict.
+if grep -F 'NoEchoRenamed.TopicName' <<< "${DEPLOY_OUT_P3B}" | grep -qF -- '--recreate-via'; then
+  echo "FAIL: the Phase 3b deploy warned that NoEchoRenamed.TopicName cannot be confirmed -- the readback of an unchanged name did not hold (issue #4043)" >&2
+  diag_output "$(grep -F 'NoEchoRenamed' <<< "${DEPLOY_OUT_P3B}" || true)"
   exit 1
 fi
 if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"; then
@@ -1150,9 +1173,9 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: resources and state are gone"
 
 # --- Teardown + VERSION sweep, ON THE SUCCESS PATH ---------------------------
-# A physical id named from the value (Phases 3, 4a) and the child's pinned
-# element stay in state, and the bucket is versioned: every version under the
-# stack's prefix is purged, and asserted.
+# A physical id named from the value (Phases 3, 4a) stays in state, and the
+# bucket is versioned: every version under the stack's prefix is purged, and
+# asserted.
 echo "==> Final teardown + state-version sweep"
 cleanup
 trap - EXIT INT TERM

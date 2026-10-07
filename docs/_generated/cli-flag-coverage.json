@@ -2101,6 +2101,7 @@
     "--quiet",
     "--receipt-handle",
     "--record-resource-mapping",
+    "--recreate-via",
     "--recursive",
     "--replica-updates",
     "--replication-group-id",

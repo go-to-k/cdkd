@@ -8,6 +8,8 @@ import {
   carryFreshNoEchoMark,
   recordInheritedParameterRead,
   recordNoEchoParameterFreshValue,
+  isNoEchoParameterPlaintext,
+  MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import {
@@ -135,6 +137,8 @@ export function recordInheritedParameterSecrets(
   // BEFORE the size test below, which reads a bag holding only log-only
   // needles as empty.
   if (inherited && recorded) carryLogOnlyValuesCarriedBy(inherited, recorded, value);
+  if (inherited && recorded)
+    recordInheritedNoEchoListElements(this, inherited, recorded, value, context);
   if (!inherited || inherited.size === 0 || !recorded) return;
   // Issue #2291 round 2. THIS parameter's own expression, when the parent
   // certified one, rather than the collapsed map's survivor. See the
@@ -174,6 +178,34 @@ export function recordInheritedParameterSecrets(
     // stays fresh in the child resource's bag, or its no-change skip reads
     // the new value's `***` as equal to the recorded `***`.
     carryFreshNoEchoMark(inherited, recorded, plaintext);
+  }
+}
+
+/**
+ * go-to-k/cdkd#4043: a child `CommaDelimitedList` / `List<...>` parameter fed
+ * a parent's `NoEcho` PARAMETER value arrives split, and no element equals the
+ * parent's whole value, so the value arm would leave each element in the
+ * clear in the child's record. An element that is a piece of such a value
+ * (from `MIN_NEEDLE_LENGTH`, the value arm's floor) is recorded as a fresh
+ * mask-only needle of the parameter class in the child resource's bag.
+ */
+function recordInheritedNoEchoListElements(
+  resolver: IntrinsicFunctionResolver,
+  inherited: RecordedSecretValues,
+  recorded: RecordedSecretValues,
+  value: unknown,
+  context: ResolverContext
+): void {
+  if (!Array.isArray(value)) return;
+  const parameterValues = [...inherited.keys()].filter((plaintext) =>
+    isNoEchoParameterPlaintext(inherited, plaintext)
+  );
+  if (parameterValues.length === 0) return;
+  for (const element of value) {
+    if (typeof element !== 'string' || element.length < MIN_NEEDLE_LENGTH) continue;
+    if (parameterValues.some((plaintext) => plaintext.includes(element))) {
+      recordNoEchoParameterFreshValue(element, recorded, resolver.publicNoEchoTokens(context));
+    }
   }
 }
 

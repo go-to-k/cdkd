@@ -524,9 +524,13 @@ inherits it through `redactOutputs`.
   resource's bag, and `carryFreshNoEchoMark` (`secret-redaction.ts:941`) keeps
   it fresh. A CDK-synthesized child's parameter declaration never says
   `NoEcho`, so that child has no positional arm. A hand-authored child that
-  declares `NoEcho: true` gets one. An inherited value
-  shorter than 4 characters therefore stays in the clear in the child's
-  record: the floor residual of section 3.3.
+  declares `NoEcho: true` gets one. A child list parameter
+  (`CommaDelimitedList`) receives the value split, so no element equals the
+  whole value: each element that is a piece of a parent `NoEcho` PARAMETER
+  value is recorded as a fresh mask-only needle of the parameter class in the
+  consuming child resource's bag, from 4 characters (added in the Phase B
+  review). An inherited value or element shorter than 4 characters therefore
+  stays in the clear in the child's record: the floor residual of section 3.3.
 
 ### 4.8 Other readers of `***`
 
@@ -1007,8 +1011,9 @@ the recommended default. The sections above follow them.
 3. **A `NoEcho` value in a delete-address property keeps the existing skip**
    (`redactedDeleteAddressSkip`). The resource is left in place and the record
    is kept, and every destroy, and every deploy that removes the resource,
-   exits 2 until it is cleaned up by hand, unless `--allow-unaddressed`. See
-   section 4.8.
+   exits non-zero until it is cleaned up by hand. `--allow-unaddressed` is a
+   deploy flag: a deploy given it exits zero, while `cdkd destroy` still exits
+   non-zero with the record kept. See section 4.8.
 4. **An updatable, write-only property is re-sent on every deploy**, with one
    info line per resource saying why it updated. This is the commonest use of
    `NoEcho`: `AWS::RDS::DBInstance.MasterUserPassword`,

@@ -976,17 +976,15 @@ count as a change for `--fail`.
 - A value shorter than 4 characters, or a number, that reaches state other
   than at a position the template names: embedded in a longer string read
   through a declared attribute, or inherited by a CDK nested stack's child
-  (whose parameters are never `NoEcho`).
+  (whose parameters are never `NoEcho`), including one element of a list the
+  child receives from a parent's `NoEcho` value. An element of 4 or more
+  characters is stored as `***`.
 - A record the template no longer names (as the same logical id and type),
   such as a resource being deleted, an orphan record, or the previous copy of
   a resource whose type changed, which the rollback journal saves: the
   positions come from today's template.
 - Outputs saved after a failed outputs pass, and an output the template
   changed since an older cdkd wrote it.
-- One element of a list a CDK nested stack's child receives from a `NoEcho`
-  value the parent split (`Fn::Split`), when the child reads that element on
-  its own: the child holds only the parent's whole value, so nothing names the
-  element.
 
 #### Migration
 
