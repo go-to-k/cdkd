@@ -339,7 +339,7 @@ assert_gone "rollback journal ${JOURNAL_KEY} still exists after the rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 # The rollback also undid Anchor's CREATE; a state record it left (empty) goes too.
 node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1 || true
-assert_gone "state ${STATE_KEY} still exists after the rollback and state destroy" \
+assert_gone "state ${STATE_KEY} still exists after the rollback and its record cleanup" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: the orphan and the journal are gone"
 
