@@ -4,6 +4,8 @@ import {
   effectiveProvisionedBy,
   throwIfDeleteSkipped,
   recordRollbackSkip,
+  rollbackCannotAddress,
+  skipUnaddressableReplay,
 } from './messages.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
@@ -198,6 +200,21 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     stateResources[op.logicalId],
     op.provisionedBy
   );
+  // go-to-k/cdkd#4628: the falsy check above stays for every type (the
+  // journal recorded no id); a present id must also be addressable. Above the
+  // final-snapshot preparation, which names the snapshot after the id.
+  // `classifyRollbackOp` reached here with the record naming this same id.
+  if (
+    rollbackCannotAddress(
+      stateResources[op.logicalId],
+      op.resourceType,
+      deleteProvisionedBy,
+      op.physicalId
+    )
+  ) {
+    skipUnaddressableReplay(s, logger, op, 'delete created resource');
+    return;
+  }
   s.createRollbackRoute = deleteProvisionedBy;
   const snapshotPolicy = action === 'delete-with-final-snapshot';
   const takeFinalSnapshot = snapshotPolicy && ctx.skipFinalSnapshot !== true;
