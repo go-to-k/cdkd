@@ -317,7 +317,7 @@ describe('EC2Provider.isSameResource for AWS::EC2::EIP (go-to-k/cdkd#4606)', () 
 });
 
 describe('EC2Provider.isSameResource for the other EC2 types (go-to-k/cdkd#4606)', () => {
-  it.each(['AWS::EC2::VPC', 'AWS::EC2::Subnet', 'AWS::EC2::InternetGateway'])(
+  it.each(['AWS::EC2::InternetGateway', 'AWS::EC2::RouteTable'])(
     '%s is unknown, with no read, even for distinct NAT-shaped ids',
     async (type) => {
       natGateways({ [NAT_A]: 'gone', [NAT_B]: 'available' });

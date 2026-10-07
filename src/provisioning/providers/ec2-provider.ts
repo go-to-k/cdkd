@@ -533,19 +533,28 @@ const EIP_ALLOCATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
 
 /** `DescribeInstances`'s answer for an instance id EC2 no longer lists. */
 const INSTANCE_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidInstanceID.NotFound']);
+/** `DescribeVpcs`'s answer for a VPC id EC2 no longer lists. */
+const VPC_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidVpcID.NotFound']);
+/** `DescribeSubnets`'s answer for a subnet id EC2 no longer lists. */
+const SUBNET_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidSubnetID.NotFound']);
+/** `DescribeSecurityGroups`'s answer for a group id EC2 no longer lists. */
+const SECURITY_GROUP_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidGroup.NotFound']);
 
 const NAT_GATEWAY_ID_PATTERN = /^nat-[0-9a-f]+$/;
 const EIP_ALLOCATION_ID_PATTERN = /^eipalloc-[0-9a-f]+$/;
 const INSTANCE_ID_PATTERN = /^i-[0-9a-f]+$/;
+const VPC_ID_PATTERN = /^vpc-[0-9a-f]+$/;
+const SUBNET_ID_PATTERN = /^subnet-[0-9a-f]+$/;
+const SECURITY_GROUP_ID_PATTERN = /^sg-[0-9a-f]+$/;
 
-/** go-to-k/cdkd#4606: a NAT gateway physical id's identity, or `undefined` for any other form. */
-function natGatewayIdentity(physicalId: string): string | undefined {
-  return NAT_GATEWAY_ID_PATTERN.test(physicalId) ? physicalId : undefined;
-}
-
-/** go-to-k/cdkd#4606: an EC2 instance physical id's identity, or `undefined` for any other form. */
-function instanceIdentity(physicalId: string): string | undefined {
-  return INSTANCE_ID_PATTERN.test(physicalId) ? physicalId : undefined;
+/**
+ * go-to-k/cdkd#4606: a physical id's identity when it is the AWS-generated
+ * id `pattern` matches (a NAT gateway's `nat-…`, an instance's `i-…`, a
+ * VPC's `vpc-…`, a subnet's `subnet-…`, a security group's `sg-…`), or
+ * `undefined` for any other form.
+ */
+function generatedIdIdentity(pattern: RegExp, physicalId: string): string | undefined {
+  return pattern.test(physicalId) ? physicalId : undefined;
 }
 
 /**
@@ -1343,21 +1352,24 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#4606: whether the NAT gateway, Elastic IP or EC2 instance a
-   * failed CREATE journaled is the one the record under the same logical id
-   * holds (a fix-forward that created a new one there). Every other type this
-   * provider serves is `'unknown'`.
+   * go-to-k/cdkd#4606: whether the NAT gateway, Elastic IP, EC2 instance,
+   * VPC, subnet or security group a failed CREATE journaled is the one the
+   * record under the same logical id holds (a fix-forward that created a new
+   * one there). Every other type this provider serves is `'unknown'`.
    *
    * The identity is the AWS-generated id: a NAT gateway's `nat-…` id, an
    * instance's `i-…` id (the physical id both the SDK create and Cloud
    * Control record; an instance the create left behind is one whose
-   * wiring failed and whose cleanup terminate failed too), and an
+   * wiring failed and whose cleanup terminate failed too), a VPC's `vpc-…`,
+   * a subnet's `subnet-…` and a security group's `sg-…` id (likewise
+   * journaled only when the wiring after the create AND the cleanup delete
+   * both failed), and an
    * Elastic IP's `eipalloc-…` allocation id (carried by the composite
    * `PublicIp|AllocationId` physical id or as a bare id, the fallback the
    * create journals only when the composite fence refused; a bare journaled
    * id is only ever `'same'` or `'unknown'`, since the settle's holder checks
    * compare the id string and cannot be trusted with that spelling).
-   * Both are unique per account and region and never
+   * Each is unique per account and region and never
    * reassigned, so two distinct ids in the stack's region name two distinct
    * resources. A public IP is NOT an identity (a released address can be
    * handed out again), so an id without an allocation segment, and anything
@@ -1366,14 +1378,15 @@ export class EC2Provider implements ResourceProvider {
    * (a NAT gateway `pending` or `available`; a `failed`, `deleting` or
    * `deleted` one is gone; an instance in any state short of
    * `shutting-down` / `terminated`, which EC2 keeps listing for about an
-   * hour), else `'unknown'`; the journaled one is then
+   * hour; a VPC or subnet `pending` or `available`; a security group, which
+   * has no state, whenever EC2 lists it), else `'unknown'`; the journaled one is then
    * `'different'` whether it reads back under its own id or AWS reports it
    * gone. A journaled NAT gateway left `failed` by its create is
    * `'different'` too: the settle's delete removes it.
    *
    * SDK-routed resources only: the settle asks the provider the journaled
-   * operation was provisioned by, so a Cloud Control-routed NAT gateway,
-   * Elastic IP or instance (e.g. a NAT gateway setting
+   * operation was provisioned by, so a Cloud Control-routed resource of these
+   * types (e.g. a NAT gateway setting
    * `MaxDrainDurationSeconds`) never reaches this method and keeps the
    * warning.
    */
@@ -1384,23 +1397,30 @@ export class EC2Provider implements ResourceProvider {
     context: { expectedRegion: string }
   ): Promise<ResourceIdentityVerdict> {
     let read: (id: string) => Promise<string | undefined>;
-    let journaledId: string | undefined;
-    let recordId: string | undefined;
+    let identity: (physicalId: string) => string | undefined;
     if (resourceType === 'AWS::EC2::NatGateway') {
-      journaledId = natGatewayIdentity(journaledPhysicalId);
-      recordId = natGatewayIdentity(record.physicalId);
+      identity = (id) => generatedIdIdentity(NAT_GATEWAY_ID_PATTERN, id);
       read = (id) => this.readNatGatewayIdIfLive(id);
     } else if (resourceType === 'AWS::EC2::EIP') {
-      journaledId = eipAllocationIdentity(journaledPhysicalId);
-      recordId = eipAllocationIdentity(record.physicalId);
+      identity = eipAllocationIdentity;
       read = (id) => this.readEipAllocationIdIfExists(id);
     } else if (resourceType === 'AWS::EC2::Instance') {
-      journaledId = instanceIdentity(journaledPhysicalId);
-      recordId = instanceIdentity(record.physicalId);
+      identity = (id) => generatedIdIdentity(INSTANCE_ID_PATTERN, id);
       read = (id) => this.readInstanceIdIfLive(id);
+    } else if (resourceType === 'AWS::EC2::VPC') {
+      identity = (id) => generatedIdIdentity(VPC_ID_PATTERN, id);
+      read = (id) => this.readVpcIdIfLive(id);
+    } else if (resourceType === 'AWS::EC2::Subnet') {
+      identity = (id) => generatedIdIdentity(SUBNET_ID_PATTERN, id);
+      read = (id) => this.readSubnetIdIfLive(id);
+    } else if (resourceType === 'AWS::EC2::SecurityGroup') {
+      identity = (id) => generatedIdIdentity(SECURITY_GROUP_ID_PATTERN, id);
+      read = (id) => this.readSecurityGroupIdIfExists(id);
     } else {
       return 'unknown';
     }
+    const journaledId = identity(journaledPhysicalId);
+    const recordId = identity(record.physicalId);
     if (journaledId === undefined || recordId === undefined) return 'unknown';
     if (journaledId === recordId) return 'same';
     // A bare journaled allocation id is never `'different'`. The bare form
@@ -1471,6 +1491,83 @@ export class EC2Provider implements ResourceProvider {
       return instance.InstanceId;
     }
     throw new Error('DescribeInstances returned an instance in no known state');
+  }
+
+  /**
+   * go-to-k/cdkd#4606: the id `DescribeVpcs` reports for `vpcId` while the
+   * VPC is `pending` or `available`; `undefined` when EC2 reports it gone
+   * (`InvalidVpcID.NotFound`, or a `deleting` VPC). Any other failure, a
+   * response naming anything but exactly that one VPC, and an unknown state
+   * throw.
+   */
+  private async readVpcIdIfLive(vpcId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
+    } catch (error) {
+      if (isNamedError(error, VPC_NOT_FOUND_NAMES)) return undefined;
+      throw error;
+    }
+    const vpcs = response.Vpcs ?? [];
+    if (vpcs.length !== 1 || typeof vpcs[0]?.VpcId !== 'string') {
+      throw new Error('DescribeVpcs did not return exactly the VPC asked for');
+    }
+    const vpc = vpcs[0];
+    if (vpc.State === 'deleting') return undefined;
+    if (vpc.State === 'pending' || vpc.State === 'available') return vpc.VpcId;
+    throw new Error('DescribeVpcs returned a VPC in no known state');
+  }
+
+  /**
+   * go-to-k/cdkd#4606: the id `DescribeSubnets` reports for `subnetId` while
+   * the subnet is `pending` or `available`; `undefined` when EC2 reports it
+   * gone (`InvalidSubnetID.NotFound`) or in a state no deploy leaves a record
+   * in (`failed`, `failed-insufficient-capacity`, `unavailable`). Any other
+   * failure, a response naming anything but exactly that one subnet, and an
+   * unknown state throw.
+   */
+  private async readSubnetIdIfLive(subnetId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.ec2Client.send(new DescribeSubnetsCommand({ SubnetIds: [subnetId] }));
+    } catch (error) {
+      if (isNamedError(error, SUBNET_NOT_FOUND_NAMES)) return undefined;
+      throw error;
+    }
+    const subnets = response.Subnets ?? [];
+    if (subnets.length !== 1 || typeof subnets[0]?.SubnetId !== 'string') {
+      throw new Error('DescribeSubnets did not return exactly the subnet asked for');
+    }
+    const subnet = subnets[0];
+    const state = subnet.State;
+    if (state === 'pending' || state === 'available') return subnet.SubnetId;
+    if (state === 'failed' || state === 'failed-insufficient-capacity' || state === 'unavailable') {
+      return undefined;
+    }
+    throw new Error('DescribeSubnets returned a subnet in no known state');
+  }
+
+  /**
+   * go-to-k/cdkd#4606: the id `DescribeSecurityGroups` reports for `groupId`,
+   * or `undefined` when EC2 reports the group gone (`InvalidGroup.NotFound`).
+   * A security group has no state: listed is live. Any other failure, and a
+   * response naming anything but exactly that one group, throws.
+   */
+  private async readSecurityGroupIdIfExists(groupId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.ec2Client.send(
+        new DescribeSecurityGroupsCommand({ GroupIds: [groupId] })
+      );
+    } catch (error) {
+      if (isNamedError(error, SECURITY_GROUP_NOT_FOUND_NAMES)) return undefined;
+      throw error;
+    }
+    const groups = response.SecurityGroups ?? [];
+    if (groups.length !== 1 || typeof groups[0]?.GroupId !== 'string') {
+      throw new Error('DescribeSecurityGroups did not return exactly the group asked for');
+    }
+    return groups[0].GroupId;
   }
 
   /**
@@ -1759,7 +1856,15 @@ export class EC2Provider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
+          if (context?.failedCreateOrphan === true) {
+            // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+            // exit 0, so say so once. Masked by the caller's printing bag.
+            this.logger.info(
+              safeMsg`  VPC ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+            );
+          } else {
+            this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
+          }
           return;
         }
         // `.detail`, never `.summary`: the substring test below is what keeps this
@@ -2129,7 +2234,15 @@ export class EC2Provider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
+          if (context?.failedCreateOrphan === true) {
+            // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+            // exit 0, so say so once. Masked by the caller's printing bag.
+            this.logger.info(
+              safeMsg`  Subnet ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+            );
+          } else {
+            this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
+          }
           return;
         }
         // `.detail`, never `.summary`: the substring test below is what keeps this
@@ -3945,7 +4058,15 @@ export class EC2Provider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
+          if (context?.failedCreateOrphan === true) {
+            // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+            // exit 0, so say so once. Masked by the caller's printing bag.
+            this.logger.info(
+              safeMsg`  Security group ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+            );
+          } else {
+            this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
+          }
           return;
         }
         // `.detail`, never `.summary`: the substring test below is what keeps this
