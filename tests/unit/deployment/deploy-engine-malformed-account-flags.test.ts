@@ -23,6 +23,9 @@ import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resource
 import type { LockRecoveryContext } from '../../../src/state/lock-contention-message.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 
+/** `calculateDiff`'s `refusalRecovery` position (a NoEcho comparison follows it, go-to-k/cdkd#4043). */
+const REFUSAL_RECOVERY_ARG = 9;
+
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
@@ -192,7 +195,7 @@ describe('DeployEngine load refusals carry DeployEngineOptions.refusalRecovery (
     // pinned on the call's argument.
     const spy = vi.spyOn(DiffCalculator.prototype, 'calculateDiff');
     await expect(makeEngine(RECOVERY).deploy(STACK, template)).resolves.toBeDefined();
-    expect(spy.mock.calls.at(-1)?.at(-1)).toBe(RECOVERY);
+    expect(spy.mock.calls.at(-1)?.[REFUSAL_RECOVERY_ARG]).toBe(RECOVERY);
     spy.mockRestore();
   });
 });

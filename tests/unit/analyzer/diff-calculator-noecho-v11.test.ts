@@ -77,6 +77,7 @@ async function diff(current: StackState, token = TOKEN) {
     undefined,
     undefined,
     undefined,
+    undefined,
     noEchoComparisonForTemplate(template, {}, { Token: token }, current.resources)
   );
 }
