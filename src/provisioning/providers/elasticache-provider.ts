@@ -674,9 +674,7 @@ export class ElastiCacheProvider implements ResourceProvider {
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           NotificationTopicArn: notificationTopicArn,
           ...(notificationRemoved && { NotificationTopicStatus: 'inactive' }),
-          ...(notificationTopicArn !== undefined && {
-            NotificationTopicStatus: 'active',
-          }),
+          ...(notificationTopicArn !== undefined && { NotificationTopicStatus: 'active' }),
           // Per-LogType merge semantics: each request entry modifies ONLY
           // its own LogType, so a log type dropped from the template (or the
           // whole property removed) must be sent as an explicit
@@ -901,10 +899,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     const tagsToRemove = plan.remove.filter((k) => live.has(k));
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
-        new RemoveTagsFromResourceCommand({
-          ResourceName: arn,
-          TagKeys: tagsToRemove,
-        })
+        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
       );
     }
     if (tagsToAdd.length > 0) {
@@ -938,10 +933,7 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
-        new RemoveTagsFromResourceCommand({
-          ResourceName: arn,
-          TagKeys: tagsToRemove,
-        })
+        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
       );
       this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ElastiCache resource ${arn}`);
     }
@@ -1122,8 +1114,9 @@ export class ElastiCacheProvider implements ResourceProvider {
    * two apart, so the settle keeps such a cluster rather than deleting it as
    * the failed CREATE's orphan.
    *
-   * `undefined` for another type, an id that is not a cache cluster id, a
-   * client in another region than `expectedRegion`, and an answer without
+   * `undefined` for another type, an id that is not a lower-case cache
+   * cluster id, a client in another region than `expectedRegion`, and an
+   * answer without
    * both fields (`CacheClusterCreateTime` may be absent while the cluster is
    * still being created). `RESOURCE_NOT_FOUND` only on the describe's
    * not-found fault NAME (or an empty list); any other failure throws.
@@ -1135,6 +1128,12 @@ export class ElastiCacheProvider implements ResourceProvider {
   ): Promise<string | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::ElastiCache::CacheCluster') return undefined;
     if (!isCacheClusterId(physicalId)) return undefined;
+    // A template-cased id names the cluster AWS stores lower-cased, but the
+    // settle's ownership checks (this stack's records, other stacks' records)
+    // compare physical ids exactly, and `cdkd import` records the lower-cased
+    // id: no token, so such an orphan is kept rather than deleted from under
+    // a record spelling it otherwise.
+    if (physicalId !== physicalId.toLowerCase()) return undefined;
     const clientRegion = await this.getClient().config.region();
     if (clientRegion !== context.expectedRegion) return undefined;
     const live = await this.readCacheClusterIfExists(physicalId);
@@ -1261,9 +1260,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     let group;
     try {
       const resp = await this.getClient().send(
-        new DescribeCacheSubnetGroupsCommand({
-          CacheSubnetGroupName: physicalId,
-        })
+        new DescribeCacheSubnetGroupsCommand({ CacheSubnetGroupName: physicalId })
       );
       group = resp.CacheSubnetGroups?.[0];
     } catch (err) {
@@ -1362,9 +1359,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     if (explicit) {
       try {
         const resp = await this.getClient().send(
-          new DescribeCacheSubnetGroupsCommand({
-            CacheSubnetGroupName: explicit,
-          })
+          new DescribeCacheSubnetGroupsCommand({ CacheSubnetGroupName: explicit })
         );
         const g = resp.CacheSubnetGroups?.[0];
         return g?.CacheSubnetGroupName

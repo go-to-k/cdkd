@@ -265,12 +265,22 @@ describe('ElastiCacheProvider.resourceIdentity for a CacheCluster (go-to-k/cdkd#
     provider = new ElastiCacheProvider();
   });
 
-  it('is the live ARN and creation time, read under the id as written', async () => {
+  it('is the live ARN and creation time', async () => {
     live({ 'my-cache': T1 });
-    expect(await provider.resourceIdentity('My-Cache', TYPE, CTX)).toBe(
+    expect(await provider.resourceIdentity('my-cache', TYPE, CTX)).toBe(
       `${ARN('my-cache')}@${T1.getTime()}`
     );
-    expect(askedIds()).toEqual(['My-Cache']);
+    expect(askedIds()).toEqual(['my-cache']);
+  });
+
+  // The settle's ownership checks compare physical ids exactly, while
+  // `cdkd import` records AWS's lower-cased id: a template-cased orphan gets no
+  // token, so it is kept rather than deleted from under such a record.
+  it('is undefined, with no read, for a template-cased id', async () => {
+    live({ 'my-cache': T1 });
+    expect(await provider.resourceIdentity('My-Cache', TYPE, CTX)).toBeUndefined();
+    expect(await provider.resourceIdentity('MY-CACHE', TYPE, CTX)).toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('a cluster re-created under the id reads another token', async () => {
@@ -420,6 +430,48 @@ describe('the created-before-failure mark of a CacheCluster (go-to-k/cdkd#4655)'
     );
   });
 
+  it('the create response\'s token wins over a poll naming another creation time', async () => {
+    let poll = 0;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateCacheClusterCommand) {
+        return {
+          CacheCluster: {
+            CacheClusterId: 'orphan-cache',
+            ARN: ARN('orphan-cache'),
+            CacheClusterCreateTime: T1,
+          },
+        };
+      }
+      if (cmd instanceof DescribeCacheClustersCommand) {
+        if (poll++ === 0) return { CacheClusters: [creating({ CacheClusterCreateTime: T2 })] };
+        throw denied();
+      }
+      throw new Error('unexpected command');
+    });
+    const provider = new ElastiCacheProvider();
+    vi.spyOn(provider as unknown as { sleep: () => Promise<void> }, 'sleep').mockResolvedValue();
+    const error = await failureOf(provider.create('Orphan', TYPE, PROPS));
+    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe(
+      `${ARN('orphan-cache')}@${T1.getTime()}`
+    );
+  });
+
+  it('with CDKD_NO_WAIT, a failing post-create describe still marks the create response\'s token', async () => {
+    vi.stubEnv('CDKD_NO_WAIT', 'true');
+    try {
+      aws({ CacheClusterId: 'orphan-cache', ARN: ARN('orphan-cache'), CacheClusterCreateTime: T1 });
+      const error = await failureOf(new ElastiCacheProvider().create('Orphan', TYPE, PROPS));
+      expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('Orphan-Cache');
+      expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe(
+        `${ARN('orphan-cache')}@${T1.getTime()}`
+      );
+      // The describe that failed was the post-create one, not a wait poll.
+      expect(mockSend.mock.calls.filter(([c]) => c instanceof DescribeCacheClustersCommand)).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('the first poll naming a token wins over a later one', async () => {
     const provider = awsPolls([
       creating({ CacheClusterCreateTime: T1 }),
@@ -559,20 +611,24 @@ describe('ElastiCacheProvider.delete of a journaled CacheCluster already gone (g
   });
 });
 
-// A cluster another owner creates under the orphan's id (in any case
-// spelling) repeats its ARN; only the creation time differs, and the settle
-// keeps it.
-describe('the success settle with ElastiCacheProvider: a reused cluster id is not deleted (go-to-k/cdkd#4655)', () => {
+// The success settle driven through ElastiCacheProvider. A cluster another
+// owner creates under the orphan's id repeats its ARN; only the creation time
+// differs, and the settle keeps it.
+describe('the success settle with ElastiCacheProvider (go-to-k/cdkd#4606, #4655)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSend.mockReset();
     clientRegion.value = 'us-east-1';
   });
 
-  async function settle(liveEntry: Entry) {
+  async function settle(opts: {
+    live: Record<string, Entry>;
+    orphanId?: string;
+    stateResources?: Record<string, unknown>;
+  }) {
     const provider = new ElastiCacheProvider();
     const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
-    live({ 'my-cache': liveEntry });
+    live(opts.live);
     const journal = {
       journalVersion: 1,
       stackName: 'S',
@@ -588,7 +644,7 @@ describe('the success settle with ElastiCacheProvider: a reused cluster id is no
               logicalId: 'Orphan',
               changeType: 'CREATE',
               resourceType: TYPE,
-              physicalId: 'My-Cache',
+              physicalId: opts.orphanId ?? 'my-cache',
               provisionedBy: 'sdk',
               physicalIdRecoveredFromError: true,
               deletionPolicy: 'Delete',
@@ -617,7 +673,7 @@ describe('the success settle with ElastiCacheProvider: a reused cluster id is no
       } as never,
       stackName: 'S',
       region: 'us-east-1',
-      stateResources: {} as never,
+      stateResources: (opts.stateResources ?? {}) as never,
       rollbackOrphans: undefined,
       newerOperations: [],
       foreignHolder: vi.fn(async () => undefined),
@@ -627,22 +683,64 @@ describe('the success settle with ElastiCacheProvider: a reused cluster id is no
     return { out, del, warned: logger.warn.mock.calls.map((m) => String(m[0])).join('\n') };
   }
 
-  it('keeps `My-Cache` when `my-cache` now reads back with another creation time', async () => {
-    const r = await settle(T2);
+  const FIX_FORWARD = {
+    Orphan: { physicalId: 'my-cache-b', resourceType: TYPE, provisionedBy: 'sdk' },
+  };
+
+  it('keeps `my-cache` when it now reads back with another creation time', async () => {
+    const r = await settle({ live: { 'my-cache': T2 } });
     expect(r.del).not.toHaveBeenCalled();
     expect(r.warned).toContain('the resource now under its physical id is another one');
     expect(r.out.unaddressed).toBe(1);
   });
 
   it('keeps it when the live read names no creation time (unproven)', async () => {
-    const r = await settle('creating');
+    const r = await settle({ live: { 'my-cache': 'creating' } });
     expect(r.del).not.toHaveBeenCalled();
     expect(r.out.unaddressed).toBe(1);
   });
 
   it('deletes it when the id still reads back with the journaled creation time (control)', async () => {
-    const r = await settle(T1);
+    const r = await settle({ live: { 'my-cache': T1 } });
     expect(r.del).toHaveBeenCalledTimes(1);
     expect(r.out.unaddressed).toBe(0);
+  });
+
+  it('the fix-forward: deletes it when the record under its logical id holds another live cluster', async () => {
+    const r = await settle({ live: { 'my-cache': T1, 'my-cache-b': T2 }, stateResources: FIX_FORWARD });
+    expect(r.del).toHaveBeenCalledTimes(1);
+    expect(r.del.mock.calls[0]![1]).toBe('my-cache');
+    expect(r.out.unaddressed).toBe(0);
+  });
+
+  it('the fix-forward: keeps it when the record\'s cluster is gone (unknown)', async () => {
+    const r = await settle({ live: { 'my-cache': T1 }, stateResources: FIX_FORWARD });
+    expect(r.del).not.toHaveBeenCalled();
+    expect(r.out.unaddressed).toBe(1);
+  });
+
+  // The security review's B1: a template-cased orphan whose cluster another
+  // record holds under AWS's lower-cased id (`cdkd import`) passes the
+  // settle's exact-match ownership checks; it is kept for want of a token.
+  it('keeps a template-cased `My-Cache` while another record holds `my-cache`', async () => {
+    const r = await settle({
+      live: { 'my-cache': T1 },
+      orphanId: 'My-Cache',
+      stateResources: {
+        Imported: { physicalId: 'my-cache', resourceType: TYPE, provisionedBy: 'sdk' },
+      },
+    });
+    expect(r.del).not.toHaveBeenCalled();
+    expect(r.out.unaddressed).toBe(1);
+  });
+
+  it('keeps a template-cased `My-Cache` the fix-forward replaced, too', async () => {
+    const r = await settle({
+      live: { 'my-cache': T1, 'my-cache-b': T2 },
+      orphanId: 'My-Cache',
+      stateResources: FIX_FORWARD,
+    });
+    expect(r.del).not.toHaveBeenCalled();
+    expect(r.warned).toContain('nothing proves');
   });
 });
