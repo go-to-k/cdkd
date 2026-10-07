@@ -195,6 +195,21 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(mockDeleteState).not.toHaveBeenCalled();
   });
 
+  it('prints no account sentence when no drop line is printed (go-to-k/cdkd#4648 review)', async () => {
+    mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'O' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+    );
+    await runDestroyForStack('TestStack', makeState({ R: res() }), {
+      ...makeCtx(),
+      profile: 'my profile',
+    });
+    // The journaled failure withholds the drop, so no command line carries the
+    // hole and no sentence may point at one.
+    expect(warn()).not.toMatch(/^Drop the record with:/m);
+    expect(warn()).not.toContain("value this run was given");
+  });
+
   it('keeps it in AWS under a journaled Retain, and still destroys the stack', async () => {
     mockLoadJournal.mockResolvedValue(
       journalOf([{ ...structuredClone(orphanOp), deletionPolicy: 'Retain' }])

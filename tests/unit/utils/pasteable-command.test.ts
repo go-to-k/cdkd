@@ -464,6 +464,42 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(ordinaryNested).toMatch(/^Destroy the child alone with: cdkd state destroy Child$/m);
   });
 
+  it('StackTerminationProtectionError carries the account it is handed (go-to-k/cdkd#4648 review)', async () => {
+    const { StackTerminationProtectionError } = await import('../../../src/utils/error-handler.js');
+    const message = new StackTerminationProtectionError('ProdStack', undefined, {
+      args: [{ flag: '--state-bucket', value: 'b', hole: 'bucket' }],
+      clause: 'ACCOUNT CLAUSE. ',
+    }).message;
+    expect(message).toMatch(/^Retry with: cdkd destroy ProdStack --state-bucket b$/m);
+    expect(message).toContain('ACCOUNT CLAUSE.');
+    expect(message.indexOf('ACCOUNT CLAUSE.')).toBeLessThan(message.indexOf('Retry with:'));
+    expect(new StackTerminationProtectionError('ProdStack').message).toMatch(
+      /^Retry with: cdkd destroy ProdStack$/m
+    );
+  });
+
+  it('NestedStackChildDirectDestroyError carries the account it is handed on both commands (go-to-k/cdkd#4648)', async () => {
+    const { NestedStackChildDirectDestroyError } = await import('../../../src/utils/error-handler.js');
+    const account = {
+      args: [
+        { flag: '--profile', value: 'prod', hole: 'profile' },
+        { flag: '--state-bucket', value: 'b', hole: 'bucket' },
+      ],
+      clause: 'ACCOUNT CLAUSE. ',
+    };
+    const message = new NestedStackChildDirectDestroyError('Child', 'Parent', undefined, undefined, account)
+      .message;
+    expect(message).toMatch(/^Cascade-delete with: cdkd destroy Parent --profile prod --state-bucket b$/m);
+    expect(message).toMatch(/^Destroy the child alone with: cdkd state destroy Child --profile prod --state-bucket b$/m);
+    // The clause sits in the prose, before the labelled lines.
+    expect(message).toContain('ACCOUNT CLAUSE.');
+    expect(message.indexOf('ACCOUNT CLAUSE.')).toBeLessThan(message.indexOf('Cascade-delete with:'));
+    // CONTROL: no account, the text is the unqualified one.
+    const bare = new NestedStackChildDirectDestroyError('Child', 'Parent').message;
+    expect(bare).toMatch(/^Destroy the child alone with: cdkd state destroy Child$/m);
+    expect(bare).not.toContain('ACCOUNT');
+  });
+
   it('the destroy errors name no value that could forge their labelled lines (go-to-k/cdkd#3759)', async () => {
     const { StackTerminationProtectionError, NestedStackChildDirectDestroyError } = await import(
       '../../../src/utils/error-handler.js'

@@ -248,6 +248,23 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toMatch(/redeploy/);
   });
 
+  it('the protected-stack retry carries --profile, the bucket and the prefix (go-to-k/cdkd#4648 review)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Protected', 'us-east-1', true)],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
+    await expect(
+      runDestroy(['Protected', '--yes', '--profile', 'prod', '--state-prefix', 'team-a'])
+    ).rejects.toThrow();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(
+      /^Retry with: cdkd destroy Protected --profile prod --state-bucket test-bucket --state-prefix team-a$/m
+    );
+  });
+
   it('names no planted REGION in the multi-region refusal beside its labelled line (go-to-k/cdkd#3759)', async () => {
     // Regions come from S3 key segments. Printed raw, one carrying a newline
     // spelled a counterfeit `Remove one record with:` row above the real one.
@@ -268,9 +285,48 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toContain('has state in multiple regions: us-east-1, a region that is not a plain identifier');
     expect(messages).not.toContain('--all --force');
     expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
-      "Remove one record with: cdkd state orphan Multi --stack-region '<region>'",
+      "Remove one record with: cdkd state orphan Multi --stack-region '<region>' --state-bucket test-bucket",
     ]);
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+  });
+
+  it('the multi-region drop carries --profile and the prefix too (go-to-k/cdkd#4648)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Multi', 'eu-west-2')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: 'eu-west-1' },
+    ]);
+    await expect(
+      runDestroy(['Multi', '--yes', '--profile', 'prod', '--state-prefix', 'team-a'])
+    ).rejects.toThrow();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
+      "Remove one record with: cdkd state orphan Multi --stack-region '<region>' --profile prod --state-bucket test-bucket --state-prefix team-a",
+    ]);
+  });
+
+  it('a refused --profile on the multi-region drop is a described hole (go-to-k/cdkd#4648)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Multi', 'eu-west-2')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: 'eu-west-1' },
+    ]);
+    await expect(runDestroy(['Multi', '--yes', '--profile', 'my profile'])).rejects.toThrow();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(/^Remove one record with: .* --profile '<profile>' --state-bucket test-bucket$/m);
+    expect(messages).not.toContain('my profile');
+    expect(messages).toContain("The '--profile' value this run was given is not a plain identifier");
+    const reason = messages.indexOf('so the command below prints a quoted hole in its place');
+    expect(reason).toBeGreaterThan(-1);
+    expect(reason).toBeLessThan(messages.indexOf('Remove one record with:'));
   });
 
   it('withholds a non-plain state-listed STACK from `Remove one record with:` and explains the hole (go-to-k/cdkd#3759)', async () => {
@@ -307,7 +363,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       );
       expect(messages, name).not.toContain('--all --force');
       expect(messages.split('\n').filter((l) => l.startsWith('Remove one record with:'))).toEqual([
-        "Remove one record with: cdkd state orphan '<stack>' --stack-region '<region>'",
+        "Remove one record with: cdkd state orphan '<stack>' --stack-region '<region>' --state-bucket test-bucket",
       ]);
       expect(messages, name).toContain(clauseText);
       expect(messages).toContain("This stack's name");
@@ -324,7 +380,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     await expect(runDestroy(['Multi', '--yes'])).rejects.toThrow();
     const plain = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(plain).toContain("Stack 'Multi' has state in multiple regions: us-east-1, eu-west-1");
-    expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>'$/m);
+    expect(plain).toMatch(/^Remove one record with: cdkd state orphan Multi --stack-region '<region>' --state-bucket test-bucket$/m);
     expect(plain).not.toContain('cdkd state list --long');
   });
 
@@ -707,7 +763,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     // child's AWS resources and then its record — it is the synth-free destroy,
     // not a record-only drop (delta round 2 on go-to-k/cdkd#3436).
     expect(messages).toMatch(
-      /^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child'$/m
+      /^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child' --state-bucket test-bucket$/m
     );
     // The parent's logical id helps the user identify which child this is when
     // a parent has multiple nested stacks with similar physical-key shapes.
@@ -805,6 +861,59 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     expect(messages).not.toMatch(/nested child of/);
   });
 
+  // go-to-k/cdkd#4648: both commands of the refusal (`cdkd destroy <parent>`
+  // and the DESTRUCTIVE `cdkd state destroy <child>`) carry the run's account
+  // flags, on both refusal sites, so a paste acts on the bucket this run read.
+  const childOnly = async (synthOk: boolean, extra: string[]): Promise<string> => {
+    if (synthOk) {
+      mockSynthesize.mockResolvedValue({
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        stacks: [makeStackInfo('NestedStackExample', 'us-east-1')],
+      });
+    } else {
+      mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    }
+    mockListStacks.mockResolvedValue([
+      ...(synthOk ? [{ stackName: 'NestedStackExample', region: 'us-east-1' }] : []),
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) =>
+      name === 'NestedStackExample~Child'
+        ? {
+            state: makeChildStackState('NestedStackExample~Child', 'NestedStackExample', 'Child'),
+            etag: '"x"',
+          }
+        : null
+    );
+    await expect(runDestroy(['NestedStackExample~Child', '--yes', ...extra])).rejects.toThrow();
+    return errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+  };
+  for (const synthOk of [false, true]) {
+    const site = synthOk ? 'synth-success site' : 'state-only site';
+    it(`${site}: both commands carry --profile, the resolved bucket and the prefix (go-to-k/cdkd#4648)`, async () => {
+      const messages = await childOnly(synthOk, ['--profile', 'prod', '--state-prefix', 'team-a']);
+      const flags = '--profile prod --state-bucket test-bucket --state-prefix team-a';
+      expect(messages).toMatch(
+        new RegExp(`^Cascade-delete with: cdkd destroy NestedStackExample ${flags}$`, 'm')
+      );
+      expect(messages).toMatch(
+        new RegExp(`^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child' ${flags}$`, 'm')
+      );
+    });
+  }
+
+  it('a refused --profile is a described hole on both commands, never echoed (go-to-k/cdkd#4648)', async () => {
+    const messages = await childOnly(false, ['--profile', 'my profile']);
+    expect(messages).toMatch(/^Cascade-delete with: cdkd destroy NestedStackExample --profile '<profile>' --state-bucket test-bucket$/m);
+    expect(messages).toMatch(/^Destroy the child alone with: .* --profile '<profile>' --state-bucket test-bucket$/m);
+    expect(messages).not.toContain('my profile');
+    // Explained before the labelled lines.
+    const reason = messages.indexOf("The '--profile' value this run was given is not a plain identifier");
+    expect(reason).toBeGreaterThan(-1);
+    expect(reason).toBeLessThan(messages.indexOf('Cascade-delete with:'));
+  });
+
   it('refuses synth-success direct child destroy (the typical user-types-child path)', async () => {
     // synth-success path: appStacks contains only the parent (CDK top-level).
     // The child appears in state but is FILTERED OUT of candidateStacks by
@@ -854,7 +963,7 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     // child's AWS resources and then its record — it is the synth-free destroy,
     // not a record-only drop (delta round 2 on go-to-k/cdkd#3436).
     expect(messages).toMatch(
-      /^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child'$/m
+      /^Destroy the child alone with: cdkd state destroy 'NestedStackExample~Child' --state-bucket test-bucket$/m
     );
   });
 

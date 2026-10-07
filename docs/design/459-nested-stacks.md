@@ -428,9 +428,13 @@ NestedStackChildDirectDestroyError: Stack 'MyParent~MyChild' is a nested child o
 directly destroying a nested stack is not supported. Either cascade-delete this child along
 with its parent, or destroy the child on its own — which deletes its AWS resources and its
 record, and leaves the parent's reference dangling (the synth-free escape hatch).
-Cascade-delete with: cdkd destroy MyParent
-Destroy the child alone with: cdkd state destroy 'MyParent~MyChild'
+Cascade-delete with: cdkd destroy MyParent --state-bucket my-state-bucket
+Destroy the child alone with: cdkd state destroy 'MyParent~MyChild' --state-bucket my-state-bucket
 ```
+
+Both commands carry the run's `--profile`, resolved `--state-bucket` and
+non-default `--state-prefix` (go-to-k/cdkd#4648), so a pasted command acts on
+the bucket the refusing run read.
 
 The check fires in `destroy.ts` BEFORE lock acquisition by reading the
 state's `parentStack` field (the v6 schema field). For pre-v6 state

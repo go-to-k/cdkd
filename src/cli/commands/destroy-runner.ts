@@ -50,6 +50,8 @@ import {
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
 import {
+  accountArgs,
+  withheldAccountClause,
   refuseDivergentRecordRegionForDestroy,
   refuseMalformedOutputsForDestroy,
   refuseMalformedOrphanRecordsForDestroy,
@@ -1251,6 +1253,9 @@ export async function runDestroyForStack(
     pasteableCommand(command, [
       { value: t, hole: 'stack', opts: { plainIdent: true } },
       { flag: '--stack-region', value: regionForState, hole: 'region', opts: { plainIdent: true } },
+      // The run's account flags (go-to-k/cdkd#4648): a pasted drop removes the
+      // record in the bucket this destroy read, not the default profile's.
+      ...accountArgs(refusalRecovery),
     ]);
   const hintFor = (command: string, targets: string[], label: string): string =>
     // DEDUPED on the produced line, not on the target: one resource failing
@@ -1282,10 +1287,21 @@ export async function runDestroyForStack(
    * rule once, and only when the gate actually withheld a value on some line.
    */
   const hintHolesClause = (targets: readonly string[]): string =>
-    targets.every((t) => hintCommand('cdkd state show', t).withheld.length === 0)
+    // IDENTITY holes only here; an account hole is explained by its own
+    // sentence, from the same context (go-to-k/cdkd#4648).
+    (targets.every((t) =>
+      hintCommand('cdkd state show', t).withheld.every(
+        (w) => w.hole !== 'stack' && w.hole !== 'region'
+      )
+    )
       ? ''
       : ` A target that is not a plain identifier is printed as a quoted '<stack>' or ` +
-        `'<region>' placeholder; list the records as stored with 'cdkd state list --long'.`;
+        `'<region>' placeholder; list the records as stored with 'cdkd state list --long'.`) +
+    (targets.length === 0
+      ? ''
+      : ((clause) => (clause === '' ? '' : ` ${clause}`))(
+          withheldAccountClause(refusalRecovery, 'the command lines below print').trimEnd()
+        ));
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -2333,7 +2349,10 @@ export async function runDestroyForStack(
             : `If the same resource keeps failing, dropping the state record is the last resort: ` +
               `it removes the record without deleting AWS resources.`) +
           skippedClause +
-          hintHolesClause([...failedTargets, ...skippedTargets]) +
+          // Only the targets that print a line: with a journaled failure the
+          // drop is withheld, and a clause about holes in lines that are not
+          // printed points at nothing (go-to-k/cdkd#4648 review).
+          hintHolesClause([...(orphanHint === '' ? [] : failedTargets), ...skippedTargets]) +
           dedupedCommands(orphanHint + skippedCommands)
       );
     }

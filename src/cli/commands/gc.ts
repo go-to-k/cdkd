@@ -42,6 +42,7 @@ import {
 } from './state-file-keys.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { accountArgs, withheldAccountClause } from '../../state/malformed-resources-bag.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 
@@ -648,7 +649,14 @@ export function collectAssetReferences(
 async function scanReferencedAssets(
   stateBackend: Pick<S3StateBackend, 'listRawKeys' | 'getRawObject'>,
   marker: BootstrapMarker,
-  logger: Logger
+  logger: Logger,
+  /**
+   * The run's `--profile` and the state bucket this scan reads (go-to-k/cdkd#4648),
+   * for the corrupt-record inspect command. The PREFIX comes from the key the
+   * record was found at ({@link keyPrefixOf}): this command takes no
+   * `--state-prefix` and lists the whole bucket.
+   */
+  account: { profile?: string | undefined; stateBucket: string }
 ): Promise<AssetReferences> {
   const refs: AssetReferences = {
     s3Keys: new Set(),
@@ -705,17 +713,41 @@ async function scanReferencedAssets(
       // `isPasteableIdent` refuses them. The gate refuses the leading `-`
       // too; dropping the stricter predicate here would be changing a
       // security predicate while moving a string.
+      // The account flags (go-to-k/cdkd#4648): the run's `--profile`, the bucket
+      // this scan read, and the prefix the record was FOUND under -- `cdkd gc`
+      // takes no `--state-prefix` and scans every prefix, so the key is the
+      // only source. A key the parse cannot reproduce gives no prefix, and the
+      // command then names none (`accountArgs` omits an absent prefix).
+      const recovery = {
+        ...account,
+        statePrefix: keyPrefixOf(key, stack, region),
+      };
       const inspectHint = pasteable
-        ? pasteableCommand(
-            'cdkd state show',
-            region === undefined
+        ? pasteableCommand('cdkd state show', [
+            ...(region === undefined
               ? [{ value: stack, hole: 'stack' }]
               : [
                   { value: stack, hole: 'stack' },
                   { flag: '--stack-region', value: region, hole: 'region' },
-                ]
-          ).command
+                ]),
+            ...accountArgs(recovery),
+          ]).command
         : undefined;
+      // Profile and bucket holes take the shared sentence ("the value you passed
+      // this run"); a PREFIX hole cannot, since this command takes no
+      // `--state-prefix`: its value is part of the KEY (go-to-k/cdkd#4648 review).
+      const accountClause =
+        inspectHint === undefined
+          ? ''
+          : [
+              withheldAccountClause(
+                { ...recovery, statePrefix: undefined },
+                'the command below prints'
+              ).trimEnd(),
+              keyPrefixHoleSentence(recovery.statePrefix),
+            ]
+              .filter((part) => part !== '')
+              .join(' ');
       // The KEY is an S3 key too, so it is sanitised on its own account — it is
       // named here whether or not a command could be offered.
       const inspect =
@@ -728,6 +760,7 @@ async function scanReferencedAssets(
           `referenced asset before deleting anything, and this file's references ` +
           `are unreadable. Repair or remove the corrupt state file ` +
           `(${inspect}), then re-run.` +
+          (accountClause === '' ? '' : ` ${accountClause}`) +
           (inspectHint === undefined ? '' : `\nInspect it with: ${inspectHint}`),
         'GC_STATE_UNREADABLE',
         error as Error
@@ -1385,7 +1418,10 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     let s3Candidates: S3Candidate[] = [];
     let ecrCandidates: EcrCandidate[] = [];
     if (marker !== null) {
-      const refs = await scanReferencedAssets(stateBackend, marker, logger);
+      const refs = await scanReferencedAssets(stateBackend, marker, logger, {
+        profile: options.profile,
+        stateBucket: bucketName,
+      });
       s3Candidates = await listS3Candidates(
         awsClients.s3,
         marker.assetBucket,
@@ -1644,4 +1680,42 @@ export function createGcCommand(): Command {
   commonOptions.forEach((opt) => cmd.addOption(opt));
 
   return cmd;
+}
+
+/**
+ * The prefix a state `key` was found under, given the `stack` / `region` its
+ * parse produced: what is left once `/{stack}[/{region}]/state.json` is taken
+ * off the end (go-to-k/cdkd#4648). `undefined` when the key does not end that
+ * way, so no prefix is claimed for a key the parse could not reproduce.
+ */
+function keyPrefixOf(key: string, stack: string, region: string | undefined): string | undefined {
+  const tail = `/${stack}${region === undefined ? '' : `/${region}`}/${STATE_FILE_SUFFIX.replace(/^\//, '')}`;
+  return key.endsWith(tail) ? key.slice(0, -tail.length) : undefined;
+}
+
+/**
+ * The sentence for a key-derived prefix the shared gate printed as a hole, or
+ * `''` when it named it (or there is none). Says where the value comes from:
+ * the printed KEY, since `cdkd gc` has no `--state-prefix` to repeat.
+ */
+function keyPrefixHoleSentence(prefix: string | undefined): string {
+  const withheld = pasteableCommand('cdkd', accountArgs({ statePrefix: prefix })).withheld;
+  const reason = withheld.find((w) => w.hole === 'prefix')?.reason;
+  if (reason === undefined) return '';
+  const why =
+    reason === 'option-shaped'
+      ? `begins with a '-'`
+      : reason === 'altered'
+        ? 'does not render exactly'
+        : reason === 'too-long'
+          ? 'is too long to print'
+          : prefix !== undefined && prefix.includes('/')
+            ? `has a '/'-separated part that is not a plain identifier`
+            : 'is not a plain identifier';
+  return (
+    `The state prefix of the key above ${why}, so the command below prints '<prefix>' in its ` +
+    `place: replace it whole, quotes included, with that prefix shell-quoted -- the part of ` +
+    `the key before '/<stack>/<region>/state.json' ('/<stack>/state.json' for a legacy key), ` +
+    `since 'cdkd gc' takes no --state-prefix.`
+  );
 }

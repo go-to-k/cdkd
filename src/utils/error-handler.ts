@@ -1,5 +1,6 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import {
+  type CommandArg,
   pasteableCommand,
   plainOrDescribed,
   quotedOrDescribed,
@@ -622,7 +623,16 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
 export class StackTerminationProtectionError extends CdkdError {
   public readonly stackName: string;
 
-  constructor(stackName: string, cause?: Error) {
+  constructor(
+    stackName: string,
+    cause?: Error,
+    /**
+     * The run's account flags (go-to-k/cdkd#4648), as
+     * {@link NestedStackChildDirectDestroyError} takes them: built by the
+     * caller, since this module cannot import `malformed-resources-bag.ts`.
+     */
+    account?: { args: readonly CommandArg[]; clause: string }
+  ) {
     // Trailing labelled line, gated value (go-to-k/cdkd#3436): the name comes
     // from a state key or an assembly, and inside the sentence's quotes it
     // pasted as shell. `patternMatched`: `cdkd destroy` resolves its argument
@@ -632,12 +642,14 @@ export class StackTerminationProtectionError extends CdkdError {
     // (go-to-k/cdkd#3759).
     const retry = pasteableCommand('cdkd destroy', [
       { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+      ...(account?.args ?? []),
     ]);
     super(
       `Stack ${quotedOrDescribed(stackName, 'stack name')} has terminationProtection: true ` +
         `and cannot be destroyed. Set terminationProtection: false in the CDK code, redeploy, ` +
         `then retry the destroy.` +
         withheldTargetClause(retry, 'stack', 'cdkd destroy', "This stack's name") +
+        (account?.clause ? ` ${account.clause.trimEnd()}` : '') +
         `\nRetry with: ${retry.command}`,
       'STACK_TERMINATION_PROTECTION',
       cause
@@ -687,7 +699,21 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
   public readonly parentStack: string;
   public readonly parentLogicalId?: string;
 
-  constructor(stackName: string, parentStack: string, parentLogicalId?: string, cause?: Error) {
+  constructor(
+    stackName: string,
+    parentStack: string,
+    parentLogicalId?: string,
+    cause?: Error,
+    /**
+     * The run's account flags (go-to-k/cdkd#4648), built by the caller with
+     * `accountArgs` / `withheldAccountClause` from `malformed-resources-bag.ts`
+     * (which this module cannot import: it imports `CdkdError` from here).
+     * Both commands carry them, so a pasted destroy acts on the bucket this run
+     * read; `clause` explains any account hole before the labelled lines.
+     */
+    account?: { args: readonly CommandArg[]; clause: string }
+  ) {
+    const accountArgs = account?.args ?? [];
     const logicalIdSuffix = parentLogicalId
       ? ` (parent's logical id: ${plainOrDescribed(parentLogicalId, 'logical id')})`
       : '';
@@ -701,6 +727,7 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
     // (go-to-k/cdkd#3759).
     const cascade = pasteableCommand('cdkd destroy', [
       { value: parentStack, hole: 'parent', opts: { patternMatched: true, plainIdent: true } },
+      ...accountArgs,
     ]);
     // `cdkd state destroy` deletes the AWS RESOURCES and then the record — it is
     // the synth-free destroy, not a record-only drop (`state.ts`'s own naming
@@ -714,6 +741,7 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
     // (go-to-k/cdkd#3759).
     const childDestroy = pasteableCommand('cdkd state destroy', [
       { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+      ...accountArgs,
     ]);
     // Every hole the message prints is explained BEFORE the labelled lines,
     // which stay last. Hoisted, like the commands, so the template stays
@@ -721,7 +749,8 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
     // template text).
     const withheld =
       withheldTargetClause(cascade, 'parent', 'cdkd destroy', "The parent stack's name") +
-      withheldTargetClause(childDestroy, 'stack', 'cdkd state destroy', "The child stack's name");
+      withheldTargetClause(childDestroy, 'stack', 'cdkd state destroy', "The child stack's name") +
+      (account?.clause ? ` ${account.clause.trimEnd()}` : '');
     const child = quotedOrDescribed(stackName, 'stack name');
     const parent = quotedOrDescribed(parentStack, 'stack name');
     super(

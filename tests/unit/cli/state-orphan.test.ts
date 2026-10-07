@@ -338,6 +338,28 @@ describe('cdkd state orphan', () => {
     expect(mockForceReleaseLock).toHaveBeenCalledWith('LockedStack', 'us-east-1');
   });
 
+  it('the `Destroy with:` line carries --profile, the bucket and the prefix (go-to-k/cdkd#4648 review)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+    const out = await runStateOrphan([
+      'orphan', 'MyStack', '--profile', 'prod', '--state-prefix', 'team-a',
+    ]);
+    expect(out).toMatch(
+      /^Destroy with: cdkd destroy MyStack --profile prod --state-bucket test-bucket --state-prefix team-a$/m
+    );
+  });
+
+  it('a refused --profile on the `Destroy with:` line is a described hole (go-to-k/cdkd#4648 review)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+    const out = await runStateOrphan(['orphan', 'MyStack', '--profile', 'my profile']);
+    expect(out).toMatch(/^Destroy with: cdkd destroy MyStack --profile '<profile>' --state-bucket test-bucket$/m);
+    expect(out).not.toContain('my profile');
+    expect(out).toContain("The '--profile' value this run was given is not a plain identifier");
+  });
+
   it('prompts and deletes when the user answers `y`', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);
@@ -347,7 +369,7 @@ describe('cdkd state orphan', () => {
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/AWS resources will NOT be deleted/);
-    expect(out).toMatch(/^Destroy with: cdkd destroy MyStack$/m);
+    expect(out).toMatch(/^Destroy with: cdkd destroy MyStack --state-bucket test-bucket$/m);
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
 
@@ -363,7 +385,7 @@ describe('cdkd state orphan', () => {
 
     expect(out).toMatch(/AWS resources will NOT be deleted/);
     expect(out).toContain('is not a plain identifier');
-    expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>'$/m);
+    expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>' --state-bucket test-bucket$/m);
     expect(out).not.toContain("cdkd destroy 'Old;Stack'");
     expect(mockDeleteState).not.toHaveBeenCalled();
   });
@@ -377,7 +399,7 @@ describe('cdkd state orphan', () => {
 
     expect(out).toContain("would be read as a PATTERN by 'cdkd destroy'");
     expect(out).not.toContain("'cdkd deploy'");
-    expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>'$/m);
+    expect(out).toMatch(/^Destroy with: cdkd destroy '<stack>' --state-bucket test-bucket$/m);
   });
 
   it('names no padded name on the `Destroy with:` line (go-to-k/cdkd#3696)', async () => {
@@ -390,7 +412,7 @@ describe('cdkd state orphan', () => {
 
     expect(out).toMatch(/AWS resources will NOT be deleted/);
     const labelled = out.split('\n').filter((l) => l.startsWith('Destroy with:'));
-    expect(labelled).toEqual(["Destroy with: cdkd destroy '<stack>'"]);
+    expect(labelled).toEqual(["Destroy with: cdkd destroy '<stack>' --state-bucket test-bucket"]);
     expect(mockDeleteState).not.toHaveBeenCalled();
   });
 

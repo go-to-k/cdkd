@@ -35,6 +35,8 @@ import {
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { StageLoadError } from '../../synthesis/failed-stages.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { accountArgs, withheldAccountClause } from '../../state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { startRunRecorder, recordRunFailed } from './deployment-events-run.js';
 import {
@@ -263,6 +265,19 @@ async function destroyCommand(
   // Resolve --state-bucket from CLI, env, cdk.json, or default
   const region = namedCliRegion(options.region) ?? 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  // The account flags the state commands this command prints carry
+  // (go-to-k/cdkd#4648): `--profile`, the RESOLVED bucket and the prefix, so a
+  // pasted `cdkd state orphan` / `cdkd state destroy` acts on the bucket this
+  // run read.
+  const accountRecovery: LockRecoveryContext = {
+    profile: options.profile,
+    stateBucket,
+    statePrefix: options.statePrefix,
+  };
+  const stateCommandAccount = {
+    args: accountArgs(accountRecovery),
+    clause: withheldAccountClause(accountRecovery, 'the command lines below print'),
+  };
 
   logger.info('Starting stack destruction...');
   logger.debug('Options:', options);
@@ -668,7 +683,9 @@ async function destroyCommand(
             const err = new NestedStackChildDirectDestroyError(
               pattern,
               stateOnlyResult.state.parentStack,
-              stateOnlyResult.state.parentLogicalId
+              stateOnlyResult.state.parentLogicalId,
+              undefined,
+              stateCommandAccount
             );
             logger.error(`  ✗ ${err.message}`);
             totalErrors++;
@@ -758,7 +775,10 @@ async function destroyCommand(
             `Stack ${displaySafe(stackName)} has terminationProtection: true — bypassing because --remove-protection set`
           );
         } else {
-          const err = new StackTerminationProtectionError(stackName);
+          const err = new StackTerminationProtectionError(stackName, undefined, {
+            args: stateCommandAccount.args,
+            clause: withheldAccountClause(accountRecovery, 'the command below prints'),
+          });
           logger.error(`  ✗ ${err.message}`);
           totalErrors++;
           continue;
@@ -788,15 +808,21 @@ async function destroyCommand(
         // labelled line: bare, `<region>` reads stdin from a file `region`
         // and truncates the next word (go-to-k/cdkd#3436). A withheld name is
         // explained in the prose before it (go-to-k/cdkd#3759).
+        const orphanOneClause = withheldAccountClause(
+          accountRecovery,
+          'the command below prints'
+        ).trimEnd();
         const orphanOne = pasteableCommand('cdkd state orphan', [
           { value: stackName, hole: 'stack', opts: { plainIdent: true } },
           { flag: '--stack-region', hole: 'region' },
+          ...stateCommandAccount.args,
         ]);
         throw new Error(
           `Stack ${quotedOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
             `Remove cdkd's record for ONE region with the command below (fill in the ` +
             `region), or run destroy from a CDK app whose env.region matches one of them.` +
             withheldTargetClause(orphanOne, 'stack', 'cdkd state orphan', "This stack's name") +
+            (orphanOneClause === '' ? '' : ` ${orphanOneClause}`) +
             `\nRemove one record with: ${orphanOne.command}`
         );
       }
@@ -826,7 +852,9 @@ async function destroyCommand(
         const err = new NestedStackChildDirectDestroyError(
           stackName,
           stateResult.state.parentStack,
-          stateResult.state.parentLogicalId
+          stateResult.state.parentLogicalId,
+          undefined,
+          stateCommandAccount
         );
         logger.error(`  ✗ ${err.message}`);
         totalErrors++;

@@ -435,8 +435,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     // WHOLE LINES, not substrings (go-to-k/cdkd#3436): one command per line is
     // the property — dropping the newline `hintFor` prefixes concatenates two
     // commands into one invocation and every substring check still passes.
-    expect(warn).toMatch(/^Inspect it with: cdkd state show 'TestStack~Child' --stack-region us-east-1$/m);
-    expect(warn).toMatch(/^Drop the record with: cdkd state orphan 'TestStack~Child' --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Inspect it with: cdkd state show 'TestStack~Child' --stack-region us-east-1 --state-bucket test-bucket$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan 'TestStack~Child' --stack-region us-east-1 --state-bucket test-bucket$/m);
     // The parent's own file must NOT be the one named — that is the bug.
     expect(warn).not.toMatch(/cdkd state show TestStack(?![\w~])/);
   });
@@ -464,10 +464,10 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
       // Positive control: the skip summary ran.
       expect(allWarn()).toContain('partially destroyed');
       expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
-        "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1 --state-bucket test-bucket",
       ]);
       expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
-        "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
+        "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --state-bucket test-bucket",
       ]);
       expect(allWarn()).toContain(
         "A target that is not a plain identifier is printed as a quoted '<stack>' or '<region>' " +
@@ -515,10 +515,10 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
         expect(warn).toContain('did not confirm the skipped resource(s) were deleted');
         expect(warn).not.toContain('--all --force');
         expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
-          "Drop the record with: cdkd state orphan TestStack --stack-region '<region>'",
+          "Drop the record with: cdkd state orphan TestStack --stack-region '<region>' --state-bucket test-bucket",
         ]);
         expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
-          "Inspect it with: cdkd state show TestStack --stack-region '<region>'",
+          "Inspect it with: cdkd state show TestStack --stack-region '<region>' --state-bucket test-bucket",
         ]);
         expect(warn).toContain(HINT_HOLES_CLAUSE);
         expect(warn.indexOf(HINT_HOLES_CLAUSE)).toBeLessThan(warn.indexOf('\nInspect it with: '));
@@ -534,7 +534,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1 --state-bucket test-bucket$/m);
     expect(warn).not.toContain('cdkd state list --long');
   });
 
@@ -549,7 +549,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     expect(warn).toContain('Stack a stack name that is not a plain identifier partially destroyed');
     expect(warn).toContain('did not confirm the skipped resource(s) were deleted');
     expect(warn).not.toContain('--all --force');
-    expect(warn).toMatch(/^Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1 --state-bucket test-bucket$/m);
     expect(warn).toContain(HINT_HOLES_CLAUSE);
     expect(warn.indexOf(HINT_HOLES_CLAUSE)).toBeLessThan(warn.indexOf('\nInspect it with: '));
   });
@@ -565,7 +565,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     expect(warn).toContain("re-run 'cdkd destroy'");
     expect(warn).not.toContain('--all --force');
     expect(warn.split('\n').filter((l) => l.startsWith('Drop the record with: '))).toEqual([
-      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1 --state-bucket test-bucket",
     ]);
     expect(warn).toContain(HINT_HOLES_CLAUSE);
     expect(warn.indexOf(HINT_HOLES_CLAUSE)).toBeLessThan(warn.indexOf('\nDrop the record with: '));
@@ -601,22 +601,22 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     ).then(() => {
       const lines = allWarn().split('\n');
       expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
-        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1",
-        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1",
+        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1 --state-bucket test-bucket",
+        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1 --state-bucket test-bucket",
       ]);
       expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
-        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1",
-        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1 --state-bucket test-bucket",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1 --state-bucket test-bucket",
       ]);
       // ...and those four lines END the summary, in that order, with nothing
       // between them: a blank entry or a reordering means a stray newline or a
       // join crept back in. (Earlier blank lines belong to the separate
       // per-resource warning `allWarn` also collects.)
       expect(lines.slice(-4)).toEqual([
-        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1",
-        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1",
-        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1",
-        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1",
+        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1 --state-bucket test-bucket",
+        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1 --state-bucket test-bucket",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1 --state-bucket test-bucket",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1 --state-bucket test-bucket",
       ]);
     });
   });
@@ -640,7 +640,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
 
     const lines = allWarn().split('\n');
     const orphan = lines.filter((l) => l.startsWith('Drop the record with: '));
-    expect(orphan).toEqual(['Drop the record with: cdkd state orphan TestStack --stack-region us-east-1']);
+    expect(orphan).toEqual(['Drop the record with: cdkd state orphan TestStack --stack-region us-east-1 --state-bucket test-bucket']);
   });
 
   it('collapses targets that all render as the same hole to ONE line', async () => {
@@ -667,8 +667,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     // (go-to-k/cdkd#3759).
     const holes = lines.filter((l) => l.includes("'<stack>' --stack-region"));
     expect(holes).toEqual([
-      "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
-      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+      "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1 --state-bucket test-bucket",
+      "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1 --state-bucket test-bucket",
     ]);
   });
 
@@ -682,9 +682,55 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toMatch(/^Inspect it with: cdkd state show TestStack --stack-region us-east-1$/m);
-    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Inspect it with: cdkd state show TestStack --stack-region us-east-1 --state-bucket test-bucket$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1 --state-bucket test-bucket$/m);
     expect(warn).not.toContain('TestStack~');
+  });
+
+  // go-to-k/cdkd#4648: both hint lines carry the run's account flags, in the
+  // skip arm and the error arm, and an account hole is explained by its own
+  // sentence, never by the identity-hole one.
+  it('the skip-arm hints carry --profile, the bucket and the prefix (go-to-k/cdkd#4648)', async () => {
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), {
+      ...makeCtx(),
+      profile: 'prod',
+      statePrefix: 'team-a',
+    });
+    const flags = '--profile prod --state-bucket test-bucket --state-prefix team-a';
+    const warn = allWarn();
+    expect(warn).toMatch(
+      new RegExp(`^Inspect it with: cdkd state show TestStack --stack-region us-east-1 ${flags}$`, 'm')
+    );
+    expect(warn).toMatch(
+      new RegExp(`^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1 ${flags}$`, 'm')
+    );
+  });
+
+  it('the error-arm drop carries them too (go-to-k/cdkd#4648)', async () => {
+    mockProviderDelete.mockRejectedValue(new Error('boom'));
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), {
+      ...makeCtx(),
+      profile: 'prod',
+      statePrefix: 'team-a',
+    }).catch(() => undefined);
+    expect(allWarn()).toMatch(
+      /^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1 --profile prod --state-bucket test-bucket --state-prefix team-a$/m
+    );
+  });
+
+  it('a refused --profile is a hole with its own reason, not the identity-hole sentence (go-to-k/cdkd#4648)', async () => {
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), {
+      ...makeCtx(),
+      profile: 'my profile',
+    });
+    const warn = allWarn();
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1 --profile '<profile>' --state-bucket test-bucket$/m);
+    expect(warn).not.toContain('my profile');
+    expect(warn).toContain("The '--profile' value this run was given is not a plain identifier");
+    // The identity sentence is about '<stack>' / '<region>' holes, and none was printed.
+    expect(warn).not.toContain('A target that is not a plain identifier');
   });
 
   it('composes the retained + skipped suffixes in one summary', async () => {
