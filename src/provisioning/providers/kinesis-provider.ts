@@ -46,6 +46,7 @@ import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logge
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 
 /**
  * Class 1/2 sanitize for `StreamEncryption` placeholder.
@@ -324,6 +325,7 @@ function isStreamName(id: string): boolean {
  */
 export class KinesisStreamProvider implements ResourceProvider {
   private client: KinesisClient | undefined;
+  private createClient: KinesisClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('KinesisProvider');
 
@@ -351,6 +353,34 @@ export class KinesisStreamProvider implements ResourceProvider {
       });
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateStream` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issues #2080 / #3978). Separate so every
+   * other call keeps the full SDK retry.
+   *
+   * `CreateStream` carries no idempotency token, but it cannot DUPLICATE: a
+   * stream name is unique per account and region. What the SDK's own replay
+   * of a 5xx whose request had succeeded does instead is collide with the
+   * stream the first send made, and that `ResourceInUseException` surfaces
+   * from the engine's FIRST attempt, so nothing can tell it from a stream
+   * somebody else holds. Refused here, the 5xx reaches the deploy engine's
+   * retry, which marks the create as possibly replayed: the replay's
+   * collision is then never credited to another holder (`withRetry`, #3978).
+   * The stream is not adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): KinesisClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new KinesisClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
   }
 
   /**
@@ -464,7 +494,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       // replay, where it is omitted and AWS applies its own default.
       const maxRecordSizeInKiB = maxRecordRead.kind === 'usable' ? maxRecordRead.size : undefined;
 
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateStreamCommand({
           StreamName: streamName,
           ...(shardCount !== undefined && { ShardCount: shardCount }),
