@@ -29,6 +29,7 @@ import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   redactSecretsForState,
+  recordNoEchoParameterFreshValue,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -588,6 +589,38 @@ describe('IntrinsicFunctionResolver.resolveParameters — the inherited-secret s
     expect(message).not.toContain(JSON_SECRET);
     expect(message).not.toContain('hunter2');
     expect(message).not.toContain('"user":"root"');
+  });
+
+  it('does NOT refuse a CommaDelimitedList or Number fed a parent NoEcho PARAMETER value (go-to-k/cdkd#4043 round 11)', async () => {
+    // The value arm's mask-only entry is no secret dynamic reference: the
+    // child positions the parameter, so each element and a number are masked
+    // by template position.
+    const list = 'alpha-piece-r11,bravo-piece-r11';
+    const listBag: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue(list, listBag);
+    await expect(
+      resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: list }, {
+        inheritedSecrets: listBag,
+      })
+    ).resolves.toEqual({ [PARAM]: ['alpha-piece-r11', 'bravo-piece-r11'] });
+    const portBag: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue('5432', portBag);
+    await expect(
+      resolver.resolveParameters(tpl('Number'), { [PARAM]: '5432' }, { inheritedSecrets: portBag })
+    ).resolves.toEqual({ [PARAM]: 5432 });
+  });
+
+  it('still refuses a secret pair beside a NoEcho parameter entry in the same bag', async () => {
+    const JSON_SECRET = '{"user":"root","pass":"hunter2"}';
+    const bag: RecordedSecretValues = new Map([
+      [JSON_SECRET, '{{resolve:secretsmanager:prod/db:SecretString:::}}'],
+    ]);
+    recordNoEchoParameterFreshValue('alpha-piece-r11,bravo-piece-r11', bag);
+    await expect(
+      resolver.resolveParameters(tpl('CommaDelimitedList'), { [PARAM]: JSON_SECRET }, {
+        inheritedSecrets: bag,
+      })
+    ).rejects.toThrow(/declared 'Type: CommaDelimitedList'/);
   });
 
   it('does NOT refuse a Number parameter when NOTHING was inherited (a top-level stack)', async () => {

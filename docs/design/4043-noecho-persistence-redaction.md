@@ -698,11 +698,14 @@ The only new refusals are these:
   producer was deployed in another run, or has no readback and is unchanged
   in this one (section 3.3); the remedy is to update the producer in the same
   run as the consumer;
-- a hand-authored nested child that declares a parameter `Number`, or a
-  comma-bearing `CommaDelimitedList`, and receives a parent's `NoEcho` value:
-  once that value is a map entry, `refuseCoercedInheritedSecret`
-  (`intrinsic-function-resolver.ts:4681`) refuses it;
 - a rollback re-create with no live resource.
+
+A nested child that declares a parameter `Number` or `CommaDelimitedList` and
+receives a parent's `NoEcho` PARAMETER value is NOT refused (review round 11
+reversed an earlier entry here): `refuseCoercedInheritedSecret` counts only a
+secret dynamic reference's pairs, not the value arm's mask-only entry, and the
+child positions the parameter (section 9 decision 8), so each element and a
+number are masked by template position.
 
 The costs that are not refusals are maintainer decisions 1 and 4 (§9): a create-only
 write-only leaf whose change is not detected (warned on every deploy), and an

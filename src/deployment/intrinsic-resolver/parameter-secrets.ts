@@ -321,11 +321,23 @@ export function refuseCoercedInheritedSecret(
   // `.trim()` whitespace variant, keeps a comma-FREE `CommaDelimitedList`
   // secret working, and cannot go stale when a new `Type` is added to
   // `coerceParameterValue`.
-  const carriedBefore = inheritedSecretsCarriedBy(userValue, inherited).length;
+  //
+  // A parent `NoEcho` PARAMETER's value is not such a pair (go-to-k/cdkd#4043
+  // review round 11): the value arm records it as a mask-only entry, but the
+  // child positions the parameter the parent fills from it
+  // (`passedNoEchoParameters`), so a split or coerced value is masked by
+  // template position, each element and a number included. Counting it here
+  // refused every CommaDelimitedList / Number child parameter fed a NoEcho
+  // value, naming a secret dynamic reference the template never had.
+  const secretPairs: RecordedSecretValues = new Map(
+    [...inherited].filter(([plaintext]) => !isNoEchoParameterPlaintext(inherited, plaintext))
+  );
+  if (secretPairs.size === 0) return;
+  const carriedBefore = inheritedSecretsCarriedBy(userValue, secretPairs).length;
   if (carriedBefore === 0) return;
   const carriedAfter = inheritedSecretsCarriedBy(
     this.coerceParameterValue(userValue, paramDef.Type),
-    inherited
+    secretPairs
   ).length;
   if (carriedAfter >= carriedBefore) return;
   // `markNonRetryable` for the same reason the `Fn::GetAtt` refusals (`getatt.ts`)
