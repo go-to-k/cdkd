@@ -305,6 +305,8 @@ echo "==> Phase 2.5: seed the ${LISTENER_LOGICAL} record to provisionedBy=cc-api
 # under `set -e` instead of uploading an empty state file.
 SEED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 SEEDED=$(printf '%s' "${SEED_STATE}" | jq --arg id "${LISTENER_LOGICAL}" '.resources[$id].provisionedBy = "cc-api"')
+# An empty read exits 0 and jq prints nothing: never upload that over the state.
+[ -n "${SEEDED}" ] || { echo "FAIL: #4679: the seeded state is empty -- not uploading it"; exit 1; }
 printf '%s\n' "${SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
 SEEDED_LAYER=$(listener_record .provisionedBy)
 [ "${SEEDED_LAYER}" = "cc-api" ] || {
@@ -353,7 +355,9 @@ POST_ARN=$(listener_record .physicalId)
   echo "FAIL: #4679: the return to the SDK provider changed the listener ARN (${LISTENER_ARN} -> ${POST_ARN})"
   exit 1
 }
-if grep -F "${LISTENER_LOGICAL}" <<<"${REMOVAL_PLAIN}" | grep -qi 'replac'; then
+# No `-q`: an early exit would SIGPIPE the first grep and, under pipefail,
+# read as "no match".
+if grep -F "${LISTENER_LOGICAL}" <<<"${REMOVAL_PLAIN}" | grep -i 'replac' >/dev/null; then
   echo "FAIL: #4679: the removal redeploy REPLACED ${LISTENER_LOGICAL} instead of updating it in place:"
   grep -F "${LISTENER_LOGICAL}" <<<"${REMOVAL_PLAIN}" | grep -i 'replac'
   exit 1
