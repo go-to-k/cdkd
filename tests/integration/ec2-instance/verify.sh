@@ -157,11 +157,22 @@ cleanup() {
         LEAKED_NET=""
       fi
       for leaked in ${LEAKED_NET}; do
-        aws ec2 "${net_del}" "${net_flag}" "${leaked}" --region "${REGION}" >/dev/null 2>&1 \
+        # Retried: a VPC delete right after its subnet / group delete can
+        # still meet the dependency for a few seconds.
+        net_deleted=""
+        for net_attempt in 1 2 3 4 5 6; do
+          if aws ec2 "${net_del}" "${net_flag}" "${leaked}" --region "${REGION}" >/dev/null 2>&1; then
+            net_deleted=1
+            break
+          fi
+          sleep 5
+        done
+        [ -n "${net_deleted}" ] \
           || echo "    NOTE: could not delete the probe ${net_kind} ${leaked}; delete it by hand" >&2
       done
     done
   fi
+  rm -f "${NET_IDS_FILE:-}"
   if [ -n "${PROBE_TOKEN:-}" ]; then
     # go-to-k/cdkd#4606: the throwaway instance the identity probe launches,
     # swept by its per-run client token (set BEFORE the launch, so a kill
@@ -960,6 +971,10 @@ THROW_SG_ID=$(aws ec2 create-security-group \
   --region "${REGION}" \
   --query 'GroupId' \
   --output text)
+# The probe reads each throwaway as a record in case (b): wait until EC2
+# lists them, or a Describe* lag right after the create reads as gone.
+aws ec2 wait subnet-available --subnet-ids "${THROW_SUBNET_ID}" --region "${REGION}"
+aws ec2 wait security-group-exists --group-ids "${THROW_SG_ID}" --region "${REGION}"
 case "${THROW_VPC_ID}|${THROW_SUBNET_ID}|${THROW_SG_ID}" in
   vpc-*\|subnet-*\|sg-*) ;;
   *)
@@ -1053,7 +1068,8 @@ assert_net_gone() { # usage: assert_net_gone <describe-subcommand> <ids-flag> <i
     if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -qF "$4"; then
       return 0
     fi
-    if [ "${rc}" -ne 0 ]; then
+    # Throttling is not an answer: wait and ask again.
+    if [ "${rc}" -ne 0 ] && ! printf '%s' "${out}" | grep -qE 'RequestLimitExceeded|Throttling'; then
       echo "FAIL: issue #4606 premise not reached -- $1 $3 (rc=${rc}) did not answer $4: $(sanitize_aws_output "${out}")" >&2
       exit 1
     fi

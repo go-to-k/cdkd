@@ -1847,7 +1847,13 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Successfully deleted VPC ${logicalId}`);
         return;
       } catch (error) {
-        if (this.isNotFoundError(error)) {
+        // go-to-k/cdkd#4606: a journaled orphan counts as gone only on
+        // EC2's own not-found code; the broad matcher's message
+        // substrings would clear a live orphan from the journal.
+        if (
+          this.isNotFoundError(error) &&
+          (context?.failedCreateOrphan !== true || isNamedError(error, VPC_NOT_FOUND_NAMES))
+        ) {
           const clientRegion = await this.ec2Client.config.region();
           assertRegionMatch(
             clientRegion,
@@ -2225,7 +2231,13 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Successfully deleted Subnet ${logicalId}`);
         return;
       } catch (error) {
-        if (this.isNotFoundError(error)) {
+        // go-to-k/cdkd#4606: a journaled orphan counts as gone only on
+        // EC2's own not-found code; the broad matcher's message
+        // substrings would clear a live orphan from the journal.
+        if (
+          this.isNotFoundError(error) &&
+          (context?.failedCreateOrphan !== true || isNamedError(error, SUBNET_NOT_FOUND_NAMES))
+        ) {
           const clientRegion = await this.ec2Client.config.region();
           assertRegionMatch(
             clientRegion,
@@ -4049,7 +4061,14 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Successfully deleted SecurityGroup ${logicalId}`);
         return;
       } catch (error) {
-        if (this.isNotFoundError(error)) {
+        // go-to-k/cdkd#4606: a journaled orphan counts as gone only on
+        // EC2's own not-found code; the broad matcher's message
+        // substrings would clear a live orphan from the journal.
+        if (
+          this.isNotFoundError(error) &&
+          (context?.failedCreateOrphan !== true ||
+            isNamedError(error, SECURITY_GROUP_NOT_FOUND_NAMES))
+        ) {
           const clientRegion = await this.ec2Client.config.region();
           assertRegionMatch(
             clientRegion,

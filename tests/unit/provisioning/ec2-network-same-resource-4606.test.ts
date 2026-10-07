@@ -252,6 +252,8 @@ describe.each(TYPES)('EC2Provider.isSameResource for $type (go-to-k/cdkd#4606)',
     ['a record id as an ARN', t.a, `arn:aws:ec2:us-east-1:123456789012:resource/${t.b}`],
     ['a journaled id of another EC2 type', 'i-0aaaaaaaaaaaaaaa1', t.b],
     ['a record id with a trailing segment', t.a, `${t.b}|x`],
+    ['a bare prefix', `${t.a.split('-')[0]}-`, t.b],
+    ['a non-hex suffix', `${t.a.split('-')[0]}-zzzz`, t.b],
   ])('%s is unknown, with no read', async (_label, journaled, rec) => {
     live(t, { [t.a]: live1(t), [t.b]: live1(t) });
     expect(await provider.isSameResource(journaled, { physicalId: rec }, t.type, CTX)).toBe(
@@ -289,6 +291,23 @@ describe.each(TYPES)('EC2Provider.delete of a journaled $type already gone (go-t
     providerLogger.info.mockClear();
     await provider.delete('Orphan', t.a, t.type, {}, { expectedRegion: 'us-east-1' });
     expect(providerLogger.info).not.toHaveBeenCalled();
+  });
+
+  it('an error matching only by message is not gone for an orphan: the delete throws and the journal keeps it', async () => {
+    mockSend.mockImplementation(async (cmd: object) => {
+      if (cmd instanceof t.del) throw awsError('SomeOtherFailure', `The thing does not exist yet`);
+      throw new Error('unexpected command');
+    });
+    await expect(
+      provider.delete('Orphan', t.a, t.type, {}, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).rejects.toThrow('does not exist yet');
+    expect(providerLogger.info).not.toHaveBeenCalled();
+
+    // A record's own delete keeps the broad matcher (unchanged).
+    await provider.delete('Orphan', t.a, t.type, {}, { expectedRegion: 'us-east-1' });
   });
 
   it('a live orphan is deleted by its id, with no already-gone line', async () => {
