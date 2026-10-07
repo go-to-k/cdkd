@@ -341,9 +341,7 @@ import { replayStackRecordsView, withStackRecords } from './stack-records-scope.
  */
 async function protectionRemovalProven(
   op: FailedOperation,
-  ctx: RollbackExecutorContext,
-  shownLogicalId: string,
-  shownType: string
+  ctx: RollbackExecutorContext
 ): Promise<boolean> {
   if (op.physicalIdRecoveredFromError !== true) return true;
   if (!orphanDeleteNeedsIdentity(op.resourceType)) return true;
@@ -359,9 +357,7 @@ async function protectionRemovalProven(
     if (live === RESOURCE_NOT_FOUND) return false;
   }
   ctx.logger.warn(
-    `  Rollback: leaving deletion protection on partially-created ${shownLogicalId} (${shownType}) — ` +
-      `--remove-protection applies only to a resource proven to be the one the failed deploy created, ` +
-      `and its name could now belong to another resource; if it is protected, its delete is refused and the journal keeps it`
+    safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection applies only to a resource proven to be the one the failed deploy created, and its name could now belong to another resource; if it is protected, its delete is refused and the journal keeps it`
   );
   return false;
 }
@@ -931,8 +927,7 @@ async function replayFailedOperationsUnbound(
           // no outer re-entry: the scope tells a protection flip's
           // compensation that any failure is the last, so the guard is put back.
           const removeProtection =
-            ctx.removeProtection === true &&
-            (await protectionRemovalProven(op, ctx, safe(op.logicalId), safe(op.resourceType)));
+            ctx.removeProtection === true && (await protectionRemovalProven(op, ctx));
           const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
             provider.delete(op.logicalId, op.physicalId!, op.resourceType, op.attemptedProperties, {
               expectedRegion: ctx.region,
