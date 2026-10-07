@@ -166,7 +166,7 @@ export interface AutoRouteHit {
  *   keeping existing state pinned to cc-api keeps a live bug alive. The
  *   fall-through is UNCONDITIONAL: no property check, and `forceCcApi` is
  *   ignored, because pinning here would be pinning to the broken handler.
- * - `'sdk-coverage'` -- CC routing WORKS, at least until a mutating deploy;
+ * - `'sdk-coverage'` -- CC routing WORKS (or misbehaves only on an update);
  *   the SDK provider has since been backfilled (issue #609) to cover the
  *   properties this resource actually uses. The fall-through is CONDITIONAL on
  *   that being true of the resource in hand, and suppressible with

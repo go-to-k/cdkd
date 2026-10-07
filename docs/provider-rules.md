@@ -2476,7 +2476,9 @@ issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)).
 
 Consider admitting a type in the same PR that empties its `silentDrop` map, or
 in a small follow-up. It is not mandatory and nothing blocks a release without
-it: an un-admitted type is merely slower, which is the status quo.
+it: an un-admitted type is merely slower, which is the status quo — unless
+Cloud Control also mishandles an update for it, in which case admission is
+the fix (issue [#4679](https://github.com/go-to-k/cdkd/issues/4679)).
 
 **The bar is physicalId parity, and it is EVIDENCE, not an argument.** Cloud
 Control mints its identifier from the schema's `primaryIdentifier`; the SDK
