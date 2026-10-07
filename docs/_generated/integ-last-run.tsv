@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 acm-certificate	2026-10-06T02:22:44Z	PASS	115	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 agentcore-tools	2026-10-03T04:25:23Z	PASS	79	verify.sh	rc ok, orph clean (#4283 PR #4449)
-alb	2026-10-05T14:42:45Z	FAIL	221	verify.sh	pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog), same as 2026-10-03 on main; deploy via PR #4587 create client ok; destroy clean
+alb	2026-10-07T17:11:49Z	PASS	368	verify.sh	#2085 fixed (tagged Listener SDK-routed: server.enabled reset); #4606 Phase 4 fix-forward deletes the journaled OrphanLb; destroy 0 errors, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-10-02T07:20:09Z	PASS	66	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean
@@ -132,7 +132,7 @@ export	2026-10-07T08:46:04Z	PASS	235	verify.sh	rc ok, orph clean (#4159)
 export-nested-stack	2026-10-04T19:49:12Z	PASS	181	verify.sh	rc ok, orph clean (#4547)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
-fsx-lustre	2026-10-06T02:22:44Z	PASS	1113	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+fsx-lustre	2026-10-07T15:51:34Z	PASS	2425	verify.sh	#4606 Phase 2c fix-forward deletes the journaled OrphanFs; destroy 0 errors, 0 orphans, 0 backups
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
 fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; untagged OpenZFS final backup deleted by hand (#1113)
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup

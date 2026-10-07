@@ -54,6 +54,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceIdentityVerdict,
   UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -67,6 +68,16 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  */
 const DEFAULT_MAX_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
+
+/**
+ * go-to-k/cdkd#4606: the physical id every path of this provider records — the
+ * `FileSystemId` FSx generates (`fs-` and hex), for every variant and for a
+ * create from a backup alike.
+ */
+const FILE_SYSTEM_ID_PATTERN = /^fs-[0-9a-f]+$/;
+
+/** Lifecycles in which a file system is on its way out, not the record's live one. */
+const FILE_SYSTEM_NOT_LIVE_LIFECYCLES: ReadonlySet<string> = new Set(['DELETING', 'FAILED']);
 
 /**
  * Lustre sub-properties that `UpdateFileSystem` accepts (the mutable
@@ -1475,7 +1486,15 @@ export class FSxFileSystemProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`FSx FileSystem ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  FSx file system ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`FSx FileSystem ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1494,6 +1513,80 @@ export class FSxFileSystemProvider implements ResourceProvider {
     await this.waitForFileSystemDeleted(physicalId, logicalId, resourceType);
 
     this.logger.debug(`Successfully deleted FSx FileSystem ${logicalId}`);
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ──────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the file system a failed CREATE journaled (one
+   * whose wait failed and whose cleanup delete failed too) is the one the
+   * record under the same logical id holds (a fix-forward that created a new
+   * one there).
+   *
+   * The identity is the `FileSystemId` FSx generates: the physical id the
+   * create, the import and every variant (Lustre / Windows / ONTAP / OpenZFS,
+   * from a backup or not) record, unique per account and region and never
+   * reassigned, so two distinct ids in the stack's region name two distinct
+   * file systems. Any other form is `'unknown'`. Equal ids are `'same'`
+   * without a read. After the region check, the record's file system must
+   * read back under its own id short of `DELETING` / `FAILED`, else
+   * `'unknown'`; the journaled one is then `'different'` whether it reads
+   * back under its own id (in any lifecycle) or FSx reports it gone.
+   *
+   * The type is never Cloud Control-routed (`disableCcApiFallback`), so every
+   * journaled file system reaches this method.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::FSx::FileSystem') return 'unknown';
+    if (
+      !FILE_SYSTEM_ID_PATTERN.test(journaledPhysicalId) ||
+      !FILE_SYSTEM_ID_PATTERN.test(record.physicalId)
+    ) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordRead = await this.readFileSystemForIdentity(record.physicalId);
+    if (
+      recordRead === undefined ||
+      recordRead.id !== record.physicalId ||
+      FILE_SYSTEM_NOT_LIVE_LIFECYCLES.has(recordRead.lifecycle ?? '')
+    ) {
+      return 'unknown';
+    }
+    const journaledRead = await this.readFileSystemForIdentity(journaledPhysicalId);
+    return journaledRead?.id === record.physicalId ? 'same' : 'different';
+  }
+
+  /**
+   * The id and lifecycle `DescribeFileSystems` reports for `fileSystemId`, or
+   * `undefined` when FSx reports it gone (`FileSystemNotFound`). Any other
+   * failure, and a response naming no file system, throws: "could not read"
+   * never reads as "gone".
+   */
+  private async readFileSystemForIdentity(
+    fileSystemId: string
+  ): Promise<{ id: string; lifecycle: string | undefined } | undefined> {
+    let response;
+    try {
+      response = await this.getClient().send(
+        new DescribeFileSystemsCommand({ FileSystemIds: [fileSystemId] })
+      );
+    } catch (error) {
+      if (error instanceof FileSystemNotFound) return undefined;
+      throw error;
+    }
+    const fileSystems = response.FileSystems ?? [];
+    if (fileSystems.length !== 1 || typeof fileSystems[0]?.FileSystemId !== 'string') {
+      throw new Error('DescribeFileSystems did not return exactly the file system asked for');
+    }
+    return { id: fileSystems[0].FileSystemId, lifecycle: fileSystems[0].Lifecycle };
   }
 
   // ─── Lifecycle polling ─────────────────────────────────────────────

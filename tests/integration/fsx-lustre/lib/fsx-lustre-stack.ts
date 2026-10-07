@@ -29,6 +29,9 @@ import type { Construct } from 'constructs';
  *     name the removal in a warning instead of dropping it silently.
  *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
  *     change proving UpdateFileSystem fired with the removal beside it.
+ *
+ * FIX-FORWARD phase (INJECT_FS_ORPHAN=true, issue #4606): an `OrphanFs`
+ * whose first CREATE fails after FSx made it; see the block below.
  */
 export class FsxLustreStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -83,6 +86,35 @@ export class FsxLustreStack extends cdk.Stack {
     if (!isUpdate) {
       // Removed in the UPDATE phase — exercises UntagResource.
       cdk.Tags.of(fileSystem).add('dropme', 'yes');
+    }
+
+    // go-to-k/cdkd#4606: the fix-forward arm (Phase 2c of `verify.sh`). The
+    // injection deploy runs under a role denied DescribeFileSystems and
+    // DeleteFileSystem, so this file system's CREATE fails after FSx made it
+    // and its cleanup delete fails too: the journal holds it as a proven
+    // orphan. The `FS_FIX_FORWARD` redeploy (as the caller) keeps the logical
+    // id; its security group differs, which changes the create token, so FSx
+    // makes a NEW file system rather than handing back the earlier one, and
+    // that successful deploy must delete the earlier one.
+    if (process.env.INJECT_FS_ORPHAN === 'true') {
+      // A security group of the earlier attempt only. Kept through the
+      // fix-forward: the earlier file system's ENIs sit in it until the
+      // settle deletes it.
+      const orphanSg = new ec2.SecurityGroup(this, 'OrphanFsSg', { vpc });
+      orphanSg.connections.allowInternally(ec2.Port.tcp(988));
+      orphanSg.connections.allowInternally(ec2.Port.tcpRange(1018, 1023));
+      const fsSg = fileSystem.connections.securityGroups[0]!;
+      const orphanFs = new fsx.CfnFileSystem(this, 'OrphanFs', {
+        fileSystemType: 'LUSTRE',
+        storageCapacity: 1200,
+        subnetIds: [vpc.publicSubnets[0]!.subnetId],
+        securityGroupIds: [
+          process.env.FS_FIX_FORWARD === 'true' ? fsSg.securityGroupId : orphanSg.securityGroupId,
+        ],
+        lustreConfiguration: { deploymentType: 'SCRATCH_2' },
+      });
+      // The fixture's constant tag: the cleanup sweep finds a leftover by it.
+      cdk.Tags.of(orphanFs).add('cdkd-integ', 'fsx-lustre');
     }
 
     new cdk.CfnOutput(this, 'FileSystemId', { value: fileSystem.fileSystemId });

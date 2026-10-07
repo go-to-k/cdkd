@@ -2195,6 +2195,7 @@
           "l1"
         ],
         "fsx-lustre": [
+          "l2",
           "literal"
         ],
         "lambda-capacity-provider-default-name": [
@@ -3676,6 +3677,7 @@
       ],
       "signals": {
         "alb": [
+          "l1",
           "l2",
           "literal"
         ],
