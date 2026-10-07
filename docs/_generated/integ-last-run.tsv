@@ -350,6 +350,6 @@ update-replace	2026-10-05T02:29:22Z	PASS	90	verify.sh	rc ok, orph clean (#4569 @
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
-vpc-nat-gateway	2026-10-06T02:22:44Z	PASS	325	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+vpc-nat-gateway	2026-10-07T08:18:35Z	PASS	706	verify.sh	PR #4652 (#4606 NAT/EIP fix-forward Phases 1d/1e); rc 0, destroy clean, orph clean; pre-fix probe red at Phase 1d (exit 2)
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
