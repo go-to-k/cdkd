@@ -118,8 +118,10 @@ export async function resolveGetAtt(
     logicalId = rawLogicalId;
     const resolvedAttributeName = await this.resolveValue(rawAttributeName, context);
     if (typeof resolvedAttributeName !== 'string') {
-      throw new Error(
-        `Fn::GetAtt attribute name for ${this.displayMasked(logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(this.maskValueLeaves(resolvedAttributeName, context))}`
+      throw markNonRetryable(
+        new Error(
+          `Fn::GetAtt attribute name for ${this.displayMasked(logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(this.maskValueLeaves(resolvedAttributeName, context))}`
+        )
       );
     }
     attributeName = resolvedAttributeName;

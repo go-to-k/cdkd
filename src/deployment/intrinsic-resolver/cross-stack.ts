@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { importableOutputKeys } from '../../types/state.js';
 import {
@@ -441,14 +442,16 @@ export async function resolveImportValue(
   const exportName = await this.resolveValue(importValueArg, context);
 
   if (typeof exportName !== 'string') {
-    throw new Error(
-      `Fn::ImportValue: export name must resolve to a string, got ${typeof exportName}`
+    throw markNonRetryable(
+      new Error(`Fn::ImportValue: export name must resolve to a string, got ${typeof exportName}`)
     );
   }
 
   // Check if we have a state backend
   if (!context.stateBackend) {
-    throw new Error('Fn::ImportValue: state backend is required for cross-stack references');
+    throw markNonRetryable(
+      new Error('Fn::ImportValue: state backend is required for cross-stack references')
+    );
   }
 
   // MASKED, and the export NAME rather than only the value (issue #2133
@@ -695,6 +698,10 @@ export async function resolveImportValue(
   // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): the export name is
   // the RESOLVED argument, so an `Fn::Sub`-assembled name IS a decrypted
   // secret — and the throw is the copy that travels to every caller.
+  // Deliberately NOT `markNonRetryable` (go-to-k/cdkd#1889): the miss can
+  // follow a SWALLOWED transient failure -- the per-stack read above warns and
+  // continues on a throttle / 5xx, and `lookupCfnExport` answers undefined on a
+  // throttled ListExports -- so it is not proof the export is absent.
   throw new Error(
     `Fn::ImportValue: export ${quotedRender(loggedExportName, "'")} not found in any stack. ` +
       `Searched ${allStacks.length} cdkd state record(s)` +

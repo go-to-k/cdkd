@@ -124,8 +124,10 @@ export async function resolveJoin(
   }
 
   if (!Array.isArray(values)) {
-    throw new Error(
-      `Fn::Join's second argument must be a list (an array literal or a list-returning intrinsic such as Fn::Cidr / Fn::GetAZs / Fn::Split / a Ref to a list-typed parameter — any List<...> type or CommaDelimitedList), but resolved to ${typeof values}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::Join's second argument must be a list (an array literal or a list-returning intrinsic such as Fn::Cidr / Fn::GetAZs / Fn::Split / a Ref to a list-typed parameter — any List<...> type or CommaDelimitedList), but resolved to ${typeof values}`
+      )
     );
   }
 
@@ -318,7 +320,9 @@ export async function resolveSelect(
     // parameter), and `cdkd scrub`'s per-key recovery abandons a plain error
     // for that key alone, where a refusal class abandons the enclosing
     // property.
-    throw new Error(`Fn::Select: list must be an array, got ${typeof resolvedList}`);
+    throw markNonRetryable(
+      new Error(`Fn::Select: list must be an array, got ${typeof resolvedList}`)
+    );
   }
 
   // The position through the builder: a resolved index can come from a

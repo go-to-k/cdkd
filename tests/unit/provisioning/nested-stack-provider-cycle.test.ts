@@ -458,6 +458,8 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       expect(err.message).toContain('Nested template file not found');
       expect(controls(err.message)).toEqual([]);
       expect(err.message.match(/FORGED/g)).toHaveLength(2);
+      // go-to-k/cdkd#1889: the synth output does not change on a retry.
+      expect(isMarkedNonRetryable(err)).toBe(true);
     });
 
     it('update(): nested template path missing from the index', async () => {
@@ -469,6 +471,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       expect(err.message).toContain('on update');
       expect(controls(err.message)).toEqual([]);
       expect(err.message).toContain('FORGED');
+      expect(isMarkedNonRetryable(err)).toBe(true);
     });
 
     it('create(): a child template that cannot be parsed', async () => {
@@ -483,6 +486,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       );
       expect(err.message).toContain('Failed to parse nested template');
       expect(controls(err.message)).toEqual([]);
+      expect(isMarkedNonRetryable(err)).toBe(true);
     });
 
     it('create(): a child template that cannot be read', async () => {
@@ -495,6 +499,9 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       expect(err.message).toContain('Failed to read nested template');
       expect(controls(err.message)).toEqual([]);
       expect(err.message).toContain('FORGED');
+      // Deliberately UNMARKED (go-to-k/cdkd#1889): a file-system read can fail
+      // transiently, so its retryability stays the classifiers' call.
+      expect(isMarkedNonRetryable(err)).toBe(false);
     });
 
     it('create(): a non-scalar child Parameter', async () => {
@@ -510,6 +517,7 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       expect(err.message).toContain('resolved to a non-scalar value');
       expect(controls(err.message)).toEqual([]);
       expect(err.message).toContain('FORGED');
+      expect(isMarkedNonRetryable(err)).toBe(true);
     });
 
     it('delete(): the skip reason naming the derived child stack', async () => {

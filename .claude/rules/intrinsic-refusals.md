@@ -11,7 +11,7 @@ paths:
 
 # Intrinsic-resolution refusals
 
-Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
+Issue #1740. Per-site reasons:
 `IntrinsicResolutionRefusalError`'s JSDoc in `error-handler.ts`.
 
 - Warn-and-keep-the-raw-`${...}` answers an unknown `Fn::Sub` variable, and must
@@ -23,7 +23,7 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
   unknown-account guard, a declared resource, an unbound declared
   parameter with no `Default`, and an `Fn::GetAtt` cdkd cannot build or
   CloudFormation does not define (`refuseUnconstructibleAttribute` /
-  `refuseUndefinedAttribute`, [#4077](https://github.com/go-to-k/cdkd/issues/4077) —
+  `refuseUndefinedAttribute`, #4077 —
   never answer `undefined`, which `Fn::Join` / `Fn::Sub` render as text); an UNDECLARED head, or a bound or defaulted
   parameter, warns. `resolveSub`'s own LIST refusal (#3809) is thrown only
   after the walk and its final dynamic-reference pass, so a later reference
@@ -46,10 +46,11 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
   and prints `No plaintext secrets found` over surviving plaintext.
   `MalformedProducerRecordRefusalError` (another stack's damaged record) becomes
   a finding. `cdkd drift` branches on the BASE class.
-- **All but the time-dependent sites `markNonRetryable` at the `throw`** — they
-  decide from inputs a retry cannot change, yet interpolate template text a
-  substring-matching classifier reads as transient. The CLASS stays UNMARKED:
-  the unknown-account arm and `refuseUnservedAttribute` ARE time-dependent.
+- **All but the time-dependent sites `markNonRetryable` at the `throw`**, bare
+  `Error`s too (#1889): a retry cannot change their inputs, yet they
+  interpolate template text the substring classifiers read as transient. Relayed
+  AWS failures and misses after a swallowed lookup stay unmarked. The CLASS stays UNMARKED: the unknown-account arm and
+  `refuseUnservedAttribute` ARE time-dependent.
 - **Where the intrinsic SITS decides what the user sees.** In a resource
   property it fails the resource; in a stack Output `deploy` catches it
   per-output and exits 0 (`--strict-getatt` fails the deploy); in

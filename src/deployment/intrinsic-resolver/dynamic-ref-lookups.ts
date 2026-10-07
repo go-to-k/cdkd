@@ -9,7 +9,7 @@ import {
   quotedRender,
 } from './support.js';
 import { withRetry } from '../retry.js';
-import { isThrottlingError } from '../retryable-errors.js';
+import { isThrottlingError, markNonRetryable } from '../retryable-errors.js';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 
@@ -118,7 +118,7 @@ export async function resolveSecretsManagerReference(
   }
 
   if (!secretId) {
-    throw new Error('Dynamic reference: secretsmanager SECRET_ID is required');
+    throw markNonRetryable(new Error('Dynamic reference: secretsmanager SECRET_ID is required'));
   }
 
   // MASKED PER RAW VALUE rather than over the assembled message (issue
@@ -169,8 +169,10 @@ export async function resolveSecretsManagerReference(
   const secretString = response.SecretString;
 
   if (!secretString) {
-    throw new Error(
-      `Dynamic reference: secret ${quotedRender(loggedSecretId, "'")} does not contain a SecretString value`
+    throw markNonRetryable(
+      new Error(
+        `Dynamic reference: secret ${quotedRender(loggedSecretId, "'")} does not contain a SecretString value`
+      )
     );
   }
 
@@ -186,8 +188,10 @@ export async function resolveSecretsManagerReference(
       // resolved secret value.
       const keyValue = Object.hasOwn(parsed, jsonKey) ? parsed[jsonKey] : undefined;
       if (keyValue === undefined) {
-        throw new Error(
-          `Dynamic reference: key ${quotedRender(loggedJsonKey, "'")} not found in secret ${quotedRender(loggedSecretId, "'")}`
+        throw markNonRetryable(
+          new Error(
+            `Dynamic reference: key ${quotedRender(loggedJsonKey, "'")} not found in secret ${quotedRender(loggedSecretId, "'")}`
+          )
         );
       }
       // NOT part of the `stringifyValue` escaping class (issue #2759): the
@@ -197,8 +201,10 @@ export async function resolveSecretsManagerReference(
       return stringifyValue(keyValue);
     } catch (error) {
       if (error instanceof SyntaxError) {
-        throw new Error(
-          `Dynamic reference: secret ${quotedRender(loggedSecretId, "'")} is not valid JSON but JSON_KEY ${quotedRender(loggedJsonKey, "'")} was specified`
+        throw markNonRetryable(
+          new Error(
+            `Dynamic reference: secret ${quotedRender(loggedSecretId, "'")} is not valid JSON but JSON_KEY ${quotedRender(loggedJsonKey, "'")} was specified`
+          )
         );
       }
       throw error;
@@ -298,7 +304,7 @@ export async function resolveSSMReference(
 
   if (!parameterName) {
     // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
-    throw new Error(`Dynamic reference: ${service} PARAMETER_NAME is required`);
+    throw markNonRetryable(new Error(`Dynamic reference: ${service} PARAMETER_NAME is required`));
   }
 
   // MASKED PER RAW VALUE — see `resolveSecretsManagerReference`'s twin
@@ -328,8 +334,10 @@ export async function resolveSSMReference(
   const paramValue = response.Parameter?.Value;
 
   if (paramValue === undefined || paramValue === null) {
-    throw new Error(
-      `Dynamic reference: SSM parameter ${quotedRender(loggedParameterName, "'")} not found or has no value`
+    throw markNonRetryable(
+      new Error(
+        `Dynamic reference: SSM parameter ${quotedRender(loggedParameterName, "'")} not found or has no value`
+      )
     );
   }
 

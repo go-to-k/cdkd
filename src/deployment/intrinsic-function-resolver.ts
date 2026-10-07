@@ -6,6 +6,7 @@ import { type AwsClients } from '../utils/aws-clients.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
 import { SECRET_MASK } from './secret-redaction.js';
+import { markNonRetryable } from './retryable-errors.js';
 import {
   type ResolverContext,
   type CachedDynamicReference,
@@ -671,7 +672,9 @@ export class IntrinsicFunctionResolver {
       // interpolations are annotated THERE. A second note here would be a copy
       // of an argument made at the construction site, on a statement that
       // composes nothing.
-      throw buildUnknownIntrinsicError(unknownIntrinsicKey);
+      // `markNonRetryable` (go-to-k/cdkd#1889): an unsupported intrinsic stays
+      // unsupported on a retry, and the key is template text.
+      throw markNonRetryable(buildUnknownIntrinsicError(unknownIntrinsicKey));
     }
 
     // Not an intrinsic function: recursively resolve object properties.
