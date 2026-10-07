@@ -205,7 +205,10 @@ describe('cdkd diff --recursive resolves a child row against the parent bound pa
     expect(printed(child)).not.toContain('abc');
   });
 
-  it('positions a child parameter fed a NoEcho value through an Fn::If on an UNKNOWN condition (go-to-k/cdkd#4043 round 10)', async () => {
+  // A contract pin, not a regression test: an unknown verdict never enters the
+  // diff's condition map, so this held before round 10 too. Forcing `IsProd:
+  // false` into the map handed to `noEchoFedChildParameters` turns it red.
+  it('positions a child parameter fed a NoEcho value through an Fn::If on an UNKNOWN condition: both branches count (go-to-k/cdkd#4043)', async () => {
     const root = await treeOf({
       rootParameters: {
         Pw: { Type: 'String', NoEcho: true, Default: 'abc' },

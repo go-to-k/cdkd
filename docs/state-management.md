@@ -985,9 +985,9 @@ count as a change for `--fail`.
   `cdkd state refresh-observed`) is masked at every position where the
   record holds `***`, named in `noEchoLeaves` or not. A leaf that is `***`
   for another reason (a custom resource's `NoEcho` value) is masked there
-  too, so `cdkd drift` can report it as drift until the next deploy captures
-  the baseline again. This errs toward hiding a value, never toward storing
-  one.
+  too, so `cdkd drift` can report it as drift until a deploy updates or
+  replaces that resource. This errs toward hiding a value, never toward
+  storing one.
 - `cdkd import` and `cdkd scrub` store `***` for a `NoEcho` value they resolve
   (the template's `Default`, whole or embedded), but do not write
   `noEchoLeaves`, and leave a value shorter than 4 characters, a number, or a
