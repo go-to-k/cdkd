@@ -731,24 +731,27 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
-   * A delete whose target ELBv2 reports gone. go-to-k/cdkd#4606: a journaled
-   * orphan already gone settles with exit 0, so it is named once at info
-   * (masked by the caller's printing bag); a record's own delete keeps the
-   * quiet `debugText`.
+   * Whether a delete's `error` means its target is gone. go-to-k/cdkd#4606: a
+   * journaled orphan's delete settles as done when it is gone, clearing its
+   * only record, so only the type's own not-found error NAME counts there; a
+   * record's own delete keeps the looser match.
    */
   private isDeleteTargetGone(
     error: unknown,
     context: DeleteContext | undefined,
     notFoundName: string
   ): boolean {
-    // go-to-k/cdkd#4606: a journaled orphan's delete settles as done when it
-    // is gone, clearing its only record, so only the type's own not-found
-    // error NAME counts there; a record's own delete keeps the looser match.
     return context?.failedCreateOrphan === true
       ? hasErrorName(error, [notFoundName])
       : this.isNotFoundError(error);
   }
 
+  /**
+   * A delete whose target ELBv2 reports gone. go-to-k/cdkd#4606: a journaled
+   * orphan already gone settles with exit 0, so it is named once at info
+   * (masked by the caller's printing bag); a record's own delete keeps the
+   * quiet `debugText`.
+   */
   private logDeleteTargetGone(
     context: DeleteContext | undefined,
     what: string,
