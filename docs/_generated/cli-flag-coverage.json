@@ -1122,7 +1122,8 @@
       "integs": [
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
-        "remove-protection-compensation"
+        "remove-protection-compensation",
+        "rollback-command"
       ]
     },
     {
@@ -1859,6 +1860,8 @@
     "--configuration-profile-id",
     "--configuration-set-name",
     "--configuration-set-names",
+    "--connection-name",
+    "--consumer-name",
     "--container-host",
     "--container-repo",
     "--content-type",
@@ -1892,6 +1895,7 @@
     "--disable-api-stop",
     "--distribution-config",
     "--domain",
+    "--drop-failed",
     "--duration-seconds",
     "--email-identity",
     "--enforce-consumer-deletion",
@@ -2116,6 +2120,7 @@
     "--service-namespace",
     "--services",
     "--session-id",
+    "--shard-count",
     "--show-error",
     "--show-nested",
     "--show-toplevel",
@@ -2140,6 +2145,7 @@
     "--state-machine-arn",
     "--statement-id",
     "--status",
+    "--stream-arn",
     "--stream-name",
     "--subnet-id",
     "--subnet-ids",

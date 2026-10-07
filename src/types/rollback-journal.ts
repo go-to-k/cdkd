@@ -446,6 +446,20 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
       `${where}.physicalIdRecoveredFromError is only valid on a CREATE (got changeType ${kind(o['changeType'])}).`
     );
   }
+  // go-to-k/cdkd#4655: COMPUTED from the provider's read, on a proven orphan
+  // only; it is compared, never sent to AWS.
+  const identity: unknown = o['createdResourceIdentity'];
+  if (identity !== undefined) {
+    if (typeof identity !== 'string' || identity === '') {
+      fail('createdResourceIdentity', identity, 'a non-empty string when present');
+    }
+    if (typeof o['physicalIdRecoveredFromError'] !== 'boolean') {
+      refuseMalformed(
+        shownStack,
+        `${where}.createdResourceIdentity is only valid on a CREATE carrying physicalIdRecoveredFromError.`
+      );
+    }
+  }
   if (
     o['deletionPolicy'] !== undefined &&
     !(['Delete', 'Retain', 'Snapshot', 'RetainExceptOnCreate'] as unknown[]).includes(

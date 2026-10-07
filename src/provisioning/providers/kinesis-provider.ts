@@ -1045,6 +1045,38 @@ export class KinesisStreamProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#4655: the stream's ARN and creation time, `<arn>@<epoch ms>`.
+   * The ARN is built from the name, so a stream re-created under the same
+   * name repeats it; the creation timestamp is what tells the two apart.
+   * Only a stream NAME is read (an ARN or anything else is `undefined`), and
+   * only through a client in `expectedRegion`. `RESOURCE_NOT_FOUND` on
+   * AWS's not-found answer; a response without both fields is `undefined`.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    _resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (!isStreamName(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    let response;
+    try {
+      response = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: physicalId })
+      );
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
+      throw error;
+    }
+    const arn = response.StreamDescriptionSummary?.StreamARN;
+    const created = response.StreamDescriptionSummary?.StreamCreationTimestamp;
+    if (typeof arn !== 'string' || arn === '') return undefined;
+    if (!(created instanceof Date) || Number.isNaN(created.getTime())) return undefined;
+    return `${arn}@${created.getTime()}`;
+  }
+
+  /**
    * The stream's ARN, or `undefined` when `DescribeStreamSummary` reports it
    * gone. Any other failure (and a response naming no ARN) throws: "could
    * not read" never reads as "gone".

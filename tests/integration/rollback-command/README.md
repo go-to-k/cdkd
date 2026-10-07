@@ -53,7 +53,10 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   fix-forward keeping `OrphanStream` under another name (`ORPHAN_FIX_FORWARD=true`)
   deletes the first stream once the provider's live read proves it is not the
   new one ([#4606](https://github.com/go-to-k/cdkd/issues/4606)), keeps the
-  new one and exits 0. Each asserts the journal gone.
+  new one and exits 0. When the stream is deleted by hand and its name re-created
+  before that deploy ([#4655](https://github.com/go-to-k/cdkd/issues/4655)), the
+  new stream's creation time differs from the one journaled, so the deploy keeps
+  it, warns and exits 2. Each asserts the journal gone.
 - **Phase P (a replacement whose new resource was created and then failed,
   issue [#4604](https://github.com/go-to-k/cdkd/issues/4604))**: deploy with
   `WITH_REPLACE_STREAM=true` (`ReplaceStream`, `-replace-stream-a`), then flip
@@ -81,6 +84,13 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
 - **Phase 3**: a `--no-rollback` `INJECT_ORPHAN_CREATE` deploy leaves the
   stream recorded only in the journal; destroy stack 1 clean, the stream
   deleted ([#4584](https://github.com/go-to-k/cdkd/issues/4584)), 0 orphans.
+- **Phase D ([#4633](https://github.com/go-to-k/cdkd/issues/4633))**: the same
+  orphan stream; `cdkd destroy` run as a fixture-made role that may not call
+  `kinesis:DeleteStream` fails, keeps the stream and its journal entry, and
+  names `cdkd rollback --drop-failed OrphanStream` → refused drops (unknown id,
+  no terminal) leave the journal unchanged → the drop removes only that entry →
+  `cdkd destroy` exits 0 with the stream left in AWS → the fixture removes the
+  stream and the role.
 
 ## Failure injection
 

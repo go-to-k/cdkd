@@ -37,6 +37,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 
 /**
  * SDK Provider for AWS CodeBuild resources
@@ -49,6 +50,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  */
 export class CodeBuildProvider implements ResourceProvider {
   private client: CodeBuildClient | undefined;
+  private createClient: CodeBuildClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CodeBuildProvider');
 
@@ -94,12 +96,39 @@ export class CodeBuildProvider implements ResourceProvider {
 
   private getClient(): CodeBuildClient {
     if (!this.client) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.client = new CodeBuildClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new CodeBuildClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateProject` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * `CreateProject` carries no idempotency token and a project name is unique
+   * per account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with the project the first send made, and that
+   * `ResourceAlreadyExistsException` surfaced from the engine's FIRST attempt
+   * as a name somebody else holds. Refused here, the 5xx reaches the deploy
+   * engine's retry, which marks the create as possibly replayed (`withRetry`,
+   * #3978). Nothing is adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): CodeBuildClient {
+    this.getClient();
+    return this.createClient as CodeBuildClient;
   }
 
   /**
@@ -439,7 +468,7 @@ export class CodeBuildProvider implements ResourceProvider {
     try {
       const input = this.mapProperties(logicalId, properties);
 
-      const result = await this.getClient().send(new CreateProjectCommand(input));
+      const result = await this.getCreateClient().send(new CreateProjectCommand(input));
 
       const projectName = result.project!.name!;
       const projectArn = result.project!.arn!;

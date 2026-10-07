@@ -194,13 +194,20 @@ describe('CloudControlProvider keeps ONE ASGProvider delegate across delete() re
 
     await del(provider);
     await del(provider);
-    expect(asgClientCtor.mock.calls).toEqual([['us-east-1']]);
+    // One delegate builds TWO AutoScalingClients together: the shared one and
+    // its `CreateAutoScalingGroup` client (issue #4639).
+    expect(asgClientCtor.mock.calls).toEqual([['us-east-1'], ['us-east-1']]);
 
     // The delegate binds its clients to the ambient region at construction,
     // so a call made under another one must not inherit a us-east-1 client.
     process.env['AWS_REGION'] = 'us-west-2';
     await del(provider);
-    expect(asgClientCtor.mock.calls).toEqual([['us-east-1'], ['us-west-2']]);
+    expect(asgClientCtor.mock.calls).toEqual([
+      ['us-east-1'],
+      ['us-east-1'],
+      ['us-west-2'],
+      ['us-west-2'],
+    ]);
   });
 
   it('two CONCURRENT first calls in one region share one delegate', async () => {
@@ -209,6 +216,6 @@ describe('CloudControlProvider keeps ONE ASGProvider delegate across delete() re
 
     await Promise.all([del(provider), del(provider)]);
 
-    expect(asgClientCtor.mock.calls).toEqual([['us-east-1']]);
+    expect(asgClientCtor.mock.calls).toEqual([['us-east-1'], ['us-east-1']]);
   });
 });

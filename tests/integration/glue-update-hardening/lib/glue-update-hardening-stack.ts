@@ -69,6 +69,9 @@ const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
  * 14. A Glue Table replacement that keeps its address (issue #3932):
  *     CDKD_TEST_TOPLEVEL_NAME adds the top-level `Name`. The collision is with
  *     the table itself, so `--replace` deletes it first and re-creates it.
+ * 15. A Glue Connection (issue #4639): `CreateConnection` goes through the
+ *     provider's dedicated create client, which refuses the SDK's 5xx replay.
+ *     verify.sh asserts it exists after the deploy and is gone after destroy.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -172,6 +175,22 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       name: `${this.stackName}-workflow`.toLowerCase(),
       maxConcurrentRuns: 1,
       tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP,
+    });
+
+    // Glue Connection (issue #4639): a live `CreateConnection` through the
+    // provider's dedicated create client. Glue does not dial the URL at create,
+    // so the host is a reserved `.invalid` name and the credentials are inert.
+    new glue.CfnConnection(this, 'Connection', {
+      catalogId: this.account,
+      connectionInput: {
+        name: `${this.stackName}-connection`.toLowerCase(),
+        connectionType: 'JDBC',
+        connectionProperties: {
+          JDBC_CONNECTION_URL: 'jdbc:postgresql://cdkd-integ.invalid:5432/cdkd',
+          USERNAME: 'cdkd',
+          PASSWORD: 'cdkd-integ-not-a-secret',
+        },
+      },
     });
 
     // CloudWatch Logs log group whose `Tags` list changes on update (issue

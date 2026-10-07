@@ -28,6 +28,8 @@ const orphan = (extra: Record<string, unknown> = {}) => ({
   provisionedBy: 'sdk',
   physicalIdRecoveredFromError: true,
   deletionPolicy: 'Delete',
+  // go-to-k/cdkd#4655: the provider's live read answers the same token.
+  createdResourceIdentity: 'created-token',
   attemptedProperties: { Name: 'orphan-stream' },
   ...extra,
 });
@@ -69,6 +71,7 @@ async function run(opts: RunOptions = {}) {
     delete: vi.fn(async () => {
       if (opts.deleteFails) throw new Error('throttled');
     }),
+    resourceIdentity: vi.fn(async () => 'created-token'),
   };
   const isSameResource = vi.fn(async () => {
     if (verdict instanceof Error) throw verdict;

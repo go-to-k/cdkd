@@ -17,12 +17,17 @@ const orphan = (extra: Record<string, unknown> = {}) => ({
   physicalId: 'orphan-stream',
   provisionedBy: 'sdk',
   physicalIdRecoveredFromError: true,
+  // go-to-k/cdkd#4655: the live read below answers the same token.
+  createdResourceIdentity: 'created-token',
   attemptedProperties: {},
   ...extra,
 });
 
 function setup(journal: unknown) {
-  const provider = { delete: vi.fn().mockResolvedValue(undefined) };
+  const provider = {
+    delete: vi.fn().mockResolvedValue(undefined),
+    resourceIdentity: vi.fn().mockResolvedValue('created-token'),
+  };
   const stateBackend = {
     loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
     reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

@@ -31,6 +31,7 @@ import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { generateResourceName } from '../resource-name.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { definedAttributes } from '../attribute-map.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
@@ -371,6 +372,7 @@ export interface PipesProviderOptions {
 
 export class PipesPipeProvider implements ResourceProvider {
   private client: PipesClient | undefined;
+  private createClient: PipesClient | undefined;
   private readonly providerRegion = ambientRegion();
   private readonly logger = getLogger().child('PipesPipeProvider');
   private readonly options: PipesProviderOptions;
@@ -440,8 +442,34 @@ export class PipesPipeProvider implements ResourceProvider {
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new PipesClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreatePipe` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry; built in {@link getClient}'s step, so both
+   * capture the region and identity active at that ONE call.
+   *
+   * `CreatePipe` carries no idempotency token (the Pipes API has no
+   * `ClientToken`), and a pipe name is unique per account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): PipesClient {
+    this.getClient();
+    return this.createClient as PipesClient;
   }
 
   async create(
@@ -460,7 +488,7 @@ export class PipesPipeProvider implements ResourceProvider {
     this.logger.debug(mask(`Creating Pipe ${logicalId}: ${name}`));
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreatePipeCommand({
           Name: name,
           RoleArn: properties['RoleArn'] as string,
@@ -496,7 +524,9 @@ export class PipesPipeProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Pipe ${logicalId}: ${cause?.message ?? String(error)}`,
+        // AWS echoes resolved inputs into its text: masked like the settle
+        // reason (`waitForSettled`).
+        `Failed to create Pipe ${logicalId}: ${mask(cause?.message ?? String(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -653,7 +683,9 @@ export class PipesPipeProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Pipe ${logicalId}: ${cause?.message ?? String(error)}`,
+        // AWS echoes resolved inputs into its text: masked like the settle
+        // reason (`waitForSettled`).
+        `Failed to update Pipe ${logicalId}: ${mask(cause?.message ?? String(error))}`,
         resourceType,
         logicalId,
         physicalId,

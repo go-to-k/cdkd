@@ -1308,6 +1308,29 @@ export interface ResourceProvider {
   ): Promise<ResourceIdentityVerdict>;
 
   /**
+   * go-to-k/cdkd#4655: a token naming THIS live resource and no later one
+   * created under the same physical id. A failed CREATE journals it beside a
+   * proven orphan's name-keyed physical id, and a successful deploy deletes
+   * that orphan only when the token read then is equal: a user may delete the
+   * orphan by hand and let something else reuse the name in between.
+   *
+   * Build it from an immutable AWS-generated id where the type has one (an
+   * RDS `DbClusterResourceId`), else from the ARN plus the creation time,
+   * since a name-built ARN alone repeats when the name is reused. Return
+   * {@link RESOURCE_NOT_FOUND} only on AWS's not-found answer, and `undefined`
+   * whenever the read cannot name the resource: an id form the provider does
+   * not recognise, a client in another region than `expectedRegion`, a
+   * response without the fields. Errors may throw; callers treat a throw as
+   * `undefined`. Absent (most providers) means no token: the settle keeps a
+   * name-keyed orphan and warns about it instead of deleting it.
+   */
+  resourceIdentity?(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined>;
+
+  /**
    * State property paths this provider deliberately cannot (or chooses
    * not to) read back from AWS. The drift comparator skips these paths
    * before comparing, so they don't fire guaranteed false-positive
