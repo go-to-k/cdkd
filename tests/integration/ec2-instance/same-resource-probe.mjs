@@ -107,6 +107,41 @@ try {
   );
 }
 
+// (g) The settle's delete of a journaled instance EC2 no longer lists
+// (`InvalidInstanceID.NotFound`): completes, and names it once at info.
+const infoLines = [];
+const logger = provider.logger;
+const originalInfo = logger?.info;
+if (typeof originalInfo === 'function') {
+  logger.info = (...args) => {
+    infoLines.push(args.map(String).join(' '));
+    return originalInfo.apply(logger, args);
+  };
+}
+try {
+  await provider.delete('ProbeOrphan', neverId, TYPE, {}, {
+    expectedRegion: region,
+    failedCreateOrphan: true,
+  });
+  if (typeof originalInfo === 'function') logger.info = originalInfo;
+  const named = infoLines.filter((l) => l.includes(neverId) && l.includes('already gone'));
+  if (named.length === 1) {
+    passed += 1;
+    console.log(`[probe] PASS ${passed}: delete of a never-existed journaled instance completed and was named once at info`);
+  } else {
+    failed += 1;
+    console.error(
+      `[probe] FAIL: delete of a never-existed journaled instance printed ${named.length} 'already gone' info line(s) naming it (expected 1): ${JSON.stringify(infoLines)}`
+    );
+  }
+} catch (err) {
+  if (typeof originalInfo === 'function') logger.info = originalInfo;
+  failed += 1;
+  console.error(
+    `[probe] FAIL: delete of a never-existed journaled instance threw ${err?.name}: ${err?.message}`
+  );
+}
+
 if (failed > 0) {
   console.error(`[probe] ${failed} case(s) FAILED, ${passed} passed`);
   process.exit(1);

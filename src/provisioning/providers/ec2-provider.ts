@@ -1372,9 +1372,10 @@ export class EC2Provider implements ResourceProvider {
    * `'different'` too: the settle's delete removes it.
    *
    * SDK-routed resources only: the settle asks the provider the journaled
-   * operation was provisioned by, so a Cloud Control-routed NAT gateway or
-   * Elastic IP (e.g. one setting `MaxDrainDurationSeconds`) never reaches
-   * this method and keeps the warning.
+   * operation was provisioned by, so a Cloud Control-routed NAT gateway,
+   * Elastic IP or instance (e.g. a NAT gateway setting
+   * `MaxDrainDurationSeconds`) never reaches this method and keeps the
+   * warning.
    */
   async isSameResource(
     journaledPhysicalId: string,

@@ -131,11 +131,15 @@ cleanup() {
     # between `run-instances` and the id capture still reaches it). First,
     # and waited on: it sits in the stack's subnet, whose delete below fails
     # while the instance's network interface is still attached.
-    LEAKED_PROBE=$(aws ec2 describe-instances \
+    if ! LEAKED_PROBE=$(aws ec2 describe-instances \
       --filters "Name=client-token,Values=${PROBE_TOKEN}" \
       --region "${REGION}" \
       --query 'Reservations[].Instances[?State.Name!=`terminated`].InstanceId[]' \
-      --output text 2>/dev/null)
+      --output text 2>/dev/null); then
+      # The probe instance carries no stack tag, so nothing else finds it.
+      echo "    NOTE: could not list the probe instance; check and terminate by hand: aws ec2 describe-instances --region ${REGION} --filters Name=client-token,Values=${PROBE_TOKEN}" >&2
+      LEAKED_PROBE=""
+    fi
     for leaked in ${LEAKED_PROBE}; do
       aws ec2 terminate-instances \
         --instance-ids "${leaked}" \
@@ -798,7 +802,7 @@ PROBE_INSTANCE_ID=$(aws ec2 run-instances \
   --no-cli-auto-prompt \
   --client-token "${PROBE_TOKEN}" \
   --image-id "${REPLAY_IMAGE_ID}" \
-  --instance-type t3.nano \
+  --instance-type "${REPLAY_INSTANCE_TYPE}" \
   ${REPLAY_SUBNET_ID:+--subnet-id "${REPLAY_SUBNET_ID}"} \
   --count 1 \
   --region "${REGION}" \
@@ -840,9 +844,9 @@ PROBE_OUT=$(node same-resource-probe.mjs "${REGION}" "${INSTANCE_ID}" "${PUBLIC_
 PROBE_RC=$?
 set -e
 printf '%s\n' "${PROBE_OUT}" | sed 's/^/    /'
-# The rc AND the receipt line only a complete run prints: 8 cases.
-if [ "${PROBE_RC}" -ne 0 ] || ! printf '%s\n' "${PROBE_OUT}" | grep -qx '\[probe\] ALL 8 PASSED'; then
-  echo "FAIL: issue #4606 -- the isSameResource probe exited ${PROBE_RC} without '[probe] ALL 8 PASSED' (output above)" >&2
+# The rc AND the receipt line only a complete run prints: 9 cases.
+if [ "${PROBE_RC}" -ne 0 ] || ! printf '%s\n' "${PROBE_OUT}" | grep -qx '\[probe\] ALL 9 PASSED'; then
+  echo "FAIL: issue #4606 -- the isSameResource probe exited ${PROBE_RC} without '[probe] ALL 9 PASSED' (output above)" >&2
   exit 1
 fi
 echo "    OK: isSameResource answers same / different / unknown against live instances (issue #4606)"
