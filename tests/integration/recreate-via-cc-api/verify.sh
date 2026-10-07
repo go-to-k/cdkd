@@ -71,6 +71,10 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
   set +eu
+  # go-to-k/cdkd#1889's arm (Sub-3e) denies `s3:DeleteBucket` on the probe
+  # bucket with a bucket policy. Drop it FIRST, before the leaked-bucket
+  # delete below, or a run that died mid-arm cannot clear the bucket.
+  aws s3api delete-bucket-policy --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -270,6 +274,97 @@ echo "        OK: non-empty bucket refused with has-objects reason"
 echo "    Sub-3d: empty the bucket so destroy can clear it"
 aws s3 rm "s3://${BUCKET_NAME}/" --recursive --region "${REGION}" >/dev/null
 echo "        OK: bucket emptied"
+
+# Sub-3e (go-to-k/cdkd#1889): a REAL recreate whose destroy of the old bucket
+# AWS refuses. The `--recreate-via-*` destroy wrap chains the delete error as
+# its `cause`, so the persisted RESOURCE_FAILED event names the AWS error code
+# and request id. Before #1889 the wrap carried no `cause`, and the event had
+# neither. A bucket policy denying ONLY `s3:DeleteBucket` makes the delete
+# fail with an AWS API error while leaving `DeleteBucketPolicy` usable.
+#
+# The failed destroy throws before any create, so the old bucket and its state
+# record are untouched and Phase 4 destroys the stack as before. The deploy
+# runs under the Phase 2 template (`CDKD_INTEG_USE_SILENT_DROP`) so the
+# Lambda diffs NO_CHANGE and the bucket is the only operation.
+echo "    Sub-3e: recreate destroy denied by AWS -> RESOURCE_FAILED carries the AWS code (#1889)"
+DENY_POLICY=$(jq -cn --arg b "${BUCKET_NAME}" '{Version: "2012-10-17", Statement: [{Sid: "Cdkd1889DenyDeleteBucket", Effect: "Deny", Principal: "*", Action: "s3:DeleteBucket", Resource: ("arn:aws:s3:::" + $b)}]}')
+aws s3api put-bucket-policy --bucket "${BUCKET_NAME}" --region "${REGION}" --policy "${DENY_POLICY}"
+export CDKD_INTEG_USE_SILENT_DROP=true
+set +e
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api RecreateProbeBucket \
+  --yes > /tmp/cdkd-1889-deny.log 2>&1
+RC=$?
+set -e
+unset CDKD_INTEG_USE_SILENT_DROP
+if [ ${RC} -eq 0 ]; then
+  echo "FAIL: recreate with DeleteBucket denied unexpectedly succeeded" >&2
+  cat /tmp/cdkd-1889-deny.log >&2
+  exit 1
+fi
+if ! grep -qF 'Failed to destroy old resource RecreateProbeBucket' /tmp/cdkd-1889-deny.log; then
+  echo "FAIL: the deploy failed, but not at the recreate destroy wrap" >&2
+  cat /tmp/cdkd-1889-deny.log >&2
+  exit 1
+fi
+echo "        OK: deploy failed at the recreate destroy"
+
+if ! node "${LOCAL_DIST}" events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" \
+  --format json > /tmp/cdkd-1889-runs.json 2> /tmp/cdkd-1889-runs.err; then
+  echo "FAIL: cdkd events (run listing) failed:" >&2
+  cat /tmp/cdkd-1889-runs.err >&2
+  exit 1
+fi
+RUN_ID=$(jq -r '.runs[0].runId // ""' /tmp/cdkd-1889-runs.json)
+RUN_CMD=$(jq -r '.runs[0].command // ""' /tmp/cdkd-1889-runs.json)
+RUN_RESULT=$(jq -r '.runs[0].result // ""' /tmp/cdkd-1889-runs.json)
+if [ -z "${RUN_ID}" ] || [ "${RUN_CMD}" != "deploy" ] || [ "${RUN_RESULT}" != "FAILED" ]; then
+  echo "FAIL: newest run is not the FAILED deploy (runId='${RUN_ID}' command='${RUN_CMD}' result='${RUN_RESULT}'):" >&2
+  cat /tmp/cdkd-1889-runs.json >&2
+  exit 1
+fi
+if ! node "${LOCAL_DIST}" events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" \
+  --run "${RUN_ID}" --format json > /tmp/cdkd-1889-events.json 2> /tmp/cdkd-1889-events.err; then
+  echo "FAIL: cdkd events --run ${RUN_ID} failed:" >&2
+  cat /tmp/cdkd-1889-events.err >&2
+  exit 1
+fi
+FAILED_EVENT=$(jq -c '[.[] | select(.eventType == "RESOURCE_FAILED" and .logicalId == "RecreateProbeBucket")] | last // empty' /tmp/cdkd-1889-events.json)
+if [ -z "${FAILED_EVENT}" ]; then
+  echo "FAIL: run ${RUN_ID} has no RESOURCE_FAILED event for RecreateProbeBucket:" >&2
+  cat /tmp/cdkd-1889-events.json >&2
+  exit 1
+fi
+AWS_CODE=$(printf '%s' "${FAILED_EVENT}" | jq -r '.error.awsErrorCode // ""')
+REQUEST_ID=$(printf '%s' "${FAILED_EVENT}" | jq -r '.error.requestId // ""')
+# Sentinel first: an EMPTY code is the pre-#1889 shape (the wrap dropped its
+# cause), a different non-empty one is AWS rewording its refusal -- re-pin
+# it rather than read it as the regression.
+if [ -z "${AWS_CODE}" ]; then
+  echo "FAIL: RESOURCE_FAILED for RecreateProbeBucket has no awsErrorCode -- the destroy wrap's cause chain is broken (#1889):" >&2
+  printf '%s\n' "${FAILED_EVENT}" >&2
+  exit 1
+fi
+if [ "${AWS_CODE}" != "AccessDenied" ]; then
+  echo "FAIL: RESOURCE_FAILED awsErrorCode is '${AWS_CODE}', pinned 'AccessDenied' -- AWS may have changed the code for an explicit-deny DeleteBucket; re-pin after checking:" >&2
+  printf '%s\n' "${FAILED_EVENT}" >&2
+  exit 1
+fi
+if [ -z "${REQUEST_ID}" ]; then
+  echo "FAIL: RESOURCE_FAILED for RecreateProbeBucket has no requestId (#1889):" >&2
+  printf '%s\n' "${FAILED_EVENT}" >&2
+  exit 1
+fi
+echo "        OK: RESOURCE_FAILED awsErrorCode=${AWS_CODE}, requestId present"
+
+if gone_probe aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"; then
+  echo "FAIL: probe bucket ${BUCKET_NAME} is gone after a destroy AWS refused" >&2
+  exit 1
+fi
+aws s3api delete-bucket-policy --bucket "${BUCKET_NAME}" --region "${REGION}"
+echo "        OK: old bucket survived the refused destroy; deny policy removed"
 
 # --- Phase 4: destroy --------------------------------------------------
 echo "==> Phase 4: destroy via CC delete path"

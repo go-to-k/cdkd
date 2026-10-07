@@ -47,6 +47,7 @@ import {
   type RecordedSecretValues,
   SECRET_MASK,
   createSecretMasker,
+  maskSecretsInError,
   maskSecretsInText,
 } from '../secret-redaction.js';
 
@@ -230,13 +231,22 @@ export async function replaceDeleteFirstAndRecreate(
     // because every reader downstream masks independently. It is
     // defense-in-depth against a future change to one of those readers, not
     // a fence — do not record it in a PR body as a tested behavior.
+    //
+    // go-to-k/cdkd#1889: the delete's error is chained as `cause` so its
+    // markers (`markNonRetryable`, wait-abandoned, `$metadata` / `Code` for
+    // `extractDeploymentEventError`) survive the wrap — a wrap with no cause
+    // severs every one of them. Chained through `maskSecretsInError` with the
+    // same bag as the message, for the message mask's reason: a bare cause
+    // would carry, in the chain `formatError` prints, the plaintext the
+    // message mask removed, held off only by the downstream reader.
     throw new Error(
       maskSecretsInText(
         `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
           `during the --replace delete-first fallback: ` +
           `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
         secrets
-      )
+      ),
+      { cause: deleteError instanceof Error ? maskSecretsInError(deleteError, secrets) : undefined }
     );
   }
   // Issue #1762: a skip here FAILS the resource, unlike the template-DELETE
@@ -317,14 +327,13 @@ export async function replaceDeleteFirstAndRecreate(
     // handed the RESOLVED `replaceProps`.
     //
     // Issue #2616 swept this site alongside its twin in the
-    // UPDATE-not-supported fallback, and the mask-asymmetry note on that
-    // twin covers this site in substance: the `cause` is chained UNMASKED
-    // because `provisionResource`'s catch masks the whole chain further up
-    // the stack. NOT "one frame up" as the twin's note says — that wording
-    // is exact only there; this throw sits in
-    // `replaceDeleteFirstAndRecreate`, called from `updateByReplacement`,
-    // which `provisionResource` invokes through `withResourceDeadline`. The
-    // `cause` is what keeps the AWS
+    // UPDATE-not-supported fallback. The `cause` is chained through
+    // `maskSecretsInError` with the message's bag, like the delete wrap
+    // above (go-to-k/cdkd#1889). `provisionResource`'s catch masks the whole
+    // chain again further up, so this is the same defense-in-depth as the
+    // message mask: no resolved secret value exists inside the thrown chain.
+    // (A name derived from a secret is masked only there, by the printing
+    // bag `printingSecretsFor` adds.) The `cause` is what keeps the AWS
     // rejection behind the sentence readable — `extractDeploymentEventError`
     // walks the chain for `$metadata` / `Code`, so an unchained wrap sends a
     // `RESOURCE_FAILED` event with no `awsErrorCode` at all. Nothing between
@@ -339,7 +348,10 @@ export async function replaceDeleteFirstAndRecreate(
           `Re-run the deploy to create it fresh.`,
         secrets
       ),
-      { cause: recreateError instanceof Error ? recreateError : undefined }
+      {
+        cause:
+          recreateError instanceof Error ? maskSecretsInError(recreateError, secrets) : undefined,
+      }
     );
   }
 }

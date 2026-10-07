@@ -181,7 +181,7 @@ lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
 lambda-config-field-removal	2026-10-02T01:44:21Z	PASS	110	verify.sh	PR #4378 removalDefaults; rc ok, orph clean
 lambda-destinations	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
-lambda-durable-replacement	2026-09-29T02:37:41Z	PASS	155	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, #3808 held-name rename refused without deleting, orph clean
+lambda-durable-replacement	2026-10-07T07:15:44Z	PASS	151	verify.sh	PR #4646 on #4650 (#1889); rc 0, destroy clean, orph clean
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
 lambda-esm-self-managed-kafka	2026-09-27T12:27:25Z	PASS	120	verify.sh	rc ok, orph clean; schema-registry add + removal phases (#3861)
 lambda-event-invoke-config-update	2026-10-03T04:23:09Z	PASS	167	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -266,8 +266,8 @@ recreate-mixed-direction	2026-10-02T20:40:31Z	PASS	111	verify.sh	rc ok, orph cle
 recreate-nested-logical-id-collision	2026-10-02T20:42:43Z	PASS	130	verify.sh	rc ok, orph clean (#4468)
 recreate-parent-child-permission	2026-10-06T05:49:58Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)
 recreate-target-readers	2026-10-02T20:44:14Z	PASS	86	verify.sh	rc ok, orph clean (#4468)
-recreate-via-cc-api	2026-10-05T15:03:08Z	PASS	100	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
-recreate-via-sdk-provider	2026-10-05T02:29:22Z	PASS	95	verify.sh	rc ok, orph clean (#4569 @480676155)
+recreate-via-cc-api	2026-10-07T07:15:44Z	PASS	141	verify.sh	PR #4646 on #4650 (#1889 masked cause on replacement delete wraps); Sub-3e arm: awsErrorCode=AccessDenied + requestId; rc 0, destroy clean, orph clean
+recreate-via-sdk-provider	2026-10-07T07:15:44Z	PASS	110	verify.sh	PR #4646 on #4650 (#1889); rc 0, destroy clean, orph clean
 redacted-delete-address	2026-10-06T05:40:55Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-07T06:44:03Z	PASS	2123	verify.sh	PR #4645 (#1889 terminal resolver throws + nested child failure non-retryable); rc 0, destroy clean, orph clean
