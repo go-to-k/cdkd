@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
@@ -164,8 +165,10 @@ export async function resolveParameters(
       // of this comment said the site had "no context to pass", which was
       // false: `inheritedLogContext` is in scope from the top of the method
       // (go-to-k/cdkd#3435 review round 2).
-      throw new Error(
-        `Parameter ${maskInherited(name)} is required but no value was provided and no default exists`
+      throw markNonRetryable(
+        new Error(
+          `Parameter ${maskInherited(name)} is required but no value was provided and no default exists`
+        )
       );
     }
 

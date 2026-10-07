@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { resolveCrossAccountStateBucket } from '../../utils/aws-region-resolver.js';
@@ -32,7 +33,9 @@ export async function getSameAccountStackState(
   context: ResolverContext
 ): ReturnType<S3StateBackend['getState']> {
   if (!context.stateBackend) {
-    throw new Error('Fn::GetStackOutput: state backend is required for cross-stack references');
+    throw markNonRetryable(
+      new Error('Fn::GetStackOutput: state backend is required for cross-stack references')
+    );
   }
   return context.stateBackend.getState(stackName, region);
 }
@@ -97,10 +100,12 @@ export async function getCrossAccountStackState(
       bounded === UNSHOWABLE_VALUE
         ? `the RoleArn argument (${UNSHOWABLE_VALUE})`
         : `RoleArn ${bounded}`;
-    throw new Error(
-      `Fn::GetStackOutput: ${subject} is not a valid IAM role ARN. ` +
-        `Expected shape: arn:<partition>:iam::<12-digit-account-id>:role/<role-name>` +
-        ` (e.g. arn:aws:iam::123456789012:role/MyRole, arn:aws-us-gov:iam::...).`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetStackOutput: ${subject} is not a valid IAM role ARN. ` +
+          `Expected shape: arn:<partition>:iam::<12-digit-account-id>:role/<role-name>` +
+          ` (e.g. arn:aws:iam::123456789012:role/MyRole, arn:aws-us-gov:iam::...).`
+      )
     );
   }
 

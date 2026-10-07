@@ -282,10 +282,12 @@ export class NestedStackProvider implements ResourceProvider {
 
     const childTemplatePath = ctx.nestedTemplates![logicalId];
     if (!childTemplatePath) {
-      throw new Error(
-        `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} ` +
-          `under parent ${displayStackName(ctx.parentStackName)}. Verify the synth output emits ` +
-          `Metadata['aws:asset:path'] on this resource (CDK 2.x cdk.NestedStack does so by default).`
+      throw markNonRetryable(
+        new Error(
+          `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} ` +
+            `under parent ${displayStackName(ctx.parentStackName)}. Verify the synth output emits ` +
+            `Metadata['aws:asset:path'] on this resource (CDK 2.x cdk.NestedStack does so by default).`
+        )
       );
     }
     this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
@@ -391,8 +393,10 @@ export class NestedStackProvider implements ResourceProvider {
 
     const childTemplatePath = ctx.nestedTemplates![logicalId];
     if (!childTemplatePath) {
-      throw new Error(
-        `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} on update.`
+      throw markNonRetryable(
+        new Error(
+          `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} on update.`
+        )
       );
     }
     this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
@@ -685,41 +689,24 @@ export class NestedStackProvider implements ResourceProvider {
     // nested stack whose logical id
     // merely CONTAINS it makes a cdkd-authored message look transient. The
     // remedy is `markNonRetryable`, which is consulted BEFORE any message
-    // heuristic — but it is applied per ARM, not to the throw as a whole,
-    // because the two arms answer the healability question differently:
+    // heuristic, and BOTH arms carry it (go-to-k/cdkd#1889):
     //
-    //  - NOT interrupted: a retry re-enters `runDestroyForStack` against the
-    //    child's PRESERVED state, and a child resource that was still
-    //    draining (an ENI detaching, a dependency releasing) on attempt 1 may
-    //    genuinely be gone on attempt 2. Some causes underneath the count are
-    //    terminal, but `DestroyRunnerResult` reports only counts, so this arm
-    //    cannot separate them; per the "if ANY arm can heal, do not mark"
-    //    rule it is left UNMARKED.
-    //
-    //    Be precise about what that leaves, because it is NOT "the arm stays
-    //    retryable": left unmarked, its classification stays MESSAGE-driven,
-    //    so it is retryable exactly when the child stack name happens to
-    //    contain a retryable pattern — i.e. this arm still carries the
-    //    name-dependence this issue is about. There is no `markRetryable` to
-    //    assert the healable reading with, and marking it would be strictly
-    //    worse (it would make the healable case terminal for everyone). So
-    //    the residual is ACCEPTED, not fixed, and saying otherwise would
-    //    overstate what the mark below achieves.
     //  - Interrupted: the child stopped early because the user pressed
-    //    Ctrl-C. `destroy-runner.ts` reads `lock.interrupted` from a
-    //    stack-lock guard it acquires per INVOCATION (`acquireStackLock`),
-    //    and that guard owns the SIGINT listener, so a retry starts a FRESH
-    //    child destroy with the interrupt forgotten — it does not heal the
-    //    failure, it RESUMES work the user just aborted, while the backoff
-    //    sleeps hold up the shutdown the interrupt asked for. Terminal by
-    //    declaration.
-    //
-    // LATENT today, and deliberately fixed anyway (the #1778 precedent): this
-    // provider sets `disableOuterRetry`, so every caller invokes `delete()`
-    // exactly once — `destroy-runner.ts` computes `maxAttempts = 0`,
-    // `DeployEngine.withRetry` short-circuits, and `rollback-executor.ts`
-    // does not wrap deletes at all. The marker is the DECLARATION that
-    // survives any of those opting back in.
+    //    Ctrl-C, and a retry would start a FRESH child destroy with the
+    //    interrupt forgotten (`destroy-runner.ts` reads `lock.interrupted`
+    //    from a per-INVOCATION stack-lock guard) — resuming work the user
+    //    just aborted.
+    //  - NOT interrupted: a whole-child re-destroy COULD heal a resource that
+    //    was still draining, but no caller retries this provider's `delete()`
+    //    — it sets `disableOuterRetry`, so `destroy-runner.ts` computes
+    //    `maxAttempts = 0` and `DeployEngine.withRetry` short-circuits — so
+    //    leaving it unmarked bought no retry. What it DID buy was the
+    //    "already deleted" misread: both delete callers drop the state row
+    //    when an UNMARKED message contains `NotFoundException` / `not found`,
+    //    and the child name interpolated here is template-controlled (a
+    //    child logical id `HandleNotFoundException` dropped the parent's row
+    //    while the child state survived). The marker is what those guards
+    //    read, so it closes that hole without touching them.
     if (childResult.errorCount > 0) {
       const inspect = pasteableCommand('cdkd state show', [
         { value: childStackName, hole: 'stack', opts: { plainIdent: true } },
@@ -739,7 +726,7 @@ export class NestedStackProvider implements ResourceProvider {
           withheldTargetClause(inspect, 'stack', 'cdkd state show', "The child stack's name")
         )
       );
-      throw childResult.interrupted ? markNonRetryable(failure) : failure;
+      throw markNonRetryable(failure);
     }
 
     if (childResult.skippedCount > 0 || childResult.interrupted) {
@@ -767,9 +754,11 @@ export class NestedStackProvider implements ResourceProvider {
     // the flat-key lookup — only happens when the user references an
     // attribute name cdkd did not record. Surface a clear error rather
     // than returning undefined silently.
-    throw new Error(
-      `AWS::CloudFormation::Stack: attribute ${displayIdent(attributeName)} is not in the recorded Outputs map. ` +
-        `Only 'Outputs.<Key>' references to declared Output names on the child template are supported.`
+    throw markNonRetryable(
+      new Error(
+        `AWS::CloudFormation::Stack: attribute ${displayIdent(attributeName)} is not in the recorded Outputs map. ` +
+          `Only 'Outputs.<Key>' references to declared Output names on the child template are supported.`
+      )
     );
   }
 
@@ -976,8 +965,10 @@ export class NestedStackProvider implements ResourceProvider {
   ): Promise<{ attributes: Record<string, unknown>; noEchoAttributeNames: string[] }> {
     const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
     if (!childStateData) {
-      throw new Error(
-        `Child stack state ${displayStackName(childStackName)} not found after deploy — NestedStackProvider invariant violated.`
+      throw markNonRetryable(
+        new Error(
+          `Child stack state ${displayStackName(childStackName)} not found after deploy — NestedStackProvider invariant violated.`
+        )
       );
     }
     // AT THE LOAD, above the rebuild it protects (issue #3207). The child's
@@ -1042,9 +1033,11 @@ export class NestedStackProvider implements ResourceProvider {
 
   private requireDeployContext(ctx: NestedStackProviderContext, op: 'create' | 'update'): void {
     if (!ctx.nestedTemplates || !ctx.dagBuilder || !ctx.diffCalculator) {
-      throw new Error(
-        `NestedStackProvider.${op}: deploy-mode context fields (nestedTemplates / dagBuilder / diffCalculator) ` +
-          `are missing. This usually means a destroy-mode entry point called into create/update by mistake.`
+      throw markNonRetryable(
+        new Error(
+          `NestedStackProvider.${op}: deploy-mode context fields (nestedTemplates / dagBuilder / diffCalculator) ` +
+            `are missing. This usually means a destroy-mode entry point called into create/update by mistake.`
+        )
       );
     }
   }
@@ -1213,14 +1206,16 @@ export class NestedStackProvider implements ResourceProvider {
    * points at `[2]` rather than at the whole parameter.
    */
   private refuseNonScalarParameter(k: string, offender: unknown, where: string): never {
-    throw new Error(
-      `NestedStackProvider: child Parameter ${displayIdent(k)}${where} resolved to a non-scalar value ` +
-        `(type=${offender === null ? 'null' : typeof offender}). Parameters must be scalars ` +
-        `(string / number / boolean), or an ARRAY of them from a list-typed parameter, by ` +
-        `the time they reach the provider — an unresolved intrinsic here means ` +
-        `IntrinsicFunctionResolver upstream did not handle the value, which ` +
-        `is a bug. Surface the unresolved input rather than silently coercing to ` +
-        `'[object Object]'.`
+    throw markNonRetryable(
+      new Error(
+        `NestedStackProvider: child Parameter ${displayIdent(k)}${where} resolved to a non-scalar value ` +
+          `(type=${offender === null ? 'null' : typeof offender}). Parameters must be scalars ` +
+          `(string / number / boolean), or an ARRAY of them from a list-typed parameter, by ` +
+          `the time they reach the provider — an unresolved intrinsic here means ` +
+          `IntrinsicFunctionResolver upstream did not handle the value, which ` +
+          `is a bug. Surface the unresolved input rather than silently coercing to ` +
+          `'[object Object]'.`
+      )
     );
   }
 
@@ -1254,8 +1249,10 @@ export class NestedStackProvider implements ResourceProvider {
     try {
       template = JSON.parse(raw) as CloudFormationTemplate;
     } catch (err) {
-      throw new Error(
-        `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
+      throw markNonRetryable(
+        new Error(
+          `Failed to parse nested template at ${displayAssemblyPath(templatePath)}: ${describeFileReadFailure(err, templatePath)}`
+        )
       );
     }
     const grandchildTemplates = this.indexGrandchildTemplates(template, templatePath);

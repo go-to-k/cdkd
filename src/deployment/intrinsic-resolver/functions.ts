@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import {
   ambientCredentialConfig,
@@ -220,7 +221,9 @@ export async function resolveAnd(
   context: ResolverContext
 ): Promise<boolean> {
   if (!Array.isArray(conditions) || conditions.length < 2 || conditions.length > 10) {
-    throw new Error(`Fn::And requires between 2 and 10 conditions, got ${conditions.length}`);
+    throw markNonRetryable(
+      new Error(`Fn::And requires between 2 and 10 conditions, got ${conditions.length}`)
+    );
   }
 
   // Resolve all conditions
@@ -252,7 +255,9 @@ export async function resolveOr(
   context: ResolverContext
 ): Promise<boolean> {
   if (!Array.isArray(conditions) || conditions.length < 2 || conditions.length > 10) {
-    throw new Error(`Fn::Or requires between 2 and 10 conditions, got ${conditions.length}`);
+    throw markNonRetryable(
+      new Error(`Fn::Or requires between 2 and 10 conditions, got ${conditions.length}`)
+    );
   }
 
   // Resolve all conditions
@@ -284,8 +289,10 @@ export async function resolveNot(
   context: ResolverContext
 ): Promise<boolean> {
   if (!Array.isArray(notArgs) || notArgs.length !== 1) {
-    throw new Error(
-      `Fn::Not requires exactly one condition, got ${Array.isArray(notArgs) ? notArgs.length : 0}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::Not requires exactly one condition, got ${Array.isArray(notArgs) ? notArgs.length : 0}`
+      )
     );
   }
 
@@ -360,7 +367,7 @@ export async function resolveFindInMap(
     if (hasDefaultValue) {
       return await resolveDefault();
     }
-    throw new Error(`Fn::FindInMap: no Mappings section found in template`);
+    throw markNonRetryable(new Error(`Fn::FindInMap: no Mappings section found in template`));
   }
 
   if (!map) {
@@ -372,8 +379,10 @@ export async function resolveFindInMap(
     // `Fn::FindInMap` arguments come back from `resolveValue`, so any of
     // them can be a decrypted secret an `Fn::Sub` assembled. Masked per RAW
     // value, which is what reaches the floorless whole-value arm.
-    throw new Error(
-      `Fn::FindInMap: mapping ${quotedRender(this.displayMasked(mapName, context), "'")} not found in Mappings section`
+    throw markNonRetryable(
+      new Error(
+        `Fn::FindInMap: mapping ${quotedRender(this.displayMasked(mapName, context), "'")} not found in Mappings section`
+      )
     );
   }
 
@@ -382,9 +391,11 @@ export async function resolveFindInMap(
     if (hasDefaultValue) {
       return await resolveDefault();
     }
-    throw new Error(
-      `Fn::FindInMap: top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")} ` +
-        `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::FindInMap: top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")}`
+      )
     );
   }
 
@@ -392,13 +403,15 @@ export async function resolveFindInMap(
     if (hasDefaultValue) {
       return await resolveDefault();
     }
-    throw new Error(
-      `Fn::FindInMap: second-level key ${quotedRender(this.displayMasked(secondLevelKey, context), "'")} ` +
-        `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")} under ` +
-        // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
-        // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
-        // (`../x`, go-to-k/cdkd#4100 review M1).
-        `top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::FindInMap: second-level key ${quotedRender(this.displayMasked(secondLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")} under ` +
+          // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
+          // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
+          // (`../x`, go-to-k/cdkd#4100 review M1).
+          `top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")}`
+      )
     );
   }
 
@@ -437,7 +450,9 @@ export async function resolveBase64(
     // widen. Left as-is deliberately while its two siblings that DO
     // interpolate a value (`Fn::GetAtt`'s attribute-name refusal,
     // `Fn::Cidr`'s `ipBlock`) gained `maskValueLeaves`.
-    throw new Error(`Fn::Base64: value must resolve to a string, got ${typeof resolvedValue}`);
+    throw markNonRetryable(
+      new Error(`Fn::Base64: value must resolve to a string, got ${typeof resolvedValue}`)
+    );
   }
 
   // THE COMPARISON PATH ANSWERS WHAT THE DEPLOY PERSISTS (issue
@@ -664,13 +679,15 @@ export async function resolveGetAZs(
       // default verbosity with the needle recorded and a boundary mask
       // applied. Masking the RAW value also reaches the whole-value arm,
       // which has no {@link MIN_NEEDLE_LENGTH} floor.
-      throw new Error(
-        // `the value` LEADS the clause: after `: ` a quoted value would be
-        // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
-        // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
-        `Fn::GetAZs: the value ${quotedRender(this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
-          `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
-          `not build a client from it.`
+      throw markNonRetryable(
+        new Error(
+          // `the value` LEADS the clause: after `: ` a quoted value would be
+          // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
+          // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
+          `Fn::GetAZs: the value ${quotedRender(this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
+            `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
+            `not build a client from it.`
+        )
       );
     }
     region = requested;
@@ -761,11 +778,13 @@ export async function resolveGetAZs(
   // `Fn::GetAZs` for that region and identity in the process (issue #1957
   // review).
   if (azNames.length === 0) {
-    throw new Error(
-      `Fn::GetAZs: no availability zones returned for region ` +
-        `${quotedRender(this.displayMasked(loggedRegionText ?? region, context), "'")}. Either the region ` +
-        `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
-        `request was answered by a different region's endpoint.`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetAZs: no availability zones returned for region ` +
+          `${quotedRender(this.displayMasked(loggedRegionText ?? region, context), "'")}. Either the region ` +
+          `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
+          `request was answered by a different region's endpoint.`
+      )
     );
   }
 
@@ -887,8 +906,10 @@ export async function resolveCidr(
   const cidrBits = Number(await this.resolveValue(rawCidrBits, context));
 
   if (!ipBlock || typeof ipBlock !== 'string') {
-    throw new Error(
-      `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(this.maskValueLeaves(ipBlock, context))}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(this.maskValueLeaves(ipBlock, context))}`
+      )
     );
   }
 

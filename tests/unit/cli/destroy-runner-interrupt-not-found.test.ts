@@ -63,6 +63,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
 import { isMarkedNonRetryable, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { CloudControlWaitAbandonedError } from '../../../src/provisioning/cloud-control-provider.js';
+import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
 
 const REGION = 'us-east-1';
 
@@ -263,6 +264,37 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     expect(result.deletedCount).toBe(1);
     expect(result.errorCount).toBe(0);
     expect(deleteState).toHaveBeenCalled();
+  });
+
+  it('keeps the parent row for a nested child failure whose child id spells the needle (go-to-k/cdkd#1889)', async () => {
+    // `NestedStackProvider.delete` throws this message with the CHILD's
+    // `<parent>~<logicalId>` name in it, marked non-retryable on both arms
+    // (fenced in nested-stack-provider.test.ts). Built by the PRODUCTION
+    // builder, and driven in BOTH polarities: unmarked, the runner really did
+    // read it as "already deleted" and drop the parent's row — the defect —
+    // so the marked arm surviving is the marker's doing.
+    const message = nestedStackChildFailureMessage(
+      `TestStack~${NEEDLE_LOGICAL_ID}`,
+      1,
+      0,
+      false,
+      `cdkd state show 'TestStack~${NEEDLE_LOGICAL_ID}'`
+    );
+    expect(message).toContain('NotFoundException');
+
+    const unmarked = makeCtx(vi.fn().mockRejectedValue(new Error(message)));
+    const dropped = await runDestroyForStack(
+      'TestStack',
+      makeState(NEEDLE_LOGICAL_ID),
+      unmarked.ctx
+    );
+    expect(dropped.deletedCount).toBe(1);
+
+    const marked = makeCtx(vi.fn().mockRejectedValue(markNonRetryable(new Error(message))));
+    const kept = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), marked.ctx);
+    expect(kept.deletedCount).toBe(0);
+    expect(kept.errorCount).toBe(1);
+    expect(marked.deleteState).not.toHaveBeenCalled();
   });
 
   it('INVERTED CONTROL — a needle-named resource with a REAL not-found still passes', async () => {

@@ -80,19 +80,21 @@ export async function resolveGetStackOutput(
   context: ResolverContext
 ): Promise<unknown> {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) {
-    throw new Error(
-      `Fn::GetStackOutput: argument must be an object with StackName/OutputName/Region/RoleArn, got ${
-        arg === null ? 'null' : Array.isArray(arg) ? 'array' : typeof arg
-      }`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetStackOutput: argument must be an object with StackName/OutputName/Region/RoleArn, got ${
+          arg === null ? 'null' : Array.isArray(arg) ? 'array' : typeof arg
+        }`
+      )
     );
   }
   const args = arg as Record<string, unknown>;
 
   if (!('StackName' in args)) {
-    throw new Error('Fn::GetStackOutput: StackName is required');
+    throw markNonRetryable(new Error('Fn::GetStackOutput: StackName is required'));
   }
   if (!('OutputName' in args)) {
-    throw new Error('Fn::GetStackOutput: OutputName is required');
+    throw markNonRetryable(new Error('Fn::GetStackOutput: OutputName is required'));
   }
 
   // Same as `Fn::ImportValue`'s: built from the RAW args, so the persist
@@ -104,15 +106,19 @@ export async function resolveGetStackOutput(
 
   const stackName = await this.resolveValue(args['StackName'], context);
   if (typeof stackName !== 'string' || stackName === '') {
-    throw new Error(
-      `Fn::GetStackOutput: StackName must resolve to a non-empty string, got ${typeof stackName}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetStackOutput: StackName must resolve to a non-empty string, got ${typeof stackName}`
+      )
     );
   }
 
   const outputName = await this.resolveValue(args['OutputName'], context);
   if (typeof outputName !== 'string' || outputName === '') {
-    throw new Error(
-      `Fn::GetStackOutput: OutputName must resolve to a non-empty string, got ${typeof outputName}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetStackOutput: OutputName must resolve to a non-empty string, got ${typeof outputName}`
+      )
     );
   }
 
@@ -125,8 +131,10 @@ export async function resolveGetStackOutput(
   if ('Region' in args && args['Region'] !== undefined && args['Region'] !== null) {
     const resolvedRegion = await this.resolveValue(args['Region'], context);
     if (typeof resolvedRegion !== 'string' || resolvedRegion === '') {
-      throw new Error(
-        `Fn::GetStackOutput: Region must resolve to a non-empty string, got ${typeof resolvedRegion}`
+      throw markNonRetryable(
+        new Error(
+          `Fn::GetStackOutput: Region must resolve to a non-empty string, got ${typeof resolvedRegion}`
+        )
       );
     }
     // Region-shape gate (issue #1957 review). This value is TEMPLATE-derived
@@ -155,10 +163,12 @@ export async function resolveGetStackOutput(
       // MASKED BEFORE THE TRANSFORM, the exact twin of `Fn::GetAZs`' region
       // gate — see the comment there for why the order is load-bearing
       // (issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
-      throw new Error(
-        `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
-          `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
-          `key, so cdkd will not use it.`
+      throw markNonRetryable(
+        new Error(
+          `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
+            `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
+            `key, so cdkd will not use it.`
+        )
       );
     }
     region = requestedRegion;
@@ -180,12 +190,14 @@ export async function resolveGetStackOutput(
       // answers the secret question, not the control-character one, and
       // `JSON.stringify` escapes C0 controls but passes `U+2028` / `U+2029`
       // and the bidi overrides through as written.
-      throw new Error(
-        `Fn::GetStackOutput: RoleArn must be a literal string in the template ` +
-          `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
-          `Got ${
-            raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-          }${typeof raw === 'object' ? ` (intrinsic shape: ${this.displayMasked(JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
+      throw markNonRetryable(
+        new Error(
+          `Fn::GetStackOutput: RoleArn must be a literal string in the template ` +
+            `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
+            `Got ${
+              raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${this.displayMasked(JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
+        )
       );
     }
     roleArn = raw;
@@ -232,10 +244,12 @@ export async function resolveGetStackOutput(
     // `loggedStackName` is bound, so it cannot reuse that binding — but it
     // renders the SAME value class, and the comment above arguing that
     // masking suffices is what the round-1 measurement disproved.
-    throw new Error(
-      `Fn::GetStackOutput: cannot reference own stack ` +
-        `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
-        `${this.displayMaskedIdent(loggedRegionText, context)}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetStackOutput: cannot reference own stack ` +
+          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
+          `${this.displayMaskedIdent(loggedRegionText, context)}`
+      )
     );
   }
 
@@ -373,9 +387,11 @@ export async function resolveGetStackOutput(
         if (!Object.hasOwn(cfnOutputs, outputName)) {
           const available = this.describeAvailableOutputs(Object.keys(cfnOutputs), context);
           // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
-          throw new Error(
-            `Fn::GetStackOutput: output ${loggedOutputName} not found in CloudFormation stack ` +
-              `${loggedStackName} (${displayIdent(loggedRegion)}). Available outputs: ${available}`
+          throw markNonRetryable(
+            new Error(
+              `Fn::GetStackOutput: output ${loggedOutputName} not found in CloudFormation stack ` +
+                `${loggedStackName} (${displayIdent(loggedRegion)}). Available outputs: ${available}`
+            )
           );
         }
         const value = cfnOutputs[outputName];
@@ -406,6 +422,10 @@ export async function resolveGetStackOutput(
     // condition is the right code; the display fence keys on a name appearing
     // in a substitution and cannot tell a test from a render.
     // not-in-class(roleArn ? ` (cross-account via ${shownRoleArn})` : ''): the RoleArn argument, refused unless it is a literal template string.
+    // Deliberately NOT `markNonRetryable` (go-to-k/cdkd#1889): with the
+    // CloudFormation fallback on, `lookupCfnStackOutputs` answers undefined on
+    // ANY lookup failure, a throttle included, so this miss can follow a
+    // swallowed transient failure.
     throw new Error(
       `Fn::GetStackOutput: stack ${loggedStackName} not found in region ${displayIdent(loggedRegion)}${
         roleArn ? ` (cross-account via ${shownRoleArn})` : ''
@@ -464,9 +484,11 @@ export async function resolveGetStackOutput(
   if (!Object.hasOwn(outputs, outputName)) {
     const available = this.describeAvailableOutputs(Object.keys(outputs), context);
     // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
-    throw new Error(
-      `Fn::GetStackOutput: output ${loggedOutputName} not found in stack ${loggedStackName} (${displayIdent(loggedRegion)}). ` +
-        `Available outputs: ${available}`
+    throw markNonRetryable(
+      new Error(
+        `Fn::GetStackOutput: output ${loggedOutputName} not found in stack ${loggedStackName} (${displayIdent(loggedRegion)}). ` +
+          `Available outputs: ${available}`
+      )
     );
   }
 

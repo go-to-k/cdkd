@@ -226,9 +226,15 @@ describe('NestedStackProvider', () => {
   describe('getAttribute()', () => {
     it('throws — the resolver fast-paths Outputs.X via state.attributes; reaching this method is a bug', async () => {
       const provider = new NestedStackProvider();
-      await expect(
-        provider.getAttribute('arn:cdkd-local:us-east-1:123:nested-stack/p/c', 'AWS::CloudFormation::Stack', 'Outputs.Missing')
-      ).rejects.toThrow(/not in the recorded Outputs map/);
+      const err = await provider
+        .getAttribute('arn:cdkd-local:us-east-1:123:nested-stack/p/c', 'AWS::CloudFormation::Stack', 'Outputs.Missing')
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+      expect(err?.message).toMatch(/not in the recorded Outputs map/);
+      // go-to-k/cdkd#1889: decided from the recorded Outputs, which a retry does not change.
+      expect(isMarkedNonRetryable(err)).toBe(true);
     });
   });
 
@@ -236,9 +242,39 @@ describe('NestedStackProvider', () => {
     it('requires deploy-mode context fields — nestedTemplates: undefined', async () => {
       const provider = new NestedStackProvider();
       const ctx = makeContext({ nestedTemplates: undefined });
-      await expect(
-        withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
-      ).rejects.toThrow(/deploy-mode context fields .* are missing/);
+      const err = await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      expect(err?.message).toMatch(/deploy-mode context fields .* are missing/);
+      // go-to-k/cdkd#1889: a wiring invariant no retry changes.
+      expect(isMarkedNonRetryable(err)).toBe(true);
+    });
+
+    it('refuses, non-retryably, when the child state is missing after its deploy (go-to-k/cdkd#1889)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-missing-state-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({ AWSTemplateFormatVersion: '2010-09-09', Resources: {} })
+      );
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({
+        nestedTemplates: { Child: childTemplatePath },
+        stateBackend: {
+          getState: vi.fn(async () => null),
+        } as unknown as NestedStackProviderContext['stateBackend'],
+      });
+      const err = await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      ).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      expect(err?.message).toContain('not found after deploy');
+      expect(isMarkedNonRetryable(err)).toBe(true);
     });
 
     // B1 per-arm coverage (issue #556): the requireDeployContext `||` check
@@ -1205,19 +1241,6 @@ describe('NestedStackProvider', () => {
         expect(isRetryableTransientError(control, control.message)).toBe(true);
       });
 
-      // UNMARKED ARM — a plain child failure with no interrupt. A whole-child
-      // re-destroy CAN legitimately succeed (a resource still draining on
-      // attempt 1 may be gone on attempt 2), so the arm is left UNMARKED and a
-      // later blanket-mark of the class breaks LOUDLY here instead of silently
-      // converting a recoverable failure into a terminal one.
-      //
-      // What "unmarked" means is asserted honestly rather than as "the arm
-      // stays retryable": with no marker the classification is MESSAGE-driven,
-      // so this arm is retryable exactly when the child stack name happens to
-      // carry a retryable pattern. Both halves are pinned, because the pair IS
-      // the residual — #1849's name-dependence survives on this arm by design
-      // (there is no `markRetryable`, and marking it would make the healable
-      // case terminal for everyone).
       // go-to-k/cdkd#3759: the child name sits beside `Inspect it with:`, and
       // its logical id comes from the template. Padded, it renders exactly —
       // so only `plainIdent` withholds it from the command, and only
@@ -1246,34 +1269,30 @@ describe('NestedStackProvider', () => {
         expect(plain.message).toMatch(/^Inspect it with: cdkd state show 'Parent~PlainSub'$/m);
       });
 
-      it('a NON-interrupted child failure is left unmarked, so it stays name-dependent', async () => {
+      // go-to-k/cdkd#1889: the NON-interrupted arm is marked too. No caller
+      // retries this provider's delete() (`disableOuterRetry`), so leaving it
+      // unmarked bought no retry; it only left the classification
+      // name-dependent.
+      it('a NON-interrupted child failure is NOT retryable, despite the substring', async () => {
         childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
 
         const poisoned = (await deleteAndCatch(POISON_ID)) as Error;
-        expect(isMarkedNonRetryable(poisoned)).toBe(false);
-        expect(isRetryableTransientError(poisoned, poisoned.message)).toBe(true);
-
-        // The SAME arm, same counts, an ordinary logical id: not retryable.
-        // The only difference is the name, which is precisely the residual.
-        const ordinary = (await deleteAndCatch('PlainSub')) as Error;
-        expect(isMarkedNonRetryable(ordinary)).toBe(false);
-        expect(isRetryableTransientError(ordinary, ordinary.message)).toBe(false);
+        expect(poisoned.message).toContain('DependencyViolation');
+        expect(isMarkedNonRetryable(poisoned)).toBe(true);
+        expect(isRetryableTransientError(poisoned, poisoned.message)).toBe(false);
+        // CONTROL: the byte-identical message unmarked is still retryable.
+        expect(isRetryableTransientError(new Error(poisoned.message), poisoned.message)).toBe(true);
       });
 
-      // The two arms must be distinguished by the MARKER alone, not by the
-      // failure count or by anything else that happens to differ — otherwise
-      // the pair above could pass for the wrong reason.
-      it('the two arms are distinguished by the marker, not by the failure count', async () => {
-        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: true };
-        const marked = (await deleteAndCatch(POISON_ID)) as Error;
-        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
-        const unmarked = (await deleteAndCatch(POISON_ID)) as Error;
-
-        // Same failure count, same child, different interrupt clause only.
-        expect(marked.message).toContain('2 resource(s) failed to delete');
-        expect(unmarked.message).toContain('2 resource(s) failed to delete');
-        expect(isMarkedNonRetryable(marked)).toBe(true);
-        expect(isMarkedNonRetryable(unmarked)).toBe(false);
+      // go-to-k/cdkd#1889 (folded from #3281): both delete callers read an
+      // UNMARKED message containing `NotFoundException` as "already deleted"
+      // and drop the parent's row while the child's state survives. The
+      // marker is the predicate those guards consult first.
+      it('a child whose logical id spells NotFoundException is marked, so it cannot read as already deleted', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 1, interrupted: false };
+        const err = (await deleteAndCatch('HandleNotFoundException')) as Error;
+        expect(err.message).toContain('NotFoundException');
+        expect(isMarkedNonRetryable(err)).toBe(true);
       });
 
       // MARKED ARM — the context-wiring refusal, the one arm of this provider

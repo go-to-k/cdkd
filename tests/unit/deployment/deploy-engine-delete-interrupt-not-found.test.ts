@@ -20,6 +20,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
 import { isMarkedNonRetryable, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
+import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -257,6 +258,34 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     // own shape — it names the resource whose delete failed, which is what
     // distinguishes this from the already-deleted path (which throws nothing
     // and drops the row instead).
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
+      new RegExp(`Failed to delete resource ${NEEDLE}`)
+    );
+
+    expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
+  });
+
+  // go-to-k/cdkd#1889: a deploy that REMOVES a nested stack routes its row here.
+  // `NestedStackProvider.delete`'s child-failure message interpolates the
+  // child's `<parent>~<logicalId>` name, and the provider now marks it on both
+  // arms (fenced in nested-stack-provider.test.ts). Built by the PRODUCTION
+  // builder and driven in both polarities, so the marker is what decides.
+  const nestedChildFailure = (): string =>
+    nestedStackChildFailureMessage(`${STACK}~${NEEDLE}`, 1, 0, false, 'cdkd state show <stack>');
+
+  it('UNMARKED, a nested child-failure message naming the needle WAS read as already-deleted (#1889)', async () => {
+    expect(nestedChildFailure()).toContain('NotFoundException');
+    deleteError = new Error(nestedChildFailure());
+
+    const result = await buildEngine().deploy(STACK, template);
+
+    expect(result.deleted).toBe(1);
+    expect(persistedResources()[NEEDLE]).toBeUndefined();
+  });
+
+  it('MARKED, the same nested child-failure message keeps the state row (#1889)', async () => {
+    deleteError = markNonRetryable(new Error(nestedChildFailure()));
+
     await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
       new RegExp(`Failed to delete resource ${NEEDLE}`)
     );
