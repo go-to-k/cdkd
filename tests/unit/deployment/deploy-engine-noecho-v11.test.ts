@@ -1475,6 +1475,39 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       }
     );
 
+    it('asks nothing under --require-approval=never, even with an approver', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({ requireApproval: 'never', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(approveDeployment).not.toHaveBeenCalled();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+    });
+
+    it('an `add` verdict on another physical resource replaces, never unions, and a create readback starts afresh', async () => {
+      const engine = makeEngine() as unknown as {
+        noteNoEchoExactEchoes: (...args: unknown[]) => void;
+        establishNoEchoEchoFidelity: (...args: unknown[]) => Promise<void>;
+        noEchoExactEchoes: Map<string, { physicalId: string; coordinates: string[][] }>;
+      };
+      const handed = { TopicName: '***', DisplayName: '***' };
+      const both = [
+        { coordinate: ['TopicName'], plaintext: TOPIC },
+        { coordinate: ['DisplayName'], plaintext: 'd' },
+      ];
+      engine.noteNoEchoExactEchoes('Topic', 'old', { live: { TopicName: TOPIC } }, handed, both, 'add');
+      engine.noteNoEchoExactEchoes('Topic', 'new', { live: { DisplayName: 'd' } }, handed, both, 'add');
+      expect(engine.noEchoExactEchoes.get('Topic')).toEqual({
+        physicalId: 'new',
+        coordinates: [['DisplayName']],
+      });
+      // No template bag for the id: nothing to judge, and nothing noted survives.
+      await engine.establishNoEchoEchoFidelity('Topic', v11State().resources['Topic'], {}, {}, new Map());
+      expect(engine.noEchoExactEchoes.has('Topic')).toBe(false);
+    });
+
     it('replaces once the late prompt approves (what --yes answers)', async () => {
       stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
       const approveDeployment = vi.fn(async () => true);
