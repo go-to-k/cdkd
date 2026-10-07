@@ -983,6 +983,10 @@ count as a change for `--fail`.
   positions come from today's template.
 - Outputs saved after a failed outputs pass, and an output the template
   changed since an older cdkd wrote it.
+- One element of a list a CDK nested stack's child receives from a `NoEcho`
+  value the parent split (`Fn::Split`), when the child reads that element on
+  its own: the child holds only the parent's whole value, so nothing names the
+  element.
 
 #### Migration
 

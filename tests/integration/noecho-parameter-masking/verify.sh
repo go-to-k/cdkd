@@ -4,8 +4,9 @@
 # A `Ref` or `Fn::Sub` variable serving a `NoEcho: true` template PARAMETER
 # records the value as a LOG-ONLY needle: the deploy's provider, error, event
 # and resolver surfaces mask it (the resolver's --verbose lines, the provider's
-# masker, the engine's error text, the deployments/*.jsonl events), and what
-# cdkd PERSISTS is unchanged except for an export alias. So do the diff's
+# masker, the engine's error text, the deployments/*.jsonl events). Since state
+# schema v11 (go-to-k/cdkd#4043) what cdkd PERSISTS holds `***` where such a
+# value served a leaf, and the record names the leaf in `noEchoLeaves`. So do the diff's
 # `requires replacement` line and `cdkd diff`'s own rendering, human and --json
 # (go-to-k/cdkd#4049), and so are the PIECES of an `Fn::Split` over a NoEcho
 # value (#4049's coverage-edges row). An `Export.Name` holding a NoEcho value,
@@ -15,8 +16,8 @@
 # Phases:
 #   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: token-...` line
 #      prints the value masked, AWS holds the REAL value, and state.json holds
-#      it in the clear -- the persistence half of the #1998 decision, asserted
-#      so a change to it is a visible decision, not a silent one.
+#      `***` at the leaf, named in `noEchoLeaves` (schema v11, #4043), with no
+#      copy of the value anywhere in the blob.
 #      NoEchoAliasProbe's Export.Name IS a second NoEcho value: the alias is
 #      refused with a masked warning, and neither state.json, its exportNames
 #      nor the exports index holds it (#4043). So are a literal name spelling
@@ -25,11 +26,18 @@
 #      Phase B: the seed, and the resolve-then-decide order).
 #      NoEchoSplitConsumer reads the second piece of an Fn::Split over a third
 #      NoEcho value: the `Resolved Fn::Split` line prints neither piece, AWS
-#      and state.json hold the piece, and NoEchoSplitAliasProbe's Export.Name,
-#      the first piece, is refused (#4049). The nested SplitChild receives
-#      the same value as its CommaDelimitedList ListIn: its `Resolved Ref to
-#      parameter: ListIn` line prints neither element, and AWS and its own
-#      state.json hold the first. No later phase prints a piece.
+#      holds the piece and state.json `***` (the position reads the NoEcho
+#      parameter, #4043), and NoEchoSplitAliasProbe's Export.Name, the first
+#      piece, is refused (#4049). The nested SplitChild receives the same value
+#      as its CommaDelimitedList ListIn: the parent row persists it as `***`,
+#      its `Resolved Ref to parameter: ListIn` line prints neither element,
+#      and AWS and its own state.json hold the first (a PINNED bound: the CDK
+#      child declares no NoEcho and an element is a log-only piece). No later
+#      phase prints a piece.
+#   1b. Redeploy unchanged (#4043 Phase B): the readback finds the value AWS
+#      holds, so neither SSM parameter is updated (LastModifiedDate unchanged);
+#      `cdkd diff --fail` exits 0; `cdkd drift --json` exits 0 and reports
+#      NoEchoConsumer under `noEchoParameter`, printing no value.
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
@@ -44,6 +52,9 @@
 #      TopicName now embeds the value, and the `requires replacement` line
 #      prints it masked while AWS holds the real name (#4049). After Phase 2,
 #      whose events scan would read the new topic's ARN.
+#   3b. Redeploy with the same renamed TopicName: AWS holds it, so the
+#      create-only topic is NOT replaced (its ARN is unchanged), and state
+#      holds `***` at TopicName, named in `noEchoLeaves` (#4043).
 #   4. Redeploy without it: the replacement back prints the old, value-bearing
 #      name masked.
 #   4a. Redeploy with CDKD_TEST_NOECHO_SNAPSHOT=true: NoEchoSnapshotGroup, a
@@ -54,8 +65,9 @@
 #      which ends inside the value, so no literal needle matches it. The
 #      `Creating final snapshot` line prints that name masked, the output
 #      holds no fragment of it, and AWS holds the snapshot, which is deleted.
-#   5. Destroy, gone-probes, and the S3 version sweep (state.json holds the
-#      value in the clear by design, so every version of it is purged).
+#   5. Destroy, gone-probes, and the S3 version sweep (a physical id named
+#      from the value stays in the clear, as AWS publishes it, and the child's
+#      pinned element too, so every version is purged).
 #
 # The value is generated per run and never printed.
 #
@@ -108,7 +120,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 cd "$(dirname "$0")"
 
 # Shared S3 VERSION-sweep helpers (issue #2096): the bucket is versioned, and
-# state.json holds the NoEcho value in the clear by design.
+# state.json holds the value in a physical id named from it (Phases 3, 4a).
 . ../s3-versions.sh
 
 STACK="CdkdNoechoParameterMaskingExample"
@@ -371,17 +383,33 @@ if [ "${CONSUMER_VALUE}" != "token-${TOKEN}" ]; then
   exit 1
 fi
 echo "    OK: AWS holds the real value"
-# PERSISTENCE UNCHANGED (the #1998 decision): state.json holds the value in
-# the clear, exactly as it did before the log-only channel existed.
+# PERSISTED AS THE MASK (schema v11, #4043): the consumer's Value holds `***`
+# and the record names the coordinate, by COORDINATE (the blob check below is
+# the negative).
 P1_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1_STATE}" --quiet
-P1_PERSISTED=$(jq -r '.resources.NoEchoConsumer.properties.Value // "<absent>"' "${P1_STATE}")
-if [ "${P1_PERSISTED}" != "token-${TOKEN}" ]; then
-  echo "FAIL: state.json does not hold the consumer's value as deployed -- what cdkd persists changed, which the #1998 decision rules out" >&2
+P1_VERSION=$(jq -r '.version' "${P1_STATE}")
+if [ "${P1_VERSION}" != "11" ]; then
+  echo "FAIL: state.json is version ${P1_VERSION}, not 11 (issue #4043)" >&2
   exit 1
 fi
-echo "    OK: state.json holds the value as before (persistence unchanged)"
+P1_PERSISTED=$(jq -r '.resources.NoEchoConsumer.properties.Value // "<absent>"' "${P1_STATE}")
+P1_LEAVES=$(jq -c '.resources.NoEchoConsumer.noEchoLeaves // "<absent>"' "${P1_STATE}")
+if [ "${P1_PERSISTED}" != '***' ] || [ "${P1_LEAVES}" != '[["Value"]]' ]; then
+  echo "FAIL: state.json does not hold NoEchoConsumer.Value as the mask named in noEchoLeaves (got leaves ${P1_LEAVES}; issue #4043)" >&2
+  exit 1
+fi
+P1_OBSERVED=$(jq -r '.resources.NoEchoConsumer.observedProperties.Value // "<absent>"' "${P1_STATE}")
+if [ "${P1_OBSERVED}" != '***' ] && [ "${P1_OBSERVED}" != '<absent>' ]; then
+  echo "FAIL: NoEchoConsumer's observed baseline does not hold the mask at the marked coordinate (issue #4043)" >&2
+  exit 1
+fi
+if grep -qF -- "${TOKEN}" "${P1_STATE}" || grep -qF -- "${SPLIT_A}" "${P1_STATE}" || grep -qF -- "${SPLIT_B}" "${P1_STATE}"; then
+  echo "FAIL: the Phase 1 state.json carries a NoEcho value or a split piece of one (issue #4043)" >&2
+  exit 1
+fi
+echo "    OK: state.json holds *** at the marked coordinate and no copy of any NoEcho value"
 # NOECHO EXPORT NAME REFUSED (#4043). PREMISE: the template declares the second
 # parameter NoEcho with this run's value as its Default, and NoEchoAliasProbe
 # exports under a bare Ref to it -- so the alias name IS the value.
@@ -541,11 +569,18 @@ if [ "${SPLIT_VALUE}" != "${SPLIT_B}" ]; then
   exit 1
 fi
 P1_SPLIT_PERSISTED=$(jq -r '.resources.NoEchoSplitConsumer.properties.Value // "<absent>"' "${P1_STATE}")
-if [ "${P1_SPLIT_PERSISTED}" != "${SPLIT_B}" ]; then
-  echo "FAIL: state.json does not hold the split piece as deployed -- what cdkd persists changed (issue #4049)" >&2
+P1_SPLIT_LEAVES=$(jq -c '.resources.NoEchoSplitConsumer.noEchoLeaves // "<absent>"' "${P1_STATE}")
+if [ "${P1_SPLIT_PERSISTED}" != '***' ] || [ "${P1_SPLIT_LEAVES}" != '[["Value"]]' ]; then
+  echo "FAIL: state.json does not hold the split piece as the mask named in noEchoLeaves (issue #4043)" >&2
   exit 1
 fi
-echo "    OK: AWS and state.json hold the real piece (persistence unchanged)"
+# The nested row passes the whole value: persisted as the mask too.
+P1_ROW_LISTIN=$(jq -r '.resources.SplitChild.properties.Parameters.ListIn // "<absent>"' "${P1_STATE}")
+if [ "${P1_ROW_LISTIN}" != '***' ]; then
+  echo "FAIL: the parent's SplitChild row does not persist its ListIn parameter as the mask (issue #4043)" >&2
+  exit 1
+fi
+echo "    OK: AWS holds the real piece; state.json holds *** for it and for the nested row's parameter"
 # The split alias: refused (the #4049 widening of the #4043 verdict), and
 # published nowhere -- the index check above counts no entry for this stack.
 if ! grep -qF -- "Output NoEchoSplitAliasProbe ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}"; then
@@ -553,9 +588,8 @@ if ! grep -qF -- "Output NoEchoSplitAliasProbe ${REFUSAL_TEXT}" <<< "${DEPLOY_OU
   diag_output "$(grep -F 'NoEchoSplitAliasProbe' <<< "${DEPLOY_OUT_P1}" || true)"
   exit 1
 fi
-# Not a raw grep of the blob: state holds the whole NoEcho value in the clear
-# by design (the SplitChild row's Parameters), and the value contains the
-# piece. The alias would live in the outputs KEYS and exportNames.
+# The alias would live in the outputs KEYS and exportNames; the raw blob
+# check above already found no piece anywhere.
 P1_SPLIT_KEYS=$(jq -r --arg p "${SPLIT_A}" '[(.outputs // {} | keys[]), (.exportNames // [])[] | select(contains($p))] | length' "${P1_STATE}")
 if [ "${P1_SPLIT_KEYS}" != "0" ]; then
   echo "FAIL: state.json holds an outputs key or exportName carrying the first split piece -- the refused split alias was published (issue #4049)" >&2
@@ -599,12 +633,84 @@ fi
 P1_CHILD_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_CHILD_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" "${P1_CHILD_STATE}" --quiet
+# A PINNED BOUND (#4043, documented): the CDK child declares no NoEcho, and an
+# element of the parent's value is a log-only piece, so the child's record
+# holds it as deployed. Asserted so a change to it is a visible decision.
 P1_CHILD_PERSISTED=$(jq -r '.resources.SplitChildConsumer.properties.Value // "<absent>"' "${P1_CHILD_STATE}")
 if [ "${P1_CHILD_PERSISTED}" != "${SPLIT_A}" ]; then
-  echo "FAIL: SplitChild's state.json does not hold the list element as deployed -- what cdkd persists changed (issue #4049)" >&2
+  echo "FAIL: SplitChild's state.json no longer holds the list element as deployed -- the pinned bound moved; update the fixture and the docs together (issue #4043)" >&2
   exit 1
 fi
-echo "    OK: the nested child's list line masks both elements; AWS and its state.json hold the real one"
+echo "    OK: the nested child's list line masks both elements; AWS and its state.json hold the real one (pinned bound)"
+
+# --- Phase 1b: an unchanged redeploy reads the value back (#4043 Phase B) ---
+echo "==> Phase 1b: redeploy unchanged; cdkd diff --fail; cdkd drift --json"
+P1B_BEFORE=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)
+P1B_SPLIT_BEFORE=$(aws ssm get-parameter --name "${SPLIT_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)
+if ! DEPLOY_OUT_P1B=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 1b redeploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P1B}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P1B}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 1b deploy output carries the NoEcho value in plaintext" >&2
+  exit 1
+fi
+assert_no_split_piece "the Phase 1b deploy output" "${DEPLOY_OUT_P1B}"
+P1B_AFTER=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)
+P1B_SPLIT_AFTER=$(aws ssm get-parameter --name "${SPLIT_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)
+if [ "${P1B_BEFORE}" != "${P1B_AFTER}" ] || [ "${P1B_SPLIT_BEFORE}" != "${P1B_SPLIT_AFTER}" ]; then
+  echo "FAIL: an unchanged redeploy UPDATED a NoEcho reader -- the readback did not confirm the value AWS holds (issue #4043)" >&2
+  exit 1
+fi
+echo "    OK: the unchanged redeploy updated neither NoEcho reader"
+set +e
+DIFF_OUT_P1B=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --fail 2>&1)
+DIFF_RC_P1B=$?
+set -e
+if [[ "${DIFF_OUT_P1B}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 1b 'cdkd diff' output carries the NoEcho value in plaintext" >&2
+  exit 1
+fi
+if [ "${DIFF_RC_P1B}" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --fail' exited ${DIFF_RC_P1B} on the unchanged stack -- a masked NoEcho reader diffs as a change (issue #4043)" >&2
+  diag_output "${DIFF_OUT_P1B}"
+  exit 1
+fi
+echo "    OK: cdkd diff --fail exits 0 on the unchanged stack"
+DRIFT_JSON_P1B=$(mktemp)
+SCRATCH_FILES+=("${DRIFT_JSON_P1B}")
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON_P1B}" 2>&1
+DRIFT_RC_P1B=$?
+set -e
+if grep -qF -- "${TOKEN}" "${DRIFT_JSON_P1B}"; then
+  echo "FAIL: the Phase 1b 'cdkd drift' output carries the NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
+P1B_BUCKET=$(jq -r '[.[] | .notCompared[]? | select(.logicalId == "NoEchoConsumer" and .cause == "noEchoParameter")] | length' "${DRIFT_JSON_P1B}" 2>/dev/null || echo "unparsable")
+P1B_DRIFTED=$(jq -r '[.[] | .drifted[]? | select(.logicalId == "NoEchoConsumer")] | length' "${DRIFT_JSON_P1B}" 2>/dev/null || echo "unparsable")
+if [ "${P1B_BUCKET}" != "1" ] || [ "${P1B_DRIFTED}" != "0" ]; then
+  echo "FAIL: cdkd drift does not report NoEchoConsumer under noEchoParameter (bucketed ${P1B_BUCKET}, drifted ${P1B_DRIFTED}; issue #4043)" >&2
+  diag_output "$(cat "${DRIFT_JSON_P1B}")"
+  exit 1
+fi
+if [ "${DRIFT_RC_P1B}" -ne 0 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC_P1B}, not 0, on the unchanged stack (issue #4043)" >&2
+  diag_output "$(cat "${DRIFT_JSON_P1B}")"
+  exit 1
+fi
+echo "    OK: cdkd drift exits 0 and reports NoEchoConsumer's marked leaf under noEchoParameter"
 
 # --- Phase 2: the provider rejection quotes the value ------------------------
 echo "==> Phase 2: probe deploy whose SSM Tier is the NoEcho value, which SSM rejects quoting it"
@@ -754,23 +860,28 @@ if [[ "${DIFF_OUT_P3A}" != *"${RENAMED_ROW}"* ]]; then
   diag_output "${DIFF_OUT_P3A}"
   exit 1
 fi
-if [[ "${DIFF_OUT_P3A}" != *'          old: "***"'* ]] \
-  || [[ "${DIFF_OUT_P3A}" != *"          new: \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\""* ]]; then
-  echo "FAIL: the NoEchoRenamed row does not print its old side withheld and its new side masked (issue #4049)" >&2
+# Since schema v11 (#4043) the new side is compared as the persist side writes
+# it, the whole leaf `***`, and the stored literal (a record written without a
+# NoEcho position there) shows as `(previous NoEcho value)`: neither side
+# prints a value.
+if [[ "${DIFF_OUT_P3A}" != *'(previous NoEcho value)'* ]] \
+  || [[ "${DIFF_OUT_P3A}" != *'new: "***"'* ]]; then
+  echo "FAIL: the NoEchoRenamed row does not print its old side as the placeholder and its new side as the mask (issue #4043)" >&2
   diag_output "${DIFF_OUT_P3A}"
   exit 1
 fi
 # The diff's own --verbose replacement line, which Phase 3 checks on the deploy.
-DIFF_REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (from *** to \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
-if [[ "${DIFF_OUT_P3A}" != *"${DIFF_REPLACE_LINE}"* ]]; then
-  echo "FAIL: 'cdkd diff --verbose' does not print the masked 'requires replacement' line for NoEchoRenamed (issue #4049)" >&2
+# Its fixed prefix is the SENTINEL; it must carry the mask and no value.
+DIFF_REPLACE_LINE=$(grep -m1 -F 'Property TopicName of AWS::SNS::Topic requires replacement (from ' <<< "${DIFF_OUT_P3A}" || true)
+if [ -z "${DIFF_REPLACE_LINE}" ] || [[ "${DIFF_REPLACE_LINE}" != *'***'* ]]; then
+  echo "FAIL: 'cdkd diff --verbose' does not print a masked 'requires replacement' line for NoEchoRenamed (issue #4049)" >&2
   diag_output "$(grep -F 'requires replacement' <<< "${DIFF_OUT_P3A}" || true)"
   exit 1
 fi
-# The --json payload: the same row, masked at the value.
-JSON_ROW=$(jq -c --arg name "cdkd-test-noecho-rename-${ACCOUNT_ID}-***" '
+# The --json payload: the same row, the placeholder against the mask.
+JSON_ROW=$(jq -c '
   [.[] | .changes[] | select(.logicalId == "NoEchoRenamed") | .propertyChanges[]?
-   | select(.path == "TopicName" and .oldValue == "***" and .newValue == $name)] | length
+   | select(.path == "TopicName" and .oldValue == "(previous NoEcho value)" and .newValue == "***")] | length
 ' <<< "${DIFF_JSON_P3A}" 2>/dev/null || echo "unparsable")
 if [ "${JSON_ROW}" != "1" ]; then
   echo "FAIL: the --json payload does not carry NoEchoRenamed's TopicName change masked (issue #4049; got ${JSON_ROW})" >&2
@@ -823,8 +934,11 @@ if [[ "${P3_REPLACE_LINES}" == *"${TOKEN}"* ]]; then
 fi
 # The masked line, whole: the new name masked, the old side withheld. The
 # SENTINEL is the engine's own replacement line, which carries no value.
-REPLACE_LINE="Property TopicName of AWS::SNS::Topic requires replacement (from *** to \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\")"
-if [[ "${DEPLOY_OUT_P3}" != *"${REPLACE_LINE}"* ]]; then
+# Since schema v11 the line compares the persisted forms (#4043): the new side
+# is the mask, the old a placeholder. The fixed prefix is the SENTINEL.
+REPLACE_LINE=$(grep -m1 -F 'Property TopicName of AWS::SNS::Topic requires replacement (from ' <<< "${DEPLOY_OUT_P3}" || true)
+if [ -z "${REPLACE_LINE}" ] || [[ "${REPLACE_LINE}" != *'***'* ]] \
+  || [[ "${DEPLOY_OUT_P3}" != *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
   if [[ "${DEPLOY_OUT_P3}" == *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
     echo "FAIL: NoEchoRenamed was replaced but the --verbose log carries no masked 'requires replacement' line for it (issue #4049)" >&2
   else
@@ -846,6 +960,36 @@ assert_gone "the replaced topic still exists after Phase 3" \
   aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"
 echo "    OK: AWS holds the real name and the old topic is gone"
 
+# --- Phase 3b: the same renamed TopicName again: not replaced (#4043) --------
+echo "==> Phase 3b: redeploy with the same NoEcho-fed TopicName"
+if ! DEPLOY_OUT_P3B=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 3b deploy exited non-zero" >&2
+  diag_output "$(grep -F 'NoEchoRenamed' <<< "${DEPLOY_OUT_P3B}" || true)"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P3B}" == *"Replacing NoEchoRenamed"* ]]; then
+  echo "FAIL: an unchanged NoEcho-fed create-only TopicName REPLACED the topic -- the readback did not confirm it (issue #4043)" >&2
+  exit 1
+fi
+if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"; then
+  echo "FAIL: the value-named topic is gone after Phase 3b -- it was replaced (issue #4043)" >&2
+  exit 1
+fi
+P3B_STATE=$(mktemp)
+SCRATCH_FILES+=("${P3B_STATE}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P3B_STATE}" --quiet
+P3B_TOPIC=$(jq -r '.resources.NoEchoRenamed.properties.TopicName // "<absent>"' "${P3B_STATE}")
+P3B_LEAVES=$(jq -c '.resources.NoEchoRenamed.noEchoLeaves // "<absent>"' "${P3B_STATE}")
+if [ "${P3B_TOPIC}" != '***' ] || [ "${P3B_LEAVES}" != '[["TopicName"]]' ]; then
+  echo "FAIL: state.json does not hold NoEchoRenamed.TopicName as the mask named in noEchoLeaves (got leaves ${P3B_LEAVES}; issue #4043)" >&2
+  exit 1
+fi
+echo "    OK: the create-only topic is not replaced, and state holds *** at its TopicName"
+
 # --- Phase 4: back to the literal name ---------------------------------------
 # The OLD side is now the state's value-bearing name. The deploy's masker
 # holds every NoEcho parameter's value before the diff starts, so it is masked
@@ -866,8 +1010,11 @@ if [[ "${P4_REPLACE_LINES}" == *"${TOKEN}"* ]]; then
   echo "FAIL: the Phase 4 'requires replacement' line carries the NoEcho value in plaintext (issue #4049)" >&2
   exit 1
 fi
-REVERT_LINE="Property TopicName of AWS::SNS::Topic requires replacement (from \"cdkd-test-noecho-rename-${ACCOUNT_ID}-***\" to \"cdkd-test-noecho-rename-${ACCOUNT_ID}-a\")"
-if [[ "${DEPLOY_OUT_P4}" != *"${REVERT_LINE}"* ]]; then
+# The old side is the persisted mask (#4043); the new one the literal name.
+REVERT_LINE=$(grep -m1 -F 'Property TopicName of AWS::SNS::Topic requires replacement (from ' <<< "${DEPLOY_OUT_P4}" || true)
+if [ -z "${REVERT_LINE}" ] || [[ "${REVERT_LINE}" != *'***'* ]] \
+  || [[ "${REVERT_LINE}" != *"cdkd-test-noecho-rename-${ACCOUNT_ID}-a"* ]] \
+  || [[ "${DEPLOY_OUT_P4}" != *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
   if [[ "${DEPLOY_OUT_P4}" == *"Replacing NoEchoRenamed (AWS::SNS::Topic)"* ]]; then
     echo "FAIL: NoEchoRenamed was replaced back but its 'requires replacement' line does not mask the old name (issue #4049)" >&2
   else
@@ -1003,8 +1150,9 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: resources and state are gone"
 
 # --- Teardown + VERSION sweep, ON THE SUCCESS PATH ---------------------------
-# state.json held the value in the clear by design, and the bucket is
-# versioned: every version under the stack's prefix is purged, and asserted.
+# A physical id named from the value (Phases 3, 4a) and the child's pinned
+# element stay in state, and the bucket is versioned: every version under the
+# stack's prefix is purged, and asserted.
 echo "==> Final teardown + state-version sweep"
 cleanup
 trap - EXIT INT TERM
@@ -1013,4 +1161,4 @@ s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "noecho-parameter-m
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "noecho-parameter-masking SplitChild state teardown"
 
-echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver and replacement-line surfaces, and so are its Fn::Split pieces, an Export.Name holding one is refused, and the rest of persistence is unchanged"
+echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver and replacement-line surfaces, and so are its Fn::Split pieces, an Export.Name holding one is refused, state persists *** at every NoEcho position (schema v11), and an unchanged redeploy neither updates nor replaces its readers"

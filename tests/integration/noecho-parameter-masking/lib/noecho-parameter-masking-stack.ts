@@ -9,15 +9,16 @@ import { Construct } from 'constructs';
  *
  * cdkd records such a value as a LOG-ONLY needle when a `Ref` or `Fn::Sub`
  * variable serves it: the provider's masker, the engine's error text and the
- * `deployments/*.jsonl` event mask it, while what cdkd PERSISTS is unchanged
- * except an export alias, which is refused (issue #4043).
+ * `deployments/*.jsonl` event mask it. Since state schema v11 (issue #4043)
+ * what cdkd PERSISTS holds `***` where the value served a leaf, and an export
+ * alias holding it is refused.
  * `verify.sh` generates the value per run and passes it in through
  * `CDKD_TEST_NOECHO_TOKEN`, which becomes the parameter's `Default` (cdkd
  * deploy takes no `--parameters`).
  *
  * - `NoEchoConsumer`: an SSM String parameter whose value embeds the token
  *   through `Fn::Sub`, so the resolver's `--verbose` `Resolved Fn::Sub:` line
- *   carries it, and AWS and state.json hold it in the clear (the decision).
+ *   carries it; AWS holds it, and state.json holds `***` there (v11).
  * - `NoEchoReject` (only under `CDKD_TEST_NOECHO_REJECT=true`): an SSM
  *   parameter whose `Tier` IS the token. `PutParameter` rejects it with a
  *   service-side `ValidationException` that quotes the value back
