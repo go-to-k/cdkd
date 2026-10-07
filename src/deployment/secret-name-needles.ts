@@ -331,15 +331,16 @@ export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedS
  * identity a cleanup needs, and `state.json` records it too. Identity when
  * nothing is bound.
  *
- * The `ownLines` exemption is DEFENSIVE. Own-remedy refusals come only from
- * the completed-op arms. Both rollback contexts route those arms' events
- * through this masker, but record them under no bound bag, so it is identity
- * there; the failed-op replay and the destroy runner raise none. It keeps
- * a replay refusal's pasteable commands, masked at construction, from being
- * cut by a short needle. Wiring one through here must re-evaluate it: the op
- * masker that built the message does not hold a name the entry READ from a
- * sibling, which this exemption would then let through.
+ * A message marked `ownLines` (a replay refusal from the completed-op arms,
+ * masked at construction by the op masker, which holds no name the entry READ
+ * from a sibling) is masked LINE BY LINE, except its labelled `To orphan it:`
+ * command line: that line carries only the vetted logical id, and a short
+ * needle would cut the pasteable command. The completed-op replay now runs
+ * under a bound bag, so these events reach this masker with needles in it.
  */
+/** The label of `orphanRemedy`'s pasteable command line. */
+const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
+
 export function maskEventTextWithBoundBags<
   T extends { error?: { message?: string; ownLines?: boolean }; reason?: string },
 >(event: T): T {
@@ -347,8 +348,15 @@ export function maskEventTextWithBoundBags<
   const mask = currentLogLineMasker();
   if (mask === undefined) return event;
   const masked: T = { ...event };
-  if (masked.error?.message && masked.error.ownLines !== true) {
-    masked.error = { ...masked.error, message: mask(masked.error.message) };
+  if (masked.error?.message) {
+    const message =
+      masked.error.ownLines === true
+        ? masked.error.message
+            .split('\n')
+            .map((line) => (line.startsWith(ORPHAN_COMMAND_LABEL) ? line : mask(line)))
+            .join('\n')
+        : mask(masked.error.message);
+    masked.error = { ...masked.error, message };
   }
   if (masked.reason) masked.reason = mask(masked.reason);
   return masked;

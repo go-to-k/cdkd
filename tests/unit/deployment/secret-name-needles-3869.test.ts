@@ -274,10 +274,17 @@ describe('maskEventTextWithBoundBags (go-to-k/cdkd#3869)', () => {
     expect(maskEventTextWithBoundBags(event())).toEqual(event());
   });
 
-  it("leaves a replay refusal's own message (ownLines) as constructed", () => {
-    const masked = bound(() => maskEventTextWithBoundBags(event(true)));
-    expect(masked.error.message).toBe(`AccessDenied on ${USER_ID}`);
-    // Premise: the bag was bound; the reason beside it is masked.
-    expect(masked.reason).toBe('skipped ***');
+  it("masks a replay refusal's own message (ownLines) line by line, but not its command line", () => {
+    const own = {
+      ...event(true),
+      error: {
+        message: `Cannot reverse the replacement of 'Q' (it read ${USER_ID})\nTo orphan it: cdkd rollback S --orphan ${USER_ID}`,
+        ownLines: true as const,
+      },
+    };
+    const masked = bound(() => maskEventTextWithBoundBags(own));
+    expect(masked.error.message).toBe(
+      `Cannot reverse the replacement of 'Q' (it read ***)\nTo orphan it: cdkd rollback S --orphan ${USER_ID}`
+    );
   });
 });

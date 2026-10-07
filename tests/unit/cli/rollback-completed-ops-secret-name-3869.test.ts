@@ -237,4 +237,56 @@ describe("cdkd rollback masks a secret-derived name on its completed-op replay (
     expect(keyLines[0]).toContain('AKIAEXAMPLEKEY');
     expect(keyLines[0]!.includes(NAME)).toBe(shown);
   });
+
+  it.each([
+    ['a user named by its reference in state', REF, false],
+    ['negative control, a literal user name', NAME, true],
+  ])("on a completed CREATE's delete line naming a record it READ: %s", async (_l, userName, shown) => {
+    // An access key the failed deploy created for a user named from a secret:
+    // its own record holds the user name in plaintext, the user's spells it
+    // as a reference.
+    install(
+      {
+        User: {
+          physicalId: NAME,
+          resourceType: 'AWS::IAM::User',
+          properties: { UserName: userName },
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+        },
+        Key: {
+          physicalId: 'AKIAEXAMPLEKEY',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: { UserName: NAME },
+          attributes: {},
+          dependencies: ['User'],
+          provisionedBy: 'sdk',
+        },
+      },
+      [
+        {
+          timestamp: 1,
+          reason: 'no-rollback-failure',
+          initialDeploy: false,
+          operations: [
+            {
+              logicalId: 'Key',
+              changeType: 'CREATE',
+              resourceType: 'AWS::IAM::AccessKey',
+              provisionedBy: 'sdk',
+              physicalId: 'AKIAEXAMPLEKEY',
+              properties: { UserName: NAME },
+            },
+          ],
+        },
+      ]
+    );
+    await run();
+    // Premise: the completed CREATE was reverted, its line naming the user.
+    const keyLines = lines.filter((l) => l.startsWith('Deleting Key: '));
+    expect(keyLines).toHaveLength(1);
+    expect(keyLines[0]).toContain('AKIAEXAMPLEKEY of user ');
+    expect(keyLines[0]!.includes(NAME)).toBe(shown);
+  });
 });

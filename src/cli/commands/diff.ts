@@ -1,4 +1,6 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
+import { orphanRecordsPrintingBag } from '../../deployment/secret-name-needles.js';
 import {
   appOptions,
   commonOptions,
@@ -389,27 +391,32 @@ async function diffCommand(
       // In the STACK's region (see `stackRegionScope`), as the deploy's own
       // pre-pass runs inside that stack's AWS scope.
       const { clients, registry } = stackRegionScope(orphanRegion);
+      // go-to-k/cdkd#3869: the planner's own lines (a vanished record's debug
+      // line, a provider `import()`'s existence check) print a kept record's
+      // id, so they run under a printing bag judged from every record.
       const outcome = await runWithStackAwsClients(clients, () =>
-        planOrphanAdoption({
-          records: state.orphans ?? [],
-          managedLogicalIds: new Set(Object.keys(state.resources ?? {})),
-          template: effectiveTemplate,
-          stackName: orphanStackName,
-          region: orphanRegion,
-          getProvider: (resourceType, provisionedBy) =>
-            registry.getProviderFor({ resourceType, provisionedBy }).provider,
-          nameProperties: (resourceType) => {
-            const property = explicitNamePropertyFor(resourceType);
-            return property ? [property] : [];
-          },
-          readSiblingClaims: makeSiblingClaimReader({
-            stateBackend,
-            selfStackName: orphanStackName,
-            selfRegion: orphanRegion,
+        withPrintingSecrets(orphanRecordsPrintingBag(state.orphans ?? []), () =>
+          planOrphanAdoption({
+            records: state.orphans ?? [],
+            managedLogicalIds: new Set(Object.keys(state.resources ?? {})),
+            template: effectiveTemplate,
+            stackName: orphanStackName,
+            region: orphanRegion,
+            getProvider: (resourceType, provisionedBy) =>
+              registry.getProviderFor({ resourceType, provisionedBy }).provider,
+            nameProperties: (resourceType) => {
+              const property = explicitNamePropertyFor(resourceType);
+              return property ? [property] : [];
+            },
+            readSiblingClaims: makeSiblingClaimReader({
+              stateBackend,
+              selfStackName: orphanStackName,
+              selfRegion: orphanRegion,
+              logger,
+            }),
             logger,
-          }),
-          logger,
-        })
+          })
+        )
       );
       // NOTICES are deliberately dropped here. On the deploy path they explain
       // why a record was kept rather than acted on, at the moment the user is

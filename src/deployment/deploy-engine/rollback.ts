@@ -164,44 +164,49 @@ export async function adoptRollbackOrphans(
   effectiveTemplate: CloudFormationTemplate
 ): Promise<OrphanAdoptionOutcome> {
   const records = currentState.orphans ?? [];
-  const plan = await planOrphanAdoption({
-    records,
-    // Read BEFORE the splice below, so a record whose resource this same
-    // pass adopts is not also read as "already managed".
-    managedLogicalIds: new Set(Object.keys(currentState.resources)),
-    template: effectiveTemplate,
-    stackName: currentState.stackName,
-    region: this.stackRegion,
-    getProvider: (type, provisionedBy) =>
-      this.providerRegistry.getProviderFor({
-        resourceType: type,
-        ...(provisionedBy !== undefined && { provisionedBy }),
-      }).provider,
-    nameProperties: (type) => {
-      const property = explicitNamePropertyFor(type);
-      return property === undefined ? [] : [property];
-    },
-    readSiblingClaims: makeSiblingClaimReader({
-      stateBackend: this.stateBackend,
-      selfStackName: currentState.stackName,
-      selfRegion: this.stackRegion,
-      logger: this.logger,
-    }),
-    logger: { debug: (m) => this.logger.debug(m) },
-  });
+  // go-to-k/cdkd#3869: the planner's own lines (a vanished record's debug
+  // line, a provider `import()`'s existence check) print a kept record's id
+  // before provisioning binds any printing bag, so they run under one judged
+  // from every record, as the notices and the refusal below are masked.
+  const named = orphanRecordsPrintingBag(records);
+  const plan = await withPrintingSecrets(named, () =>
+    planOrphanAdoption({
+      records,
+      // Read BEFORE the splice below, so a record whose resource this same
+      // pass adopts is not also read as "already managed".
+      managedLogicalIds: new Set(Object.keys(currentState.resources)),
+      template: effectiveTemplate,
+      stackName: currentState.stackName,
+      region: this.stackRegion,
+      getProvider: (type, provisionedBy) =>
+        this.providerRegistry.getProviderFor({
+          resourceType: type,
+          ...(provisionedBy !== undefined && { provisionedBy }),
+        }).provider,
+      nameProperties: (type) => {
+        const property = explicitNamePropertyFor(type);
+        return property === undefined ? [] : [property];
+      },
+      readSiblingClaims: makeSiblingClaimReader({
+        stateBackend: this.stateBackend,
+        selfStackName: currentState.stackName,
+        selfRegion: this.stackRegion,
+        logger: this.logger,
+      }),
+      logger: { debug: (m) => this.logger.debug(m) },
+    })
+  );
 
   // `notices` and `refusals` arrive already rendered through `displaySafe` /
   // `displayIdent`: `planOrphanAdoption` sanitizes each state-chosen field
   // where it builds the string, because `cdkd diff` consumes the same lines
   // (go-to-k/cdkd#3642). Only the `Adopting` line below is built HERE, so it
   // is the one this method sanitizes.
-  // go-to-k/cdkd#3869: these lines are logged before provisioning binds any
-  // printing bag, so a record named from a secret (its name still a
-  // `{{resolve:` reference) masks its id spellings here. One log-only bag over
-  // every record: a line names one record, and a sibling's needle only
-  // over-masks. The thrown refusal too: it names the id and carries no
-  // command, and the logical id beside it is what the user acts on.
-  const named = orphanRecordsPrintingBag(records);
+  // go-to-k/cdkd#3869: the same bag masks these lines, a record named from a
+  // secret (its name still a `{{resolve:` reference) by its id spellings. One
+  // log-only bag over every record: a line names one record, and a sibling's
+  // needle only over-masks. The thrown refusal too: it names the id and
+  // carries no command, and the logical id beside it is what the user acts on.
   for (const notice of plan.notices) this.logger.info(maskSecretsInText(notice, named));
 
   if (plan.refusals.length > 0) {

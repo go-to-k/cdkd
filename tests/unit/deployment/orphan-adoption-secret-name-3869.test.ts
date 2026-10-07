@@ -8,9 +8,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
+// `debug` applies the logger's sink masker at call time, as the real logger
+// does, so a line logged under a bound printing bag reads as it would print.
+const sink = vi.hoisted(() => ({ masker: undefined as (() => ((t: string) => string) | undefined) | undefined, lines: [] as string[] }));
 const quiet = vi.hoisted(() => {
   const q = {
-    debug: vi.fn(),
+    debug: vi.fn((m: string) => {
+      const mask = sink.masker?.();
+      sink.lines.push(mask ? mask(m) : m);
+    }),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -25,6 +31,9 @@ vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
 });
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+
+sink.masker = currentLogLineMasker;
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -33,7 +42,10 @@ const NAME = 'team-secret-queue';
 const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${NAME}`;
 
 describe('the orphan-adoption line masks a name derived from a secret (go-to-k/cdkd#3869)', () => {
-  beforeEach(() => quiet.info.mockClear());
+  beforeEach(() => {
+    quiet.info.mockClear();
+    sink.lines.length = 0;
+  });
 
   async function infoLines(opts: {
     type: string;
@@ -44,10 +56,14 @@ describe('the orphan-adoption line masks a name derived from a secret (go-to-k/c
     templateDropsName?: boolean;
     /** Another stack's record holds the same physical id: adoption refuses. */
     claimedElsewhere?: boolean;
+    /** The provider finds nothing: the record is dropped with a debug line. */
+    vanished?: boolean;
     /** Receives the thrown refusal, when one is thrown. */
     onError?: (error: unknown) => void;
   }): Promise<string[]> {
-    const provider = { import: vi.fn(async () => ({ physicalId: opts.physicalId })) };
+    const provider = {
+      import: vi.fn(async () => (opts.vanished === true ? null : { physicalId: opts.physicalId })),
+    };
     const engine = new DeployEngine(
       (opts.claimedElsewhere === true
         ? {
@@ -164,5 +180,23 @@ describe('the orphan-adoption line masks a name derived from a secret (go-to-k/c
     const message = (error as Error).message;
     expect(message).toContain('is already recorded by another cdkd stack');
     expect(message.includes(BUCKET)).toBe(shown);
+  });
+
+  it.each([
+    ['a record naming it by its reference', REF, false],
+    ['negative control, a literal name', BUCKET, true],
+  ])("on the planner's own line about a record that vanished: %s", async (_l, name, shown) => {
+    await infoLines({
+      type: 'AWS::S3::Bucket',
+      nameKey: 'BucketName',
+      name,
+      physicalId: BUCKET,
+      templateDropsName: true,
+      vanished: true,
+    });
+    const lines = sink.lines.filter((l) => l.includes('no longer exists in AWS'));
+    // Premise: the planner logged the dropped record.
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.includes(BUCKET)).toBe(shown);
   });
 });

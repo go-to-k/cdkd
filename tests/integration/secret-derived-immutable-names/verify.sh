@@ -767,11 +767,25 @@ if ! grep -qF "Deleted Schedule PlainTargetSchedule (found by its recorded creat
 fi
 echo "    OK: PlainTargetSchedule was deleted by its recorded identity"
 
+# SQS refuses to re-create a queue under a name deleted less than 60 seconds
+# ago (QueueDeletedRecently). SecretRollbackQueue's name is fixed for the run,
+# and each step before a re-deploy deletes it, so wait the cooldown out rather
+# than ride the provider's name-cooldown retry (whose failure would surface as
+# a missing-repository premise, since the repository depends on the queue).
+# A no-op before the first deploy (QUEUE_DELETED_AT unset).
+wait_queue_name_cooldown() {
+  if [ -n "${QUEUE_DELETED_AT:-}" ]; then
+    local left=$((QUEUE_DELETED_AT + 65 - $(date +%s)))
+    if [ "${left}" -gt 0 ]; then sleep "${left}"; fi
+  fi
+}
+
 # Deploys the orphan stack, which must FAIL after ECR made the repository, and
 # checks the journal records it as a proven orphan (no state record holds it).
 # Used by step 6b (destroy) and step 6c (rollback).
 orphan_deploy_failing() {
   ORPHAN_DEPLOYED=1
+  wait_queue_name_cooldown
   set +e
   node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
@@ -828,6 +842,7 @@ assert_rollback_queue_deleted() { # usage: assert_rollback_queue_deleted <which>
     echo "FAIL: queue ${RB_QUEUE_NAME} still exists 65s after the $1" >&2
     exit 1
   fi
+  QUEUE_DELETED_AT="$(date +%s)"
 }
 
 echo "==> Step 6b: a failed-CREATE orphan named from the secret, destroyed from the journal"
@@ -859,6 +874,8 @@ for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
   assert_gone "${key} still exists after the orphan stack's destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
+# The destroy deleted SecretRollbackQueue as a state resource.
+QUEUE_DELETED_AT="$(date +%s)"
 echo "    OK: the journaled orphan was deleted, and the destroy log withholds its name"
 
 echo "==> Step 6c: the same orphan, deleted by a plain cdkd rollback from the journal"
@@ -904,6 +921,7 @@ echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic r
 # no earlier step greps that log, so read HIT_LINES to tell which phase leaked.
 # State and journal are not asserted gone: the automatic rollback never deletes
 # state.json, and cleanup / step 8 sweep the prefix.
+wait_queue_name_cooldown
 set +e
 node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --yes --verbose > "${ORPHAN_LOG}" 2>&1

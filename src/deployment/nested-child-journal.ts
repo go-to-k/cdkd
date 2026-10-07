@@ -36,6 +36,12 @@
  * that failed and rolled itself back leaves a segment the parent never reverts,
  * so "the newest child segment" is not the one a given parent segment means.
  */
+import { withPrintingSecrets } from './resource-secrets-scope.js';
+import {
+  completedReplayEntries,
+  journaledOrphanPrintingBag,
+  maskEventTextWithBoundBags,
+} from './secret-name-needles.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
@@ -700,7 +706,10 @@ export async function revertNestedChildFromJournal(args: {
       region,
       logger,
       ...(ctx.options?.eventRecorder && {
-        recordEvent: (event) => ctx.options!.eventRecorder!.record(event),
+        // go-to-k/cdkd#3869: masked by the printing bag bound around the
+        // replay below, as its log lines are.
+        recordEvent: (event) =>
+          ctx.options!.eventRecorder!.record(maskEventTextWithBoundBags(event)),
       }),
       finalSnapshotClients: ctx.options?.finalSnapshotClients,
       skipFinalSnapshot:
@@ -744,16 +753,18 @@ export async function revertNestedChildFromJournal(args: {
             // parent's the enclosing replay bound.
             withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>
               withNestedRevertRun(runId, async (inner) => {
-                const replayed = await replayRollback(
-                  split.replay,
-                  stateResources,
-                  childStackName,
-                  execCtx,
-                  {
-                    afterOp: save,
-                    onOrphan: (record) => mintedOrphans.push(record),
-                    inlinePolicyWriters,
-                  }
+                // go-to-k/cdkd#3869: the child's completed ops revert under a
+                // PRINTING bag judged from their journal entries and the
+                // child's records, as the parent's do: a provider's delete of
+                // a resource named from a secret prints its name otherwise.
+                const replayed = await withPrintingSecrets(
+                  journaledOrphanPrintingBag(completedReplayEntries(split.replay), stateResources),
+                  () =>
+                    replayRollback(split.replay, stateResources, childStackName, execCtx, {
+                      afterOp: save,
+                      onOrphan: (record) => mintedOrphans.push(record),
+                      inlinePolicyWriters,
+                    })
                 );
                 for (const [id, below] of inner.settled) settledBelow.set(id, below);
                 return { ...replayed, warnings: replayed.warnings + inner.warnings };
