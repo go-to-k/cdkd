@@ -96,8 +96,17 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { renderDisableCommand } from '../replacement-protection-advice.js';
+import { pasteableAwsCommand, renderDisableCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  AMBIGUOUS_LATCH_TTL_MS,
+  AmbiguousCreateLatch,
+  createAttemptKey,
+  setBounded,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
 import {
   planTagDiff,
   readTagList,
@@ -1873,8 +1882,71 @@ function noRecordedRegionCause(): UnverifiedIdentityCause {
 function shownLifecycleRuleId(id: unknown): string {
   return id === undefined || id === null || id === '' ? '(no Id)' : displayIdent(id);
 }
+
+/**
+ * "An earlier attempt at this `CreateBucket` ended ambiguous" (issue #4639).
+ * Module-scoped, like the other latches: a provider instance is per registry,
+ * and `create()` runs on a per-call view of it.
+ */
+const createBucketLatch = new AmbiguousCreateLatch('CreateBucket');
+
+/**
+ * A window an attempt took from {@link createBucketLatch} but ended WITHOUT
+ * the oracle's verdict on (issue #4639). Here `CreateBucket` itself is the
+ * oracle -- a fresh 200, `BucketAlreadyOwnedByYou` or `BucketAlreadyExists`
+ * -- so an attempt that failed some other way (an `OperationAborted`, a
+ * `SlowDown` that outlasted the SDK's retries, a throttled `GetBucketLocation`
+ * in the owned-bucket arm) leaves the question open, and the engine's next
+ * attempt must still see the window. The latch re-arms only on an AMBIGUOUS
+ * error, so the window is held here, keyed and aged like the latch.
+ */
+const heldCreateBucketWindows = new Map<
+  string,
+  { window: AmbiguousCreateWindow; heldAtMs: number }
+>();
+
+/** The latch's window merged with one an earlier attempt held; both cleared. */
+function takeCreateBucketWindow(logicalId: string): AmbiguousCreateWindow | undefined {
+  const latched = createBucketLatch.take(logicalId);
+  const key = createAttemptKey('CreateBucket', logicalId);
+  const held = heldCreateBucketWindows.get(key);
+  heldCreateBucketWindows.delete(key);
+  const kept =
+    held !== undefined && Date.now() - held.heldAtMs <= AMBIGUOUS_LATCH_TTL_MS
+      ? held.window
+      : undefined;
+  if (latched === undefined) return kept;
+  if (kept === undefined) return latched;
+  return {
+    floorMs: Math.min(latched.floorMs, kept.floorMs),
+    ceilingMs: Math.max(latched.ceilingMs, kept.ceilingMs),
+  };
+}
+
+function holdCreateBucketWindow(logicalId: string, window: AmbiguousCreateWindow): void {
+  setBounded(heldCreateBucketWindows, createAttemptKey('CreateBucket', logicalId), {
+    window,
+    heldAtMs: Date.now(),
+  });
+}
+
+/** Reset the module-scoped `CreateBucket` retry state. TEST-ONLY. */
+export function resetS3BucketCreateRetryStateForTests(): void {
+  createBucketLatch.resetForTests();
+  heldCreateBucketWindows.clear();
+}
+
 export class S3BucketProvider implements ResourceProvider {
   private s3Client: S3Client;
+  /**
+   * The client `CreateBucket` goes through, built once per provider (issue
+   * #4639). A holder object rather than a field, because `create()` runs on a
+   * `maskedView` whose prototype is this instance: assigning a field there
+   * would cache the client on the per-call view only.
+   */
+  private readonly createClientHolder: { client?: Promise<S3Client> | undefined } = {};
+  /** The credential half of the `AwsClients` `s3Client` came from (#4639). */
+  private readonly credentialConfig: CredentialConfig;
   private logger = getLogger().child('S3BucketProvider');
   /**
    * The masker every name this OPERATION prints goes through (issue
@@ -1926,6 +1998,113 @@ export class S3BucketProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.s3Client = awsClients.s3;
+    // A test double may carry no `credentialConfig`: degrade to `{}`, as
+    // `ambientCredentialConfig` does.
+    this.credentialConfig =
+      (awsClients as { credentialConfig?: CredentialConfig }).credentialConfig ?? {};
+  }
+
+  /**
+   * The client `CreateBucket` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Every other call keeps the
+   * shared client and its full SDK retry. Built in the shared client's REGION
+   * (read from it, as `config.region()` resolves it), so the create cannot land
+   * in another region than the calls around it, and with the credentials of
+   * the SAME `AwsClients` that client came from, read at construction, so a
+   * later `setAwsClients` switch cannot give the create another identity. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it.
+   *
+   * `CreateBucket` carries no idempotency token. The SDK's own replay of a 5xx
+   * whose request had succeeded answered `BucketAlreadyOwnedByYou` (or, in
+   * us-east-1, 200) INSIDE one send, where nothing could tell it from a bucket
+   * that was already there. Refused here, the 5xx arms
+   * {@link createBucketLatch} and reaches the deploy engine's retry.
+   */
+  private getCreateClient(): Promise<S3Client> {
+    const holder = this.createClientHolder;
+    holder.client ??= this.s3Client.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(
+          new S3Client({ ...clientDefaultsFor(this.credentialConfig), region })
+        ),
+      (error: unknown) => {
+        holder.client = undefined;
+        throw error;
+      }
+    );
+    return holder.client;
+  }
+
+  /**
+   * Refuse to go on with a create whose bucket it cannot attribute (issue
+   * #4639): an earlier attempt of THIS create ended ambiguous (a 5xx or a lost
+   * response), and the name is now taken or may be. Three callers: the
+   * `BucketAlreadyOwnedByYou` arm (a bucket this account owns, in this
+   * region); and the us-east-1 pre-send arm, either over a bucket the
+   * pre-flight located in us-east-1 -- which `CreateBucket` was never asked
+   * about, so it may be ANOTHER account's -- or over a pre-flight that could
+   * not answer, where the bucket may not exist at all. The earlier attempt may
+   * have created it, or a concurrent actor (this account or another) may hold
+   * the name, and a name is not attribution (`docs/provider-rules.md`, "Adopt
+   * only on EXACT attribution"). Adopting would apply this stack's
+   * configuration to a bucket that may not be ours and, if a later call
+   * failed, leave a bucket this run created with no created-before-failure
+   * mark; deleting it could destroy someone else's.
+   *
+   * The refusal therefore names the bucket and LEADS with read commands
+   * (`list-buckets` shows whether this account owns it at all), then a delete
+   * conditional on the bucket being this account's empty orphan, then the
+   * re-run (a fresh deploy takes the cold path, which adopts an owned bucket
+   * and fails on another account's). `markNonRetryable` because the engine's
+   * next attempt would see the same bucket with no window and adopt it -- the
+   * outcome this refuses. Avoids the
+   * literal `does not exist`, which reads as transient
+   * (`retryable-errors/patterns.ts`).
+   */
+  private refuseAmbiguousCreateAdopt(
+    logicalId: string,
+    resourceType: string,
+    bucketName: string,
+    region: string,
+    via: { cause: Error } | { preflight: 'region' | 'indeterminate' }
+  ): never {
+    const aws = pasteableAwsCommand(this.shownMask);
+    const regionArg = region ? aws` --region ${region}` : aws``;
+    // `list-buckets` lists only buckets THIS account owns, which
+    // `GetBucketLocation` cannot tell; its `CreationDate` is a HINT at who made
+    // the bucket, not proof (S3 documents that some bucket changes, such as a
+    // policy edit, update it).
+    const owned = aws`aws s3api list-buckets --prefix ${bucketName}`.render();
+    // Versions, not just current objects: a versioned bucket holding only
+    // non-current versions or delete markers is not empty.
+    const versions =
+      aws`aws s3api list-object-versions --bucket ${bucketName} --max-items 10${regionArg}`.render();
+    const deletion = aws`aws s3api delete-bucket --bucket ${bucketName}${regionArg}`.render();
+    const presence =
+      'preflight' in via && via.preflight === 'indeterminate'
+        ? 'a bucket of that name may exist (cdkd could not read its location)'
+        : 'the bucket now exists';
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Refusing to adopt S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} ` +
+          `(${resourceType}): an earlier attempt of this create ended without a definite ` +
+          `answer (a server error or a lost response) after it may have created the bucket, ` +
+          `and ${presence}, so cdkd cannot tell whether this deploy or someone else ` +
+          `created it. Check whether this account owns it: ${owned} (it lists only this ` +
+          `account's buckets; its CreationDate is a hint, not proof, since some bucket changes ` +
+          `update it), and whether it holds any object or object version: ${versions}. If it ` +
+          `is listed there, its CreationDate matches the failed attempt, it is empty, and ` +
+          `nobody else on your team uses this name, it is this deploy's orphan: delete it ` +
+          `with ${deletion} (S3 refuses with BucketNotEmpty if anything is left in it) and ` +
+          `re-run the deploy. If it is a bucket you mean this stack to own, re-run the ` +
+          `deploy to adopt it.`,
+        resourceType,
+        logicalId,
+        bucketName,
+        'cause' in via ? via.cause : undefined
+      )
+    );
   }
 
   /**
@@ -4529,15 +4708,20 @@ export class S3BucketProvider implements ResourceProvider {
    * question instead of a restated copy of it: running
    * {@link applySubConfigDiffs} on this view executes every predicate, in the
    * real order and under the real diff gating, while each `send` resolves to
-   * an empty response. Safe because `s3Client` is the ONLY client this class
-   * holds and no applier reads a response field back; a new client, or an
-   * applier that consumes a response, must be stubbed here too. A fresh object
+   * an empty response. Safe because `s3Client` and the `CreateBucket` client
+   * (issue #4639; no applier reaches it, but it is stubbed all the same) are
+   * the ONLY clients this class holds and no applier reads a response field
+   * back; a new client, or an applier that consumes a response, must be
+   * stubbed here too. A fresh object
    * per call (its prototype is `this`), so concurrent resources on this
    * singleton never see each other's stub.
    */
   private noWriteProbe(): S3BucketProvider {
     const probe = Object.create(this) as S3BucketProvider;
     probe.s3Client = { send: async () => ({}) } as unknown as S3Client;
+    Object.defineProperty(probe, 'createClientHolder', {
+      value: { client: Promise.resolve(probe.s3Client) },
+    });
     const silent = (): void => {};
     probe.logger = Object.assign(Object.create(this.logger) as typeof this.logger, {
       debug: silent,
@@ -6390,6 +6574,11 @@ export class S3BucketProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: true while a bucket THIS call created (`createdNewBucket`)
     // exists with no state record; cleared once the cleanup below deletes it.
     let bucketLeftBehind = false;
+    // Issue #4639: the window this attempt took, and whether `CreateBucket`
+    // (the oracle) answered on it. An attempt that ends without that answer
+    // holds the window for the engine's next attempt (`holdCreateBucketWindow`).
+    let ambiguousWindow: AmbiguousCreateWindow | undefined;
+    let windowSpent = false;
 
     try {
       // CreateBucket params
@@ -6575,12 +6764,15 @@ export class S3BucketProvider implements ResourceProvider {
       // (`generateResourceName`) with no region or account in it, so the name
       // collision that reaches this is not exotic.
       //
-      // The probe informs the cleanup gate ONLY; it never replaces the
-      // `CreateBucket` call. `CreateBucket` is the authoritative OWNERSHIP
+      // The probe never licenses an ADOPTION in place of the `CreateBucket`
+      // call: it informs the cleanup gate, and -- after an ambiguous attempt of
+      // this same create -- a refusal that adopts nothing (issue #4639, below).
+      // `CreateBucket` is the authoritative OWNERSHIP
       // oracle (a bucket held by another account fails it with
       // `BucketAlreadyExists`), while `GetBucketLocation` can succeed against a
       // foreign-owned bucket whose policy happens to allow it — so skipping the
-      // create on a positive probe would trade this bug for a worse one.
+      // create on a positive probe AND adopting would trade this bug for a
+      // worse one.
       // Canonicalized, like the `LocationConstraint` gate above it: a mis-cased
       // region reaches `getRegion()` unfolded whenever the client bag carries no
       // region and the SDK's own chain answers from the profile (the mechanism
@@ -6606,10 +6798,40 @@ export class S3BucketProvider implements ResourceProvider {
       // pre-existing bucket would destroy a user resource that lived
       // before this deploy ran.
       let createdNewBucket = false;
+      // Issue #4639: the create client is built and the window taken AFTER the
+      // pre-flight (which never throws).
+      const createClient = await this.getCreateClient();
+      ambiguousWindow = takeCreateBucketWindow(logicalId);
+      if (
+        ambiguousWindow !== undefined &&
+        (preflight.kind === 'indeterminate' ||
+          (preflight.kind === 'region' && preflight.region === 'us-east-1'))
+      ) {
+        // us-east-1's analogue of the `BucketAlreadyOwnedByYou` arm below,
+        // refused BEFORE the send. With the bucket seen there, a re-create
+        // cannot create anything and its legacy 200 would only reset the
+        // ACLs of a bucket that may be a colleague's; the refusal's own
+        // `list-buckets` tells an owned bucket from a foreign one. With the
+        // pre-flight unanswered, the send could CREATE the bucket and leave
+        // it unattributed. A pre-flight placing it in another region keeps
+        // the foreign-region refusal below.
+        windowSpent = true;
+        this.refuseAmbiguousCreateAdopt(logicalId, resourceType, bucketName, canonicalRegion, {
+          preflight: preflight.kind,
+        });
+      }
       try {
-        await this.s3Client.send(new CreateBucketCommand(createParams));
+        const attemptStartMs = Date.now();
+        try {
+          await createClient.send(new CreateBucketCommand(createParams));
+        } catch (sendError) {
+          createBucketLatch.noteFailure(logicalId, sendError, attemptStartMs, ambiguousWindow);
+          throw sendError;
+        }
         createdNewBucket = preflight.kind === 'absent';
         bucketLeftBehind = createdNewBucket;
+        // A fresh create answers the question: the earlier attempt made nothing.
+        if (createdNewBucket) windowSpent = true;
         if (preflight.kind === 'region' && preflight.region !== 'us-east-1') {
           // A 200 over a bucket the pre-flight placed in ANOTHER region.
           // Refuse with the same message the 409 path raises, rather than warn
@@ -6667,6 +6889,11 @@ export class S3BucketProvider implements ResourceProvider {
         // `BucketAlreadyOwnedByYou` arm below calls `assertExistingBucketRegion`
         // on different evidence, so both would fire and double-refuse.
         if (createError instanceof ProvisioningError) throw createError;
+        // Another account holds the name: the oracle's answer, so the window
+        // (issue #4639) is spent.
+        if (createError instanceof Error && createError.name === 'BucketAlreadyExists') {
+          windowSpent = true;
+        }
 
         // `BucketAlreadyOwnedByYou` is an idempotent-create success ONLY once
         // the bucket that already exists is confirmed to live in the region
@@ -6692,6 +6919,16 @@ export class S3BucketProvider implements ResourceProvider {
             region,
             createError
           );
+          // Issue #4639: a same-region bucket we own, after an ambiguous
+          // attempt of THIS create, is not attributable -- refuse rather than
+          // adopt. Without a preceding ambiguous attempt the adoption below is
+          // unchanged (go-to-k/cdkd#4684 tracks that cold path).
+          if (ambiguousWindow !== undefined) {
+            windowSpent = true;
+            this.refuseAmbiguousCreateAdopt(logicalId, resourceType, bucketName, canonicalRegion, {
+              cause: createError,
+            });
+          }
           this.logger.debug(
             `S3 bucket ${this.shown(bucketName)} already exists and is owned by you`
           );
@@ -6815,6 +7052,9 @@ export class S3BucketProvider implements ResourceProvider {
         ...(effectiveProperties ? { effectiveProperties } : {}),
       };
     } catch (error) {
+      if (ambiguousWindow !== undefined && !windowSpent) {
+        holdCreateBucketWindow(logicalId, ambiguousWindow);
+      }
       const thrown = this.wrapOperationError('create', logicalId, resourceType, bucketName, error);
       if (bucketLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, bucketName);
       throw thrown;

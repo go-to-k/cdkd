@@ -7,6 +7,13 @@ import {
 
 const mockSend = vi.fn();
 
+// CreateBucket goes through its own S3Client (issue #4639); forward it to the
+// shared double below.
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-s3')>()),
+  ...(await import('./s3-create-client-forward.js')).forwardedS3Client(),
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     s3: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -297,12 +304,16 @@ describe('S3BucketProvider per-config appliers: template refuses, replay warns (
   });
 
   it('the provider holds no field noWriteProbe() does not stub or treat as inert (a new client would escape the probe)', () => {
-    // `noWriteProbe()` replaces `s3Client` and `logger` only; the two maps are
-    // read-only property metadata, and `opMask` is a pure masker the probe
-    // inherits from the operation's view (issue #2177). A new own field —
+    // `noWriteProbe()` replaces `s3Client`, `createClientHolder` (the
+    // `CreateBucket` client, issue #4639) and `logger`; the two maps are
+    // read-only property metadata, `credentialConfig` is inert identity data,
+    // and `opMask` is a pure masker the probe inherits from the operation's
+    // view (issue #2177). A new own field —
     // above all a second AWS client — must be added to the probe's stubbing
     // before it lands here.
     expect(Object.keys(new S3BucketProvider()).sort()).toEqual([
+      'createClientHolder',
+      'credentialConfig',
       'handledProperties',
       'logger',
       'opMask',

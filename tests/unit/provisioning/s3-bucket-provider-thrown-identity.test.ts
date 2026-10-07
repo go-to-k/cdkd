@@ -35,6 +35,13 @@ const { mockSend, clientRegion, debugSpy, warnSpy, infoSpy } = vi.hoisted(() => 
   infoSpy: vi.fn(),
 }));
 
+// CreateBucket goes through its own S3Client (issue #4639); forward it to the
+// shared double below.
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-s3')>()),
+  ...(await import('./s3-create-client-forward.js')).forwardedS3Client(),
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     s3: { send: mockSend, config: { region: () => Promise.resolve(clientRegion.value) } },
