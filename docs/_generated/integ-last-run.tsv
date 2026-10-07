@@ -143,14 +143,14 @@ getstackoutput-crossregion	2026-10-02T23:48:01Z	PASS	105	verify.sh	rc ok, orph c
 glue-securityconfig-replace	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
 glue-update-hardening	2026-10-04T09:21:25Z	PASS	275	verify.sh	rc ok, orph clean, #3932 phases 2c/2b/2f; reverted-fix runs RED at 2c step 2 and (2c bypassed) at 2f
 healthimaging-stateful-update-fallback	2026-10-02T09:33:03Z	PASS	226	verify.sh	rc ok, orph clean (#4414)
-iam-access-key	2026-10-06T02:22:44Z	PASS	75	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
-iam-managed-policy	2026-10-06T09:02:41Z	PASS	70	verify.sh	rc ok, orph clean (#3869 PR #4614)
+iam-access-key	2026-10-07T06:43:47Z	PASS	81	verify.sh	rc ok, orph clean (#4639)
+iam-managed-policy	2026-10-07T06:43:47Z	PASS	71	verify.sh	rc ok, orph clean (#4639)
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
-iam-propagation-stress	2026-10-06T12:30:56Z	PASS	110	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
-iam-recreate-reattach	2026-10-06T02:22:44Z	PASS	210	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+iam-propagation-stress	2026-10-07T06:43:47Z	PASS	106	verify.sh	rc ok, orph clean (#4639)
+iam-recreate-reattach	2026-10-07T06:43:47Z	PASS	211	verify.sh	rc ok, orph clean (#4639)
 iam-role-policies-drift-clean	2026-10-06T07:02:26Z	PASS	170	verify.sh	rc ok, orph clean (#2207 PR #4613)
 iam-role-prefixed-name-update	2026-10-03T04:27:32Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
-iam-secret-derived-principals	2026-10-06T14:31:29Z	PASS	175	verify.sh	rc ok, orph clean (#3869 PR #4625)
+iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, orph clean; providers at origin/main: 2 imports failed + all rows wrong
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
