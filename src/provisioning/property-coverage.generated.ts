@@ -792,7 +792,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
-      readOnly: new Set<string>(['Id']),
+      readOnly: new Set<string>(['AnomalyDetectorId']),
       ccRouteUnavailable: true,
     },
   ],

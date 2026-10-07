@@ -95,6 +95,10 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     '{"AlarmActions":"array","Dimensions":"array","Dimensions[]":"object","EvaluationCriteria":"object","EvaluationCriteria.PromQLCriteria":"object","EvaluationWindow":"object","EvaluationWindow.SlidingWindow":"object","EvaluationWindow.WallClockWindow":"object","InsufficientDataActions":"array","Metrics":"array","Metrics[]":"object","Metrics[].MetricStat":"object","Metrics[].MetricStat.Metric":"object","Metrics[].MetricStat.Metric.Dimensions":"array","Metrics[].MetricStat.Metric.Dimensions[]":"object","OKActions":"array","Tags":"array","Tags[]":"object","WarmUpConfiguration":"object"}',
   ],
   [
+    'AWS::CloudWatch::AnomalyDetector',
+    '{"Configuration":"object","Configuration.ExcludedTimeRanges":"array","Configuration.ExcludedTimeRanges[]":"object","Dimensions":"array","Dimensions[]":"object","MetricCharacteristics":"object","MetricMathAnomalyDetector":"object","MetricMathAnomalyDetector.MetricDataQueries":"array","MetricMathAnomalyDetector.MetricDataQueries[]":"object","MetricMathAnomalyDetector.MetricDataQueries[].MetricStat":"object","MetricMathAnomalyDetector.MetricDataQueries[].MetricStat.Metric":"object","MetricMathAnomalyDetector.MetricDataQueries[].MetricStat.Metric.Dimensions":"array","MetricMathAnomalyDetector.MetricDataQueries[].MetricStat.Metric.Dimensions[]":"object","SingleMetricAnomalyDetector":"object","SingleMetricAnomalyDetector.Dimensions":"array","SingleMetricAnomalyDetector.Dimensions[]":"object"}',
+  ],
+  [
     'AWS::CodeCommit::Repository',
     '{"Code":"object","Code.S3":"object","Tags":"array","Tags[]":"object","Triggers":"array","Triggers[]":"object","Triggers[].Branches":"array","Triggers[].Events":"array"}',
   ],
