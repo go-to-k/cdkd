@@ -1286,10 +1286,13 @@ export interface ResourceProvider {
    * only when, this answers `'different'` (the fix-forward that created a new
    * resource under the logical id).
    *
-   * Decide by a LIVE read of both (an ARN, a unique id, a creation identity),
-   * never by comparing the two id strings alone: providers record ids in
-   * different forms and an idempotent create can return the same resource
-   * under another spelling. Answer `'unknown'` whenever the read cannot prove
+   * A `'different'` must rest on AWS evidence, not on two id strings
+   * differing: providers record ids in different forms and an idempotent
+   * create can return the same resource under another spelling. At the least,
+   * a live read must confirm the record's resource exists, and the type's id
+   * namespace must make two distinct ids name two distinct resources (a
+   * unique name per account and region that cannot be renamed, an immutable
+   * unique id). Answer `'unknown'` whenever the read cannot prove
    * either way (an error, a region the client is not in, an id form the
    * provider does not recognise, the record's resource not found), and
    * `'different'` for a journaled id AWS reports gone only when the record's

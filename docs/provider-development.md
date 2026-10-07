@@ -111,8 +111,11 @@ export interface ResourceProvider {
    *
    * Optional. A successful deploy deletes the journaled resource only on
    * `'different'`; absent, `'unknown'` or a throw keeps today's warning.
-   * Decide by a LIVE read of both (ARN, unique id), never by comparing the
-   * id strings alone, and answer `'unknown'` for an id form you do not
+   * A `'different'` must rest on AWS evidence, not on two id strings
+   * differing: at the least a live read confirming the record's resource
+   * exists, in an id namespace where two distinct ids cannot name one
+   * resource (a unique, non-renamable name per account and region). Answer
+   * `'unknown'` for an id form you do not
    * recognise, a client region other than `context.expectedRegion`, or a
    * record whose resource is not found.
    */

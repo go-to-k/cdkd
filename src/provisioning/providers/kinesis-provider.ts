@@ -22,6 +22,7 @@ import {
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -308,6 +309,11 @@ function comparableRecordSize(value: unknown, mask: MaskerFn): number | undefine
 const KINESIS_DELETE_POLL_INTERVAL_MS = 2_000;
 const KINESIS_DELETE_MAX_WAIT_MS = 5 * 60 * 1000;
 
+/** A Kinesis stream name, as `CreateStream` accepts it (never an ARN). */
+function isStreamName(id: string): boolean {
+  return /^[a-zA-Z0-9_.-]{1,128}$/.test(id);
+}
+
 /**
  * AWS Kinesis Stream Provider
  *
@@ -316,11 +322,6 @@ const KINESIS_DELETE_MAX_WAIT_MS = 5 * 60 * 1000;
  * creation, but we can poll DescribeStream directly with shorter intervals (2s),
  * eliminating the CC API intermediary overhead and reducing total wait time.
  */
-/** A Kinesis stream name, as `CreateStream` accepts it (never an ARN). */
-function isStreamName(id: string): boolean {
-  return /^[a-zA-Z0-9_.-]{1,128}$/.test(id);
-}
-
 export class KinesisStreamProvider implements ResourceProvider {
   private client: KinesisClient | undefined;
   private readonly providerRegion = ambientRegion();
@@ -943,7 +944,15 @@ export class KinesisStreamProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Kinesis stream ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  Kinesis stream ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`Kinesis stream ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -979,9 +988,9 @@ export class KinesisStreamProvider implements ResourceProvider {
    *
    * Both ids must be stream NAMES (the physical id on either route: Cloud
    * Control's primary identifier is the name too); an ARN or anything else
-   * is `'unknown'`. A stream name names at most one stream per account and
-   * region, and a stream cannot be renamed, so after the region check the
-   * live read decides: the record's stream must exist (else `'unknown'`);
+   * is `'unknown'`. Stream names are case-sensitive and unique per account
+   * and region, and a stream cannot be renamed, so two distinct names in the
+   * stack's region name two distinct streams. After the region check: the record's stream must exist (else `'unknown'`);
    * the journaled one is `'same'` when it reads back under the record's ARN,
    * `'different'` under another ARN or when AWS reports it gone (it cannot
    * then be the record's live stream; its delete settles as already gone).

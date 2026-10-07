@@ -59,6 +59,8 @@ interface RunOptions {
   ops?: unknown[];
   holding?: ForeignHolding;
   deleteFails?: boolean;
+  /** Route `cc-api` to a second provider whose read would answer `same`. */
+  ccProvider?: boolean;
 }
 
 async function run(opts: RunOptions = {}) {
@@ -80,7 +82,12 @@ async function run(opts: RunOptions = {}) {
     dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const getProviderFor = vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' });
+  const ccProvider = { delete: vi.fn(), isSameResource: vi.fn(async () => 'same') };
+  const getProviderFor = vi.fn((input: { provisionedBy?: string }) =>
+    opts.ccProvider === true && input.provisionedBy === 'cc-api'
+      ? { provider: ccProvider, provisionedBy: 'cc-api' }
+      : { provider, provisionedBy: 'sdk' }
+  );
   const ctx = {
     providerRegistry: { getProviderFor, getProvider: vi.fn().mockReturnValue(provider) },
     region: REGION,
@@ -103,7 +110,18 @@ async function run(opts: RunOptions = {}) {
   const deletes = (provider['delete'] as ReturnType<typeof vi.fn>).mock.calls;
   const warned = logger.warn.mock.calls.map(([m]) => String(m)).join('\n');
   const debugged = logger.debug.mock.calls.map(([m]) => String(m)).join('\n');
-  return { out, deletes, isSameResource, foreignHolder, warned, debugged, stateResources, getProviderFor };
+  return {
+    out,
+    deletes,
+    isSameResource,
+    foreignHolder,
+    warned,
+    debugged,
+    stateResources,
+    getProviderFor,
+    stateBackend,
+    ccProvider,
+  };
 }
 
 describe('settleJournaledOrphansOnSuccess: the fix-forward (go-to-k/cdkd#4606)', () => {
@@ -198,6 +216,12 @@ describe('settleJournaledOrphansOnSuccess: the fix-forward (go-to-k/cdkd#4606)',
     const r = await run({ deleteFails: true });
     expect(r.deletes).toHaveLength(1);
     expect(r.out).toMatchObject({ unaddressed: 1, keepJournal: true });
+    // Written back as a PROVEN orphan (keep, not demote): the verdict is not
+    // journaled, so the next deploy reads the record live again.
+    const [, , keep, , demote] = r.stateBackend.reduceRollbackJournalToFailedOperations.mock.calls[0]!;
+    const seg = journal([]).segments[0]!;
+    expect(keep(orphan(), seg)).toBe(true);
+    expect(demote(orphan(), seg)).toBe(false);
   });
 
   it('a DeletionPolicy: Retain orphan proven different is kept in AWS, the record left alone', async () => {
@@ -309,5 +333,28 @@ describe('a settled proven-distinct orphan settles its logical id for the inline
     const [held] = writers.takeHeldRemovals(state);
     expect(held?.holders.map((h) => h.logicalId)).toEqual(['R']);
     expect(held?.unsettled).toEqual([]);
+  });
+});
+
+describe('settleJournaledOrphansOnSuccess: who is asked (go-to-k/cdkd#4606)', () => {
+  it("a #4604 replaced record under the id is never compared, even with this deploy's op there", async () => {
+    // The record is the resource the failed replacement was replacing; this
+    // deploy then completed an op under the id. Nothing proves the orphan is
+    // not what that op made, so it is warned about, never asked or deleted.
+    const r = await run({
+      ops: [orphan({ replacedPhysicalId: 'orphan-stream-old', replacedResourceType: TYPE })],
+      record: fixForwardRecord({ physicalId: 'orphan-stream-old' }),
+      newerOperations: [{ ...fixForwardCreate, changeType: 'UPDATE', physicalId: 'orphan-stream-old' }],
+    });
+    expect(r.isSameResource).not.toHaveBeenCalled();
+    expect(r.deletes).toHaveLength(0);
+    expect(r.out).toMatchObject({ unaddressed: 1 });
+  });
+
+  it("asks the provider the ORPHAN's delete routes to, not the record's", async () => {
+    const r = await run({ ccProvider: true, record: fixForwardRecord({ provisionedBy: 'cc-api' }) });
+    expect(r.isSameResource).toHaveBeenCalledOnce();
+    expect(r.ccProvider.isSameResource).not.toHaveBeenCalled();
+    expect(r.deletes).toHaveLength(1);
   });
 });
