@@ -1848,6 +1848,7 @@
     "--category",
     "--certificate-arn",
     "--cfn-stack-name",
+    "--cidr-block",
     "--cli-binary-format",
     "--cli-input-json",
     "--client-certificate-id",
