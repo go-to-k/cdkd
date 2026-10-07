@@ -247,7 +247,7 @@ describe.each(TYPES)('EC2Provider.isSameResource for $type (go-to-k/cdkd#4606)',
   });
 
   it.each([
-    ['a journaled id with upper-case hex', t.a.toUpperCase(), t.b],
+    ['a journaled id with upper-case hex', t.a.replace(/[0-9a-f]+$/, (h) => h.toUpperCase()), t.b],
     ['an empty journaled id', '', t.b],
     ['a record id as an ARN', t.a, `arn:aws:ec2:us-east-1:123456789012:resource/${t.b}`],
     ['a journaled id of another EC2 type', 'i-0aaaaaaaaaaaaaaa1', t.b],
