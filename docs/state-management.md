@@ -966,8 +966,8 @@ count as a change for `--fail`.
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target) cannot be addressed from its record, which holds `***`.
   `cdkd destroy`, and a deploy that removes the resource, skip that delete,
-  keep the record and exit non-zero unless `--allow-unaddressed`; delete the
-  resource by hand. When a REPLACEMENT creates the new resource first, the
+  keep the record and exit non-zero (a deploy exits zero with
+  `--allow-unaddressed`); delete the resource by hand. When a REPLACEMENT creates the new resource first, the
   delete of the old one is skipped with a warning that it is no longer
   tracked, and it is left in AWS.
 

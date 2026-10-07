@@ -69,6 +69,20 @@ declare module '../deploy-engine.js' {
   }
 }
 
+/**
+ * Is `value` the mask at every leaf (a scalar `***`, or a list / object of
+ * nothing but masks, as `maskWholeValue` writes a list parameter)?
+ */
+function isWhollyMask(value: unknown): boolean {
+  if (value === SECRET_MASK) return true;
+  if (Array.isArray(value)) return value.length > 0 && value.every(isWhollyMask);
+  if (value !== null && typeof value === 'object') {
+    const children = Object.values(value as Record<string, unknown>);
+    return children.length > 0 && children.every(isWhollyMask);
+  }
+  return false;
+}
+
 /** The `UPDATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
 export async function provisionUpdate(
   this: DeployEngine,
@@ -356,7 +370,7 @@ export async function provisionUpdate(
   const staleCoordinates = (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) => {
     if (noEchoCoordinates.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
       return false;
-    if (valueAtCoordinate(currentProps, coordinate) !== SECRET_MASK) return false;
+    if (!isWhollyMask(valueAtCoordinate(currentProps, coordinate))) return false;
     const resolved = valueAtCoordinate(resolvedProps, coordinate);
     return resolved !== undefined && !carriesSecretMask(resolved);
   });
@@ -485,6 +499,18 @@ export async function provisionUpdate(
           ? []
           : [{ path: coordinate.slice(1), plaintext }];
       });
+  // The migration witness, per leaf: a pre-v11 record's stored plaintext at
+  // the leaf equals what the dynamic-reference persist form holds there.
+  const witnessConfirms = (key: string, leaf: FreshNoEchoLeaf): boolean => {
+    if (todayAsWritten === undefined) return false;
+    const full = [key, ...leaf.path];
+    const stored = valueAtCoordinate(recordedAsWritten, full);
+    return (
+      stored !== undefined &&
+      !carriesSecretMask(stored) &&
+      keyOrderFreeJson(stored) === keyOrderFreeJson(valueAtCoordinate(todayAsWritten, full))
+    );
+  };
   const otherFreshAt = (key: string): FreshNoEchoLeaf[] => {
     const leaves = freshNoEchoLeafPositions(resolvedProps[key], updateSecrets, 'other');
     for (const leaf of positionalLeavesAt(attributeCoordinates, key)) {
@@ -492,21 +518,13 @@ export async function provisionUpdate(
         leaves.push(leaf);
       }
     }
-    return leaves;
+    // A pre-v11 reader of a declared attribute whose stored value is the
+    // same is unchanged too (the witness covers both classes).
+    return leaves.filter((leaf) => !witnessConfirms(key, leaf));
   };
   const pendingParameterLeaves = new Map<string, FreshNoEchoLeaf[]>();
   const addParameterLeaf = (key: string, leaf: FreshNoEchoLeaf): void => {
-    const full = [key, ...leaf.path];
-    if (todayAsWritten !== undefined) {
-      const stored = valueAtCoordinate(recordedAsWritten, full);
-      if (
-        stored !== undefined &&
-        !carriesSecretMask(stored) &&
-        keyOrderFreeJson(stored) === keyOrderFreeJson(valueAtCoordinate(todayAsWritten, full))
-      ) {
-        return; // the witness confirmed it
-      }
-    }
+    if (witnessConfirms(key, leaf)) return; // the witness confirmed it
     const list = pendingParameterLeaves.get(key) ?? [];
     if (!list.some((known) => keyOrderFreeJson(known.path) === keyOrderFreeJson(leaf.path))) {
       list.push(leaf);
@@ -744,6 +762,24 @@ export async function provisionUpdate(
         } else {
           verdict = liveHoldsFreshLeaves(read.live[pc.path], freshLeaves) ? 'held' : 'differs';
         }
+        // A mixed path whose custom-resource leaves AWS holds, and whose only
+        // unconfirmed leaves are a `NoEcho` PARAMETER's: the parameter class's
+        // rule (maintainer decision 1 on #4043) — never replaced on a
+        // readback's word, warned on every deploy.
+        const parameterLeaves = pendingParameterLeaves.get(pc.path) ?? [];
+        if (
+          verdict === 'differs' &&
+          parameterLeaves.length > 0 &&
+          !('failure' in read) &&
+          liveHoldsFreshLeaves(read.live[pc.path], otherFreshAt(pc.path))
+        ) {
+          this.logger.warn(
+            safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (differs). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+          );
+          noEchoHeldPaths.add(pc.path);
+          lowered.push({ ...pc, requiresReplacement: false });
+          continue;
+        }
         if (verdict !== 'held') {
           // WARN, not debug: this is what turns the update into a
           // replacement, and a `Replacing` label must never be
@@ -822,8 +858,11 @@ export async function provisionUpdate(
         // Maintainer decision 1 on #4043: never replaced on a readback's
         // word, whether it could not read the property or read a different
         // value (a provider may normalize what it echoes). Every deploy says so.
+        const staleOnly = staleCoordinates.some((coordinate) => coordinate[0] === pc.path);
         this.logger.warn(
-          safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+          staleOnly
+            ? safeMsg`${logicalId}.${pc.path} is a create-only property whose recorded value is only the NoEcho mask, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+            : safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
         );
       }
       parameterSettledPaths.add(pc.path);

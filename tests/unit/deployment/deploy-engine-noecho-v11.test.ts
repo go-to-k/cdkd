@@ -656,7 +656,10 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const text = outcome + JSON.stringify(stateBackend.saveState.mock.calls) + lines(logger.error).join('\n');
       expect(text).toContain('declared that attribute NoEcho');
       expect(JSON.stringify(stateBackend.saveState.mock.calls)).not.toContain('some-other-value');
-      expect(lines(logger.debug).join('\n')).not.toContain('some-other-value');
+      expect(outcome).not.toContain('some-other-value');
+      for (const channel of [logger.debug, logger.info, logger.warn, logger.error]) {
+        expect(lines(channel!).join('\n')).not.toContain('some-other-value');
+      }
     });
 
     it('refuses the reader when the producer cannot report the attribute (not readable)', async () => {
@@ -693,6 +696,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
           (e: unknown) => String(e)
         );
       expect(callsFor(provider.update, 'Reader')).toHaveLength(0);
+      expect(outcome).not.toBe('ok');
       expect(outcome + lines(logger.error).join('\n')).toContain('declared that attribute NoEcho');
     });
   });
@@ -739,6 +743,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN, 'old-topic-name'), etag: 'etag-old' });
       await makeEngine().deploy(STACK, template());
       expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
       expect(lines(logger.warn).some((l) => l.includes('Topic.TopicName'))).toBe(false);
     });
 
@@ -788,6 +793,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(saved.resources['Consumer']!.properties['Value']).toBe('***');
       expect(saved.resources['Consumer']!.attributes?.['Value']).toBe('***');
       expect(allSaved()).not.toContain(TOKEN);
+      // The migration sends nothing to an unchanged producer or reader.
+      expect(callsFor(provider.update, 'Param')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Consumer')).toHaveLength(0);
     });
 
     it('migrates a record the failed deploy never reached, by today\'s template positions', async () => {
@@ -811,7 +819,12 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         },
       });
       (tpl.Parameters!['Short'] as unknown as Record<string, unknown>)['Default'] = 'xy';
-      await expect(makeEngine({ noRollback: true }).deploy(STACK, tpl)).rejects.toThrow();
+      await expect(makeEngine({ noRollback: true }).deploy(STACK, tpl)).rejects.toThrow(
+        'Param'
+      );
+      // The premise: the deploy never reached `Later`.
+      expect(callsFor(provider.update, 'Later')).toHaveLength(0);
+      expect(callsFor(provider.create, 'Later')).toHaveLength(0);
       const saved = lastSaved();
       expect(saved.resources['Later']!.properties['Value']).toBe('***');
       expect(saved.resources['Later']!.noEchoLeaves).toEqual([['Value']]);

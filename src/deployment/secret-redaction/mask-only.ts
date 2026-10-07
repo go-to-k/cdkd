@@ -668,17 +668,20 @@ export function recordNoEchoParameterFreshValue(
 }
 
 /**
- * A copy of `secrets` without the entries a `NoEcho` PARAMETER supplied, with
- * the uncollapsed pairs and the other classes' side-set marks carried: the
- * map the persist walk would have read before go-to-k/cdkd#4043, which the
- * migration witness compares a pre-v11 record against.
+ * A copy of `secrets` without the FRESH `NoEcho` entries (a parameter's value,
+ * a declared attribute's, a recovered output's), with the uncollapsed pairs
+ * and the remaining side-set marks carried: the map the persist walk reads
+ * for the dynamic-reference arms alone, which the migration witness compares
+ * a pre-v11 record against (go-to-k/cdkd#4043). A record a pre-v11 binary
+ * wrote holds `***` for a custom resource's own declared value already, so
+ * dropping that class here confirms nothing it should not.
  */
 export function withoutNoEchoParameterEntries(secrets: RecordedSecretValues): RecordedSecretValues {
-  const parameterClass = noEchoParameterValuesOf.get(secrets);
-  if (parameterClass === undefined || parameterClass.size === 0) return secrets;
+  const fresh = freshNoEchoValuesOf.get(secrets);
+  if (fresh === undefined || fresh.size === 0) return secrets;
   const copy: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
-    if (expression === SECRET_MASK && parameterClass.has(plaintext)) continue;
+    if (expression === SECRET_MASK && fresh.has(plaintext)) continue;
     copy.set(plaintext, expression);
   }
   mergeResolvedPairs(secrets, copy);
