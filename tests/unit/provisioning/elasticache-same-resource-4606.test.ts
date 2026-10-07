@@ -368,6 +368,7 @@ describe('the created-before-failure mark of a CacheCluster (go-to-k/cdkd#4655)'
   it.each([
     ['no creation time (the documented "creating" answer)', { ARN: ARN('orphan-cache') }],
     ['no ARN', { CacheClusterCreateTime: T1 }],
+    ['an empty ARN', { ARN: '', CacheClusterCreateTime: T1 }],
     ['an invalid creation time', { ARN: ARN('orphan-cache'), CacheClusterCreateTime: new Date('x') }],
     ['nothing', {}],
   ])('a create answering with %s marks the id alone', async (_label, cluster) => {
