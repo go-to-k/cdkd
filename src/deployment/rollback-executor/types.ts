@@ -217,6 +217,14 @@ export interface RollbackExecutorContext {
    */
   skipFinalSnapshot?: boolean | undefined;
   /**
+   * `--remove-protection` on `cdkd destroy` / `cdkd state destroy`: a failed
+   * CREATE's journaled orphan is deleted with its deletion / termination
+   * protection turned off first (go-to-k/cdkd#4678). Set ONLY by the destroy
+   * journal sweep: a deploy's automatic rollback and its success settle never
+   * strip a protection the user did not ask to remove.
+   */
+  removeProtection?: boolean | undefined;
+  /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,
    * as produced by {@link producerRegionsFromState} (issue

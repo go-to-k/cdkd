@@ -324,6 +324,7 @@ export {
 
 import { withProducerRegions } from './producer-regions-scope.js';
 import { noteRetainedResource } from '../provisioning/providers/create-token-ledger.js';
+import { runDeleteAttempt } from '../provisioning/providers/deletion-protection-compensation.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
 async function replaySingle(
@@ -884,13 +885,15 @@ async function replayFailedOperationsUnbound(
             op.logicalId,
             stateResources
           );
-          const failedCreateDelete = await provider.delete(
-            op.logicalId,
-            op.physicalId!,
-            op.resourceType,
-            op.attemptedProperties,
-            {
+          // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` reaches a
+          // protected orphan here; nothing else sets the flag. ONE attempt, no
+          // outer re-entry: the scope tells a protection flip's compensation
+          // that any failure is the last, so the guard is put back.
+          const removeProtection = ctx.removeProtection === true;
+          const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
+            provider.delete(op.logicalId, op.physicalId!, op.resourceType, op.attemptedProperties, {
               expectedRegion: ctx.region,
+              ...(removeProtection && { removeProtection: true }),
               ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
@@ -907,8 +910,10 @@ async function replayFailedOperationsUnbound(
                   resolveReplayProps(op.attemptedProperties, resolver, secrets, ctx, op.logicalId),
                 ...(ctx.writtenThisRun !== undefined && { writtenThisRun: ctx.writtenThisRun }),
               }),
-            }
-          );
+            });
+          const failedCreateDelete = removeProtection
+            ? await runDeleteAttempt(true, deleteFailedCreate)
+            : await deleteFailedCreate();
           // Issue #1762: the partially-created resource is still there, so
           // the op did NOT happen — let the shared catch record the failure
           // and keep it in `remainingFailedOps` for a re-run.

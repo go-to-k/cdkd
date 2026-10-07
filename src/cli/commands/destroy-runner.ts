@@ -97,6 +97,7 @@ import {
   journaledOrphanLines,
   loadJournaledOrphans,
   sameJournaledOrphans,
+  type JournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
 import {
@@ -454,6 +455,33 @@ export function countProtectedResources(state: StackState): number {
         count++;
       }
       continue;
+    }
+  }
+  return count;
+}
+
+/**
+ * The journaled failed-CREATE orphans whose ATTEMPTED properties turn deletion
+ * protection on: `--remove-protection` strips theirs too (go-to-k/cdkd#4678),
+ * so the prompt counts them beside {@link countProtectedResources}.
+ */
+export function countProtectedJournaledOrphans(
+  orphans: Pick<JournaledOrphans, 'segments'>,
+  region: string | undefined
+): number {
+  let count = 0;
+  for (const { ops } of orphans.segments) {
+    for (const op of ops) {
+      const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
+      if (
+        locator &&
+        isProtectionValueActive(
+          op.resourceType,
+          readProtection(op.attemptedProperties, locator, region)
+        )
+      ) {
+        count++;
+      }
     }
   }
   return count;
@@ -871,7 +899,10 @@ export async function runDestroyForStack(
   // recorded. Resources whose state doesn't carry the protection flag
   // (or where the recorded value is `false`) are still flipped via the
   // idempotent flip-off call inside each provider's `delete()`.
-  const protectedCount = ctx.removeProtection ? countProtectedResources(state) : 0;
+  const protectedCount = ctx.removeProtection
+    ? countProtectedResources(state) +
+      countProtectedJournaledOrphans(journaledOrphans, state.region)
+    : 0;
 
   // Resources an earlier rollback left in AWS (issue #2934). Destroying this
   // stack deletes the state file, and with it the ONLY record that those
@@ -1457,6 +1488,8 @@ export async function runDestroyForStack(
           }),
           finalSnapshotClients: destroyAwsClients ?? ctx.baseAwsClients,
           skipFinalSnapshot: ctx.skipFinalSnapshot === true,
+          // go-to-k/cdkd#4678: as the state-tracked deletes below take it.
+          ...(ctx.removeProtection === true && { removeProtection: true }),
           importedProducerRegions: producerRegionsFromState(state),
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
