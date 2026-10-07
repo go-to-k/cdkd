@@ -25,6 +25,7 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
@@ -62,6 +63,8 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
  */
 export class IAMRoleProvider implements ResourceProvider {
   private iamClient: IAMClient;
+  /** `CreateRole` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
   private logger = getLogger().child('IAMRoleProvider');
 
   /**
@@ -223,7 +226,8 @@ export class IAMRoleProvider implements ResourceProvider {
         createParams.PermissionsBoundary = properties['PermissionsBoundary'] as string;
       }
 
-      const response = await this.iamClient.send(new CreateRoleCommand(createParams));
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreateRoleCommand(createParams));
       leftBehind = true;
 
       log.debug(`Created IAM role: ${v(roleName)}`);

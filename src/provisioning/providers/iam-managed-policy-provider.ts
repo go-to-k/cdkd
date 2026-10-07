@@ -23,6 +23,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { IamCreateClientCache } from './iam-create-client.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
@@ -104,6 +105,8 @@ const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
  */
 export class IAMManagedPolicyProvider implements ResourceProvider {
   private iamClient: IAMClient;
+  /** `CreatePolicy` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
   private logger = getLogger().child('IAMManagedPolicyProvider');
 
   /**
@@ -222,7 +225,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         createParams.Tags = tags;
       }
 
-      const response = await this.iamClient.send(new CreatePolicyCommand(createParams));
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreatePolicyCommand(createParams));
       const policyArn = response.Policy?.Arn;
       if (!policyArn) {
         throw new ProvisioningError(
