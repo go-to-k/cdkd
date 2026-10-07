@@ -371,10 +371,13 @@ export function classifyFailedOp(
     if (op.physicalIdRecoveredFromError === true) {
       // go-to-k/cdkd#4604: a replacement's new resource shares its logical id
       // with the resource it was replacing, so a record still naming THAT
-      // resource is no later owner of this one.
+      // resource is no later owner of this one. go-to-k/cdkd#4606: nor is a
+      // record a successful deploy's settle proved holds another resource.
       if (current) {
         if (current.physicalId === op.physicalId) return 'skip-failed-noop';
-        if (!isReplacedRecord(op, current)) return 'skip-failed-mismatch';
+        if (!isReplacedRecord(op, current) && !isProvenDistinctRecord(op, current)) {
+          return 'skip-failed-mismatch';
+        }
       }
       if (stateHoldsPhysicalId(stateResources, op.resourceType, op.physicalId)) {
         return 'skip-failed-noop';
@@ -467,7 +470,62 @@ export function failedOpOwnRecord(
   op: FailedOperation,
   stateResources: Record<string, ResourceState>
 ): ResourceState | undefined {
-  return isReplacementOrphan(op) ? undefined : stateResources[op.logicalId];
+  return recordUnderIdIsNotOwn(op, stateResources) ? undefined : stateResources[op.logicalId];
+}
+
+/**
+ * go-to-k/cdkd#4606: proven orphans a successful deploy's settle proved, by
+ * the provider's live identity read (`isSameResource`), to be a resource
+ * OTHER than the one the record under their logical id holds (a
+ * fix-forward's new resource). Keyed by the op object, so the verdict lives
+ * only for the settle that read it: never journaled, and a re-read journal
+ * (a later run) carries none.
+ */
+const provenDistinctFrom = new WeakMap<
+  FailedOperation,
+  { physicalId: string; resourceType: string }
+>();
+
+/** Record the settle's `'different'` verdict for `op` against `record`. */
+export function markProvenDistinctFromRecord(op: FailedOperation, record: ResourceState): void {
+  provenDistinctFrom.set(op, { physicalId: record.physicalId, resourceType: record.resourceType });
+}
+
+/**
+ * Whether `record` is the very record (same physical id AND type) the
+ * settle proved `op`'s resource distinct from. A record that moved since
+ * carries no such proof.
+ */
+export function isProvenDistinctRecord(
+  op: FailedOperation,
+  record: ResourceState | undefined
+): boolean {
+  const verdict = provenDistinctFrom.get(op);
+  return (
+    verdict !== undefined &&
+    record !== undefined &&
+    record.physicalId === verdict.physicalId &&
+    record.resourceType === verdict.resourceType
+  );
+}
+
+/**
+ * Whether the record under `op`'s logical id, if any, is not `op`'s own: a
+ * replacement orphan's (go-to-k/cdkd#4604), or one proven a different
+ * resource (go-to-k/cdkd#4606). An arm acting on the orphan then neither
+ * reads nor drops that record.
+ */
+export function recordUnderIdIsNotOwn(
+  op: FailedOperation,
+  stateResources: Record<string, ResourceState>
+): boolean {
+  return (
+    isReplacementOrphan(op) ||
+    isProvenDistinctRecord(
+      op,
+      Object.hasOwn(stateResources, op.logicalId) ? stateResources[op.logicalId] : undefined
+    )
+  );
 }
 
 /**

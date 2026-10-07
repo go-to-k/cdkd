@@ -103,6 +103,28 @@ export interface ResourceProvider {
    *   `null` as "skipped — not deployed yet", not as a failure).
    */
   import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
+
+  /**
+   * Whether a resource a failed CREATE proved it made (its journaled id) is
+   * the same live resource as the one the state record under the same
+   * logical id holds (issue #4606: the fix-forward).
+   *
+   * Optional. A successful deploy deletes the journaled resource only on
+   * `'different'`; absent, `'unknown'` or a throw keeps today's warning.
+   * A `'different'` must rest on AWS evidence, not on two id strings
+   * differing: at the least a live read confirming the record's resource
+   * exists, in an id namespace where two distinct ids cannot name one
+   * resource (a unique, non-renamable name per account and region). Answer
+   * `'unknown'` for an id form you do not
+   * recognise, a client region other than `context.expectedRegion`, or a
+   * record whose resource is not found.
+   */
+  isSameResource?(
+    journaledPhysicalId: string,
+    record: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<'same' | 'different' | 'unknown'>;
 }
 ```
 

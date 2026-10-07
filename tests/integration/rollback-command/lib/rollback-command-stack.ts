@@ -121,7 +121,8 @@ export class RollbackCommandStack extends cdk.Stack {
       // so the segment is failed-only, the shape a lone failed create leaves.
       // go-to-k/cdkd#4600: ORPHAN_FIX_FORWARD is the fix-forward — the same
       // logical id under another name with a valid retention, so the CREATE
-      // succeeds and the earlier failed attempt's stream is the orphan.
+      // succeeds and the earlier failed attempt's stream is the orphan, which the
+      // successful deploy deletes (go-to-k/cdkd#4606).
       const fixForward = process.env.ORPHAN_FIX_FORWARD === 'true';
       const orphanStream = new kinesis.CfnStream(this, 'OrphanStream', {
         name: `${this.stackName}-orphan-stream${fixForward ? '-b' : ''}`,

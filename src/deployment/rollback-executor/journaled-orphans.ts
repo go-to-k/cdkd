@@ -15,6 +15,7 @@
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { type RollbackJournalSegment, splitImportedOps } from '../../types/rollback-journal.js';
 import type { ResourceState, StackState } from '../../types/state.js';
+import type { ResourceIdentityVerdict } from '../../types/resource.js';
 import {
   hasReadableOrphans,
   unreadableOrphanRecords,
@@ -34,6 +35,7 @@ import {
   demoteSupersededOrphans,
   isJournaledOrphan,
   isReplacedRecord,
+  markProvenDistinctFromRecord,
   replacementNeverSwapped,
   replayFailedOperations,
 } from '../rollback-executor.js';
@@ -293,7 +295,10 @@ export interface SuccessSettleOutcome {
  * The rule. An orphan is deleted, per its journaled `DeletionPolicy`, only
  * when after this deploy no state record sits under its logical id (other
  * than the record a replacement orphan's replacement was replacing,
- * go-to-k/cdkd#4604), this deploy completed no op under it, no record of this stack holds its type and
+ * go-to-k/cdkd#4604), this deploy completed no op under it, or — the
+ * fix-forward, go-to-k/cdkd#4606 — the provider's live read
+ * (`isSameResource`) proves the record under it holds ANOTHER resource,
+ * no record of this stack holds its type and
  * physical id (the classifier's check), and no resource record of another
  * stack under the same state prefix does (`foreignHolder`). Anything else is
  * DEMOTED (`physicalIdRecoveredFromError: false`) and goes through the
@@ -388,7 +393,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
         args.foreignHolder,
         stack,
         logger,
-        args.isInterrupted
+        args.isInterrupted,
+        ctx
       );
       const acting: JournaledOrphans = {
         segments: orphans.segments
@@ -527,7 +533,8 @@ async function applySuccessRule(
   foreignHolder: (resourceType: string, physicalId: string) => Promise<ForeignHolding>,
   stack: string,
   logger: Logger,
-  isInterrupted: (() => boolean) | undefined
+  isInterrupted: (() => boolean) | undefined,
+  identityCtx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>
 ): Promise<{ unreadable: Set<FailedOperation>; tracked: Set<FailedOperation> }> {
   const unreadable = new Set<FailedOperation>();
   const tracked = new Set<FailedOperation>();
@@ -556,13 +563,25 @@ async function applySuccessRule(
       // go-to-k/cdkd#4604: a replacement's new resource shares its logical
       // id with the resource it was replacing; a record still naming THAT
       // resource is not one this deploy or a later one put there.
-      if (
-        (Object.prototype.hasOwnProperty.call(stateResources, op.logicalId) &&
-          !isReplacedRecord(op, stateResources[op.logicalId])) ||
-        deployLogicalIds.has(op.logicalId)
-      ) {
-        op.physicalIdRecoveredFromError = false;
-        continue;
+      const hasRecord = Object.prototype.hasOwnProperty.call(stateResources, op.logicalId);
+      const record = hasRecord ? stateResources[op.logicalId] : undefined;
+      const recordUnderId = hasRecord && !isReplacedRecord(op, record);
+      if (recordUnderId || deployLogicalIds.has(op.logicalId)) {
+        // go-to-k/cdkd#4606: the fix-forward. A record under the id may hold
+        // a NEW resource; only the provider's live read can tell, and only
+        // its `'different'` lets the orphan on to the delete below.
+        const verdict = recordUnderId
+          ? await recordIdentity(op, record, identityCtx, logger)
+          : 'unknown';
+        if (verdict === 'same') {
+          tracked.add(op);
+          continue;
+        }
+        if (verdict !== 'different') {
+          op.physicalIdRecoveredFromError = false;
+          continue;
+        }
+        markProvenDistinctFromRecord(op, record!);
       }
       const holding = await foreignHolder(op.resourceType, op.physicalId);
       if (holding === undefined) continue;
@@ -583,6 +602,56 @@ async function applySuccessRule(
     }
   }
   return { unreadable, tracked };
+}
+
+/**
+ * go-to-k/cdkd#4606: whether the proven orphan `op` is the resource `record`
+ * (the record under its logical id) holds, by the provider's live read
+ * (`ResourceProvider.isSameResource`), asked through the provider the orphan's
+ * delete would take. `'unknown'` for a record of another type or without a
+ * physical id, a provider without the method, and any error: the caller then
+ * keeps today's warn-and-skip.
+ */
+async function recordIdentity(
+  op: FailedOperation,
+  record: ResourceState | undefined,
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>,
+  logger: Logger
+): Promise<ResourceIdentityVerdict> {
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    record.resourceType !== op.resourceType ||
+    typeof record.physicalId !== 'string' ||
+    record.physicalId === '' ||
+    !op.physicalId
+  ) {
+    return 'unknown';
+  }
+  try {
+    const { provider } = ctx.providerRegistry.getProviderFor({
+      resourceType: op.resourceType,
+      provisionedBy: op.provisionedBy,
+    });
+    if (typeof provider.isSameResource !== 'function') return 'unknown';
+    return await provider.isSameResource(
+      op.physicalId,
+      {
+        physicalId: record.physicalId,
+        ...(record.provisionedBy !== undefined && { provisionedBy: record.provisionedBy }),
+      },
+      op.resourceType,
+      { expectedRegion: ctx.region }
+    );
+  } catch (err) {
+    // The error CLASS only: AWS's text may quote the account and role, or a
+    // resource name this line has no masker for (go-to-k/cdkd#3869). The
+    // warn-and-skip that follows names the resource, masked.
+    logger.debug(
+      safeMsg`Could not compare ${logicalIdShown(op.logicalId)}'s journaled resource with its state record (${displaySafe(err instanceof Error ? err.name : typeof err)}).`
+    );
+    return 'unknown';
+  }
 }
 
 /**

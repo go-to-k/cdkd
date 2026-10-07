@@ -279,7 +279,7 @@ replacement-immutable-name	2026-10-05T02:29:22Z	PASS	135	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-06T11:44:18Z	PASS	641	verify.sh	PR #4622 (NAMED_CREATE_COLLISION adopt command, rebased on #4614); rc 0, destroy clean, orph clean
 retain-orphan-redeploy	2026-10-06T05:42:35Z	PASS	200	verify.sh	rc ok, orph clean (#4602 PR #4609)
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-06T09:44:22Z	PASS	574	verify.sh	PR #4616 (#4604 replacement orphan journaled + settled with its failed UPDATE, P0-P4); rc 0, destroy clean, orph clean; discrimination proof: pre-fix src RED at P1 (journal lacked the replacement's new stream)
+rollback-command	2026-10-07T04:36:50Z	PASS	631	verify.sh	PR #4640 (#4606 fix-forward deletes the earlier Kinesis stream once a live read proves it another, O8); rc 0, destroy clean, orph clean; discrimination proof: pre-fix src RED at O8 (fix-forward deploy exited 2, expected 0)
 rollback-cross-region-secret	2026-10-05T10:27:06Z	PASS	195	verify.sh	rc ok, orph clean (#2624 PR #4572)
 rollback-deletion-policy-snapshot	2026-10-02T13:55:47Z	PASS	141	verify.sh	rc ok, orph clean (#4436)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)

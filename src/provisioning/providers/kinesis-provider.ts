@@ -22,6 +22,7 @@ import {
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -38,6 +39,7 @@ import type {
   CreateContext,
   UpdateContext,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
@@ -306,6 +308,11 @@ function comparableRecordSize(value: unknown, mask: MaskerFn): number | undefine
  */
 const KINESIS_DELETE_POLL_INTERVAL_MS = 2_000;
 const KINESIS_DELETE_MAX_WAIT_MS = 5 * 60 * 1000;
+
+/** A Kinesis stream name, as `CreateStream` accepts it (never an ARN). */
+function isStreamName(id: string): boolean {
+  return /^[a-zA-Z0-9_.-]{1,128}$/.test(id);
+}
 
 /**
  * AWS Kinesis Stream Provider
@@ -937,7 +944,15 @@ export class KinesisStreamProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Kinesis stream ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  Kinesis stream ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`Kinesis stream ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -964,6 +979,61 @@ export class KinesisStreamProvider implements ResourceProvider {
       maxWaitMs: KINESIS_DELETE_MAX_WAIT_MS,
     });
     this.logger.debug(`Successfully deleted Kinesis stream ${logicalId}`);
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the stream a failed CREATE journaled is the
+   * one the record under the same logical id holds (a fix-forward that
+   * created a new stream there).
+   *
+   * Both ids must be stream NAMES (the physical id on either route: Cloud
+   * Control's primary identifier is the name too); an ARN or anything else
+   * is `'unknown'`. Stream names are case-sensitive and unique per account
+   * and region, and a stream cannot be renamed, so two distinct names in the
+   * stack's region name two distinct streams. After the region check: the record's stream must exist (else `'unknown'`);
+   * the journaled one is `'same'` when it reads back under the record's ARN,
+   * `'different'` under another ARN or when AWS reports it gone (it cannot
+   * then be the record's live stream; its delete settles as already gone).
+   * Equal names are `'same'` without a read: whatever stream holds the name
+   * now is the record's, and deleting by that name would delete it.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    _resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (!isStreamName(journaledPhysicalId) || !isStreamName(record.physicalId)) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordArn = await this.readStreamArnIfExists(record.physicalId);
+    if (recordArn === undefined) return 'unknown';
+    const journaledArn = await this.readStreamArnIfExists(journaledPhysicalId);
+    if (journaledArn === undefined) return 'different';
+    return journaledArn === recordArn ? 'same' : 'different';
+  }
+
+  /**
+   * The stream's ARN, or `undefined` when `DescribeStreamSummary` reports it
+   * gone. Any other failure (and a response naming no ARN) throws: "could
+   * not read" never reads as "gone".
+   */
+  private async readStreamArnIfExists(streamName: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: streamName })
+      );
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
+    }
+    const arn = response.StreamDescriptionSummary?.StreamARN;
+    if (typeof arn !== 'string' || arn === '') {
+      throw new Error('DescribeStreamSummary returned no StreamARN');
+    }
+    return arn;
   }
 
   /** The stream's status, or `undefined` once `DescribeStreamSummary` reports it gone. */
