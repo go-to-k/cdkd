@@ -971,10 +971,6 @@ THROW_SG_ID=$(aws ec2 create-security-group \
   --region "${REGION}" \
   --query 'GroupId' \
   --output text)
-# The probe reads each throwaway as a record in case (b): wait until EC2
-# lists them, or a Describe* lag right after the create reads as gone.
-aws ec2 wait subnet-available --subnet-ids "${THROW_SUBNET_ID}" --region "${REGION}"
-aws ec2 wait security-group-exists --group-ids "${THROW_SG_ID}" --region "${REGION}"
 case "${THROW_VPC_ID}|${THROW_SUBNET_ID}|${THROW_SG_ID}" in
   vpc-*\|subnet-*\|sg-*) ;;
   *)
@@ -982,6 +978,10 @@ case "${THROW_VPC_ID}|${THROW_SUBNET_ID}|${THROW_SG_ID}" in
     exit 1
     ;;
 esac
+# The probe reads each throwaway as a record in case (b): wait until EC2
+# lists them, or a Describe* lag right after the create reads as gone.
+aws ec2 wait subnet-available --subnet-ids "${THROW_SUBNET_ID}" --region "${REGION}"
+aws ec2 wait security-group-exists --group-ids "${THROW_SG_ID}" --region "${REGION}"
 echo "    throwaway VPC ${THROW_VPC_ID}, subnet ${THROW_SUBNET_ID}, security group ${THROW_SG_ID}"
 
 # Premise of case (c): a well-formed id that never existed answers NotFound;
@@ -1075,7 +1075,7 @@ assert_net_gone() { # usage: assert_net_gone <describe-subcommand> <ids-flag> <i
     fi
     sleep 5
   done
-  echo "FAIL: issue #4606 -- $3 is still listed 60s after the probe's settle delete" >&2
+  echo "FAIL: issue #4606 -- $3 did not answer $4 within 60s of the probe's settle delete (last answer: $(sanitize_aws_output "${out}"))" >&2
   exit 1
 }
 assert_net_gone describe-security-groups --group-ids "${THROW_SG_ID}" InvalidGroup.NotFound
