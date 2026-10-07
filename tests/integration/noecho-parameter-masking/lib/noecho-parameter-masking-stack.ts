@@ -40,6 +40,10 @@ import { Construct } from 'constructs';
  *   spelling the value only a resource reads, and an earlier literal name
  *   spelling the `Fn::Base64` encoding a LATER name records. Every deploy
  *   refuses all three aliases.
+ * - `NoEchoShortAliasProbe` (go-to-k/cdkd#4657): an `Fn::Join` name embedding
+ *   a fourth `NoEcho` parameter whose value is 3 characters
+ *   (`CDKD_TEST_NOECHO_SHORT_TOKEN`), under the containment floor: only the
+ *   positional refusal (the name READS the parameter) refuses it.
  * - `NoEchoSplitConsumer` (go-to-k/cdkd#4049): an SSM String parameter whose
  *   value is the SECOND piece of an `Fn::Split` over a third `NoEcho`
  *   parameter holding two comma-separated pieces
@@ -140,6 +144,17 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NoEchoLateEncodedProbe', {
       value: 'late-encoded-probe-value',
       exportName: cdk.Fn.base64(aliasToken.valueAsString),
+    });
+
+    // go-to-k/cdkd#4657: a 3-character value embedded through an intrinsic.
+    const shortToken = new cdk.CfnParameter(this, 'NoEchoShortToken', {
+      type: 'String',
+      noEcho: true,
+      default: process.env['CDKD_TEST_NOECHO_SHORT_TOKEN'] ?? 'qzz',
+    });
+    new cdk.CfnOutput(this, 'NoEchoShortAliasProbe', {
+      value: 'short-alias-probe-value',
+      exportName: cdk.Fn.join('-', ['short', shortToken.valueAsString, 'probe']),
     });
 
     const splitToken = new cdk.CfnParameter(this, 'NoEchoSplitToken', {

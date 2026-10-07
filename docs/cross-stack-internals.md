@@ -160,9 +160,14 @@ deliberate divergence, the same one the secret refusal takes.
   `NoEcho` value that one of the child's parameters carries. Every
   `Export.Name` is resolved before any alias is decided, so declaration order
   does not matter.
-- **When a name is refused.** The name is refused when it equals the value.
-  It is also refused when it contains the value and the value is 4 or more
-  characters long. The same holds for a piece of the value that an
+- **When a name is refused.** An `Export.Name` intrinsic that reads a
+  `NoEcho` parameter (a `Ref`, an `Fn::Sub` variable, or an `Fn::Join` /
+  `Fn::Select` / other intrinsic over one, at any depth) is refused whatever
+  the value's length ([#4657](https://github.com/go-to-k/cdkd/issues/4657)),
+  and the warning names the output and the parameter. An `Fn::If` reads only
+  the branch its condition selects. Otherwise the name is refused when it
+  equals the value. It is also refused when it contains the value and the
+  value is 4 or more characters long. The same holds for a piece of the value that an
   `Fn::Split` over it produced, and in a nested child for an element of a list
   parameter split out of it
   ([#4049](https://github.com/go-to-k/cdkd/issues/4049)), so a name built
@@ -178,9 +183,13 @@ deliberate divergence, the same one the secret refusal takes.
     parameter through an attribute rather than a `Ref` (`cdkd diff` refuses
     this alias, so its preview differs from the deploy);
   - a 1-3 character value, `Fn::Split` piece or list element inside a longer
-    name;
-  - the alias of an output that fails to resolve on a deploy with no resource
-    change, which is carried forward from the previous record.
+    name that does not read the parameter: a literal name, or one reaching
+    the value through an attribute or another stack;
+  - on a deploy with no resource change that keeps the previous outputs whole
+    because an output failed to resolve, the aliases that bag already holds.
+    When it instead carries a failed output's alias forward from the previous
+    record, the alias is decided again and a refused one is dropped
+    ([#4657](https://github.com/go-to-k/cdkd/issues/4657)).
 - **Preview.** `cdkd diff` previews the same verdict, so a refused alias is
   not shown as an addition.
 - **The warning** says when the name was refused only because it contains a

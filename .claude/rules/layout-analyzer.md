@@ -17,9 +17,8 @@ of every area: [code-layout.md](code-layout.md).
 
 ## `outputs-diff.ts`
 
-The diff-side `Outputs` resolution and comparison behind `cdkd diff`'s Outputs
-section (issue [#1921](https://github.com/go-to-k/cdkd/issues/1921)) — the
-preview half of the Outputs-only persist `cdkd deploy` does.
+The `Outputs` resolution and comparison behind `cdkd diff`'s Outputs section
+([#1921](https://github.com/go-to-k/cdkd/issues/1921)), previewing the deploy's.
 
 - `resolveTemplateOutputs` builds the exact bag shape
   `DeployEngine.resolveOutputs` writes to `StackState.outputs`: a condition-false
@@ -27,9 +26,10 @@ preview half of the Outputs-only persist `cdkd deploy` does.
   same value (what `Fn::ImportValue` resolves against).
 - Values resolve into the `outputsPass` bag, each `Export.Name` into a bag
   sharing its log-only set (deploy pass 2); each alias is then decided (pass
-  3) against those plus `noEchoParameterValueSeed` (#4043). `diffSecrets` is
-  print-only (`printingSecrets`): its resource-pass needles (an encoding, a
-  split piece) would refuse an alias the deploy publishes.
+  3) against those plus `noEchoParameterValueSeed` (#4043), after a name
+  READING a `NoEcho` parameter is refused from the template (#4657).
+  `diffSecrets` is print-only: its resource-pass needles would refuse an
+  alias the deploy publishes.
 - It reads the STORED bag for two decisions: the `skippedOutputs` record, and a
   LITERAL `Export.Name` in a stack resolving a secret. Deploy refuses a name
   CONTAINING a resolved plaintext; the preview never substitutes one, so it

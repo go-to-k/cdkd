@@ -665,7 +665,9 @@ export class DeployEngine {
    * with `Outputs` has run.
    */
   /** @internal */
-  carriedExportAliasRefusal: ((outputKey: string, exportName: string) => string | undefined) | undefined;
+  carriedExportAliasRefusal:
+    | ((outputKey: string, exportName: string) => string | undefined)
+    | undefined;
   /**
    * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
    * (the resolver threw under the default arm of

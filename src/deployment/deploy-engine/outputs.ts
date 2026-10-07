@@ -485,7 +485,7 @@ export async function resolveOutputs(
         outputKey,
         exportName,
         verdict.exposure,
-        outputsPassSecrets,
+        context.recordedSecretValues,
         verdict.noEchoOnly
       );
     };

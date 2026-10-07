@@ -23,7 +23,10 @@
 #      nor the exports index holds it (#4043). So are a literal name spelling
 #      NoEchoToken's value, which only a resource reads, and an earlier literal
 #      name spelling the Fn::Base64 encoding a LATER name records (#4043,
-#      Phase B: the seed, and the resolve-then-decide order).
+#      Phase B: the seed, and the resolve-then-decide order). A name whose
+#      intrinsic READS a NoEcho parameter is refused from the template, naming
+#      the parameter (go-to-k/cdkd#4657): NoEchoShortAliasProbe's Fn::Join
+#      embeds a 3-character NoEcho value, under the containment floor.
 #      NoEchoSplitConsumer reads the second piece of an Fn::Split over a third
 #      NoEcho value: the `Resolved Fn::Split` line prints neither piece, AWS
 #      holds the piece and state.json `***` (the position reads the NoEcho
@@ -162,6 +165,14 @@ if [ "${#SPLIT_A}" -lt 20 ] || [ "${#SPLIT_B}" -lt 20 ]; then
   exit 1
 fi
 export CDKD_TEST_NOECHO_SPLIT_TOKEN="${SPLIT_A},${SPLIT_B}"
+# NoEchoShortToken (go-to-k/cdkd#4657): THREE characters, under the
+# containment floor, so only the positional refusal sees it in a name.
+SHORT_TOKEN="q$(od -An -N1 -tx1 /dev/urandom | tr -d ' \n')"
+if [ "${#SHORT_TOKEN}" -ne 3 ]; then
+  echo "FAIL: premise: could not generate the 3-character NoEcho value (got ${#SHORT_TOKEN} characters)" >&2
+  exit 1
+fi
+export CDKD_TEST_NOECHO_SHORT_TOKEN="${SHORT_TOKEN}"
 SPLIT_NAME="cdkd-test-noecho-split-${ACCOUNT_ID}"
 # The nested SplitChild (#4049): its own state key is a SIBLING prefix of the
 # parent's, so it is swept by its own prefix too.
@@ -462,17 +473,17 @@ if [ "${ALIAS_SHAPE}" != "true" ]; then
   exit 1
 fi
 # The refusal warning, found by its fixed wording and the output it names --
-# neither carries the value -- and printed with the name masked.
+# neither carries the value. A name that is a LITERAL is refused by
+# containment and printed masked (REFUSAL_TEXT); one whose intrinsic READS a
+# NoEcho parameter, as this Ref does, is refused from the template and names
+# the parameter instead of the name (POSITIONAL_TEXT, go-to-k/cdkd#4657).
 REFUSAL_TEXT='has an Export.Name that resolves to a value containing a secret'
-P1_REFUSAL_LINE=$(grep -m1 -F -- "Output NoEchoAliasProbe ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}" || true)
+POSITIONAL_TEXT='has an Export.Name that reads the NoEcho template parameter'
+P1_REFUSAL_LINE=$(grep -m1 -F -- "Output NoEchoAliasProbe ${POSITIONAL_TEXT} NoEchoAliasToken " <<< "${DEPLOY_OUT_P1}" || true)
 if [ -z "${P1_REFUSAL_LINE}" ]; then
-  echo "FAIL: the Phase 1 deploy printed no export-name refusal for NoEchoAliasProbe -- the NoEcho alias was not refused (issue #4043)" >&2
+  echo "FAIL: the Phase 1 deploy printed no export-name refusal naming NoEchoAliasToken for NoEchoAliasProbe -- the NoEcho alias was not refused (issues #4043, #4657)" >&2
   # The alias value masked by hand: a regression here may print it.
   diag_output "$(grep -F 'NoEchoAliasProbe' <<< "${DEPLOY_OUT_P1}" | sed "s/${ALIAS_TOKEN}/***/g" || true)"
-  exit 1
-fi
-if [[ "${P1_REFUSAL_LINE}" != *'(masked: "***")'* ]]; then
-  echo "FAIL: the export-name refusal does not name the export masked (issue #4043): ${P1_REFUSAL_LINE//${ALIAS_TOKEN}/***}" >&2
   exit 1
 fi
 if [[ "${DEPLOY_OUT_P1}" == *"${ALIAS_TOKEN}"* ]]; then
@@ -535,7 +546,9 @@ if [ "${PHASE_B_SHAPE}" != "true" ]; then
   echo "FAIL: premise: the synthesized template does not declare the Phase B alias probes as expected (got ${PHASE_B_SHAPE})" >&2
   exit 1
 fi
-for probe in NoEchoLiteralAliasProbe NoEchoEarlyAliasProbe NoEchoLateEncodedProbe; do
+# The two LITERAL names are refused by containment, printed masked; the
+# LATER name reads NoEchoAliasToken, so it is refused positionally (below).
+for probe in NoEchoLiteralAliasProbe NoEchoEarlyAliasProbe; do
   PROBE_LINE=$(grep -m1 -F -- "Output ${probe} ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}" || true)
   if [ -z "${PROBE_LINE}" ]; then
     echo "FAIL: the Phase 1 deploy printed no export-name refusal for ${probe} -- its alias was published (issue #4043, Phase B)" >&2
@@ -546,6 +559,10 @@ for probe in NoEchoLiteralAliasProbe NoEchoEarlyAliasProbe NoEchoLateEncodedProb
     exit 1
   fi
 done
+if ! grep -qF -- "Output NoEchoLateEncodedProbe ${POSITIONAL_TEXT} NoEchoAliasToken " <<< "${DEPLOY_OUT_P1}"; then
+  echo "FAIL: the Phase 1 deploy printed no export-name refusal naming NoEchoAliasToken for NoEchoLateEncodedProbe (issues #4043, #4657)" >&2
+  exit 1
+fi
 if [[ "${DEPLOY_OUT_P1}" == *"${ALIAS_ENCODING}"* ]]; then
   echo "FAIL: the Phase 1 deploy output carries the encoding of the NoEcho alias value (issue #4043)" >&2
   exit 1
@@ -577,6 +594,40 @@ if [ -s "${P1_INDEX}" ] && { grep -qF -- "${ALIAS_ENCODING}" "${P1_INDEX}" || gr
   exit 1
 fi
 echo "    OK: a literal name spelling a resource-only NoEcho value, and an earlier name spelling a later name's encoding, are refused (#4043 Phase B)"
+
+# A 3-CHARACTER NoEcho value embedded through an intrinsic (go-to-k/cdkd#4657).
+# PREMISE: NoEchoShortToken is NoEcho with this run's 3-character value as its
+# Default, and NoEchoShortAliasProbe's Export.Name joins it between two
+# literals, so the name EMBEDS a value the containment floor (4) cannot see.
+SHORT_SHAPE=$(jq -r --arg tok "${SHORT_TOKEN}" '
+  (.Parameters.NoEchoShortToken.NoEcho == true and .Parameters.NoEchoShortToken.Default == $tok)
+  and (.Outputs.NoEchoShortAliasProbe.Export.Name
+       == {"Fn::Join": ["-", ["short", {"Ref": "NoEchoShortToken"}, "probe"]]})
+' "${SYNTH_TEMPLATE}" 2>/dev/null || echo "unparsable")
+if [ "${SHORT_SHAPE}" != "true" ]; then
+  echo "FAIL: premise: the synthesized template does not export NoEchoShortAliasProbe under an Fn::Join embedding the 3-character NoEcho NoEchoShortToken (got ${SHORT_SHAPE})" >&2
+  exit 1
+fi
+SHORT_LINE=$(grep -m1 -F -- "Output NoEchoShortAliasProbe ${POSITIONAL_TEXT} NoEchoShortToken " <<< "${DEPLOY_OUT_P1}" || true)
+if [ -z "${SHORT_LINE}" ]; then
+  echo "FAIL: the Phase 1 deploy printed no positional refusal for NoEchoShortAliasProbe -- a name embedding a 3-character NoEcho value was not refused (go-to-k/cdkd#4657)" >&2
+  diag_output "$(grep -F 'NoEchoShortAliasProbe' <<< "${DEPLOY_OUT_P1}" || true)"
+  exit 1
+fi
+if [[ "${SHORT_LINE}" == *"short-${SHORT_TOKEN}-probe"* ]]; then
+  echo "FAIL: the positional refusal prints the resolved name, which holds the value (go-to-k/cdkd#4657)" >&2
+  exit 1
+fi
+SHORT_KEYS=$(jq -r '[(.outputs // {} | to_entries[] | select(.value == "short-alias-probe-value") | .key)] | join(",")' "${P1_STATE}")
+if [ "${SHORT_KEYS}" != "NoEchoShortAliasProbe" ]; then
+  echo "FAIL: state.json holds NoEchoShortAliasProbe's value under another key -- the alias embedding a 3-character NoEcho value was published (go-to-k/cdkd#4657)" >&2
+  exit 1
+fi
+if [ -s "${P1_INDEX}" ] && grep -qF -- "short-${SHORT_TOKEN}-probe" "${P1_INDEX}"; then
+  echo "FAIL: the exports index carries the alias embedding a 3-character NoEcho value (go-to-k/cdkd#4657)" >&2
+  exit 1
+fi
+echo "    OK: a name embedding a 3-character NoEcho value through Fn::Join is refused, naming the parameter (#4657)"
 
 # SPLIT PIECES (#4049). PREMISE: the template declares NoEchoSplitToken NoEcho
 # with this run's two pieces as its Default, NoEchoSplitConsumer reads the
@@ -623,8 +674,9 @@ fi
 echo "    OK: AWS holds the real piece; state.json holds *** for it and for the nested row's parameter"
 # The split alias: refused (the #4049 widening of the #4043 verdict), and
 # published nowhere -- the index check above counts no entry for this stack.
-if ! grep -qF -- "Output NoEchoSplitAliasProbe ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}"; then
-  echo "FAIL: the Phase 1 deploy printed no export-name refusal for NoEchoSplitAliasProbe -- an Export.Name holding a split piece was not refused (issue #4049)" >&2
+# Its Fn::Select over Fn::Split READS NoEchoSplitToken: refused positionally.
+if ! grep -qF -- "Output NoEchoSplitAliasProbe ${POSITIONAL_TEXT} NoEchoSplitToken " <<< "${DEPLOY_OUT_P1}"; then
+  echo "FAIL: the Phase 1 deploy printed no export-name refusal naming NoEchoSplitToken for NoEchoSplitAliasProbe -- an Export.Name holding a split piece was not refused (issues #4049, #4657)" >&2
   diag_output "$(grep -F 'NoEchoSplitAliasProbe' <<< "${DEPLOY_OUT_P1}" || true)"
   exit 1
 fi
