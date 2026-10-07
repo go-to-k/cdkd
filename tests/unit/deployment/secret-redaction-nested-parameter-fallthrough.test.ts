@@ -316,6 +316,31 @@ describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#234
     expect(persisted['V']).toBe(`xxAB${X_EXPR}xx`);
   });
 
+  it('does NOT decline on a sub-floor PARENT key the child lacks -- the parent scan never takes it as a substring', () => {
+    // `q7` is below MIN_NEEDLE_LENGTH, so the parent scan cannot cut anything
+    // with it; declining on it would only keep the pre-#2349 perpetual diff.
+    const X = 'shared-secret-2349';
+    const PIN = 'q7';
+    const X_PARENT = '{{resolve:secretsmanager:parent/x:SecretString:x::}}';
+    const X_CHILD = '{{resolve:secretsmanager:child/x:SecretString:x::}}';
+    const PIN_EXPR = '{{resolve:ssm:/parent/pin}}';
+    const value = `xx${X}${PIN}xx`;
+    const parent: RecordedSecretValues = new Map([
+      [X, X_PARENT],
+      [PIN, PIN_EXPR],
+    ]);
+    const child: RecordedSecretValues = new Map([[X, X_CHILD]]);
+    recordInheritedParameterRead(child, parent, PARAM_A);
+    // The premise: the parent-bag answer leaves the pin as text (never a needle).
+    expect(redactInheritedParameterValue(parent, PARAM_A, value)).toBe(`xx${X_PARENT}${PIN}xx`);
+
+    const persisted = redactSecretsForState({ V: value }, child, { V: { Ref: PARAM_A } }) as Record<
+      string,
+      unknown
+    >;
+    expect(persisted['V']).toBe(`xx${X_PARENT}${PIN}xx`);
+  });
+
   it('leaves a {Ref} the resolver recorded no inherited read for on the existing arms', () => {
     // A child bag carrying the parent's pair WITHOUT the read record -- what
     // any non-resolver writer produces. The arm must not fire.
