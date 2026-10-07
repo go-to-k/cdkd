@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -74,6 +75,8 @@ const CREATE_DATE_SKEW_MARGIN_MS = 5_000;
  */
 export class IAMAccessKeyProvider implements ResourceProvider {
   private iamClient: IAMClient;
+  /** `CreateAccessKey` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
   private logger = getLogger().child('IAMAccessKeyProvider');
 
   /**
@@ -220,9 +223,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     // has deleted that key. Only the id is ever marked, never the secret.
     let leftBehindKeyId: string | undefined;
     try {
-      const response = await this.iamClient.send(
-        new CreateAccessKeyCommand({ UserName: userName })
-      );
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreateAccessKeyCommand({ UserName: userName }));
 
       const accessKeyId = response.AccessKey?.AccessKeyId;
       const secretAccessKey = response.AccessKey?.SecretAccessKey;

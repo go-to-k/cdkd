@@ -1221,6 +1221,10 @@ resource is gone (returning `undefined` rather than `RESOURCE_NOT_FOUND`),
   DELETES; a report-only lookup, below, runs at the top of the next attempt
   on purpose). A baseline that spans the whole retry
   schedule describes a window many seconds wide.
+- **Send the create through a client that refuses the SDK's 5xx retry**
+  (`withoutServerErrorRetries`; [#4639](https://github.com/go-to-k/cdkd/issues/4639)).
+  The SDK's replay inside one `send` SUCCEEDS with a second resource, so the
+  failure path, and the reconcile in it, never runs.
 - **Require a creation timestamp at or after the attempt started**, with a small
   margin for clock skew between you and the service.
 - **Keep a set of ids this process created successfully and never delete one.**
@@ -1248,7 +1252,9 @@ shared report is `orphan-report.ts`):
   failures, clock skew and socket resets, which the engine does not retry.
   A create whose replay COLLIDES instead of duplicating (CodeCommit's
   `CreateRepository`, by name, and its seed `CreateCommit`, refused once the
-  branch exists; EC2's `CreateSecurityGroup`, by group name in the VPC)
+  branch exists; EC2's `CreateSecurityGroup`, by group name in the VPC; IAM's
+  `CreateRole`, `CreateUser`, `CreateGroup`, `CreateInstanceProfile` and
+  `CreatePolicy`, by entity name, through `iam-create-client.ts`)
   needs this client and no lookup: the surfaced 5xx lets
   `withRetry` mark the collision as possibly this create's own
   ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never

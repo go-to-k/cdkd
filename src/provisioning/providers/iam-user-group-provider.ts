@@ -38,6 +38,7 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -285,6 +286,8 @@ function derivedNamePairs(
  */
 export class IAMUserGroupProvider implements ResourceProvider {
   private iamClient: IAMClient;
+  /** `CreateUser` / `CreateGroup` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
   private logger = getLogger().child('IAMUserGroupProvider');
 
   /**
@@ -512,7 +515,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
         createParams.Tags = desiredTags;
       }
 
-      const response = await this.iamClient.send(new CreateUserCommand(createParams));
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreateUserCommand(createParams));
       leftBehind = true;
 
       // CreateUserCommand has succeeded — AWS has now committed the User
@@ -1283,7 +1287,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
         createParams.Path = properties['Path'] as string;
       }
 
-      const response = await this.iamClient.send(new CreateGroupCommand(createParams));
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(new CreateGroupCommand(createParams));
       leftBehind = true;
 
       // CreateGroupCommand has succeeded — AWS has now committed the

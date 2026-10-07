@@ -11,6 +11,7 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -49,6 +50,8 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
  */
 export class IAMInstanceProfileProvider implements ResourceProvider {
   private iamClient: IAMClient;
+  /** `CreateInstanceProfile` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
+  private readonly createClient = new IamCreateClientCache(() => this.iamClient);
   private logger = getLogger().child('IAMInstanceProfileProvider');
 
   /**
@@ -122,7 +125,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     let leftBehind = false;
     try {
       // Create instance profile
-      const response = await this.iamClient.send(
+      const createClient = await this.createClient.get();
+      const response = await createClient.send(
         new CreateInstanceProfileCommand({
           InstanceProfileName: instanceProfileName,
           Path: path,
