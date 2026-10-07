@@ -82,7 +82,9 @@ await expectVerdict('other live instance vs the record', otherLiveId, liveId, 'd
 // (different, the settle deletes it), and never proof as the record's.
 await expectVerdict('terminated journaled instance vs a live record', terminatedId, liveId, 'different');
 await expectVerdict('live journaled instance vs a terminated record', liveId, terminatedId, 'unknown');
-// (d) A well-formed id that never existed: AWS reports it not found, which is
+// (d) An 8-hex id that never existed (verify.sh draws one EC2 answers
+// InvalidInstanceID.NotFound; a synthetic 17-hex id answers Malformed, which
+// the provider throws on, so the caller reads it unknown): not found, which is
 // gone as a journaled id and never proof as the record's.
 await expectVerdict('never-existed journaled id vs a live record', neverId, liveId, 'different');
 await expectVerdict('live journaled instance vs a never-existed record', liveId, neverId, 'unknown');

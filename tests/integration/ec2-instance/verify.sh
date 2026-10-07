@@ -39,7 +39,7 @@
 # Also the issue #4606 arm (Phase 1b): `same-resource-probe.mjs` drives the
 # built `EC2Provider.isSameResource` against live instances -- this stack's two,
 # a throwaway launched and terminated here (still described as `terminated`),
-# and a well-formed id that never existed -- asserting same / different /
+# and a random 8-hex id that never existed -- asserting same / different /
 # unknown per case. With the #4606 change reverted, five cases fail: (a), (b)
 # and the journaled halves of (c) / (d) answer `unknown`, and (g) prints no
 # `already gone` line; the record halves of (c) / (d), (e) and (f) are controls.
@@ -831,17 +831,36 @@ if [ "${PROBE_STATE}" != "terminated" ]; then
   echo "FAIL: issue #4606 premise not reached -- the throwaway ${PROBE_INSTANCE_ID} describes as '${PROBE_STATE}', expected terminated" >&2
   exit 1
 fi
-# Premise of case (d): a well-formed id that never existed answers NotFound
-# (a Malformed answer would make the probe exercise the wrong error).
-NEVER_INSTANCE_ID="i-0000000000000000f"
-set +e
-NEVER_OUT=$(aws ec2 describe-instances --instance-ids "${NEVER_INSTANCE_ID}" --region "${REGION}" 2>&1)
-NEVER_RC=$?
-set -e
-if [ "${NEVER_RC}" -eq 0 ] || ! printf '%s' "${NEVER_OUT}" | grep -q 'InvalidInstanceID.NotFound'; then
-  echo "FAIL: issue #4606 premise not reached -- describe-instances ${NEVER_INSTANCE_ID} (rc=${NEVER_RC}) did not answer InvalidInstanceID.NotFound: $(sanitize_aws_output "${NEVER_OUT}")" >&2
-  exit 1
-fi
+# Premise of case (d): an id that never existed answers NotFound (a Malformed
+# answer would make the probe exercise the wrong error). Short form, 8 hex: EC2
+# answers a synthetic 17-hex id `InvalidInstanceID.Malformed` (measured in
+# us-east-1 on i-0000000000000000f and random 17-hex ids). Random per run; one
+# that happens to exist is drawn again.
+NEVER_INSTANCE_ID=""
+for _attempt in 1 2 3 4 5; do
+  CANDIDATE_ID="i-$(openssl rand -hex 4)"
+  set +e
+  NEVER_OUT=$(aws ec2 describe-instances --instance-ids "${CANDIDATE_ID}" --region "${REGION}" 2>&1)
+  NEVER_RC=$?
+  set -e
+  if [ "${NEVER_RC}" -ne 0 ] && printf '%s' "${NEVER_OUT}" | grep -q 'InvalidInstanceID.NotFound'; then
+    NEVER_INSTANCE_ID="${CANDIDATE_ID}"
+    break
+  fi
+  if [ "${NEVER_RC}" -ne 0 ]; then
+    # Not "exists, draw again": any other error is a broken premise.
+    echo "FAIL: issue #4606 premise not reached -- describe-instances ${CANDIDATE_ID} (rc=${NEVER_RC}) did not answer InvalidInstanceID.NotFound: $(sanitize_aws_output "${NEVER_OUT}")" >&2
+    exit 1
+  fi
+done
+case "${NEVER_INSTANCE_ID}" in
+  i-????????) ;;
+  *)
+    echo "FAIL: issue #4606 premise not reached -- no never-existed 8-hex instance id found in 5 draws" >&2
+    exit 1
+    ;;
+esac
+echo "    never-existed instance id for case (d): ${NEVER_INSTANCE_ID} (InvalidInstanceID.NotFound)"
 set +e
 PROBE_OUT=$(node same-resource-probe.mjs "${REGION}" "${INSTANCE_ID}" "${PUBLIC_INSTANCE_ID}" \
   "${PROBE_INSTANCE_ID}" "${NEVER_INSTANCE_ID}" 2>&1)

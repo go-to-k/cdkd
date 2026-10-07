@@ -41,7 +41,12 @@ const I_B = 'i-0bbbbbbbbbbbbbbb2';
 
 const awsError = (name: string, message = name): Error => Object.assign(new Error(message), { name });
 
-/** `DescribeInstances` answers per instance id: its state name, gone, or an error. */
+/**
+ * `DescribeInstances` answers per instance id: its state name, gone, or an
+ * error. The ids are labels only: real EC2 answers a synthetic 17-hex id
+ * like these `InvalidInstanceID.Malformed`, not NotFound (the Malformed case
+ * below pins that the provider throws on it, so the caller reads `unknown`).
+ */
 function instances(live: Record<string, string | 'gone' | Error>): void {
   mockSend.mockImplementation(async (cmd: unknown) => {
     if (!(cmd instanceof DescribeInstancesCommand)) throw new Error('unexpected command');
