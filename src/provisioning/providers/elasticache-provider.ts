@@ -39,6 +39,7 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -56,6 +57,31 @@ const CACHE_DELETE_WAIT_MS = Math.max(
   600_000,
   slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'DELETE')
 );
+
+/**
+ * A cache cluster id: a letter, then letters, digits and single hyphens, not
+ * ending in one, at most 50 characters. Either case, as a template may spell
+ * it (ElastiCache stores it lower-cased and matches it in any case).
+ */
+function isCacheClusterId(id: string): boolean {
+  return id.length <= 50 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
+}
+
+/**
+ * go-to-k/cdkd#4655: a cache cluster's identity token, `<ARN>@<epoch ms of
+ * CacheClusterCreateTime>`, or `undefined` when the answer lacks either. The
+ * ARN is built from the (lower-cased) cluster id, so a cluster re-created
+ * under the id repeats it; the creation time is what tells the two apart.
+ */
+function cacheClusterToken(
+  cluster: { ARN?: string | undefined; CacheClusterCreateTime?: Date | undefined } | undefined
+): string | undefined {
+  const arn = cluster?.ARN;
+  const created = cluster?.CacheClusterCreateTime;
+  if (typeof arn !== 'string' || arn === '') return undefined;
+  if (!(created instanceof Date) || Number.isNaN(created.getTime())) return undefined;
+  return `${arn}@${created.getTime()}`;
+}
 
 /**
  * AWS ElastiCache Provider
@@ -454,8 +480,12 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateCacheCluster returned (no self-cleanup).
     let clusterCreated = false;
+    // go-to-k/cdkd#4655: the token CreateCacheCluster's answer names, carried
+    // on the failure's mark. Only when it holds both the ARN and the creation
+    // time; otherwise the deploy engine's write-side read tries.
+    let createdIdentity: string | undefined;
     try {
-      await this.getCreateClient().send(
+      const createResponse = await this.getCreateClient().send(
         new CreateCacheClusterCommand({
           CacheClusterId: cacheClusterId,
           Engine: properties['Engine'] as string,
@@ -493,6 +523,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         })
       );
       clusterCreated = true;
+      createdIdentity = cacheClusterToken(createResponse.CacheCluster);
 
       this.logger.debug(`Successfully created CacheCluster ${logicalId}: ${cacheClusterId}`);
 
@@ -542,7 +573,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateCacheCluster returned (another owner's name).
       if (clusterCreated) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, cacheClusterId);
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, cacheClusterId, createdIdentity);
       }
       throw thrown;
     }
@@ -637,7 +668,9 @@ export class ElastiCacheProvider implements ResourceProvider {
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           NotificationTopicArn: notificationTopicArn,
           ...(notificationRemoved && { NotificationTopicStatus: 'inactive' }),
-          ...(notificationTopicArn !== undefined && { NotificationTopicStatus: 'active' }),
+          ...(notificationTopicArn !== undefined && {
+            NotificationTopicStatus: 'active',
+          }),
           // Per-LogType merge semantics: each request entry modifies ONLY
           // its own LogType, so a log type dropped from the template (or the
           // whole property removed) must be sent as an explicit
@@ -775,7 +808,15 @@ export class ElastiCacheProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`CacheCluster ${logicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  ElastiCache cache cluster ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`CacheCluster ${logicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -848,7 +889,10 @@ export class ElastiCacheProvider implements ResourceProvider {
     const tagsToRemove = plan.remove.filter((k) => live.has(k));
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
-        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
+        new RemoveTagsFromResourceCommand({
+          ResourceName: arn,
+          TagKeys: tagsToRemove,
+        })
       );
     }
     if (tagsToAdd.length > 0) {
@@ -882,7 +926,10 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
-        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
+        new RemoveTagsFromResourceCommand({
+          ResourceName: arn,
+          TagKeys: tagsToRemove,
+        })
       );
       this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ElastiCache resource ${arn}`);
     }
@@ -1012,6 +1059,105 @@ export class ElastiCacheProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * go-to-k/cdkd#4606: whether the cache cluster a failed CREATE journaled is
+   * the one the record under the same logical id holds (a fix-forward that
+   * created a new one there under another cluster id).
+   *
+   * Reached on the SDK route only (Cloud Control's provider has no
+   * `isSameResource`, so a Cloud Control-routed orphan is `'unknown'`). Both
+   * ids must be cache cluster ids; an ARN or anything else is `'unknown'`, as
+   * is a SubnetGroup. A cluster id names at most one cluster per account and
+   * region at a time, a cluster cannot be renamed, and ElastiCache matches ids
+   * case-insensitively (it stores them lower-cased), so two spellings equal
+   * modulo case are `'same'` without a read: whatever holds that id now is
+   * the record's cluster. After the region check the record's cluster must
+   * read back (else `'unknown'`); the journaled one is `'same'` when it reads
+   * back under the record's ARN, `'different'` under another, and
+   * `'different'` when AWS reports it gone: the record's cluster answers to
+   * its own, other, id, so the gone one cannot name it, and its delete
+   * settles as already gone.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::ElastiCache::CacheCluster') return 'unknown';
+    if (!isCacheClusterId(journaledPhysicalId) || !isCacheClusterId(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordCluster = await this.readCacheClusterIfExists(record.physicalId);
+    if (recordCluster === undefined) return 'unknown';
+    const journaledCluster = await this.readCacheClusterIfExists(journaledPhysicalId);
+    if (journaledCluster === undefined) return 'different';
+    return journaledCluster.arn === recordCluster.arn ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655: the cluster's ARN and creation time, `<arn>@<epoch
+   * ms>`. ElastiCache generates no immutable id for a cache cluster, and the
+   * ARN is built from the cluster id, so a cluster re-created under the id
+   * (in any case spelling) repeats it; the creation time is what tells the
+   * two apart, so the settle keeps such a cluster rather than deleting it as
+   * the failed CREATE's orphan.
+   *
+   * `undefined` for another type, an id that is not a cache cluster id, a
+   * client in another region than `expectedRegion`, and an answer without
+   * both fields (`CacheClusterCreateTime` may be absent while the cluster is
+   * still being created). `RESOURCE_NOT_FOUND` only on the describe's
+   * not-found fault NAME (or an empty list); any other failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::ElastiCache::CacheCluster') return undefined;
+    if (!isCacheClusterId(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const live = await this.readCacheClusterIfExists(physicalId);
+    if (live === undefined) return RESOURCE_NOT_FOUND;
+    return live.token;
+  }
+
+  /**
+   * The cluster's ARN (and its identity token, when the answer carries the
+   * creation time), or `undefined` when AWS reports the id gone (its
+   * not-found fault NAME, or an empty describe list). Any other failure, an
+   * answer naming another cluster id and one naming no ARN throw: "could not
+   * read" never reads as "gone".
+   */
+  private async readCacheClusterIfExists(
+    cacheClusterId: string
+  ): Promise<{ arn: string; token: string | undefined } | undefined> {
+    let cluster;
+    try {
+      const response = await this.getClient().send(
+        new DescribeCacheClustersCommand({ CacheClusterId: cacheClusterId })
+      );
+      cluster = response.CacheClusters?.[0];
+    } catch (error) {
+      if ((error as { name?: unknown } | null)?.name === 'CacheClusterNotFoundFault') {
+        return undefined;
+      }
+      throw error;
+    }
+    if (cluster === undefined) return undefined;
+    if (cluster.CacheClusterId?.toLowerCase() !== cacheClusterId.toLowerCase()) {
+      throw new Error('DescribeCacheClusters answered for another cluster id');
+    }
+    if (typeof cluster.ARN !== 'string' || cluster.ARN === '') {
+      throw new Error('DescribeCacheClusters returned no ARN');
+    }
+    return { arn: cluster.ARN, token: cacheClusterToken(cluster) };
+  }
+
   private async readCacheCluster(
     physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
@@ -1099,7 +1245,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     let group;
     try {
       const resp = await this.getClient().send(
-        new DescribeCacheSubnetGroupsCommand({ CacheSubnetGroupName: physicalId })
+        new DescribeCacheSubnetGroupsCommand({
+          CacheSubnetGroupName: physicalId,
+        })
       );
       group = resp.CacheSubnetGroups?.[0];
     } catch (err) {
@@ -1198,7 +1346,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     if (explicit) {
       try {
         const resp = await this.getClient().send(
-          new DescribeCacheSubnetGroupsCommand({ CacheSubnetGroupName: explicit })
+          new DescribeCacheSubnetGroupsCommand({
+            CacheSubnetGroupName: explicit,
+          })
         );
         const g = resp.CacheSubnetGroups?.[0];
         return g?.CacheSubnetGroupName
