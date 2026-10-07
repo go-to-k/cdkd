@@ -151,6 +151,29 @@ export const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
 export const ASCII_CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set(['AWS::Glue::Table']);
 
 /**
+ * go-to-k/cdkd#4692: the key under which two physical ids of `resourceType`
+ * name the same resource — case-folded for a type in
+ * {@link CASE_INSENSITIVE_NAME_TYPES} (ASCII only for
+ * {@link ASCII_CASE_INSENSITIVE_NAME_TYPES}), exact for every other. A
+ * provider records the id as the template spelled it, so `MyCluster` and
+ * `mycluster` are one RDS cluster. Only for a check whose MATCH keeps a
+ * resource (a record holds it): a fold can merge ids, so a match must never
+ * be what licenses a delete.
+ */
+export function physicalIdKey(resourceType: string, physicalId: string): string {
+  if (CASE_INSENSITIVE_NAME_TYPES.has(resourceType)) return physicalId.toLowerCase();
+  if (ASCII_CASE_INSENSITIVE_NAME_TYPES.has(resourceType)) {
+    return physicalId.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  }
+  return physicalId;
+}
+
+/** Whether `a` and `b` name the same resource of `resourceType` ({@link physicalIdKey}). */
+export function samePhysicalId(resourceType: string, a: string, b: string): boolean {
+  return physicalIdKey(resourceType, a) === physicalIdKey(resourceType, b);
+}
+
+/**
  * Types whose physical id never proves the name the holder holds: a
  * `<database>|<table>` id where either name may carry `|`, so the id's tail
  * (`a|b` ends in `b`) or the whole id (`x|y`) can name another table (#3932).
