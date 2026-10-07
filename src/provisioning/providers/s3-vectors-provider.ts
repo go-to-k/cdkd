@@ -27,6 +27,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
@@ -48,6 +49,7 @@ import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
  */
 export class S3VectorsProvider implements ResourceProvider {
   private client: S3VectorsClient | undefined;
+  private createClient: S3VectorsClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('S3VectorsProvider');
 
@@ -76,8 +78,34 @@ export class S3VectorsProvider implements ResourceProvider {
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new S3VectorsClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateVectorBucket` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry; built in {@link getClient}'s step, so both
+   * capture the region and identity active at that ONE call.
+   *
+   * `CreateVectorBucket` carries no idempotency token, and a vector bucket
+   * name is unique per account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): S3VectorsClient {
+    this.getClient();
+    return this.createClient as S3VectorsClient;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -331,7 +359,7 @@ export class S3VectorsProvider implements ResourceProvider {
     const tags = Object.keys(tagRecord).length > 0 ? tagRecord : undefined;
 
     try {
-      const result = await this.getClient().send(
+      const result = await this.getCreateClient().send(
         new CreateVectorBucketCommand({
           vectorBucketName,
           encryptionConfiguration: encryptionConfiguration

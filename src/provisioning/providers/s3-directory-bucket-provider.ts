@@ -40,7 +40,12 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import {
+  ambientClientDefaults,
+  clientDefaultsFor,
+  type CredentialConfig,
+} from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -124,6 +129,9 @@ function notEmptyRefusalMessage(bucketName: string): string {
  */
 export class S3DirectoryBucketProvider implements ResourceProvider {
   private s3Client: S3Client;
+  private createClient: Promise<S3Client> | undefined;
+  /** The credential half of the `AwsClients` `s3Client` came from (#4639). */
+  private readonly credentialConfig: CredentialConfig;
   private stsClient: STSClient;
   private logger = getLogger().child('S3DirectoryBucketProvider');
 
@@ -142,6 +150,45 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     const awsClients = getAwsClients();
     this.s3Client = awsClients.s3;
     this.stsClient = awsClients.sts;
+    // A test double may carry no `credentialConfig`: degrade to `{}`, as
+    // `ambientCredentialConfig` does.
+    this.credentialConfig =
+      (awsClients as { credentialConfig?: CredentialConfig }).credentialConfig ?? {};
+  }
+
+  /**
+   * The client `CreateBucket` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * -- and every other provider sharing `getAwsClients().s3` -- keeps the full
+   * SDK retry. Built in the shared client's REGION (read from it, as
+   * `config.region()` resolves it), so the create cannot land in another
+   * region than the calls around it, and with the credentials of the SAME
+   * `AwsClients` that client came from, read at construction, so a later
+   * `setAwsClients` switch cannot give the create another identity. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it.
+   *
+   * `CreateBucket` carries no idempotency token, and a directory bucket name
+   * is unique in its zone, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with the bucket the first send made, and that
+   * collision surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). The bucket is
+   * not adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): Promise<S3Client> {
+    this.createClient ??= this.s3Client.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(
+          new S3Client({ ...clientDefaultsFor(this.credentialConfig), region })
+        ),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
   }
 
   private getEc2Client(): EC2Client {
@@ -304,7 +351,9 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       // exists, leaving a bucket no state record names.
       const attributes = await this.buildAttributes(bucketName);
 
-      await this.s3Client.send(
+      await (
+        await this.getCreateClient()
+      ).send(
         new CreateBucketCommand({
           Bucket: bucketName,
           CreateBucketConfiguration: {

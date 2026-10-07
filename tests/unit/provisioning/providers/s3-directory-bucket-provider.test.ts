@@ -25,12 +25,25 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 // derivation). Reset to `us-east-1` in `beforeEach`.
 const clientRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
 
+// The create goes through its own S3Client (issue #4639); answer it with the
+// same send double as the shared one.
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({
+      send: (...args: unknown[]) => mockSend(...args),
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     s3: {
       send: mockSend,
       config: {
-        region: () => clientRegion.value,
+        region: () => Promise.resolve(clientRegion.value),
       },
     },
     sts: { send: mockSend },

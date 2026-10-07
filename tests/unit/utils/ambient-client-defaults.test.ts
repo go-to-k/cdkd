@@ -221,11 +221,11 @@ describe('routed sites carry the explicit credentials', () => {
     // The read went through the mocked client, so the recorded config is the
     // one that signed it.
     expect(state).toMatchObject({ TableBucketName: 'bucket-3588' });
-    expect(clientConfigs['s3tables']).toHaveLength(1);
-    expect(clientConfigs['s3tables']![0]).toMatchObject({
-      region: 'eu-west-1',
-      credentials: EXPLICIT,
-    });
+    // The shared client and the create client (issue #4639), built together.
+    expect(clientConfigs['s3tables']).toHaveLength(2);
+    for (const config of clientConfigs['s3tables']!) {
+      expect(config).toMatchObject({ region: 'eu-west-1', credentials: EXPLICIT });
+    }
   });
 
   it('a synthesis context provider', async () => {

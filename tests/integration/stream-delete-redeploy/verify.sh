@@ -131,6 +131,17 @@ kinesis_status() {
   aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}" \
     --query 'StreamDescriptionSummary.StreamStatus' --output text
 }
+# The consumer is named like the streams; Kinesis scopes it to the stream ARN,
+# read from the stream itself so the partition is never assumed.
+stream_arn() {
+  aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamARN' --output text
+}
+consumer_status() {
+  aws kinesis describe-stream-consumer --stream-arn "$(stream_arn)" \
+    --consumer-name "${NAME}" --region "${REGION}" \
+    --query 'ConsumerDescription.ConsumerStatus' --output text
+}
 assert_eq() { # usage: assert_eq "<what>" "<expected>" "<actual>"
   if [ "$2" != "$3" ]; then
     echo "FAIL: $1 — expected '$2', got '$3'" >&2
@@ -145,7 +156,8 @@ CDKD_SRD_PHASE=a node "${LOCAL_DIST}" deploy "${STACK}" \
 
 assert_eq "Firehose status after Phase 1" "ACTIVE" "$(firehose_status)"
 assert_eq "Kinesis status after Phase 1" "ACTIVE" "$(kinesis_status)"
-echo "    both streams ACTIVE"
+assert_eq "Kinesis consumer status after Phase 1" "ACTIVE" "$(consumer_status)"
+echo "    both streams and the stream consumer ACTIVE"
 
 # --- Phase 2: destroy, then IMMEDIATELY redeploy -------------------------
 echo "==> Phase 2: destroy"
@@ -179,9 +191,11 @@ echo "    streams were gone when destroy returned, and the redeploy succeeded"
 # --- Phase 3: the redeploy really re-created both ------------------------
 assert_eq "Firehose status after the redeploy" "ACTIVE" "$(firehose_status)"
 assert_eq "Kinesis status after the redeploy" "ACTIVE" "$(kinesis_status)"
-echo "    both streams ACTIVE again under the same names"
+assert_eq "Kinesis consumer status after the redeploy" "ACTIVE" "$(consumer_status)"
+echo "    both streams and the stream consumer ACTIVE again under the same names"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
+STREAM_ARN="$(stream_arn)"
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -190,6 +204,8 @@ assert_gone "Firehose delivery stream ${NAME} still exists after destroy" \
   aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"
 assert_gone "Kinesis stream ${NAME} still exists after destroy" \
   aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"
+assert_gone "Kinesis stream consumer ${NAME} still exists after destroy" \
+  aws kinesis describe-stream-consumer --stream-arn "${STREAM_ARN}" --consumer-name "${NAME}" --region "${REGION}"
 assert_gone "bucket ${BUCKET_A} still exists after destroy" \
   aws s3api head-bucket --bucket "${BUCKET_A}" --region "${REGION}"
 assert_gone "bucket ${BUCKET_B} still exists after destroy" \
