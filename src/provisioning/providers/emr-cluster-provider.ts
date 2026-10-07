@@ -1381,10 +1381,11 @@ export class EMRClusterProvider implements ResourceProvider {
    * `'same'` without a read. After the region check, `DescribeCluster` must
    * read the record's cluster back under its own id in a live state
    * (`STARTING` / `BOOTSTRAPPING` / `RUNNING` / `WAITING`), else `'unknown'`.
-   * The journaled cluster is then `'different'`, whether it reads back under
-   * its own id (a `TERMINATED_WITH_ERRORS` one included: the settle's delete
-   * names it already gone) or EMR answers `InvalidRequestException` for it.
-   * Any other failure throws, which the caller reads as `'unknown'`.
+   * The journaled cluster is then `'different'`, whether it reads back in any
+   * state (a `TERMINATED_WITH_ERRORS` one included: the settle's delete names
+   * it already terminated) or EMR answers `InvalidRequestException` for it;
+   * only a read naming the record's cluster makes it `'same'`. Any other
+   * failure throws, which the caller reads as `'unknown'`.
    */
   async isSameResource(
     journaledPhysicalId: string,

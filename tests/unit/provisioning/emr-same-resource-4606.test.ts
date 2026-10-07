@@ -167,6 +167,8 @@ describe('EMRClusterProvider.isSameResource (go-to-k/cdkd#4606)', () => {
     ['a journaled id of another form', 'ig-1AAAAAAAAAAAA', J_B],
     ['an empty record id', J_A, ''],
     ['a bare prefix', 'j-', J_B],
+    ['a journaled id with text before the prefix', 'xj-1AAAAAAAAAAAA', J_B],
+    ['a record id with text after the id', J_A, `${J_B}|x`],
   ])('%s is unknown without a read', async (_label, journaled, recorded) => {
     clusters({ [J_A]: 'WAITING', [J_B]: 'WAITING' });
     expect(
@@ -218,12 +220,23 @@ describe('EMRClusterProvider.delete of a journaled orphan already gone (go-to-k/
     );
   });
 
-  it.each([['TERMINATED'], ['gone']])(
-    'a record delete of a %s cluster stays at debug',
-    async (state) => {
+  it.each([
+    ['TERMINATED', undefined, 'already TERMINATED, skipping deletion'],
+    ['TERMINATED', false, 'already TERMINATED, skipping deletion'],
+    ['gone', undefined, 'does not exist, skipping deletion'],
+    ['gone', false, 'does not exist, skipping deletion'],
+  ] as const)(
+    'a record delete of a %s cluster (failedCreateOrphan %s) stays at debug',
+    async (state, failedCreateOrphan, debugText) => {
       clusters({ [J_A]: state });
-      await provider.delete('Cluster', J_A, CLUSTER, undefined, { expectedRegion: 'us-east-1' });
+      await provider.delete('Cluster', J_A, CLUSTER, undefined, {
+        expectedRegion: 'us-east-1',
+        ...(failedCreateOrphan !== undefined && { failedCreateOrphan }),
+      });
       expect(providerLogger.info).not.toHaveBeenCalled();
+      expect(
+        providerLogger.debug.mock.calls.some(([m]) => String(m).includes(`${J_A} ${debugText}`))
+      ).toBe(true);
     }
   );
 

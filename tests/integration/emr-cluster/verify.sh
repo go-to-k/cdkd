@@ -230,7 +230,9 @@ wait_cluster_terminated() {
 }
 
 # Delete every Phase 3b deny role any run of this fixture created, found by
-# the LITERAL prefix. Idempotent and soft-failing.
+# the LITERAL prefix. Idempotent and soft-failing. Deliberately not scoped to
+# this run's role: a role a killed run left behind is caught by the next run,
+# and two concurrent runs of this fixture collide on the stack anyway.
 delete_deny_roles() {
   (
     set +eu
@@ -983,8 +985,9 @@ fi
 TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
 # Scoped to what the injection deploy calls, never `*`: the role is assumable
 # by the caller for minutes, and an inline `Allow *` would hand it more than
-# the caller may have. The Deny is what makes the create's cleanup fail.
-DENY_POLICY="$(node -e 'const [acct,bucket,...roles]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:*",Resource:[`arn:aws:s3:::${bucket}`,`arn:aws:s3:::${bucket}/*`,"arn:aws:s3:::cdk-hnb659fds-*","arn:aws:s3:::cdk-hnb659fds-*/*"]},{Effect:"Allow",Action:["elasticmapreduce:*","ec2:Describe*","iam:Get*","iam:List*","cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Allow",Action:"iam:PassRole",Resource:roles.map((r)=>`arn:aws:iam::${acct}:role/${r}`)},{Effect:"Deny",Action:["elasticmapreduce:SetTerminationProtection","elasticmapreduce:TerminateJobFlows"],Resource:"*"}]}))' "${ACCOUNT_ID}" "${STATE_BUCKET}" ${PASS_ROLE_NAMES})"
+# the caller may have. The stack publishes no assets, so S3 is the state
+# bucket only. The Deny makes the create's cleanup fail.
+DENY_POLICY="$(node -e 'const [acct,bucket,...roles]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:*",Resource:[`arn:aws:s3:::${bucket}`,`arn:aws:s3:::${bucket}/*`]},{Effect:"Allow",Action:["elasticmapreduce:*","ec2:Describe*","iam:Get*","iam:List*","cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Allow",Action:"iam:PassRole",Resource:roles.map((r)=>`arn:aws:iam::${acct}:role/${r}`)},{Effect:"Deny",Action:["elasticmapreduce:SetTerminationProtection","elasticmapreduce:TerminateJobFlows"],Resource:"*"}]}))' "${ACCOUNT_ID}" "${STATE_BUCKET}" ${PASS_ROLE_NAMES})"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=emr-cluster >/dev/null
 aws iam put-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" \
@@ -1030,6 +1033,20 @@ case "${DENY_ARN}" in
     exit 1
     ;;
 esac
+# STS needs no permission: poll a call only the inline policy grants, so a
+# policy not yet in effect fails here rather than as a missing journal below.
+DENY_POLICY_LIVE=false
+for _ in $(seq 1 24); do
+  if as_deny_role aws s3api head-bucket --bucket "${STATE_BUCKET}" >/dev/null 2>&1; then
+    DENY_POLICY_LIVE=true
+    break
+  fi
+  sleep 5
+done
+if [ "${DENY_POLICY_LIVE}" != "true" ]; then
+  echo "FAIL: precondition — ${DENY_ROLE}'s inline policy never let it read ${STATE_BUCKET} within 2 minutes" >&2
+  exit 1
+fi
 
 echo "==> Phase 3b: --no-rollback deploy whose OrphanCluster bootstrap fails (as ${DENY_ROLE}; ~10 min)"
 set +e
@@ -1044,21 +1061,26 @@ if [ "${CLUSTER_FAIL_RC}" -eq 0 ]; then
   echo "FAIL: the OrphanCluster injection deploy unexpectedly SUCCEEDED (its bootstrap action names a missing script)" >&2
   exit 1
 fi
-if [ -n "$(state_query 'st.resources["OrphanCluster"]?.physicalId')" ]; then
+ORPHAN_RECORD="$(state_query 'st.resources["OrphanCluster"]?.physicalId')" || {
+  echo "FAIL: could not read the state record after the injection deploy" >&2
+  exit 1
+}
+if [ -n "${ORPHAN_RECORD}" ]; then
   echo "FAIL: state records OrphanCluster after a CREATE that threw (expected no record)" >&2
   exit 1
 fi
 ORPHAN_CID="$(journaled_orphan_id OrphanCluster 'after the --no-rollback deploy of Phase 3b')"
 case "${ORPHAN_CID}" in j-*) ;; *) echo "FAIL: journaled OrphanCluster id is not a cluster id: '${ORPHAN_CID}'" >&2; exit 1;; esac
 # Pinned to the injection's mechanism: the bootstrap failure terminated it, and
-# the denied cleanup is what journaled it.
+# its create's cleanup then failed (denied to this role; EMR may also refuse
+# the calls on a terminated cluster), which is what journaled it.
 ORPHAN_STATE="$(strict_cluster_state "${ORPHAN_CID}")" || { echo "FAIL: could not read the journaled cluster ${ORPHAN_CID} (DescribeCluster failed)" >&2; exit 1; }
 if [ "${ORPHAN_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
   echo "FAIL: the journaled ${ORPHAN_CID} is '${ORPHAN_STATE}' before the fix-forward, expected TERMINATED_WITH_ERRORS (the missing-bootstrap injection did not fire as designed)" >&2
   exit 1
 fi
 if ! grep -q "Failed to roll back partially-created EMR Cluster ${ORPHAN_CID}" "${FF_LOG}"; then
-  echo "FAIL: the injection deploy did not report its denied cleanup of ${ORPHAN_CID} (output above)" >&2
+  echo "FAIL: the injection deploy did not report its failed cleanup of ${ORPHAN_CID} (output above)" >&2
   exit 1
 fi
 echo "    OK: OrphanCluster ${ORPHAN_CID} (${ORPHAN_STATE}) is journaled as a proven orphan, no state record"
@@ -1082,6 +1104,12 @@ if ! grep -q "deleting partially-created OrphanCluster" "${FF_LOG}"; then
 fi
 if grep -q "Skipping failed CREATE of OrphanCluster" "${FF_LOG}"; then
   echo "FAIL: the fix-forward deploy still warned about the earlier OrphanCluster instead of deleting it (output above)" >&2
+  exit 1
+fi
+# Sentinel for that negative grep, independent of its wording: the skip warning
+# names the earlier cluster id and tells you to act on it by hand.
+if grep -F "${ORPHAN_CID}" "${FF_LOG}" | grep -qiE 'skipping|manual'; then
+  echo "FAIL: the fix-forward deploy printed a skip / manual-action line naming ${ORPHAN_CID} (output above) -- reworded skip warning?" >&2
   exit 1
 fi
 if ! grep -q "EMR cluster ${ORPHAN_CID} (OrphanCluster), which a failed deploy created, is already TERMINATED_WITH_ERRORS" "${FF_LOG}"; then
