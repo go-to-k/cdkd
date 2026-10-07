@@ -2,8 +2,11 @@ import {
   SECRET_MASK,
   carryLogOnlyValuesCarriedBy,
   isSingleDynamicReferenceToken,
+  noEchoParametersReadBy,
   printingCorpusOf,
   recordLogOnlyParameterValue,
+  shareLogOnlyValues,
+  type NoEchoPositionSources,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 
@@ -524,6 +527,53 @@ export function exportNameSecretExposure(
     }
   }
   return exposure.size > 0 ? exposure : undefined;
+}
+
+/**
+ * {@link exportNameSecretExposure} over an alias the no-change merge would
+ * CARRY from state rather than resolve (go-to-k/cdkd#4657), with the
+ * `noEchoOnly` reason {@link isNoEchoOnlyExposure} gives, or `undefined` to
+ * carry it. A carried name is LITERAL, so nothing was substituted into it: its
+ * own bag is empty and shares `recordedThisPass`'s log-only set, as a pass-2
+ * name bag does. The deploy and `cdkd diff` both decide a carry here.
+ */
+export function carriedExportAliasExposure(
+  exportName: string,
+  recordedThisPass: RecordedSecretValues,
+  noEchoParameterValues: RecordedSecretValues | undefined
+): { exposure: RecordedSecretValues; noEchoOnly: boolean } | undefined {
+  const carried: RecordedSecretValues = new Map();
+  shareLogOnlyValues(carried, recordedThisPass);
+  const exposure = exportNameSecretExposure(
+    exportName,
+    carried,
+    recordedThisPass,
+    noEchoParameterValues
+  );
+  if (exposure === undefined) return undefined;
+  return { exposure, noEchoOnly: isNoEchoOnlyExposure(exposure, carried, recordedThisPass) };
+}
+
+/**
+ * The `NoEcho` parameters an INTRINSIC `Export.Name` reads (go-to-k/cdkd#4657,
+ * the positional twin of {@link exportNameSecretExposure}'s `NoEcho` arm),
+ * empty when it reads none. A `Ref`, an `Fn::Sub` variable, or any intrinsic
+ * whose operands read one (`Fn::Join`, `Fn::Select`, ...), at any depth; an
+ * `Fn::If` whose verdict `sources.conditions` holds reads only the branch it
+ * selected, and one without a verdict reads both.
+ *
+ * Decided from the TEMPLATE, so it needs no value: a name embedding a 1-3
+ * character value, which the containment scan cannot see without refusing
+ * every name holding that character run, is refused like any other. A
+ * LITERAL name reads nothing, and is the containment scan's alone.
+ * Parameters only: an attribute declared `NoEcho` is not consulted here.
+ */
+export function exportNameNoEchoParameters(
+  exportName: unknown,
+  sources: NoEchoPositionSources | undefined
+): string[] {
+  if (sources === undefined || exportName === null || typeof exportName !== 'object') return [];
+  return noEchoParametersReadBy(exportName, sources);
 }
 
 /**

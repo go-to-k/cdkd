@@ -34,6 +34,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   exportNameSecretExposure,
   isNoEchoOnlyExposure,
+  noEchoParameterExportNameWarning,
   noEchoParameterValueSeed,
   secretBearingExportNameWarning,
 } from '../../../src/deployment/outputs-export-alias.js';
@@ -164,7 +165,11 @@ describe('secretBearingExportNameWarning - never prints the NoEcho value (go-to-
 
 // The ENGINE half, with the REAL resolver: the refused alias reaches neither
 // `state.outputs`, `exportNames`, nor the exports index.
-function harness(parameters: Record<string, string>, inheritedSecrets?: RecordedSecretValues) {
+function harness(
+  parameters: Record<string, string>,
+  inheritedSecrets?: RecordedSecretValues,
+  extraOptions: Record<string, unknown> = {}
+) {
   const props = { Name: '/app/param', Type: 'String', Value: { Ref: 'ResourceOnly' } };
   const provider = {
     create: vi.fn().mockResolvedValue({ physicalId: '/app/param' }),
@@ -219,7 +224,7 @@ function harness(parameters: Record<string, string>, inheritedSecrets?: Recorded
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false, parameters, ...(inheritedSecrets && { inheritedSecrets }) },
+    { dryRun: false, parameters, ...(inheritedSecrets && { inheritedSecrets }), ...extraOptions },
     'us-east-1',
     { updateForStack } as never
   );
@@ -261,6 +266,8 @@ beforeEach(() => {
 });
 
 describe('DeployEngine - an Export.Name holding a NoEcho value is refused (go-to-k/cdkd#4043)', () => {
+  // Both read the parameter, so the positional refusal (go-to-k/cdkd#4657)
+  // decides them, ahead of the containment arms.
   const cases: Array<[string, unknown, string]> = [
     ['a Ref equal to the value', { Ref: 'Secret' }, NOECHO],
     ['an Fn::Sub embedding the value', { 'Fn::Sub': 'exp-${Secret}' }, `exp-${NOECHO}`],
@@ -280,7 +287,9 @@ describe('DeployEngine - an Export.Name holding a NoEcho value is refused (go-to
       expect(r.last.outputs['plain-export']).toBe('w');
       expect(r.last.exportNames).toContain('plain-export');
       expect(r.indexed.some((index) => index['plain-export'] === 'w')).toBe(true);
-      expect(r.lines).toContain('Output Echo has an Export.Name that resolves to a value containing a secret');
+      expect(r.lines).toContain(
+        'Output Echo has an Export.Name that reads the NoEcho template parameter Secret'
+      );
       expect(r.lines).not.toContain(NOECHO);
     });
 
@@ -629,5 +638,139 @@ describe('noEchoParameterValueSeed - the export-name verdict seed (go-to-k/cdkd#
     const message = secretBearingExportNameWarning('Echo', 'exp-hiddenValue1', exposure, new Map());
     expect(message).toContain(`(masked: "exp-${SECRET_MASK}")`);
     expect(message).not.toContain('hiddenValue1');
+  });
+});
+
+// go-to-k/cdkd#4657: the POSITIONAL twin. An `Export.Name` intrinsic that READS
+// a `NoEcho` parameter is refused from the template, at any value length: the
+// containment arms above need a value of 4+ characters to see one embedded.
+describe('DeployEngine - an Export.Name intrinsic reading a NoEcho parameter is refused at any length (go-to-k/cdkd#4657)', () => {
+  async function deployedWith(
+    secretValue: string,
+    noEcho: boolean,
+    outputs: Record<string, unknown>,
+    options: { conditions?: Record<string, unknown>; extra?: Record<string, unknown> } = {}
+  ) {
+    const h = harness({ Secret: secretValue, ResourceOnly: RESOURCE_ONLY }, undefined, options.extra);
+    const template = templateOf(noEcho, outputs, h.props);
+    if (options.conditions) template.Conditions = options.conditions;
+    await h.engine.deploy('s', template);
+    const states = h.saveState.mock.calls.map((call) => call[2] as StackState);
+    expect(states.length).toBeGreaterThan(0);
+    const indexed = h.updateForStack.mock.calls.map((call) => call[2] as Record<string, unknown>);
+    expect(indexed.length).toBeGreaterThan(0);
+    return { states, last: states[states.length - 1]!, indexed, lines: logLines.join('\n') };
+  }
+
+  const shapes: Array<[string, unknown, string]> = [
+    ['an Fn::Sub', { 'Fn::Sub': 'x-${Secret}-y' }, 'x-ab-y'],
+    ['an Fn::Join', { 'Fn::Join': ['-', ['x', { Ref: 'Secret' }, 'y']] }, 'x-ab-y'],
+    [
+      'an Fn::Select over a list holding the Ref',
+      { 'Fn::Join': ['', ['x-', { 'Fn::Select': [0, [{ Ref: 'Secret' }, 'b']] }, '-y']] },
+      'x-ab-y',
+    ],
+    [
+      'an Fn::Sub variable bound to the Ref',
+      { 'Fn::Sub': ['x-${V}-y', { V: { Ref: 'Secret' } }] },
+      'x-ab-y',
+    ],
+  ];
+
+  for (const [label, name, published] of shapes) {
+    it(`refuses ${label} embedding a 2-character NoEcho value, naming the output and the parameter`, async () => {
+      const r = await deployedWith('ab', true, {
+        Echo: { Value: 'v', Export: { Name: name } },
+        ...INNOCENT,
+      });
+      for (const state of r.states) {
+        expect(Object.keys(state.outputs)).not.toContain(published);
+        expect(state.exportNames ?? []).not.toContain(published);
+      }
+      for (const index of r.indexed) expect(Object.keys(index)).not.toContain(published);
+      // The output and the innocent sibling alias are still published.
+      expect(r.last.outputs['Echo']).toBe('v');
+      expect(r.last.exportNames).toEqual(['plain-export']);
+      expect(r.indexed.some((index) => index['plain-export'] === 'w')).toBe(true);
+      expect(r.lines).toContain(
+        'Output Echo has an Export.Name that reads the NoEcho template parameter Secret — skipping the export alias'
+      );
+      // Never the resolved name, which holds the value. The refusal line
+      // only: the resolver's own debug trace of a sub-floor value is the
+      // print masker's documented MIN_NEEDLE_LENGTH bound, not this verdict's.
+      const refusal = r.lines.split('\n').filter((line) => line.includes('reads the NoEcho'));
+      expect(refusal).toHaveLength(1);
+      expect(refusal[0]).not.toContain(published);
+      expect(refusal[0]).not.toContain('ab-');
+    });
+
+    it(`publishes ${label} embedding the same value when the parameter is not NoEcho (negative control)`, async () => {
+      const r = await deployedWith('ab', false, { Echo: { Value: 'v', Export: { Name: name } } });
+      expect(r.last.outputs[published]).toBe('v');
+      expect(r.last.exportNames).toEqual([published]);
+    });
+  }
+
+  it('refuses a 4+ character value through the positional arm too, with the parameter-naming reason', async () => {
+    const r = await deployedWith(NOECHO, true, {
+      Echo: { Value: 'v', Export: { Name: { 'Fn::Join': ['-', ['x', { Ref: 'Secret' }]] } } },
+      ...INNOCENT,
+    });
+    expect(r.last.exportNames).toEqual(['plain-export']);
+    for (const state of r.states) expect(JSON.stringify(state)).not.toContain(NOECHO);
+    expect(r.lines).toContain('reads the NoEcho template parameter Secret');
+    expect(r.lines).not.toContain(NOECHO);
+  });
+
+  it('reads only the Fn::If branch the condition selected: a public branch publishes, the NoEcho branch is refused', async () => {
+    const ifName = { 'Fn::If': ['UseSecret', { 'Fn::Sub': 'x-${Secret}-y' }, 'public-name'] };
+    const off = await deployedWith(
+      'ab',
+      true,
+      { Echo: { Value: 'v', Export: { Name: ifName } } },
+      { conditions: { UseSecret: { 'Fn::Equals': ['a', 'b'] } } }
+    );
+    expect(off.last.exportNames).toEqual(['public-name']);
+    expect(off.last.outputs['public-name']).toBe('v');
+    logLines.length = 0;
+    const on = await deployedWith(
+      'ab',
+      true,
+      { Echo: { Value: 'v', Export: { Name: ifName } } },
+      { conditions: { UseSecret: { 'Fn::Equals': ['a', 'a'] } } }
+    );
+    expect(on.last.exportNames).toEqual([]);
+    expect(Object.keys(on.last.outputs)).not.toContain('x-ab-y');
+    expect(on.lines).toContain('reads the NoEcho template parameter Secret');
+  });
+
+  it('leaves a LITERAL name to the containment arms (a literal reads no parameter)', async () => {
+    // `x-ab-y` spelled literally beside a 2-character NoEcho value: under the
+    // floor, so the containment scan publishes it, and the positional arm has
+    // no intrinsic to read.
+    const r = await deployedWith('ab', true, { Echo: { Value: 'v', Export: { Name: 'x-ab-y' } } });
+    expect(r.last.exportNames).toEqual(['x-ab-y']);
+  });
+
+  it("refuses a nested child's name reading a parameter its parent fills from a NoEcho source", async () => {
+    // The child declares `Secret` plain; the parent's row marked it.
+    const r = await deployedWith(
+      'ab',
+      false,
+      { Echo: { Value: 'v', Export: { Name: { 'Fn::Sub': 'x-${Secret}-y' } } }, ...INNOCENT },
+      { extra: { passedNoEchoParameters: new Set(['Secret']) } }
+    );
+    expect(r.last.exportNames).toEqual(['plain-export']);
+    expect(r.lines).toContain('reads the NoEcho template parameter Secret');
+  });
+});
+
+describe('noEchoParameterExportNameWarning (go-to-k/cdkd#4657)', () => {
+  it('names every parameter read and masks the output key against the corpus', () => {
+    const pass: RecordedSecretValues = new Map();
+    recordLogOnlyValue(pass, 'leakyKey77');
+    const message = noEchoParameterExportNameWarning('Out-leakyKey77', ['A', 'B'], pass);
+    expect(message).toContain('Output Out-*** has an Export.Name that reads the NoEcho template parameters A, B');
+    expect(message).not.toContain('leakyKey77');
   });
 });

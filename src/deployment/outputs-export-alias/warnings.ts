@@ -104,6 +104,36 @@ export function secretBearingExportNameWarning(
 }
 
 /**
+ * Warning for an `Export.Name` intrinsic that READS a `NoEcho` parameter
+ * (go-to-k/cdkd#4657, the positional twin of
+ * {@link secretBearingExportNameWarning}'s `NoEcho` arm). Decided from the
+ * template, so it holds at any value length, a 1-3 character value embedded
+ * in a longer name included, where the containment scan has no floor to
+ * stand on.
+ *
+ * Names the output and the PARAMETERS, never the resolved name: it holds the
+ * value, and a sub-floor value cannot be masked out of it without shredding
+ * the rest. The output key is masked against `secrets` as the sibling warning
+ * masks it.
+ */
+export function noEchoParameterExportNameWarning(
+  outputKey: string,
+  parameterNames: readonly string[],
+  secrets: RecordedSecretValues
+): string {
+  const owner = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, printingCorpusOf(secrets)));
+  const names = parameterNames.map((name) => displayIdent(name, { listMember: true })).join(', ');
+  const noun = parameterNames.length === 1 ? 'parameter' : 'parameters';
+  return (
+    `Output ${owner} has an Export.Name that reads the NoEcho template ${noun} ${names} ` +
+    `— skipping the export alias. An export name becomes a key in state.json and in the ` +
+    `exports index, where the value would be stored in plaintext, so a name built from a ` +
+    `NoEcho parameter is refused whatever the value's length. An existing Fn::ImportValue ` +
+    `of this name stops resolving. Build the Export.Name without the NoEcho parameter.`
+  );
+}
+
+/**
  * How a state-bag KEY may be SHOWN, once it has been tested for secret content
  * (issue [#2667](https://github.com/go-to-k/cdkd/issues/2667)).
  *

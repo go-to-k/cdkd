@@ -4,6 +4,7 @@ import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
 import {
   collectPublishedOutputNames,
   displayTextOrWithheld,
+  exportNameNoEchoParameters,
   exportNameSecretExposure,
   isExportAliasCollision,
   secretSafeKeyDisplay,
@@ -16,6 +17,7 @@ import {
   hasMaskableValues,
   printingCorpusOf,
   shareLogOnlyValues,
+  type NoEchoPositionSources,
   type RecordedSecretValues,
 } from '../deployment/secret-redaction.js';
 import { stripControlChars } from '../utils/regexp.js';
@@ -634,6 +636,11 @@ export async function resolveTemplateOutputs(
     secrets: RecordedSecretValues;
     /** The deploy's `noEchoParameterValueSeed`, built from this diff's inputs. */
     noEchoParameterValues?: RecordedSecretValues;
+    /**
+     * The `NoEcho` parameters an intrinsic name may read, under the verdicts
+     * this diff KNOWS (go-to-k/cdkd#4657): the deploy's positional refusal.
+     */
+    noEchoNameSources?: NoEchoPositionSources;
   }
 ): Promise<ResolvedTemplateOutputs> {
   const resolveValue = outputsPass?.resolveInto(outputsPass.secrets) ?? resolveFn;
@@ -940,6 +947,7 @@ export async function resolveTemplateOutputs(
     exportName: string;
     value: unknown;
     declaredExportIsIntrinsic: boolean;
+    nameSource: unknown;
     nameBag: RecordedSecretValues;
   }> = [];
   for (const { outputKey, output, value } of exporting) {
@@ -981,7 +989,14 @@ export async function resolveTemplateOutputs(
         passResolvesSecret = true;
       }
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
-        resolvedNames.push({ outputKey, exportName, value, declaredExportIsIntrinsic, nameBag });
+        resolvedNames.push({
+          outputKey,
+          exportName,
+          value,
+          declaredExportIsIntrinsic,
+          nameSource: output.Export.Name,
+          nameBag,
+        });
       } else {
         // An Export.Name that stayed intrinsic means the alias key the deploy
         // WILL write is unknown, so the bag is incomplete — same suppression as
@@ -1004,13 +1019,20 @@ export async function resolveTemplateOutputs(
     exportName,
     value,
     declaredExportIsIntrinsic,
+    nameSource,
     nameBag,
   } of resolvedNames) {
     // The refusal order MIRRORS the deploy engine's — secret first, then
     // collision — so a name matching both is attributed the same way on
     // both sides. See `outputs-export-alias.ts`'s parity table for the full
     // row-by-row correspondence this block is written against.
-    if (refusesNoEchoName(exportName, nameBag)) {
+    if (exportNameNoEchoParameters(nameSource, outputsPass?.noEchoNameSources).length > 0) {
+      // An intrinsic name reading a `NoEcho` parameter (go-to-k/cdkd#4657),
+      // refused from the template at any value length, as the deploy does.
+      logger.debug(
+        safeMsg`Diff skipping export alias of ${ownerDisplay(outputKey)} — the name reads a NoEcho parameter`
+      );
+    } else if (refusesNoEchoName(exportName, nameBag)) {
       // A `NoEcho` value in the name (go-to-k/cdkd#4043), decided HERE, as
       // the deploy decides it: after every value and every name, against
       // all their needles and the stack's `NoEcho` seed.

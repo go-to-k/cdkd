@@ -186,12 +186,15 @@ export {
 } from './outputs-export-alias/names.js';
 export {
   exportNameSecretExposure,
+  exportNameNoEchoParameters,
+  carriedExportAliasExposure,
   isNoEchoOnlyExposure,
   noEchoParameterValueSeed,
   isWholeDynamicReferenceValue,
 } from './outputs-export-alias/secret-scan.js';
 export {
   secretBearingExportNameWarning,
+  noEchoParameterExportNameWarning,
   type SecretSafeKeyDisplay,
   secretSafeKeyDisplay,
   secretBearing,

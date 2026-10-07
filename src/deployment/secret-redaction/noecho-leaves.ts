@@ -544,9 +544,11 @@ export const PREVIOUS_NOECHO_VALUE = '(previous NoEcho value)';
 
 /**
  * The names of the `NoEcho` parameters a template bag reads
- * ({@link readsNoEchoSource}, parameter by parameter).
+ * ({@link readsNoEchoSource}, parameter by parameter). Declared attributes are
+ * not consulted: the answer is a list of PARAMETER names. Also the positional
+ * `Export.Name` verdict (go-to-k/cdkd#4657), which names them in its refusal.
  */
-function parametersReadBy(node: unknown, sources: NoEchoPositionSources): string[] {
+export function noEchoParametersReadBy(node: unknown, sources: NoEchoPositionSources): string[] {
   return [...sources.parameters].filter((name) =>
     readsNoEchoSource(node, {
       parameters: new Set([name]),
@@ -589,7 +591,7 @@ export function noEchoComparison(options: {
   return ({ templateProperties, desired, current, record }) => {
     const coordinates = noEchoCoordinatesOf(templateProperties, desired, sources);
     const needles: string[] = [];
-    for (const name of parametersReadBy(templateProperties, sources)) {
+    for (const name of noEchoParametersReadBy(templateProperties, sources)) {
       const value = values[name];
       const leaves = Array.isArray(value) ? value : [value];
       for (const leaf of leaves) {
