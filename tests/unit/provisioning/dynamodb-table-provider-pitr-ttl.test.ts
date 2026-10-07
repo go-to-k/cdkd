@@ -19,6 +19,20 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+// Issue #4639: `CreateTable` goes through a dedicated client built in the
+// shared client's region. Route that one to the shared double, so `mockSend`
+// still sees every call; any other region keeps the real class.
+vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-dynamodb')>();
+  const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
+  return {
+    ...actual,
+    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) =>
+      cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : new actual.DynamoDBClient(cfg ?? {})
+    ),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),

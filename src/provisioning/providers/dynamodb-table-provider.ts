@@ -46,6 +46,8 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
@@ -1555,6 +1557,9 @@ function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
 
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
+  private createClient: Promise<DynamoDBClient> | undefined;
+  /** The credential half of the `AwsClients` `dynamoDBClient` came from (#4639). */
+  private readonly credentialConfig: CredentialConfig;
   private logger = getLogger().child('DynamoDBTableProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1625,6 +1630,45 @@ export class DynamoDBTableProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.dynamoDBClient = awsClients.dynamoDB;
+    // A test double may carry no `credentialConfig`: degrade to `{}`, as
+    // `ambientCredentialConfig` does.
+    this.credentialConfig =
+      (awsClients as { credentialConfig?: CredentialConfig }).credentialConfig ?? {};
+  }
+
+  /**
+   * The client `CreateTable` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * -- and every other provider sharing `getAwsClients().dynamoDB` -- keeps
+   * the full SDK retry. Built in the shared client's REGION (read from it, as
+   * `config.region()` resolves it), so the create cannot land in another
+   * region than the calls around it, and with the credentials of the SAME
+   * `AwsClients` that client came from, read at construction, so a later
+   * `setAwsClients` switch cannot give the create another identity. The PROMISE is cached, so two creates on
+   * a cold provider build one client; a rejected region read is not cached,
+   * so the next create retries it.
+   *
+   * `CreateTable` carries no idempotency token and a table name is unique per
+   * account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with the table the first send made, and that
+   * `ResourceInUseException` surfaced from the engine's FIRST attempt as a
+   * table somebody else holds. Refused here, the 5xx reaches the deploy
+   * engine's retry, which marks the create as possibly replayed (`withRetry`,
+   * #3978). The table is not adopted on that collision: a name is not
+   * attribution (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): Promise<DynamoDBClient> {
+    this.createClient ??= this.dynamoDBClient.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(
+          new DynamoDBClient({ ...clientDefaultsFor(this.credentialConfig), region })
+        ),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
   }
 
   /**
@@ -1941,7 +1985,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         createParams.ResourcePolicy = createResourcePolicyDoc;
       }
 
-      await this.dynamoDBClient.send(new CreateTableCommand(createParams));
+      await (await this.getCreateClient()).send(new CreateTableCommand(createParams));
       tableCreated = true;
 
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);

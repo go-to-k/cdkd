@@ -22,6 +22,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -37,6 +38,7 @@ import { safeMsg } from '../../utils/display-safe.js';
  */
 export class DocDBSubnetGroupProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
+  private createClient?: DocDBClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DocDBSubnetGroupProvider');
 
@@ -49,12 +51,39 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
 
   private getClient(): DocDBClient {
     if (!this.docdbClient) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.docdbClient = new DocDBClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new DocDBClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.docdbClient;
+  }
+
+  /**
+   * The client `CreateDBSubnetGroup` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * It carries no idempotency token, and the subnet group name is unique per
+   * account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): DocDBClient {
+    this.getClient();
+    return this.createClient as DocDBClient;
   }
 
   /** The one type this provider serves; anything else is a registration bug. */
@@ -84,7 +113,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
-      await this.getClient().send(
+      await this.getCreateClient().send(
         new CreateDBSubnetGroupCommand({
           DBSubnetGroupName: dbSubnetGroupName,
           DBSubnetGroupDescription:

@@ -60,7 +60,8 @@ describe('NeptuneProvider region option (issue #4029)', () => {
       if (saved === undefined) delete process.env['AWS_REGION'];
       else process.env['AWS_REGION'] = saved;
     }
-    expect(clientRegions).toEqual(['eu-west-1']);
+    // The shared client and the create client built with it (#4639).
+    expect(clientRegions).toEqual(['eu-west-1', 'eu-west-1']);
     const del = send.mock.calls.find((c) => c[0].constructor.name === 'DeleteDBClusterCommand');
     expect(del?.[0].input).toEqual(expect.objectContaining({ SkipFinalSnapshot: true }));
   });

@@ -47,6 +47,7 @@ import {
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
@@ -109,6 +110,7 @@ const RETAINED_ON_REMOVAL: readonly string[] = [
  */
 export class RDSDBProxyProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
+  private createClient?: RDSClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('RDSDBProxyProvider');
   private readonly attributeCache = new Map<string, unknown>();
@@ -133,12 +135,39 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
   private getClient(): RDSClient {
     if (!this.rdsClient) {
+      // Built together with the create client, so both capture the identity
+      // active at this ONE call (issue #4639).
       this.rdsClient = new RDSClient({
         ...ambientClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
+      this.createClient = withoutServerErrorRetries(
+        new RDSClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
     }
     return this.rdsClient;
+  }
+
+  /**
+   * The client `CreateDBProxy` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #4639). Separate so every other call
+   * keeps the full SDK retry.
+   *
+   * `CreateDBProxy` carries no idempotency token and the proxy name is unique per
+   * account and region, so the SDK's own replay of a 5xx whose request had
+   * succeeded collides with what the first send made, and that "already
+   * exists" surfaced from the engine's FIRST attempt as a name somebody else
+   * holds. Refused here, the 5xx reaches the deploy engine's retry, which
+   * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
+   * adopted on that collision: a name is not attribution
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   */
+  private getCreateClient(): RDSClient {
+    this.getClient();
+    return this.createClient as RDSClient;
   }
 
   async create(
@@ -197,7 +226,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     this.logger.debug(`Creating DBProxy ${dbProxyName} (${engineFamily})`);
 
     try {
-      await client.send(
+      await this.getCreateClient().send(
         new CreateDBProxyCommand({
           DBProxyName: dbProxyName,
           EngineFamily: engineFamily,
