@@ -44,6 +44,12 @@
 # and the journaled halves of (c) / (d) answer `unknown`, and (g) prints no
 # `already gone` line; the record halves of (c) / (d), (e) and (f) are controls.
 #
+# Phase 1c is the same arm for VPC / Subnet / SecurityGroup:
+# `network-same-resource-probe.mjs` against this stack's resources, a
+# throwaway VPC / subnet / group created here, the default VPC and
+# never-existed ids, then the settle's delete of the throwaways and the reads
+# once they are gone (see the phase's own comment).
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -123,10 +129,39 @@ CLIENT_TOKEN=""
 # between CreateSecurityGroup and the state write leaves a group no state
 # record names, and the next run's create fails InvalidGroup.Duplicate.
 DEFAULT_VPC_SG_NAME="CdkdEc2InstanceIntegDefaultVpcSg"
+# go-to-k/cdkd#4606 (Phase 1c): the tag key the throwaway VPC, subnet and
+# security group carry; the value is per run (NET_PROBE_TAG).
+NET_PROBE_TAG_KEY="cdkd-integ-4606-net-probe"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
   set +eu
+  if [ -n "${NET_PROBE_TAG:-}" ]; then
+    # go-to-k/cdkd#4606: the throwaway VPC, subnet and security group of the
+    # network identity probe, swept by their per-run tag (set BEFORE the
+    # creates, so a kill between a create and the id capture still reaches
+    # them). Dependents first: a VPC delete fails while its subnet or group
+    # is still there. The probe's own deletes normally leave nothing here.
+    for net_kind in security-group subnet vpc; do
+      case "${net_kind}" in
+        security-group) net_list=describe-security-groups net_del=delete-security-group net_flag=--group-id net_query='SecurityGroups[].GroupId' ;;
+        subnet) net_list=describe-subnets net_del=delete-subnet net_flag=--subnet-id net_query='Subnets[].SubnetId' ;;
+        vpc) net_list=describe-vpcs net_del=delete-vpc net_flag=--vpc-id net_query='Vpcs[].VpcId' ;;
+      esac
+      if ! LEAKED_NET=$(aws ec2 "${net_list}" \
+        --filters "Name=tag:${NET_PROBE_TAG_KEY},Values=${NET_PROBE_TAG}" \
+        --region "${REGION}" \
+        --query "${net_query}" \
+        --output text 2>/dev/null); then
+        echo "    NOTE: could not list the probe ${net_kind}; check and delete by hand: aws ec2 ${net_list} --region ${REGION} --filters Name=tag:${NET_PROBE_TAG_KEY},Values=${NET_PROBE_TAG}" >&2
+        LEAKED_NET=""
+      fi
+      for leaked in ${LEAKED_NET}; do
+        aws ec2 "${net_del}" "${net_flag}" "${leaked}" --region "${REGION}" >/dev/null 2>&1 \
+          || echo "    NOTE: could not delete the probe ${net_kind} ${leaked}; delete it by hand" >&2
+      done
+    done
+  fi
   if [ -n "${PROBE_TOKEN:-}" ]; then
     # go-to-k/cdkd#4606: the throwaway instance the identity probe launches,
     # swept by its per-run client token (set BEFORE the launch, so a kill
@@ -874,6 +909,166 @@ if [ "${PROBE_RC}" -ne 0 ] || ! printf '%s\n' "${PROBE_OUT}" | grep -qx '\[probe
 fi
 echo "    OK: isSameResource answers same / different / unknown against live instances (issue #4606)"
 
+# --- Phase 1c: the VPC / subnet / security group identity read (go-to-k/cdkd#4606)
+# The same settle, for the network types: a journaled VPC, subnet or security
+# group is deleted only when `isSameResource` answers 'different'. The create
+# journals one only when its wiring AND its cleanup delete both fail, which
+# nothing makes happen on demand, so `network-same-resource-probe.mjs` drives
+# the built provider against this stack's resources, a throwaway VPC / subnet
+# / group created here out of band (standing in for the earlier attempt's
+# orphans), the default VPC, and well-formed ids that never existed. Phase
+# `live` ends with the settle's delete (`failedCreateOrphan`) of each
+# throwaway; once EC2 answers NotFound for all three, phase `gone` asks again.
+# With the #4606 change reverted, phase `live` fails 14 cases: (a), (b), the
+# journaled half of (c) and (e) answer 'unknown'; the record half of (c), (d)
+# and (f) are controls.
+echo "==> Phase 1c: EC2Provider.isSameResource for VPC / Subnet / SecurityGroup (issue #4606)"
+STACK_VPC_ID=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::EC2::VPC") | .physicalId] | first // ""')
+STACK_SUBNET_ID=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::EC2::Subnet") | .physicalId] | first // ""')
+STACK_SG_ID=$(echo "${STATE}" | jq -r --arg name "${DEFAULT_VPC_SG_NAME}" '[.resources[] | select(.resourceType == "AWS::EC2::SecurityGroup") | select(.properties.GroupName != $name) | .physicalId] | first // ""')
+OTHER_SG_ID=$(echo "${STATE}" | jq -r --arg name "${DEFAULT_VPC_SG_NAME}" '[.resources[] | select(.resourceType == "AWS::EC2::SecurityGroup") | select(.properties.GroupName == $name) | .physicalId] | first // ""')
+case "${STACK_VPC_ID}|${STACK_SUBNET_ID}|${STACK_SG_ID}|${OTHER_SG_ID}" in
+  vpc-*\|subnet-*\|sg-*\|sg-*) ;;
+  *)
+    echo "FAIL: issue #4606 premise not reached -- the stack's VPC / subnet / security groups read from state as '${STACK_VPC_ID}' / '${STACK_SUBNET_ID}' / '${STACK_SG_ID}' / '${OTHER_SG_ID}'" >&2
+    exit 1
+    ;;
+esac
+
+# Per run, so the cleanup sweep cannot reach another run's resources.
+NET_PROBE_TAG="ec2-instance-$$-$(date +%s)"
+NET_TAGS="{Key=${NET_PROBE_TAG_KEY},Value=${NET_PROBE_TAG}},{Key=Name,Value=cdkd-integ-ec2-instance-4606-probe}"
+THROW_VPC_ID=$(aws ec2 create-vpc \
+  --cidr-block 10.250.0.0/16 \
+  --tag-specifications "ResourceType=vpc,Tags=[${NET_TAGS}]" \
+  --region "${REGION}" \
+  --query 'Vpc.VpcId' \
+  --output text)
+aws ec2 wait vpc-available --vpc-ids "${THROW_VPC_ID}" --region "${REGION}"
+THROW_SUBNET_ID=$(aws ec2 create-subnet \
+  --vpc-id "${THROW_VPC_ID}" \
+  --cidr-block 10.250.0.0/24 \
+  --tag-specifications "ResourceType=subnet,Tags=[${NET_TAGS}]" \
+  --region "${REGION}" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+THROW_SG_ID=$(aws ec2 create-security-group \
+  --group-name "cdkd-integ-4606-${NET_PROBE_TAG}" \
+  --description "cdkd ec2-instance integ (issue #4606) throwaway" \
+  --vpc-id "${THROW_VPC_ID}" \
+  --tag-specifications "ResourceType=security-group,Tags=[${NET_TAGS}]" \
+  --region "${REGION}" \
+  --query 'GroupId' \
+  --output text)
+case "${THROW_VPC_ID}|${THROW_SUBNET_ID}|${THROW_SG_ID}" in
+  vpc-*\|subnet-*\|sg-*) ;;
+  *)
+    echo "FAIL: issue #4606 -- the throwaway creates answered '${THROW_VPC_ID}' / '${THROW_SUBNET_ID}' / '${THROW_SG_ID}'" >&2
+    exit 1
+    ;;
+esac
+echo "    throwaway VPC ${THROW_VPC_ID}, subnet ${THROW_SUBNET_ID}, security group ${THROW_SG_ID}"
+
+# Premise of case (c): a well-formed id that never existed answers NotFound;
+# a Malformed answer would make the probe exercise the wrong error. EC2
+# answers a synthetic 17-hex INSTANCE id Malformed and an 8-hex one NotFound
+# (Phase 1b); for these types the form is measured here: the 8-hex form
+# first, then the 17-hex one. Random per run; one that happens to exist is
+# drawn again. Prints the id on stdout, the measurement on stderr.
+draw_never_id() { # usage: draw_never_id <prefix> <describe-subcommand> <ids-flag> <notfound-code>
+  local prefix="$1" list="$2" flag="$3" code="$4" len attempt candidate out rc
+  for len in 8 17; do
+    for attempt in 1 2 3 4 5; do
+      candidate="${prefix}-$(openssl rand -hex 9 | cut -c1-"${len}")"
+      set +e
+      out=$(aws ec2 "${list}" "${flag}" "${candidate}" --region "${REGION}" 2>&1)
+      rc=$?
+      set -e
+      if [ "${rc}" -eq 0 ]; then
+        continue
+      fi
+      if printf '%s' "${out}" | grep -qF "${code}"; then
+        echo "    never-existed ${prefix} id: ${candidate} (${len} hex, ${code})" >&2
+        printf '%s' "${candidate}"
+        return 0
+      fi
+      if printf '%s' "${out}" | grep -q '\.Malformed'; then
+        echo "    NOTE: EC2 answers a ${len}-hex ${prefix} id Malformed: $(sanitize_aws_output "${out}")" >&2
+        break
+      fi
+      # Not "exists, draw again" and not Malformed: a broken premise.
+      echo "FAIL: issue #4606 premise not reached -- ${list} ${candidate} (rc=${rc}) did not answer ${code}: $(sanitize_aws_output "${out}")" >&2
+      return 1
+    done
+  done
+  echo "FAIL: issue #4606 premise not reached -- no 8- or 17-hex ${prefix} id answered ${code} (Malformed, or existed in every draw)" >&2
+  return 1
+}
+NEVER_VPC_ID=$(draw_never_id vpc describe-vpcs --vpc-ids InvalidVpcID.NotFound)
+NEVER_SUBNET_ID=$(draw_never_id subnet describe-subnets --subnet-ids InvalidSubnetID.NotFound)
+NEVER_SG_ID=$(draw_never_id sg describe-security-groups --group-ids InvalidGroup.NotFound)
+case "${NEVER_VPC_ID}|${NEVER_SUBNET_ID}|${NEVER_SG_ID}" in
+  vpc-*\|subnet-*\|sg-*) ;;
+  *)
+    echo "FAIL: issue #4606 premise not reached -- the never-existed ids drew '${NEVER_VPC_ID}' / '${NEVER_SUBNET_ID}' / '${NEVER_SG_ID}'" >&2
+    exit 1
+    ;;
+esac
+
+NET_IDS_FILE=$(mktemp)
+jq -n \
+  --arg sv "${STACK_VPC_ID}" --arg ss "${STACK_SUBNET_ID}" --arg sg "${STACK_SG_ID}" \
+  --arg tv "${THROW_VPC_ID}" --arg ts "${THROW_SUBNET_ID}" --arg tg "${THROW_SG_ID}" \
+  --arg nv "${NEVER_VPC_ID}" --arg ns "${NEVER_SUBNET_ID}" --arg ng "${NEVER_SG_ID}" \
+  --arg ov "${DEFAULT_VPC_ID}" --arg og "${OTHER_SG_ID}" \
+  '{stack: {vpc: $sv, subnet: $ss, sg: $sg},
+    throwaway: {vpc: $tv, subnet: $ts, sg: $tg},
+    never: {vpc: $nv, subnet: $ns, sg: $ng},
+    otherVpc: $ov, otherSg: $og}' > "${NET_IDS_FILE}"
+
+# usage: run_net_probe <phase> <case count>; the rc AND the receipt line only
+# a complete run of that phase prints.
+run_net_probe() {
+  local out rc
+  set +e
+  out=$(node network-same-resource-probe.mjs "${REGION}" "$1" "${NET_IDS_FILE}" 2>&1)
+  rc=$?
+  set -e
+  printf '%s\n' "${out}" | sed 's/^/    /'
+  if [ "${rc}" -ne 0 ] || ! printf '%s\n' "${out}" | grep -qx "\[probe\] ALL $2 PASSED"; then
+    echo "FAIL: issue #4606 -- the network probe's '$1' phase exited ${rc} without '[probe] ALL $2 PASSED' (output above)" >&2
+    exit 1
+  fi
+}
+run_net_probe live 23
+
+# Premise of phase `gone`: EC2 no longer lists any throwaway.
+assert_net_gone() { # usage: assert_net_gone <describe-subcommand> <ids-flag> <id> <notfound-code>
+  local attempt out rc
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    set +e
+    out=$(aws ec2 "$1" "$2" "$3" --region "${REGION}" 2>&1)
+    rc=$?
+    set -e
+    if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -qF "$4"; then
+      return 0
+    fi
+    if [ "${rc}" -ne 0 ]; then
+      echo "FAIL: issue #4606 premise not reached -- $1 $3 (rc=${rc}) did not answer $4: $(sanitize_aws_output "${out}")" >&2
+      exit 1
+    fi
+    sleep 5
+  done
+  echo "FAIL: issue #4606 -- $3 is still listed 60s after the probe's settle delete" >&2
+  exit 1
+}
+assert_net_gone describe-security-groups --group-ids "${THROW_SG_ID}" InvalidGroup.NotFound
+assert_net_gone describe-subnets --subnet-ids "${THROW_SUBNET_ID}" InvalidSubnetID.NotFound
+assert_net_gone describe-vpcs --vpc-ids "${THROW_VPC_ID}" InvalidVpcID.NotFound
+run_net_probe gone 9
+rm -f "${NET_IDS_FILE}"
+echo "    OK: isSameResource and the settle's delete for VPC / Subnet / SecurityGroup against live resources (issue #4606)"
+
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -942,4 +1137,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity read) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity reads) ==="
