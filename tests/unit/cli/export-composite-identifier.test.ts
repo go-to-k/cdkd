@@ -1737,7 +1737,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
         },
       }),
       'MyStack',
-      { skipImportSupportPreflight: true }
+      { recreateImportUnsupported: false, skipImportSupportPreflight: true }
     );
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
