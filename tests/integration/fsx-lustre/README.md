@@ -38,6 +38,19 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
 
      Phase 2's output is the negative control: that deploy removes nothing,
      so it must not carry the warning.
+   - **Fix-forward of a failed CREATE** (issue #4606): a `--no-rollback`
+     deploy adding `OrphanFs` (`INJECT_FS_ORPHAN=true`) runs under a role
+     the script creates, denied `fsx:DescribeFileSystems` and
+     `fsx:DeleteFileSystem`. `CreateFileSystem` succeeds, while the wait and
+     the cleanup delete are refused, so the journal holds the file system as
+     a proven orphan. The `FS_FIX_FORWARD=true` redeploy runs as the caller.
+     It changes the security group, so FSx makes a new file system instead of
+     returning the earlier one. That deploy must succeed, delete the earlier
+     file system, keep the new one and exit `0`. A plain deploy then removes
+     `OrphanFs`. The caller needs `iam:CreateRole` / `PutRolePolicy` /
+     `DeleteRolePolicy` / `DeleteRole` / `ListRoles` / `ListRoleTags` and
+     `sts:AssumeRole` on the role, whose trust policy expires 2 hours after
+     it is created.
 3. **Destroy** and assert the file system + VPC are gone from AWS and
    the cdkd state file is removed. A leftover FSx file system is never
    acceptable (per-hour billing) — the cleanup trap force-deletes any
@@ -47,7 +60,8 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
 ## Timing
 
 FSx Lustre creation takes ~5-10 minutes and deletion a few more; expect
-a total wall clock of 15-30 minutes.
+a total wall clock of 45-60 minutes. The fix-forward arm creates two more
+file systems and deletes them.
 
 ## Run
 

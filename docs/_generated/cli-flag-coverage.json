@@ -423,10 +423,12 @@
     {
       "flag": "--no-rollback",
       "integs": [
+        "alb",
         "appsync",
         "created-before-failure-revert",
         "dynamodb-globaltable",
         "emr-cluster",
+        "fsx-lustre",
         "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
@@ -1122,6 +1124,7 @@
       "flag": "--role-arn",
       "integs": [
         "emr-cluster",
+        "fsx-lustre",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "remove-protection-compensation",
@@ -1532,6 +1535,7 @@
       "flag": "--yes",
       "integs": [
         "agentcore-tools",
+        "alb",
         "apigateway",
         "apigatewayv2-update-removal",
         "apigw-gateway-response",
