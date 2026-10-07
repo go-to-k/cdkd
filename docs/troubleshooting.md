@@ -2415,7 +2415,8 @@ and a physical id Cloud Control cannot address are the exceptions. See
 
 The resource is recorded `provisionedBy: cc-api`, and its type carries an
 `'sdk-coverage'` exemption from the sticky rule described above — Cloud Control
-manages the type correctly and is merely slower, and cdkd now covers every
+manages the type and is slower (for `AWS::ElasticLoadBalancingV2::Listener` it
+also leaves a removed `ListenerAttributes` key at its old value), and cdkd now covers every
 property this particular resource uses. The next mutating deploy moves it back
 to the faster SDK provider — see
 [Coming back from Cloud Control](provisioning-layers.md#coming-back-from-cloud-control).

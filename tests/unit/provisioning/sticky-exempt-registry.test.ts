@@ -23,10 +23,11 @@ const providerClasses = await loadProviderClasses();
  * on a live resource.
  *
  * The `integFixture` assertions are what make that claim cost something. A
- * comment saying "parity verified" is free; an entry naming a fixture that
- * must EXIST and must have RUN cannot be added before its parity arm was
- * actually run against real AWS. That is the difference between a rule and a
- * request.
+ * comment saying "parity verified" is free; an entry must name a fixture that
+ * EXISTS and has RUN at least once. That does not prove the parity arm itself
+ * ran: an entry naming a fixture that ran before its arm was added passes
+ * here, so the real-AWS run of that arm stays a merge condition for the PR
+ * adding the entry.
  *
  * What this deliberately does NOT do: judge freshness. A fixture that ran
  * eight months ago satisfies these assertions. Freshness is the `integ-destroy`
@@ -163,7 +164,7 @@ describe('sticky-CC exemption table', () => {
         ran.has(e.integFixture),
         `${type} names integ fixture "${e.integFixture}", which has no row in ` +
           `docs/_generated/integ-last-run.tsv. Existing is not running: this is the assertion ` +
-          `that stops an entry being added before its parity arm was ever run against real AWS.`,
+          `that stops an entry naming a fixture that never ran against real AWS.`,
       ).toBe(true);
     }
   });

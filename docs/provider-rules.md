@@ -2481,7 +2481,9 @@ issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)).
 
 Consider admitting a type in the same PR that empties its `silentDrop` map, or
 in a small follow-up. It is not mandatory and nothing blocks a release without
-it: an un-admitted type is merely slower, which is the status quo.
+it: an un-admitted type is merely slower, which is the status quo — unless
+Cloud Control also mishandles an update for it, in which case admission is
+the fix (issue [#4679](https://github.com/go-to-k/cdkd/issues/4679)).
 
 **The bar is physicalId parity, and it is EVIDENCE, not an argument.** Cloud
 Control mints its identifier from the schema's `primaryIdentifier`; the SDK
@@ -2517,12 +2519,17 @@ To admit a type:
    update from a replacement, which is the whole claim.
 4. Add the entry naming that fixture. `tests/unit/provisioning/sticky-exempt-registry.test.ts`
    refuses an entry whose fixture does not exist or has no row in the integ
-   ledger, so an entry cannot land before its parity arm has actually run.
+   ledger. A fixture that ran before your arm was added still passes that
+   check, so the arm's own run (step 5) is what the PR must wait for.
 5. Run the fixture and commit the ledger row.
 
 Use `mode: 'cc-broken'` **only** when Cloud Control genuinely cannot manage the
 type (its escape is unconditional and ignores `--pin-cc-api`). A type that
-works on Cloud Control and is only slower is `'sdk-coverage'`.
+works on Cloud Control and is only slower is `'sdk-coverage'`, and so is one
+whose Cloud Control defect only a mutating deploy reaches, since that deploy is
+the one that flips the record (`AWS::ElasticLoadBalancingV2::Listener`: Cloud
+Control leaves a removed `ListenerAttributes` key at its old value, issue
+[#4679](https://github.com/go-to-k/cdkd/issues/4679)).
 
 ## Logging
 

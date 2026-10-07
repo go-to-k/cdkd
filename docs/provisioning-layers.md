@@ -95,7 +95,8 @@ the move is:
 
 - **Cloud Control cannot manage the type correctly.** Staying pinned keeps a
   live bug alive, so the move is unconditional and cannot be declined.
-- **Cloud Control works and is merely slower**, and cdkd has since gained full
+- **Cloud Control works and is slower** (apart from at most a defect only an
+  update reaches, which the move avoids from that update on), and cdkd has since gained full
   property coverage for the type. The move happens on the next deploy that
   changes the resource, provided neither the template's properties nor the
   recorded ones carry anything the SDK provider would drop. It **can** be

@@ -32,6 +32,10 @@
 # fix-forward under the same logical id: that successful deploy deletes the
 # earlier load balancer and exits 0.
 #
+# PLUS issue #4679 (Phase 2.5): the listener record is seeded to
+# provisionedBy=cc-api, and the removal redeploy must return it to the SDK
+# provider on the same ARN, which resets the dropped listener attribute.
+#
 # Run via: /run-integ alb
 #         or: bash tests/integration/alb/verify.sh
 
@@ -83,7 +87,7 @@ cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors tolerated)"
-  rm -f "${FF_LOG:-}"
+  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}"
   # go-to-k/cdkd#4606: the Phase 4 injection's load balancer is created with
   # deletion protection on, and unfixed, the fix-forward settle drops it from
   # the rollback journal, so nothing else reaches it. Clear the protection and
@@ -251,9 +255,118 @@ if [[ "${IDLE_P2}" != "180" ]]; then
 fi
 echo "    deregistration_delay=60, idle_timeout=180, target swapped to 10.0.0.101 (✓)"
 
+# --- Phase 2.5: seed a cc-api listener record (go-to-k/cdkd#4679) ------------
+# A listener first deployed while tagged, before go-to-k/cdkd#4673, was created
+# through Cloud Control and its record says provisionedBy=cc-api, which the
+# sticky rule kept on Cloud Control even after its type gained full SDK
+# coverage -- and Cloud Control's update leaves a removed ListenerAttributes key
+# live. The listener is now an 'sdk-coverage' sticky exemption, so the removal
+# redeploy below must move the record back to the SDK provider ON THE SAME ARN
+# and reset the key.
+#
+# The record is SEEDED to cc-api (the go-to-k/cdkd#4117 precedent in
+# lambda-event-invoke-config-update), not recreated through Cloud Control: this
+# binary has no Cloud Control route for a fresh listener, and
+# --recreate-via-cc-api of a listener with rules hits a separate defect in the
+# rule's replacement. The flip reads only the record's layer and its template
+# property bag, which do not depend on the layer that created the listener.
+listener_record() { # usage: listener_record <jq path under the resource>; "" when absent
+  local state
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  printf '%s' "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ElasticLoadBalancingV2::Listener") | .value'"$1"'] | first // ""'
+}
+LISTENER_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ElasticLoadBalancingV2::Listener") | .key] | first // ""')
+[ -n "${LISTENER_LOGICAL}" ] || { echo "FAIL: #4679: no Listener record in cdkd state"; exit 1; }
+SEED_ARN=$(listener_record .physicalId)
+[ "${SEED_ARN}" = "${LISTENER_ARN}" ] || {
+  echo "FAIL: #4679 premise: the listener record holds '${SEED_ARN}', expected ${LISTENER_ARN}"
+  exit 1
+}
+PRE_LAYER=$(listener_record .provisionedBy)
+[ "${PRE_LAYER}" = "sdk" ] || {
+  echo "FAIL: #4679 premise: the listener is provisionedBy '${PRE_LAYER}' before seeding, expected sdk"
+  exit 1
+}
+# Cloud Control addresses the listener by the ARN cdkd stored. This is the
+# physicalId parity the exemption needs: a record Cloud Control wrote holds
+# the identifier it returns here.
+CC_IDENTIFIER=$(aws cloudcontrol get-resource --type-name AWS::ElasticLoadBalancingV2::Listener \
+  --identifier "${LISTENER_ARN}" --region "${AWS_REGION}" --query 'ResourceDescription.Identifier' --output text)
+[ "${CC_IDENTIFIER}" = "${LISTENER_ARN}" ] || {
+  echo "FAIL: #4679: Cloud Control's identifier '${CC_IDENTIFIER}' differs from cdkd's physicalId '${LISTENER_ARN}'"
+  exit 1
+}
+echo "    Cloud Control addresses ${LISTENER_LOGICAL} by cdkd's physicalId (✓)"
+
+echo ""
+echo "==> Phase 2.5: seed the ${LISTENER_LOGICAL} record to provisionedBy=cc-api (#4679)"
+# Assignments, not argument substitutions, so a failed read or jq aborts here
+# under `set -e` instead of uploading an empty state file.
+SEED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+SEEDED=$(printf '%s' "${SEED_STATE}" | jq --arg id "${LISTENER_LOGICAL}" '.resources[$id].provisionedBy = "cc-api"')
+# An empty read exits 0 and jq prints nothing: never upload that over the state.
+[ -n "${SEEDED}" ] || { echo "FAIL: #4679: the seeded state is empty -- not uploading it"; exit 1; }
+printf '%s\n' "${SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+SEEDED_LAYER=$(listener_record .provisionedBy)
+[ "${SEEDED_LAYER}" = "cc-api" ] || {
+  echo "FAIL: #4679: seeding the listener record to cc-api did not stick (got '${SEEDED_LAYER}') -- every assertion below would be vacuous"
+  exit 1
+}
+echo "    ${LISTENER_LOGICAL} recorded as cc-api (✓)"
+
+echo ""
+echo "==> Assert the plan announces the listener's return to the SDK provider (#4679)"
+# Pre-fix, this is the first assertion to go red: the diff tags the listener
+# `sticky` instead.
+REMOVAL_DIFF=$(CDKD_TEST_REMOVAL=true ${CDKD} diff ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1 || true)
+if ! grep -F "${LISTENER_LOGICAL}" <<<"${REMOVAL_DIFF}" | grep -qF 'returning to SDK provider'; then
+  echo "FAIL: #4679: cdkd diff does not announce '${LISTENER_LOGICAL} ... [returning to SDK provider]'"
+  printf '%s\n' "${REMOVAL_DIFF}"
+  exit 1
+fi
+echo "    diff: ${LISTENER_LOGICAL} [returning to SDK provider] (✓)"
+
 echo ""
 echo "==> Removal redeploy: drop HealthCheckPort (issue #1160 elbv2 batch)"
-CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+REMOVAL_LOG=$(mktemp)
+if ! CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" \
+  >"${REMOVAL_LOG}" 2>&1; then
+  cat "${REMOVAL_LOG}"
+  echo "FAIL: the removal redeploy failed"
+  exit 1
+fi
+REMOVAL_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REMOVAL_LOG}")"
+rm -f "${REMOVAL_LOG}"
+REMOVAL_LOG=""
+printf '%s\n' "${REMOVAL_PLAIN}"
+
+# go-to-k/cdkd#4679: the cc-api listener record returned to the SDK provider
+# in place, and the listener-attribute readback further down reads the reset.
+POST_LAYER=$(listener_record .provisionedBy)
+POST_ARN=$(listener_record .physicalId)
+[ "${POST_LAYER}" = "sdk" ] || {
+  echo "FAIL: #4679: the removal redeploy left the listener record on '${POST_LAYER}', expected it to return to sdk"
+  exit 1
+}
+# The listener ARN ends in an id AWS mints per create, so an unchanged ARN is
+# the identity witness: a replacement would have minted another.
+[ "${POST_ARN}" = "${LISTENER_ARN}" ] || {
+  echo "FAIL: #4679: the return to the SDK provider changed the listener ARN (${LISTENER_ARN} -> ${POST_ARN})"
+  exit 1
+}
+# No `-q`: an early exit would SIGPIPE the first grep and, under pipefail,
+# read as "no match".
+if grep -F "${LISTENER_LOGICAL}" <<<"${REMOVAL_PLAIN}" | grep -i 'replac' >/dev/null; then
+  echo "FAIL: #4679: the removal redeploy REPLACED ${LISTENER_LOGICAL} instead of updating it in place:"
+  grep -F "${LISTENER_LOGICAL}" <<<"${REMOVAL_PLAIN}" | grep -i 'replac'
+  exit 1
+fi
+if ! grep -qF "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener): returning to the SDK provider" <<<"${REMOVAL_PLAIN}"; then
+  echo "FAIL: #4679: the record flipped, but no 'returning to the SDK provider' line names ${LISTENER_LOGICAL} -- the wording drifted"
+  exit 1
+fi
+echo "    ${LISTENER_LOGICAL} returned to the SDK provider on the same ARN (✓)"
 
 # Pre-fix the provider passed the absent field through and ModifyTargetGroup
 # merged (port stayed 8080); post-fix the removal sends the explicit

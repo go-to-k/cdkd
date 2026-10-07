@@ -674,14 +674,19 @@ conditional the escape is:
   update fails validation) and `AWS::Pipes::Pipe` (a Cloud Control UPDATE
   cannot change a stream or broker source's write-only `SourceParameters`)
   are the members today.
-- **`'sdk-coverage'`** — Cloud Control manages the type correctly and is merely
-  slower; cdkd has since gained full property coverage. The escape is
+- **`'sdk-coverage'`** — Cloud Control manages the type, apart from at most a
+  defect that only an update reaches, and is slower; cdkd has since gained full
+  property coverage. The escape is
   conditional on **this resource**: it happens only on a mutating deploy where
   neither the template's property bag nor the recorded one carries a property
   cdkd would silently drop. Reading the recorded bag too is what keeps a
   *removal* deploy correct — a property applied under Cloud Control and since
   deleted from the template still needs Cloud Control to unset it, so the flip
-  waits one deploy. `AWS::SNS::Topic` is the member today.
+  waits one deploy. `AWS::SNS::Topic` and
+  `AWS::ElasticLoadBalancingV2::Listener` are the members today. The listener
+  has one more reason to leave: Cloud Control leaves a `ListenerAttributes`
+  key removed from the template at its old value, and the SDK provider resets
+  it, on the same deploy that flips the record.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

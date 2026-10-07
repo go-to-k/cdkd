@@ -166,10 +166,13 @@ export interface AutoRouteHit {
  *   keeping existing state pinned to cc-api keeps a live bug alive. The
  *   fall-through is UNCONDITIONAL: no property check, and `forceCcApi` is
  *   ignored, because pinning here would be pinning to the broken handler.
- * - `'sdk-coverage'` -- CC routing WORKS, it is merely slower; the SDK
- *   provider has since been backfilled (issue #609) to cover the properties
- *   this resource actually uses. The fall-through is CONDITIONAL on that being
- *   true of the resource in hand, and suppressible with `forceCcApi`.
+ * - `'sdk-coverage'` -- CC routing WORKS (or misbehaves only on an update);
+ *   the SDK provider has since been backfilled (issue #609) to cover the
+ *   properties this resource actually uses. The fall-through is CONDITIONAL on
+ *   that being true of the resource in hand, and suppressible with
+ *   `forceCcApi`. A CC defect that only a mutating deploy reaches fits here
+ *   too, since that deploy is the one that flips the record (the listener's
+ *   removed `ListenerAttributes` key, issue #4679).
  */
 export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
 
@@ -180,9 +183,11 @@ export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
  * The fields are not documentation. `tests/unit/provisioning/
  * sticky-exempt-registry.test.ts` requires `integFixture` to name a directory
  * that EXISTS under `tests/integration/` and to have at least one row in
- * `docs/_generated/integ-last-run.tsv` -- so an entry added before its parity
- * arm was ever run against real AWS fails the unit suite. That is the whole
- * mechanism behind "evidence rather than assumption": physicalId parity is an
+ * `docs/_generated/integ-last-run.tsv` -- so an entry naming a fixture that
+ * never ran fails the unit suite. A fixture that ran before its parity arm was
+ * added still passes, so that arm's real-AWS run is a merge condition of the
+ * PR adding the entry. That is the mechanism behind "evidence rather than
+ * assumption": physicalId parity is an
  * empirical per-type fact about what the CC handler mints as `Identifier`
  * versus what the SDK provider stores as `physicalId`, and it is FALSE in
  * general (composite ids, ARN-vs-name divergences). Asserting it from provider
@@ -301,6 +306,26 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
         'TopicArn and SnsTopicProvider.create records the CreateTopic TopicArn',
       issue: 'https://github.com/go-to-k/cdkd/issues/2719',
       integFixture: 'cc-to-sdk-reroute',
+    },
+  ],
+  [
+    'AWS::ElasticLoadBalancingV2::Listener',
+    {
+      // Pinned to cc-api: every listener first deployed while tagged, before
+      // the provider declared `Tags` handled. Cloud Control creates, reads,
+      // updates and deletes it, but a deploy dropping a `ListenerAttributes`
+      // key sends no `ModifyListenerAttributes` there, so the old value stays
+      // live (issue #4679, measured on the `alb` integ); the SDK provider
+      // resets it. Not 'cc-broken': that mode would also move an unflipped
+      // record's drift read to the SDK provider against its Cloud Control
+      // baseline. This one flips on the next deploy that changes the
+      // listener, which is the deploy that drops the key.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the listener ARN: the schema primaryIdentifier is ' +
+        'ListenerArn and ELBv2Provider.create records the CreateListener ListenerArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4679',
+      integFixture: 'alb',
     },
   ],
 ]);

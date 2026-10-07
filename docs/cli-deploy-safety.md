@@ -721,8 +721,8 @@ deploy, declining the automatic return to cdkd's SDK provider.
 
 **What it declines.** Once a resource is recorded `'cc-api'` it normally stays
 there ([state management](state-management.md) has the full rule). Types whose
-Cloud Control routing works but is merely slower can carry an `'sdk-coverage'`
-exemption, and a resource of such a type returns to the SDK provider on its
+Cloud Control routing works but is slower (apart from at most a defect only an
+update reaches) can carry an `'sdk-coverage'` exemption, and a resource of such a type returns to the SDK provider on its
 next mutating deploy — provided neither its template properties nor its
 recorded ones carry a property cdkd would silently drop. The physical id is
 preserved; the resource is updated in place, not replaced.
@@ -736,6 +736,11 @@ standing preference — for example wanting one deploy to go through the same
 layer as the last one while investigating something. It is deliberately
 per-deploy: pass it again next time, or stop passing it and let the flip
 happen.
+
+Pinning keeps Cloud Control's behavior for that deploy, gaps included. For an
+`AWS::ElasticLoadBalancingV2::Listener`, a deploy that removes a
+`ListenerAttributes` key under the pin leaves that key at its old value; the
+SDK provider is the route that resets it.
 
 **It is not a way to keep a broken type on Cloud Control.** A type admitted
 because Cloud Control *cannot* manage it (`'cc-broken'`, e.g.
