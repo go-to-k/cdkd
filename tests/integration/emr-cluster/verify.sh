@@ -237,6 +237,10 @@ delete_deny_role() { # usage: delete_deny_role <role-name>
     aws iam delete-role-policy --role-name "$1" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
     if aws iam delete-role --role-name "$1" >/dev/null 2>&1; then
       echo "    deleted deny role $1"
+    elif aws iam get-role --role-name "$1" >/dev/null 2>&1; then
+      # Still there (a throttle, a failed delete): say so. A role that never
+      # existed (the pre-run cleanup) stays silent.
+      echo "    WARN: could not delete role $1; delete it by hand" >&2
     fi
   )
 }
