@@ -40,7 +40,9 @@
 # built `EC2Provider.isSameResource` against live instances -- this stack's two,
 # a throwaway launched and terminated here (still described as `terminated`),
 # and a well-formed id that never existed -- asserting same / different /
-# unknown per case. Before #4606 every instance case answered `unknown`.
+# unknown per case. With the #4606 change reverted, five cases fail: (a), (b)
+# and the journaled halves of (c) / (d) answer `unknown`, and (g) prints no
+# `already gone` line; the record halves of (c) / (d), (e) and (f) are controls.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -794,7 +796,9 @@ echo "    OK: Placement.AvailabilityZone == ${ACTUAL_AZ} on AWS (AvailabilityZon
 # drives the built provider against live instances: the two this stack holds,
 # a throwaway launched and terminated below (EC2 keeps describing it as
 # `terminated` for about an hour, which no mock proves), and a well-formed id
-# that never existed. Before #4606 every case answered 'unknown'.
+# that never existed. With the #4606 change reverted, (a), (b) and the
+# journaled halves of (c) / (d) answer 'unknown' and (g) prints no 'already
+# gone' line; the record halves of (c) / (d), (e) and (f) pass either way.
 echo "==> Phase 1b: EC2Provider.isSameResource against live instances (issue #4606)"
 # Per run, so the cleanup sweep cannot reach another run's instance.
 PROBE_TOKEN="cdkd-integ-4606-$$-$(date +%s)"

@@ -207,4 +207,30 @@ describe('EC2Provider.delete of a journaled EC2 instance already gone (go-to-k/c
     await provider.delete('Orphan', I_A, INSTANCE, {}, { expectedRegion: 'us-east-1' });
     expect(providerLogger.info).not.toHaveBeenCalled();
   });
+
+  it('a termination-protected orphan throws and is never reported gone (the journal keeps it)', async () => {
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof TerminateInstancesCommand) {
+        throw awsError(
+          'OperationNotPermitted',
+          `The instance '${I_A}' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.`
+        );
+      }
+      throw new Error('unexpected command');
+    });
+    await expect(
+      provider.delete('Orphan', I_A, INSTANCE, {}, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).rejects.toThrow('disableApiTermination');
+    const gone = providerLogger.info.mock.calls
+      .map(([m]) => String(m))
+      .filter((m) => m.includes('already gone'));
+    expect(gone).toEqual([]);
+    // One attempt only: without --remove-protection the 400 is not retried.
+    expect(
+      mockSend.mock.calls.filter(([c]) => c instanceof TerminateInstancesCommand)
+    ).toHaveLength(1);
+  });
 });
