@@ -184,6 +184,46 @@ describe('a write-only create-only reference the registry names (go-to-k/cdkd#46
   const RULE = 'AWS::ElasticLoadBalancingV2::ListenerRule';
   const LISTENER = 'AWS::ElasticLoadBalancingV2::Listener';
 
+  const template: CloudFormationTemplate = {
+    Resources: {
+      Listener: {
+        Type: LISTENER,
+        Properties: { LoadBalancerArn: 'arn:lb', Port: 80, Protocol: 'HTTP' },
+      },
+      Rule: {
+        Type: RULE,
+        Properties: {
+          ListenerArn: { Ref: 'Listener' },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/h'] } }],
+          Actions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
+        },
+      },
+    },
+  };
+  const expected = [
+    {
+      logicalId: 'Rule',
+      resourceType: RULE,
+      reads: 'Listener',
+      properties: ['ListenerArn'],
+      statefulReason: null,
+    },
+  ];
+
+  it('lists it with DescribeType denied for the rule too: the registry, not the schema, decides', async () => {
+    // This file's default mock denies every non-API-Gateway type.
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    expect(
+      await findReplacedReadersOfRecreateTargets({
+        template,
+        state: stateOf({ Listener: record(LISTENER), Rule: record(RULE) }),
+        targetIds: ['Listener'],
+      })
+    ).toEqual(expected);
+  });
+
   it('lists the rule of a recreated listener as replaced through ListenerArn', async () => {
     clearCreateOnlyPropertiesCache();
     clearWriteOnlyPropertiesCache();
@@ -203,35 +243,11 @@ describe('a write-only create-only reference the registry names (go-to-k/cdkd#46
     );
     try {
       const readers = await findReplacedReadersOfRecreateTargets({
-        template: {
-          Resources: {
-            Listener: {
-              Type: LISTENER,
-              Properties: { LoadBalancerArn: 'arn:lb', Port: 80, Protocol: 'HTTP' },
-            },
-            Rule: {
-              Type: RULE,
-              Properties: {
-                ListenerArn: { Ref: 'Listener' },
-                Priority: 10,
-                Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/h'] } }],
-                Actions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
-              },
-            },
-          },
-        },
+        template,
         state: stateOf({ Listener: record(LISTENER), Rule: record(RULE) }),
         targetIds: ['Listener'],
       });
-      expect(readers).toEqual([
-        {
-          logicalId: 'Rule',
-          resourceType: RULE,
-          reads: 'Listener',
-          properties: ['ListenerArn'],
-          statefulReason: null,
-        },
-      ]);
+      expect(readers).toEqual(expected);
     } finally {
       mockCloudFormationSend.mockImplementation(fallback);
       clearCreateOnlyPropertiesCache();

@@ -395,11 +395,12 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
 
     async function diffWithLiveSchema(
       lbName: string,
-      forced: ReadonlySet<string> | undefined
+      forced: ReadonlySet<string> | undefined,
+      schema: typeof liveSchema = liveSchema
     ): Promise<Map<string, { changeType?: string; propertyChanges?: PropertyChange[] }>> {
       clearCreateOnlyPropertiesCache();
       clearWriteOnlyPropertiesCache();
-      mockCloudFormationSend.mockImplementation(liveSchema);
+      mockCloudFormationSend.mockImplementation(schema);
       try {
         const state = listenerState();
         return await new DiffCalculator().calculateDiff(
@@ -426,6 +427,14 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
       const pc = changeOf(changes, 'Rule', 'ListenerArn');
       expect(pc?.replacementPropagated).toBe(true);
       expect(pc?.requiresReplacement).toBe(true);
+    });
+
+    it('replaces it with DescribeType denied for the rule: the registry, not the schema, decides', async () => {
+      const changes = await diffWithLiveSchema('lb-a', new Set(['Listener']), (command) =>
+        command.input?.TypeName === RULE ? denied() : liveSchema(command)
+      );
+
+      expect(changeOf(changes, 'Rule', 'ListenerArn')?.requiresReplacement).toBe(true);
     });
 
     it('replaces the rule of a listener replaced by its create-only LoadBalancerArn', async () => {

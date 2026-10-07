@@ -104,18 +104,29 @@ cleanup() {
       aws elbv2 delete-load-balancer --load-balancer-arn "${ORPHAN_LB_ARN}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
       ;;
   esac
-  ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   # go-to-k/cdkd#4689: a Phase 5 recreate that failed mid-way can leave a
-  # listener (and its rule) state no longer records. Both live on this run's
-  # load balancer and go with it, so if the destroy left it, delete it by the
-  # ARN this run captured.
+  # listener state no longer records, forwarding to the target group, so the
+  # destroy's target-group delete would fail in use. Delete every listener on
+  # this run's load balancer (by the ARN this run captured) BEFORE the
+  # destroy; a listener's rules go with it, and the destroy reads a listener
+  # or rule already gone as deleted.
+  # Best-effort, as the rest of this cleanup: `set +e` for the remainder.
+  set +e
   if [ -n "${P5_OLD_LISTENER:-}" ]; then
     case "${LB_ARN:-}" in
       arn:*:loadbalancer/app/*)
-        aws elbv2 delete-load-balancer --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+        for arn in $(aws elbv2 describe-listeners --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+          --query 'Listeners[].ListenerArn' --output text 2>/dev/null); do
+          case "${arn}" in
+            arn:*:listener/app/*)
+              aws elbv2 delete-listener --listener-arn "${arn}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+              ;;
+          esac
+        done
         ;;
     esac
   fi
+  ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   exit ${rc}
 }
 trap cleanup EXIT
@@ -283,8 +294,9 @@ echo "    deregistration_delay=60, idle_timeout=180, target swapped to 10.0.0.10
 # lambda-event-invoke-config-update), not recreated through Cloud Control: this
 # binary has no Cloud Control route for a fresh listener, and a
 # --recreate-via-cc-api would give the listener a new ARN, which the readbacks
-# below address by the old one (Phase 5 runs that recreate last). The flip reads only the record's layer and its template
-# property bag, which do not depend on the layer that created the listener.
+# below address by the old one (Phase 5 runs that recreate last). The flip
+# reads only the record's layer and its template property bag, which do not
+# depend on the layer that created the listener.
 listener_record() { # usage: listener_record <jq path under the resource>; "" when absent
   local state
   state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
@@ -677,6 +689,13 @@ P5_RULE_SHAPE="$(printf '%s' "${P5_RULE_JSON}" | jq -r '
   end')"
 if [ "${P5_RULE_SHAPE}" != "${P5_NEW_RULE} 1 /health fixed-response 200" ]; then
   echo "FAIL: #4689: the new listener's rule is '${P5_RULE_SHAPE}', expected '${P5_NEW_RULE} 1 /health fixed-response 200'" >&2
+  exit 1
+fi
+# The record must hold the NEW listener: one keeping the old ARN would make
+# the next ordinary deploy see a create-only change and replace the rule again.
+P5_RECORDED_REF="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.HealthRule.properties.ListenerArn // "<absent>"')"
+if [ "${P5_RECORDED_REF}" != "${P5_NEW_LISTENER}" ]; then
+  echo "FAIL: #4689: state records HealthRule's ListenerArn as '${P5_RECORDED_REF}', expected the new ${P5_NEW_LISTENER}" >&2
   exit 1
 fi
 echo "    OK: HealthRule replaced onto ${P5_NEW_LISTENER} (priority 1, /health -> 200), no NotFound"
