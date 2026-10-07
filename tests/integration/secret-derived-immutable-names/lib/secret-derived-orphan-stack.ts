@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * A failed-CREATE orphan named from a secret (go-to-k/cdkd#3869).
@@ -13,12 +14,24 @@ import * as ecr from 'aws-cdk-lib/aws-ecr';
  * state record holds it, so `cdkd destroy` deletes it from the journal; that
  * delete's lines must not name the repository.
  *
+ * `SecretRollbackQueue`, its `QueueName` from the secret's `rbqueue` field,
+ * is created FIRST (the repository depends on it) and succeeds: a COMPLETED
+ * CREATE, which a rollback reverts by deleting it. That delete's lines must
+ * not name the queue either.
+ *
  * covers: AWS::ECR::Repository
+ * covers: AWS::SQS::Queue
  */
 export class SecretDerivedOrphanStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     const secretName = process.env.SDIN_SECRET_NAME ?? 'cdkd-integ-sdin-unset';
+    const queue = new sqs.CfnQueue(this, 'SecretRollbackQueue', {
+      queueName: cdk.SecretValue.secretsManager(secretName, {
+        jsonField: 'rbqueue',
+      }).unsafeUnwrap(),
+    });
+    queue.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     const repo = new ecr.CfnRepository(this, 'SecretOrphanRepo', {
       repositoryName: cdk.SecretValue.secretsManager(secretName, {
         jsonField: 'repo',
@@ -40,5 +53,6 @@ export class SecretDerivedOrphanStack extends cdk.Stack {
       },
     });
     repo.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    repo.addDependency(queue);
   }
 }

@@ -70,9 +70,13 @@ import {
   recordLogOnlyParameterValue,
   literalSplitDelimitersOf,
   recordLogOnlyValue,
+  maskSecretsInText,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
-import { stateSecretNameNeedles } from '../../deployment/secret-name-needles.js';
+import {
+  orphanRecordsPrintingBag,
+  stateSecretNameNeedles,
+} from '../../deployment/secret-name-needles.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -1840,7 +1844,11 @@ export async function computeStackDiff(
     );
     adoptedOrphans = Object.keys(plan.adopted);
     adoptedRecords = plan.adopted;
-    blocking = plan.refusals;
+    // go-to-k/cdkd#3869: the refusal names a kept record's physical id, which
+    // can be named from a secret. Masked at the source, so the rendered view
+    // and `--json` print the same text the deploy's refusal does.
+    const orphanNames = orphanRecordsPrintingBag(readableOrphans);
+    blocking = plan.refusals.map((reason) => maskSecretsInText(reason, orphanNames));
     if (adoptedOrphans.length > 0) {
       stateForDiff = {
         ...currentState,

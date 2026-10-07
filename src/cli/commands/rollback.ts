@@ -46,6 +46,7 @@ import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import {
+  completedReplayEntries,
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
 } from '../../deployment/secret-name-needles.js';
@@ -1314,30 +1315,37 @@ export async function rollbackCommand(
                     // destroy`'s orphans do: a provider's delete lines and the
                     // events mask a name derived from a secret, and one an
                     // orphan READ from a record.
+                    // Nested inside the batch bag: this segment's ops judged
+                    // against the state as it stands NOW, so a name a newer
+                    // segment's completed-op revert restored is caught too.
                     const failedResult = await withPrintingSecrets(failedOpsPrinting, () =>
-                      replayFailedOperations(failedToReplay, stateResources, stackName, ctx, {
-                        afterOp: saveState,
-                        isInterrupted: () => interrupted,
-                        // Failed-only segment: replayRollback below returns
-                        // early without the STARTED/FINISHED envelope, so the
-                        // failed-op replay owns it (events symmetry). For a
-                        // MIXED segment the failed-op ROLLBACK_RESOURCE_*
-                        // events land just before replayRollback's
-                        // ROLLBACK_STARTED — accepted cosmetic ordering (the
-                        // events stream is informational; the reader derives
-                        // nothing from envelope position).
-                        // The REPLAYED list, not `segment.operations`: an
-                        // all-imported segment hands replayRollback nothing,
-                        // and it then emits no envelope (cosmetic ordering
-                        // only, unpinned on purpose).
-                        emitEnvelope: completedOps.length === 0,
-                        // Same reason as the sibling replay below: `afterOp`
-                        // saves per op, so a record appended only after this
-                        // returns is absent from every intermediate save
-                        // (issue #2934).
-                        onOrphan: (record) => mintedOrphans.push(record),
-                        inlinePolicyWriters,
-                      })
+                      withPrintingSecrets(
+                        journaledOrphanPrintingBag(failedToReplay, stateResources),
+                        () =>
+                          replayFailedOperations(failedToReplay, stateResources, stackName, ctx, {
+                            afterOp: saveState,
+                            isInterrupted: () => interrupted,
+                            // Failed-only segment: replayRollback below returns
+                            // early without the STARTED/FINISHED envelope, so the
+                            // failed-op replay owns it (events symmetry). For a
+                            // MIXED segment the failed-op ROLLBACK_RESOURCE_*
+                            // events land just before replayRollback's
+                            // ROLLBACK_STARTED — accepted cosmetic ordering (the
+                            // events stream is informational; the reader derives
+                            // nothing from envelope position).
+                            // The REPLAYED list, not `segment.operations`: an
+                            // all-imported segment hands replayRollback nothing,
+                            // and it then emits no envelope (cosmetic ordering
+                            // only, unpinned on purpose).
+                            emitEnvelope: completedOps.length === 0,
+                            // Same reason as the sibling replay below: `afterOp`
+                            // saves per op, so a record appended only after this
+                            // returns is absent from every intermediate save
+                            // (issue #2934).
+                            onOrphan: (record) => mintedOrphans.push(record),
+                            inlinePolicyWriters,
+                          })
+                      )
                     );
                     failedOpFailures = failedResult.failures;
                     failedOpWarnings = failedResult.warnings;
@@ -1389,22 +1397,28 @@ export async function rollbackCommand(
                       };
                     }
                   }
-                  const replayResult = await replayRollback(
-                    completedOps,
-                    stateResources,
-                    stackName,
-                    ctx,
-                    {
-                      orphanLogicalIds,
-                      afterOp: saveState,
-                      isInterrupted: () => interrupted,
-                      // Pushed from INSIDE the replay, not after it returns: the
-                      // `afterOp` above saves per op, so a record appended only
-                      // on return would be missing from every intermediate save
-                      // — and a crash there loses it for good (issue #2934).
-                      onOrphan: (record) => mintedOrphans.push(record),
-                      inlinePolicyWriters,
-                    }
+                  // go-to-k/cdkd#3869: the completed ops revert under a PRINTING
+                  // bag judged from their journal entries and the records they
+                  // replaced, against the state as it stands now: a provider's
+                  // delete of a resource the failed deploy created, named from
+                  // a secret, prints its name otherwise.
+                  const replayResult = await withPrintingSecrets(
+                    journaledOrphanPrintingBag(
+                      completedReplayEntries(completedOps),
+                      stateResources
+                    ),
+                    () =>
+                      replayRollback(completedOps, stateResources, stackName, ctx, {
+                        orphanLogicalIds,
+                        afterOp: saveState,
+                        isInterrupted: () => interrupted,
+                        // Pushed from INSIDE the replay, not after it returns: the
+                        // `afterOp` above saves per op, so a record appended only
+                        // on return would be missing from every intermediate save
+                        // — and a crash there loses it for good (issue #2934).
+                        onOrphan: (record) => mintedOrphans.push(record),
+                        inlinePolicyWriters,
+                      })
                   );
                   return {
                     failures: replayResult.failures + failedOpFailures,

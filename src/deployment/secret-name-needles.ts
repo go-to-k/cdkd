@@ -259,6 +259,71 @@ export function journaledOrphanPrintingBag(
 }
 
 /**
+ * The records a completed op's revert names (go-to-k/cdkd#3869), as entries a
+ * printing-bag judge reads: the op's own (the resource it made or wrote, its
+ * properties) and the one it replaced (`previousState`, which an UPDATE or
+ * DELETE revert writes back and whose id it prints).
+ */
+export function completedReplayEntries(
+  ops: readonly {
+    logicalId: string;
+    resourceType: string;
+    physicalId?: string | undefined;
+    properties?: Record<string, unknown> | undefined;
+    previousState?: ResourceState | undefined;
+  }[]
+): Array<{
+  logicalId: string;
+  resourceType: string;
+  physicalId?: string | undefined;
+  properties?: Record<string, unknown> | undefined;
+  attemptedProperties?: Record<string, unknown> | undefined;
+}> {
+  return ops.flatMap((op) => [
+    {
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      physicalId: op.physicalId,
+      properties: op.properties,
+      attemptedProperties: op.properties,
+    },
+    ...(op.previousState === undefined
+      ? []
+      : [
+          {
+            logicalId: op.logicalId,
+            resourceType: op.previousState.resourceType,
+            physicalId: op.previousState.physicalId,
+            properties: op.previousState.properties,
+            attemptedProperties: op.previousState.properties,
+          },
+        ]),
+  ]);
+}
+
+/**
+ * The log-only bag over a stack's orphan records (`state.orphans`, what an
+ * earlier rollback kept in AWS; go-to-k/cdkd#3869): each record's own name
+ * spellings, judged from the record, which still spells a secret-derived name
+ * as its `{{resolve:` reference. One bag for every record: a line names one
+ * record, and a sibling's needle only over-masks. Malformed entries are
+ * skipped (their own refusal reports them). For the adoption pre-pass's lines
+ * and refusal, on `cdkd deploy` and `cdkd diff` alike.
+ */
+export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  for (const entry of records) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { logicalId, state } = entry as { logicalId?: unknown; state?: unknown };
+    if (typeof logicalId !== 'string' || state === null || typeof state !== 'object') continue;
+    for (const needle of secretNameNeedlesOf(logicalId, state, undefined) ?? []) {
+      recordLogOnlyValue(bag, needle);
+    }
+  }
+  return bag;
+}
+
+/**
  * An event with its human-authored text (`error.message`, `reason`) masked by
  * the printing bags bound where it is recorded (go-to-k/cdkd#3869): the events
  * store is DURABLE, so a name the log lines beside it withhold must not land
@@ -266,15 +331,21 @@ export function journaledOrphanPrintingBag(
  * identity a cleanup needs, and `state.json` records it too. Identity when
  * nothing is bound.
  *
- * The `ownLines` exemption is DEFENSIVE. Own-remedy refusals come only from
- * the completed-op arms. Both rollback contexts route those arms' events
- * through this masker, but record them under no bound bag, so it is identity
- * there; the failed-op replay and the destroy runner raise none. It keeps
- * a replay refusal's pasteable commands, masked at construction, from being
- * cut by a short needle. Wiring one through here must re-evaluate it: the op
- * masker that built the message does not hold a name the entry READ from a
- * sibling, which this exemption would then let through.
+ * A message marked `ownLines` (a replay refusal from the completed-op arms,
+ * masked at construction by the op masker, which holds no name the entry READ
+ * from a sibling) is masked LINE BY LINE, except its labelled `To orphan it:`
+ * command line: that line carries only the vetted logical id and the run's own
+ * stack, region and option values, none derived from a secret, and a short
+ * needle would cut the pasteable command. The completed-op replay now runs
+ * under a bound bag, so these events reach this masker with needles in it.
+ * The terminal line of the same refusal is masked WHOLE by the logger's sink,
+ * its command line too: an over-mask a needle equal to a stack name, region or
+ * vetted logical id can cause there, accepted rather than special-cased in the
+ * sink.
  */
+/** The label of `orphanRemedy`'s pasteable command line. */
+const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
+
 export function maskEventTextWithBoundBags<
   T extends { error?: { message?: string; ownLines?: boolean }; reason?: string },
 >(event: T): T {
@@ -282,8 +353,15 @@ export function maskEventTextWithBoundBags<
   const mask = currentLogLineMasker();
   if (mask === undefined) return event;
   const masked: T = { ...event };
-  if (masked.error?.message && masked.error.ownLines !== true) {
-    masked.error = { ...masked.error, message: mask(masked.error.message) };
+  if (masked.error?.message) {
+    const message =
+      masked.error.ownLines === true
+        ? masked.error.message
+            .split('\n')
+            .map((line) => (line.startsWith(ORPHAN_COMMAND_LABEL) ? line : mask(line)))
+            .join('\n')
+        : mask(masked.error.message);
+    masked.error = { ...masked.error, message };
   }
   if (masked.reason) masked.reason = mask(masked.reason);
   return masked;

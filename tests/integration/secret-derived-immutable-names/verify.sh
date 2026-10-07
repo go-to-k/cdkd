@@ -56,7 +56,9 @@
 #      destroy that stack: its --verbose log does not name the repository,
 #      whose delete runs from the journal alone.
 #   6c. The same failed deploy again, then a plain `cdkd rollback`: its log
-#      does not name the repository either (its failed-op replay, go-to-k/cdkd#3869).
+#      does not name the repository either (its failed-op replay, go-to-k/cdkd#3869),
+#      nor SecretRollbackQueue, the completed CREATE each rollback deletes
+#      (the completed-op replay); 6d checks the same queue.
 #   6d. The same deploy WITHOUT --no-rollback: the automatic rollback deletes the
 #      orphan, and the deploy's --verbose log does not name the repository.
 #   7. Remove the secret; assert 0 orphans.
@@ -98,6 +100,10 @@
 # Revert the `withPrintingSecrets` wrap around the orphan replay in
 # src/deployment/deploy-engine/rollback.ts ALONE and step 6d fails the same way
 # on the deploy's log (not yet measured on real AWS).
+# Revert the `withPrintingSecrets` wrap around `replayRollback` in
+# src/cli/commands/rollback.ts (step 6c) or src/deployment/deploy-engine/rollback.ts
+# (step 6d) ALONE and that step fails naming ${RB_QUEUE_NAME} on the SQS
+# provider's delete line (not yet measured on real AWS).
 # Revert the `secretNameNeedles` / `secretNameSink` lines of
 # src/cli/commands/diff-recursive.ts ALONE and step 5b fails naming
 # ${QUEUE_NAME}; revert the `withPrintingSecrets` wrap in
@@ -184,6 +190,8 @@ FILTER_NAME="sdin-mf-${SUFFIX}"
 FILTER_NAME_ROTATED="sdin-mfr-${SUFFIX}"
 # ECR repository names are lower-case.
 REPO_NAME="sdin-repo-${SUFFIX}"
+# The orphan stack's completed CREATE, which each rollback deletes.
+RB_QUEUE_NAME="sdin-rbq-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
 SCHEDULE_NAME="CdkdSdinSchedule"
 PLAIN_SCHEDULE_NAME="CdkdSdinSchedulePlainTarget"
@@ -249,6 +257,11 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${ORPHAN_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null 2>&1
+    LEFT_RB_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${RB_QUEUE_NAME}" \
+      --query QueueUrl --output text 2>/dev/null)"
+    if [ -n "${LEFT_RB_QUEUE_URL}" ] && [ "${LEFT_RB_QUEUE_URL}" != "None" ]; then
+      aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_RB_QUEUE_URL}" >/dev/null 2>&1
+    fi
     aws s3 rm "s3://${STATE_BUCKET:-}/${ORPHAN_JOURNAL_KEY}" >/dev/null 2>&1
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${ORPHAN_PREFIX}" noncurrent || true
   fi
@@ -305,8 +318,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -540,8 +553,8 @@ done
 
 echo "==> Step 3b: rotate the secret's filter field only"
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -754,11 +767,25 @@ if ! grep -qF "Deleted Schedule PlainTargetSchedule (found by its recorded creat
 fi
 echo "    OK: PlainTargetSchedule was deleted by its recorded identity"
 
+# SQS refuses to re-create a queue under a name deleted less than 60 seconds
+# ago (QueueDeletedRecently). SecretRollbackQueue's name is fixed for the run,
+# and each step before a re-deploy deletes it, so wait the cooldown out rather
+# than ride the provider's name-cooldown retry (whose failure would surface as
+# a missing-repository premise, since the repository depends on the queue).
+# A no-op before the first deploy (QUEUE_DELETED_AT unset).
+wait_queue_name_cooldown() {
+  if [ -n "${QUEUE_DELETED_AT:-}" ]; then
+    local left=$((QUEUE_DELETED_AT + 65 - $(date +%s)))
+    if [ "${left}" -gt 0 ]; then sleep "${left}"; fi
+  fi
+}
+
 # Deploys the orphan stack, which must FAIL after ECR made the repository, and
 # checks the journal records it as a proven orphan (no state record holds it).
 # Used by step 6b (destroy) and step 6c (rollback).
 orphan_deploy_failing() {
   ORPHAN_DEPLOYED=1
+  wait_queue_name_cooldown
   set +e
   node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
@@ -787,6 +814,35 @@ orphan_deploy_failing() {
     exit 1
   fi
   echo "    OK: the failed deploy journaled the repository as a proven orphan"
+}
+
+# Asserts a rollback log deleted SecretRollbackQueue (the orphan stack's
+# completed CREATE) without naming it (go-to-k/cdkd#3869), and that the queue
+# is gone. SQS may answer for a deleted queue name for up to 60 seconds.
+assert_rollback_queue_deleted() { # usage: assert_rollback_queue_deleted <which>
+  if ! grep -qF -- "Deleting SQS queue SecretRollbackQueue: " "${ORPHAN_LOG}"; then
+    echo "FAIL: premise: the $1 log has no 'Deleting SQS queue SecretRollbackQueue: ' line (the completed CREATE was not reverted, the --verbose debug stream is missing, or the wording drifted)" >&2
+    tail -60 "${ORPHAN_LOG}" >&2
+    exit 1
+  fi
+  if grep -qF -- "${RB_QUEUE_NAME}" "${ORPHAN_LOG}"; then
+    HIT_LINES="$(grep -nF -- "${RB_QUEUE_NAME}" "${ORPHAN_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the $1 log names the secret-derived queue name of the completed CREATE in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
+  local gone=0 attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    if gone_probe aws sqs get-queue-url --region "${REGION}" --queue-name "${RB_QUEUE_NAME}"; then
+      gone=1
+      break
+    fi
+    [ "${attempt}" = 14 ] || sleep 5
+  done
+  if [ "${gone}" != "1" ]; then
+    echo "FAIL: queue ${RB_QUEUE_NAME} still exists 65s after the $1" >&2
+    exit 1
+  fi
+  QUEUE_DELETED_AT="$(date +%s)"
 }
 
 echo "==> Step 6b: a failed-CREATE orphan named from the secret, destroyed from the journal"
@@ -818,6 +874,8 @@ for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
   assert_gone "${key} still exists after the orphan stack's destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
+# The destroy deleted SecretRollbackQueue as a state resource.
+QUEUE_DELETED_AT="$(date +%s)"
 echo "    OK: the journaled orphan was deleted, and the destroy log withholds its name"
 
 echo "==> Step 6c: the same orphan, deleted by a plain cdkd rollback from the journal"
@@ -853,7 +911,8 @@ for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
   assert_gone "${key} still exists after the orphan stack's initial-deploy rollback" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
-echo "    OK: the rollback deleted the journaled orphan, and its log withholds the name"
+assert_rollback_queue_deleted rollback
+echo "    OK: the rollback deleted the journaled orphan and the completed CREATE, and its log withholds both names"
 
 echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic rollback deletes the orphan"
 # go-to-k/cdkd#3869: the deploy engine's own rollback replays the orphan
@@ -862,6 +921,7 @@ echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic r
 # no earlier step greps that log, so read HIT_LINES to tell which phase leaked.
 # State and journal are not asserted gone: the automatic rollback never deletes
 # state.json, and cleanup / step 8 sweep the prefix.
+wait_queue_name_cooldown
 set +e
 node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --yes --verbose > "${ORPHAN_LOG}" 2>&1
@@ -885,7 +945,8 @@ if grep -qF -- "${REPO_NAME}" "${ORPHAN_LOG}"; then
 fi
 assert_gone "orphan repository ${REPO_NAME} still exists after the automatic rollback" \
   aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
-echo "    OK: the automatic rollback deleted the orphan, and the deploy log withholds its name"
+assert_rollback_queue_deleted "automatic rollback"
+echo "    OK: the automatic rollback deleted the orphan and the completed CREATE, and the deploy log withholds both names"
 
 echo "==> Step 7: remove the secret; assert 0 orphans"
 aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \

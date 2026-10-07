@@ -30,7 +30,9 @@ const replay = vi.hoisted(() => ({
   warningsFor: new Set<string>(),
   orphanFor: new Set<string>(),
   /** Runs inside the replay, with the scope the replay was bound in. */
-  duringReplay: undefined as ((inner: NestedRevertRun) => void) | undefined,
+  duringReplay: undefined as
+    | ((inner: NestedRevertRun, ctx: Record<string, unknown>) => void)
+    | undefined,
   readNested: (() => undefined) as () =>
     | { parentStackName: string; nestedTemplates?: unknown }
     | undefined,
@@ -51,7 +53,7 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
       ctx: Record<string, unknown>,
       options: { afterOp?: () => Promise<void>; onOrphan?: (record: unknown) => void }
     ) => {
-      replay.duringReplay?.(replay.readRun() as NestedRevertRun);
+      replay.duringReplay?.(replay.readRun() as NestedRevertRun, ctx);
       const nested = replay.readNested();
       replay.calls.push({
         ops: ops.map((o) => o.logicalId),
@@ -105,6 +107,7 @@ import {
   withSkipPrefix,
 } from '../../../src/provisioning/resource-name.js';
 import { reserveStackCreateToken } from '../../../src/provisioning/providers/create-token-ledger.js';
+import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 
 replay.readNested = getCurrentNestedStackContext;
 replay.readRun = getNestedRevertRun;
@@ -1265,4 +1268,105 @@ describe('revertNestedChildFromJournal qualifies its malformed-record refusals (
       expect(err.message).not.toContain('--state-prefix');
     });
   }
+});
+
+describe("a nested child's revert masks a secret-derived name (go-to-k/cdkd#3869)", () => {
+  const REF = '{{resolve:secretsmanager:team:SecretString:queue::}}';
+  const NAME = 'team-secret-queue';
+  const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${NAME}`;
+
+  it.each([
+    ['a queue the child names by its reference', REF, false],
+    ['negative control, a literal name', NAME, true],
+  ])("on the child replay's lines and events: %s", async (_l, queueName, shown) => {
+    const recorded: Array<{ reason?: string }> = [];
+    const h = harness({
+      state: childState({
+        Q: {
+          physicalId: URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: queueName },
+          attributes: {},
+          dependencies: [],
+        },
+      }),
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            {
+              logicalId: 'Q',
+              resourceType: 'AWS::SQS::Queue',
+              changeType: 'CREATE',
+              physicalId: URL,
+              properties: { QueueName: queueName },
+            },
+          ] as RollbackJournalSegment['operations'],
+        }),
+      ],
+      ctxExtra: { options: { eventRecorder: { record: (e: { reason?: string }) => recorded.push(e) } } },
+    });
+    let line: string | undefined;
+    replay.duringReplay = (_inner, ctx) => {
+      const raw = `Deleting SQS queue Q: ${URL}`;
+      line = currentLogLineMasker()?.(raw) ?? raw;
+      (ctx as { recordEvent: (e: { eventType: string; reason: string }) => void }).recordEvent({
+        eventType: 'ROLLBACK_RESOURCE_SKIPPED',
+        reason: `could not confirm ${URL}`,
+      });
+    };
+    await h.run('run-1');
+    // Premise: the child replay ran with its op.
+    expect(replay.calls.map((c) => c.ops)).toEqual([['Q']]);
+    expect(line).toContain('Deleting SQS queue Q: ');
+    expect(line!.includes(NAME)).toBe(shown);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.reason).toContain('could not confirm ');
+    expect(recorded[0]!.reason!.includes(NAME)).toBe(shown);
+  });
+
+  it.each([
+    ['a user the child names by its reference', REF, false],
+    ['negative control, a literal name', NAME, true],
+  ])("on a child op's line naming a record it READ: %s", async (_l, userName, shown) => {
+    const h = harness({
+      state: childState({
+        User: {
+          physicalId: NAME,
+          resourceType: 'AWS::IAM::User',
+          properties: { UserName: userName },
+          attributes: {},
+          dependencies: [],
+        },
+        Key: {
+          physicalId: 'AKIAEXAMPLEKEY',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: { UserName: NAME },
+          attributes: {},
+          dependencies: ['User'],
+        },
+      }),
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            {
+              logicalId: 'Key',
+              resourceType: 'AWS::IAM::AccessKey',
+              changeType: 'CREATE',
+              physicalId: 'AKIAEXAMPLEKEY',
+              properties: { UserName: NAME },
+            },
+          ] as RollbackJournalSegment['operations'],
+        }),
+      ],
+    });
+    let line: string | undefined;
+    replay.duringReplay = () => {
+      const raw = `Deleting access key AKIAEXAMPLEKEY of user ${NAME}`;
+      line = currentLogLineMasker()?.(raw) ?? raw;
+    };
+    await h.run('run-1');
+    // Premise: the child replay ran with the key's op.
+    expect(replay.calls.map((c) => c.ops)).toEqual([['Key']]);
+    expect(line!.includes(NAME)).toBe(shown);
+  });
 });
