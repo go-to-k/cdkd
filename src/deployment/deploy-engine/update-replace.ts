@@ -30,7 +30,7 @@ import {
   isRecreateRetryableError,
   markNonRetryable,
 } from '../retryable-errors.js';
-import { createSecretMasker, maskSecretsInText } from '../secret-redaction.js';
+import { createSecretMasker, maskSecretsInError, maskSecretsInText } from '../secret-redaction.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -436,10 +436,25 @@ export async function updateByReplacement(
         // (without it the subsequent create collides with the
         // pre-existing resource), so a swallowed failure would
         // produce a confusing AlreadyExists later.
+        //
+        // go-to-k/cdkd#1889: the delete's error is chained as `cause` so
+        // its markers survive the wrap, through `maskSecretsInError` so the
+        // chain carries no plaintext the message would not; the message is
+        // masked at construction like the delete-first fallback's twin in
+        // `replacement.ts`.
         throw new Error(
-          `Failed to destroy old resource ${logicalId} (${currentResource.physicalId}) ` +
-            `during ${recreateFlagName}: ` +
-            `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+          maskSecretsInText(
+            `Failed to destroy old resource ${logicalId} (${currentResource.physicalId}) ` +
+              `during ${recreateFlagName}: ` +
+              `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
+            updateSecrets
+          ),
+          {
+            cause:
+              deleteError instanceof Error
+                ? maskSecretsInError(deleteError, updateSecrets)
+                : undefined,
+          }
         );
       }
       // Issue #1762: same reasoning as the delete-first fallback —
