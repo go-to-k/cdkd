@@ -34,6 +34,14 @@ import {
 } from '../redacted-delete-address.js';
 
 /**
+ * The registry schema's read-only primaryIdentifier, under both of its names:
+ * `AnomalyDetectorId` (current schema) and `Id` (the earlier one, still what
+ * an aws-cdk-lib `attrId` emits). Both are cdkd's deterministic physical id
+ * (issue #4668).
+ */
+const ID_ATTRIBUTES = ['AnomalyDetectorId', 'Id'] as const;
+
+/**
  * AWS CloudWatch AnomalyDetector Provider (issue #1304)
  *
  * Implements resource provisioning for AWS::CloudWatch::AnomalyDetector using
@@ -118,9 +126,9 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
 
       return {
         physicalId,
-        // The registry schema's read-only `Id` primaryIdentifier — expose it
-        // so `Fn::GetAtt [<detector>, Id]` resolves from cached attributes.
-        attributes: { Id: physicalId },
+        // Expose the read-only primaryIdentifier so `Fn::GetAtt` resolves
+        // from cached attributes under either name.
+        attributes: { AnomalyDetectorId: physicalId, Id: physicalId },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -174,7 +182,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: { Id: physicalId },
+        attributes: { AnomalyDetectorId: physicalId, Id: physicalId },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -271,18 +279,19 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
 
   /**
    * Resolve a `Fn::GetAtt` attribute. The registry schema exposes a single
-   * read-only attribute, `Id` — cdkd's deterministic physical id.
+   * read-only attribute, `AnomalyDetectorId` (formerly `Id`) — cdkd's
+   * deterministic physical id.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await -- Id is derived locally; no AWS call needed
+  // eslint-disable-next-line @typescript-eslint/require-await -- the id is derived locally; no AWS call needed
   async getAttribute(
     physicalId: string,
     resourceType: string,
     attributeName: string,
     logicalId: string
   ): Promise<unknown> {
-    if (attributeName === 'Id') return physicalId;
+    if ((ID_ATTRIBUTES as readonly string[]).includes(attributeName)) return physicalId;
     throw new ProvisioningError(
-      `Unknown attribute ${attributeName} for ${resourceType} (only 'Id' is defined)`,
+      `Unknown attribute ${attributeName} for ${resourceType} (only 'AnomalyDetectorId' and 'Id' are defined)`,
       resourceType,
       logicalId,
       physicalId
@@ -301,7 +310,10 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+      return {
+        physicalId: input.knownPhysicalId,
+        attributes: { AnomalyDetectorId: input.knownPhysicalId, Id: input.knownPhysicalId },
+      };
     }
     return null;
   }
