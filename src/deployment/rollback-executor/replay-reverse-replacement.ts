@@ -688,6 +688,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
           recordedAttributes: current.attributes,
+          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+          recordedNoEchoLeaves: current.noEchoLeaves,
         }
       );
       // Issue #1762: this delete exists to release the name the
@@ -965,6 +967,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
           recordedAttributes: current.attributes,
+          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+          recordedNoEchoLeaves: current.noEchoLeaves,
         }
       );
       // Issue #1762: the old resource is already re-created and state

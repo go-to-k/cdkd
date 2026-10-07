@@ -937,6 +937,21 @@ A provider can receive `***` as the PREVIOUS value of such a property on an
 update whose readback could not confirm it, since the record holds nothing
 else. A readback that confirms the value sends nothing.
 
+#### Custom resources that read a `NoEcho` parameter
+
+cdkd cannot read a custom resource back, so its handler is the "AWS does not
+report it" row above:
+
+| request | what the handler receives |
+| --- | --- |
+| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position |
+| `Delete` | not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
+
+A handler whose `Update` is not idempotent, or that compares the two bags to
+decide what to do, should take a name or an ARN (for example of a Secrets
+Manager secret) and read the value itself, rather than the value, which is the
+same pattern cdkd already requires for a secure dynamic reference.
+
 `cdkd diff` cannot read AWS, so it compares the masks and says once per stack
 how many unchanged resources read a `NoEcho` parameter; that note does not
 count as a change for `--fail`.
@@ -970,10 +985,13 @@ count as a change for `--fail`.
 - A resource's physical id is never masked. A `NoEcho` value used as a NAME is
   published by AWS, and the deploy warns once per such resource.
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
-  a policy target) cannot be addressed from its record, which holds `***`.
+  a policy target, or any property of a custom resource, whose handler would
+  receive `***`) cannot be addressed from its record, which holds `***`.
   `cdkd destroy`, and a deploy that removes the resource, skip that delete,
   keep the record and exit non-zero (a deploy exits zero with
-  `--allow-unaddressed`); delete the resource by hand. When a REPLACEMENT creates the new resource first, the
+  `--allow-unaddressed`); delete the resource by hand (for a custom resource,
+  whatever its handler manages), then drop the record with
+  `cdkd state orphan`. When a REPLACEMENT creates the new resource first, the
   delete of the old one is skipped with a warning that it is no longer
   tracked, and it is left in AWS; the resource's row is reported as a partial
   update, and the deploy exits non-zero for it unless `--allow-unaddressed`.
@@ -1010,6 +1028,13 @@ last sent, so the migration deploy neither updates nor replaces a resource for
 it, and its save stores `***` and the new fields. A record that deploy did not
 reach is masked by the template's positions too, while the template still
 names it as the same logical id and type.
+
+A value that DID change since the last deploy is applied by that first deploy
+as before, a replacement included when it feeds a create-only property (the
+warning names the cause, "a NoEcho parameter's value changed since the last
+deploy", never the value): the recorded plaintext is exact evidence. Later
+deploys compare against `***`, and never replace a create-only property on a
+readback.
 
 **Rotate any `NoEcho` value a stack ever held in the clear.** Earlier object
 versions of `state.json` written before the upgrade still contain it, and cdkd

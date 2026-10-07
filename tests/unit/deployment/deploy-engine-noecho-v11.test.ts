@@ -365,6 +365,42 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(lines(logger.info).filter((l) => l.includes('re-sending Value'))).toHaveLength(1);
     });
 
+    it('hands a custom resource reading a NoEcho parameter the plaintext as ResourceProperties and *** as OldResourceProperties, never reversed (maintainer decision 4)', async () => {
+      const cr = {
+        Cr: {
+          Type: 'Custom::Thing',
+          Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Value: { Ref: 'Token' } },
+        },
+      };
+      const state = v11State();
+      state.resources['Cr'] = {
+        physicalId: 'cr-1',
+        resourceType: 'Custom::Thing',
+        properties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Value: '***' },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['Value']],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === TOPIC_ARN
+            ? { TopicName: TOPIC, DisplayName: 'd' }
+            : physicalId === 'cr-1'
+              ? {}
+              : { Name: '/app/p', Type: 'String', Value: TOKEN }
+        )
+      );
+      await makeEngine().deploy(STACK, template(TOKEN, cr));
+      const updates = callsFor(provider.update, 'Cr');
+      expect(updates).toHaveLength(1);
+      // provider.update(logicalId, physicalId, type, properties, previousProperties)
+      expect((updates[0]![3] as Record<string, unknown>)['Value']).toBe(TOKEN);
+      expect((updates[0]![4] as Record<string, unknown>)['Value']).toBe('***');
+      expect(lines(logger.info).filter((l) => l.includes('re-sending Value'))).toHaveLength(1);
+      expect(allSaved()).not.toContain(TOKEN);
+    });
+
     it('never replaces a create-only property on a readback that differs, and names --recreate-via-* (maintainer decision 1)', async () => {
       provider.readCurrentState.mockImplementation((physicalId: string) =>
         Promise.resolve(
@@ -920,7 +956,19 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       await makeEngine().deploy(STACK, template());
       expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
-      expect(lines(logger.warn).some((l) => l.includes('Topic.TopicName'))).toBe(false);
+      // Maintainer decision (design §9 item 6): the replacement names its
+      // cause, and never the value on either side.
+      const cause = lines(logger.warn).filter((l) => l.includes('Topic.TopicName'));
+      expect(cause).toEqual([
+        "Topic.TopicName is a create-only property, and a NoEcho parameter's value changed since the last deploy: Topic is replaced.",
+      ]);
+    });
+
+    it('names no NoEcho cause when the pre-v11 witness CONFIRMS the value (no replacement)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN, TOPIC), etag: 'etag-old' });
+      await makeEngine().deploy(STACK, template());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(lines(logger.warn).some((l) => l.includes('changed since the last deploy'))).toBe(false);
     });
 
     it('counts a replacement whose old resource could not be deleted (delete address is ***) as a partial update (review MEDIUM-3)', async () => {

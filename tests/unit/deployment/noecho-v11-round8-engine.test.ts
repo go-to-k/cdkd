@@ -5,6 +5,10 @@ import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import {
+  CustomResourceProvider,
+  CR_NOECHO_PROPERTIES_SKIP_REASON,
+} from '../../../src/provisioning/providers/custom-resource-provider.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -177,6 +181,62 @@ describe('DeployEngine - NoEcho round 8', () => {
     });
   });
 
+  it('keeps the record and counts a skipped delete (exit 2 unless --allow-unaddressed) for a custom resource removed from the template whose properties hold a NoEcho mask (maintainer decision, round 8)', async () => {
+    const state: StackState = {
+      version: 11 as never,
+      region: REGION,
+      stackName: STACK,
+      resources: {
+        Cr: {
+          physicalId: 'cr-1',
+          resourceType: 'Custom::Thing',
+          properties: { ServiceToken: TOKEN, Password: '***' },
+          attributes: {},
+          dependencies: [],
+          noEchoLeaves: [['Password']],
+        },
+        Keep: {
+          physicalId: '/app/k',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/app/k', Type: 'String', Value: 'v' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    stateBackend.getState!.mockResolvedValue({ state, etag: 'etag-old' });
+    // The REAL provider for the custom resource, so the skip proves the
+    // engine threads the record's `noEchoLeaves` into the delete context.
+    const cr = new CustomResourceProvider();
+    const crDelete = vi.spyOn(cr, 'delete');
+    const engine = makeEngine({ captureObservedState: false });
+    const registry = (engine as unknown as { providerRegistry: Record<string, unknown> })
+      .providerRegistry;
+    registry['getProviderFor'] = vi.fn((q: { resourceType: string }) => ({
+      provider: q.resourceType === 'Custom::Thing' ? cr : provider,
+      provisionedBy: 'sdk',
+    }));
+    registry['getProvider'] = vi.fn((type: string) => (type === 'Custom::Thing' ? cr : provider));
+    const result = await engine.deploy(STACK, {
+      Resources: {
+        Keep: { Type: 'AWS::SSM::Parameter', Properties: { Name: '/app/k', Type: 'String', Value: 'v' } },
+      },
+    } as CloudFormationTemplate);
+    expect(crDelete).toHaveBeenCalledTimes(1);
+    await expect(crDelete.mock.results[0]!.value).resolves.toEqual({
+      outcome: 'skipped',
+      reason: CR_NOECHO_PROPERTIES_SKIP_REASON,
+    });
+    // The deploy command exits 2 on a non-zero `deleteSkipped` unless
+    // --allow-unaddressed (deploy-unaddressed-exit.test.ts).
+    expect(result.deleteSkipped).toBe(1);
+    expect(lastSaved().resources['Cr']).toBeDefined();
+    expect(lastSaved().resources['Cr']!.properties['Password']).toBe('***');
+    expect(lines(logger.warn!).join('\n')).toContain('LEFT IN PLACE');
+  });
+
   function replacementState(): StackState {
     return {
       version: 11 as never,
@@ -222,6 +282,20 @@ describe('DeployEngine - NoEcho round 8', () => {
     expect(lines(logger.info!).some((l) => l.includes('replaced') && l.includes('Topic'))).toBe(
       false
     );
+  });
+
+  it("threads the replaced record's noEchoLeaves into the old resource's delete context (go-to-k/cdkd#4043)", async () => {
+    const state = replacementState();
+    state.resources['Topic']!.noEchoLeaves = [['DisplayName']];
+    stateBackend.getState!.mockResolvedValue({ state, etag: 'etag-old' });
+    provider.create!.mockResolvedValue({
+      physicalId: 'arn:aws:sns:us-east-1:123456789012:new-name',
+      attributes: {},
+    });
+    await makeEngine({ captureObservedState: false }).deploy(STACK, renamed);
+    const del = provider.delete!.mock.calls.filter((c) => c[0] === 'Topic');
+    expect(del).toHaveLength(1);
+    expect(del[0]![4]).toHaveProperty('recordedNoEchoLeaves', [['DisplayName']]);
   });
 
   it('joins a skipped old-resource delete with a partial reason the row already had (CODE m3)', async () => {

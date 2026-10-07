@@ -502,11 +502,12 @@ export async function provisionUpdate(
         desiredProps
       )
     : undefined;
-  const currentPropsAsWritten =
+  const witness =
     todayAsWritten === undefined
-      ? recordedAsWritten
-      : (witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten)
-          .current as Record<string, unknown>);
+      ? undefined
+      : witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten);
+  const currentPropsAsWritten =
+    witness === undefined ? recordedAsWritten : (witness.current as Record<string, unknown>);
   // The fresh `NoEcho` leaves, by class. The custom-resource class (a
   // handler's `Data`, a recovered output) keeps the go-to-k/cdkd#3729 table;
   // the PARAMETER class is read back whatever the property's replacement
@@ -573,6 +574,25 @@ export async function provisionUpdate(
       if (!covered) addParameterLeaf(key, leaf);
     }
   }
+  // A pre-v11 record whose stored plaintext DIFFERS from a `NoEcho` parameter
+  // value this deploy supplies: exact evidence the value changed (maintainer
+  // decision on #4043, design §9 item 6), so a create-only path it feeds is
+  // replaced as before, and the replacement names that cause, never the value.
+  const witnessMovedParameterAt = (key: string): boolean =>
+    (witness?.differing ?? []).some((coordinate) => {
+      if (coordinate[0] !== key) return false;
+      const rest = coordinate.slice(1);
+      return (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
+        const shorter = rest.length <= leaf.path.length ? rest : leaf.path;
+        const longer = shorter === rest ? leaf.path : rest;
+        return shorter.every((segment, i) => segment === longer[i]);
+      });
+    });
+  const warnWitnessReplacement = (key: string): void => {
+    this.logger.warn(
+      safeMsg`${logicalId}.${key} is a create-only property, and a NoEcho parameter's value changed since the last deploy: ${logicalId} is replaced.`
+    );
+  };
   const suppliesFreshMaskOnlyValue =
     pendingParameterLeaves.size > 0 ||
     Object.keys(resolvedProps).some((key) => otherFreshAt(key).length > 0);
@@ -783,6 +803,7 @@ export async function provisionUpdate(
             )
           : undefined;
       if (moved && conditionalVerdict !== false) {
+        if (witnessMovedParameterAt(pc.path)) warnWitnessReplacement(pc.path);
         lowered.push(pc);
         continue;
       }
@@ -885,6 +906,7 @@ export async function provisionUpdate(
         keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
           keyOrderFreeJson(currentPropsAsWritten[pc.path]);
       if (moved) {
+        if (witnessMovedParameterAt(pc.path)) warnWitnessReplacement(pc.path);
         lowered.push(pc);
         continue;
       }

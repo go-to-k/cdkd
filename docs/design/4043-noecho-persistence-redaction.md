@@ -937,7 +937,7 @@ consumer. The assertions:
 ### Phase B decisions (#4043 comment 6032677173)
 
 Recorded when Phase B's direction was frozen after a security-direction
-review. Item 1 is the maintainer's; the rest are lane decisions.
+review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
 
 1. **A create-only property fed by a `NoEcho` parameter is not replaced on a
    readback `differs`** either, only warned about on every deploy naming
@@ -955,11 +955,15 @@ review. Item 1 is the maintainer's; the rest are lane decisions.
 5. The `Export.Name` positional twin and the no-change merge's carried-alias
    verdict (section 5) moved to follow-up #4657. A value of 4 or more
    characters is still refused wholesale through its map entry.
-6. **Lane amendment, awaiting the maintainer's confirmation** (not part of
-   decision 1): a pre-v11 record's migration witness that DIFFERS on a
-   create-only property keeps the replacement. The stored value is exactly
-   what was last sent, so the difference is proven rather than read back
-   through a provider that may normalize it, which is decision 1's reason.
+6. **Maintainer decision** (round 8 on #4043): a pre-v11 record's migration
+   witness that DIFFERS on a create-only property keeps the replacement, and
+   the replacement's warning names the cause ("a NoEcho parameter's value
+   changed since the last deploy"), never the value. The witness is exact
+   EVIDENCE, the value cdkd last sent in its dynamic-reference form, not a
+   readback through a provider that may normalize it, which is decision 1's
+   reason. Declining would overwrite it with `***` and strand the pending
+   change forever. Only that first deploy after upgrading replaces this way;
+   later deploys compare against `***` and fall under decision 1.
 7. Folded in from the review: the migration witness compares against the
    dynamic-reference persist form (the `NoEcho` arms suppressed); the rollback
    journal's `previousState` / `previousOutputs` take the positional arm; a

@@ -547,7 +547,10 @@ describe('UpdateReplacePolicy: Snapshot on the --replace delete-first (#4292)', 
   // create-first cleanup delete above. Driven through the name-idempotent
   // arm: the create-first returns the OLD physical id, which is the
   // provider saying the name is held by the resource we are replacing.
-  async function invokeDeleteFirst(updateReplacePolicy: string | undefined): Promise<void> {
+  async function invokeDeleteFirst(
+    updateReplacePolicy: string | undefined,
+    stateExtra: Record<string, unknown> = {}
+  ): Promise<void> {
     const engine = makeEngine({ replace: true, forceStatefulRecreation: true });
     (deleteProvider.create as ReturnType<typeof vi.fn>).mockResolvedValue({
       physicalId: 'phys-target',
@@ -570,6 +573,7 @@ describe('UpdateReplacePolicy: Snapshot on the --replace delete-first (#4292)', 
         properties: { Immutable: 'a' },
         attributes: {},
         dependencies: [],
+        ...stateExtra,
       },
     };
     const template = {
@@ -605,6 +609,12 @@ describe('UpdateReplacePolicy: Snapshot on the --replace delete-first (#4292)', 
       /^phys-target-final-\d{8}-\d{6}$/
     );
     expect(deleteContextArg()['deletionPolicy']).toBe('Snapshot');
+  });
+
+  it("go-to-k/cdkd#4043: threads the old record's noEchoLeaves into the delete-first", async () => {
+    await invokeDeleteFirst(undefined, { noEchoLeaves: [['Immutable']] });
+    expect(deleteProvider.create).toHaveBeenCalledTimes(2);
+    expect(deleteContextArg()['recordedNoEchoLeaves']).toEqual([['Immutable']]);
   });
 
   it('policy absent — the delete-first carries no identifier', async () => {
@@ -682,6 +692,11 @@ describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement 
     await invokeUpdateFallback({}, { updateReplacePolicy: 'Snapshot' });
     const ctx = deleteContextArg();
     expect(ctx['finalSnapshotIdentifier']).toMatch(/^phys-target-final-\d{8}-\d{6}$/);
+  });
+
+  it("go-to-k/cdkd#4043: threads the old record's noEchoLeaves into the fallback replacement delete", async () => {
+    await invokeUpdateFallback({}, { noEchoLeaves: [['AllocatedStorage']] });
+    expect(deleteContextArg()['recordedNoEchoLeaves']).toEqual([['AllocatedStorage']]);
   });
 
   it('skipFinalSnapshot: true — plain replacement delete (opt-out polarity)', async () => {

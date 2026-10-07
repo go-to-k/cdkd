@@ -1869,6 +1869,8 @@ export async function runDestroyForStack(
                             }),
                             // Issue #4157: the identity evidence of the record deleted.
                             recordedAttributes: resource.attributes,
+                            // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+                            recordedNoEchoLeaves: resource.noEchoLeaves,
                             // go-to-k/cdkd#2115: only a whole-stack teardown.
                             ...(ctx.stackDestroy === true && { stackDestroy: true }),
                           }

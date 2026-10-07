@@ -656,6 +656,8 @@ export async function updateInPlace(
               }),
               ...this.replacementDeleteContext(fallbackUpdateReplacePolicy),
               recordedAttributes: currentResource.attributes,
+              // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+              recordedNoEchoLeaves: currentResource.noEchoLeaves,
             }
           );
         } catch (deleteError) {

@@ -265,6 +265,8 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
 describe('rollback executor — recordedAttributes on every delete arm (#4157)', () => {
   const NEW_ATTRS = { RepositoryId: 'id-new-4157' };
   const OLD_ATTRS = { RepositoryId: 'id-old-4157' };
+  // go-to-k/cdkd#4043: the same record's NoEcho coordinates ride beside them.
+  const NEW_LEAVES = [['Password']];
 
   function contextOf(del: ReturnType<typeof vi.fn>): Record<string, unknown> {
     expect(del).toHaveBeenCalledOnce();
@@ -278,12 +280,14 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B' },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
 
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
   });
 
   it('reverse-replacement re-adopt: the NEW record deleted', async () => {
@@ -301,12 +305,14 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
 
     expect(contextOf(del)[`recordedAttributes`]).toEqual(NEW_ATTRS);
+
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
   });
 
@@ -332,7 +338,7 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'new-b', properties: { BucketName: 'b' }, attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'new-b', properties: { BucketName: 'b' }, attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
@@ -340,6 +346,7 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
     // Reached through the collision: the re-create ran twice.
     expect(create).toHaveBeenCalledTimes(2);
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
   });
 
@@ -358,13 +365,14 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'new-b', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayRollback(ops, state, 'S', ctx);
 
     expect(create).toHaveBeenCalledOnce();
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
     expect(del.mock.calls[0]?.[1]).toBe('new-b');
   });
 
@@ -381,11 +389,13 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
       },
     ];
     const state: Record<string, ResourceState> = {
-      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS }),
+      B: res({ physicalId: 'phys-B', attributes: NEW_ATTRS, noEchoLeaves: NEW_LEAVES }),
     };
 
     await replayFailedOperations(failed, state, 'S', ctx, {});
 
     expect(contextOf(del)['recordedAttributes']).toEqual(NEW_ATTRS);
+
+    expect(del.mock.calls[0]?.[4]).toHaveProperty('recordedNoEchoLeaves', NEW_LEAVES);
   });
 });

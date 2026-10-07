@@ -172,6 +172,8 @@ Drop the record with: ${dropCommand}`
             ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
             // Issue #4157: the identity evidence of the record deleted.
             recordedAttributes: currentResource.attributes,
+            // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+            recordedNoEchoLeaves: currentResource.noEchoLeaves,
           }
         ),
       logicalId,

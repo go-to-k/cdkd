@@ -67,6 +67,7 @@ import {
   carriesSecretMask,
   dynamicReferenceTokens,
   SECRET_MASK,
+  valueAtCoordinate,
 } from '../../deployment/secret-redaction.js';
 
 /**
@@ -120,6 +121,30 @@ export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
  */
 export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
   'masked ServiceToken in state — Delete handler not invoked';
+
+/**
+ * A record whose recorded `ResourceProperties` hold the `***` mask at a
+ * coordinate its `noEchoLeaves` names (go-to-k/cdkd#4043, schema v11): a
+ * `NoEcho` parameter value, or an attribute its producer declared `NoEcho`,
+ * that cdkd does not keep and does not re-resolve on delete. Sending the mask would hand the handler a `Delete` request whose
+ * properties are not the ones it was created with, and a handler that tears
+ * down by a property value would act on `***`. Skipped instead, the record
+ * kept, the same shape as the redacted-address skip. Re-resolving the value
+ * into the `Delete` payload is go-to-k/cdkd#4682.
+ */
+export const CR_NOECHO_PROPERTIES_SKIP_REASON =
+  'NoEcho mask in recorded properties — Delete handler not invoked';
+
+/** The NoEcho-mask skip's remedy for this delete's phase. */
+function noEchoPropertiesRemedy(context: DeleteContext | undefined, logicalId: string): string {
+  return context?.stackDestroy === true
+    ? `cdkd is KEEPING the state record and the run exits non-zero, and every re-run skips it again. ` +
+        `Tear down what the handler manages by hand, then drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`
+    : `This delete is not part of a stack destroy (a 'cdkd deploy' template removal, replacement or rollback, ` +
+        `or a 'cdkd rollback'). For a resource removed from the template the record is KEPT and every ` +
+        `'cdkd deploy' skips it again: tear down what the handler manages by hand. ` +
+        crDeploySkipTail(logicalId);
+}
 
 /**
  * Sibling of {@link CR_MASKED_SERVICE_TOKEN_SKIP_REASON} for a record whose
@@ -2064,6 +2089,24 @@ export class CustomResourceProvider implements ResourceProvider {
           safeMsg`${unaddressableServiceTokenRemedy(context, logicalId)}`
       );
       return { outcome: 'skipped', reason: CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON };
+    }
+
+    // go-to-k/cdkd#4043: the handler would receive `***` where a `NoEcho`
+    // parameter value stood. Below the ServiceToken arms (an unaddressable
+    // handler is the more basic cause) and above any AWS call.
+    const maskedNoEchoPaths = (context?.recordedNoEchoLeaves ?? [])
+      .filter((coordinate) => carriesSecretMask(valueAtCoordinate(properties, coordinate)))
+      .map((coordinate) => coordinate.join('.'));
+    if (maskedNoEchoPaths.length > 0) {
+      this.logger.warn(
+        safeMsg`Custom resource ${logicalId} is recorded in state with ${maskedNoEchoPaths.join(', ')} ` +
+          `holding the '***' mask of a NoEcho value (a NoEcho parameter, or an attribute declared ` +
+          `NoEcho), which cdkd does not keep or re-resolve ` +
+          `on delete, so its handler would receive the mask in ResourceProperties; skipping deletion — ` +
+          `the handler is not invoked, so anything this custom resource manages is LEFT IN PLACE. ` +
+          safeMsg`${noEchoPropertiesRemedy(context, logicalId)}`
+      );
+      return { outcome: 'skipped', reason: CR_NOECHO_PROPERTIES_SKIP_REASON };
     }
 
     // Fail-fast for re-run idempotency (issue #804): after an interrupted /

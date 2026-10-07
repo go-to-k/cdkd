@@ -210,6 +210,8 @@ export async function replaceDeleteFirstAndRecreate(
         ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
         ...this.replacementDeleteContext(updateReplacePolicy),
         recordedAttributes: currentResource.attributes,
+        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+        recordedNoEchoLeaves: currentResource.noEchoLeaves,
       }
     );
   } catch (deleteError) {
@@ -724,6 +726,8 @@ export async function deleteReplacedAfterCreate(
         ...this.replacementDeleteContext(updateReplacePolicy),
         // Issue #4157: the identity evidence of the record deleted.
         recordedAttributes: currentResource.attributes,
+        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+        recordedNoEchoLeaves: currentResource.noEchoLeaves,
       }
     );
   } catch (deleteError) {

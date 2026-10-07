@@ -989,6 +989,8 @@ async function replayFailedOperationsUnbound(
               // Issue #4157; as on the completed-CREATE arm, the record names
               // `op.physicalId` here.
               recordedAttributes: failedCreateRecord?.attributes,
+              // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+              recordedNoEchoLeaves: failedCreateRecord?.noEchoLeaves,
               // go-to-k/cdkd#4612: a proven orphan, never a record's own delete.
               // The bag is the journal's, secrets redacted: a provider that
               // compares it with AWS re-resolves it through this, lazily.
