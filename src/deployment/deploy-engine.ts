@@ -526,6 +526,14 @@ export class DeployEngine {
    */
   /** @internal */
   noEchoPositionedValues = new Map<string, Set<string>>();
+  /**
+   * go-to-k/cdkd#4656: per resource, the `NoEcho` parameter coordinates a
+   * readback of THIS deploy proved its provider echoes exactly, unioned into
+   * `noEchoExactEchoLeaves` at the save (`withNoEchoExactEchoes`). Coordinates
+   * only, never a value.
+   */
+  /** @internal */
+  noEchoExactEchoes = new Map<string, string[][]>();
   /** @internal */
   noEchoAttributeReads = new Map<string, Promise<Record<string, unknown> | undefined>>();
   /**
@@ -929,6 +937,7 @@ export class DeployEngine {
     this.inheritedNoEchoParameters = new Set();
     this.noEchoPhysicalIdWarned = new Set();
     this.noEchoPositionedValues = new Map();
+    this.noEchoExactEchoes = new Map();
     this.noEchoAttributeReads = new Map();
     this.replacedDeleteSkips = new Map();
     this.secretNameNeedles = new Map();
@@ -1041,7 +1050,9 @@ export class DeployEngine {
       const noEchoScrubbed = this.applyNoEchoPersist(
         logicalId,
         record,
-        scrubbed,
+        // go-to-k/cdkd#4656: this deploy's echo-fidelity verdicts join the
+        // record's own; only this loop's records are the ones it read back.
+        this.withNoEchoExactEchoes(logicalId, scrubbed),
         templateProps,
         state.resources,
         secrets
@@ -1619,6 +1630,9 @@ DeployEngine.prototype.warnNoEchoPhysicalId = noEchoMixin.warnNoEchoPhysicalId;
 DeployEngine.prototype.seedPersistedNoEchoAttributes = noEchoMixin.seedPersistedNoEchoAttributes;
 DeployEngine.prototype.noEchoAttributeOverridesFor = noEchoMixin.noEchoAttributeOverridesFor;
 DeployEngine.prototype.noEchoDiffComparison = noEchoMixin.noEchoDiffComparison;
+DeployEngine.prototype.noteNoEchoExactEchoes = noEchoMixin.noteNoEchoExactEchoes;
+DeployEngine.prototype.establishNoEchoEchoFidelity = noEchoMixin.establishNoEchoEchoFidelity;
+DeployEngine.prototype.withNoEchoExactEchoes = noEchoMixin.withNoEchoExactEchoes;
 
 DeployEngine.prototype.handleOutputResolutionFailure = outputsMixin.handleOutputResolutionFailure;
 DeployEngine.prototype.resolveOutputs = outputsMixin.resolveOutputs;

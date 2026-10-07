@@ -7451,6 +7451,7 @@
     "AWS::Logs::SubscriptionFilter",
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
+    "AWS::RDS::DBParameterGroup",
     "AWS::RDS::GlobalCluster",
     "AWS::Redshift::Cluster",
     "AWS::ResourceGroups::Group",

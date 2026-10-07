@@ -814,6 +814,28 @@ export interface ResourceState {
   noEchoLeaves?: (string | number)[][] | undefined;
 
   /**
+   * No bump (go-to-k/cdkd#4656): the `noEchoLeaves` coordinates a `NoEcho`
+   * PARAMETER serves at which this resource's provider has been seen to ECHO
+   * the value exactly. It is derived from the provider's echo behaviour, never
+   * from the value: an entry says only that a readback handed the record with
+   * `***` at that coordinate returned, there, a string strictly equal to what
+   * was sent. Only a whole scalar string leaf under a create-only property,
+   * reached by object keys alone, is eligible.
+   *
+   * Set by the readback at the deploy that creates (or replaces) the
+   * resource, at the deploy that migrates a pre-v11 record, and by any later
+   * readback that holds the value. A readback that differs never changes it;
+   * one that fails or cannot report the property leaves it absent. The save
+   * keeps only entries still in `noEchoLeaves`.
+   *
+   * Read by the UPDATE arm: a create-only coordinate named here whose
+   * readback differs is a proven change and replaces the resource. ABSENT
+   * (or an entry missing) keeps the never-replace rule of #4043 Phase B.
+   * Read through `noEchoExactEchoLeavesOf` (malformed reads as absent).
+   */
+  noEchoExactEchoLeaves?: string[][] | undefined;
+
+  /**
    * v11+ (go-to-k/cdkd#2449): the keys of this record's OWN `attributes` that
    * its provider DECLARED `NoEcho` (a custom resource answering `NoEcho: true`
    * declares every attribute it returned; a nested stack names the outputs it

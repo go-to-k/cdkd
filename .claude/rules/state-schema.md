@@ -56,6 +56,7 @@ interface ResourceState {
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
   noEchoLeaves?: (string | number)[][];     // v11+: coordinates in `properties` stored `***` for a NoEcho parameter / declared-NoEcho GetAtt
   noEchoAttributeNames?: string[];          // v11+: own `attributes` declared NoEcho, each stored `***`
+  noEchoExactEchoLeaves?: string[][];       // no bump: `noEchoLeaves` echoed exactly (#4656)
   acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
   constructPath?: string;                   // no bump: display only; stamped in `redactStateForPersist` on every deploy save (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
@@ -69,13 +70,13 @@ Neither field hashes a secret-derived value (a confirm oracle). The input field 
 
 ## `exportNames` (v9+)
 
-`outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`) — so before v9 nothing said which keys were exports.
+`outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`).
 
 Every reader goes through ONE predicate, `importableOutputKeys(state)` in `src/types/state.ts`: `exportNames` intersected with the bag when the record carries it, every key when it does not. The discriminator is the FIELD, not `version` — `undefined` means NOT KNOWN and keeps the legacy rule so no cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included — unlike `imports` / `outputReads`, an empty array is NOT omitted. A save that CARRIES a bag forward spreads `exportNamesCarriedFrom(previous)`.
 
 ## `conditionVerdicts` (no bump)
 
-The verdict a deploy computed for each condition `cdkd diff` reads but cannot evaluate, because its closure reaches a secret-fed parameter. Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint and otherwise takes FALSE. Writer, reader and the fingerprint's input all live in `src/deployment/condition-verdicts.ts`: change one side there or not at all. Absent or malformed means no record (`readRecordedConditionVerdicts`). A fresh-built save that omits it only costs the diff the verdict; a spreading writer may carry it, because none of them changes a definition or an input.
+The verdict a deploy computed for each condition `cdkd diff` reads but cannot evaluate, because its closure reaches a secret-fed parameter. Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint and otherwise takes FALSE. Writer, reader and the fingerprint's input all live in `src/deployment/condition-verdicts.ts`: change one side there or not at all. Absent or malformed means no record (`readRecordedConditionVerdicts`). A spreading writer may carry it: none changes a definition or an input.
 
 ## `outputs`
 
@@ -117,11 +118,11 @@ The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-
 
 ## `noEchoLeaves` / `noEchoAttributeNames` (v11+)
 
-Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/noecho.ts`); coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field, one with NONE (pre-v11) takes today's template positions. ABSENT = not known: a non-mask stored leaf there is the MIGRATION WITNESS (`witnessNormalize`), so `version` never certifies redaction. `noEchoAttributeNames` comes from the DECLARATION, never from which attributes hold `***`, unioned with earlier names still masked. Spreading writers carry both.
+Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/noecho.ts`); coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field, one with NONE (pre-v11) takes today's template positions. ABSENT = not known: a non-mask stored leaf there is the MIGRATION WITNESS (`witnessNormalize`), so `version` never certifies redaction. `noEchoAttributeNames` comes from the DECLARATION, never from which attributes hold `***`, unioned with earlier names still masked. Spreading writers carry both. `noEchoExactEchoLeaves` (#4656) is echo behaviour, never value: set only by a readback handed `***` there, never cleared by `differs`, kept while in `noEchoLeaves`, reset by a create or replacement.
 
 ## `observedProperties` (v3+)
 
-Populated on each successful create / update by a fire-and-forget `provider.readCurrentState`, the in-flight set drained just before the final save so the critical path does not block; `cdkd import` populates it synchronously, so the first `cdkd drift` has a real baseline rather than template intent. It is the drift comparator's preferred baseline; an older record, or a provider without `readCurrentState`, leaves it `undefined` and the comparator falls back to `properties`. `--no-capture-observed-state` disables the capture.
+Populated on each successful create / update by a fire-and-forget `provider.readCurrentState`, the in-flight set drained just before the final save so the critical path does not block; `cdkd import` populates it synchronously. The drift comparator prefers it, falling back to `properties` when it is `undefined`. `--no-capture-observed-state` disables the capture.
 
 ## Rollback journal (NOT part of the state schema)
 

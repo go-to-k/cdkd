@@ -269,6 +269,15 @@ export async function provisionCreate(
     provisionedBy: createDecision.provisionedBy,
   };
   this.recordInlinePolicyWrite(logicalId, 'create');
+  // go-to-k/cdkd#4656: does the provider echo a create-only value a `NoEcho`
+  // parameter fed exactly? Read once, against the masked record.
+  await this.establishNoEchoEchoFidelity(
+    logicalId,
+    stateResources[logicalId]!,
+    resolvedProps,
+    stateResources,
+    createSecrets
+  );
 
   const createCaptureSiblings = await this.buildObservedCaptureSiblings(
     resourceType,

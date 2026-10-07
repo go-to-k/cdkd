@@ -63,6 +63,7 @@ import {
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
+import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -522,7 +523,8 @@ export async function provisionUpdate(
   // handler's `Data`, a recovered output) keeps the go-to-k/cdkd#3729 table;
   // the PARAMETER class is read back whatever the property's replacement
   // class, and a create-only property it feeds is never replaced on a
-  // readback's word (maintainer decision on #4043).
+  // readback's word (maintainer decision on #4043) unless that readback is
+  // proven exact (`noEchoExactEchoLeaves`, #4656).
   // A positional leaf of the attribute class: a value supplied in this run
   // that no needle keys (a `Number`, a value under the floor).
   const positionalLeavesAt = (
@@ -656,6 +658,90 @@ export async function provisionUpdate(
       safeMsg`${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
     );
   };
+  // The type's create-only paths (the committed snapshot when DescribeType
+  // fails), read when a `NoEcho` parameter serves this bag.
+  const schemaCreateOnly =
+    pendingParameterLeaves.size === 0 && parameterCoordinates.length === 0
+      ? []
+      : await getCreateOnlyPropertyPaths(resourceType).catch(
+          () => [] as ReadonlyArray<readonly string[]>
+        );
+  // go-to-k/cdkd#4656: the create-only `NoEcho` parameter coordinates whose
+  // echo fidelity a readback may prove.
+  const echoCandidates = echoFidelityCandidates(
+    parameterCoordinates,
+    resolvedProps,
+    schemaCreateOnly
+  );
+  // The ONE readback of this resource for its `NoEcho` leaves, shared by every
+  // block below. It hands the provider the RECORD, never the resolved bag. A
+  // pre-v11 record still holds the plaintext it last sent, so it is handed a
+  // copy with `***` at every `NoEcho` parameter coordinate (#4656, rule 1):
+  // a provider that echoes its argument then reports the mask.
+  const readbackRecord =
+    unmarkedRecord && parameterCoordinates.length > 0
+      ? {
+          ...currentResource,
+          properties: maskAtCoordinates(currentResource.properties, parameterCoordinates),
+        }
+      : currentResource;
+  let readback: Promise<FreshNoEchoReadback> | undefined;
+  const readOnce = (): Promise<FreshNoEchoReadback> =>
+    (readback ??= this.readReaderForFreshNoEchoCeiling(
+      logicalId,
+      readbackRecord,
+      updateSecrets
+    ).then((read) => {
+      // Every coordinate this read echoed exactly gains the flag; a differing
+      // or failed one changes nothing.
+      this.noteNoEchoExactEchoes(logicalId, read, readbackRecord.properties, echoCandidates, 'add');
+      return read;
+    }));
+  // go-to-k/cdkd#4656: a create-only `NoEcho` parameter leaf this record's
+  // provider was PROVEN to echo exactly (`noEchoExactEchoLeaves`), which the
+  // readback now reports holding a different string: a change, not a
+  // provider's normalization, so the path is replaced as before Phase B. Only
+  // a whole-string leaf the record holds as `***` is eligible, as when the
+  // flag was set (a value-arm leaf there would be a stale coordinate).
+  const exactEchoCoordinates = new Set(
+    (noEchoExactEchoLeavesOf(currentResource) ?? []).map((c) => JSON.stringify(c))
+  );
+  const provenChangedAt = (key: string, read: FreshNoEchoReadback | undefined): boolean => {
+    if (exactEchoCoordinates.size === 0 || read === undefined || 'failure' in read) return false;
+    return (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
+      const full = [key, ...leaf.path];
+      if (!exactEchoCoordinates.has(JSON.stringify(full))) return false;
+      const [candidate] = echoFidelityCandidates([full], resolvedProps, schemaCreateOnly);
+      return (
+        candidate !== undefined &&
+        provesEchoChangeAt(read.live, readbackRecord.properties, candidate)
+      );
+    });
+  };
+  // A replacement the readback proves is decided here, after
+  // `--require-approval` asked about the diff, which showed none. Where the
+  // operator asked to approve a replacement, cdkd does not replace without
+  // asking: the never-replace rule applies, and the warning says why.
+  const approvalCoversReplacement =
+    this.options.approveDeployment !== undefined &&
+    (this.options.requireApproval === 'destructive' ||
+      this.options.requireApproval === 'any-change');
+  // Why a `differs` on such a path is not acted on: the warning names it.
+  const differsWhy = (key: string, read: FreshNoEchoReadback | undefined): string =>
+    provenChangedAt(key, read)
+      ? `differs; --require-approval=${this.options.requireApproval ?? 'never'} did not ask about a replacement`
+      : 'differs; the provider is not known to report this property exactly, so the difference may be its normalization';
+  // go-to-k/cdkd#4656: the MIGRATION deploy of a pre-v11 record takes the
+  // echo-fidelity readback even when its witness settles every value (so no
+  // block below would read), before the skip just below can return.
+  if (
+    unmarkedRecord &&
+    !typeChanged &&
+    echoCandidates.length > 0 &&
+    hasAddressablePhysicalId(currentResource)
+  ) {
+    await readOnce();
+  }
   if (
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
@@ -764,7 +850,6 @@ export async function provisionUpdate(
   // The paths whose fresh `NoEcho` leaves AWS confirmed, for the skip
   // below the block.
   const noEchoHeldPaths = new Set<string>();
-  let readback: Promise<FreshNoEchoReadback> | undefined;
   // The create-only paths a `NoEcho` PARAMETER value feeds, taken before the
   // block below can lower them: the parameter block after it decides them.
   // Create-only by the type's SCHEMA (the committed snapshot when DescribeType
@@ -772,12 +857,6 @@ export async function provisionUpdate(
   // property raises no ceiling in the diff, nor does any whole-property path
   // when the lookup fails, and maintainer decision 1 covers both (never sent
   // as an in-place change, never replaced; warned).
-  const schemaCreateOnly =
-    pendingParameterLeaves.size === 0
-      ? []
-      : await getCreateOnlyPropertyPaths(resourceType).catch(
-          () => [] as ReadonlyArray<readonly string[]>
-        );
   const isSchemaCreateOnly = (key: string): boolean =>
     (pendingParameterLeaves.get(key) ?? []).some((leaf) => {
       const full = [key, ...leaf.path.map(String)];
@@ -846,12 +925,7 @@ export async function provisionUpdate(
           lowered.push(pc);
           continue;
         }
-        readback ??= this.readReaderForFreshNoEchoCeiling(
-          logicalId,
-          currentResource,
-          updateSecrets
-        );
-        const read = await readback;
+        const read = await readOnce();
         let verdict: FreshNoEchoCeilingVerdict;
         if ('failure' in read) {
           verdict = read.failure;
@@ -909,13 +983,7 @@ export async function provisionUpdate(
   const parameterUnreadablePaths: string[] = [];
   if (pendingParameterLeaves.size > 0 && !typeChanged) {
     const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired;
-    const read = mustRead
-      ? await (readback ??= this.readReaderForFreshNoEchoCeiling(
-          logicalId,
-          currentResource,
-          updateSecrets
-        ))
-      : undefined;
+    const read = mustRead ? await readOnce() : undefined;
     const verdictAt = (key: string): FreshNoEchoCeilingVerdict => {
       if (read === undefined) return 'not-readable';
       if ('failure' in read) return read.failure;
@@ -956,15 +1024,29 @@ export async function provisionUpdate(
         this.logger.debug(
           safeMsg`${logicalId}.${pc.path} carries a NoEcho parameter value AWS already holds: not replaced.`
         );
+      } else if (
+        verdict === 'differs' &&
+        provenChangedAt(pc.path, read) &&
+        !approvalCoversReplacement
+      ) {
+        // go-to-k/cdkd#4656: the provider echoes this leaf exactly, so the
+        // difference is the value's. The id, the path and the cause only.
+        this.logger.warn(
+          safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and AWS, which reports it exactly, holds a different value: ${logicalId} is replaced.`
+        );
+        lowered.push({ ...pc, requiresReplacement: true });
+        continue;
       } else {
         // Maintainer decision 1 on #4043: never replaced on a readback's
         // word, whether it could not read the property or read a different
-        // value (a provider may normalize what it echoes). Every deploy says so.
+        // value (a provider may normalize what it echoes). Every deploy says so,
+        // and a `differs` names why it is not trusted (#4656).
         const staleOnly = staleCoordinates.some((coordinate) => coordinate[0] === pc.path);
+        const why = verdict === 'differs' ? differsWhy(pc.path, read) : verdict;
         this.logger.warn(
           staleOnly
-            ? safeMsg`${logicalId}.${pc.path} is a create-only property whose recorded value is only the NoEcho mask, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
-            : safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (${verdict}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+            ? safeMsg`${logicalId}.${pc.path} is a create-only property whose recorded value is only the NoEcho mask, and cdkd cannot confirm AWS holds its current value (${why}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+            : safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (${why}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
         );
       }
       parameterSettledPaths.add(pc.path);

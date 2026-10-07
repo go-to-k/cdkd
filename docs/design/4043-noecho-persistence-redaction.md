@@ -373,7 +373,7 @@ Verdicts for a leaf a parameter served:
 | Verdict | Updatable path | Create-only path |
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
-| `differs` | UPDATE | not replaced; warns on every deploy and names `--recreate-via-*` (decision 1 as amended, §9) |
+| `differs` | UPDATE | not replaced; warns on every deploy and names `--recreate-via-*` (decision 1 as amended, §9). Replaced where `noEchoExactEchoLeaves` records that the provider reports the leaf exactly (#4656, §9 decision 9) |
 | `not-readable` (write-only, or the provider has no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (maintainer decision 4, §9) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (maintainer decision 1, §9) |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
 
@@ -952,7 +952,7 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    unchanged value. A `read-failed` fails the resource. The custom-resource
    (#3729) class keeps its own table. Restoring the
    auto-replacement where a masked-record readback proves the provider echoes
-   exactly is follow-up #4656.
+   exactly landed in #4656 (decision 9).
 2. One coordinate field, `noEchoLeaves` (section 3.2).
 3. `noEchoAttributeNames` comes from the declaration (section 3.2).
 4. The drift REPORT bucket (section 4.3, "Report") moved into Phase B, exit
@@ -985,6 +985,20 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    off the parent template, so a value under the needle floor counts), the
    child engine unions them with the inherited fresh marks, and `cdkd diff`
    derives the same set from the parent row.
+
+9. **Landed in #4656** (maintainer decision on #4043): decision 1's
+   auto-replacement is restored where a one-bit echo-fidelity flag,
+   `ResourceState.noEchoExactEchoLeaves` (optional, no bump), records that a
+   readback handed the masked record reported the leaf exactly. Set by the
+   readback at the create or replacement create, at the migration deploy
+   (against a copy with the witness coordinates pre-masked) and by a later
+   `held`; `differs` never changes it, `not-readable` / `read-failed` leave
+   it absent. Only a whole string leaf under a create-only path, reached by
+   object keys, is eligible. Flag set and `differs`: the existing create-first
+   replacement and its guards. Flag absent: decision 1, the warning naming
+   the reason. A path that also carries a custom-resource leaf keeps
+   decision 1; under `--require-approval` with an approver the replacement is
+   not taken either, since the prompt saw none.
 
 ### Design decisions (#4043 comments 5903984771, 5904913259)
 

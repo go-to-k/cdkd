@@ -21,9 +21,13 @@
 #     re-runs the producer);
 #   - an unchanged value is read back and NOT re-sent (SSM `LastModifiedDate`
 #     unchanged), a rotated one reaches AWS while state keeps `***`;
-#   - a create-only property a NoEcho parameter feeds is NEVER replaced
-#     (maintainer decision 1 on #4043): its topic ARN is unchanged across the
-#     migration AND across a rotation, which warns naming --recreate-via-*;
+#   - a create-only property a NoEcho parameter feeds is replaced on a
+#     rotation ONLY where a readback proved the provider reports it exactly
+#     (#4656): the migration records that for the topic's name (the SNS
+#     readback reports it exactly) and not for the DB parameter group's (RDS
+#     stores it lowercased), without replacing either; the rotation REPLACES
+#     the topic (its out-of-band marker is lost) and only WARNS for the group,
+#     naming --recreate-via-* (maintainer decision 1 on #4043);
 #   - no object version written from the migration on — state.json,
 #     rollback-journal.json, deployments/*.jsonl, the shared exports index, the
 #     custom-resource response objects — carries a NoEcho value.
@@ -38,14 +42,17 @@
 #      its handler re-runs and declares its attributes): `version: 11`, no
 #      token anywhere, `***` + `noEchoLeaves` at every position, observed
 #      baseline masked, `noEchoAttributeNames` on the custom resource, the
-#      SSM parameters NOT updated, the topic NOT replaced.
-#   4  redeploy unchanged: nothing re-sent; `cdkd diff --fail` exits 0.
+#      SSM parameters NOT updated, the topic NOT replaced, and
+#      `noEchoExactEchoLeaves` on the topic but not on the group.
+#   4  redeploy unchanged: nothing re-sent, the group's lowercased readback
+#      warns and replaces nothing; `cdkd diff --fail` exits 0.
 #   5  the v10 binary refuses the v11 record ("Upgrade cdkd").
 #   6  a dependent of the declared attribute is refused with the exact remedy,
 #      created nothing; the stack redeploys clean without it.
-#   7  rotate the token and the topic name: SSM holds the new token, state
-#      `***`, the topic is NOT replaced and the deploy warns naming
-#      --recreate-via-cc-api.
+#   7  rotate the token, the topic name and the group name: SSM holds the
+#      new token, state `***`, the topic is REPLACED (new ARN, old one gone,
+#      marker lost) and the group is NOT (the deploy warns naming
+#      --recreate-via-cc-api).
 #   7b add ParamCr, a custom resource reading the NoEcho parameter: its record
 #      holds `***` at `Token`, named in `noEchoLeaves`.
 #   7c remove it: the delete is SKIPPED (exit 2), the record is kept with
@@ -127,6 +134,7 @@ TOKEN_ID="TokenProbe"
 SHORT_ID="ShortProbe"
 PLAIN_ID="PlainProbe"
 TOPIC_ID="NamedTopic"
+GROUP_ID="NormalizedGroup"
 CR_ID="NoEchoCr"
 
 # The LAST v10-writing cdkd release on npm when this fixture was written.
@@ -149,6 +157,11 @@ TOKEN_ROTATED="cdkdv11tok$(openssl rand -hex 12)"
 SHORT_VALUE="q$(openssl rand -hex 1)"
 TOPIC_NAME="cdkd-v11-topic-$(openssl rand -hex 6)"
 TOPIC_NAME_ROTATED="cdkd-v11-topic-$(openssl rand -hex 6)"
+# Mixed case on purpose: RDS stores a DB parameter group's name lowercased.
+GROUP_NAME="CdkdV11Group$(openssl rand -hex 6)"
+GROUP_NAME_ROTATED="CdkdV11GroupR$(openssl rand -hex 6)"
+GROUP_NAME_LOWER="$(printf '%s' "${GROUP_NAME}" | tr '[:upper:]' '[:lower:]')"
+GROUP_NAME_ROTATED_LOWER="$(printf '%s' "${GROUP_NAME_ROTATED}" | tr '[:upper:]' '[:lower:]')"
 CR_SEED_A="$(openssl rand -hex 8)"
 CR_SEED_B="$(openssl rand -hex 8)"
 CR_SECRET_A="cdkdv11crsecret${CR_SEED_A}"
@@ -161,11 +174,12 @@ TOKENS="${TOKEN} ${TOKEN_ROTATED} ${CR_SECRET_A} ${CR_SECRET_B}"
 # it (`${!name}` is bash 3.2 indirect expansion). The exact-scalar needles are
 # the values too short, or too public, for a blob scan.
 BLOB_NEEDLE_NAMES="TOKEN TOKEN_ROTATED CR_SECRET_A CR_SECRET_B"
-SCALAR_NEEDLE_NAMES="SHORT_VALUE TOPIC_NAME TOPIC_NAME_ROTATED"
+SCALAR_NEEDLE_NAMES="SHORT_VALUE TOPIC_NAME TOPIC_NAME_ROTATED GROUP_NAME GROUP_NAME_ROTATED"
 
 export CDKD_V11_TOKEN="${TOKEN}"
 export CDKD_V11_SHORT="${SHORT_VALUE}"
 export CDKD_V11_TOPIC_NAME="${TOPIC_NAME}"
+export CDKD_V11_GROUP_NAME="${GROUP_NAME}"
 export CDKD_V11_CR_SEED="${CR_SEED_A}"
 export CDKD_V11_ADD_DEPENDENT=""
 export CDKD_V11_PARAM_CR=""
@@ -203,6 +217,10 @@ cleanup() {
   for name in "${TOPIC_NAME}" "${TOPIC_NAME_ROTATED}"; do
     aws sns delete-topic --region "${REGION}" \
       --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT_ID:-000000000000}:${name}" >/dev/null 2>&1
+  done
+  for name in "${GROUP_NAME_LOWER}" "${GROUP_NAME_ROTATED_LOWER}"; do
+    aws rds delete-db-parameter-group --region "${REGION}" \
+      --db-parameter-group-name "${name}" >/dev/null 2>&1
   done
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
 
@@ -258,7 +276,7 @@ fail() {
 redact_tokens() { # stdin -> stdout, every token rewritten
   local line t
   while IFS= read -r line || [ -n "${line}" ]; do
-    for t in ${TOKENS} ${TOPIC_NAME} ${TOPIC_NAME_ROTATED}; do
+    for t in ${TOKENS} ${TOPIC_NAME} ${TOPIC_NAME_ROTATED} ${GROUP_NAME} ${GROUP_NAME_ROTATED}; do
       line="${line//${t}/<noecho>}"
     done
     printf '%s\n' "${line}"
@@ -346,6 +364,15 @@ TOPIC_MARKER="cdkd-v11-marker-$(openssl rand -hex 6)"
 topic_display() { # <arn> — strict
   aws sns get-topic-attributes --region "${REGION}" --topic-arn "$1" \
     --query 'Attributes.DisplayName' --output text
+}
+group_name_in_aws() { # <lowercase name> -- the name AWS holds, or <absent>
+  if gone_probe aws rds describe-db-parameter-groups --region "${REGION}" \
+      --db-parameter-group-name "$1"; then
+    printf '<absent>'
+    return
+  fi
+  aws rds describe-db-parameter-groups --region "${REGION}" --db-parameter-group-name "$1" \
+    --query 'DBParameterGroups[0].DBParameterGroupName' --output text
 }
 # Exact-scalar occurrences of <value> in a JSON (or JSON-lines) body on stdin:
 # a short value (3 characters) or a name cannot be blob-grepped meaningfully,
@@ -559,6 +586,10 @@ assert_eq "v10 deploy: ${TOKEN_ID}.observedProperties.Value holds the token in t
   "$(state_field ".resources[\"${TOKEN_ID}\"].observedProperties.Value // \"<absent>\"")" "${TOKEN}"
 assert_eq "v10 deploy: ${SHORT_ID}.observedProperties.Value holds the short value in the clear" \
   "$(state_field ".resources[\"${SHORT_ID}\"].observedProperties.Value // \"<absent>\"")" "${SHORT_VALUE}"
+# The normalization premise of the #4656 control: AWS holds the group's name
+# LOWERCASED, so a readback can never report the mixed-case value it was sent.
+assert_eq "v10 deploy: RDS holds the group's name lowercased (the normalization premise)" \
+  "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
 aws sns set-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}" \
   --attribute-name DisplayName --attribute-value "${TOPIC_MARKER}" >/dev/null
 assert_eq "v10 deploy: the out-of-band topic marker is set" \
@@ -611,6 +642,17 @@ assert_eq "v11 migration deploy: ${TOPIC_ID}.properties.TopicName" \
 assert_eq "v11 migration deploy: ${TOPIC_ID}.noEchoLeaves" \
   "$(jq -c ".resources[\"${TOPIC_ID}\"].noEchoLeaves" "${STATE_FILE}")" '[["TopicName"]]'
 assert_eq "v11 migration deploy: outputs.TokenOut" "$(state_field '.outputs.TokenOut')" "${SECRET_MASK}"
+# #4656: the migration's readback, handed the record with the plaintext
+# pre-masked, proves the SNS provider reports the name exactly, and never the
+# group's (AWS lowercased it).
+assert_eq "v11 migration deploy: ${TOPIC_ID}.noEchoExactEchoLeaves" \
+  "$(jq -c ".resources[\"${TOPIC_ID}\"].noEchoExactEchoLeaves" "${STATE_FILE}")" '[["TopicName"]]'
+assert_eq "v11 migration deploy: ${GROUP_ID}.properties.DBParameterGroupName" \
+  "$(state_field ".resources[\"${GROUP_ID}\"].properties.DBParameterGroupName")" "${SECRET_MASK}"
+assert_eq "v11 migration deploy: ${GROUP_ID}.noEchoLeaves" \
+  "$(jq -c ".resources[\"${GROUP_ID}\"].noEchoLeaves" "${STATE_FILE}")" '[["DBParameterGroupName"]]'
+assert_eq "v11 migration deploy: ${GROUP_ID} has no noEchoExactEchoLeaves" \
+  "$(state_field ".resources[\"${GROUP_ID}\"].noEchoExactEchoLeaves // \"absent\"")" "absent"
 # The negative control stays in the clear.
 assert_eq "v11 migration deploy: ${PLAIN_ID}.properties.Value (ordinary parameter)" \
   "$(state_field ".resources[\"${PLAIN_ID}\"].properties.Value")" "${PLAIN_VALUE}"
@@ -654,6 +696,16 @@ assert_eq "v11 unchanged redeploy: ${SHORT_PARAM_NAME} was not re-sent" \
   "$(ssm_modified "${SHORT_PARAM_NAME}")" "${SHORT_MODIFIED_1}"
 assert_eq "v11 unchanged redeploy: the topic was not replaced (out-of-band marker kept)" \
   "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
+# The group's readback differs on an UNCHANGED value (AWS lowercased it): it is
+# warned about, naming why, and never replaced.
+if ! grep -F -- "${GROUP_ID}.DBParameterGroupName" "${DEPLOY_LOG}" \
+    | grep -qF -- "the provider is not known to report this property exactly"; then
+  redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
+  fail "v11 unchanged redeploy: no line names ${GROUP_ID}.DBParameterGroupName with the normalization reason"
+fi
+pass "v11 unchanged redeploy: the group's normalized readback is warned about, naming why"
+assert_eq "v11 unchanged redeploy: the group was not replaced" \
+  "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
 fetch_state "v11 unchanged redeploy"
 assert_no_tokens_in_state "v11 unchanged redeploy"
 run_cdkd ok "v11 diff --fail on an unchanged stack" "${LOCAL_DIST}" diff "${STACK}" \
@@ -694,6 +746,7 @@ echo "==> Phase 7: rotate the token and the topic name"
 # ---------------------------------------------------------------------------
 export CDKD_V11_TOKEN="${TOKEN_ROTATED}"
 export CDKD_V11_TOPIC_NAME="${TOPIC_NAME_ROTATED}"
+export CDKD_V11_GROUP_NAME="${GROUP_NAME_ROTATED}"
 run_cdkd ok "v11 rotation deploy" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_log_has_no_tokens "v11 rotation deploy"
@@ -719,19 +772,38 @@ assert_eq "v11 rotation deploy: ${TOPIC_ID}.attributes.TopicName" \
   "$(state_field ".resources[\"${TOPIC_ID}\"].attributes.TopicName // \"<absent>\"")" "${SECRET_MASK}"
 assert_eq "v11 rotation deploy: ${TOPIC_ID}.noEchoAttributeNames" \
   "$(jq -c ".resources[\"${TOPIC_ID}\"].noEchoAttributeNames" "${STATE_FILE}")" '["TopicName"]'
-# Maintainer decision 1 on #4043: never replaced on a readback's word. The
-# rotated name would give a replacement a new ARN; the marker covers a
-# replacement under any name.
-assert_eq "v11 rotation deploy: the topic was NOT replaced" "$(topic_arn)" "${TOPIC_ARN_1}"
-assert_eq "v11 rotation deploy: the topic kept its out-of-band marker" \
-  "$(topic_display "${TOPIC_ARN_1}")" "${TOPIC_MARKER}"
+# #4656: the topic's name is proven to be reported exactly, so the rotated
+# name REPLACES it, create-first: a new ARN under the rotated name, the old
+# topic gone with its out-of-band marker.
+TOPIC_ARN_2="$(topic_arn)"
+assert_eq "v11 rotation deploy: the topic was REPLACED under the rotated name" \
+  "${TOPIC_ARN_2##*:}" "${TOPIC_NAME_ROTATED}"
+assert_gone "v11 rotation deploy: the replaced topic ${TOPIC_ARN_1##*:} still exists" \
+  aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}"
+pass "v11 rotation deploy: the old topic is gone"
+if [ "$(topic_display "${TOPIC_ARN_2}")" = "${TOPIC_MARKER}" ]; then
+  fail "v11 rotation deploy: the new topic carries the old one's out-of-band marker — it was not a real replacement"
+fi
+pass "v11 rotation deploy: the out-of-band marker is LOST (a real replacement)"
+assert_log_has "v11 rotation deploy: the replacement names its cause" \
+  "${TOPIC_ID}.TopicName is a create-only property fed by a NoEcho parameter, and AWS, which reports it exactly, holds a different value: ${TOPIC_ID} is replaced."
+assert_eq "v11 rotation deploy: ${TOPIC_ID}.noEchoExactEchoLeaves (the new topic's own readback)" \
+  "$(jq -c ".resources[\"${TOPIC_ID}\"].noEchoExactEchoLeaves" "${STATE_FILE}")" '[["TopicName"]]'
+# Maintainer decision 1 on #4043: the group, never proven exact, is never
+# replaced on a readback's word.
+assert_eq "v11 rotation deploy: the group was NOT replaced (old name still held)" \
+  "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
+assert_eq "v11 rotation deploy: no group exists under the rotated name" \
+  "$(group_name_in_aws "${GROUP_NAME_ROTATED_LOWER}")" "<absent>"
+assert_eq "v11 rotation deploy: ${GROUP_ID}.properties.DBParameterGroupName" \
+  "$(state_field ".resources[\"${GROUP_ID}\"].properties.DBParameterGroupName")" "${SECRET_MASK}"
 # ONE line names both the property and the remedy (the wording
 # noecho-parameter-masking's Phase 3b negative grep relies on).
-if ! grep -F -- "${TOPIC_ID}.TopicName" "${DEPLOY_LOG}" | grep -qF -- "--recreate-via-cc-api"; then
+if ! grep -F -- "${GROUP_ID}.DBParameterGroupName" "${DEPLOY_LOG}" | grep -qF -- "--recreate-via-cc-api"; then
   redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
-  fail "v11 rotation deploy: no single line names both ${TOPIC_ID}.TopicName and --recreate-via-cc-api — the create-only warning did not fire, or its wording drifted"
+  fail "v11 rotation deploy: no single line names both ${GROUP_ID}.DBParameterGroupName and --recreate-via-cc-api — the create-only warning did not fire, or its wording drifted"
 fi
-pass "v11 rotation deploy: one create-only warning line names ${TOPIC_ID}.TopicName and --recreate-via-cc-api"
+pass "v11 rotation deploy: one create-only warning line names ${GROUP_ID}.DBParameterGroupName and --recreate-via-cc-api"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 7b: add a custom resource reading the NoEcho parameter"
@@ -844,13 +916,15 @@ for param in "${TOKEN_PARAM_NAME}" "${SHORT_PARAM_NAME}" "${PLAIN_PARAM_NAME}"; 
     aws ssm get-parameter --region "${REGION}" --name "${param}"
 done
 pass "every SSM parameter is gone"
-assert_gone "the topic still exists after destroy" \
+assert_gone "the (replacement) topic still exists after destroy" \
+  aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_2}"
+assert_gone "the replaced topic exists again after destroy" \
   aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}"
-# The rotated name was never applied (no replacement): no topic under it.
-assert_gone "a topic under the ROTATED name exists" \
-  aws sns get-topic-attributes --region "${REGION}" \
-  --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME_ROTATED}"
-pass "the topic is gone, and none exists under the rotated name"
+pass "both topics are gone"
+assert_eq "the DB parameter group is gone after destroy" \
+  "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "<absent>"
+assert_eq "no DB parameter group exists under the rotated name after destroy" \
+  "$(group_name_in_aws "${GROUP_NAME_ROTATED_LOWER}")" "<absent>"
 assert_gone "the custom-resource handler ${CR_HANDLER_NAME} still exists after destroy" \
   aws lambda get-function --region "${REGION}" --function-name "${CR_HANDLER_NAME}"
 pass "the custom-resource handler is gone"
@@ -887,11 +961,11 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 121 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 121 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 136 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 136 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi
 
 echo ""
-echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, rotation applied without replacing the create-only reader, a custom resource reading a NoEcho parameter never sent a Delete holding the mask); ${ASSERTIONS_RUN} assertions executed"
+echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, a rotated create-only value replaced only where the readback is proven exact, a custom resource reading a NoEcho parameter never sent a Delete holding the mask); ${ASSERTIONS_RUN} assertions executed"
