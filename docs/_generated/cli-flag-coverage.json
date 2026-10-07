@@ -1458,7 +1458,8 @@
       "flag": "--state-prefix",
       "integs": [
         "destroy-interrupt",
-        "importvalue-chain"
+        "importvalue-chain",
+        "remove-protection-journaled-orphan"
       ]
     },
     {

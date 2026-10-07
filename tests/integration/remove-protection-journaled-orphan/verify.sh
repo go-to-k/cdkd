@@ -19,6 +19,12 @@
 #      journal are gone.
 #   8. Destroy the network stack.
 #
+# The run lives under its OWN state prefix (STATE_PREFIX, unique per run): the
+# foreign-holder scan `--remove-protection` asks before stripping reads every
+# record under the prefix, and an unreadable one (a peer's newer state schema,
+# a legacy key) keeps the protection on. Here it sees only this run's two
+# stacks. The trap deletes this prefix's objects, never anything under `cdkd/`.
+#
 # Run via: /run-integ remove-protection-journaled-orphan
 #         or: bash tests/integration/remove-protection-journaled-orphan/verify.sh
 
@@ -62,9 +68,10 @@ export AWS_REGION="${REGION}"
 NET_STACK="CdkdRpJournaledOrphanNet"
 STACK="CdkdRpJournaledOrphanExample"
 LB_NAME="cdkd-4678-orphan"
-STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
-NET_STATE_KEY="cdkd/${NET_STACK}/${REGION}/state.json"
+STATE_PREFIX="${STATE_PREFIX:-cdkd-rpjo-$(date +%s)-$$}"
+STATE_KEY="${STATE_PREFIX}/${STACK}/${REGION}/state.json"
+JOURNAL_KEY="${STATE_PREFIX}/${STACK}/${REGION}/rollback-journal.json"
+NET_STATE_KEY="${STATE_PREFIX}/${NET_STACK}/${REGION}/state.json"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
@@ -94,21 +101,40 @@ lb_protection() { # usage: lb_protection <arn>
     --query "Attributes[?Key=='deletion_protection.enabled'].Value | [0]" --output text
 }
 
-# The journaled OrphanLb op, compact JSON, or empty when the journal holds none.
 # A failed --remove-protection run whose foreign-holder scan met an unreadable
-# record of ANOTHER stack (a peer's legacy key in the shared state bucket) is
-# environmental, not a regression: say so beside the FAIL.
+# record is environmental, not a regression: say so beside the FAIL. Under this
+# run's own prefix the scan should see only its two stacks.
 explain_unreadable_scan() {
   if grep -q "leaves open whether another stack holds it" "${RUN_LOG}"; then
-    echo "      environmental: an unreadable record in the shared state bucket kept the protection on (see the 'leaves open whether another stack holds it' warning above)" >&2
+    echo "      environmental: an unreadable record under s3://${STATE_BUCKET}/${STATE_PREFIX}/ kept the protection on (see the 'leaves open whether another stack holds it' warning above); this run's prefix should hold only its own two stacks, so check what else wrote there" >&2
   fi
 }
 
+# The journaled OrphanLb op, compact JSON, or empty when the journal holds none.
 journaled_orphan_op() {
   local body
   body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)" || return 1
   printf '%s' "${body}" | jq -c \
     '[.segments[]?.failedOperations[]? | select(.logicalId == "OrphanLb")] | last // empty'
+}
+
+# Delete this run's own prefix (its events, exports index, any leftover
+# object), only once neither stack's record is left: a record that survived a
+# failed teardown is the one way back to its resources. Never under `cdkd/`.
+sweep_run_prefix() {
+  case "${STATE_PREFIX:-}" in
+    cdkd-rpjo-?*)
+      if ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ) &&
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}" ); then
+        aws s3 rm "s3://${STATE_BUCKET}/${STATE_PREFIX}/" --recursive >/dev/null 2>&1
+      else
+        echo "WARN: teardown incomplete; records kept under s3://${STATE_BUCKET:-}/${STATE_PREFIX}/ (pass --state-prefix ${STATE_PREFIX} to cdkd state destroy)" >&2
+      fi
+      ;;
+    *)
+      echo "WARN: teardown sweep refused: STATE_PREFIX '${STATE_PREFIX:-}' is not this fixture's cdkd-rpjo-* prefix" >&2
+      ;;
+  esac
 }
 
 cleanup() {
@@ -130,18 +156,20 @@ cleanup() {
         ;;
     esac
   done
-  if [ "${DEPLOYED_ORPHAN:-}" = "1" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
+  # A record the run already destroyed is not there to destroy again.
+  if [ "${DEPLOYED_ORPHAN:-}" = "1" ] && ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ); then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" \
       --remove-protection --yes >/dev/null 2>&1
   fi
   # A deleted load balancer's ENIs can outlive it for a few minutes.
-  if [ "${DEPLOYED_NET:-}" = "1" ]; then
+  if [ "${DEPLOYED_NET:-}" = "1" ] && ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}" ); then
     for _ in 1 2 3; do
-      node "${LOCAL_DIST}" state destroy "${NET_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" \
+      node "${LOCAL_DIST}" state destroy "${NET_STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" \
         --yes >/dev/null 2>&1 && break
       sleep 30
     done
   fi
+  sweep_run_prefix
   exit ${rc}
 }
 trap cleanup EXIT
@@ -169,7 +197,7 @@ fi
 echo ""
 echo "==> Step 1: deploy ${NET_STACK}"
 DEPLOYED_NET=1
-node "${LOCAL_DIST}" deploy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --yes
+node "${LOCAL_DIST}" deploy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --yes
 NET_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${NET_STATE_KEY}" -)"
 SUBNET_A="$(printf '%s' "${NET_STATE}" | jq -r '.outputs.SubnetAId // ""')"
 SUBNET_B="$(printf '%s' "${NET_STATE}" | jq -r '.outputs.SubnetBId // ""')"
@@ -194,7 +222,7 @@ ORPHAN_LB_ARN=""
 JOURNALED_ARN=""
 DEPLOYED_ORPHAN=1
 set +e
-node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" \
+node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" \
   --yes --no-rollback >"${RUN_LOG}" 2>&1
 DEPLOY_RC=$?
 set -e
@@ -248,7 +276,7 @@ inject_orphan 2
 echo ""
 echo "==> Step 3: cdkd destroy WITHOUT --remove-protection keeps the protected orphan"
 set +e
-node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >"${RUN_LOG}" 2>&1
+node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force >"${RUN_LOG}" 2>&1
 PLAIN_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
@@ -277,7 +305,7 @@ echo "    OK: exit ${PLAIN_RC}; the load balancer, its protection and its journa
 echo ""
 echo "==> Step 4: cdkd destroy --remove-protection clears it (go-to-k/cdkd#4678)"
 set +e
-node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" \
+node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" \
   --force --remove-protection >"${RUN_LOG}" 2>&1
 RP_RC=$?
 set -e
@@ -306,7 +334,7 @@ inject_orphan 5
 echo ""
 echo "==> Step 6: cdkd rollback WITHOUT --remove-protection keeps the protected orphan"
 set +e
-node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force >"${RUN_LOG}" 2>&1
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force >"${RUN_LOG}" 2>&1
 PLAIN_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
@@ -331,7 +359,7 @@ echo "    OK: exit ${PLAIN_RC}; the load balancer, its protection and its journa
 echo ""
 echo "==> Step 7: cdkd rollback --remove-protection clears it (go-to-k/cdkd#4678)"
 set +e
-node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --remove-protection >"${RUN_LOG}" 2>&1
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force --remove-protection >"${RUN_LOG}" 2>&1
 RP_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
@@ -349,14 +377,14 @@ assert_gone "${ORPHAN_LB_ARN} still exists after cdkd rollback --remove-protecti
 assert_gone "rollback journal ${JOURNAL_KEY} still exists after the rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 # The rollback also undid Anchor's CREATE; a state record it left (empty) goes too.
-node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1 || true
+node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" --yes >/dev/null 2>&1 || true
 assert_gone "state ${STATE_KEY} still exists after the rollback and its record cleanup" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: the orphan and the journal are gone"
 
 echo ""
 echo "==> Step 8: destroy ${NET_STACK}"
-node "${LOCAL_DIST}" destroy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force
+node "${LOCAL_DIST}" destroy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force
 assert_gone "state ${NET_STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}"
 assert_gone "security group ${ORPHAN_SECURITY_GROUP} still exists after the destroy" \
@@ -364,4 +392,5 @@ assert_gone "security group ${ORPHAN_SECURITY_GROUP} still exists after the dest
 
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
+sweep_run_prefix
 echo "[verify] PASS — cdkd destroy / rollback --remove-protection cleared the protected journaled orphan (#4678)"
