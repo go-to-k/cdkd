@@ -9847,6 +9847,7 @@
           "name": "Tags",
           "status": "wired",
           "types": [
+            "AWS::ElasticLoadBalancingV2::Listener",
             "AWS::ElasticLoadBalancingV2::LoadBalancer",
             "AWS::ElasticLoadBalancingV2::TargetGroup"
           ],

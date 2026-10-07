@@ -174,6 +174,33 @@ export class AlbStack extends cdk.Stack {
       actions: [{ type: 'fixed-response', fixedResponseConfig: { statusCode: '200', contentType: 'text/plain', messageBody: 'OK' } }],
     });
 
+    // go-to-k/cdkd#4606: the fix-forward arm (Phase 4 of `verify.sh`). The
+    // first deploy's CREATE fails AFTER AWS made the load balancer and its
+    // wiring-failure cleanup cannot delete it, so the journal holds it as a
+    // proven orphan: `deletion_protection.enabled` is applied first, then the
+    // malformed enforce flag fails `SetSecurityGroups`, and the cleanup's
+    // DeleteLoadBalancer is refused by that protection. The `LB_FIX_FORWARD`
+    // redeploy keeps the logical id with a valid shape under ANOTHER name (the
+    // same name and settings would hand back the earlier load balancer), the
+    // CREATE succeeds, and that successful deploy must delete the earlier one.
+    if (process.env.INJECT_LB_ORPHAN === 'true') {
+      const fixForward = process.env.LB_FIX_FORWARD === 'true';
+      const orphanLb = new elbv2.CfnLoadBalancer(this, 'OrphanLb', {
+        name: fixForward ? 'cdkd-alb-orphan-ff' : 'cdkd-alb-orphan',
+        type: 'application',
+        scheme: 'internal',
+        subnets: vpc.publicSubnets.map((subnet) => subnet.subnetId),
+        securityGroups: [sg.securityGroupId],
+      });
+      if (!fixForward) {
+        orphanLb.loadBalancerAttributes = [{ key: 'deletion_protection.enabled', value: 'true' }];
+        orphanLb.addPropertyOverride(
+          'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic',
+          'cdkd-malformed'
+        );
+      }
+    }
+
     // Outputs
     new cdk.CfnOutput(this, 'AlbDnsName', {
       value: alb.loadBalancerDnsName,
