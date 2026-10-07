@@ -143,7 +143,8 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   command list** — fix rounds too: one dropped `gen:all-matrices`, another
   `typecheck:test` (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
   serially** — concurrent suites trip the 600s watchdog in untouched files.
-  Each runs `vp test run <its own suite>`.
+  Each runs `vp test run <its own suite>`, its files spelled out or inside
+  `bash -c`: zsh passes an unquoted `$files` as ONE argument.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`), waking it per line.
