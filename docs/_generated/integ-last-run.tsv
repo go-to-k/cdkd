@@ -34,6 +34,7 @@ bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 
 budgets	2026-10-07T16:21:49Z	PASS	65	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 cache-streaming	2026-10-06T02:22:44Z	PASS	677	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
+budgets	2026-10-07T12:15:10Z	PASS	78	verify.sh	rc ok, orph clean (#4668 drift arm moved here)
 cache-streaming	2026-10-07T10:50:32Z	PASS	724	verify.sh	PR #4654 (#4639 database slice); first run FAILED in a host DNS outage window (ENOTFOUND 09:30-09:44Z), orphans removed by hand, re-run rc 0, destroy clean, orph clean
 cc-api-fallback	2026-10-05T15:03:08Z	PASS	40	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
 cc-api-fallback-transitions	2026-10-05T15:03:08Z	PASS	90	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
