@@ -511,6 +511,23 @@ describe('ElastiCacheProvider.delete of a journaled CacheCluster already gone (g
     clientRegion.value = 'us-east-1';
   });
 
+  it('"not found" in the message alone fails the orphan\'s delete rather than settling it as gone', async () => {
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof DeleteCacheClusterCommand) {
+        throw Object.assign(new Error('endpoint not found'), { name: 'InternalFailure' });
+      }
+      throw new Error('unexpected command');
+    });
+    const provider = new ElastiCacheProvider();
+    await expect(
+      provider.delete('Orphan', 'orphan-cache', TYPE, {}, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).rejects.toThrow('endpoint not found');
+    expect(providerLogger.info).not.toHaveBeenCalled();
+  });
+
   it('names it once at info, since the settle then exits 0 with nothing deleted', async () => {
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof DeleteCacheClusterCommand) {

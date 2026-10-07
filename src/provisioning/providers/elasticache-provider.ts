@@ -805,7 +805,13 @@ export class ElastiCacheProvider implements ResourceProvider {
       // Wait for cluster to be fully deleted
       await this.waitForClusterDeleted(logicalId, physicalId, CACHE_DELETE_WAIT_MS);
     } catch (error) {
-      if (this.isNotFoundError(error, 'CacheClusterNotFoundFault')) {
+      // A failed CREATE's orphan settles as gone only on the fault NAME: the
+      // looser message match would drop its journal entry on a misread error.
+      if (
+        this.isNotFoundError(error, 'CacheClusterNotFoundFault') &&
+        (context?.failedCreateOrphan !== true ||
+          (error as { name?: unknown }).name === 'CacheClusterNotFoundFault')
+      ) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
           clientRegion,
