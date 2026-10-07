@@ -795,15 +795,24 @@ describe('cdkd gc', () => {
     it('a holed KEY prefix says to take it from the key, not from a flag (go-to-k/cdkd#4648 review)', async () => {
       const message = await messageFor('MyStack', 'regional', { keyPrefix: 'pfx zq' });
       expect(message).toMatch(/^Inspect it with: .* --state-prefix '<prefix>'$/m);
-      expect(message).toContain(
-        "The state prefix of the key above has a '/'-separated part that is not a plain identifier"
-      );
+      // A slash-free prefix gets the plain sentence; the segment wording is for
+      // a slash prefix only (case below).
+      expect(message).toContain('The state prefix of the key above is not a plain identifier');
+      expect(message).not.toContain("'/'-separated part");
       expect(message).toContain("since 'cdkd gc' takes no --state-prefix");
       // Not the shared sentence: there is no `--state-prefix` value "you passed".
       expect(message).not.toContain("The '--state-prefix' value this run was given");
       expect(message).not.toContain('the shell-quoted value you passed this run');
       expect(message.indexOf('The state prefix of the key above')).toBeLessThan(
         message.indexOf('Inspect it with:')
+      );
+    });
+
+    it('a holed SLASH key prefix names the failing part (go-to-k/cdkd#4648 review)', async () => {
+      const message = await messageFor('MyStack', 'regional', { keyPrefix: 'org/a b' });
+      expect(message).toMatch(/^Inspect it with: .* --state-prefix '<prefix>'$/m);
+      expect(message).toContain(
+        "The state prefix of the key above has a '/'-separated part that is not a plain identifier"
       );
     });
 

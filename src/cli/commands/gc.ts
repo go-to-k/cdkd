@@ -1709,7 +1709,9 @@ function keyPrefixHoleSentence(prefix: string | undefined): string {
         ? 'does not render exactly'
         : reason === 'too-long'
           ? 'is too long to print'
-          : `has a '/'-separated part that is not a plain identifier`;
+          : prefix !== undefined && prefix.includes('/')
+            ? `has a '/'-separated part that is not a plain identifier`
+            : 'is not a plain identifier';
   return (
     `The state prefix of the key above ${why}, so the command below prints '<prefix>' in its ` +
     `place: replace it whole, quotes included, with that prefix shell-quoted -- the part of ` +
