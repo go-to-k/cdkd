@@ -794,7 +794,7 @@ string is dropped — key lookup coerces rather than throwing, so
 `exportNames: [0]` against a bag holding a `"0"` key would otherwise publish
 it. A healthy `string[]` is unaffected.
 
-### `version: 10` adds `observedBaselineRefused` (current writers)
+### `version: 10` adds `observedBaselineRefused`
 
 Schema `version: 10` adds a per-resource `observedBaselineRefused` flag, set
 by `cdkd import` when it DECLINES to capture an `observedProperties` baseline
@@ -884,6 +884,107 @@ worth knowing before you upgrade one machine in a fleet: cdkd stamps the
 current schema version on every state file it writes, so once a v10 binary has
 deployed a stack, every older binary fails on that stack, whether or not it
 holds a refused record. Upgrade the whole fleet together.
+
+### `version: 11` stores `NoEcho` values as `***` (current writers)
+
+Schema `version: 11` keeps the value of a `NoEcho: true` template parameter
+out of everything cdkd writes down. Before it, cdkd masked such a value in its
+log output only, and `state.json` held it in the clear wherever a resource or
+an output used it.
+
+Where a `NoEcho` parameter supplied a value, cdkd now stores `***`:
+
+| surface | what is stored |
+| --- | --- |
+| `properties`, `observedProperties` | `***` at every position the parameter fills, whatever the value's type or length |
+| `attributes` | `***` for an attribute that echoes the value back (an `AWS::SSM::Parameter`'s `Value`) |
+| `outputs`, the exports index | `***` for an output whose value reads the parameter |
+| `rollback-journal.json` | the same masks, for the records and outputs it saves |
+
+A string that only CONTAINS the value is stored as `***` whole, as for a
+`NoEcho` custom-resource response (see
+[`NoEcho` custom-resource responses](#noecho-custom-resource-responses)).
+
+Two optional per-resource fields record what was masked, and neither holds any
+part of a value:
+
+| field | meaning |
+| --- | --- |
+| `noEchoLeaves` | the positions in `properties` (and so in `observedProperties`) stored as `***` because a `NoEcho` parameter, or an attribute declared `NoEcho`, supplied them; each position is a list of keys and array indexes |
+| `noEchoAttributeNames` | the record's own `attributes` its provider declared `NoEcho`: every attribute of a custom resource that answered `NoEcho: true`, a nested stack's masked outputs, and an attribute that echoes a `NoEcho` value. Each is stored as `***` whatever its type or length |
+
+An ABSENT field means "not known", which is every record an older cdkd wrote.
+
+#### How a deploy compares a masked value
+
+AWS still receives the real value: cdkd resolves the parameter on every deploy
+and sends it. What changes is how a deploy decides whether to send it, since
+the record only says `***`. Every resource that reads a `NoEcho` parameter is
+re-resolved on every deploy, and:
+
+| the property | what the deploy does |
+| --- | --- |
+| can be updated, and AWS reports it back | reads the resource back; an unchanged value is skipped, a changed one updated |
+| can be updated, but AWS does not report it (write-only, such as an RDS `MasterUserPassword`, or a type cdkd cannot read back) | sends it on every deploy, with one info line per resource saying why |
+| cannot change without a replacement (create-only) | never replaced on the readback's word: when the readback cannot confirm the value, every deploy warns, and `--recreate-via-cc-api` / `--recreate-via-sdk-provider` is how to apply a new value |
+| create-only, and the readback FAILED | the resource fails with a message to re-run; it is never replaced on a failed read |
+
+A provider can receive `***` as the PREVIOUS value of such a property on an
+update whose readback could not confirm it, since the record holds nothing
+else. A readback that confirms the value sends nothing.
+
+`cdkd diff` cannot read AWS, so it compares the masks and says once per stack
+how many unchanged resources read a `NoEcho` parameter; that note does not
+count as a change for `--fail`.
+
+#### What else changes
+
+- A stack that reads another stack's output served by a `NoEcho` parameter gets
+  the value only within ONE `cdkd deploy` run that also deploys the producer;
+  a separate run reads `***` and is refused, as for a custom-resource `NoEcho`
+  output. Deploy producer and consumer together (`cdkd deploy --all`).
+- An `Export.Name` holding a `NoEcho` value is not published (the deploy warns),
+  so no consumer can bind to it.
+- A resource that reads an attribute its producer declared `NoEcho`, out of a
+  record an EARLIER run wrote, is refused with the attribute named; cdkd does
+  not re-run the producer to recover the value. Change the producer in the same
+  deploy (for a custom resource, change one of its properties so its handler
+  runs again).
+- An attribute echoing a `NoEcho` value is read back from AWS for the readers
+  of an unchanged producer within one deploy, and is never written to state.
+- `cdkd drift` reports a masked position in its own group, without printing
+  either side and without affecting the exit code. `cdkd drift --accept` /
+  `--revert`, `cdkd rollback` and `cdkd export` still refuse a masked value, as
+  they do for a custom-resource one.
+- `cdkd import` and `cdkd scrub` store `***` for a `NoEcho` value they resolve
+  (the template's `Default`, whole or embedded), but do not write
+  `noEchoLeaves`, and leave a value shorter than 4 characters, a number, or a
+  value other than the current `Default` in plain text. The next `cdkd deploy`
+  masks every position and writes the field.
+- A resource's physical id is never masked. A `NoEcho` value used as a NAME is
+  published by AWS, and the deploy warns once per such resource.
+
+#### Migration
+
+Nothing to do. A `version: 10` record is read unchanged, and the first
+`cdkd deploy` after the upgrade migrates the stack: each unchanged value is
+compared with the plaintext the record still holds, which is exactly what cdkd
+last sent, so the migration deploy neither updates nor replaces a resource for
+it, and its save stores `***` and the new fields. A record that deploy did not
+reach is masked by the template's positions too.
+
+**Rotate any `NoEcho` value a stack ever held in the clear.** Earlier object
+versions of `state.json` written before the upgrade still contain it, and cdkd
+does not purge them: they are the state's recovery path. Treat the value as
+exposed to anyone who can read the state bucket's object versions, as
+[`cdkd scrub`](cli-scrub.md) advises for a secret.
+
+As with every bump, an OLDER cdkd binary refuses a `version: 11` blob with the
+"Upgrade cdkd" error, so upgrade every machine that deploys the stack together.
+A v11 binary stamps `version: 11` on every state file it writes, including by
+commands that hold no template (`cdkd state refresh-observed`, `cdkd drift
+--accept`, `cdkd orphan`), which mask nothing; `version: 11` alone therefore
+does not mean a stack's values are masked, and only a `cdkd deploy` migrates it.
 
 ### `skippedOutputs` (informational, no version bump)
 
@@ -1102,8 +1203,10 @@ another's output: a clean sibling output is now a clean passed value, so a
 masked property in the receiving child that reads it is sent when the
 output's value changes (it used to be kept as written).
 
-So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
-a flip of a condition over one, and a new value of anything above. A hash
+So these are NOT sent through the mask: a flip of a condition over a `NoEcho`
+parameter, and a new value of anything above. (A new value of the `NoEcho`
+parameter itself is found by reading the resource back from AWS; see
+[`version: 11`](#version-11-stores-noecho-values-as-current-writers).) A hash
 that moved with such a value would let anyone holding the state file test
 guesses of it. CloudFormation would update the resource; change the
 property's template text, or replace the resource, to push one.
@@ -1168,7 +1271,7 @@ hash too, and edits to it are not seen through the mask.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState, 11 = +noEchoLeaves/noEchoAttributeNames on ResourceState
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
@@ -1536,7 +1639,7 @@ cdkd.
 
 ```json
 {
-  "version": 10,
+  "version": 11,
   "stackName": "MyAppStack",
   "region": "us-east-1",
   "resources": {
@@ -1603,6 +1706,8 @@ interface ResourceState {
   provisionedBy?: 'sdk' | 'cc-api'             // v7+: provisioning layer (absent = SDK legacy default)
   observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
+  noEchoLeaves?: (string | number)[][]         // v11+: positions in `properties` stored as `***` for a NoEcho value
+  noEchoAttributeNames?: string[]              // v11+: `attributes` the provider declared NoEcho, each stored as `***`
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
@@ -1779,9 +1884,9 @@ tell this mask from a `NoEcho` one: each refusal names both causes.
   not clear this mask.
 - `cdkd export` blocks the resource; see [cdkd export](cli-export.md).
 
-Giving the state file a durable per-attribute `NoEcho` flag — which would let a
-later deploy know WHY the mask is there rather than inferring it from the value
-— is a possible future schema bump, not yet implemented.
+Since `version: 11` the record names the attributes a custom resource declared
+`NoEcho` (`noEchoAttributeNames`), so a refused read names that cause alone; a
+mask with no such record still names every cause.
 
 **Known bound: a value used as a NAME.** A resource's physical id is what
 cdkd uses to find it again, so it is never masked. A `NoEcho` value passed as a
@@ -2863,8 +2968,9 @@ detect any of them:
 - a credential a provider records in `attributes` so that `Fn::GetAtt` can
   read it, whether the provider is an SDK provider or Cloud Control — for
   example an `AWS::IAM::AccessKey`'s `SecretAccessKey`;
-- the value of a `NoEcho` parameter, wherever a resource's properties use it
-  (cdkd masks it in log output only).
+- a `NoEcho` parameter's value in a state record written before
+  [`version: 11`](#version-11-stores-noecho-values-as-current-writers), until the
+  next `cdkd deploy` migrates it, and in every earlier object version of it.
 
 Limit who can read the state bucket, and its earlier object versions,
 accordingly.
@@ -3208,11 +3314,11 @@ first read.
 
 ### Schema Version
 
-Current writers emit **`version: 10`** on the region-prefixed key layout
+Current writers emit **`version: 11`** on the region-prefixed key layout
 (`cdkd/{stackName}/{region}/state.json`, introduced by `version: 2`). Older
 `version: 1` blobs at the non-region key (`cdkd/{stackName}/state.json`) are
 still readable; the next save migrates them to the region-prefixed key and
-deletes the legacy key. Every v1..v9 blob is read and auto-upgraded in memory
+deletes the legacy key. Every v1..v10 blob is read and auto-upgraded in memory
 by the current binary, and the next write persists the current version
 silently — no user action, no migration command.
 

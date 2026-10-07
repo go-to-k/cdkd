@@ -183,7 +183,7 @@ Each of these loads on its own when it is needed, so it is not restated here.
 | Subject | Loads from | On |
 | --- | --- | --- |
 | Architecture, layer map | [architecture.md](.claude/rules/architecture.md), [code-layout.md](.claude/rules/code-layout.md) | `src/**` |
-| State schema (v10), migrations | [state-schema.md](.claude/rules/state-schema.md) | `src/state/**`, `src/types/state.ts` |
+| State schema (v11), migrations | [state-schema.md](.claude/rules/state-schema.md) | `src/state/**`, `src/types/state.ts` |
 | Provider pattern, registration | [providers.md](.claude/rules/providers.md) | `src/provisioning/**` |
 | CLI, synthesis, assets, analyzer | the matching `.claude/rules/*.md` | the matching `src/` path |
 | Testing, fixtures, mutation probes | [testing.md](.claude/rules/testing.md) | `tests/**` |

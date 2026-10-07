@@ -290,6 +290,12 @@ cdkd deploy MyStack \
   --yes
 ```
 
+It is also how to apply a new value to a create-only property a `NoEcho`
+parameter feeds: state holds only `***` there, so the deploy never replaces such
+a resource on its own and warns on every deploy whose readback cannot confirm
+the value (see
+[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
+
 The template does not have to change. Moving a resource between provisioning
 layers is not a template edit, so a target is recreated even when its diff is
 otherwise empty, and the deploy counts it as an update. Both `--recreate-via-*`

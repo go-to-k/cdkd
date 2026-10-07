@@ -19,6 +19,7 @@ import { keepsSecretReferenceToken } from './context.js';
 import {
   SECRET_MASK,
   embedsFreshNoEchoValue,
+  markNoEchoParameterClass,
   hasMaskableValues,
   recordDerivedMaskOnlyValue,
   recordFreshNoEchoValuesIn,
@@ -562,6 +563,12 @@ export async function resolveBase64(
     // resource on every deploy.
     if (embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues)) {
       recordFreshNoEchoValuesIn(result, context.recordedSecretValues);
+      // The encoding of a `NoEcho` PARAMETER's value is read as that
+      // parameter's value is (go-to-k/cdkd#4043): one readback, never a
+      // replacement on its word.
+      if (embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues, 'parameter')) {
+        markNoEchoParameterClass(context.recordedSecretValues, result);
+      }
     }
   }
   // go-to-k/cdkd#1998: the encoding of text holding a LOG-ONLY needle (a

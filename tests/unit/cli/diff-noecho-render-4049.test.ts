@@ -170,13 +170,18 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
 
     const change = result.changes.get('A');
     expect(change?.changeType).toBe('UPDATE');
+    // go-to-k/cdkd#4043: the pre-v11 record's plaintext is the migration
+    // witness; a different one shows a placeholder, never the old value.
     expect(change?.propertyChanges).toEqual([
-      expect.objectContaining({ path: 'Value', oldValue: '***', newValue: '***' }),
+      expect.objectContaining({
+        path: 'Value',
+        oldValue: '(previous NoEcho value)',
+        newValue: '***',
+      }),
     ]);
     const out = printed(nodeOf(result));
     expect(out).not.toContain(NOECHO);
     expect(out).not.toContain(OLD_NOECHO);
-    expect(out).toContain('old: "***"');
     expect(out).toContain('new: "***"');
   });
 
@@ -218,7 +223,9 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
     expect(out).not.toContain('31337');
     expect(result.changes.get('A')?.propertyChanges).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ path: 'Value', newValue: 'user=***' }),
+        // go-to-k/cdkd#4043: compared as the persist side writes it, the
+        // embedding leaf whole.
+        expect.objectContaining({ path: 'Value', newValue: '***' }),
         expect.objectContaining({ path: 'Tier', newValue: '***' }),
       ])
     );
@@ -235,7 +242,7 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
     );
 
     expect(result.changes.get('A')?.propertyChanges).toEqual([
-      expect.objectContaining({ oldValue: '***', newValue: '***' }),
+      expect.objectContaining({ oldValue: '(previous NoEcho value)', newValue: '***' }),
     ]);
     expect(printed(nodeOf(result))).not.toContain(encoded);
   });

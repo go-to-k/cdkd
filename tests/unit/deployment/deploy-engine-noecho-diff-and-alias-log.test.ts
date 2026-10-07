@@ -149,8 +149,11 @@ describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (
     await h.engine.deploy('s', templateOf(true));
     const lines = logLines.join('\n');
     // Premise: both lines were printed, so their masking is what is tested.
+    // Since go-to-k/cdkd#4043 the diff compares what state stores: the new
+    // side is the mask, and the record's pre-v11 plaintext, which differs, is
+    // shown as the witness placeholder rather than as the old value.
     expect(lines).toContain(
-      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to "${SECRET_MASK}")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "(previous NoEcho value)" to "${SECRET_MASK}")`
     );
     // The name IS the NoEcho value, so the secret-bearing-name refusal fires
     // before the collision arm could (go-to-k/cdkd#4043).
@@ -310,7 +313,14 @@ describe('DeployEngine - the replacement line knows every NoEcho value up front 
       const viaHelper: RecordedSecretValues = new Map();
       recordLogOnlyParameterValue(viaHelper, value);
       const needles = (bag: RecordedSecretValues): string[] => [...printingCorpusOf(bag).keys()].sort();
-      expect(needles(viaHelper)).toEqual(needles(viaResolver));
+      // Every spelling the up-front record prints, the resolver prints too.
+      const fromResolver = needles(viaResolver);
+      for (const needle of needles(viaHelper)) expect(fromResolver).toContain(needle);
+      // Since go-to-k/cdkd#4043 the resolver ALSO registers each string leaf as
+      // a mask-only map entry (the value arm); any extra needle is one of those.
+      for (const needle of fromResolver) {
+        if (!needles(viaHelper).includes(needle)) expect(viaResolver.get(needle)).toBe(SECRET_MASK);
+      }
     }
   });
 });
@@ -333,10 +343,13 @@ describe('DeployEngine - the diff pass bag feeds the replacement line (go-to-k/c
       },
     });
     const line = logLines.find((l) => l.includes('requires replacement ('));
+    // go-to-k/cdkd#4043: compared as state stores it (the mask), with the
+    // differing pre-v11 witness shown as the placeholder.
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to "${SECRET_MASK}")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "(previous NoEcho value)" to "${SECRET_MASK}")`
     );
     expect(line).not.toContain(encoded);
+    expect(line).not.toContain(NOECHO);
   });
 });
 
@@ -397,8 +410,8 @@ describe('DeployEngine - an output resolution failure is masked in one pass (go-
   });
 });
 
-describe('DeployEngine - persistence is unchanged by the #4049 masking', () => {
-  it('saves byte-identical state with and without NoEcho on the parameter', async () => {
+describe('DeployEngine - NoEcho persists as the mask (go-to-k/cdkd#4043, schema v11)', () => {
+  it('saves *** where the NoEcho parameter served the record, and the clear value without NoEcho', async () => {
     const saved = async (noEcho: boolean): Promise<string> => {
       const h = harness();
       await h.engine.deploy('s', templateOf(noEcho));
@@ -415,13 +428,18 @@ describe('DeployEngine - persistence is unchanged by the #4049 masking', () => {
     const noEchoLines = logLines.join('\n');
     logLines.length = 0;
     const without = await saved(false);
-    // Non-vacuity: the value is persisted in the clear (the decision on
-    // #1998), the colliding alias is skipped either way, and only the log
-    // differs between the two runs.
-    expect(withNoEcho).toContain(`"Name":"${NOECHO}"`);
+    // Negative control: without NoEcho the value is persisted and logged in
+    // the clear, so the masked half below is not vacuous.
+    expect(without).toContain(`"Name":"${NOECHO}"`);
+    expect(logLines.join('\n')).toContain(NOECHO);
+    // With NoEcho the property persists `***` and names its coordinate. Two
+    // spellings stay by design: the physical id (AWS publishes a resource's
+    // name) and a LITERAL output key the template itself spells.
+    expect(withNoEcho).not.toContain(`"Name":"${NOECHO}"`);
+    expect(withNoEcho).toContain('"Name":"***"');
+    expect(withNoEcho).toContain('"noEchoLeaves":[["Name"]]');
     expect(withNoEcho).toContain(`"${NOECHO}":"owner-value"`);
     expect(noEchoLines).not.toContain(NOECHO);
-    expect(logLines.join('\n')).toContain(NOECHO);
-    expect(withNoEcho).toBe(without);
+    expect(withNoEcho).not.toBe(without);
   });
 });

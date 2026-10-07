@@ -138,14 +138,41 @@
  *       loud with a named remedy — but the cost is real and is not the
  *       marker's own scope.
  *
+ * - 11 — adds `ResourceState.noEchoLeaves` and
+ *       `ResourceState.noEchoAttributeNames` (issues
+ *       [#4043](https://github.com/go-to-k/cdkd/issues/4043) /
+ *       [#2449](https://github.com/go-to-k/cdkd/issues/2449)). A `NoEcho: true`
+ *       template parameter's value, and a value an attribute declared `NoEcho`
+ *       served, is persisted as `***` in `properties` / `observedProperties` /
+ *       `attributes` / `outputs`; the first field names WHERE in `properties`
+ *       (and so in `observedProperties`) the mask stands for such a value, the
+ *       second WHICH of the record's own `attributes` were declared `NoEcho`.
+ *       A comparison that needs the value reads it back from AWS or
+ *       re-resolves it; nothing derived from it is stored.
+ *       A bump, for v10's reason: a v10 binary would compare its plaintext
+ *       desired value with `***`, and on a create-only property that is a
+ *       REPLACEMENT every deploy. Failing with "Upgrade cdkd" is the safe
+ *       direction.
+ *       **The same TRADE as v10, plus one of its own.** `saveState` stamps the
+ *       current version unconditionally, so every stack a v11 binary writes
+ *       refuses older binaries, and that includes writes that hold no template
+ *       and so redact nothing (`cdkd state refresh-observed`, `cdkd drift
+ *       --accept`, `cdkd orphan`, a destroy's partial save, a rollback
+ *       restore). `version: 11` therefore never certifies "redacted"; readers
+ *       read the two fields, and their ABSENCE means "not known", which keeps
+ *       the v10 reading of a `***` (the custom-resource class) and makes a
+ *       stored plaintext the MIGRATION WITNESS the next deploy compares with.
+ *       No read-time migration: a v10 document is read unchanged and the next
+ *       `cdkd deploy` rewrites it.
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 10;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 11;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -154,7 +181,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 10;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
 ];
 
 /**
@@ -764,6 +791,50 @@ export interface ResourceState {
    * (`refusedBaselineRemedy`, issue #3465).
    */
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' | undefined;
+
+  /**
+   * v11+ (go-to-k/cdkd#4043): the coordinates, within `properties`, persisted
+   * as `***` because a `NoEcho: true` template PARAMETER served them, or an
+   * `Fn::GetAtt` of an attribute its producer declared `NoEcho`. Each entry is
+   * a SEGMENT ARRAY (keys and array indexes), never a dotted string, since a
+   * dotted key is legal in a property bag. `observedProperties` holds the mask
+   * at the same coordinates, found through an array's identity field.
+   *
+   * The entries name POSITIONS, never values or parameter names: nothing in
+   * the field is derived from the value.
+   *
+   * ABSENT means "not known", which is every record a pre-v11 binary wrote:
+   * a reader then treats a `***` as before (the custom-resource class), and a
+   * deploy reads a non-mask leaf at a position the template names as the
+   * MIGRATION WITNESS, the exact value last sent. Every writer that rebuilds
+   * `properties` from a template recomputes it (a deploy writes `[]` for a
+   * record with none); every writer that carries a record forward keeps it.
+   * Read through `noEchoLeavesOf` (malformed reads as absent).
+   */
+  noEchoLeaves?: (string | number)[][] | undefined;
+
+  /**
+   * v11+ (go-to-k/cdkd#2449): the keys of this record's OWN `attributes` that
+   * its provider DECLARED `NoEcho` (a custom resource answering `NoEcho: true`
+   * declares every attribute it returned; a nested stack names the outputs it
+   * recovered from a masked child output), plus each attribute that echoed a
+   * `NoEcho` value of this resource. Each is persisted as `***` whatever its
+   * type or length.
+   *
+   * Sourced from the DECLARATION, never from "which attributes hold `***`":
+   * a 1-3 character or `Number` value has no needle, and a record naming only
+   * masked keys would leave it in the clear for the next dependent. A write
+   * that registers no declaration (an update whose provider returned none, a
+   * carried record) keeps every earlier name whose attribute still holds the
+   * mask. ABSENT means "not known" (pre-v11): a `***` attribute is then read
+   * as today, fail closed.
+   *
+   * A dependent that reads a declared attribute out of a previous run's
+   * record is still REFUSED with the remedy (the maintainer's decision on
+   * #2449): this field only makes the refusal name the attribute exactly.
+   * cdkd never forces the producer to run again.
+   */
+  noEchoAttributeNames?: string[] | undefined;
 
   /**
    * The CREATE-ONLY silent drops in `properties` that the SDK route was told to

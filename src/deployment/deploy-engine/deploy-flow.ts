@@ -1,3 +1,4 @@
+import { freshNoEchoParametersWithDeclared } from './noecho.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -466,6 +467,11 @@ export async function doDeployWithPrefetch(
     const effectiveTemplate = this.templateParser.filterResourcesByCondition(template, conditions);
     // Every save from here on stamps each record's construct path from it.
     this.constructPathTemplate = effectiveTemplate;
+    // go-to-k/cdkd#4043: the positional `NoEcho` arm opens only the `Fn::If`
+    // branch this deploy selected, and reads the previous records' declared
+    // `NoEcho` attributes (go-to-k/cdkd#2449).
+    this.noEchoConditions = conditions;
+    this.seedPersistedNoEchoAttributes(currentState.resources);
 
     // 2b. Re-adopt anything a previous rollback left in AWS (issue #2934).
     //
@@ -650,7 +656,14 @@ export async function doDeployWithPrefetch(
       // value the parent supplied in THIS deploy. The diff side binds the
       // redacted bag above, where such a value is `***` like its record, so
       // the calculator promotes each reader instead.
-      this.freshNoEchoParameters(parameterValues),
+      // go-to-k/cdkd#4043: and EVERY `NoEcho: true` parameter of this
+      // template, at every level. Its readers persist `***`, so the diff
+      // cannot see a changed value; each is promoted and the engine decides
+      // with the value in hand (a readback, or the migration witness).
+      freshNoEchoParametersWithDeclared(
+        this.freshNoEchoParameters(parameterValues),
+        effectiveTemplate
+      ),
       // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
       // parameter to its plaintext and records it as a log-only needle of
       // THIS context's bag, so the calculator's replacement line masks with
@@ -672,7 +685,16 @@ export async function doDeployWithPrefetch(
       // layout 2 from these same inputs, stamped below without sending.
       maskedInputs,
       // go-to-k/cdkd#4159: the account flags the load's refusals above carry.
-      this.options.refusalRecovery
+      this.options.refusalRecovery,
+      // go-to-k/cdkd#4043: compare what the persist side writes for a value
+      // a `NoEcho` source served, and read a pre-v11 record's plaintext as
+      // the migration witness.
+      this.noEchoDiffComparison(
+        currentState.resources,
+        effectiveTemplate,
+        conditions,
+        parameterValues
+      )
     );
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the

@@ -157,6 +157,23 @@ STATE_EDIT_FILE=""
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# The schema version the LOCAL binary writes. It was 10 when this fixture was
+# written; a later bump (v11, issue #4043) moves it, and the local-binary
+# phases below assert "the current version", not a literal, so this fixture
+# keeps proving the v9 -> current migration. Read from the source of the
+# binary under test; an unparsable line fails the run rather than defaulting.
+LOCAL_SCHEMA_VERSION="$(sed -n 's/^export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = \([0-9][0-9]*\);$/\1/p' ../../../src/types/state.ts)"
+case "${LOCAL_SCHEMA_VERSION}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read STATE_SCHEMA_VERSION_CURRENT from src/types/state.ts" >&2
+    exit 1
+    ;;
+esac
+if [ "${LOCAL_SCHEMA_VERSION}" -lt 10 ]; then
+  echo "FAIL: STATE_SCHEMA_VERSION_CURRENT is ${LOCAL_SCHEMA_VERSION}; this fixture needs a v10+ local binary" >&2
+  exit 1
+fi
+
 # THE NEEDLE, generated PER RUN. Unique and high-entropy on purpose: a fixed
 # needle could collide with a leftover from an earlier run (making the leak
 # check fire on a clean run) and gives no evidence that THIS run's readback is
@@ -586,7 +603,7 @@ CDKD_TEST_SCHEMA_PHASE=import AWS_REGION="${REGION}" node "${LOCAL_DIST}" import
 
 fetch_state "v10 import"
 # THE MIGRATION WRITE: a v9 record, upgraded with no user action.
-assert_version "v10 import" 10
+assert_version "v10 import" "${LOCAL_SCHEMA_VERSION}"
 assert_resource_present "v10 import" "${MARKED_LOGICAL_ID}"
 assert_resource_present "v10 import" "${CONTROL_LOGICAL_ID}"
 # THE FEATURE: the refusal is now RECORDED, and still no baseline.
@@ -609,7 +626,7 @@ AWS_REGION="${REGION}" node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes
 
 fetch_state "v10 refresh-observed"
-assert_version "v10 refresh-observed" 10
+assert_version "v10 refresh-observed" "${LOCAL_SCHEMA_VERSION}"
 # The marked resource: still marked, still no baseline — the refill that
 # Phase 2 performed under v9 does NOT happen here.
 assert_marker "v10 refresh-observed" "${MARKED_LOGICAL_ID}" true
@@ -668,7 +685,7 @@ CDKD_TEST_SCHEMA_PHASE=deploy node "${LOCAL_DIST}" deploy "${STACK}" \
 assert_param_value "phase 8 no-change proof" "${MARKED_PARAM_NAME}" "${SECRET_PLAINTEXT}"
 
 fetch_state "v10 deploy (auto-refresh)"
-assert_version "v10 deploy (auto-refresh)" 10
+assert_version "v10 deploy (auto-refresh)" "${LOCAL_SCHEMA_VERSION}"
 # The marked record: the auto-refresh saw `observedProperties === undefined` and
 # declined on the marker.
 assert_marker "v10 deploy (auto-refresh)" "${MARKED_LOGICAL_ID}" true
@@ -692,7 +709,7 @@ CDKD_TEST_SCHEMA_PHASE=deploy-update node "${LOCAL_DIST}" deploy "${STACK}" \
 assert_param_value "v10 deploy (update)" "${MARKED_PARAM_NAME}" "${FALSE_BRANCH_LITERAL_UPDATED}"
 
 fetch_state "v10 deploy (update)"
-assert_version "v10 deploy (update)" 10
+assert_version "v10 deploy (update)" "${LOCAL_SCHEMA_VERSION}"
 assert_marker "v10 deploy (update)" "${MARKED_LOGICAL_ID}" absent
 assert_observed_present "v10 deploy (update)" "${MARKED_LOGICAL_ID}" true
 assert_observed_value "v10 deploy (update)" "${MARKED_LOGICAL_ID}" "${FALSE_BRANCH_LITERAL_UPDATED}"

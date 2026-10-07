@@ -190,6 +190,7 @@ directly, each under that record's lock.
 | `readAborted` | cdkd never read the resource: 5 reads in a row earlier in the same stack failed, through the same read path. Every Cloud Control read is one path — a resource cdkd manages through Cloud Control, and the Cloud Control fallback for a type whose provider cannot read it — and a read through one of cdkd's own SDK providers is the other. Five failures in a row is what expired credentials, a revoked role or a permission all of those reads need (such as `cloudcontrol:GetResource`) looks like, though a burst of throttling can trip it too. cdkd stops reading that stack that way instead of paying the same failure for every remaining resource; resources read the other way are still read. A read that succeeds resets the count, so one unreadable resource among readable ones never causes this, and resources cdkd never sends to AWS (skipped types, a type denied the Cloud Control fallback, a refused baseline) neither count nor reset. Other stacks in the run are still read. | Yes — fix the condition (refresh the credentials, restore the role or permission), or simply re-run if it was throttling. |
 | `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource; for a [template-parameter refusal](#clearing-a-baseline-refusal), replace it, or re-import it while a CloudFormation stack can prove the parameter. |
 | `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
+| `noEchoParameter` | The resource's state holds a `NoEcho: true` template parameter's value only as the redaction mask `***`, at the positions the record names, and the mask is the only difference at those positions. The report names the positions, never a value. Every other property was compared. | No — the value is masked by design, which is why, like `unresolvedToken`, it does not affect the exit code. `cdkd deploy` compares the value with AWS instead. |
 | `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object. cdkd drops the row so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. | Yes — repair or re-import the record. |
 | `unreadableMap` | The record's whole `resources` map is not a JSON object, so no resource in it was read. cdkd reads the map as empty and reports one entry whose `logicalId` is `(resources map)`. Key on this cause, not on that name: a hand-edited record can hold an entry keyed `(resources map)`, which is reported as `unreadableRecord`. | Yes — repair or re-import the record. |
 
@@ -371,7 +372,7 @@ sequence.
 
 | Code | Meaning |
 | --- | --- |
-| `0` (detection) | Nothing drifted, and every resource under `notCompared`, if any, is there for an `unresolvedToken`. |
+| `0` (detection) | Nothing drifted, and every resource under `notCompared`, if any, is there for an `unresolvedToken` or a `noEchoParameter`. |
 | `0` (`--accept` / `--revert`) | The remediation run completed. This does NOT assert every comparison completed. |
 | `1` | Drift was detected on at least one resource (a **deleted** resource counts), OR the command failed (no state found, an AWS error, bad arguments). |
 | `2` (detection) | Nothing drifted, but at least one comparison did not happen for a reason you can act on. |
@@ -394,12 +395,14 @@ one whose baseline an import refused (`baselineRefused`), one whose baseline
 holds a mask cdkd could not certify (`uncertifiedBaseline`), a state row that
 is not readable as a resource or whose `properties` map is not an object
 (`unreadableRecord`), and a `resources` map that is not an object
-(`unreadableMap`). The eighth does not: a
+(`unreadableMap`). The other two do not: a
 resource whose only uncompared properties hold an
 `unresolvedToken` is listed under `notCompared` and in the report's
 not-fully-compared block, but does not produce this exit code — cdkd resolves
 that spelling for nobody, the condition is permanent, and exiting non-zero for
-it would fail such a stack's CI forever over something unrelated. A type
+it would fail such a stack's CI forever over something unrelated. The same
+holds for `noEchoParameter`: state never holds a `NoEcho` parameter's value, so
+no re-run can compare it. A type
 Cloud Control has no READ handler for is excluded on the same grounds and
 reports `drift unknown` instead, whether the fallback signals that by
 returning nothing or by throwing `UnsupportedActionException`.
@@ -557,6 +560,12 @@ arms above therefore answer differently, and none of them needs a
   the revert itself substituted — a preserved `{{resolve:...}}` token cdkd
   resolves for nobody — vouch for nothing, so a list whose only other values
   are such tokens refuses too.
+
+A position a `NoEcho` template PARAMETER fills is different: the record names
+it (state schema `version: 11`), so the report lists it under
+`notCompared: noEchoParameter` by path only, it does not affect the exit code,
+and `--accept` / `--revert` leave it alone as above. What follows applies to a
+custom-resource value.
 
 **Such a position drifts on every run, and that is expected.** cdkd's side is
 the mask and AWS's side is the real value, so the two never converge: the
@@ -1221,8 +1230,9 @@ Each `notCompared` entry carries two keys of its own:
   to gate on when you need to tell a clearable cause from a permanent one; the
   exit code says the run had at least one clearable cause but cannot say which
   resource.
-- **`referencesUnresolved`** — `true` for the three reference-related causes
-  (`refused`, `unresolvedToken`, `uncertifiedBaseline`) and `false` for every
+- **`referencesUnresolved`** — `true` for the causes where the rest of the
+  resource was compared (`refused`, `unresolvedToken`, `uncertifiedBaseline`,
+  `noEchoParameter`) and `false` for every
   other one, where nothing
   was compared at all and references are beside the point. A consumer written
   as `notCompared.filter(n => n.referencesUnresolved)` therefore drops those

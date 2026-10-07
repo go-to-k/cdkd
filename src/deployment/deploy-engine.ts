@@ -77,6 +77,7 @@ import * as resolverContextMixin from './deploy-engine/resolver-context.js';
 import * as routingMixin from './deploy-engine/routing.js';
 import * as recordShapeMixin from './deploy-engine/record-shape.js';
 import * as dependenciesMixin from './deploy-engine/dependencies.js';
+import * as noEchoMixin from './deploy-engine/noecho.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -493,6 +494,32 @@ export class DeployEngine {
   /** @internal */
   noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
   /**
+   * go-to-k/cdkd#2449: the attributes each record of the PREVIOUS state
+   * declared `NoEcho` (`ResourceState.noEchoAttributeNames`), seeded at deploy
+   * start. Read-only evidence for the positional arm and the refusal's
+   * wording; never a source of needles (its values are the mask).
+   */
+  /** @internal */
+  persistedNoEchoAttributes = new Map<string, ReadonlySet<string>>();
+  /**
+   * go-to-k/cdkd#4043: the condition verdicts of the deploy in progress, so the
+   * positional arm opens only the `Fn::If` branch the deploy selected.
+   */
+  /** @internal */
+  noEchoConditions: Record<string, boolean> | undefined;
+  /** @internal */
+  noEchoPhysicalIdWarned = new Set<string>();
+  /**
+   * go-to-k/cdkd#4043 §3.3: per resource resolved this deploy, the canonical
+   * JSON of each leaf a `NoEcho` PARAMETER served it, so a HELD producer's
+   * echoed attribute can be matched against a value it was given without a
+   * needle (a `Number`, a value under the floor). Never persisted.
+   */
+  /** @internal */
+  noEchoPositionedValues = new Map<string, Set<string>>();
+  /** @internal */
+  noEchoAttributeReads = new Map<string, Promise<Record<string, unknown> | undefined>>();
+  /**
    * The deploy-wide DERIVED-NAME registry (go-to-k/cdkd#3869): per logical
    * id, an EMPTY map whose LOG-ONLY needles are what its physical ids print as
    * when its name came from a secret (`noteSecretNamedRecord` in
@@ -867,6 +894,11 @@ export class DeployEngine {
     this.recordedOutputReads = [];
     this.perResourceSecrets = new Map();
     this.noEchoAttributeResources = new Map();
+    this.persistedNoEchoAttributes = new Map();
+    this.noEchoConditions = undefined;
+    this.noEchoPhysicalIdWarned = new Set();
+    this.noEchoPositionedValues = new Map();
+    this.noEchoAttributeReads = new Map();
     this.secretNameNeedles = new Map();
     this.perResourceTemplateProps = new Map();
     this.constructPathTemplate = undefined;
@@ -972,9 +1004,19 @@ export class DeployEngine {
       // record this deploy wrote; a failed update keeps the previous bag and
       // its previous fingerprints. This resource's needles refuse a hash to a
       // template value that holds one as a literal.
+      // go-to-k/cdkd#4043 / #2449: the `NoEcho` arms, BEFORE the fingerprints,
+      // which read the `***` keys of the persisted bag.
+      const noEchoScrubbed = this.applyNoEchoPersist(
+        logicalId,
+        record,
+        scrubbed,
+        templateProps,
+        state.resources,
+        secrets
+      );
       resources[logicalId] = withConstructPath(
         withMaskedPropertyFingerprints(
-          scrubbed,
+          noEchoScrubbed,
           record.properties,
           templateProps,
           secrets,
@@ -1036,11 +1078,20 @@ export class DeployEngine {
         // properties' fingerprints here too, or a later adoption backfills
         // them from whatever template that deploy carries.
         state: withMaskedPropertyFingerprints(
-          scrubResourceRecord(
+          // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
+          // by today's template while it still names the logical id as that
+          // type.
+          this.applyNoEchoPersist(
+            entry.logicalId,
             entry.state,
-            (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
-              new Map<string, string>(),
-            orphanTemplateProps
+            scrubResourceRecord(
+              entry.state,
+              (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
+                new Map<string, string>(),
+              orphanTemplateProps
+            ),
+            orphanTemplateProps,
+            state.resources
           ),
           entry.state.properties,
           orphanTemplateProps,
@@ -1527,6 +1578,15 @@ DeployEngine.prototype.rollbackExecutorContext = rollbackMixin.rollbackExecutorC
 DeployEngine.prototype.producerRegionEvidence = rollbackMixin.producerRegionEvidence;
 DeployEngine.prototype.writeRollbackJournalSegment = rollbackMixin.writeRollbackJournalSegment;
 DeployEngine.prototype.redactOperationsForJournal = rollbackMixin.redactOperationsForJournal;
+
+DeployEngine.prototype.noEchoPositionSources = noEchoMixin.noEchoPositionSources;
+DeployEngine.prototype.noEchoLeavesFor = noEchoMixin.noEchoLeavesFor;
+DeployEngine.prototype.applyNoEchoPersist = noEchoMixin.applyNoEchoPersist;
+DeployEngine.prototype.maskOutputsByPosition = noEchoMixin.maskOutputsByPosition;
+DeployEngine.prototype.warnNoEchoPhysicalId = noEchoMixin.warnNoEchoPhysicalId;
+DeployEngine.prototype.seedPersistedNoEchoAttributes = noEchoMixin.seedPersistedNoEchoAttributes;
+DeployEngine.prototype.noEchoAttributeOverridesFor = noEchoMixin.noEchoAttributeOverridesFor;
+DeployEngine.prototype.noEchoDiffComparison = noEchoMixin.noEchoDiffComparison;
 
 DeployEngine.prototype.handleOutputResolutionFailure = outputsMixin.handleOutputResolutionFailure;
 DeployEngine.prototype.resolveOutputs = outputsMixin.resolveOutputs;

@@ -72,7 +72,12 @@ import {
   recordLogOnlyValue,
   maskSecretsInText,
   type RecordedSecretValues,
+  readsNoEchoSource,
 } from '../../deployment/secret-redaction.js';
+import {
+  noEchoComparisonForTemplate,
+  noEchoParameterNamesOf,
+} from '../../deployment/deploy-engine/noecho.js';
 import {
   orphanRecordsPrintingBag,
   stateSecretNameNeedles,
@@ -2023,8 +2028,37 @@ export async function computeStackDiff(
     maskForLog,
     undefined,
     maskedInputs,
-    options.refusalRecovery
+    options.refusalRecovery,
+    // go-to-k/cdkd#4043: compare what the deploy persists for a value a
+    // `NoEcho` source served (`***`), reading a pre-v11 record's plaintext as
+    // the migration witness. Only the verdicts this diff knows position an
+    // `Fn::If`; an unknown one masks the whole leaf.
+    noEchoComparisonForTemplate(
+      effectiveTemplate,
+      conditions === undefined
+        ? undefined
+        : Object.fromEntries(
+            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+          ),
+      mergedParameters,
+      stateForDiff.resources
+    )
   );
+  // The deploy reads back every resource a `NoEcho` parameter feeds, since
+  // state holds only `***` there; this preview cannot, so it says so once.
+  // Informational: it never counts as a change for `--fail`.
+  const noEchoReaders = Object.keys(effectiveTemplate.Resources ?? {}).filter(
+    (logicalId) =>
+      changes.get(logicalId)?.changeType === 'NO_CHANGE' &&
+      readsNoEchoSource(effectiveTemplate.Resources?.[logicalId]?.Properties, {
+        parameters: noEchoParameterNamesOf(effectiveTemplate),
+      })
+  );
+  if (noEchoReaders.length > 0) {
+    logger.info(
+      safeMsg`Stack ${displayStackName(stackName)}: ${String(noEchoReaders.length)} unchanged resource(s) read a NoEcho parameter, whose value state holds only as ***: the deploy compares it with AWS, and updates a resource whose value changed.`
+    );
+  }
 
   // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
   // through the SAME finder over the same two inputs the engine hands it —

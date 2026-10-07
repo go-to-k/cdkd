@@ -1,4 +1,4 @@
-import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
+import { type RecordedSecretValues, SECRET_MASK, mergeResolvedPairs } from './pairs.js';
 import { MIN_NEEDLE_LENGTH } from './rules.js';
 
 /**
@@ -633,6 +633,78 @@ export function recordFreshNoEchoValuesIn(
 }
 
 /**
+ * The fresh mask-only plaintexts of a pass that a `NoEcho: true` template
+ * PARAMETER supplied (go-to-k/cdkd#4043), as opposed to a custom resource's
+ * handler or a recovered output. The engine reads the two classes differently:
+ * a parameter's value is confirmed by a readback whatever the property's
+ * replacement class, and a create-only property it feeds is never replaced on
+ * that readback's word (maintainer decision on #4043), while the
+ * custom-resource class keeps the go-to-k/cdkd#3729 table.
+ */
+export const noEchoParameterValuesOf = new WeakMap<RecordedSecretValues, Set<string>>();
+
+/**
+ * Record a `NoEcho` parameter's resolved value as a FRESH mask-only needle of
+ * the pass (the value arm, go-to-k/cdkd#4043 §3.1): every string leaf is
+ * registered by {@link recordFreshNoEchoValuesIn} and marked as the parameter
+ * class. A leaf under `MIN_NEEDLE_LENGTH`, or a number, registers nothing; the
+ * positional arm covers it.
+ */
+export function recordNoEchoParameterFreshValue(
+  value: unknown,
+  secrets: RecordedSecretValues,
+  publicTokens?: ReadonlySet<string>
+): void {
+  recordFreshNoEchoValuesIn(value, secrets, undefined, publicTokens);
+  const parameterClass = sideSetOf(noEchoParameterValuesOf, secrets);
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      if (isMaskOnlyPlaintext(secrets, node)) parameterClass.add(node);
+      return;
+    }
+    if (Array.isArray(node)) for (const item of node) walk(item);
+  };
+  walk(value);
+}
+
+/**
+ * A copy of `secrets` without the entries a `NoEcho` PARAMETER supplied, with
+ * the uncollapsed pairs and the other classes' side-set marks carried: the
+ * map the persist walk would have read before go-to-k/cdkd#4043, which the
+ * migration witness compares a pre-v11 record against.
+ */
+export function withoutNoEchoParameterEntries(secrets: RecordedSecretValues): RecordedSecretValues {
+  const parameterClass = noEchoParameterValuesOf.get(secrets);
+  if (parameterClass === undefined || parameterClass.size === 0) return secrets;
+  const copy: RecordedSecretValues = new Map();
+  for (const [plaintext, expression] of secrets) {
+    if (expression === SECRET_MASK && parameterClass.has(plaintext)) continue;
+    copy.set(plaintext, expression);
+  }
+  mergeResolvedPairs(secrets, copy);
+  carryMaskOnlyMarks(secrets, copy);
+  return copy;
+}
+
+/**
+ * Mark an already-registered fresh mask-only `plaintext` as the PARAMETER
+ * class: a value DERIVED from a parameter's (its `Fn::Base64` encoding) is
+ * read the way the value itself is.
+ */
+export function markNoEchoParameterClass(secrets: RecordedSecretValues, plaintext: string): void {
+  if (isMaskOnlyPlaintext(secrets, plaintext))
+    sideSetOf(noEchoParameterValuesOf, secrets).add(plaintext);
+}
+
+/** Is `plaintext` a fresh value of `secrets` that a `NoEcho` PARAMETER supplied? */
+export function isNoEchoParameterPlaintext(
+  secrets: RecordedSecretValues,
+  plaintext: string
+): boolean {
+  return noEchoParameterValuesOf.get(secrets)?.has(plaintext) === true;
+}
+
+/**
  * Carry the FRESH mark of `plaintext` from `from` into `to`, when `from` marks
  * it and `to` holds it as mask-only (go-to-k/cdkd#3717). The one caller is the
  * resolver's inherited-parameter recording in a nested CHILD: the parent's
@@ -656,6 +728,9 @@ export function carryFreshNoEchoMark(
     sideSetOf(containmentValuesOf, to).add(plaintext);
   }
   if (freshNoEchoValuesOf.get(from)?.has(plaintext) === true) freshNoEchoSet(to).add(plaintext);
+  if (noEchoParameterValuesOf.get(from)?.has(plaintext) === true) {
+    sideSetOf(noEchoParameterValuesOf, to).add(plaintext);
+  }
 }
 
 /**
@@ -664,7 +739,7 @@ export function carryFreshNoEchoMark(
  * about pairs.
  */
 export function carryMaskOnlyMarks(from: RecordedSecretValues, to: RecordedSecretValues): void {
-  for (const table of [freshNoEchoValuesOf, containmentValuesOf]) {
+  for (const table of [freshNoEchoValuesOf, containmentValuesOf, noEchoParameterValuesOf]) {
     const marks = table.get(from);
     if (marks === undefined) continue;
     for (const plaintext of marks) {

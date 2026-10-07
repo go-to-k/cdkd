@@ -378,7 +378,7 @@ different problem with a different fix — upgrade cdkd rather than restoring a
 backup:
 
 ```
-StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9. Upgrade cdkd to a version that supports schema 12.
+StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Upgrade cdkd to a version that supports schema 12.
 ```
 
 **Causes:**

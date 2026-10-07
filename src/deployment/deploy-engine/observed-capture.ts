@@ -23,7 +23,11 @@ import {
 } from '../masked-baseline-recapture.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
-import { markSameGenerationBag, type RecordedSecretValues } from '../secret-redaction.js';
+import {
+  createUnionSecretMasker,
+  markSameGenerationBag,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -84,8 +88,18 @@ export function kickOffObservedCapture(
       // leaves, never the sentinel installed as a property bag.
       (observed) => (observed === RESOURCE_NOT_FOUND ? undefined : observed),
       (err: unknown) => {
+        // go-to-k/cdkd#4043 (review M6): masked with the resource's bag, its
+        // derived-name needles and the stack's `NoEcho` values, since the
+        // deploy-start refresh runs with NO bag and AWS may echo a value.
+        const mask = createUnionSecretMasker([
+          secrets,
+          this.printingSecretsFor(logicalId),
+          this.fingerprintNoEchoValues,
+        ]);
         this.logger.debug(
-          `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+          mask(
+            `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+          )
         );
         return undefined;
       }

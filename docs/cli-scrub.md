@@ -949,7 +949,11 @@ The same scope leaves two other kinds of value out of scrub's check. A
 credential a provider records in `attributes` so that `Fn::GetAtt` can read
 it — an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a Cognito user pool
 client's `ClientSecret` — is stored as returned. A `NoEcho` parameter's value
-is used only to mask it in log output, not to find it in state.
+is found only as the template's `Default` binds it today, where a resource that
+reads the parameter holds it whole or embedded in a value of 4 or more
+characters; an older value, a shorter one or a number is not found. A
+`cdkd deploy` masks every position the parameter fills (see
+[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
 
 ## Stack outputs
 

@@ -76,6 +76,13 @@ export {
   recordFreshNoEchoValuesIn,
   carryFreshNoEchoMark,
   isSecretExpressionByVerdictOrSpelling,
+  recordNoEchoParameterFreshValue,
+  isNoEchoParameterPlaintext,
+  noEchoParameterValuesOf,
+  withoutNoEchoParameterEntries,
+  markNoEchoParameterClass,
+  freshNoEchoValuesOf,
+  isMaskOnlyPlaintext,
 } from './secret-redaction/mask-only.js';
 export {
   recordLogOnlyValue,
@@ -96,6 +103,7 @@ export {
   embedsFreshNoEchoValue,
   carriesFreshNoEchoValue,
   type FreshNoEchoLeaf,
+  type FreshNoEchoClass,
   freshNoEchoLeafPositions,
   recordRecoverableMaskedOutput,
   recoverMaskedOutput,
@@ -137,6 +145,22 @@ export {
 export { spanNamesResolvableService } from './secret-redaction/anchors.js';
 export { liveMatchesUnresolvedTokenFrame } from './secret-redaction/unresolved-token-frame.js';
 export { redactSecretsForState, scrubResourceRecord } from './secret-redaction/redact-state.js';
+export {
+  type NoEchoCoordinate,
+  type NoEchoPositionSources,
+  readsNoEchoSource,
+  noEchoCoordinatesOf,
+  maskWholeValue,
+  valueAtCoordinate,
+  maskAtCoordinates,
+  maskReadbackAtCoordinates,
+  canonicalCoordinates,
+  noEchoLeavesOf,
+  isMarkedCoordinate,
+  witnessNormalize,
+  noEchoComparison,
+  PREVIOUS_NOECHO_VALUE,
+} from './secret-redaction/noecho-leaves.js';
 export {
   maskSecretsInText,
   maskRecordedSecretsInText,

@@ -1572,6 +1572,11 @@ export function withRebaselinedFingerprints<T extends object>(
  */
 const writtenFromDeployedTemplate = new WeakSet<object>();
 
+/** Whether `bag` was written from the template this deploy resolved. */
+export function isWrittenFromDeployedTemplate(bag: unknown): boolean {
+  return bag !== null && typeof bag === 'object' && writtenFromDeployedTemplate.has(bag);
+}
+
 /** Marks `bag` as written from the template this deploy resolved. */
 export function markWrittenFromDeployedTemplate<T extends object>(bag: T): T {
   writtenFromDeployedTemplate.add(bag);

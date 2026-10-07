@@ -606,11 +606,18 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
     expect(h.provider.update.mock.calls.filter((c) => c[0] === 'R')).toHaveLength(1);
   });
 
-  it('a NoEcho parameter stays out of the hash: its change is not sent (documented)', async () => {
+  it('a NoEcho parameter stays out of the hash, and (since go-to-k/cdkd#4043) its change is sent', async () => {
     const h = harness();
     const first = await h.deployTemplate(withParameter('noecho-one-value', { NoEcho: true }));
     const second = await h.deployTemplate(withParameter('noecho-two-value', { NoEcho: true }));
-    expect(h.provider.update).not.toHaveBeenCalled();
+    // The value is a FRESH value of the pass now, so the no-change skip does
+    // not trust the mask and the new value reaches AWS.
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+    expect(sentValue(h, 0)).toBe(
+      Buffer.from('b=noecho-two-value;pw=pw-secret-value').toString('base64')
+    );
+    expect(second.resources['R']!.properties['Value']).toBe('***');
+    expect(JSON.stringify(second)).not.toContain('noecho-two-value');
     // The same entry for both values: `{Ref: P}` is hashed, never the value.
     expect(fps(second.resources['R']!)).toEqual(fps(first.resources['R']!));
     expect(first.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(

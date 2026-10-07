@@ -43,7 +43,7 @@ Outputs:
 - cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
 - Both print outputs to stdout after a successful deploy
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
-- Both print an output whose value comes from a `NoEcho` parameter in the clear (cdkd masks a resolved `{{resolve:...}}` dynamic-reference secret and a `NoEcho` custom-resource attribute). An output is published data, so keep secrets out of outputs.
+- An output whose value comes from a `NoEcho` parameter: CloudFormation prints it in the clear, while cdkd stores and prints it as `***`, as it does a resolved `{{resolve:...}}` dynamic-reference secret and a `NoEcho` custom-resource attribute (see [`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)). A stack that reads such an output gets the value only within the same `cdkd deploy` run as its producer. An output is published data, so keep secrets out of outputs.
 
 ## Related
 

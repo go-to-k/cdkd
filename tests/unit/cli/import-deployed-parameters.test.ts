@@ -142,7 +142,9 @@ describe('ARM 4: a parameter whose deployed value is not provably the bound Defa
       deployed: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }],
     });
     expect(refused).toBe(true);
-    expect(state.resources['Res']!.properties).toEqual({ Detail: { pw: 'CHANGEME' } });
+    // The bound Default is a `NoEcho` value, persisted as the mask since
+    // go-to-k/cdkd#4043 (schema v11's value arm).
+    expect(state.resources['Res']!.properties).toEqual({ Detail: { pw: '***' } });
     expect(state.resources['Res']!.observedProperties).toBeUndefined();
     expect(JSON.stringify(state)).not.toContain(LIVE_PLAINTEXT);
     const warns = logged.filter((line) => line.includes('could not be proven'));

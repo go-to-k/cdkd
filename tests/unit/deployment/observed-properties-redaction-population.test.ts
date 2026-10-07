@@ -203,6 +203,12 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'NOT a write: the destructuring rename that STRIPS `observedProperties` off a ' +
       'previous-generation record before a reverse-replacement replay re-adopts it.',
   },
+  'src/deployment/deploy-engine/noecho.ts': {
+    sites: 1,
+    why:
+      '`applyNoEchoPersist` (go-to-k/cdkd#4043): masks the `NoEcho` coordinates of a ' +
+      'bag `scrubResourceRecord` already redacted, on the same persist choke point.',
+  },
   'src/provisioning/stateful-types.ts': {
     sites: 3,
     why:
@@ -291,10 +297,11 @@ describe('observedProperties write population (issue #2828)', () => {
     // comparison green. 11 across 7 files was the 2026-09-09 measurement in the
     // header; go-to-k/cdkd#2943 added one READ in `scrub.ts` — the orphan
     // record's `observedProperties` reaching the needle-learning resolve — for
-    // 12 across 8.
+    // 12 across 8; go-to-k/cdkd#4043 added the NoEcho mask over the scrubbed
+    // record, for 13 across 9.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(12);
-    expect(Object.keys(EXPECTED)).toHaveLength(8);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(13);
+    expect(Object.keys(EXPECTED)).toHaveLength(9);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

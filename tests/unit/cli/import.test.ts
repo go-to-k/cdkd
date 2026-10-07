@@ -4152,7 +4152,8 @@ describe('cdkd import', () => {
         });
         await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
         expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['Src']);
-        expect(savedResource().properties).toEqual({ BucketName: 'CHANGEME' });
+        // The bound `NoEcho` Default persists as the mask (go-to-k/cdkd#4043).
+        expect(savedResource().properties).toEqual({ BucketName: '***' });
         expect(savedResource().observedProperties).toBeUndefined();
         expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain(LIVE);
       });

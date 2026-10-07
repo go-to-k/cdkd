@@ -209,6 +209,24 @@ function replacementSidesForLog(
 }
 
 /**
+ * The `NoEcho` half of the comparison (go-to-k/cdkd#4043), injected so the
+ * analyzer layer holds no redaction rule of its own: given a resource's
+ * template bag, its resolved desired bag and its recorded bag (both after the
+ * calculator's own narrowing), return the two bags the property comparison
+ * reads. The deploy and `cdkd diff` mask the desired side where a `NoEcho`
+ * source served a leaf, exactly as the persist side writes it, and read a
+ * pre-v11 record's plaintext there as the migration witness.
+ */
+export type NoEchoCompareFn = (input: {
+  logicalId: string;
+  resourceType: string;
+  templateProperties: Record<string, unknown>;
+  desired: Record<string, unknown>;
+  current: Record<string, unknown>;
+  record: ResourceState;
+}) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined;
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -317,7 +335,13 @@ export class DiffCalculator {
      * refusals' `cdkd state show` pointer. Trusted CLI values, unlike the
      * record's own identity fields, so they ride where the identity does not.
      */
-    refusalRecovery?: LockRecoveryContext
+    refusalRecovery?: LockRecoveryContext,
+    /**
+     * go-to-k/cdkd#4043: rewrites both compared bags the way the persist side
+     * stores a `NoEcho` value (see {@link NoEchoCompareFn}). Absent compares
+     * them as resolved.
+     */
+    noEchoCompare?: NoEchoCompareFn
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -614,10 +638,25 @@ export class DiffCalculator {
           );
         }
 
+        // go-to-k/cdkd#4043: compare what the persist side WRITES. A leaf a
+        // `NoEcho` source served is `***` in state, so the desired side is
+        // masked the same way, and a pre-v11 record's stored plaintext is
+        // read as the migration witness. Supplied by the caller, which holds
+        // the template's `NoEcho` declarations and the deploy's verdicts.
+        const noEchoCompared = noEchoCompare?.({
+          logicalId,
+          resourceType: desiredResource.Type,
+          templateProperties: rawDesiredProps,
+          desired: desiredPropsForCompare,
+          current: currentPropsForCompare,
+          record: currentResource,
+        });
+        const desiredCompared = noEchoCompared?.desired ?? desiredPropsForCompare;
+        const currentCompared = noEchoCompared?.current ?? currentPropsForCompare;
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,
-          currentPropsForCompare,
-          desiredPropsForCompare,
+          currentCompared,
+          desiredCompared,
           maskForLog
         );
         // go-to-k/cdkd#4451: a property the record holds as `***` compares
@@ -642,10 +681,10 @@ export class DiffCalculator {
         }
         for (const key of moved) {
           if (reported.has(key)) continue;
-          if (!Object.hasOwn(currentPropsForCompare, key)) continue;
-          if (!Object.hasOwn(desiredPropsForCompare, key)) continue;
-          const oldValue = currentPropsForCompare[key];
-          const newValue = desiredPropsForCompare[key];
+          if (!Object.hasOwn(currentCompared, key)) continue;
+          if (!Object.hasOwn(desiredCompared, key)) continue;
+          const oldValue = currentCompared[key];
+          const newValue = desiredCompared[key];
           propertyChanges.push({
             path: key,
             oldValue,

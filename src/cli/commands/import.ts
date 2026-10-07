@@ -1971,6 +1971,23 @@ export function reimportedAttributes(
  *
  * Exported for unit testing — internal to the command flow otherwise.
  */
+/**
+ * The `noEchoAttributeNames` field a rebuilt record carries (go-to-k/cdkd#2449):
+ * each prior declared name whose attribute in `attributes` still holds the
+ * mask. Empty or absent carries nothing, so the field stays omitted.
+ */
+export function noEchoAttributeNamesCarried(
+  prior: unknown,
+  attributes: Record<string, unknown> | undefined
+): { noEchoAttributeNames?: string[] } {
+  if (!Array.isArray(prior) || attributes === undefined) return {};
+  const kept = prior.filter(
+    (name): name is string =>
+      typeof name === 'string' && hasOwnKey(attributes, name) && carriesSecretMask(attributes[name])
+  );
+  return kept.length > 0 ? { noEchoAttributeNames: kept } : {};
+}
+
 export function buildStackState(
   stackName: string,
   region: string,
@@ -2048,6 +2065,15 @@ export function buildStackState(
       // does. How it combines with the same-physical-id stored map is
       // `reimportedAttributes`' contract.
       attributes,
+      // go-to-k/cdkd#2449 (schema v11): the attribute names the producer
+      // DECLARED `NoEcho`, carried on an UNCHANGED physical id like the
+      // attributes themselves, for each name whose carried value still holds
+      // the mask. `noEchoLeaves` is NOT carried: `properties` is rebuilt from
+      // the template here, so the old coordinates do not describe it.
+      ...noEchoAttributeNamesCarried(
+        prior && prior.physicalId === row.physicalId ? prior.noEchoAttributeNames : undefined,
+        attributes
+      ),
       dependencies: deps,
       // Issue #3645: the template's policies, as `DeployEngine` records them.
       // `cdkd destroy` reads `DeletionPolicy` from STATE only, so a record

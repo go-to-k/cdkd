@@ -4954,6 +4954,7 @@
         "s3-asset-deploy",
         "s3-event-notification",
         "scheduled-task",
+        "schema-v10-to-v11-migration",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
@@ -5294,6 +5295,9 @@
           "l2"
         ],
         "scheduled-task": [
+          "l2"
+        ],
+        "schema-v10-to-v11-migration": [
           "l2"
         ],
         "sdk-ccapi-crossref": [
@@ -6183,6 +6187,7 @@
         "retain-orphan-redeploy",
         "s3-lifecycle",
         "scheduled-task",
+        "schema-v10-to-v11-migration",
         "serverless-api",
         "sns-event-source",
         "sns-inline-subscription",
@@ -6308,6 +6313,9 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "schema-v10-to-v11-migration": [
+          "l1"
         ],
         "serverless-api": [
           "l2"
@@ -6756,6 +6764,7 @@
         "rollback-nested-cross-region-secret",
         "rollback-replacement-retain",
         "s3-tables",
+        "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -7031,6 +7040,9 @@
           "literal"
         ],
         "s3-tables": [
+          "l1"
+        ],
+        "schema-v10-to-v11-migration": [
           "l1"
         ],
         "schema-v5-to-v6-migration": [

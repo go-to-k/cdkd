@@ -208,35 +208,42 @@ describe("DeployEngine - a NoEcho parameter is masked on the deploy's provider, 
   });
 });
 
-describe('DeployEngine - persistence is unchanged by NoEcho (go-to-k/cdkd#1998)', () => {
-  it('saves byte-identical state with and without NoEcho on the parameter', async () => {
-    const saved = async (noEcho: boolean): Promise<string> => {
+describe('DeployEngine - NoEcho persists as the mask (go-to-k/cdkd#4043, schema v11)', () => {
+  it('saves *** at every leaf a NoEcho parameter serves, and names each coordinate', async () => {
+    const saved = async (noEcho: boolean): Promise<StackState[]> => {
       const h = harness();
       await h.engine.deploy('s', templateOf(noEcho));
       expect(h.saveState).toHaveBeenCalled();
-      return JSON.stringify(
-        h.saveState.mock.calls.map((call) => {
-          const state = { ...(call[2] as StackState) };
-          delete (state as { lastModified?: unknown }).lastModified;
-          return state;
-        })
-      );
+      return h.saveState.mock.calls.map((call) => call[2] as StackState);
     };
     const withNoEcho = await saved(true);
     const without = await saved(false);
-    // Non-vacuity: the value, the encoding and the output value are all in
-    // the persisted state in the clear (the decision on #1998), the export
-    // alias is published, and the dynamic reference beside them is still
-    // redacted.
     const encoded = Buffer.from(`pw=${NOECHO}`).toString('base64');
-    expect(withNoEcho).toContain(`"Value":"${NOECHO}"`);
-    expect(withNoEcho).toContain(encoded);
-    expect(withNoEcho).toContain(`"Echo":"${NOECHO}"`);
-    expect(withNoEcho).toContain(`"exp-public-plain":"${NOECHO}"`);
-    expect(withNoEcho).toContain(`built for ${NOECHO}`);
-    expect(withNoEcho).toContain('{{resolve:ssm-secure:/app/pw}}');
-    expect(withNoEcho).not.toContain('dynref-secret-value');
-    expect(withNoEcho).toBe(without);
+    // Negative control: without NoEcho the value, its encoding and the output
+    // stay in the clear, so the positive half below is not vacuous.
+    const plain = JSON.stringify(without);
+    expect(plain).toContain(`"Value":"${NOECHO}"`);
+    expect(plain).toContain(encoded);
+    expect(plain).toContain(`"Echo":"${NOECHO}"`);
+    expect(plain).toContain(`built for ${NOECHO}`);
+    // With NoEcho nothing derived from the value reaches any save.
+    const masked = JSON.stringify(withNoEcho);
+    expect(masked).not.toContain(NOECHO);
+    expect(masked).not.toContain(encoded);
+    const last = withNoEcho[withNoEcho.length - 1]!;
+    expect(last.version).toBe(11);
+    const record = last.resources['R']!;
+    expect(record.properties['Value']).toBe('***');
+    expect(record.properties['Description']).toBe('***');
+    expect(record.properties['AllowedPattern']).toBe('***');
+    expect(record.noEchoLeaves).toEqual([['AllowedPattern'], ['Description'], ['Value']]);
+    expect(last.outputs['Echo']).toBe('***');
+    expect(last.outputs['exp-public-plain']).toBe('***');
+    // The dynamic reference beside them keeps its expression, as before.
+    expect(masked).toContain('{{resolve:ssm-secure:/app/pw}}');
+    expect(masked).not.toContain('dynref-secret-value');
+    // No coordinate is recorded for a template that declares no NoEcho.
+    expect(without[without.length - 1]!.resources['R']!.noEchoLeaves).toBeUndefined();
   });
 });
 

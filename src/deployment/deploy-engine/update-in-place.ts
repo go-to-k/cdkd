@@ -1184,6 +1184,15 @@ export async function updateInPlace(
       currentResource
     ),
     ...(carriedAttributes && { attributes: carriedAttributes }),
+    // go-to-k/cdkd#2449: the previous declared `NoEcho` attribute names, which
+    // the save unions with this run's declaration (an in-place update keeps
+    // the resource, and a name whose attribute still holds the mask stays
+    // declared). Not on a replacement: the new resource's create result is
+    // authoritative, as for `attributes` above.
+    ...(!result.wasReplaced &&
+      currentResource.noEchoAttributeNames !== undefined && {
+        noEchoAttributeNames: currentResource.noEchoAttributeNames,
+      }),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...this.extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,

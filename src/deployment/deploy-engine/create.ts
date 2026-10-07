@@ -96,6 +96,14 @@ export async function provisionCreate(
   if (context.recordedSecretValues) {
     this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
   }
+  // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
+  // attributes serve this resolution, read back from AWS (never persisted).
+  const noEchoOverrides = await this.noEchoAttributeOverridesFor(
+    desiredProps,
+    stateResources,
+    stackName
+  );
+  if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
   printNestedStackReadsOnly(context, resourceType);
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,

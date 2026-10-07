@@ -353,6 +353,58 @@ export function equalModuloMask(state: unknown, aws: unknown, mask: string): boo
   );
 }
 
+/**
+ * {@link equalModuloMask} for the coordinates a record's `noEchoLeaves` names
+ * (go-to-k/cdkd#4043): at a MARKED coordinate, a state side that is `mask` (or
+ * a container whose every leaf is `mask`) matches ANY present live value — a
+ * string, a number, a boolean, a list or an object — because a `NoEcho`
+ * parameter's value is persisted as the mask whatever its type. Everywhere
+ * else the comparison is {@link equalModuloMask}'s, unchanged.
+ *
+ * `coordinate` is the segment path of `state` within the record's
+ * `properties`; `isMarked` answers whether a coordinate is (inside) a marked
+ * one. Arrays are compared positionally, as the comparator compares them.
+ */
+export function equalModuloMarkedMask(
+  state: unknown,
+  aws: unknown,
+  mask: string,
+  coordinate: readonly (string | number)[],
+  isMarked: (coordinate: readonly (string | number)[]) => boolean
+): boolean {
+  const a = jsonForm(state);
+  const b = jsonForm(aws);
+  if (isMarked(coordinate) && isWhollyMask(a, mask)) return b !== undefined && b !== null;
+  if (a === mask && typeof b === 'string') return true;
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  if (typeof a !== typeof b || typeof a !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => equalModuloMarkedMask(v, b[i], mask, [...coordinate, i], isMarked));
+  }
+  const aObj = a as Record<string, unknown>;
+  const bObj = b as Record<string, unknown>;
+  const aKeys = Object.keys(aObj);
+  if (aKeys.length !== Object.keys(bObj).length) return false;
+  return aKeys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(bObj, key) &&
+      equalModuloMarkedMask(aObj[key], bObj[key], mask, [...coordinate, key], isMarked)
+  );
+}
+
+/** Is `value` the mask, or a non-empty container whose every leaf is? */
+function isWhollyMask(value: unknown, mask: string): boolean {
+  if (value === mask) return true;
+  if (Array.isArray(value)) return value.length > 0 && value.every((v) => isWhollyMask(v, mask));
+  if (isPlainObject(value)) {
+    const values = Object.values(value);
+    return values.length > 0 && values.every((v) => isWhollyMask(v, mask));
+  }
+  return false;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

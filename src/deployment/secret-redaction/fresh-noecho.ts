@@ -2,6 +2,7 @@ import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
 import {
   freshNoEchoValuesOf,
   isMaskOnlyPlaintext,
+  isNoEchoParameterPlaintext,
   type WalkedContainers,
   containmentValuesOf,
 } from './mask-only.js';
@@ -14,10 +15,20 @@ import { isOrdinaryDate } from './redact-path.js';
  * `Fn::Base64`, whose encoded result is a new plaintext that carries the
  * value's freshness along with its secrecy.
  */
-export function embedsFreshNoEchoValue(text: string, secrets: RecordedSecretValues): boolean {
+export function embedsFreshNoEchoValue(
+  text: string,
+  secrets: RecordedSecretValues,
+  freshClass?: FreshNoEchoClass
+): boolean {
   const fresh = freshNoEchoValuesOf.get(secrets);
   if (fresh === undefined) return false;
   for (const value of fresh) {
+    if (
+      freshClass !== undefined &&
+      isNoEchoParameterPlaintext(secrets, value) !== (freshClass === 'parameter')
+    ) {
+      continue;
+    }
     if (isMaskOnlyPlaintext(secrets, value) && text.includes(value)) return true;
   }
   return false;
@@ -45,8 +56,12 @@ export function embedsFreshNoEchoValue(text: string, secrets: RecordedSecretValu
  * (the resolver records that read as a redacted read), not supplied fresh in
  * this pass. Neither does a derived needle (see {@link freshNoEchoValuesOf}).
  */
-export function carriesFreshNoEchoValue(value: unknown, secrets: RecordedSecretValues): boolean {
-  const isFresh = freshNoEchoLeafTest(secrets);
+export function carriesFreshNoEchoValue(
+  value: unknown,
+  secrets: RecordedSecretValues,
+  freshClass?: FreshNoEchoClass
+): boolean {
+  const isFresh = freshNoEchoLeafTest(secrets, freshClass);
   if (isFresh === undefined) return false;
   const seen: WalkedContainers = new Set();
   const walk = (node: unknown): boolean => {
@@ -67,8 +82,21 @@ export function carriesFreshNoEchoValue(value: unknown, secrets: RecordedSecretV
  */
 export interface FreshNoEchoLeaf {
   readonly path: readonly (string | number)[];
-  readonly plaintext: string;
+  /**
+   * What AWS holds at the position when the value is unchanged. A string for
+   * a value-arm leaf; any resolved leaf for a POSITIONAL one (a `Number`, a
+   * list, a value under the needle floor; go-to-k/cdkd#4043).
+   */
+  readonly plaintext: unknown;
 }
+
+/**
+ * Which population of fresh values a question counts (go-to-k/cdkd#4043):
+ * `parameter` is a `NoEcho` template parameter's value, `other` everything
+ * else fresh (a custom resource's `NoEcho` `Data`, a recovered output).
+ * Absent counts both.
+ */
+export type FreshNoEchoClass = 'parameter' | 'other';
 
 /**
  * Where, inside `value`, the string leaves are that
@@ -88,9 +116,10 @@ export interface FreshNoEchoLeaf {
  */
 export function freshNoEchoLeafPositions(
   value: unknown,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  freshClass?: FreshNoEchoClass
 ): FreshNoEchoLeaf[] {
-  const isFresh = freshNoEchoLeafTest(secrets);
+  const isFresh = freshNoEchoLeafTest(secrets, freshClass);
   if (isFresh === undefined) return [];
   const leaves: FreshNoEchoLeaf[] = [];
   const ancestors: WalkedContainers = new Set();
@@ -125,10 +154,20 @@ export function freshNoEchoLeafPositions(
  * is not fresh (a derived `Fn::Base64` one) does not count.
  */
 function freshNoEchoLeafTest(
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  freshClass?: FreshNoEchoClass
 ): ((leaf: string) => boolean) | undefined {
-  const fresh = freshNoEchoValuesOf.get(secrets);
-  if (fresh === undefined || fresh.size === 0) return undefined;
+  const all = freshNoEchoValuesOf.get(secrets);
+  if (all === undefined || all.size === 0) return undefined;
+  const fresh =
+    freshClass === undefined
+      ? all
+      : new Set(
+          [...all].filter(
+            (value) => isNoEchoParameterPlaintext(secrets, value) === (freshClass === 'parameter')
+          )
+        );
+  if (fresh.size === 0) return undefined;
   const needles = containmentNeedlesOf(secrets).filter((needle) => fresh.has(needle));
   return (leaf) =>
     (fresh.has(leaf) && isMaskOnlyPlaintext(secrets, leaf)) ||

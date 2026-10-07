@@ -7,6 +7,7 @@ import {
   inheritedParameterExpression,
   carryFreshNoEchoMark,
   recordInheritedParameterRead,
+  recordNoEchoParameterFreshValue,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import {
@@ -185,8 +186,9 @@ export function recordInheritedParameterSecrets(
  * Every leaf a log line can spell is recorded: a string leaf, the
  * `String()` form of a number (a `Number` parameter is coerced before this
  * runs), and a list's comma-joined form, the spelling the user supplied and
- * the one `String()` renders. Log-only, so over-covering costs a masked log
- * line and nothing else. Recorded into the pass's own bag and nowhere else:
+ * the one `String()` renders. The log-only record over-covers at the cost of
+ * a masked log line; the mask-only record (go-to-k/cdkd#4043) is what
+ * persistence reads. Recorded into the pass's own bag and nowhere else:
  * a pass without one (the parameter pass's log context) has no masker to
  * feed.
  */
@@ -201,6 +203,14 @@ export function recordNoEchoParameterValue(
   // One spelling rule, shared with the deploy's diff log masker, which
   // records every `NoEcho` value up front (go-to-k/cdkd#4049).
   recordLogOnlyParameterValue(bag, value);
+  // go-to-k/cdkd#4043 (the value arm): also a FRESH mask-only needle of the
+  // pass, so everything that persists from this bag stores `***` where a
+  // leaf equals or embeds the value, and the engine knows the bag carries a
+  // value supplied in this deploy. A value under the needle floor, or a
+  // number, registers nothing here; the positional arm masks it by template
+  // position. The public tokens (region, stack name) stay out of the
+  // containment arm, as for a custom resource's echo.
+  recordNoEchoParameterFreshValue(value, bag, this.publicNoEchoTokens(context));
 }
 
 /**

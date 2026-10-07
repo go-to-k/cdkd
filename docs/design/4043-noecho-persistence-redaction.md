@@ -89,7 +89,7 @@ Not affected:
    it, in addition to the log-only needle it is today.
 2. **A second, POSITIONAL arm masks by template position.** It is not bounded
    by the value's length. It also covers number and boolean leaves.
-3. **State schema v11 adds `ResourceState.noEchoParameterLeaves`.** This is the
+3. **State schema v11 adds `ResourceState.noEchoLeaves`.** This is the
    durable record of which leaves stand for a parameter. Readers that hold no
    template need it (`cdkd drift`, `cdkd rollback`, `cdkd export`, observed
    writers). The bump also locks out older binaries, which would replace a
@@ -143,7 +143,7 @@ references `P`.
 - A scalar leaf of any type becomes `***`.
 - A list-valued leaf (`CommaDelimitedList`, `List<Number>`) becomes a list of
   `***`, one per element, so array shape survives for `equalModuloMask`.
-- The arm writes each masked coordinate into `noEchoParameterLeaves`.
+- The arm writes each masked coordinate into `noEchoLeaves`.
 - **The arm also marks each coordinate FRESH, by position.** Freshness today
   is value-keyed and string-only: `freshNoEchoValuesOf` is a
   `Set<string>` per bag (`secret-redaction.ts:830`), `FreshNoEchoLeaf.plaintext`
@@ -162,15 +162,35 @@ migration. The value arm stays the backstop for flows the template cannot
 position: an attribute a provider echoes, an observed readback, and a
 cross-stack or nested hop.
 
-### 3.2 `ResourceState.noEchoParameterLeaves` (schema v11)
+### 3.2 `ResourceState.noEchoLeaves` (schema v11)
+
+Amended in the Phase B PR (maintainer decision 2 of #4043 comment
+6032677173): ONE field covers both populations a position can name, a
+`NoEcho` parameter AND an attribute declared `NoEcho` (served by
+`Fn::GetAtt`), beside `noEchoAttributeNames` (#2449).
 
 ```typescript
 interface ResourceState {
   // ...v10 fields...
-  /** v11+: coordinates within `properties` persisted as `***` because a NoEcho template parameter served them. */
-  noEchoParameterLeaves?: (string | number)[][];
+  /** v11+: coordinates within `properties` persisted as `***` because a NoEcho
+   *  template parameter, or an attribute its producer declared NoEcho, served them. */
+  noEchoLeaves?: (string | number)[][];
+  /** v11+: this record's own `attributes` its provider DECLARED NoEcho. */
+  noEchoAttributeNames?: string[];
 }
 ```
+
+- A declared attribute positions only a leaf that IS its `Fn::GetAtt`. A leaf
+  that embeds one (`Fn::Join`, `Fn::Sub`) stays with the value arm's
+  containment rule, which spares an echoed PUBLIC value (the region, the stack
+  name) that position cannot tell apart.
+- `noEchoAttributeNames` is sourced from the DECLARATION (a custom resource's
+  whole-bag `NoEcho` names every returned attribute; a nested stack's names as
+  given; an attribute echoing a fresh `NoEcho` value), unioned with every
+  earlier name whose attribute still holds the mask. Never from "which
+  attributes hold `***`", which would drop a 1-3 character or `Number` value.
+- An empty field is omitted: an unmarked record is read through the migration
+  witness, which is exact for a v11 record with no `NoEcho` position too.
 
 - **Coordinates are segment arrays, not dotted strings.** A dotted key is legal
   in a property bag, and `pathCrossesDottedKey` (`secret-redaction.ts:5524`)
@@ -189,7 +209,7 @@ interface ResourceState {
 | Surface | Marker | Written by |
 | --- | --- | --- |
 | `properties` | `***` at every positioned leaf, plus value-arm leaves | both arms |
-| `observedProperties` | `***` at every coordinate `noEchoParameterLeaves` names, plus value-arm leaves | every observed writer (deploy capture, import, refresh-observed, drift) |
+| `observedProperties` | `***` at every coordinate `noEchoLeaves` names, plus value-arm leaves | every observed writer (deploy capture, import, refresh-observed, drift) |
 | `attributes` | value arm only | the deploy's `scrubResourceRecord` |
 | a same-stack `Fn::GetAtt` consumer's `properties` | `***` via the value arm, once the producer declares the attribute (below) | both arms |
 | `outputs` values | `***` via the outputs position source (`outputsTemplateSource`), plus the value arm | `redactOutputs` |
@@ -319,7 +339,7 @@ masked resource diffs as UPDATE forever. `cdkd diff` has the same gap
    and nothing else moved. Its gate becomes "every fresh leaf is confirmed
    held", not "a ceiling was lowered".
 4. **Migration witness.** A leaf at a position the positional arm names,
-   in a record that carries no `noEchoParameterLeaves`, and that still holds a
+   in a record that carries no `noEchoLeaves`, and that still holds a
    non-mask value, is a pre-v11 plaintext. It is the exact value last sent, so
    it is compared directly and needs no readback. The witness must sit BEFORE
    anything classifies the leaf as moved, or the migration deploy replaces a
@@ -395,7 +415,7 @@ comparator has no mask logic, and `partitionUncertifiedBaselineChanges`
 (`isUncertifiedBaselineMaskPosition`, `secret-redaction.ts:5570`). Without a
 change, every migrated stack would drift forever.
 
-- **Report.** A change at a coordinate `noEchoParameterLeaves` names, where the
+- **Report.** A change at a coordinate `noEchoLeaves` names, where the
   two sides are equal modulo the mask (`equalModuloMask`), is split into a new
   `noEchoParameter` bucket. It prints the path only. `equalModuloMask`
   accepts a mask only against a STRING live value
@@ -656,7 +676,7 @@ refuses older binaries.
 over a record that may still hold plaintext. That is `refresh-observed`,
 `drift --accept`, `orphan`, a destroy partial snapshot, or a rollback restore.
 So readers never infer redaction from `version`. They read
-`noEchoParameterLeaves`, and absence means "treat as today".
+`noEchoLeaves`, and absence means "treat as today".
 
 **Migration, per record, with no user action:**
 
@@ -666,7 +686,7 @@ So readers never infer redaction from `version`. They read
    - Readers of a `NoEcho` parameter are promoted (section 4.1).
    - Each is compared against its own recorded plaintext: the witness, so no
      readback is needed.
-   - The final save masks by both arms and writes `noEchoParameterLeaves`.
+   - The final save masks by both arms and writes `noEchoLeaves`.
    - A record this deploy did not resolve has no needles in
      `perResourceSecrets`. That covers a resource a failed deploy never
      reached, and a partial save. For that case, `redactStateForPersist`
@@ -747,9 +767,17 @@ the `noecho-parameter-masking` fixture, unit tests, and a changelog entry. The
 side-set doc comment in `src/deployment/secret-redaction.ts` moved to Phase B.
 Section 5 lists what Phase A leaves and which phase closes each item.
 
+**Phase B status.** Implemented in the Phase B PR together with #2449, with
+the amendments in section 9 ("Phase B decisions"): no create-only replacement
+on a readback, the drift report bucket pulled in, and the `Export.Name`
+positional twin and the carried-alias verdict moved to #4657. A held
+producer's declared attribute is served to its readers by a per-resolution
+side map (`ResolverContext.noEchoAttributeOverrides`). The line references in
+this page predate it.
+
 **Phase B** covers:
 
-- both arms, `noEchoParameterLeaves`, and the v11 bump and migration;
+- both arms, `noEchoLeaves`, and the v11 bump and migration;
 - the diff and `cdkd diff` promotion;
 - the generalized readback, with the maintainer decision 1 warning and the
   decision 4 info line (§9);
@@ -878,7 +906,7 @@ assertions:
 - **Flipped in Phase B.** Phase 1 asserts today that `state.json` holds the value in the
   clear. It becomes: no state blob, no object version written after the
   migration, and no exports-index version holds the token. Every positioned
-  leaf is `***`, and `noEchoParameterLeaves` names it.
+  leaf is `***`, and `noEchoLeaves` names it.
 - **Redeploy, same value.** SSM `Value` is readable, so there is no update:
   AWS's `LastModifiedDate` is unchanged across the redeploy. This fails if the
   readback is skipped, because the resource would update every deploy. The
@@ -920,6 +948,38 @@ consumer. The assertions:
   the token.
 
 ## 9. Decisions
+
+### Phase B decisions (#4043 comment 6032677173)
+
+Recorded when Phase B's direction was frozen after a security-direction
+review. Item 1 is the maintainer's; the rest are lane decisions.
+
+1. **A create-only property fed by a `NoEcho` parameter is not replaced on a
+   readback `differs`** either, only warned about on every deploy naming
+   `--recreate-via-*`, as for `not-readable`: a provider that normalizes what
+   it echoes (case-folded identifiers, reordered lists) reads `differs` on an
+   unchanged value. A `read-failed` fails the resource. A pre-v11 record's
+   witness that differs is an EXACT change and keeps the replacement. The
+   custom-resource (#3729) class keeps its own table. Restoring the
+   auto-replacement where a masked-record readback proves the provider echoes
+   exactly is follow-up #4656.
+2. One coordinate field, `noEchoLeaves` (section 3.2).
+3. `noEchoAttributeNames` comes from the declaration (section 3.2).
+4. The drift REPORT bucket (section 4.3, "Report") moved into Phase B, exit
+   code unchanged, so a release between B and C does not fail every
+   `cdkd drift --fail` on a `NoEcho` stack. `--accept` / `--revert` stay in C.
+5. The `Export.Name` positional twin and the no-change merge's carried-alias
+   verdict (section 5) moved to follow-up #4657. A value of 4 or more
+   characters is still refused wholesale through its map entry.
+6. Folded in from the review: the migration witness compares against the
+   dynamic-reference persist form (the `NoEcho` arms suppressed); the rollback
+   journal's `previousState` / `previousOutputs` take the positional arm; a
+   pre-v11 `observedProperties` baseline is masked at marked coordinates
+   through the keyed-identity array rule (the whole array on refusal);
+   `Fn::If` / `Fn::Select` position only the branch the deploy selected (the
+   diff masks the whole leaf for a verdict it does not know).
+
+### Design decisions (#4043 comments 5903984771, 5904913259)
 
 The maintainer answered the design's five open questions on #4043, each with
 the recommended default. The sections above follow them.

@@ -144,7 +144,11 @@ describe('issue #2909: Fn::Base64 over an unresolved secret reference compares a
     expect(sends.ssm.every((input) => input.WithDecryption !== true)).toBe(true);
   });
 
-  it('the diff-path line prints the mask and no encoding, beside a NoEcho value it masks', async () => {
+  it('the diff-path line prints neither the encoding nor a FRESH NoEcho value it embeds', async () => {
+    // Since go-to-k/cdkd#4043 a `NoEcho` parameter's value is a FRESH value of
+    // the pass, so the diff path returns the ENCODING here rather than the mask
+    // (the go-to-k/cdkd#3662 rule: `***` against the recorded `***` would hide a
+    // changed value). The comparison masks it by position instead.
     const noEcho = 'noecho-parameter-value';
     const ctx = {
       ...context(true),
@@ -152,16 +156,19 @@ describe('issue #2909: Fn::Base64 over an unresolved secret reference compares a
       parameters: { P: noEcho },
     };
     const property = { 'Fn::Base64': { 'Fn::Join': ['', ['K=', { Ref: 'P' }, '\nPW=', SM_REF]] } };
+    const encoded = Buffer.from(`K=${noEcho}\nPW=${SM_REF}`).toString('base64');
     expect(await new IntrinsicFunctionResolver('us-east-1').resolve(property, ctx as never)).toBe(
-      SECRET_MASK
+      encoded
     );
     const lines = debugSpy.mock.calls
       .map((c) => String(c[0]))
       .filter((l) => l.startsWith('Resolved Fn::Base64: '));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain(`resolved to ${SECRET_MASK} (an unresolved secret reference`);
+    // Positive: the line rendered a masked result, so the negatives cannot
+    // pass on an absent line.
+    expect(lines[0]).toContain(`resolved to ${SECRET_MASK}`);
     expect(lines[0]).not.toContain(noEcho);
-    expect(lines[0]).not.toContain(Buffer.from(`K=${noEcho}\nPW=${SM_REF}`).toString('base64'));
+    expect(lines[0]).not.toContain(encoded);
   });
 
   it('a Base64 input both sides resolve alike keeps its real encoding on the diff path', async () => {

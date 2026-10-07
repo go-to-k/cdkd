@@ -23,6 +23,10 @@ function fakeEngine() {
     options: { captureObservedState: true },
     observedCaptureTasks: new Map<string, Promise<unknown>>(),
     logger: getLogger().child('DeployEngine'),
+    // go-to-k/cdkd#4043 (review M6): the failure line also masks with the
+    // resource's derived-name bag and the stack's NoEcho values.
+    printingSecretsFor: () => undefined,
+    fingerprintNoEchoValues: undefined,
   };
 }
 
@@ -89,6 +93,22 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
   it('binds nothing when the caller passes no bag (the schema-upgrade refresh)', async () => {
     await capture('log');
     expect(printed()).toContain(`Reading queue ${SECRET}`);
+  });
+
+  it("masks the bagless refresh's failure line with the stack's NoEcho values (go-to-k/cdkd#4043 review M6)", async () => {
+    const engine = { ...fakeEngine(), fingerprintNoEchoValues: bag(SECRET) };
+    kickOffObservedCapture.call(
+      engine as never,
+      providerReading('reject'),
+      'Queue',
+      SECRET,
+      'AWS::SQS::Queue',
+      { QueueName: SECRET },
+      { afterOwnWrite: true }
+    );
+    await engine.observedCaptureTasks.get('Queue');
+    expect(printed()).toContain('observedProperties capture for Queue');
+    expect(printed()).not.toContain(SECRET);
   });
 });
 

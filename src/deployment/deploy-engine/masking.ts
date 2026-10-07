@@ -11,8 +11,13 @@ import {
 import { displayIdent, isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
 import { commandHole, pasteableCommand, shellQuote } from '../../utils/pasteable-command.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import type { FreshNoEchoReadback } from '../deploy-value-equality.js';
+import { type FreshNoEchoReadback, keyOrderFreeJson } from '../deploy-value-equality.js';
 import {
+  SECRET_MASK,
+  freshNoEchoValuesOf,
+  isMaskOnlyPlaintext as isMaskOnlyPlaintextOf,
+  noEchoCoordinatesOf,
+  valueAtCoordinate,
   type RecordedSecretValues,
   type SecretMasker,
   TEMPLATE_SOURCED_RULES,
@@ -313,7 +318,10 @@ export function redactOutputs(
   // First, and before the empty-bag return: a late recording (issue #2814)
   // may be the only needle there is.
   this.absorbOutputsPassSecrets();
-  if (this.outputSecrets.size === 0) return outputs;
+  // go-to-k/cdkd#4043: the positional `NoEcho` arm runs on every call, after
+  // the dynamic-reference redaction, so an output a `NoEcho` parameter served
+  // persists `***` whatever its type or length.
+  if (this.outputSecrets.size === 0) return this.maskOutputsByPosition(outputs);
   // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
   // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
   // the only flag the two differ on, and it claims "this bag was PRODUCED by
@@ -344,11 +352,13 @@ export function redactOutputs(
   // sibling `cdkd scrub` outputs call still passes the default and records
   // the inertness measurement for its own bag; converging the two is issue
   // [#2099](https://github.com/go-to-k/cdkd/issues/2099).
-  return redactSecretsForState(
-    outputs,
-    this.outputSecrets,
-    this.outputsSourceUsable ? this.outputsTemplateSource : undefined,
-    TEMPLATE_SOURCED_RULES
+  return this.maskOutputsByPosition(
+    redactSecretsForState(
+      outputs,
+      this.outputSecrets,
+      this.outputsSourceUsable ? this.outputsTemplateSource : undefined,
+      TEMPLATE_SOURCED_RULES
+    )
   );
 }
 
@@ -430,7 +440,57 @@ export function registerNoEchoAttributes(
   // rollback executor's record rebuilds call too, go-to-k/cdkd#4434); what is
   // the ENGINE's alone is remembering the declaration for dependents.
   const declared = recordNoEchoAttributeValues(result, secrets, ownProperties);
-  if (declared !== undefined) this.noEchoAttributeResources.set(logicalId, declared);
+  // go-to-k/cdkd#4043 §3.3: an attribute that ECHOES a `NoEcho` value this
+  // resource was given (`AWS::SSM::Parameter`'s `Value`) is declared too, so a
+  // same-stack `Fn::GetAtt` reader masks it and its record persists `***`
+  // there whatever the value's type or length.
+  const echoed = echoedNoEchoAttributes(this, logicalId, result.attributes, secrets, ownProperties);
+  if (declared === true) {
+    this.noEchoAttributeResources.set(logicalId, true);
+  } else if (declared !== undefined || echoed.size > 0) {
+    this.noEchoAttributeResources.set(logicalId, new Set([...(declared ?? []), ...echoed]));
+  }
+}
+
+/**
+ * The attributes of a provider result that hold a `NoEcho` value the resource
+ * itself was given in this deploy: a leaf equal to, or embedding, a fresh
+ * needle of its bag, or equal to the resolved leaf at one of its `NoEcho`
+ * PARAMETER positions (a `Number`, a value under the needle floor).
+ */
+function echoedNoEchoAttributes(
+  engine: DeployEngine,
+  logicalId: string,
+  attributes: Record<string, unknown> | undefined,
+  secrets: RecordedSecretValues,
+  ownProperties: Record<string, unknown> | undefined
+): Set<string> {
+  const echoed = new Set<string>();
+  if (attributes === undefined) return echoed;
+  const fresh = [...(freshNoEchoValuesOf.get(secrets) ?? [])].filter((value) =>
+    isMaskOnlyPlaintextOf(secrets, value)
+  );
+  const templateProps = engine.perResourceTemplateProps.get(logicalId);
+  const sources = engine.noEchoPositionSources();
+  const positioned =
+    templateProps === undefined || ownProperties === undefined || sources === undefined
+      ? []
+      : noEchoCoordinatesOf(templateProps, ownProperties, {
+          parameters: sources.parameters,
+          ...(sources.conditions !== undefined && { conditions: sources.conditions }),
+        }).map((coordinate) => keyOrderFreeJson(valueAtCoordinate(ownProperties, coordinate)));
+  const holds = (value: unknown): boolean => {
+    if (value === undefined || value === null) return false;
+    if (typeof value === 'string') {
+      if (value === SECRET_MASK) return false;
+      if (fresh.some((needle) => value === needle || value.includes(needle))) return true;
+    }
+    return positioned.includes(keyOrderFreeJson(value));
+  };
+  for (const [name, value] of Object.entries(attributes)) {
+    if (holds(value)) echoed.add(name);
+  }
+  return echoed;
 }
 
 /**
@@ -549,6 +609,26 @@ export function refuseRedactedAttributeReads(
   // repeats. Deliberately: dropping the mask would make the read resolve to
   // the physical id instead. The import warns naming each kept key (issue
   // [#2927](https://github.com/go-to-k/cdkd/issues/2927)).
+  // go-to-k/cdkd#2449: every read names an attribute its producer DECLARED
+  // `NoEcho` (schema v11's `noEchoAttributeNames`), so the cause is known and
+  // only its remedy applies. Still a refusal: cdkd never re-runs the producer
+  // (maintainer decision on #2449).
+  if (reads.every((read) => read.kind === 'attribute' && read.declaredNoEcho === true)) {
+    const producers = [
+      ...new Set(reads.map((read) => read.logicalId).filter((id): id is string => !!id)),
+    ];
+    throw new ProvisioningError(
+      `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: ` +
+        `${producers.map((id) => displayIdent(id)).join(', ')} declared ${reads.length === 1 ? 'that attribute' : 'those attributes'} NoEcho, ` +
+        `so cdkd's recorded state holds only the redaction mask for ${reads.length === 1 ? 'it' : 'them'}, ` +
+        `and cdkd does not re-run a producer to recover a value. Remedy: deploy a change to the ` +
+        `producer in the SAME run as ${logicalId} (for a custom resource, change one of its ` +
+        `properties, e.g. a nonce / version property, so its handler runs again and supplies the ` +
+        `value), or stop declaring the value NoEcho.`,
+      resourceType,
+      logicalId
+    );
+  }
   throw new ProvisioningError(
     `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
       `redaction mask there, and the value is not recoverable from state. There are three ways a ` +
