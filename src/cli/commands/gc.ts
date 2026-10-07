@@ -733,10 +733,21 @@ async function scanReferencedAssets(
             ...accountArgs(recovery),
           ]).command
         : undefined;
+      // Profile and bucket holes take the shared sentence ("the value you passed
+      // this run"); a PREFIX hole cannot, since this command takes no
+      // `--state-prefix`: its value is part of the KEY (go-to-k/cdkd#4648 review).
       const accountClause =
         inspectHint === undefined
           ? ''
-          : withheldAccountClause(recovery, 'the command below prints').trimEnd();
+          : [
+              withheldAccountClause(
+                { ...recovery, statePrefix: undefined },
+                'the command below prints'
+              ).trimEnd(),
+              keyPrefixHoleSentence(recovery.statePrefix),
+            ]
+              .filter((part) => part !== '')
+              .join(' ');
       // The KEY is an S3 key too, so it is sanitised on its own account — it is
       // named here whether or not a command could be offered.
       const inspect =
@@ -1680,4 +1691,29 @@ export function createGcCommand(): Command {
 function keyPrefixOf(key: string, stack: string, region: string | undefined): string | undefined {
   const tail = `/${stack}${region === undefined ? '' : `/${region}`}/${STATE_FILE_SUFFIX.replace(/^\//, '')}`;
   return key.endsWith(tail) ? key.slice(0, -tail.length) : undefined;
+}
+
+/**
+ * The sentence for a key-derived prefix the shared gate printed as a hole, or
+ * `''` when it named it (or there is none). Says where the value comes from:
+ * the printed KEY, since `cdkd gc` has no `--state-prefix` to repeat.
+ */
+function keyPrefixHoleSentence(prefix: string | undefined): string {
+  const withheld = pasteableCommand('cdkd', accountArgs({ statePrefix: prefix })).withheld;
+  const reason = withheld.find((w) => w.hole === 'prefix')?.reason;
+  if (reason === undefined) return '';
+  const why =
+    reason === 'option-shaped'
+      ? `begins with a '-'`
+      : reason === 'altered'
+        ? 'does not render exactly'
+        : reason === 'too-long'
+          ? 'is too long to print'
+          : `has a '/'-separated part that is not a plain identifier`;
+  return (
+    `The state prefix of the key above ${why}, so the command below prints '<prefix>' in its ` +
+    `place: replace it whole, quotes included, with that prefix shell-quoted -- the part of ` +
+    `the key before '/<stack>/<region>/state.json' ('/<stack>/state.json' for a legacy key), ` +
+    `since 'cdkd gc' takes no --state-prefix.`
+  );
 }

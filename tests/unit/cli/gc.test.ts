@@ -792,6 +792,27 @@ describe('cdkd gc', () => {
       expect(reason).toBeLessThan(message.indexOf('Inspect it with:'));
     });
 
+    it('a holed KEY prefix says to take it from the key, not from a flag (go-to-k/cdkd#4648 review)', async () => {
+      const message = await messageFor('MyStack', 'regional', { keyPrefix: 'pfx zq' });
+      expect(message).toMatch(/^Inspect it with: .* --state-prefix '<prefix>'$/m);
+      expect(message).toContain(
+        "The state prefix of the key above has a '/'-separated part that is not a plain identifier"
+      );
+      expect(message).toContain("since 'cdkd gc' takes no --state-prefix");
+      // Not the shared sentence: there is no `--state-prefix` value "you passed".
+      expect(message).not.toContain("The '--state-prefix' value this run was given");
+      expect(message).not.toContain('the shell-quoted value you passed this run');
+      expect(message.indexOf('The state prefix of the key above')).toBeLessThan(
+        message.indexOf('Inspect it with:')
+      );
+    });
+
+    it('a holed --profile keeps the shared sentence, and no prefix sentence (go-to-k/cdkd#4648 review)', async () => {
+      const message = await messageFor('MyStack', 'regional', { profile: 'my profile' });
+      expect(message).toContain('the shell-quoted value you passed this run');
+      expect(message).not.toContain('The state prefix of the key above');
+    });
+
     it('takes the region-less arm for a legacy key, both polarities', async () => {
       const ok = await messageFor('MyStack', 'legacy');
       expect(ok).toMatch(/^Inspect it with: cdkd state show MyStack --state-bucket cdkd-state-123456789012$/m);
