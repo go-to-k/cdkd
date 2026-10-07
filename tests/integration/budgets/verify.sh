@@ -65,6 +65,7 @@ STACK="CdkdBudgetsExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 BUDGET_NAME="cdkd-budgets-integ-budget"
+QUEUE_NAME="cdkd-budgets-drift-sibling"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -78,7 +79,14 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
+  rm -f "${DRIFT_OUT:-}"
   aws budgets delete-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" >/dev/null 2>&1 || true
+  local qurl
+  qurl=$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
+    --query 'QueueUrl' --output text 2>/dev/null)
+  if [ -n "${qurl}" ] && [ "${qurl}" != "None" ]; then
+    aws sqs delete-queue --queue-url "${qurl}" --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -207,6 +215,61 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    budget routed via SDK provider (provisionedBy=sdk)"
 
+# --- Phase 2b: drift over a type with NO Cloud Control READ handler --------
+# Issues go-to-k/cdkd#2151 / go-to-k/cdkd#2154, moved here from the
+# cloudwatch-anomaly-detector fixture once AWS gave that type Cloud Control
+# handlers (go-to-k/cdkd#4668). `AWS::Budgets::Budget` is NON_PROVISIONABLE in
+# the CloudFormation registry and its SDK provider implements no
+# `readCurrentState`, so drift takes the Cloud Control fallback, which has no
+# READ handler to call. Beside it sits an SQS queue drift CAN compare. Before
+# #2151 that fallback's throw escaped the command with exit 1 and no report.
+echo "==> Phase 2b: drift completes despite a resource with no Cloud Control READ handler"
+# Removed by `cleanup`: a second `trap ... EXIT` would REPLACE the teardown.
+DRIFT_OUT="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+DRIFT_RC=$?
+set -e
+cat "${DRIFT_OUT}"
+
+# 1. The command produced a per-resource report for the budget.
+if ! grep -q '? CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift printed no drift-unknown line for CostBudget (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: CostBudget reported as drift unknown rather than aborting the run"
+
+# 2. The sibling was compared. The FULL parenthetical: a bare
+#    `1 resource checked` is a substring of #2154's `0 of 1 resource checked`.
+if ! grep -qF '(1 resource checked, 1 unsupported)' "${DRIFT_OUT}"; then
+  echo "FAIL: the SQS sibling was not compared -- expected '(1 resource checked, 1 unsupported)' (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: the sibling SQS queue was still compared"
+
+# 3. Exit 0: a type with no READ handler is permanent, not actionable.
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a type with no READ handler is not an actionable failure (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: exit 0"
+
+# 4. Not misreported as the actionable read-failure cause.
+if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
+  echo "FAIL: CostBudget was reported as a read FAILURE; a type with no READ handler must report drift unknown (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: classified as drift unknown, not as a read failure"
+
+# 5. go-to-k/cdkd#2154's negative control: something WAS compared.
+if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
+  echo "FAIL: the stack warned 'NOTHING was compared' although the queue was compared (go-to-k/cdkd#2154)" >&2
+  exit 1
+fi
+echo "    OK: the glyph is kept for a stack where something WAS compared"
+
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -214,6 +277,9 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "budget ${BUDGET_NAME} still exists after destroy" aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}"
 echo "    budget deleted from AWS"
+
+assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
+echo "    drift sibling queue deleted from AWS"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    state file removed"

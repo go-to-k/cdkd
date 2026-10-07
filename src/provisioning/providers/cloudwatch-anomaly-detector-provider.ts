@@ -34,6 +34,14 @@ import {
 } from '../redacted-delete-address.js';
 
 /**
+ * The registry schema's read-only primaryIdentifier, under both of its names:
+ * `AnomalyDetectorId` (current schema) and `Id` (the earlier one, still what
+ * an aws-cdk-lib `attrId` emits). Both are cdkd's deterministic physical id
+ * (issue #4668).
+ */
+const ID_ATTRIBUTES = ['AnomalyDetectorId', 'Id'] as const;
+
+/**
  * AWS CloudWatch AnomalyDetector Provider (issue #1304)
  *
  * Implements resource provisioning for AWS::CloudWatch::AnomalyDetector using
@@ -44,8 +52,10 @@ import {
  * API mapping: `PutAnomalyDetector` is an UPSERT keyed by the metric
  * descriptor (the single-metric tuple or the metric-math query set), and
  * `DeleteAnomalyDetector` takes the same descriptor. There is no
- * server-generated identifier; the registry schema's read-only `Id`
- * primaryIdentifier has no Cloud Control handler to mint it. cdkd therefore
+ * server-generated identifier in the API cdkd calls; the registry schema's
+ * read-only `AnomalyDetectorId` (formerly `Id`) primaryIdentifier is minted
+ * only by the Cloud Control handlers, which cdkd does not use for this type
+ * (`cdkd drift` deny-lists its CC read for that reason, #4668). cdkd therefore
  * derives a DETERMINISTIC physical id from the descriptor (see
  * {@link derivePhysicalId}) — every descriptor field is createOnly in the
  * registry schema, so the id is stable across in-place updates
@@ -118,9 +128,9 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
 
       return {
         physicalId,
-        // The registry schema's read-only `Id` primaryIdentifier — expose it
-        // so `Fn::GetAtt [<detector>, Id]` resolves from cached attributes.
-        attributes: { Id: physicalId },
+        // Expose the read-only primaryIdentifier so `Fn::GetAtt` resolves
+        // from cached attributes under either name.
+        attributes: { AnomalyDetectorId: physicalId, Id: physicalId },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -174,7 +184,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: { Id: physicalId },
+        attributes: { AnomalyDetectorId: physicalId, Id: physicalId },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -271,18 +281,19 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
 
   /**
    * Resolve a `Fn::GetAtt` attribute. The registry schema exposes a single
-   * read-only attribute, `Id` — cdkd's deterministic physical id.
+   * read-only attribute, `AnomalyDetectorId` (formerly `Id`) — cdkd's
+   * deterministic physical id.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await -- Id is derived locally; no AWS call needed
+  // eslint-disable-next-line @typescript-eslint/require-await -- the id is derived locally; no AWS call needed
   async getAttribute(
     physicalId: string,
     resourceType: string,
     attributeName: string,
     logicalId: string
   ): Promise<unknown> {
-    if (attributeName === 'Id') return physicalId;
+    if ((ID_ATTRIBUTES as readonly string[]).includes(attributeName)) return physicalId;
     throw new ProvisioningError(
-      `Unknown attribute ${attributeName} for ${resourceType} (only 'Id' is defined)`,
+      `Unknown attribute ${attributeName} for ${resourceType} (only 'AnomalyDetectorId' and 'Id' are defined)`,
       resourceType,
       logicalId,
       physicalId
@@ -301,7 +312,10 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+      return {
+        physicalId: input.knownPhysicalId,
+        attributes: { AnomalyDetectorId: input.knownPhysicalId, Id: input.knownPhysicalId },
+      };
     }
     return null;
   }

@@ -1454,6 +1454,7 @@
     {
       "flag": "--strict-getatt",
       "integs": [
+        "cloudwatch-anomaly-detector",
         "getatt-fallback-guard",
         "sns-subscription-update"
       ]

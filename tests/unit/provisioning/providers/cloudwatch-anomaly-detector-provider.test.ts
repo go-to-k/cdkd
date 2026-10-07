@@ -69,6 +69,7 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
 
       expect(result.physicalId).toBe('AWS/SQS:NumberOfMessagesSent:Sum:QueueName=my-queue');
       expect(result.attributes).toEqual({
+        AnomalyDetectorId: 'AWS/SQS:NumberOfMessagesSent:Sum:QueueName=my-queue',
         Id: 'AWS/SQS:NumberOfMessagesSent:Sum:QueueName=my-queue',
       });
     });
@@ -252,7 +253,10 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       expect(putInput()['Configuration']).toEqual({ MetricTimezone: 'UTC' });
       expect(result.wasReplaced).toBe(false);
       expect(result.physicalId).toBe('AWS/SQS:NumberOfMessagesSent:Sum');
-      expect(result.attributes).toEqual({ Id: 'AWS/SQS:NumberOfMessagesSent:Sum' });
+      expect(result.attributes).toEqual({
+        AnomalyDetectorId: 'AWS/SQS:NumberOfMessagesSent:Sum',
+        Id: 'AWS/SQS:NumberOfMessagesSent:Sum',
+      });
     });
 
     it('wraps AWS errors in ProvisioningError', async () => {
@@ -355,6 +359,14 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    // The current schema's name for the same primaryIdentifier (go-to-k/cdkd#4668).
+    it('resolves AnomalyDetectorId to the physical id without an AWS call', async () => {
+      await expect(
+        provider.getAttribute('the-id', TYPE, 'AnomalyDetectorId', 'Detector')
+      ).resolves.toBe('the-id');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('rejects unknown attributes', async () => {
       await expect(provider.getAttribute('the-id', TYPE, 'Arn', 'Detector')).rejects.toThrow(
         'Unknown attribute Arn'
@@ -377,7 +389,10 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
         region: 'us-east-1',
         knownPhysicalId: 'NS:M:Sum',
       });
-      expect(result).toEqual({ physicalId: 'NS:M:Sum', attributes: { Id: 'NS:M:Sum' } });
+      expect(result).toEqual({
+        physicalId: 'NS:M:Sum',
+        attributes: { AnomalyDetectorId: 'NS:M:Sum', Id: 'NS:M:Sum' },
+      });
       expect(mockSend).not.toHaveBeenCalled();
     });
 

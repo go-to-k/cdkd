@@ -2,9 +2,9 @@
 # verify.sh — cdkd AWS::CloudWatch::AnomalyDetector SDK provider integ test
 # (issue #1304).
 #
-# The type is NON_PROVISIONABLE in the CloudFormation registry (no Cloud
-# Control handlers) — before the SDK provider, cdkd's pre-flight rejected any
-# template declaring it. This test proves the full lifecycle against real AWS:
+# The type was NON_PROVISIONABLE in the CloudFormation registry when the SDK
+# provider was written (AWS has since added Cloud Control handlers; cdkd keeps
+# the SDK route, #4668). This test proves the full lifecycle against real AWS:
 #
 #   Phase 1 (create): deploy an SQS queue + an anomaly detection model on its
 #     NumberOfMessagesSent metric; assert DescribeAnomalyDetectors returns it.
@@ -131,6 +131,7 @@ echo "==> Phase 1: deploy (queue + single-metric anomaly detector)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --strict-getatt \
   --yes
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
@@ -155,6 +156,14 @@ if [ -z "${PHYS_ID_1}" ] || [ "${OUTPUT_ID}" != "${PHYS_ID_1}" ]; then
   exit 1
 fi
 echo "    OK: GetAtt Id output resolves to the physical id (${PHYS_ID_1})"
+# The current schema renamed the attribute to AnomalyDetectorId (#4668): it must
+# resolve from the cached attributes too, to the same value.
+OUTPUT_ADID=$(printf '%s' "${STATE}" | python3 -c "import json,sys; s=json.load(sys.stdin); print(s['outputs'].get('AnomalyDetectorId',''))")
+if [ "${OUTPUT_ADID}" != "${PHYS_ID_1}" ]; then
+  echo "FAIL: GetAtt AnomalyDetectorId output (${OUTPUT_ADID}) does not match the detector physical id (${PHYS_ID_1})" >&2
+  exit 1
+fi
+echo "    OK: GetAtt AnomalyDetectorId output resolves to the physical id (${PHYS_ID_1})"
 
 # --- Phase 2: update (add Configuration — the only mutable property) -------
 # NOTE: the Describe output field is `MetricTimezone` (lowercase z, the SDK /
@@ -165,6 +174,7 @@ echo "==> Phase 2: update (add Configuration: MetricTimeZone + ExcludedTimeRange
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --strict-getatt \
   --yes
 
 CONFIG_SET=$(aws cloudwatch describe-anomaly-detectors \
@@ -186,33 +196,21 @@ if [ "${PHYS_ID_2}" != "${PHYS_ID_1}" ]; then
 fi
 echo "    OK: physical id stable across the in-place update"
 
-# --- Phase 2b: drift over a type with NO Cloud Control READ handler --------
-# Issues go-to-k/cdkd#2151 / go-to-k/cdkd#1945 / go-to-k/cdkd#2154. THIS fixture
-# is where go-to-k/cdkd#2151 was measured live on 2026-08-21, and it is the
-# shape the defect needs: `AWS::CloudWatch::AnomalyDetector` is NON_PROVISIONABLE
-# in the CloudFormation registry -- which is the whole reason it has an SDK
-# provider -- and that provider implements no `readCurrentState`, so drift takes
-# the Cloud Control fallback, which THROWS `UnsupportedActionException`. Beside
-# it sits an ordinary SQS queue drift CAN compare. Before the fix that throw
-# propagated out of the loop and out of the command:
+# --- Phase 2b: drift over a deny-listed Cloud Control fallback ------------
+# go-to-k/cdkd#4668: AWS gave `AWS::CloudWatch::AnomalyDetector` Cloud Control
+# handlers, but the SDK provider (no `readCurrentState`) records a metric
+# descriptor as the physicalId, which Cloud Control's `GetResource` refuses with
+# a ValidationException. Drift deny-lists the type off its Cloud Control
+# fallback, so the row reports drift unknown and the run exits 0; without the
+# entry every run reported a read failure and exited 2 (measured live
+# 2026-10-07). Beside it sits an SQS queue drift CAN compare.
 #
-#     UnsupportedActionException: Resource type AWS::CloudWatch::AnomalyDetector
-#     does not support READ action
-#     $ echo $?  -> 1
-#
-# No summary line, no per-resource report, and the queue never looked at -- while
-# exiting the SAME code that means "drift detected".
-#
-# EVERY assertion below is NEW rather than inherited: this fixture had no drift
-# phase at all, so none of it could pass before the change. Each is a POSITIVE
-# marker only the fixed path emits, not a "the bad thing did not happen"
-# negative that any early failure would also satisfy.
-echo "==> Phase 2b: drift completes despite a resource with no Cloud Control READ handler"
-# NOT given its own `trap ... EXIT`: line 103 already installs `trap cleanup
-# EXIT`, and bash REPLACES a signal's handler rather than chaining, so a second
-# one here would silently disarm the AWS teardown on every failure path -- a
-# scratch-file leak traded for orphaned billable resources. The file is removed
-# by `cleanup` instead, which runs on all of EXIT / INT / TERM.
+# The go-to-k/cdkd#2151 arm this phase used to carry (a fallback that THROWS for
+# a type with no READ handler) now lives in the `budgets` fixture.
+echo "==> Phase 2b: drift reports the deny-listed detector as drift unknown"
+# NOT given its own `trap ... EXIT`: bash REPLACES a signal's handler rather
+# than chaining, so a second one would disarm the AWS teardown. The file is
+# removed by `cleanup` instead.
 DRIFT_OUT="$(mktemp)"
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" \
@@ -222,10 +220,9 @@ DRIFT_RC=$?
 set -e
 cat "${DRIFT_OUT}"
 
-# 1. THE discriminator: the command produced a report at all. Pre-fix the throw
-#    escaped and this line could not exist.
+# 1. The detector is reported as drift unknown.
 if ! grep -q '? Detector (AWS::CloudWatch::AnomalyDetector)' "${DRIFT_OUT}"; then
-  echo "FAIL: drift printed no per-resource line for Detector -- the run aborted instead of reporting (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: drift printed no drift-unknown line for Detector (go-to-k/cdkd#4668)" >&2
   exit 1
 fi
 echo "    OK: Detector reported rather than aborting the run"
@@ -239,35 +236,29 @@ echo "    OK: Detector reported rather than aborting the run"
 # the loose spelling passed on exactly the output that means nothing was
 # compared -- the opposite of what this assertion is for.
 if ! grep -qF '(1 resource checked, 1 unsupported)' "${DRIFT_OUT}"; then
-  echo "FAIL: the ordinary SQS queue was not compared -- expected '(1 resource checked, 1 unsupported)' (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: the ordinary SQS queue was not compared -- expected '(1 resource checked, 1 unsupported)' (go-to-k/cdkd#4668)" >&2
   exit 1
 fi
 echo "    OK: the sibling SQS queue was still compared"
 
-# 3. EXIT 0, not 2. The taxonomy call: a type with no READ handler is permanent
-#    by construction, so routing it to the actionable bucket would fail this
-#    stack's CI forever. Asserted as an exact code, not "non-zero" -- the whole
-#    complaint in go-to-k/cdkd#2151 was that 1 (drift) and "compared nothing"
-#    were indistinguishable.
+# 3. EXIT 0, not 2: the descriptor can never address Cloud Control, so a
+#    read failure here would fail this stack's CI forever.
 if [ "${DRIFT_RC}" -ne 0 ]; then
-  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a type with no READ handler is not an actionable failure (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a deny-listed type is not an actionable failure (go-to-k/cdkd#4668)" >&2
   exit 1
 fi
 echo "    OK: exit 0 (no-read-path is reported, not charged to the exit code)"
 
-# 4. ...and it is NOT misreported as the actionable cause. Without this, an
-#    implementation that routed every throw to `readFailed` would still satisfy
-#    1 and 2 above, and only the exit code would have caught it -- one assertion
-#    deep for a taxonomy decision this whole change turns on.
+# 4. ...and NOT reported as a read failure -- the exact output this fixture
+#    measured before the deny-list entry.
 if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
-  echo "FAIL: Detector was reported as a read FAILURE; a type with no READ handler must report drift unknown (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: Detector was reported as a read FAILURE; a deny-listed type must report drift unknown (go-to-k/cdkd#4668)" >&2
   exit 1
 fi
 echo "    OK: classified as drift unknown, not as a read failure"
 
 # 5. go-to-k/cdkd#2154: something WAS compared here, so the reassuring glyph is
-#    correct on this stack. The NEGATIVE CONTROL for that change -- a glyph rule
-#    that warned unconditionally would satisfy every #2151 assertion above.
+#    correct on this stack (negative control for the glyph rule).
 if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
   echo "FAIL: the stack warned 'NOTHING was compared' although the queue was compared (go-to-k/cdkd#2154)" >&2
   exit 1

@@ -6310,6 +6310,7 @@
         "basic",
         "bench-cdk-sample",
         "bench-sdk",
+        "budgets",
         "cc-getatt-readback",
         "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
@@ -6376,6 +6377,9 @@
           "l2"
         ],
         "bench-sdk": [
+          "l2"
+        ],
+        "budgets": [
           "l2"
         ],
         "cc-getatt-readback": [
