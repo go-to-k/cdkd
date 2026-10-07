@@ -25,9 +25,12 @@ import {
 } from '../../deployment/nested-child-journal.js';
 import { runDestroyForStack } from '../../cli/commands/destroy-runner.js';
 import {
+  accountArgs,
   refuseMalformedNestedChildOutputs,
   refuseMalformedResourcesForDestroy,
+  withheldAccountClause,
 } from '../../state/malformed-resources-bag.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import {
   withNestedStackContext,
   getCurrentNestedStackContext,
@@ -544,11 +547,12 @@ export class NestedStackProvider implements ResourceProvider {
     // Same helper, so the child's refusal reads identically to a top-level
     // one — and the same account flags the child's runner is handed below, so
     // its pasteable commands read the bucket this run read (go-to-k/cdkd#3909).
-    refuseMalformedResourcesForDestroy(childStateData.state, childStackName, childRegion, {
-      profile: ctx.destroyOptions?.profile,
-      stateBucket: ctx.stateBucket,
-      statePrefix: ctx.destroyOptions?.statePrefix,
-    });
+    refuseMalformedResourcesForDestroy(
+      childStateData.state,
+      childStackName,
+      childRegion,
+      runAccountOf(ctx)
+    );
     const resourceCount = Object.keys(childStateData.state.resources).length;
     this.logger.info(
       `Destroying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
@@ -708,8 +712,13 @@ export class NestedStackProvider implements ResourceProvider {
     //    while the child state survived). The marker is what those guards
     //    read, so it closes that hole without touching them.
     if (childResult.errorCount > 0) {
+      // The run's account flags (go-to-k/cdkd#4648), so the pasted command
+      // reads the child record in the bucket this destroy read.
+      const account = runAccountOf(ctx);
+      const accountClause = withheldAccountClause(account, 'the command below prints').trimEnd();
       const inspect = pasteableCommand('cdkd state show', [
         { value: childStackName, hole: 'stack', opts: { plainIdent: true } },
+        ...accountArgs(account),
       ]);
       const failure = new Error(
         nestedStackChildFailureMessage(
@@ -723,7 +732,8 @@ export class NestedStackProvider implements ResourceProvider {
           childResult.skippedCount,
           childResult.interrupted,
           inspect.command,
-          withheldTargetClause(inspect, 'stack', 'cdkd state show', "The child stack's name")
+          withheldTargetClause(inspect, 'stack', 'cdkd state show', "The child stack's name") +
+            (accountClause === '' ? '' : ` ${accountClause}`)
         )
       );
       throw markNonRetryable(failure);
@@ -984,7 +994,13 @@ export class NestedStackProvider implements ResourceProvider {
     // what it returns is written by its CALLER, so repairing would put a
     // well-formed fabricated attribute set into the parent's record with
     // nothing left to say the child was damaged.
-    refuseMalformedNestedChildOutputs(childStateData.state, childStackName, childRegion);
+    refuseMalformedNestedChildOutputs(
+      childStateData.state,
+      childStackName,
+      childRegion,
+      // The run's account flags (go-to-k/cdkd#4159), as the delete path's.
+      runAccountOf(ctx)
+    );
     const attributes = this.buildOutputsAttributes(childStateData.state.outputs ?? {});
     const noEchoAttributeNames: string[] = [];
     // The identity the child was deployed with, which is this process's
@@ -1379,4 +1395,18 @@ export class NestedStackProvider implements ResourceProvider {
     }
     return attributes;
   }
+}
+
+/**
+ * The run's account (`--profile`, the RESOLVED bucket, `--state-prefix`) as the
+ * provider context carries it, for every pasteable command a nested child's
+ * message prints: the deploy and destroy paths set `stateBucket` and
+ * `destroyOptions` alike (go-to-k/cdkd#3909, #4159, #4648).
+ */
+function runAccountOf(ctx: NestedStackProviderContext): LockRecoveryContext {
+  return {
+    profile: ctx.destroyOptions?.profile,
+    stateBucket: ctx.stateBucket,
+    statePrefix: ctx.destroyOptions?.statePrefix,
+  };
 }

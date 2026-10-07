@@ -4039,7 +4039,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       derefIndex,
       `${file} no longer contains \`${derefAt}\`; this fence's anchor is stale.`
     ).toBeGreaterThan(-1);
-    const refusalAt = src.indexOf('refuseMalformedResourcesForDestroy(childStateData.state');
+    // Whitespace-tolerant: a formatter may break the argument list.
+    const refusalAt = src.search(/refuseMalformedResourcesForDestroy\(\s*childStateData\.state/);
     expect(
       refusalAt,
       `${file} refuses AFTER counting the child's bag, so the count this guard exists to ` +

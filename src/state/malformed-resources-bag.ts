@@ -622,11 +622,12 @@ function withheldListingPointer(recovery: LockRecoveryContext | undefined): {
  * `Drop the record: ...` would print, quoted, where a terminal wrap starts a
  * visual line with it. A refused value prints as a quoted hole and is
  * DESCRIBED by {@link withheldAccountClause}, never echoed. Every command in
- * this module qualifies through it, the `cdkd orphan` refusals' included;
- * `recoveryCommandFlags` stays with `cdkd force-unlock`'s hint, which suppresses
- * its whole command instead.
+ * this module qualifies through it, the `cdkd orphan` refusals' included, and
+ * so do the state commands other modules print (go-to-k/cdkd#4648), exported
+ * for them with that clause; `recoveryCommandFlags` stays with
+ * `cdkd force-unlock`'s hint, which suppresses its whole command instead.
  */
-function accountArgs(recovery: LockRecoveryContext | undefined): CommandArg[] {
+export function accountArgs(recovery: LockRecoveryContext | undefined): CommandArg[] {
   if (recovery === undefined) return [];
   const args: CommandArg[] = [];
   if (recovery.profile) {
@@ -687,7 +688,10 @@ const ACCOUNT_FLAG_BY_HOLE: Readonly<Record<string, string>> = {
  * Takes the context rather than the gate's verdicts so a held prefix's reason
  * can say whether it is about a `/`-separated part ({@link prefixGate}).
  */
-function withheldAccountClause(recovery: LockRecoveryContext | undefined, where: string): string {
+export function withheldAccountClause(
+  recovery: LockRecoveryContext | undefined,
+  where: string
+): string {
   const slashPrefix = recovery?.statePrefix?.includes('/') === true;
   const parts = withheldAccountValues(recovery)
     .filter((w) => ACCOUNT_FLAG_BY_HOLE[w.hole] !== undefined)

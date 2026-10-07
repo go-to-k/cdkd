@@ -850,7 +850,7 @@ describe('the two confirmation prompts describe a non-plain name or region (go-t
       const all = `${out}\n${logged}`;
 
       expect(all.match(/Destroy with:/g) ?? []).toHaveLength(1);
-      expect(out).toContain('\nDestroy with: cdkd destroy Decoy\n');
+      expect(out).toContain('\nDestroy with: cdkd destroy Decoy --state-bucket test-bucket\n');
       expect(all).not.toContain('--all --force');
       if (answer === 'y') {
         expect(logged).toContain('✓ Removed state for stack: Decoy (a region that is not a plain identifier)');

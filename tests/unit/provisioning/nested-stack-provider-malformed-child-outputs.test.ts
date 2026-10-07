@@ -77,7 +77,10 @@ function templatePath(): string {
   return file;
 }
 
-function makeContext(state: StackState): NestedStackProviderContext {
+function makeContext(
+  state: StackState,
+  extra: Partial<NestedStackProviderContext> = {}
+): NestedStackProviderContext {
   return {
     stateBackend: {
       getState: vi.fn(async () => ({ state, etag: 'e' })),
@@ -93,12 +96,16 @@ function makeContext(state: StackState): NestedStackProviderContext {
     diffCalculator: {} as NestedStackProviderContext['diffCalculator'],
     options: { concurrency: 1 },
     nestedTemplates: { Child: templatePath() },
+    ...extra,
   };
 }
 
-const create = async (state: StackState): Promise<{ attributes: Record<string, unknown> }> => {
+const create = async (
+  state: StackState,
+  extra: Partial<NestedStackProviderContext> = {}
+): Promise<{ attributes: Record<string, unknown> }> => {
   const provider = new NestedStackProvider();
-  return (await withNestedStackContext(makeContext(state), () =>
+  return (await withNestedStackContext(makeContext(state, extra), () =>
     provider.create('Child', 'AWS::CloudFormation::Stack', {
       TemplateURL: 'https://example.com/child.json',
     })
@@ -158,5 +165,27 @@ describe("NestedStackProvider refuses a child's malformed outputs (go-to-k/cdkd#
   it('accepts an ABSENT bag — a record cdkd writes on purpose', async () => {
     const result = await create(childState(undefined, { omitOutputs: true }));
     expect(result.attributes).toEqual({});
+  });
+});
+
+describe("the child-outputs refusal carries the run's account flags (go-to-k/cdkd#4159)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  const refusal = (extra: Partial<NestedStackProviderContext>): Promise<string> =>
+    create(childState('abcdef'), extra).then(
+      () => '',
+      (e: unknown) => (e as Error).message
+    );
+  const SHOW = `cdkd state show 'Parent~Child' --stack-region ${REGION} --json`;
+
+  it('--profile, the bucket and the prefix ride on the inspect command', async () => {
+    const message = await refusal({ destroyOptions: { profile: 'prod', statePrefix: 'team-a' } });
+    expect(message).toContain(`${SHOW} --profile prod --state-bucket cdkd-state-test --state-prefix team-a`);
+  });
+
+  it('CONTROL: with no profile and the default prefix, only the bucket rides', async () => {
+    const message = await refusal({ destroyOptions: { statePrefix: 'cdkd' } });
+    expect(message).toContain(`${SHOW} --state-bucket cdkd-state-test`);
+    expect(message).not.toContain('--profile');
+    expect(message).not.toContain('--state-prefix');
   });
 });

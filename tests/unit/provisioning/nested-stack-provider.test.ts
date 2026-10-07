@@ -896,6 +896,35 @@ describe('NestedStackProvider', () => {
       ).rejects.toThrow(/Nested stack Parent~Child failed to destroy/);
     });
 
+    // go-to-k/cdkd#4648: the child-failure inspect line carries the run's
+    // account flags, from the provider context's bucket and destroy options.
+    it('the child-failure inspect line carries --profile, the bucket and the prefix (go-to-k/cdkd#4648)', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 0, errorCount: 1 };
+      const provider = new NestedStackProvider();
+      const failure = (ctx: NestedStackProviderContext): Promise<string> =>
+        withNestedStackContext(ctx, () =>
+          provider
+            .delete(
+              'Child',
+              'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+              'AWS::CloudFormation::Stack'
+            )
+            .then(
+              () => '',
+              (e: unknown) => (e as Error).message
+            )
+        );
+      expect(
+        await failure(makeContext({ destroyOptions: { profile: 'prod', statePrefix: 'team-a' } }))
+      ).toMatch(
+        /^Inspect it with: cdkd state show 'Parent~Child' --profile prod --state-bucket cdkd-state-test --state-prefix team-a$/m
+      );
+      const holed = await failure(makeContext({ destroyOptions: { profile: 'my profile' } }));
+      expect(holed).toMatch(/^Inspect it with: .* --profile '<profile>' --state-bucket cdkd-state-test$/m);
+      expect(holed).not.toContain('my profile');
+      expect(holed).toContain("The '--profile' value this run was given is not a plain identifier");
+    });
+
     it('the throw names the child stack, the failure COUNT and the child state remedy', async () => {
       childCounts.value = { deletedCount: 1, skippedCount: 0, errorCount: 3 };
       const provider = new NestedStackProvider();
@@ -922,7 +951,7 @@ describe('NestedStackProvider', () => {
       expect(msg).toContain('3 resource(s) failed to delete');
       // The whole labelled line (go-to-k/cdkd#3436): the command left the
       // sentence's quotes, which is the shape that pastes as shell.
-      expect(msg).toMatch(/^Inspect it with: cdkd state show 'Parent~Child'$/m);
+      expect(msg).toMatch(/^Inspect it with: cdkd state show 'Parent~Child' --state-bucket cdkd-state-test$/m);
       // BOTH callers' catch blocks treat an already-deleted-shaped message as
       // an idempotent SUCCESS and drop the state row — the exact outcome this
       // throw exists to prevent. The two sets are not identical, so pin their
@@ -1255,7 +1284,7 @@ describe('NestedStackProvider', () => {
         );
         expect(err.message).not.toContain('--all --force');
         expect(err.message.split('\n').filter((l) => l.startsWith('Inspect it with:'))).toEqual([
-          "Inspect it with: cdkd state show '<stack>'",
+          "Inspect it with: cdkd state show '<stack>' --state-bucket cdkd-state-test",
         ]);
         // The hole is explained, BEFORE the labelled line.
         const clause = err.message.indexOf("The child stack's name is not a plain identifier");
@@ -1266,7 +1295,7 @@ describe('NestedStackProvider', () => {
         const plain = (await deleteAndCatch('PlainSub')) as Error;
         expect(plain.message).not.toContain("The child stack's name");
         expect(plain.message).toContain('Nested stack Parent~PlainSub failed to destroy');
-        expect(plain.message).toMatch(/^Inspect it with: cdkd state show 'Parent~PlainSub'$/m);
+        expect(plain.message).toMatch(/^Inspect it with: cdkd state show 'Parent~PlainSub' --state-bucket cdkd-state-test$/m);
       });
 
       // go-to-k/cdkd#1889: the NON-interrupted arm is marked too. No caller

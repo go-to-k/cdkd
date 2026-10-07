@@ -394,6 +394,37 @@ describe('cdkd state orphan --resource', () => {
       return state;
     }
 
+    // go-to-k/cdkd#4648: the child drop carries the run's account flags.
+    it('the child drop carries --profile, the resolved bucket and the prefix (go-to-k/cdkd#4648)', async () => {
+      mockGetState.mockImplementation(async () => ({ state: stateWithNested(), etag: 'e' }));
+      mockListStacks.mockResolvedValue([
+        { stackName: 'App', region: 'us-east-1' },
+        { stackName: 'App~Child', region: 'us-east-1' },
+      ]);
+      await expect(
+        run([
+          'orphan', 'App', '--resource', 'Child', '-y', '--profile', 'prod', '--state-prefix', 'team-a',
+        ])
+      ).rejects.toThrow();
+      expect(errors()).toMatch(
+        /Drop the child with: cdkd state orphan 'App~Child' --stack-region us-east-1 --profile prod --state-bucket test-bucket --state-prefix team-a$/m
+      );
+    });
+
+    it('a refused --profile is a described hole on the child drop (go-to-k/cdkd#4648)', async () => {
+      mockGetState.mockImplementation(async () => ({ state: stateWithNested(), etag: 'e' }));
+      mockListStacks.mockResolvedValue([
+        { stackName: 'App', region: 'us-east-1' },
+        { stackName: 'App~Child', region: 'us-east-1' },
+      ]);
+      await expect(
+        run(['orphan', 'App', '--resource', 'Child', '-y', '--profile', 'my profile'])
+      ).rejects.toThrow();
+      expect(errors()).toMatch(/Drop the child with: .* --profile '<profile>' --state-bucket test-bucket$/m);
+      expect(errors()).not.toContain('my profile');
+      expect(errors()).toContain("The '--profile' value this run was given is not a plain identifier");
+    });
+
     it("refuses while the child's own state record exists, naming the command that drops it", async () => {
       mockGetState.mockImplementation(async () => ({ state: stateWithNested(), etag: 'e' }));
       mockListStacks.mockResolvedValue([
@@ -405,7 +436,7 @@ describe('cdkd state orphan --resource', () => {
 
       expect(errors()).toMatch(/Child has a nested stack's state record of its own/);
       expect(errors()).toMatch(
-        /Drop the child with: cdkd state orphan 'App~Child' --stack-region us-east-1$/m
+        /Drop the child with: cdkd state orphan 'App~Child' --stack-region us-east-1 --state-bucket test-bucket$/m
       );
       expect(errors()).not.toMatch(/other region/);
       expect(mockSaveState).not.toHaveBeenCalled();
@@ -437,7 +468,7 @@ describe('cdkd state orphan --resource', () => {
       await expect(run(['orphan', 'App', '--resource', 'Child', '-y'])).rejects.toThrow();
 
       expect(errors()).toMatch(
-        /Drop the child with: cdkd state orphan 'App~Child' --stack-region eu-west-1$/m
+        /Drop the child with: cdkd state orphan 'App~Child' --stack-region eu-west-1 --state-bucket test-bucket$/m
       );
       expect(mockSaveState).not.toHaveBeenCalled();
     });
@@ -454,7 +485,7 @@ describe('cdkd state orphan --resource', () => {
 
       expect(errors()).toMatch(/also has records in 1 other region\(s\)/);
       expect(errors()).toMatch(
-        /Drop the child with: cdkd state orphan 'App~Child' --stack-region eu-west-1$/m
+        /Drop the child with: cdkd state orphan 'App~Child' --stack-region eu-west-1 --state-bucket test-bucket$/m
       );
     });
 
@@ -469,7 +500,7 @@ describe('cdkd state orphan --resource', () => {
       await expect(run(['orphan', 'App', '--resource', 'Child', '-y'])).rejects.toThrow();
 
       expect(errors()).toMatch(
-        /Drop the child with: cdkd state orphan 'App~Child' --stack-region us-east-1$/m
+        /Drop the child with: cdkd state orphan 'App~Child' --stack-region us-east-1 --state-bucket test-bucket$/m
       );
     });
 
@@ -482,7 +513,7 @@ describe('cdkd state orphan --resource', () => {
 
       await expect(run(['orphan', 'App', '--resource', 'Child', '-y'])).rejects.toThrow();
 
-      expect(errors()).toMatch(/Drop the child with: cdkd state orphan 'App~Child'$/m);
+      expect(errors()).toMatch(/Drop the child with: cdkd state orphan 'App~Child' --state-bucket test-bucket$/m);
       expect(mockSaveState).not.toHaveBeenCalled();
     });
 

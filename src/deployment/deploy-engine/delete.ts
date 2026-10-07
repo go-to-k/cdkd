@@ -9,7 +9,11 @@ import {
   type ResourceState,
   shouldRetainResource,
 } from '../../types/state.js';
-import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
+import {
+  accountArgs,
+  hasAddressablePhysicalId,
+  withheldAccountClause,
+} from '../../state/malformed-resources-bag.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
@@ -92,17 +96,27 @@ export async function provisionDelete(
     renderer.removeTask(logicalId);
     const skipLine = formatResourceLine('skipped', logicalId, resourceType, `skipped (${reason})`);
     this.logger.info(safeMsg`${skipPrefix}${skipLine}`);
+    // The run's account flags ride on both commands (go-to-k/cdkd#4648), so a
+    // pasted drop removes the record in the bucket this deploy read.
+    const recovery = this.options.refusalRecovery;
+    const account = accountArgs(recovery);
     const showCommand = pasteableCommand('cdkd state show', [
       { value: stackName, hole: 'stack', opts: { plainIdent: true } },
       { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+      ...account,
     ]).command;
     const dropCommand = pasteableCommand('cdkd state orphan', [
       { value: stackName, hole: 'stack', opts: { plainIdent: true } },
       { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
       { flag: '--resource', value: logicalId, hole: 'logicalId', opts: { plainIdent: true } },
+      ...account,
     ]).command;
+    const accountClause = withheldAccountClause(
+      recovery,
+      'the command lines below print'
+    ).trimEnd();
     this.logger.warn(
-      safeMsg`Resource ${displaySafe(logicalId)} (${displaySafe(resourceType)}) has no non-empty string 'physicalId' in its state record, so cdkd cannot address it in AWS and did not try to delete it while removing it from the template. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the delete. Repair the record's 'physicalId', or delete the resource by hand and drop the record.
+      safeMsg`Resource ${displaySafe(logicalId)} (${displaySafe(resourceType)}) has no non-empty string 'physicalId' in its state record, so cdkd cannot address it in AWS and did not try to delete it while removing it from the template. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the delete. Repair the record's 'physicalId', or delete the resource by hand and drop the record.${accountClause === '' ? '' : ` ${accountClause}`}
 Inspect it with: ${showCommand}
 Drop the record with: ${dropCommand}`
     );
@@ -249,6 +263,12 @@ Drop the record with: ${dropCommand}`
     // it. An interrupted child destroy is resumed by re-running the deploy;
     // advising to drop its record first would untrack resources mid-teardown.
     const interrupted = nested && deleteSkipped.endsWith(' was interrupted');
+    const recovery = this.options.refusalRecovery;
+    const account = accountArgs(recovery);
+    const accountClause = withheldAccountClause(
+      recovery,
+      'the command lines below print'
+    ).trimEnd();
     // The hole names WHOSE record it is, so a withheld child name is not
     // filled in with the parent's (the deployed stack this run named).
     const stackArg = {
@@ -288,10 +308,13 @@ Drop the record with: ${dropCommand}`
         // rule), so an operator repairing one region would silently
         // orphan the resources another region's record points at. M2 of
         // the go-to-k/cdkd#3499 review.
+        // The run's account flags ride on both commands (go-to-k/cdkd#4648).
+        (accountClause === '' ? '' : ` ${accountClause}`) +
         `\nInspect it with: ${
           pasteableCommand('cdkd state show', [
             stackArg,
             { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+            ...account,
           ]).command
         }` +
         `\nDrop the record with: ${
@@ -309,6 +332,7 @@ Drop the record with: ${dropCommand}`
                     opts: { plainIdent: true },
                   },
                 ]),
+            ...account,
           ]).command
         }`
     );

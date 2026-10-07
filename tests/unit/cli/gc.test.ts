@@ -657,15 +657,20 @@ describe('cdkd gc', () => {
   describe('the corrupt-state hint never pastes an attacker-chosen name', () => {
     const corruptBody = 'not json at all';
 
-    async function messageFor(stackSegment: string, layout: 'regional' | 'legacy' = 'regional') {
+    async function messageFor(
+      stackSegment: string,
+      layout: 'regional' | 'legacy' = 'regional',
+      opts: { keyPrefix?: string; profile?: string } = {}
+    ) {
+      const keyPrefix = opts.keyPrefix ?? 'cdkd';
       // `legacy` is the region-less `{prefix}/{stack}/state.json` shape, which
       // takes the OTHER arm of the hint (`cdkd state show <stack>`, no
       // `--stack-region`). Without it that arm is exercised only by this
       // file's hand-written copy of the logic, never through `runGc`.
       const key =
         layout === 'legacy'
-          ? `cdkd/${stackSegment}/state.json`
-          : `cdkd/${stackSegment}/${REGION}/state.json`;
+          ? `${keyPrefix}/${stackSegment}/state.json`
+          : `${keyPrefix}/${stackSegment}/${REGION}/state.json`;
       stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
         if (prefix === '') return [MARKER_KEY, key];
         return [];
@@ -678,7 +683,10 @@ describe('cdkd gc', () => {
         return null;
       });
       try {
-        await runGc(['--yes']);
+        // Two literal calls, not a spread: the operand-count fence reads literal
+        // argv arrays (`commander-parse-from-user-convention.test.ts`).
+        if (opts.profile === undefined) await runGc(['--yes']);
+        else await runGc(['--yes', '--profile', opts.profile]);
       } catch (error) {
         return (error as Error).message;
       }
@@ -711,7 +719,9 @@ describe('cdkd gc', () => {
       const message = await messageFor('MyStack');
       // On a LABELLED LINE of its own since go-to-k/cdkd#3436's fold-in, not
       // inside the sentence's `'...'`. The sentence points at it instead.
-      expect(message).toMatch(/^Inspect it with: cdkd state show MyStack --stack-region \S+$/m);
+      expect(message).toMatch(
+        /^Inspect it with: cdkd state show MyStack --stack-region \S+ --state-bucket cdkd-state-123456789012$/m
+      );
       expect(message).toContain('see the command below');
       expect(message).not.toMatch(/not safe to paste/);
       // Nothing runnable left in prose. This message also carries an
@@ -748,9 +758,43 @@ describe('cdkd gc', () => {
       });
     }, 120_000);
 
+    // go-to-k/cdkd#4648: the command carries the run's `--profile`, the bucket
+    // the scan read, and the prefix the record was FOUND under -- `cdkd gc`
+    // takes no `--state-prefix` and lists the whole bucket, so the key is the
+    // only source of the record's prefix.
+    it('carries --profile, the bucket and the KEY\'s prefix (go-to-k/cdkd#4648)', async () => {
+      const message = await messageFor('MyStack', 'regional', {
+        keyPrefix: 'team-a',
+        profile: 'prod',
+      });
+      expect(message).toMatch(
+        new RegExp(
+          `^Inspect it with: cdkd state show MyStack --stack-region ${REGION} --profile prod ` +
+            '--state-bucket cdkd-state-123456789012 --state-prefix team-a$',
+          'm'
+        )
+      );
+    });
+
+    it('a slash prefix rides, and the default prefix is omitted (go-to-k/cdkd#4648)', async () => {
+      expect(await messageFor('MyStack', 'legacy', { keyPrefix: 'org/dev' })).toMatch(
+        /^Inspect it with: cdkd state show MyStack --state-bucket cdkd-state-123456789012 --state-prefix org\/dev$/m
+      );
+      expect(await messageFor('MyStack', 'legacy')).not.toContain('--state-prefix');
+    });
+
+    it('a refused --profile is a described hole, never echoed (go-to-k/cdkd#4648)', async () => {
+      const message = await messageFor('MyStack', 'regional', { profile: 'my profile' });
+      expect(message).toMatch(/^Inspect it with: .* --profile '<profile>' --state-bucket cdkd-state-123456789012$/m);
+      expect(message).not.toContain('my profile');
+      const reason = message.indexOf("The '--profile' value this run was given is not a plain identifier");
+      expect(reason).toBeGreaterThan(-1);
+      expect(reason).toBeLessThan(message.indexOf('Inspect it with:'));
+    });
+
     it('takes the region-less arm for a legacy key, both polarities', async () => {
       const ok = await messageFor('MyStack', 'legacy');
-      expect(ok).toMatch(/^Inspect it with: cdkd state show MyStack$/m);
+      expect(ok).toMatch(/^Inspect it with: cdkd state show MyStack --state-bucket cdkd-state-123456789012$/m);
       expect(ok, 'a legacy key carries no region to name').not.toMatch(/--stack-region/);
       const hostile = await messageFor('$(whoami)', 'legacy');
       expect(hostile).not.toMatch(/cdkd state show/);

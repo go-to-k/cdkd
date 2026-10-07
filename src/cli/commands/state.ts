@@ -52,6 +52,7 @@ import {
   UNREPRODUCIBLE_LOCK_CLAUSE,
 } from '../../state/lock-contention-message.js';
 import {
+  accountArgs,
   hasReadableResources,
   isReadableBag,
   malformedRenderedContainersWarning,
@@ -65,6 +66,7 @@ import {
   refuseMalformedState,
   repairMalformedResourcesForReadOnly,
   type RenderedStateContainer,
+  withheldAccountClause,
 } from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
@@ -2392,9 +2394,21 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
         // `plainIdent` for the same reason as the legacy refusals in this file
         // (go-to-k/cdkd#3696): a labelled `Destroy with:` line names a target
         // only when it is a plain identifier, and a hole says why.
+        // The run's account flags (go-to-k/cdkd#4648), so the pasted destroy
+        // acts on the bucket this command read.
+        const bannerAccount = {
+          profile: options.profile,
+          stateBucket: setup.bucket,
+          statePrefix: options.statePrefix,
+        };
         const destroyCmd = pasteableCommand('cdkd destroy', [
           { value: stackName, hole: 'stack', opts: { patternMatched: true, plainIdent: true } },
+          ...accountArgs(bannerAccount),
         ]);
+        const bannerAccountClause = withheldAccountClause(
+          bannerAccount,
+          'the command below prints'
+        ).trimEnd();
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.` +
@@ -2404,6 +2418,7 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
             `\n` +
             `Delete the actual resources instead with the command below.` +
             withheldTargetClause(destroyCmd, 'stack', 'cdkd destroy') +
+            (bannerAccountClause === '' ? '' : ` ${bannerAccountClause}`) +
             `\nDestroy with: ${destroyCmd.command}\n\n`
         );
         const ok = await confirmStateOrphanRemoval(
@@ -2596,7 +2611,11 @@ async function stateOrphanResources(
                 },
               ]
             : []),
+          // The run's account flags (go-to-k/cdkd#4648): the drop removes the
+          // child record in the bucket this run read.
+          ...accountArgs(recovery),
         ]);
+        const accountClause = withheldAccountClause(recovery, 'the command below prints').trimEnd();
         throw new Error(
           `${capitalize(plainOrDescribed(id, 'logical id'))} has a nested stack's state record ` +
             `of its own. The child's resources are recorded there, and removing this row would ` +
@@ -2608,6 +2627,7 @@ async function stateOrphanResources(
               ? ` The child also has records in ${otherRegions} other region(s); ` +
                 `'cdkd state list' shows them, and each needs the same drop.`
               : '') +
+            (accountClause === '' ? '' : ` ${accountClause}`) +
             `\nDrop the child with: ${childCommand.command}`
         );
       }

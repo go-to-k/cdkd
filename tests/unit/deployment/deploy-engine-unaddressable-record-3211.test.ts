@@ -367,6 +367,60 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
       expect(Object.keys(state)).toEqual([]);
       expect(counts.deleteSkipped).toBe(0);
     });
+
+    // go-to-k/cdkd#4648: both delete-skip warnings print their `cdkd state show`
+    // and `cdkd state orphan` lines with the engine's account flags, so a pasted
+    // drop removes the record in the bucket this deploy read.
+    const RECOVERY = { profile: 'prod', stateBucket: 'my-bucket', statePrefix: 'team-a' };
+    const FLAGS = '--profile prod --state-bucket my-bucket --state-prefix team-a';
+    const commandLines = (): string[] =>
+      warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .join('\n')
+        .split('\n')
+        .filter((l) => l.startsWith('Inspect it with:') || l.startsWith('Drop the record with:'));
+    const skipWarning = async (
+      skipShape: 'unaddressable' | 'provider-skip',
+      extra: { refusalRecovery?: LockRecoveryContext }
+    ): Promise<string[]> => {
+      warnSpy.mockClear();
+      if (skipShape === 'provider-skip') {
+        (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+          outcome: 'skipped',
+          reason: 'test skip',
+        });
+      }
+      await provision(
+        makeEngine(extra),
+        deleteChange(),
+        record(skipShape === 'unaddressable' ? '' : 'phys-1'),
+        { Resources: {} },
+        freshCounts()
+      );
+      return commandLines();
+    };
+    for (const shape of ['unaddressable', 'provider-skip'] as const) {
+      it(`${shape}: both command lines carry the engine's account flags (go-to-k/cdkd#4648)`, async () => {
+        const lines = await skipWarning(shape, { refusalRecovery: RECOVERY });
+        expect(lines).toHaveLength(2);
+        for (const line of lines) expect(line.endsWith(FLAGS), line).toBe(true);
+      });
+
+      it(`${shape}: CONTROL — no context, no account flag`, async () => {
+        const lines = await skipWarning(shape, {});
+        expect(lines).toHaveLength(2);
+        for (const line of lines) expect(line).not.toContain('--state-bucket');
+      });
+
+      it(`${shape}: a refused account value is a described hole, never echoed`, async () => {
+        warnSpy.mockClear();
+        const lines = await skipWarning(shape, { refusalRecovery: { profile: 'my profile' } });
+        for (const line of lines) expect(line.endsWith(`--profile '<profile>'`), line).toBe(true);
+        const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(text).not.toContain('my profile');
+        expect(text).toContain("The '--profile' value this run was given is not a plain identifier");
+      });
+    }
   });
 
   describe('UPDATE', () => {
