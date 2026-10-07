@@ -6,6 +6,7 @@ import {
   carryLogOnlyValuesCarriedBy,
   inheritedParameterExpression,
   carryFreshNoEchoMark,
+  recordInheritedParameterRead,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import {
@@ -109,7 +110,11 @@ declare module '../intrinsic-function-resolver.js' {
  * stretch of other text the value scan would rewrite, a recorded plaintext
  * the final re-scan still finds or one crossing a placeholder's edge, and a
  * leaf with no usable record that the template parse cannot align. There
- * the order-dependent disagreement with the diff side remains.
+ * the order-dependent disagreement with the diff side remains. A leaf spelled
+ * exactly `{Ref: <Param>}` no longer reads the slot either (issue
+ * [#2349](https://github.com/go-to-k/cdkd/issues/2349)): the persist walk
+ * answers it from the PARENT bag through the function the diff side binds,
+ * for the parameters {@link recordInheritedParameterRead} names here.
  *
  * Substituting is deliberately NOT done here — the resolved value is what
  * reaches AWS, and an `Fn::Equals` over a parameter must compare the real
@@ -160,6 +165,10 @@ export function recordInheritedParameterSecrets(
     // is what says so rather than leaving it to the argument passed above.
     const own = inheritedParameterExpression(inherited, parameterName, plaintext);
     recorded.set(plaintext, typeof own === 'string' ? own : expression);
+    // Issue #2349: the persist walk answers a `{Ref: <Param>}` leaf of THIS
+    // resource from the parent bag, as the diff side does, and only for a
+    // parameter recorded here -- the #2087 scope this loop already applies.
+    recordInheritedParameterRead(recorded, inherited, parameterName);
     // go-to-k/cdkd#3717: a `NoEcho` value the parent supplied in THIS deploy
     // stays fresh in the child resource's bag, or its no-change skip reads
     // the new value's `***` as equal to the recorded `***`.

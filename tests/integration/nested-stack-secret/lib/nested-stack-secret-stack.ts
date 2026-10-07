@@ -85,6 +85,15 @@ import { Construct } from 'constructs';
  *    `Fn::If` selecting an `Fn::Sub` over it. Each is positioned from the spans
  *    the RESOLVER recorded while substituting the parameter. Its own JSON key
  *    (`spans`); the two resources have a bag each, so they do not collide.
+ *  - `FallthroughPair` (child) — THE #2349 ARM. `Description` is
+ *    `{Ref: FallConnA}`, a connection string the parent built around TWO
+ *    tokens (so no association can certify it), and `Value` is
+ *    `{Ref: FallSecretB}`, a whole token of the SAME password. The parent
+ *    resolves `FallSecretB` first, so the password's survivor is
+ *    `FallConnA`'s spelling; the child resolves `Value` last, so the
+ *    resource's slot holds `FallSecretB`'s. The persist walk scanned that
+ *    slot while the diff side scanned the parent's bag: a perpetual UPDATE.
+ *    Its own JSON keys (`fall`, `falluser`).
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -159,6 +168,7 @@ class SecretBearingChild extends cdk.NestedStack {
       handoffMixedParamName: string;
       handoffSpansParamName: string;
       handoffSpansIfParamName: string;
+      fallthroughParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -214,6 +224,11 @@ class SecretBearingChild extends cdk.NestedStack {
     spanA.overrideLogicalId('SpanSecretA');
     const spanB = new cdk.CfnParameter(this, 'SpanSecretB', { type: 'String' });
     spanB.overrideLogicalId('SpanSecretB');
+    // THE #2349 ARM's two inputs, on their OWN JSON keys.
+    const fallConn = new cdk.CfnParameter(this, 'FallConnA', { type: 'String' });
+    fallConn.overrideLogicalId('FallConnA');
+    const fallSecret = new cdk.CfnParameter(this, 'FallSecretB', { type: 'String' });
+    fallSecret.overrideLogicalId('FallSecretB');
 
     // THE #2327 ARM's two inputs. The SAME two-references-one-plaintext shape as
     // the pair above, declared `CommaDelimitedList` -- which
@@ -412,6 +427,17 @@ class SecretBearingChild extends cdk.NestedStack {
       }),
     });
     ((handoffMixed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffMixed');
+
+    // THE #2349 ARM. Both leaves are bare `{Ref}`s, so neither the #2320 nor
+    // the #4446 arm applies. `Description` must resolve FIRST (CDK renders SSM
+    // properties alphabetically), so the slot holds `FallSecretB`'s expression
+    // while the parent's survivor is `FallConnA`'s -- the order that diverged.
+    const fallthroughPair = new ssm.StringParameter(this, 'FallthroughPair', {
+      parameterName: names.fallthroughParamName,
+      stringValue: fallSecret.valueAsString,
+      description: fallConn.valueAsString,
+    });
+    ((fallthroughPair.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('FallthroughPair');
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
     // parse refuses, so only the resolver's recorded parameter spans can
@@ -748,6 +774,12 @@ export class NestedStackSecretStack extends cdk.Stack {
     // one. Kept in sync with verify.sh's secret JSON.
     const spanReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:spans::}}`;
     const spanReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:spans:AWSCURRENT:}}`;
+    // THE #2349 PAIR, on its OWN JSON key (`fall`), plus a `falluser` key for
+    // the connection string's second token. Kept in sync with verify.sh's
+    // secret JSON.
+    const fallReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:fall::}}`;
+    const fallReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:fall:AWSCURRENT:}}`;
+    const fallUserReference = `{{resolve:secretsmanager:${secretName}:SecretString:falluser::}}`;
     // THE #2327 PAIR. Same two-spellings-one-value trick, on a FOURTH JSON key
     // so its plaintext is its own -- sharing any of `stage` / `shared` /
     // `handoff` would drag that arm's only-leaf premise into this collapse.
@@ -803,6 +835,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         handoffMixedParamName: `cdkd-nested-child-handoffmixed-${account}`,
         handoffSpansParamName: `cdkd-nested-child-handoffspans-${account}`,
         handoffSpansIfParamName: `cdkd-nested-child-handoffspansif-${account}`,
+        fallthroughParamName: `cdkd-nested-child-fallthrough-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,
@@ -840,6 +873,10 @@ export class NestedStackSecretStack extends cdk.Stack {
           // The #4446 pair. TWO parameters, ONE resolved plaintext.
           SpanSecretA: spanReferenceA,
           SpanSecretB: spanReferenceB,
+          // The #2349 pair. `FallSecretB` FIRST, so the parent resolves
+          // `FallConnA`'s password token last and it is the survivor.
+          FallSecretB: fallReferenceB,
+          FallConnA: `postgres://${fallUserReference}:${fallReferenceA}@host`,
           // The #2327 pair. TWO LIST-typed parameters, ONE resolved plaintext.
           ListSecretA: listReferenceA,
           ListSecretB: listReferenceB,

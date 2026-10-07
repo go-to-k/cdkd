@@ -29,9 +29,10 @@ import {
   UNKNOWN_PART_PLACEHOLDER,
   singleSpanFrame,
 } from './positions.js';
-import { dynamicReferenceSpans } from './redact-path.js';
+import { dynamicReferenceSpans, deepEqualJsonValue } from './redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './anchors.js';
 import { wholeStringLeavesOf } from './mask-only.js';
+import { substringNeedlesOf } from './fresh-noecho.js';
 
 /**
  * The `AWS::CloudFormation::Stack` type string, named once because the recorder
@@ -1008,4 +1009,185 @@ export function inheritedParameterExpression(
   }
 
   return certifiedExpressionForLeaf(parentSecrets, association, resolvedValue);
+}
+
+/**
+ * The parameters a nested-stack CHILD resource's resolution READ while their
+ * value carried an inherited secret, and the PARENT bag that value was
+ * checked against, keyed by the child resource's own bag (issue
+ * [#2349](https://github.com/go-to-k/cdkd/issues/2349)).
+ *
+ * A `WeakMap` keyed by the pass's bag, for the reason
+ * {@link nestedStackParameterExpressions} gives: the parent bag holds
+ * PLAINTEXT and must not outlive the pass. `POISONED_PARAMETER_READS` marks a
+ * child bag that was handed TWO different parent bags; no engine does that
+ * (one child engine has one `inheritedSecrets`), and the reader refuses it
+ * rather than choose.
+ */
+const inheritedParameterReads = new WeakMap<
+  RecordedSecretValues,
+  { readonly parent: RecordedSecretValues; readonly names: Set<string> } | symbol
+>();
+const POISONED_PARAMETER_READS: unique symbol = Symbol('cdkd.inherited-parameter-reads.poisoned');
+
+/**
+ * Record that the child resource owning `childSecrets` read `parameterName`
+ * and that its value carried a plaintext of `parentSecrets` (issue #2349).
+ * Called by `IntrinsicFunctionResolver.recordInheritedParameterSecrets` at the
+ * moment it carries such a pair into the child bag, so the record exists for
+ * exactly the parameters the #2087 scoping already admits into that bag.
+ */
+export function recordInheritedParameterRead(
+  childSecrets: RecordedSecretValues,
+  parentSecrets: RecordedSecretValues,
+  parameterName: string
+): void {
+  const reads = inheritedParameterReads.get(childSecrets);
+  if (reads === undefined) {
+    inheritedParameterReads.set(childSecrets, {
+      parent: parentSecrets,
+      names: new Set([parameterName]),
+    });
+    return;
+  }
+  if (typeof reads === 'symbol') return;
+  if (reads.parent !== parentSecrets) {
+    inheritedParameterReads.set(childSecrets, POISONED_PARAMETER_READS);
+    return;
+  }
+  reads.names.add(parameterName);
+}
+
+/**
+ * THE one answer for a nested-stack child PARAMETER's value with its inherited
+ * secrets rewritten back to their expressions, read off the PARENT's bag
+ * (issue [#2349](https://github.com/go-to-k/cdkd/issues/2349)).
+ *
+ * The DIFF side (`DeployEngine.redactParametersForDiff`) binds this for every
+ * parameter, and the PERSIST side ({@link positionByInheritedParameter})
+ * writes it for a leaf the child template spells `{Ref: <Param>}`. One
+ * function, so the two cannot disagree on any input.
+ *
+ * Before #2349 the persist side certified through the same predicate but FELL
+ * THROUGH to a value scan of the CHILD resource's bag, whose one slot per
+ * plaintext holds whichever parameter's own expression resolved LAST, while
+ * the diff side fell through to the parent's collapsed survivor. Two shapes
+ * reached it: an element that EMBEDS the plaintext, and a bare one whose
+ * parameter's association was refused while a sibling's survived. Either way
+ * the next diff reported a change that no deploy could clear.
+ */
+export function redactInheritedParameterValue(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  value: unknown
+): unknown {
+  return (
+    inheritedParameterExpression(parentSecrets, parameterName, value) ??
+    redactSecretsForState(value, parentSecrets)
+  );
+}
+
+/**
+ * Persist a nested-stack child leaf spelled exactly `{Ref: <Param>}` as
+ * {@link redactInheritedParameterValue} answers it, so the persisted value is
+ * the diff side's desired value by construction (issue #2349).
+ *
+ * `undefined` (the caller keeps its existing arms) unless ALL of:
+ *
+ * 1. the source is a single-key `{Ref: <string>}`;
+ * 2. this resource's own resolution read that parameter while its value
+ *    carried an inherited secret ({@link recordInheritedParameterRead}). That
+ *    is the #2087 scope: a resource that never consumed the parameter has no
+ *    record, and a leaf of a resource that did is the parameter's own value,
+ *    which is all the parent bag is asked about;
+ * 3. the leaf is a string or a list, the two shapes a parameter takes once
+ *    `coerceParameterValue` has run (a number that carried a secret is refused
+ *    upstream by `refuseCoercedInheritedSecret`);
+ * 4. FAIL-CLOSED, on the ORIGINAL value: it carries no child-bag key the
+ *    parent does not hold (a child-only plaintext, needle or mask-only, which
+ *    the parent scan would leave or cut apart where a parent needle overlaps
+ *    it), and no child NEEDLE the parent holds only as mask-only (no parent
+ *    needle, so cut apart the same way), and no parent needle the child bag
+ *    lacks (which the parent scan could take first, cutting an overlapping
+ *    child plaintext); and the answer holds nothing the child bag would still
+ *    rewrite. The existing arms
+ *    redact with the child bag, so falling back to them keeps every leaf at
+ *    least as redacted as before #2349; only the agreement with the diff
+ *    side is given up, on that row alone.
+ */
+export function positionByInheritedParameter(
+  bag: unknown,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): unknown {
+  const keys = Object.keys(source);
+  if (keys.length !== 1 || keys[0] !== 'Ref') return undefined;
+  const name = source['Ref'];
+  if (typeof name !== 'string') return undefined;
+  const reads = inheritedParameterReads.get(secrets);
+  if (reads === undefined || typeof reads === 'symbol' || !reads.names.has(name)) {
+    return undefined;
+  }
+  if (typeof bag !== 'string' && !Array.isArray(bag)) return undefined;
+  // Condition 4, asked of the ORIGINAL value: a child-only plaintext the
+  // parent-bag scan could cut apart (a parent needle overlapping it) would
+  // leave fragments the answer's own re-scan can no longer find.
+  if (carriesChildOnlyPlaintext(bag, secrets, reads.parent)) return undefined;
+  const answer = redactInheritedParameterValue(reads.parent, name, bag);
+  // ...and of the answer, for a parent expression that itself spells a
+  // child needle. Deep equality, not identity: the value walk rebuilds every
+  // array it visits, so `!==` would refuse every list leaf.
+  if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
+  return answer;
+}
+
+/**
+ * Does any string leaf of `value` contain a child-bag KEY the parent-bag scan
+ * would not redact the way the child scan does? Two halves, mirroring the
+ * child scan's whole-value arm (every key) and its substring arm (needles):
+ *
+ * - a key the parent does not HOLD at all -- needle or mask-only alike, since
+ *   a parent needle overlapping it cuts it apart where the child scan took it
+ *   whole;
+ * - a child NEEDLE the parent holds only as mask-only, which is no parent
+ *   needle, so the parent scan can cut it apart the same way.
+ *
+ * - a parent NEEDLE (at or above `MIN_NEEDLE_LENGTH`) the child bag does not
+ *   hold, which the parent scan could take first and so cut a child plaintext
+ *   overlapping it.
+ *
+ * A key both bags hold as needles, with different expressions, passes: that is
+ * the #2349 row itself. Containment at ANY length; declining keeps the
+ * pre-#2349 child-bag redaction.
+ */
+function carriesChildOnlyPlaintext(
+  value: unknown,
+  childSecrets: RecordedSecretValues,
+  parentSecrets: RecordedSecretValues
+): boolean {
+  const parentNeedles = new Set(substringNeedlesOf(parentSecrets));
+  const childNeedles = new Set(substringNeedlesOf(childSecrets));
+  const childOnly = [...childSecrets.keys()].filter(
+    (plaintext) =>
+      plaintext !== '' &&
+      (!parentSecrets.has(plaintext) ||
+        (childNeedles.has(plaintext) && !parentNeedles.has(plaintext)))
+  );
+  // Third half: a PARENT needle the child bag does not hold. Today
+  // `inheritedSecretsCarriedBy` puts every parent needle the value carries
+  // into the child bag; asked here so the guarantee does not rest on that.
+  // Floored at `MIN_NEEDLE_LENGTH`: the parent scan never takes a shorter key
+  // as a substring, so it cannot cut anything (the first two halves stay
+  // unfloored, as they guard the child's whole-value arm).
+  for (const needle of parentNeedles) {
+    if (needle.length >= MIN_NEEDLE_LENGTH && !childSecrets.has(needle)) childOnly.push(needle);
+  }
+  if (childOnly.length === 0) return false;
+  const visit = (node: unknown): boolean => {
+    if (typeof node === 'string') return childOnly.some((plaintext) => node.includes(plaintext));
+    if (Array.isArray(node)) return node.some(visit);
+    if (node !== null && typeof node === 'object') return Object.values(node).some(visit);
+    return false;
+  };
+  return visit(value);
 }

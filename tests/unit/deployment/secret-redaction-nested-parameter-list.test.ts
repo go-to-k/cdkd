@@ -7,6 +7,7 @@ import {
   recordResolvedPair,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
+  recordInheritedParameterRead,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -123,6 +124,10 @@ function wiredChild(
     for (const name of order) {
       const own = inheritedParameterExpression(parent, name, SHARED);
       child.set(SHARED, typeof own === 'string' ? own : survivor);
+      // ...and names the parameter as one this resource read with an
+      // inherited secret in it (issue #2349), which is what sends its
+      // `{Ref}` leaf to the parent-bag answer the diff side binds.
+      recordInheritedParameterRead(child, parent, name);
     }
   }
   inheritNestedStackParameterAssociations(child, parent);
@@ -319,8 +324,9 @@ describe('#2327 persist/diff parity', () => {
     // identically on both sides, and that is all it does. It says nothing about
     // condition 3, which reads the bag's VALUES, nor about the value-scan
     // FALL-THROUGH, which also reads values. Condition 3 is now decided ONCE at
-    // write time (refusal 4), so both sides read one verdict; the fall-through
-    // asymmetry is older than this arm and is pinned as a residual below.
+    // write time (refusal 4), so both sides read one verdict; since issue
+    // #2349 a `{Ref}` leaf's fall-through reads the parent bag on both sides
+    // too (the two #2349 cases below).
     const child = wiredChild(parent, PARAM_A);
     expect(child.get(SHARED)).not.toBe(parent.get(SHARED));
 
@@ -476,73 +482,53 @@ describe('#2327 persist/diff parity', () => {
     }
   });
 
-  it('PINNED RESIDUAL: the value-scan fall-through reads a different bag on each side', () => {
-    // OLDER THAN THIS ARM and deliberately not closed here. When neither side
-    // certifies, both fall through to `redactSecretsForState` -- the persist
-    // side over the CHILD bag, the diff side over the PARENT's -- and those
-    // differ in VALUES by construction.
+  it('#2349 shape 1: an EMBEDDING element persists what the diff side binds, whichever parameter resolved last', () => {
+    // Pinned as a RESIDUAL until issue
+    // [#2349](https://github.com/go-to-k/cdkd/issues/2349). When neither side
+    // certifies, both fall through to a value scan -- and the persist side
+    // scanned the CHILD bag, whose one slot per plaintext holds whichever
+    // parameter's own expression resolved LAST, while the diff side scanned
+    // the PARENT's, whose entry is the collapsed survivor. An element that
+    // EMBEDS the plaintext can never certify (`crossStackSourceKey` cannot key
+    // it), so it always took that fall-through.
     //
-    // TWO SHAPES REACH IT, not one. An earlier revision of this comment named
-    // only the first, and issue
-    // [#2349](https://github.com/go-to-k/cdkd/issues/2349) was filed on that
-    // narrower description:
-    //
-    // 1. an EMBEDDING element, which `crossStackSourceKey` can never key, so no
-    //    association could have helped it -- the shape this case pins; and
-    // 2. a BARE element whose parameter's association REFUSAL 4 refused while
-    //    its SIBLING's survived. Measured on the final tree with no embedding
-    //    anywhere in the bag: with `EXPR_B` recorded against two plaintexts,
-    //    refusal 4 fires for `PARAM_B` only, the child bag takes `PARAM_A`'s own
-    //    expression, and `PARAM_B`'s bare leaf then falls through to it while
-    //    the diff side falls through to the parent's survivor.
-    //
-    // Shape 2 is one refusal 4 itself creates, and it is still a strict
-    // BASELINE member -- the same sweep with the arm and refusal 4 both absent
-    // diverges there too -- so it is a residual rather than new exposure.
-    //
-    // MEASURED: with the array arm disabled entirely and refusal 4 absent, the
-    // same sweep that found the blocker above still diverged on 4 of 16
-    // configurations, all of them here. This case pins one, so a future change
-    // that alters it has to say so rather than drift.
+    // Both settings of `lastResolved` are asserted: under `PARAM_B` the child
+    // slot happened to equal the survivor, so a case pinned on that setting
+    // alone passes with the defect intact.
     const parent = recordedParent();
     const embedded = `postgres://u:${SHARED}@host`;
-    const child = wiredChild(parent, PARAM_A);
-
-    const persisted = redactSecretsForState({ AList: [embedded] }, child, CHILD_SOURCE) as Record<
-      string,
-      unknown
-    >;
     const desired =
       inheritedParameterExpression(parent, PARAM_A, [embedded]) ??
       redactSecretsForState([embedded], parent);
-
-    // The persist side splices the child bag's entry, the diff side the
-    // parent's, and they are different expressions.
-    expect(persisted['AList']).toEqual([`postgres://u:${EXPR_A}@host`]);
     expect(desired).toEqual([`postgres://u:${EXPR_B}@host`]);
-    expect(desired).not.toEqual(persisted['AList']);
+
+    for (const last of [PARAM_A, PARAM_B]) {
+      const child = wiredChild(parent, last);
+      const persisted = redactSecretsForState(
+        { AList: [embedded] },
+        child,
+        CHILD_SOURCE
+      ) as Record<string, unknown>;
+      expect(persisted['AList'], `${last} resolved last`).toEqual(desired);
+      expect(JSON.stringify(persisted)).not.toContain(SHARED);
+    }
   });
 
-  it('PINNED RESIDUAL, shape 2: a BARE element diverges when refusal 4 fires for one parameter and not its sibling', () => {
-    // THE SECOND SHAPE that reaches the issue
-    // [#2349](https://github.com/go-to-k/cdkd/issues/2349) fall-through, and
-    // the one its scope is written from. No EMBEDDING anywhere in this bag --
-    // both leaves are bare `[SHARED]` -- so the case above cannot stand in for
-    // it. (A future REMOVAL of refusal 4 is no longer observable here either;
-    // refusal 5 refuses `PARAM_B` too, #3090. A WIDENING still is.)
+  it('#2349 shape 2: a BARE element agrees with the diff side when refusal 4 fires for one parameter and not its sibling', () => {
+    // THE SECOND SHAPE that reached the #2349 fall-through. No EMBEDDING
+    // anywhere in this bag -- both leaves are bare `[SHARED]` -- so the case
+    // above cannot stand in for it.
     //
     // THE MECHANISM: `EXPR_B` is recorded against TWO plaintexts, so
-    // `plaintextIndexOf` poisons its entry and refusal 4 fires for `PARAM_B`.
-    // `PARAM_A`'s expression has a clean entry, so its association SURVIVES,
-    // the child bag takes `PARAM_A`'s own expression, and `PARAM_B`'s
-    // now-uncertifiable bare leaf falls through onto it -- while the diff side
-    // falls through onto the parent's survivor.
+    // `plaintextIndexOf` poisons its entry and refusal 4 (and refusal 5,
+    // #3090) refuses `PARAM_B`. `PARAM_A`'s association SURVIVES, so with
+    // `PARAM_A` resolved last the child slot held `EXPR_A` and `PARAM_B`'s
+    // now-uncertifiable leaf fell through onto it, while the diff side fell
+    // through onto the parent's survivor `EXPR_B`.
     const parent: RecordedSecretValues = new Map([
       [SHARED, EXPR_B],
       ['a-different-plaintext-2327', EXPR_B],
     ]);
-    // The pair table beside it (refusal 5, #3090): `EXPR_B` CONFLICTING,
-    // `EXPR_A` cleanly on `SHARED`.
     recordResolvedPair(parent, EXPR_B, SHARED);
     recordResolvedPair(parent, EXPR_B, 'a-different-plaintext-2327');
     recordResolvedPair(parent, EXPR_A, SHARED);
@@ -552,36 +538,32 @@ describe('#2327 persist/diff parity', () => {
       PARENT_RESOLVED,
       PARENT_SOURCE
     );
-    const child = wiredChild(parent, PARAM_A);
-
-    const persisted = redactSecretsForState(
-      { AList: [SHARED], BList: [SHARED] },
-      child,
-      CHILD_SOURCE
-    ) as Record<string, unknown>;
-    const desiredB =
-      inheritedParameterExpression(parent, PARAM_B, [SHARED]) ??
-      redactSecretsForState([SHARED], parent);
-
-    // THE DIVERGENCE, asserted POSITIVELY rather than as an inequality: a
-    // future change that made both sides wrong TOGETHER would satisfy
-    // `not.toEqual` and must not satisfy this.
-    expect(persisted['BList']).toEqual([EXPR_A]);
+    // NEITHER side certifies `PARAM_B` -- the property that makes this the
+    // fall-through's row -- while the SIBLING still does, which is what put
+    // its expression into the child slot at all.
+    expect(inheritedParameterExpression(parent, PARAM_B, [SHARED])).toBeUndefined();
+    expect(inheritedParameterExpression(parent, PARAM_A, [SHARED])).toEqual([EXPR_A]);
+    const desiredB = redactSecretsForState([SHARED], parent);
     expect(desiredB).toEqual([EXPR_B]);
 
-    // ...AND IT IS A BASELINE MEMBER, stated as the property that makes it one
-    // rather than as a comment: NEITHER side certified this leaf, so the
-    // divergence belongs entirely to the value-scan fall-through -- the
-    // mechanism that predates the array arm and refusal 4 alike. If a future
-    // change makes either side CERTIFY here, these two assertions stop being
-    // about the residual and the case must be rewritten rather than renumbered.
-    expect(inheritedParameterExpression(parent, PARAM_B, [SHARED])).toBeUndefined();
-    expect(persisted['BList']).toEqual(redactSecretsForState([SHARED], child));
-
-    // The SIBLING is the reason this shape exists at all: its association
-    // survived refusal 4 and still certifies, which is what put its expression
-    // into the child bag. A blanket refusal would remove the divergence.
-    expect(inheritedParameterExpression(parent, PARAM_A, [SHARED])).toEqual([EXPR_A]);
+    for (const last of [PARAM_A, PARAM_B]) {
+      const child = wiredChild(parent, last);
+      const persisted = redactSecretsForState(
+        { AList: [SHARED], BList: [SHARED] },
+        child,
+        CHILD_SOURCE
+      ) as Record<string, unknown>;
+      // POSITIVE, not an inequality with the old answer: both sides wrong
+      // TOGETHER must not satisfy this.
+      expect(persisted['BList'], `${last} resolved last`).toEqual(desiredB);
+      expect(persisted['AList'], `${last} resolved last`).toEqual([EXPR_A]);
+      // The discriminator: with `PARAM_A` last the CHILD bag's own scan still
+      // answers the sibling's expression, so the agreement above is the new
+      // arm's and not the bag's.
+      if (last === PARAM_A) {
+        expect(redactSecretsForState([SHARED], child)).toEqual([EXPR_A]);
+      }
+    }
   });
 
   it('keeps the SCALAR answer byte-identical, so the #2291 mechanism is untouched', () => {
