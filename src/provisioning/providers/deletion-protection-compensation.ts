@@ -311,8 +311,8 @@ export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>)
  *
  *  1. **A caller with no attempt scope.** Outside {@link runDeleteAttempt} the
  *     predicate cannot see an attempt cap, so a retryable failure reads as "a
- *     re-entry is coming". Only `cdkd destroy` sets `removeProtection`, and its
- *     loop scopes every attempt.
+ *     re-entry is coming". Only `cdkd destroy` and `cdkd rollback` set
+ *     `removeProtection`, and each scopes its delete attempts.
  *  2. **The per-resource DEADLINE route.** `src/deployment/resource-deadline.ts`
  *     rejects the OUTER promise on its timer and does NOT cancel what it
  *     wraps — the provider's own `await` never settles as a rejection, so no

@@ -968,8 +968,10 @@ async function replayFailedOperationsUnbound(
             op.logicalId,
             stateResources
           );
-          // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` reaches a
-          // protected orphan here; nothing else sets the flag. Only on a
+          // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` and `cdkd
+          // rollback --remove-protection` (incl. `--revert-failed`) reach a
+          // protected resource here; a deploy, its settle and a nested
+          // in-process revert never set the flag. Only on a
           // resource proven to be the one the failed CREATE made: AWS's refusal
           // is the last guard on a name another resource reused. ONE attempt,
           // no outer re-entry: the scope tells a protection flip's

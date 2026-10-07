@@ -300,6 +300,31 @@ describe('a name-keyed orphan gets the flag only when its identity is proven (go
     expect(resourceIdentity).not.toHaveBeenCalled();
   });
 
+  // The record is the stack's own: no foreign scan is asked, so a `held`
+  // answer (the record's own stack would read as another) cannot withhold it.
+  it('passes it, with no foreign scan, for a state-recorded failed CREATE', async () => {
+    const { del, seen } = recordingDelete();
+    const { ctx } = tableCtx(del, 'tok-2');
+    const foreignHolder = vi.fn(async () => ({ kind: 'held' as const, by: 'stack B' }));
+    await replayFailedOperations(
+      [tableOrphan({ physicalIdRecoveredFromError: undefined })],
+      {
+        Table: {
+          physicalId: 'orders',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      'Stack',
+      { ...ctx, foreignHolder },
+      {}
+    );
+    expect(seen[0]!.context['removeProtection']).toBe(true);
+    expect(foreignHolder).not.toHaveBeenCalled();
+  });
+
   it('withholds it, and warns, when the live read gives no answer', async () => {
     const { del, seen } = recordingDelete();
     const { ctx, warned, resourceIdentity } = tableCtx(del, undefined);

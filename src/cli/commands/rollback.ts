@@ -1119,7 +1119,13 @@ export async function rollbackCommand(
       logger.info('');
 
       if (!skipConfirmation) {
-        const ok = await confirm(`Roll back ${stackRegionShown(stackName, region)}?`);
+        // go-to-k/cdkd#4678: name the side effect, as destroy's prompt does.
+        const ok = await confirm(
+          `Roll back ${stackRegionShown(stackName, region)}` +
+            (options.removeProtection === true
+              ? ', TURNING DELETION PROTECTION OFF on resources a failed CREATE left?'
+              : '?')
+        );
         if (!ok) {
           logger.info('Rollback cancelled');
           return;
@@ -1889,7 +1895,8 @@ export function createRollbackCommand(): Command {
         '--remove-protection',
         'Turn deletion protection off before deleting a resource a failed CREATE left behind ' +
           '(a journaled orphan, or under --revert-failed the failed CREATE itself), when cdkd ' +
-          'can prove it is that resource and no other stack holds it. Covers ' +
+          'can prove it is that resource and no other stack holds it. On a failed nested ' +
+          "stack it cascades to that child's resources. Covers " +
           `${removeProtectionTypeList()}.`
       ).default(false)
     )

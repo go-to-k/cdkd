@@ -33,6 +33,10 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
   startRunRecorder: () => ({ record: vi.fn(), finalize: vi.fn().mockResolvedValue(undefined) }),
 }));
+const question = vi.hoisted(() => vi.fn());
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({ question, close: vi.fn() }),
+}));
 const setupMock = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/cli/commands/state.js', async () => {
   const actual = await vi.importActual<typeof import('../../../src/cli/commands/state.js')>(
@@ -163,12 +167,35 @@ describe('cdkd rollback --remove-protection (go-to-k/cdkd#4678)', () => {
     expect(seen[0]!.final).toBe(true);
   });
 
-  it('strips nothing without the flag', async () => {
+  it('strips nothing without the flag, and scans no other stack', async () => {
     install(structuredClone(orphanOp), { R: record('r-1', 'AWS::SSM::Parameter') });
+    const backend = (await setupMock())!.stateBackend as { listStacks: ReturnType<typeof vi.fn> };
     await rollbackCommand('S', { ...BASE });
     expect(seen.map((s) => s.logicalId)).toEqual(['OrphanLb']);
     expect(seen[0]!.context).not.toHaveProperty('removeProtection');
     expect(seen[0]!.final).toBe(false);
+    // Only the stack selection reads the listing (the flagged run reads it
+    // twice, the scan's being the second); without the flag the scan never runs.
+    expect(backend.listStacks).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['names the side effect with the flag', true, true],
+    ['keeps the plain question without it', false, false],
+  ])('the confirmation prompt %s', async (_l, removeProtection, named) => {
+    install(structuredClone(orphanOp), { R: record('r-1', 'AWS::SSM::Parameter') });
+    question.mockReset().mockResolvedValue('n');
+    const original = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    try {
+      await rollbackCommand('S', { ...BASE, force: false, removeProtection });
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+    }
+    const asked = String(question.mock.calls[0]![0]);
+    expect(asked).toContain('Roll back ');
+    expect(asked.includes('TURNING DELETION PROTECTION OFF')).toBe(named);
+    expect(seen).toEqual([]);
   });
 
   // E.g. a later `cdkd import` adopted the load balancer into stack B.

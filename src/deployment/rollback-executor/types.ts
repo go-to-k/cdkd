@@ -218,17 +218,19 @@ export interface RollbackExecutorContext {
    */
   skipFinalSnapshot?: boolean | undefined;
   /**
-   * `--remove-protection` on `cdkd destroy` / `cdkd state destroy`: a failed
-   * CREATE's journaled orphan is deleted with its deletion / termination
-   * protection turned off first (go-to-k/cdkd#4678). Set ONLY by the destroy
-   * journal sweep: a deploy's automatic rollback and its success settle never
-   * strip a protection the user did not ask to remove.
+   * `--remove-protection`: a failed CREATE's resource is deleted with its
+   * deletion / termination protection turned off first (go-to-k/cdkd#4678).
+   * Set ONLY on an explicit flag: by the `cdkd destroy` / `cdkd state destroy`
+   * journal sweep and by `cdkd rollback --remove-protection` (with or without
+   * `--revert-failed`). A deploy's automatic rollback, its success settle and a
+   * nested child's in-process revert never set it, so they never strip a
+   * protection the user did not ask to remove.
    */
   removeProtection?: boolean | undefined;
   /**
    * go-to-k/cdkd#4678: who else holds a journaled orphan, asked before
    * `removeProtection` strips one (`makeForeignHolderScan`, scoped to this
-   * stack). Supplied by the destroy sweep only when `removeProtection` is set;
+   * stack). Supplied with `removeProtection` by its two setters only;
    * a `held` or `unreadable` answer keeps the protection on.
    */
   foreignHolder?:

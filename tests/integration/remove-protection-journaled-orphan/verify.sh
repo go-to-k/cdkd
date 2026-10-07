@@ -95,6 +95,15 @@ lb_protection() { # usage: lb_protection <arn>
 }
 
 # The journaled OrphanLb op, compact JSON, or empty when the journal holds none.
+# A failed --remove-protection run whose foreign-holder scan met an unreadable
+# record of ANOTHER stack (a peer's legacy key in the shared state bucket) is
+# environmental, not a regression: say so beside the FAIL.
+explain_unreadable_scan() {
+  if grep -q "leaves open whether another stack holds it" "${RUN_LOG}"; then
+    echo "      environmental: an unreadable record in the shared state bucket kept the protection on (see the 'leaves open whether another stack holds it' warning above)" >&2
+  fi
+}
+
 journaled_orphan_op() {
   local body
   body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)" || return 1
@@ -276,6 +285,7 @@ sed 's/^/  /' "${RUN_LOG}"
 if [ "${RP_RC}" -ne 0 ]; then
   echo "FAIL: cdkd destroy --remove-protection exited ${RP_RC} (expected 0: the flag reaches the journaled orphan's delete -- output above)" >&2
   echo "      (before go-to-k/cdkd#4678 the sweep dropped the flag and AWS refused the delete)" >&2
+  explain_unreadable_scan
   exit 1
 fi
 # DeleteLoadBalancer returns before the load balancer leaves the describe list.
@@ -327,6 +337,7 @@ set -e
 sed 's/^/  /' "${RUN_LOG}"
 if [ "${RP_RC}" -ne 0 ]; then
   echo "FAIL: cdkd rollback --remove-protection exited ${RP_RC} (expected 0: the flag reaches the journaled orphan's delete -- output above)" >&2
+  explain_unreadable_scan
   exit 1
 fi
 for _ in $(seq 1 24); do

@@ -209,7 +209,7 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
     expect(seen.get('OrphanLb')?.context).not.toHaveProperty('removeProtection');
     expect(seen.get('R')?.context['removeProtection']).toBe(true);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'the state record of stack B'
+      'the state record of stack B (us-east-1) holds it now'
     );
   });
 
