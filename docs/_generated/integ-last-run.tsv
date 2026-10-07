@@ -116,7 +116,7 @@ efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 de
 efs-standalone	2026-10-07T16:21:49Z	PASS	165	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 elasticache-replicationgroup-getatt	2026-10-03T06:06:22Z	PASS	806	verify.sh	rc ok, orph clean (#4497)
 elbv2-same-name-replacement	2026-10-05T02:29:22Z	PASS	66	verify.sh	rc ok, orph clean (#4569 @480676155)
-emr-cluster	2026-10-07T17:53:33Z	FAIL	0	verify.sh	#4606 Phase 3b blocked by environment: the settle foreign-holder scan failed closed on a peer stack state.json at schema v11 (PR #4661 lane, CdkdCrNoEchoConsumerExample) this v10 binary cannot read; destroy 0 errors, 0 orphans
+emr-cluster	2026-10-07T18:32:50Z	PASS	0	verify.sh	#4606 Phase 3b fix-forward settles the journaled OrphanCluster (already TERMINATED_WITH_ERRORS); destroy 0 errors, 0 orphans
 emr-instance-configs	2026-10-06T02:22:44Z	PASS	922	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 emr-instance-fleets	2026-10-06T02:22:44Z	PASS	1354	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
