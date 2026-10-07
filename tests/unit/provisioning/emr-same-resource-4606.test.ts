@@ -91,8 +91,18 @@ describe('EMRClusterProvider.isSameResource (go-to-k/cdkd#4606)', () => {
     }
   );
 
-  it.each(['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING'])(
-    'a record cluster %s counts as live',
+  // A transient record cluster may already be terminating by the settle; its
+  // own id read back through the stack-region client is the proof.
+  it.each([
+    'STARTING',
+    'BOOTSTRAPPING',
+    'RUNNING',
+    'WAITING',
+    'TERMINATING',
+    'TERMINATED',
+    'TERMINATED_WITH_ERRORS',
+  ])(
+    'a record cluster %s reading back under its own id proves the journaled one different',
     async (recorded) => {
       clusters({ [J_A]: 'TERMINATED_WITH_ERRORS', [J_B]: recorded });
       expect(await provider.isSameResource(J_A, { physicalId: J_B }, CLUSTER, CTX)).toBe(
@@ -101,25 +111,36 @@ describe('EMRClusterProvider.isSameResource (go-to-k/cdkd#4606)', () => {
     }
   );
 
-  it.each(['TERMINATING', 'TERMINATED', 'TERMINATED_WITH_ERRORS', 'gone'])(
-    'the record cluster %s is unknown, not different, and the journaled one is not read',
-    async (recorded) => {
-      clusters({ [J_A]: 'WAITING', [J_B]: recorded });
-      expect(await provider.isSameResource(J_A, { physicalId: J_B }, CLUSTER, CTX)).toBe('unknown');
-      expect(readIds()).toEqual([J_B]);
-    }
-  );
-
-  it('a record cluster read back with no state is unknown', async () => {
-    mockSend.mockResolvedValue({ Cluster: { Id: J_B } });
+  it('a record cluster EMR does not know is unknown, and the journaled one is not read', async () => {
+    clusters({ [J_A]: 'WAITING', [J_B]: 'gone' });
     expect(await provider.isSameResource(J_A, { physicalId: J_B }, CLUSTER, CTX)).toBe('unknown');
     expect(readIds()).toEqual([J_B]);
+  });
+
+  it('a record cluster read back with no state still proves the journaled one different', async () => {
+    mockSend.mockResolvedValueOnce({ Cluster: { Id: J_B } });
+    mockSend.mockResolvedValueOnce({ Cluster: { Id: J_A } });
+    expect(await provider.isSameResource(J_A, { physicalId: J_B }, CLUSTER, CTX)).toBe('different');
+    expect(readIds()).toEqual([J_B, J_A]);
   });
 
   it('a record read naming another cluster is unknown', async () => {
     mockSend.mockResolvedValue({ Cluster: { Id: J_A, Status: { State: 'WAITING' } } });
     expect(await provider.isSameResource(J_A, { physicalId: J_B }, CLUSTER, CTX)).toBe('unknown');
     expect(readIds()).toEqual([J_B]);
+  });
+
+  // The id-form check runs before the equality short-circuit: identical but
+  // unrecognised ids are never vouched for as the same cluster.
+  it.each([
+    ['ig-X', 'ig-X'],
+    ['j-1aaaaaaaaaaaa', 'j-1aaaaaaaaaaaa'],
+  ])('identical malformed ids %s / %s are unknown, not same', async (journaled, recorded) => {
+    clusters({});
+    expect(
+      await provider.isSameResource(journaled, { physicalId: recorded }, CLUSTER, CTX)
+    ).toBe('unknown');
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('equal ids are the same without a read', async () => {
@@ -218,6 +239,7 @@ describe('EMRClusterProvider.delete of a journaled orphan already gone (go-to-k/
     expect(providerLogger.info.mock.calls[0]![0]).toContain(
       `EMR cluster ${J_A} (Orphan), which a failed deploy created, is already gone`
     );
+    expect(sentTerminate()).toBe(false);
   });
 
   it.each([

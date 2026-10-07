@@ -117,11 +117,11 @@ SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
 PHASE2_LOG=""
 PHASE2B_LOG=""
 # Phase 3b (issue #4606): the rollback journal, the deploy log the phase greps,
-# and the role its injection deploy runs as (deleted by cleanup, by prefix).
+# and the role its injection deploy runs as: this run's own, deleted by name;
+# the stale sweep finds any run's by the literal prefix.
 JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 FF_LOG=""
-DENY_ROLE_PREFIX="cdkd-emr-ff-deny-"
-DENY_ROLE="${DENY_ROLE_PREFIX}$$"
+DENY_ROLE="cdkd-emr-ff-deny-$(date +%s)-$$"
 DENY_POLICY_NAME="cdkd-emr-ff-deny"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -229,23 +229,36 @@ wait_cluster_terminated() {
   return 1
 }
 
-# Delete every Phase 3b deny role any run of this fixture created, found by
-# the LITERAL prefix. Idempotent and soft-failing. Deliberately not scoped to
-# this run's role: a role a killed run left behind is caught by the next run,
-# and two concurrent runs of this fixture collide on the stack anyway.
-delete_deny_roles() {
+# Delete one Phase 3b deny role by name. Idempotent and soft-failing.
+delete_deny_role() { # usage: delete_deny_role <role-name>
+  (
+    # Best-effort, in a subshell: the caller's errexit is untouched.
+    set +eu
+    aws iam delete-role-policy --role-name "$1" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+    if aws iam delete-role --role-name "$1" >/dev/null 2>&1; then
+      echo "    deleted deny role $1"
+    fi
+  )
+}
+
+# Delete Phase 3b deny roles an earlier run left behind (a SIGKILL skips the
+# trap): only roles with the literal prefix, carrying the fixture's tag, and
+# created more than 2 hours ago -- their trust policy has expired by then
+# (`DateLessThan`), so a concurrent run's live role is never one of them.
+sweep_stale_deny_roles() {
   (
     set +eu
-    roles="$(aws iam list-roles \
-      --query "Roles[?starts_with(RoleName, 'cdkd-emr-ff-deny-')].RoleName" --output text 2>/dev/null)"
-    for r in ${roles}; do
-      [ "${r}" = "None" ] && continue
-      aws iam delete-role-policy --role-name "${r}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
-      if aws iam delete-role --role-name "${r}" >/dev/null 2>&1; then
-        echo "    deleted deny role ${r}"
-      else
-        echo "    WARN: could not delete role ${r}; delete it by hand" >&2
-      fi
+    cutoff="$(node -e 'process.stdout.write(new Date(Date.now()-2*3600e3).toISOString().slice(0,19))')"
+    aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, 'cdkd-emr-ff-deny-')].[RoleName,CreateDate]" \
+      --output text 2>/dev/null | while read -r r created; do
+      [ -z "${r}" ] || [ "${r}" = "None" ] && continue
+      # ISO-8601 UTC sorts lexically; compare to the second.
+      [[ "${created:0:19}" < "${cutoff}" ]] || continue
+      tagged="$(aws iam list-role-tags --role-name "${r}" \
+        --query "Tags[?Key=='cdkd-integ' && Value=='emr-cluster'] | length(@)" --output text 2>/dev/null)"
+      [ "${tagged}" = "1" ] || continue
+      delete_deny_role "${r}"
     done
   )
 }
@@ -256,7 +269,8 @@ cleanup() {
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   [ -n "${FF_LOG:-}" ] && rm -f "${FF_LOG}"
-  delete_deny_roles
+  # Only THIS run's role: another run's may be live.
+  delete_deny_role "${DENY_ROLE}"
   # ORDER MATTERS — the tag-scoped cluster sweep MUST run before
   # `state destroy`. The sweep finds the cluster by NAME + TAG, so it works
   # whether or not the cluster is still tracked in cdkd state; `state destroy`
@@ -403,6 +417,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+sweep_stale_deny_roles
 
 state_json() {
   node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -981,8 +996,9 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${CALLER_USERID}" ] || [ "$(printf '%s\n' ${P
   echo "FAIL: precondition — account '${ACCOUNT_ID}', caller '${CALLER_USERID}' or the two fixture roles '${PASS_ROLE_NAMES}' are missing" >&2
   exit 1
 fi
-# Assumable by THIS caller identity only, not by the whole account.
-TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
+# Assumable by THIS caller identity only, not by the whole account, and only
+# for 2 hours: a role a SIGKILL leaves behind (no trap) expires on its own.
+TRUST="$(node -e 'const until=new Date(Date.now()+2*3600e3).toISOString().replace(/\.\d{3}Z$/,"Z");process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]},DateLessThan:{"aws:CurrentTime":until}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
 # Scoped to what the injection deploy calls, never `*`: the role is assumable
 # by the caller for minutes, and an inline `Allow *` would hand it more than
 # the caller may have. The stack publishes no assets, so S3 is the state
@@ -1011,11 +1027,15 @@ fi
 # temp file, and these are live credentials.
 read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
 unset DENY_CREDS
-# Run a command as the deny role. A profile in the environment would win over
-# the key variables in the SDK's credential chain, so it is dropped.
+# Run a command as the deny role, in a subshell that EXPORTS the keys: on an
+# `env` argv they would be readable in `ps`. A profile in the environment would
+# win over the key variables in the SDK's credential chain, so it is dropped.
 as_deny_role() {
-  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE \
-    AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}" "$@"
+  (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE
+    export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
+    "$@"
+  )
 }
 # Fresh role credentials can be refused for a while: poll until STS takes them.
 DENY_ARN=""
@@ -1056,7 +1076,7 @@ as_deny_role env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL INJECT_CLUSTER_ORPHAN=
 CLUSTER_FAIL_RC=$?
 set -e
 sed 's/^/  /' "${FF_LOG}"
-delete_deny_roles
+delete_deny_role "${DENY_ROLE}"
 if [ "${CLUSTER_FAIL_RC}" -eq 0 ]; then
   echo "FAIL: the OrphanCluster injection deploy unexpectedly SUCCEEDED (its bootstrap action names a missing script)" >&2
   exit 1

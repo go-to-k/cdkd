@@ -113,8 +113,9 @@ EMR clusters).
    `--no-rollback` deploy with `INJECT_CLUSTER_ORPHAN=true` adds
    `OrphanCluster`, whose bootstrap action names a missing script, so the
    cluster terminates with errors after `RunJobFlow` made it. The deploy runs
-   as a temporary role (`cdkd-emr-ff-deny-<pid>`, deleted right after and by
-   `cleanup()`) denied `SetTerminationProtection` / `TerminateJobFlows`, so the
+   as a temporary role (`cdkd-emr-ff-deny-<epoch>-<pid>`, assumable for 2
+   hours, deleted right after and by `cleanup()`; a start-of-run sweep deletes
+   tagged ones older than 2 hours) denied `SetTerminationProtection` / `TerminateJobFlows`, so the
    create's own cleanup fails and the rollback journal holds the cluster as a
    proven orphan. The `CLUSTER_FIX_FORWARD=true` redeploy creates a new
    cluster under the same logical id; it must settle the earlier one (named

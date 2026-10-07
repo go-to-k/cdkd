@@ -1114,8 +1114,7 @@ export class EMRClusterProvider implements ResourceProvider {
           physicalId
         );
         if (context?.failedCreateOrphan === true) {
-          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
-          // exit 0, so say so once.
+          // go-to-k/cdkd#4606: a journaled orphan already gone is named once.
           this.logger.info(
             safeMsg`  EMR cluster ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
           );
@@ -1379,9 +1378,12 @@ export class EMRClusterProvider implements ResourceProvider {
    * region and never reassigned, so two distinct ids in the stack's region name
    * two distinct clusters. Any other id form is `'unknown'`; equal ids are
    * `'same'` without a read. After the region check, `DescribeCluster` must
-   * read the record's cluster back under its own id in a live state
-   * (`STARTING` / `BOOTSTRAPPING` / `RUNNING` / `WAITING`), else `'unknown'`.
-   * The journaled cluster is then `'different'`, whether it reads back in any
+   * read the record's cluster back under its own id, in any state: the same
+   * client then proves it is in the stack's account and region, and a
+   * transient cluster (no `KeepJobFlowAliveWhenNoSteps`, an idle
+   * `AutoTerminationPolicy`) may already be terminating by the settle. A
+   * record cluster EMR does not know, or one reading back as another id, is
+   * `'unknown'`. The journaled cluster is then `'different'`, whether it reads back in any
    * state (a `TERMINATED_WITH_ERRORS` one included: the settle's delete names
    * it already terminated) or EMR answers `InvalidRequestException` for it;
    * only a read naming the record's cluster makes it `'same'`. Any other
@@ -1404,26 +1406,18 @@ export class EMRClusterProvider implements ResourceProvider {
     const clientRegion = await this.getClient().config.region();
     if (clientRegion !== context.expectedRegion) return 'unknown';
     const recorded = await this.readClusterIdentity(record.physicalId);
-    if (
-      recorded?.id !== record.physicalId ||
-      recorded.state === undefined ||
-      !LIVE_CLUSTER_STATES.includes(recorded.state)
-    ) {
-      return 'unknown';
-    }
+    if (recorded?.id !== record.physicalId) return 'unknown';
     const journaled = await this.readClusterIdentity(journaledPhysicalId);
     return journaled?.id === recorded.id ? 'same' : 'different';
   }
 
   /**
-   * The id and state `DescribeCluster` reports for `clusterId`, or `undefined`
+   * The id `DescribeCluster` reports for `clusterId`, or `undefined`
    * on `InvalidRequestException` (EMR's answer for an id it does not know).
    * Any other failure, and a response naming no cluster, throws: "could not
    * read" never reads as "gone".
    */
-  private async readClusterIdentity(
-    clusterId: string
-  ): Promise<{ id: string; state: ClusterState | undefined } | undefined> {
+  private async readClusterIdentity(clusterId: string): Promise<{ id: string } | undefined> {
     let response;
     try {
       response = await this.getClient().send(new DescribeClusterCommand({ ClusterId: clusterId }));
@@ -1435,7 +1429,7 @@ export class EMRClusterProvider implements ResourceProvider {
     if (typeof id !== 'string') {
       throw new Error('DescribeCluster did not return the cluster asked for');
     }
-    return { id, state: response.Cluster?.Status?.State };
+    return { id };
   }
 
   // ─── IMPORT ────────────────────────────────────────────────────────
