@@ -49,6 +49,9 @@ const { withPrintingSecrets, withCurrentResourceSecrets, getCurrentResourceSecre
   await import('../../../src/deployment/resource-secrets-scope.js');
 const { currentLogLineMasker } = await import('../../../src/utils/log-line-masker.js');
 const { withStackName } = await import('../../../src/provisioning/resource-name.js');
+const { buildFinalSnapshotIdentifier } = await import(
+  '../../../src/provisioning/final-snapshot.js'
+);
 
 type Bag = Map<string, string>;
 
@@ -516,5 +519,193 @@ describe('withPrintingSecrets — a printing bag, not the resource bag (go-to-k/
       recordLogOnlyValue(printing, 'late-derived-name');
       expect(currentLogLineMasker()?.('late-derived-name')).toBe('***');
     });
+  });
+});
+
+describe('secretNameNeedlesOf — an ElastiCache final-snapshot name cut across a needle', () => {
+  const RG = 'AWS::ElastiCache::ReplicationGroup';
+  const AT = new Date('2026-08-03T04:05:06Z');
+  const snapshotLine = (id: string, type = RG): string =>
+    `Creating final snapshot ${buildFinalSnapshotIdentifier(id, type, AT)} for Cache (${id})`;
+
+  it('a name resolved this deploy: the 28-character snapshot base is masked', () => {
+    const name = 'Cdkd-Secret-Derived-Cache-Group-01';
+    const id = name.toLowerCase();
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: { ReplicationGroupId: name } },
+      new Map([[name, REF]])
+    );
+    expect(maskSecretsInText(snapshotLine(id), logOnlyBag(needles))).toBe(
+      'Creating final snapshot ***20260803-040506 for Cache (***)'
+    );
+  });
+
+  it('a NoEcho value the id embeds: no fragment of it survives in the snapshot base', () => {
+    const token = 'cdkd-noecho-0123456789abcdef';
+    const id = `rg-${token}`;
+    const noEcho = logOnlyBag([token]);
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: { ReplicationGroupId: id } },
+      noEcho,
+      { embedded: noEcho }
+    );
+    const masked = maskSecretsInText(snapshotLine(id), logOnlyBag(needles));
+    expect(masked).not.toContain('0123456789');
+    expect(masked).toContain('***20260803-040506');
+  });
+
+  it('an embedded needle alone, with no name key: the prefix stands in for its fragment', () => {
+    const token = 'cdkd-noecho-0123456789abcdef';
+    const id = `rg-${token}`;
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag([token]) }
+    );
+    expect([...(needles ?? [])].sort()).toEqual([`${id.slice(0, 28)}-final-`, token].sort());
+  });
+
+  it('a cache cluster (the atomic delete parameter) is cut the same way', () => {
+    const name = 'cdkd-secret-derived-cache-cluster-01';
+    const needles = secretNameNeedlesOf(
+      'Cluster',
+      {
+        resourceType: 'AWS::ElastiCache::CacheCluster',
+        physicalId: name,
+        properties: { ClusterName: name },
+      },
+      new Map([[name, REF]])
+    );
+    expect([...(needles ?? [])]).toContain(`${name.slice(0, 28)}-final-`);
+  });
+
+  it('a mixed-case needle the cut splits is found in the case-folded base', () => {
+    // AWS returns a lowercase id; a mixed-case one pins the fold defensively.
+    const token = 'NoEchoToken-0123456789ABCDEF';
+    const id = `Rg-${token}`;
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag([token]) }
+    );
+    expect([...(needles ?? [])]).toContain(`${id.toLowerCase().slice(0, 28)}-final-`);
+  });
+
+  it('a mixed-case needle wholly inside the kept part adds its lowercased spelling', () => {
+    const id = 'SecretHead-plain-tail-plain-tail';
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag(['SecretHead']) }
+    );
+    expect([...(needles ?? [])].sort()).toEqual(['SecretHead', 'secrethead']);
+    expect(maskSecretsInText(snapshotLine(id), logOnlyBag(needles))).not.toContain('secrethead');
+  });
+
+  it('folds a needle through the base charset: a character outside it, and a run of hyphens', () => {
+    const id = 'team_secret--value_x-plain-tail-plain';
+    const needles = secretNameNeedlesOf(
+      'Db',
+      { resourceType: 'AWS::RDS::DBInstance', physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag(['team_secret--value']) }
+    );
+    expect([...(needles ?? [])].sort()).toEqual(['team-secret-value', 'team_secret--value']);
+    expect(
+      maskSecretsInText(snapshotLine(id, 'AWS::RDS::DBInstance'), logOnlyBag(needles))
+    ).not.toContain('team-secret-value');
+  });
+
+  it('judges the substring floor on the folded spelling: one folding below it adds nothing', () => {
+    const id = 'ab___cd-plain-tail';
+    const needles = secretNameNeedlesOf(
+      'Db',
+      { resourceType: 'AWS::RDS::DBInstance', physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag(['ab___']) }
+    );
+    expect([...(needles ?? [])]).toEqual(['ab___']);
+  });
+
+  it('reads every occurrence: a needle inside the kept part AND across the cut', () => {
+    const id = `sekret-${'a'.repeat(19)}sekret-tail`;
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag(['sekret']) }
+    );
+    expect([...(needles ?? [])]).toContain(`${id.slice(0, 28)}-final-`);
+  });
+
+  it('adds nothing for a needle that starts at, or ends exactly at, the cut', () => {
+    const judge = (id: string, needle: string): string[] => [
+      ...(secretNameNeedlesOf(
+        'Cache',
+        { resourceType: RG, physicalId: id, properties: {} },
+        undefined,
+        { embedded: logOnlyBag([needle]) }
+      ) ?? []),
+    ];
+    const startsAtCut = `${'a'.repeat(28)}tok1-tail`;
+    expect(startsAtCut.indexOf('tok1-tail')).toBe(28);
+    expect(judge(startsAtCut, 'tok1-tail')).toEqual(['tok1-tail']);
+    const endsAtCut = `${'a'.repeat(22)}ends12-tail`;
+    expect(endsAtCut.indexOf('ends12') + 'ends12'.length).toBe(28);
+    expect(judge(endsAtCut, 'ends12')).toEqual(['ends12']);
+  });
+
+  it('adds nothing for a needle wholly inside the kept part, which already matches', () => {
+    const id = 'secret-head-plain-tail-plain-tail';
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag(['secret-head']) }
+    );
+    expect([...(needles ?? [])]).toEqual(['secret-head']);
+    expect(maskSecretsInText(snapshotLine(id), logOnlyBag(needles))).toContain(
+      '***-plain-tail-plain-final-'
+    );
+  });
+
+  it('adds nothing for a needle wholly past the cut, which the snapshot name does not carry', () => {
+    const id = 'plain-replication-group-head-tok-secret-value';
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: {} },
+      undefined,
+      { embedded: logOnlyBag(['tok-secret-value']) }
+    );
+    expect([...(needles ?? [])]).toEqual(['tok-secret-value']);
+  });
+
+  it('adds nothing for a needle below the substring floor, which masks only a whole string', () => {
+    const id = `${'a'.repeat(26)}xyz-tail`;
+    const needles = secretNameNeedlesOf(
+      'Cache',
+      { resourceType: RG, physicalId: id, properties: { ReplicationGroupId: 'xyz' } },
+      new Map([['xyz', REF]])
+    );
+    expect([...(needles ?? [])]).toEqual(['xyz']);
+  });
+
+  it('adds nothing for a type whose snapshot base keeps the whole id', () => {
+    const name = 'cdkd-secret-derived-database-instance-01';
+    const needles = secretNameNeedlesOf(
+      'Db',
+      {
+        resourceType: 'AWS::RDS::DBInstance',
+        physicalId: name,
+        properties: { DBInstanceIdentifier: name },
+      },
+      new Map([[name, REF]])
+    );
+    expect([...(needles ?? [])]).toEqual([name]);
   });
 });

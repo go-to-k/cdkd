@@ -46,10 +46,26 @@
 #      whose events scan would read the new topic's ARN.
 #   4. Redeploy without it: the replacement back prints the old, value-bearing
 #      name masked.
+#   4a. Redeploy with CDKD_TEST_NOECHO_SNAPSHOT=true: NoEchoSnapshotGroup, a
+#      Redis replication group whose id is `rg-<value>`, under
+#      `DeletionPolicy: Snapshot` (go-to-k/cdkd#3869).
+#   4b. LOAD-BEARING: redeploy without it. The template-removal DELETE takes a
+#      final snapshot named `<the id's first 28 characters>-final-<timestamp>`,
+#      which ends inside the value, so no literal needle matches it. The
+#      `Creating final snapshot` line prints that name masked, the output
+#      holds no fragment of it, and AWS holds the snapshot, which is deleted.
 #   5. Destroy, gone-probes, and the S3 version sweep (state.json holds the
 #      value in the clear by design, so every version of it is purged).
 #
 # The value is generated per run and never printed.
+#
+# Discrimination (go-to-k/cdkd#3869, for a mutation probe on real AWS): revert
+# the `finalSnapshotSpellingsOf` loop in
+# src/deployment/secret-name-needles.ts ALONE and Phase 4b fails "prints
+# NoEchoSnapshotGroup's final-snapshot base in plaintext": the engine judges
+# the state record's plaintext id from the stack's NoEcho values and masks the
+# whole id, which the snapshot name no longer spells (not yet measured on real
+# AWS).
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -140,6 +156,15 @@ SPLIT_CHILD_NAME="cdkd-test-noecho-splitchild-${ACCOUNT_ID}"
 CHILD_STACK="${STACK}~SplitChild"
 CHILD_STATE_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
 CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
+# NoEchoSnapshotGroup (go-to-k/cdkd#3869): its id, and the 28-character base
+# of the final snapshot its removal takes. The base must END inside the
+# value's random part, or a whole needle would still match it.
+SNAP_GROUP_ID="rg-${TOKEN}"
+SNAP_STEM="${SNAP_GROUP_ID:0:28}"
+if [ "${#SNAP_GROUP_ID}" -le 28 ] || [ "${#SNAP_GROUP_ID}" -gt 40 ] || [ "${#TOKEN}" -lt 28 ]; then
+  echo "FAIL: premise: NoEchoSnapshotGroup's id is ${#SNAP_GROUP_ID} characters; the snapshot arm needs 29 to 40, cut inside the value" >&2
+  exit 1
+fi
 RENAME_OLD_ARN="${RENAME_TOPIC_PREFIX}-a"
 RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
 
@@ -152,7 +177,7 @@ SCRATCH_FILES=()
 # the value: these paths exist to detect a masking regression, and echoing the
 # log there would print exactly what failed to be masked.
 diag_output() { # diag_output <text>
-  if [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]] \
+  if [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${SNAP_STEM}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]] \
     || [[ "$1" == *"${ALIAS_TOKEN}"* ]] || [[ -n "${ALIAS_ENCODING:-}" && "$1" == *"${ALIAS_ENCODING}"* ]]; then
     echo "    (output withheld: it carries a NoEcho value, split piece or encoding)" >&2
   else
@@ -170,6 +195,29 @@ mask_literals() { # mask_literals <text> <needle>...
     text=$(awk -v n="${needle}" '{ while (n != "" && (i = index($0, n)) > 0) $0 = substr($0, 1, i - 1) "***" substr($0, i + length(n)); print }' <<< "${text}")
   done
   printf '%s' "${text}"
+}
+
+# gone_probe / assert_gone for a probe that addresses a resource named from
+# the NoEcho value (NoEchoSnapshotGroup, its snapshot; go-to-k/cdkd#3869):
+# gone_probe's undetermined line echoes the probe command and AWS's text, so
+# it runs in a subshell here and that line is printed masked.
+masked_gone_probe() { # usage: masked_gone_probe aws <service> <read-verb> [args...]
+  local err rc
+  err=$( { gone_probe "$@"; } 2>&1 >/dev/null ) && rc=0 || rc=$?
+  if [ -n "${err}" ]; then
+    mask_literals "${err}" "${TOKEN}" "${SNAP_STEM}" >&2
+    echo >&2
+    exit 1
+  fi
+  return "${rc}"
+}
+masked_assert_gone() { # usage: masked_assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! masked_gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
 }
 
 # A split piece of NoEchoSplitToken in a captured output is a #4049 leak.
@@ -197,6 +245,36 @@ cleanup() {
   aws ssm delete-parameters --names "${CONSUMER_NAME}" "${REJECT_NAME}" "${SPLIT_NAME}" "${SPLIT_CHILD_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
+  # NoEchoSnapshotGroup and the final snapshot its removal takes (#3869),
+  # swept by the `${SNAP_STEM}-final-` prefix. A snapshot still `creating`
+  # refuses the delete, so this waits (bounded) for none to be `creating`
+  # first; a run killed mid-snapshot is the case this covers.
+  # A group still `creating` / `modifying` refuses the delete
+  # (InvalidReplicationGroupState), so retry, bounded, until AWS accepts it or
+  # the group is gone; one attempt would orphan the node of a run killed early.
+  for _ in $(seq 1 90); do
+    aws elasticache delete-replication-group --replication-group-id "${SNAP_GROUP_ID}" \
+      --region "${REGION}" >/dev/null 2>&1 && break
+    rg_probe=$(aws elasticache describe-replication-groups --replication-group-id "${SNAP_GROUP_ID}" \
+      --region "${REGION}" --query 'ReplicationGroups[0].Status' --output text 2>&1)
+    case "${rg_probe}" in
+      *ReplicationGroupNotFound* | deleting) break ;;
+    esac
+    sleep 10
+  done
+  for _ in $(seq 1 90); do
+    creating=$(aws elasticache describe-snapshots --region "${REGION}" \
+      --query "length(Snapshots[?starts_with(SnapshotName, '${SNAP_STEM}-final-') && SnapshotStatus=='creating'])" \
+      --output text 2>/dev/null)
+    [ "${creating:-0}" = "0" ] && break
+    sleep 10
+  done
+  for snap in $(aws elasticache describe-snapshots --region "${REGION}" \
+    --query "Snapshots[?starts_with(SnapshotName, '${SNAP_STEM}-final-')].SnapshotName" \
+    --output text 2>/dev/null); do
+    [ "${snap}" = "None" ] && continue
+    aws elasticache delete-snapshot --snapshot-name "${snap}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${destroy_rc}" -eq 0 ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -807,6 +885,97 @@ assert_gone "the value-named topic still exists after Phase 4" \
 echo "    OK: the replacement back masks the old, value-bearing name"
 assert_no_split_piece "the Phase 4 deploy output" "${DEPLOY_OUT_P4}"
 
+# --- Phase 4a: a replication group named from the value ---------------------
+echo "==> Phase 4a: redeploy adding NoEchoSnapshotGroup (id rg-<value>, DeletionPolicy: Snapshot)"
+if ! DEPLOY_OUT_P4A=$(CDKD_TEST_NOECHO_SNAPSHOT=true env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 4a deploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P4A}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P4A}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 4a deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
+  exit 1
+fi
+assert_no_split_piece "the Phase 4a deploy output" "${DEPLOY_OUT_P4A}"
+P4A_STATUS=$(aws elasticache describe-replication-groups --replication-group-id "${SNAP_GROUP_ID}" \
+  --region "${REGION}" --query 'ReplicationGroups[0].Status' --output text)
+if [ "${P4A_STATUS}" != "available" ]; then
+  echo "FAIL: premise: NoEchoSnapshotGroup is '${P4A_STATUS}' after Phase 4a, not 'available' -- the final snapshot cannot be taken" >&2
+  exit 1
+fi
+echo "    OK: AWS holds the replication group under the value-bearing id"
+
+# --- Phase 4b: its removal takes a final snapshot named from a CUT id --------
+echo "==> Phase 4b: redeploy without NoEchoSnapshotGroup (a final snapshot of a cut, value-bearing id)"
+if ! DEPLOY_OUT_P4B=$(env -u CDKD_TEST_NOECHO_SNAPSHOT -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 4b deploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P4B}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P4B}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 4b deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P4B}" == *"${SNAP_STEM}"* ]]; then
+  echo "FAIL: the Phase 4b deploy prints NoEchoSnapshotGroup's final-snapshot base in plaintext -- the snapshot name cuts the id inside the NoEcho value, and no needle masked the fragment (go-to-k/cdkd#3869)" >&2
+  mask_literals "$(grep -F 'final snapshot' <<< "${DEPLOY_OUT_P4B}" || true)" "${SNAP_STEM}" "${TOKEN}" >&2
+  echo >&2
+  exit 1
+fi
+assert_no_split_piece "the Phase 4b deploy output" "${DEPLOY_OUT_P4B}"
+if ! grep -qE 'Creating final snapshot \*\*\*[0-9]{8}-[0-9]{6} for NoEchoSnapshotGroup ' <<< "${DEPLOY_OUT_P4B}"; then
+  echo "FAIL: premise: the Phase 4b deploy printed no masked 'Creating final snapshot ***<timestamp> for NoEchoSnapshotGroup' line -- the final-snapshot arm did not run" >&2
+  diag_output "$(grep -F 'NoEchoSnapshotGroup' <<< "${DEPLOY_OUT_P4B}" || true)"
+  exit 1
+fi
+masked_assert_gone "NoEchoSnapshotGroup still exists after Phase 4b" \
+  aws elasticache describe-replication-groups --replication-group-id "${SNAP_GROUP_ID}" --region "${REGION}"
+SNAP_NAME=$(aws elasticache describe-snapshots --region "${REGION}" \
+  --query "Snapshots[?starts_with(SnapshotName, '${SNAP_STEM}-final-')].SnapshotName | [0]" \
+  --output text)
+if [ -z "${SNAP_NAME}" ] || [ "${SNAP_NAME}" = "None" ]; then
+  echo "FAIL: premise: AWS holds no final snapshot of NoEchoSnapshotGroup after Phase 4b (DeletionPolicy: Snapshot ignored)" >&2
+  exit 1
+fi
+SNAP_STATUS=$(aws elasticache describe-snapshots --snapshot-name "${SNAP_NAME}" --region "${REGION}" \
+  --query 'Snapshots[0].SnapshotStatus' --output text)
+if [ "${SNAP_STATUS}" != "available" ]; then
+  echo "FAIL: NoEchoSnapshotGroup's final snapshot is '${SNAP_STATUS}', not 'available', after its delete" >&2
+  exit 1
+fi
+echo "    OK: the snapshot line masks the cut, value-bearing name, and AWS holds the snapshot"
+# A test artifact: deleted here, and waited on (the delete is asynchronous).
+aws elasticache delete-snapshot --snapshot-name "${SNAP_NAME}" --region "${REGION}" >/dev/null
+SNAP_GONE=0
+for _ in $(seq 1 60); do
+  if masked_gone_probe aws elasticache describe-snapshots --snapshot-name "${SNAP_NAME}" --region "${REGION}"; then
+    SNAP_GONE=1
+    break
+  fi
+  # By name, describe-snapshots answers an empty list once the delete
+  # completes: a success response, not a not-found error.
+  if [ "$(aws elasticache describe-snapshots --snapshot-name "${SNAP_NAME}" --region "${REGION}" \
+    --query 'length(Snapshots)' --output text 2>/dev/null)" = "0" ]; then
+    SNAP_GONE=1
+    break
+  fi
+  sleep 10
+done
+if [ "${SNAP_GONE}" -ne 1 ]; then
+  echo "FAIL: NoEchoSnapshotGroup's final snapshot is still present 10 minutes after its delete" >&2
+  exit 1
+fi
+
 # --- Phase 5: destroy --------------------------------------------------------
 echo "==> Phase 5: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -827,6 +996,8 @@ assert_gone "SNS topic NoEchoRenamed still exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"
 assert_gone "the value-named SNS topic exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"
+masked_assert_gone "NoEchoSnapshotGroup exists after destroy" \
+  aws elasticache describe-replication-groups --replication-group-id "${SNAP_GROUP_ID}" --region "${REGION}"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: resources and state are gone"

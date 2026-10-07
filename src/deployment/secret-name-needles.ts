@@ -10,6 +10,11 @@
  * persisted, diffed or sent, since a physical id is the record's identity.
  */
 import type { ResourceState } from '../types/state.js';
+import {
+  ATOMIC_FINAL_SNAPSHOT_TYPES,
+  finalSnapshotNameCut,
+  PRE_DELETE_SNAPSHOT_TYPES,
+} from '../provisioning/final-snapshot.js';
 import { isSecretDerivedValue } from '../provisioning/masked-retry-logger.js';
 import { secretDerivedNamePairs } from './rollback-executor/names.js';
 import { currentLogLineMasker } from '../utils/log-line-masker.js';
@@ -48,7 +53,8 @@ import {
  * Two more arms: an IAM `Path` (the ARN carries it, and the rollback's keys
  * omit it) adds the whole id, and a needle of `secrets` the id embeds as it
  * is (a queue URL ending in the resolved name) is added for a READER's bag,
- * which does not hold the resource's plaintext.
+ * which does not hold the resource's plaintext. Last, the spellings a
+ * final-snapshot name of the id needs ({@link finalSnapshotSpellingsOf}).
  *
  * LOG-ONLY wherever they are recorded: they mask what PRINTS and never what
  * is persisted, diffed or sent, since a physical id is the record's identity.
@@ -125,7 +131,64 @@ export function secretNameNeedlesOf(
       }
     }
   }
+  if (physicalId !== undefined) {
+    for (const spelling of finalSnapshotSpellingsOf(physicalId, record?.resourceType, needles)) {
+      add(spelling);
+    }
+  }
   return needles.size > 0 ? needles : undefined;
+}
+
+/**
+ * The needles a final-snapshot name of this resource needs beyond `needles`
+ * (go-to-k/cdkd#3869), for a type that takes one (the atomic and pre-delete
+ * sets). The name is `<base>-final-<timestamp>`, where the base
+ * is the physical id LOWERCASED and, for ElastiCache, cut to 28 characters
+ * (`finalSnapshotNameCut`). Two spellings of a needle can miss it:
+ *
+ *  - one the cut SPLITS: the name carries only a fragment, which no literal
+ *    masker matches. The `<base>-final-` prefix stands in for it;
+ *  - one the base FOLDS (mixed case, or a character outside its charset)
+ *    wholly inside the kept part: its folded spelling stands in for it.
+ *
+ * Both reach the printed snapshot id and AWS's `SnapshotAlreadyExistsFault`
+ * text quoting it. The `{{resolve:` arm's id spellings already carry the
+ * prefix; the plaintext arms (a resolved name, a `NoEcho` value, an embedded
+ * needle) did not. A needle wholly past the cut is not in the name, so it adds
+ * nothing.
+ */
+function finalSnapshotSpellingsOf(
+  physicalId: string,
+  resourceType: unknown,
+  needles: ReadonlySet<string>
+): string[] {
+  // Only a type that takes a final snapshot ever prints such a name.
+  if (
+    typeof resourceType !== 'string' ||
+    !(ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) || PRE_DELETE_SNAPSHOT_TYPES.has(resourceType))
+  ) {
+    return [];
+  }
+  const { prefix, sanitized, kept } = finalSnapshotNameCut(physicalId, resourceType);
+  const spellings: string[] = [];
+  for (const needle of needles) {
+    // Folded as the base is: lowercased, and every character outside the
+    // snapshot charset mapped to `-` with runs collapsed (`sanitizeSnapshotBase`,
+    // minus its edge trim and `r` prefix, which only the whole id takes).
+    const folded = needle
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-{2,}/g, '-');
+    // A shorter spelling masks only a whole string, which a snapshot name
+    // never is; judged on the FOLDED one, the spelling the name carries.
+    if (folded.length < MIN_NEEDLE_LENGTH) continue;
+    for (let at = sanitized.indexOf(folded); at !== -1; at = sanitized.indexOf(folded, at + 1)) {
+      if (at >= kept) break;
+      if (at + folded.length > kept) spellings.push(prefix);
+      else if (folded !== needle) spellings.push(folded);
+    }
+  }
+  return spellings;
 }
 
 /** The bags a resource's name is judged with (see {@link secretNameNeedlesOf}). */
