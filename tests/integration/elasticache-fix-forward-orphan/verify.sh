@@ -355,6 +355,20 @@ wait_describe_denied() { # usage: wait_describe_denied <cluster id>
   echo "[verify] FAIL: ${DENY_ROLE}'s explicit deny on DescribeCacheClusters never bound within 3 minutes (last answer: ${probe:-<allowed>})" >&2
   exit 1
 }
+# Waits until the role's fresh inline policy grants DescribeCacheClusters:
+# before it propagates, the role is refused everything, and the deploy would
+# fail before its CREATE for the wrong reason.
+wait_describe_allowed() { # usage: wait_describe_allowed
+  local probe=""
+  for _ in $(seq 1 24); do
+    if probe="$(as_deny_role aws elasticache describe-cache-clusters --max-records 20 --region "${REGION}" 2>&1)"; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "[verify] FAIL: precondition -- ${DENY_ROLE} was never granted DescribeCacheClusters within 2 minutes (last answer: ${probe})" >&2
+  exit 1
+}
 drop_deny_role() { # usage: drop_deny_role
   delete_deny_role
   # IAM is eventually consistent: a get-role right after delete-role can
@@ -400,6 +414,7 @@ assert_record() { # usage: assert_record <logicalId> <cluster id>
 
 echo "[verify] step 2: a role that may create and describe cache clusters, but not delete one"
 make_deny_role allow-describe
+wait_describe_allowed
 
 echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE} in the background (ORPHAN_ARM=inject)"
 as_deny_role env -u KEPT_ARM ORPHAN_ARM=inject ${CLI} deploy "${STACK}" \
@@ -441,6 +456,9 @@ if [ -z "${SEEN}" ]; then
   echo "[verify] FAIL: ${ORPHAN_A} never answered with its creation time within 10 minutes" >&2
   exit 1
 fi
+# The provider polls every 10 seconds and keeps the first token a poll names:
+# let at least one of its polls see the creation time before any deny lands.
+sleep 15
 
 echo "[verify] step 2: deny DescribeCacheClusters to ${DENY_ROLE} while ${ORPHAN_A} is still being created"
 put_deny_policy deny-describe
@@ -478,6 +496,7 @@ OP_2="$(journaled_op OrphanCache "${ORPHAN_A}")"
 JOURNALED_TOKEN="$(printf '%s' "${OP_2}" | jq -r '.createdResourceIdentity // "<absent>"')"
 if [ "${JOURNALED_TOKEN}" != "${LIVE_TOKEN}" ]; then
   echo "[verify] FAIL: the journal carries OrphanCache's identity as '${JOURNALED_TOKEN}' (expected the live ${LIVE_TOKEN}; op: ${OP_2})" >&2
+  echo "         ('<absent>': no available-wait poll carried the creation time onto the failure's mark)" >&2
   exit 1
 fi
 echo "[verify] step 2 ok: ${ORPHAN_A} is in AWS, journaled with its live identity ${LIVE_TOKEN}, with no state record"
