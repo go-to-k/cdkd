@@ -36,6 +36,10 @@
 # provisionedBy=cc-api, and the removal redeploy must return it to the SDK
 # provider on the same ARN, which resets the dropped listener attribute.
 #
+# PLUS issue #4689 (Phase 5): a `--recreate-via-cc-api` of the listener must
+# REPLACE its HealthRule onto the new listener (the rule's create-only
+# `ListenerArn` is also write-only), not update the rule AWS already deleted.
+#
 # Run via: /run-integ alb
 #         or: bash tests/integration/alb/verify.sh
 
@@ -87,7 +91,7 @@ cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors tolerated)"
-  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}"
+  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}" "${P5_LOG:-}"
   # go-to-k/cdkd#4606: the Phase 4 injection's load balancer is created with
   # deletion protection on, and unfixed, the fix-forward settle drops it from
   # the rollback journal, so nothing else reaches it. Clear the protection and
@@ -101,6 +105,17 @@ cleanup() {
       ;;
   esac
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
+  # go-to-k/cdkd#4689: a Phase 5 recreate that failed mid-way can leave a
+  # listener (and its rule) state no longer records. Both live on this run's
+  # load balancer and go with it, so if the destroy left it, delete it by the
+  # ARN this run captured.
+  if [ -n "${P5_OLD_LISTENER:-}" ]; then
+    case "${LB_ARN:-}" in
+      arn:*:loadbalancer/app/*)
+        aws elbv2 delete-load-balancer --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+        ;;
+    esac
+  fi
   exit ${rc}
 }
 trap cleanup EXIT
@@ -266,9 +281,9 @@ echo "    deregistration_delay=60, idle_timeout=180, target swapped to 10.0.0.10
 #
 # The record is SEEDED to cc-api (the go-to-k/cdkd#4117 precedent in
 # lambda-event-invoke-config-update), not recreated through Cloud Control: this
-# binary has no Cloud Control route for a fresh listener, and
-# --recreate-via-cc-api of a listener with rules hits a separate defect in the
-# rule's replacement. The flip reads only the record's layer and its template
+# binary has no Cloud Control route for a fresh listener, and a
+# --recreate-via-cc-api would give the listener a new ARN, which the readbacks
+# below address by the old one (Phase 5 runs that recreate last). The flip reads only the record's layer and its template
 # property bag, which do not depend on the layer that created the listener.
 listener_record() { # usage: listener_record <jq path under the resource>; "" when absent
   local state
@@ -579,6 +594,92 @@ assert_gone "the fix-forward ${FF_LB_ARN} still exists after the deploy that rem
   aws elbv2 describe-load-balancers --load-balancer-arns "${FF_LB_ARN}" --region "${AWS_REGION}"
 rm -f "${FF_LOG}"
 echo "    OK: Phase 4 passed"
+
+# --- Phase 5: recreate the listener WITH its rule (go-to-k/cdkd#4689) --------
+# The live ListenerRule schema lists `ListenerArn` as create-only AND
+# write-only, and the schema fallback leaves a write-only create-only property
+# out, so a recreate of the listener promoted HealthRule as an in-place UPDATE.
+# AWS deletes a listener's rules with it, and that update failed `NotFound`.
+# The rule must be REPLACED onto the new listener. Last before the destroy:
+# the recreate leaves the listener record on cc-api and under a new ARN, which
+# Phase 2.5 and the listener-attribute readbacks must not see.
+echo ""
+echo "==> Phase 5: --recreate-via-cc-api ${LISTENER_LOGICAL} with its HealthRule (#4689)"
+P5_OLD_LISTENER="$(state_physical_id "${LISTENER_LOGICAL}")"
+P5_OLD_RULE="$(state_physical_id HealthRule)"
+case "${P5_OLD_LISTENER}" in
+  arn:*:listener/app/*) ;;
+  *) echo "FAIL: #4689 premise: the listener record holds '${P5_OLD_LISTENER}', not a listener ARN" >&2; exit 1;;
+esac
+case "${P5_OLD_RULE}" in
+  arn:*:listener-rule/app/*) ;;
+  *) echo "FAIL: #4689 premise: the HealthRule record holds '${P5_OLD_RULE}', not a listener-rule ARN" >&2; exit 1;;
+esac
+[ "$(listener_record .provisionedBy)" = "sdk" ] || {
+  echo "FAIL: #4689 premise: the listener is not on the SDK provider, so --recreate-via-cc-api would be refused" >&2
+  exit 1
+}
+P5_LOG=$(mktemp)
+set +e
+CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" \
+  --recreate-via-cc-api "${LISTENER_LOGICAL}" --yes >"${P5_LOG}" 2>&1
+P5_RC=$?
+set -e
+P5_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${P5_LOG}")"
+rm -f "${P5_LOG}"
+P5_LOG=""
+printf '%s\n' "${P5_PLAIN}" | sed 's/^/  /'
+# Pre-fix, this is the first assertion to go red: the pre-flight's replaced
+# list is empty, since the rule's create-only reference is write-only.
+if ! grep -qF -- "- HealthRule (AWS::ElasticLoadBalancingV2::ListenerRule) reads ${LISTENER_LOGICAL} via ListenerArn" <<<"${P5_PLAIN}"; then
+  echo "FAIL: #4689: the --recreate-via-cc-api pre-flight does not list HealthRule as replaced through ListenerArn (output above)" >&2
+  exit 1
+fi
+if grep -iE 'rules? not found|HandlerErrorCode: NotFound' <<<"${P5_PLAIN}" >/dev/null; then
+  echo "FAIL: #4689: the recreate hit NotFound (output above) -- the rule was updated in place after AWS deleted it" >&2
+  exit 1
+fi
+if [ "${P5_RC}" -ne 0 ]; then
+  echo "FAIL: #4689: the --recreate-via-cc-api deploy of ${LISTENER_LOGICAL} exited ${P5_RC} (output above)" >&2
+  exit 1
+fi
+if ! grep -qF 'Replacing HealthRule (AWS::ElasticLoadBalancingV2::ListenerRule) - immutable properties changed: ListenerArn' <<<"${P5_PLAIN}"; then
+  echo "FAIL: #4689: the deploy did not plan HealthRule as a replacement through ListenerArn (output above)" >&2
+  exit 1
+fi
+if ! grep -qF 'HealthRule (AWS::ElasticLoadBalancingV2::ListenerRule) replaced' <<<"${P5_PLAIN}"; then
+  echo "FAIL: #4689: no 'HealthRule ... replaced' progress line (output above)" >&2
+  exit 1
+fi
+P5_NEW_LISTENER="$(state_physical_id "${LISTENER_LOGICAL}")"
+P5_NEW_RULE="$(state_physical_id HealthRule)"
+case "${P5_NEW_LISTENER}" in
+  arn:*:listener/app/*) ;;
+  *) echo "FAIL: #4689: after the recreate the listener record holds '${P5_NEW_LISTENER}'" >&2; exit 1;;
+esac
+[ "${P5_NEW_LISTENER}" != "${P5_OLD_LISTENER}" ] || {
+  echo "FAIL: #4689 premise: the recreate kept the listener ARN ${P5_OLD_LISTENER}, so nothing moved the rule" >&2
+  exit 1
+}
+[ "${P5_NEW_RULE}" != "${P5_OLD_RULE}" ] || {
+  echo "FAIL: #4689: state still records HealthRule as the deleted ${P5_OLD_RULE}" >&2
+  exit 1
+}
+assert_gone "#4689: the recreated listener's predecessor ${P5_OLD_LISTENER} still exists" \
+  aws elbv2 describe-listeners --listener-arns "${P5_OLD_LISTENER}" --region "${AWS_REGION}"
+# The live rule on the NEW listener: the recorded ARN, priority 1, the
+# /health path condition and the fixed 200 response.
+P5_RULE_JSON="$(aws elbv2 describe-rules --listener-arn "${P5_NEW_LISTENER}" --region "${AWS_REGION}" \
+  --query "Rules[?IsDefault==\`false\`]" --output json)"
+P5_RULE_SHAPE="$(printf '%s' "${P5_RULE_JSON}" | jq -r '
+  if length != 1 then "count=\(length)" else .[0] |
+    "\(.RuleArn) \(.Priority) \([.Conditions[] | select(.Field == "path-pattern") | (.PathPatternConfig.Values // .Values)[]] | join(",")) \(.Actions[0].Type) \(.Actions[0].FixedResponseConfig.StatusCode)"
+  end')"
+if [ "${P5_RULE_SHAPE}" != "${P5_NEW_RULE} 1 /health fixed-response 200" ]; then
+  echo "FAIL: #4689: the new listener's rule is '${P5_RULE_SHAPE}', expected '${P5_NEW_RULE} 1 /health fixed-response 200'" >&2
+  exit 1
+fi
+echo "    OK: HealthRule replaced onto ${P5_NEW_LISTENER} (priority 1, /health -> 200), no NotFound"
 
 echo ""
 echo "==> Destroy ${STACK}"
