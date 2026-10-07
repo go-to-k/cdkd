@@ -446,7 +446,7 @@ for _ in $(seq 1 120); do
       echo "[verify] ${ORPHAN_A} answers '${status}' with its creation time: ${SEEN}"
       break
     fi
-  elif ! grep -qiE 'not ?found|no cluster' "${LOG_DIR}/live-err"; then
+  elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' "${LOG_DIR}/live-err"; then
     echo "[verify] FAIL: describing ${ORPHAN_A} failed: $(cat "${LOG_DIR}/live-err")" >&2
     exit 1
   fi
