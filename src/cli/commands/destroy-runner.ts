@@ -8,6 +8,7 @@ import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.
 import { displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
+import type { TemplateNoEchoReresolver } from '../../deployment/noecho-delete-reresolution.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import {
@@ -276,6 +277,16 @@ export interface DestroyRunnerContext {
    * Error + metadata only — never resource properties.
    */
   eventRecorder?: DeploymentEventRecorder;
+
+  /**
+   * The stack's synthesized template source (go-to-k/cdkd#4682): set by
+   * `cdkd destroy` when the app synthesized it, and by a nested-stack row for
+   * its child. Each delete whose record holds a NoEcho mask gets today's
+   * values at those coordinates (`DeleteContext.noEchoDeleteValues`), so a
+   * custom resource's handler receives them instead of being skipped.
+   * `cdkd state destroy` holds no template and leaves it unset.
+   */
+  noEchoReresolver?: TemplateNoEchoReresolver;
 }
 
 /**
@@ -1834,6 +1845,11 @@ export async function runDestroyForStack(
                   }
                 : undefined;
 
+            // go-to-k/cdkd#4682: today's values at the record's masked NoEcho
+            // coordinates, re-resolved from the template this destroy holds.
+            // Never persisted or logged; `undefined` keeps the provider's skip.
+            const noEchoDeleteValues = await ctx.noEchoReresolver?.valuesFor(logicalId, resource);
+
             // Wrap the entire retry loop in the per-resource deadline so a
             // genuinely-stuck delete (e.g. a hung Custom Resource handler or
             // a Cloud-Control polling loop that never terminates) aborts
@@ -1878,6 +1894,10 @@ export async function runDestroyForStack(
                             recordedAttributes: resource.attributes,
                             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
                             recordedNoEchoLeaves: resource.noEchoLeaves,
+                            ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+                            ...(ctx.noEchoReresolver !== undefined && {
+                              noEchoReresolver: ctx.noEchoReresolver,
+                            }),
                             // go-to-k/cdkd#2115: only a whole-stack teardown.
                             ...(ctx.stackDestroy === true && { stackDestroy: true }),
                           }

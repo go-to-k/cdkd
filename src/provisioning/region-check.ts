@@ -1,6 +1,10 @@
 import { ProvisioningError } from '../utils/error-handler.js';
 import type { SecretPrincipalRetryMemo } from './secret-principal-resolution.js';
 import type { InlinePolicyClaimed } from '../types/resource.js';
+import type {
+  NoEchoDeleteValues,
+  TemplateNoEchoReresolver,
+} from '../deployment/noecho-delete-reresolution.js';
 
 /**
  * Context passed to provider delete operations.
@@ -217,6 +221,25 @@ export interface DeleteContext {
    * whole-`***` leaf of it counts there.
    */
   recordedNoEchoLeaves?: readonly (readonly (string | number)[])[] | undefined;
+
+  /**
+   * Today's values at the record's masked `recordedNoEchoLeaves`
+   * coordinates (go-to-k/cdkd#4682), from a caller that holds the template:
+   * `cdkd destroy` with the app, and a deploy's replacement delete of a
+   * resource still in its template. A custom resource sends them in its
+   * `Delete` payload instead of skipping, masking its own messages with
+   * `maskSecrets`; a nested-stack row hands them to its child. In memory
+   * only: never persisted, logged or put in an error. ABSENT (a template-less
+   * command, a template removal, a rollback) keeps the skip.
+   */
+  noEchoDeleteValues?: NoEchoDeleteValues | undefined;
+
+  /**
+   * The destroying stack's template source (go-to-k/cdkd#4682), set by
+   * `cdkd destroy` only, so a nested-stack row's child destroy re-resolves
+   * from the child's template and the parameters this row hands it.
+   */
+  noEchoReresolver?: TemplateNoEchoReresolver | undefined;
 
   /**
    * The delete is part of tearing the WHOLE stack down: set only by

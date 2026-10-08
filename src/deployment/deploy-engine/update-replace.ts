@@ -1,4 +1,5 @@
 import { updatePartialMessage } from '../update-outcome.js';
+import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
@@ -100,6 +101,17 @@ export async function updateByReplacement(
     lostWithParent?: string | undefined;
   }
 ): Promise<ResourceOutcomeSignal | void> {
+  // go-to-k/cdkd#4682: the resource is still in the template, so a custom
+  // resource's delete of the OLD record gets today's values at its NoEcho
+  // coordinates instead of being skipped. Never persisted or logged.
+  const noEchoDeleteValues = noEchoDeleteValuesFromResolved({
+    record: currentResource,
+    templateResource: template?.Resources?.[logicalId],
+    resolvedProperties: resolvedProps,
+    noEchoParameters: this.noEchoPositionSources(stateResources, template)?.parameters ?? new Set(),
+    conditions: this.noEchoConditions,
+    secrets: updateSecrets,
+  });
   // Stateful guard for PROPERTY-DRIVEN replacement (an immutable /
   // createOnly property changed in the template). DELETE+CREATEing a
   // stateful type (RDS / EFS / Secret / SSM Parameter / Kinesis / etc.)
@@ -374,6 +386,7 @@ export async function updateByReplacement(
       snapshotPolicy: updateReplacePolicy,
       deletePolicy: updateReplacePolicy,
       trigger: recreateFlagName,
+      noEchoDeleteValues,
     });
   } else if (recreateFlagged) {
     // Destroy-then-create path. Same `UpdateReplacePolicy:
@@ -431,6 +444,7 @@ export async function updateByReplacement(
             recordedAttributes: currentResource.attributes,
             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
             recordedNoEchoLeaves: currentResource.noEchoLeaves,
+            ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
           }
         );
       } catch (deleteError) {
@@ -786,7 +800,8 @@ export async function updateByReplacement(
         replaceProps,
         updateSecrets,
         updateReplacePolicy,
-        oldDeleteRoute.provisionedBy
+        oldDeleteRoute.provisionedBy,
+        noEchoDeleteValues
       );
     }
 
@@ -866,7 +881,8 @@ export async function updateByReplacement(
         replaceProps,
         updateSecrets,
         updateReplacePolicy,
-        oldDeleteRoute.provisionedBy
+        oldDeleteRoute.provisionedBy,
+        noEchoDeleteValues
       );
     }
 
@@ -929,7 +945,8 @@ export async function updateByReplacement(
           cleanupFinalSnapshotId,
           updateReplacePolicy,
           updateSecrets,
-          oldDeleteRoute.provisionedBy
+          oldDeleteRoute.provisionedBy,
+          noEchoDeleteValues
         );
       }
     }

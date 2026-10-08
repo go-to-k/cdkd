@@ -67,8 +67,8 @@ import {
   carriesSecretMask,
   dynamicReferenceTokens,
   SECRET_MASK,
-  valueAtCoordinate,
 } from '../../deployment/secret-redaction.js';
+import { applyNoEchoDeleteValues } from '../../deployment/noecho-delete-reresolution.js';
 
 /**
  * The DELETE path threads NO masker (issue #2178).
@@ -134,6 +134,23 @@ export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
  */
 export const CR_NOECHO_PROPERTIES_SKIP_REASON =
   'NoEcho mask in recorded properties — Delete handler not invoked';
+
+/**
+ * Sibling of {@link CR_NOECHO_PROPERTIES_SKIP_REASON} for a `***` NO
+ * `noEchoLeaves` coordinate names (go-to-k/cdkd#4682): a mask embedded through
+ * `Fn::Join`, a record a pre-v11 binary wrote, or one `cdkd import` /
+ * `cdkd scrub` wrote. Nothing names what it stood for, so it cannot be
+ * re-resolved, and sending it is the hazard the NoEcho skip exists for.
+ */
+export const CR_MASKED_PROPERTIES_SKIP_REASON =
+  'redaction mask in recorded properties — Delete handler not invoked';
+
+/** When a NoEcho coordinate IS re-resolved on delete (go-to-k/cdkd#4682). */
+const NOECHO_RERESOLUTION_BOUND =
+  `cdkd re-resolves such a coordinate only where it holds the template — 'cdkd destroy' ` +
+  `with the app, or a 'cdkd deploy' replacing a resource still in its template — and only ` +
+  `while today's template reads a NoEcho parameter there; an attribute a producer declared ` +
+  `NoEcho has no template value and is never re-resolved.`;
 
 /** The NoEcho-mask skip's remedy for this delete's phase. */
 function noEchoPropertiesRemedy(context: DeleteContext | undefined, logicalId: string): string {
@@ -2093,21 +2110,48 @@ export class CustomResourceProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4043: the handler would receive `***` where a `NoEcho`
     // parameter value stood. Below the ServiceToken arms (an unaddressable
-    // handler is the more basic cause) and above any AWS call.
-    const maskedNoEchoPaths = (context?.recordedNoEchoLeaves ?? [])
-      .filter((coordinate) => carriesSecretMask(valueAtCoordinate(properties, coordinate)))
-      .map((coordinate) => coordinate.join('.'));
-    if (maskedNoEchoPaths.length > 0) {
+    // handler is the more basic cause) and above any AWS call. A caller that
+    // holds the template re-resolved those coordinates (go-to-k/cdkd#4682):
+    // the payload carries today's values, the record keeps the mask.
+    const reresolved = context?.noEchoDeleteValues;
+    const { payload, unresolved } = applyNoEchoDeleteValues(
+      properties,
+      context?.recordedNoEchoLeaves,
+      reresolved
+    );
+    if (unresolved.length > 0) {
+      const maskedNoEchoPaths = unresolved.map((coordinate) => coordinate.join('.'));
       this.logger.warn(
         safeMsg`Custom resource ${logicalId} is recorded in state with ${maskedNoEchoPaths.join(', ')} ` +
           `holding the '***' mask of a NoEcho value (a NoEcho parameter, or an attribute declared ` +
-          `NoEcho), which cdkd does not keep or re-resolve ` +
-          `on delete, so its handler would receive the mask in ResourceProperties; skipping deletion — ` +
-          `the handler is not invoked, so anything this custom resource manages is LEFT IN PLACE. ` +
+          `NoEcho), which cdkd does not keep, so its handler would receive the mask in ` +
+          `ResourceProperties; skipping deletion — the handler is not invoked, so anything this ` +
+          `custom resource manages is LEFT IN PLACE. ${NOECHO_RERESOLUTION_BOUND} ` +
           safeMsg`${noEchoPropertiesRemedy(context, logicalId)}`
       );
       return { outcome: 'skipped', reason: CR_NOECHO_PROPERTIES_SKIP_REASON };
     }
+    // go-to-k/cdkd#4682 (the issue's second decision): a mask NO coordinate
+    // names (one embedded through `Fn::Join`, a pre-v11 record, an import or
+    // scrub record) is not re-resolvable either, and sending it is the same
+    // hazard: a tolerant handler answers SUCCESS on `***` and the record is
+    // dropped over whatever it manages.
+    if (carriesSecretMask(payload)) {
+      this.logger.warn(
+        safeMsg`Custom resource ${logicalId} is recorded in state with a property holding the ` +
+          `'***' redaction mask, which no NoEcho coordinate of the record names, so cdkd cannot ` +
+          `re-resolve it and its handler would receive the mask in ResourceProperties; skipping ` +
+          `deletion — the handler is not invoked, so anything this custom resource manages is ` +
+          `LEFT IN PLACE. ` +
+          safeMsg`${noEchoPropertiesRemedy(context, logicalId)}`
+      );
+      return { outcome: 'skipped', reason: CR_MASKED_PROPERTIES_SKIP_REASON };
+    }
+    // The re-resolved values' masker, for every message below that can carry
+    // a payload value (the handler's reason, its log, an invoke error).
+    const deleteMask: MaskerFn | undefined =
+      payload === properties ? DELETE_PATH_UNMASKED : reresolved?.maskSecrets;
+    const show = (text: string): string => (deleteMask === undefined ? text : deleteMask(text));
 
     // Fail-fast for re-run idempotency (issue #804): after an interrupted /
     // partially-failed destroy, the preserved state can still list a Custom
@@ -2162,11 +2206,12 @@ export class CustomResourceProvider implements ResourceProvider {
           LogicalResourceId: logicalId,
           PhysicalResourceId: physicalId,
           StackId: invocation.stackId,
-          ResourceProperties: this.stringifyProperties(properties),
+          ResourceProperties: this.stringifyProperties(payload),
         }),
         // `DeleteContext` carries no masker by the SecretMaskingContext
-        // contract — see DELETE_PATH_UNMASKED.
-        DELETE_PATH_UNMASKED
+        // contract — see DELETE_PATH_UNMASKED — except the re-resolved
+        // values' own (go-to-k/cdkd#4682).
+        deleteMask
       );
 
       // Issue #2054: the handler RAN and said it did not delete. This arm used
@@ -2181,9 +2226,11 @@ export class CustomResourceProvider implements ResourceProvider {
       // break it carries.
       if (cfnResponse.Status === 'FAILED') {
         this.logger.warn(
-          `Custom resource delete handler returned FAILED for ${logicalId}: ` +
-            `${cfnResponse.Reason || 'Unknown reason'}. The handler reported that it did NOT ` +
-            `delete, so anything this custom resource manages is LEFT IN PLACE${handlerSkipRemedy(context, logicalId)}`
+          show(
+            `Custom resource delete handler returned FAILED for ${logicalId}: ` +
+              `${cfnResponse.Reason || 'Unknown reason'}. The handler reported that it did NOT ` +
+              `delete, so anything this custom resource manages is LEFT IN PLACE${handlerSkipRemedy(context, logicalId)}`
+          )
         );
         return { outcome: 'skipped', reason: CR_DELETE_HANDLER_FAILED_SKIP_REASON };
       }
@@ -2209,9 +2256,11 @@ export class CustomResourceProvider implements ResourceProvider {
       // their catch classifies "already deleted" by substring, so an AWS text
       // carrying `does not exist` would put the record right back in the bin.
       this.logger.warn(
-        `Failed to delete custom resource ${logicalId}, but continuing: ${describeAwsFailure(error).detail}. ` +
-          `The Delete handler did not complete, so anything this custom resource manages may still ` +
-          `be LIVE${handlerSkipRemedy(context, logicalId)}`
+        show(
+          `Failed to delete custom resource ${logicalId}, but continuing: ${describeAwsFailure(error).detail}. ` +
+            `The Delete handler did not complete, so anything this custom resource manages may still ` +
+            `be LIVE${handlerSkipRemedy(context, logicalId)}`
+        )
       );
       return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }
@@ -2380,6 +2429,9 @@ export class CustomResourceProvider implements ResourceProvider {
     // Ctrl-C aborts a 47.75s pre-delivery backoff and the placeholder
     // `PutObject`'s own retry schedule instead of sitting them out.
     const watch = startInterruptWatch(`Custom resource ${logicalId}`);
+    // Masked BEFORE truncation, so a cut cannot leave half a needle: the
+    // handler's reason and log can echo the payload (go-to-k/cdkd#4682).
+    const shown = (text: string): string => (mask === undefined ? text : mask(text));
     try {
       // Resolved ONCE per call, and deliberately AFTER the watch above: the
       // value does not vary between attempts. It REJECTS when STS cannot name
@@ -2454,7 +2506,7 @@ export class CustomResourceProvider implements ResourceProvider {
           this.logger.warn(
             `Custom resource ${operation} for ${logicalId} hit a transient IAM-authorization error ` +
               `before the request was delivered (attempt ${attempt + 1}/${this.preDeliveryAuthzMaxRetries + 1}): ` +
-              `${this.truncateReason(describeAwsFailure(error).detail)}. ` +
+              `${this.truncateReason(shown(describeAwsFailure(error).detail))}. ` +
               `Retrying in ${delayMs / 1000}s with a fresh response URL and RequestId.`
           );
           // Best-effort, and BEFORE the sleep so an interrupt cannot skip it.
@@ -2489,10 +2541,10 @@ export class CustomResourceProvider implements ResourceProvider {
           failedResponseRetries += 1;
           this.logger.warn(
             `Custom resource ${operation} for ${logicalId} returned a transient IAM-authorization FAILED ` +
-              `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason)}. ` +
+              `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason === undefined ? undefined : shown(cfnResponse.Reason))}. ` +
               (logAuthzMatch === undefined
                 ? ''
-                : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(logAuthzMatch.line)}. `) +
+                : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(shown(logAuthzMatch.line))}. `) +
               `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
           );
           await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
@@ -2569,7 +2621,7 @@ export class CustomResourceProvider implements ResourceProvider {
               `the reason. Log tail from the DISPATCH invocation (for the CDK Provider ` +
               `framework's async pattern the failure may have occurred in a later execution, ` +
               `whose log this is not):\n` +
-              this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+              this.truncateReason(shown(logTail), CR_LOG_TAIL_WARN_MAX_CHARS)
           );
         }
 
@@ -3085,10 +3137,15 @@ export class CustomResourceProvider implements ResourceProvider {
       if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
         this.logger.warn(
           `Backing function log tail for ${logicalId} (${operation}):\n` +
-            this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+            this.truncateReason(
+              mask === undefined ? logTail : mask(logTail),
+              CR_LOG_TAIL_WARN_MAX_CHARS
+            )
         );
       }
-      throw new Error(`Lambda function error (${lambdaResponse.FunctionError}): ${errorPayload}`);
+      throw new Error(
+        `Lambda function error (${lambdaResponse.FunctionError}): ${mask === undefined ? errorPayload : mask(errorPayload)}`
+      );
     }
 
     // Try to parse direct Lambda response

@@ -70,6 +70,8 @@ import {
   type StackLike,
 } from '../stack-matcher.js';
 import { runDestroyForStack } from './destroy-runner.js';
+import { TemplateNoEchoReresolver } from '../../deployment/noecho-delete-reresolution.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
   inferCrossStackStackDeps,
   type CrossStackScanStack,
@@ -367,7 +369,13 @@ async function destroyCommand(
     // everywhere matchStacks is used. `terminationProtection` is consulted
     // in the per-stack loop below to refuse destroying protected stacks
     // before any lock or per-resource delete fires.
-    type AppStack = StackLike & { region?: string; terminationProtection?: boolean };
+    type AppStack = StackLike & {
+      region?: string;
+      terminationProtection?: boolean;
+      // go-to-k/cdkd#4682: what a delete re-resolves a NoEcho coordinate from.
+      template?: CloudFormationTemplate;
+      nestedTemplates?: Record<string, string>;
+    };
     let appStacks: AppStack[] = [];
     // Synthesized templates kept for cross-stack ordering inference (see the
     // reverse-edge sort below). Only populated when synth succeeds; on the
@@ -408,6 +416,8 @@ async function destroyCommand(
           ...(s.terminationProtection !== undefined && {
             terminationProtection: s.terminationProtection,
           }),
+          template: s.template,
+          ...(s.nestedTemplates !== undefined && { nestedTemplates: s.nestedTemplates }),
         }));
         synthScanStacks = result.stacks.map((s) => ({
           stackName: s.stackName,
@@ -972,6 +982,19 @@ async function destroyCommand(
                 // a deploy-engine delete never sets it.
                 stackDestroy: true,
                 exportIndexStore,
+                // go-to-k/cdkd#4682: the synthesized template, so a custom
+                // resource reading a NoEcho parameter gets its value back on
+                // delete. A macro-carrying template was never expanded here.
+                ...(TemplateNoEchoReresolver.usable(synthStack?.template) && {
+                  noEchoReresolver: new TemplateNoEchoReresolver({
+                    template: synthStack.template,
+                    stackName,
+                    region: stackTargetRegion,
+                    ...(synthStack.nestedTemplates !== undefined && {
+                      nestedTemplates: synthStack.nestedTemplates,
+                    }),
+                  }),
+                }),
                 ...(options.allowUnsupportedTypes?.length && {
                   allowUnsupportedTypes: options.allowUnsupportedTypes,
                 }),
