@@ -34,16 +34,19 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
  * region-valued test: `Object.is(...)`, membership (`[a, region].includes(x)`,
  * `regions.indexOf(region)`), `localeCompare`, a `switch` on a region or with a
  * region `case`, and either side wrapped in `String(...)` or a bare
- * `` `${...}` `` template.
+ * `` `${...}` `` template. These arms lean SAFE: a substring test taking a
+ * region as its ARGUMENT (`arn.includes(region)`) and a `localeCompare` used
+ * for ordering are refused too, and a genuine one takes the marker below.
  *
  * Out of reach by design:
  * - a region used as a Map or cache KEY, which is not an equality at all.
  *   `cfn-fallback.ts`'s two memo keys are that class, and their own behaviour
  *   tests are what guard them;
- * - any other way to compare without an equality operator: a hand-rolled
- *   `.some(r => ...)` / `.find(...)` over a list, `startsWith` / `endsWith`, a
- *   `Set` / object lookup, `Array.prototype.includes.call(...)`, a template
- *   carrying more than the region, a comparison inside a helper of its own;
+ * - any other way to compare without an equality operator: `startsWith` /
+ *   `endsWith`, a `Set` / object lookup, `Array.prototype.includes.call(...)`,
+ *   a template carrying more than the region, a comparison inside a helper of
+ *   its own, or a `.some(...)` / `.find(...)` callback whose own comparison
+ *   names no region (one that does, `r === region`, is caught as an equality);
  * - two plain names neither ending in `region`, as above.
  *
  * A reader must not take the fence to cover those.
@@ -51,7 +54,8 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
  * A comparison that genuinely means "this exact string" carries
  * `// allow-raw-region-compare: <reason>` on the line above or the same line.
  * The marker exempts LINES, not one comparison: every comparison starting on
- * the marker's last line or the line after it.
+ * the marker's last line or the line after it. A `switch` is reported at its
+ * `switch` line, so its marker goes above that line and covers every `case`.
  */
 
 const MARKER = 'allow-raw-region-compare:';
@@ -143,11 +147,16 @@ function isRegionComparingCall(node: Node): boolean {
   const args = node['arguments'] as Node[];
   const name = nameOf(callee);
   if (object.type === 'Identifier' && object['name'] === 'Object' && name === 'is') {
-    return args.some((a) => isRegionValued(a));
+    const [a, b] = args;
+    return (
+      a !== undefined &&
+      b !== undefined &&
+      ((isRegionValued(a) && !isAbsenceLiteral(b)) || (isRegionValued(b) && !isAbsenceLiteral(a)))
+    );
   }
   // Membership: `regions.includes(region)` or `[a, region].includes(x)`. A
   // region's OWN `.includes('gov')` is a substring test, so not matched.
-  if (name === 'includes' || name === 'indexOf') {
+  if (name === 'includes' || name === 'indexOf' || name === 'lastIndexOf') {
     return (
       args.some((a) => isRegionValued(a)) ||
       (object.type === 'ArrayExpression' &&
@@ -273,6 +282,9 @@ describe('the bare-region-comparison scanner (issue #2209)', () => {
     '[a, region].includes(target)',
     'regions.includes(this.resolverRegion)',
     'regions.indexOf(region) >= 0',
+    'regions.lastIndexOf(region) >= 0',
+    // Leans safe: a substring test taking a region as its argument.
+    'arn.includes(region)',
     'Object.is(region, this.resolverRegion)',
     'Object.is(target, region)',
     'region.localeCompare(this.resolverRegion) === 0',
@@ -317,6 +329,8 @@ describe('the bare-region-comparison scanner (issue #2209)', () => {
     "region.includes('-gov-')",
     'producerRegions.includes(x)',
     'Object.is(a, b)',
+    'Object.is(region, undefined)',
+    'Object.is(null, region)',
     'String(name) === other',
     '`${region}-suffix` === target',
     'names.localeCompare(other)',
