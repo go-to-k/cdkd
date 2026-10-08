@@ -221,7 +221,8 @@ cleanup() {
     # would otherwise synthesize whatever app the caller's cwd holds.
     (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)
     # Then by name, for the buckets no state record holds (the orphans and
-    # the re-created name). All are empty: nothing in this run writes objects.
+    # the re-created name). OrphanD's holds the one object step 2c wrote,
+    # emptied first.
     empty_bucket_by_name "${BUCKET_D}"
     for b in "${ALL_BUCKETS[@]}"; do
       delete_bucket_by_name "${b}"
@@ -453,9 +454,18 @@ fi
 echo "[verify] step 2b ok: ${BUCKET_C} re-created outside the stack (CreationDate ${C_CREATED} -> ${C2_CREATED})"
 
 echo "[verify] step 2c: something writes data into ${BUCKET_D}"
+D_CREATED="$(listed_creation_date "${BUCKET_D}")"
 printf 'held by someone else\n' > "${LOG_DIR}/held-data.txt"
 aws s3api put-object --bucket "${BUCKET_D}" --region "${REGION}" --key "${D_OBJECT_KEY}" \
   --body "${LOG_DIR}/held-data.txt" >/dev/null
+# Premise: an object write does not move the bucket's CreationDate (not part
+# of the #4606 measurement). If it did, OrphanD would read as another bucket
+# and be kept for that reason, and step 3 would measure the wrong guard.
+D_CREATED_AFTER="$(listed_creation_date "${BUCKET_D}")"
+if [ -z "${D_CREATED}" ] || [ "${D_CREATED_AFTER}" != "${D_CREATED}" ]; then
+  echo "[verify] FAIL: premise -- ${BUCKET_D}'s CreationDate moved from '${D_CREATED}' to '${D_CREATED_AFTER}' on an object write, so step 3 could not tell the never-empty guard from an identity mismatch" >&2
+  exit 1
+fi
 
 echo "[verify] step 3: the fix-forward (same logical ids, other names)"
 set +e
@@ -474,6 +484,10 @@ if [ "${FF_RC}" -ne 2 ]; then
 fi
 # OrphanD's delete did not complete, so the journal is kept with that entry
 # alone (the next successful deploy retries it).
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: the fix-forward dropped the rollback journal (expected it kept with OrphanD's entry, whose delete the never-empty guard skipped -- output above)" >&2
+  exit 1
+fi
 JOURNAL_3="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
 J3_IDS="$(printf '%s' "${JOURNAL_3}" | jq -r '[.segments[].failedOperations[]? | select(.physicalIdRecoveredFromError == true) | .logicalId] | sort | join(",")')"
 if [ "${J3_IDS}" != "OrphanD" ]; then
@@ -555,6 +569,10 @@ echo "[verify] step 4: destroy"
 aws s3api delete-bucket --bucket "${BUCKET_C}" --region "${REGION}"
 empty_bucket_by_name "${BUCKET_D}"
 aws s3api delete-bucket --bucket "${BUCKET_D}" --region "${REGION}"
+# The destroy's journal replay asks GetBucketLocation first: wait until IT
+# reports the bucket gone, or a half-propagated delete reads as 'unproven'.
+assert_gone_eventually "step 4: ${BUCKET_D} still located after its delete" \
+  aws s3api get-bucket-location --bucket "${BUCKET_D}" --region "${REGION}"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 for b in "${ALL_BUCKETS[@]}"; do
   assert_gone_eventually "bucket ${b} still exists after destroy" \
