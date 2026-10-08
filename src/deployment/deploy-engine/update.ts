@@ -200,7 +200,7 @@ export async function provisionUpdate(
     stackName
   );
   if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
-  printNestedStackReadsOnly(context, resourceType);
+  printNestedStackReadsOnly(context, resourceType, this.secretNameBagFor(logicalId));
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown

@@ -666,7 +666,8 @@
         "recreate-nested-logical-id-collision",
         "remove-protection-journaled-orphan",
         "rollback-nested-cross-region-secret",
-        "scrub-nested-child"
+        "scrub-nested-child",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "custom-resource-noecho-nested": [
@@ -715,6 +716,9 @@
           "literal"
         ],
         "scrub-nested-child": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "literal"
         ]
       }
@@ -6781,6 +6785,7 @@
         "schema-v9-to-v10-migration",
         "scrub-nested-child",
         "sdk-ccapi-crossref",
+        "secret-derived-immutable-names",
         "secrets-dynamic-ref",
         "stale-attribute-heal",
         "state-info-command",
@@ -7078,6 +7083,10 @@
         ],
         "sdk-ccapi-crossref": [
           "l1"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ],
         "secrets-dynamic-ref": [
           "l1",

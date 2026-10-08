@@ -7,6 +7,28 @@ import * as appsync from 'aws-cdk-lib/aws-appsync';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+
+/**
+ * `QueueReaderChild`: stores the parent-passed queue ARN. Its description
+ * changes on UPDATE, so the parent's row is updated too.
+ */
+class QueueReaderChild extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props: cdk.NestedStackProps & { update: boolean }) {
+    super(scope, id, props);
+    // Pinned so the child's cdkd state key is `<parent>~QueueReaderChild`.
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('QueueReaderChild');
+    const queueArn = new cdk.CfnParameter(this, 'QueueArn', { type: 'String' });
+    queueArn.overrideLogicalId('QueueArn');
+    new ssm.CfnParameter(this, 'ChildQueueArn', {
+      // Named per run by `verify.sh`, so its cleanup can delete it by name.
+      name: process.env.SDIN_CHILD_PARAM_NAME ?? '/cdkd-integ/sdin-unset/child-queue-arn',
+      type: 'String',
+      value: queueArn.valueAsString,
+      description: props.update ? 'cdkd integ: updated' : 'cdkd integ: initial',
+    });
+  }
+}
 
 /**
  * Immutable NAMES taken from a Secrets Manager secret, updated in place
@@ -70,6 +92,14 @@ import * as scheduler from 'aws-cdk-lib/aws-scheduler';
  *     ones too. A redacted recorded target or role (the date then decides) is
  *     covered by unit tests only.
  *
+ *   - `QueueReaderChild` (a nested stack, go-to-k/cdkd#3869) receives
+ *     SecretQueue's ARN as its `QueueArn` parameter and stores it in an SSM
+ *     String parameter. The parent's read is no recorded secret of the row, and
+ *     never may be (it would seed the child's export-name verdict), so the
+ *     child's `Resolved Ref to parameter: QueueArn` and provider lines printed
+ *     the queue name until the row's reads joined the printing bag bound around
+ *     its body.
+ *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
  * `PolicyDocument`, the API's `XrayEnabled`, the DataSource's `Description`
@@ -91,6 +121,8 @@ import * as scheduler from 'aws-cdk-lib/aws-scheduler';
  * covers: AWS::Scheduler::ScheduleGroup
  * covers: AWS::Scheduler::Schedule
  * covers: AWS::IAM::Role
+ * covers: AWS::CloudFormation::Stack
+ * covers: AWS::SSM::Parameter
  */
 export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -271,6 +303,11 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       target: { arn: plainTargetQueue.attrArn, roleArn: plainScheduleRole.attrArn },
     });
     plainTargetSchedule.addDependency(scheduleGroup);
+
+    new QueueReaderChild(this, 'QueueReaderChild', {
+      parameters: { QueueArn: secretQueue.attrArn },
+      update,
+    });
 
     const logGroup = new logs.CfnLogGroup(this, 'FilterLogGroup', { retentionInDays: 1 });
     new logs.CfnMetricFilter(this, 'SecretFilter', {

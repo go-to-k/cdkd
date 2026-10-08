@@ -192,15 +192,22 @@ export function buildResolverContext(
  * (go-to-k/cdkd#3869) to a print-only bag (`ResolverContext.printingSecrets`)
  * instead of the row's own: that bag is the child's `inheritedSecrets`, where
  * a log-only needle seeds the child's export-name verdict and would withhold
- * an export the same template publishes at the root (security review). The
- * row's own `resolved to` lines stay masked; its provider lines do not. A
- * no-op for every other type.
+ * an export the same template publishes at the root (security review).
+ *
+ * The print-only bag is the row's derived-name registry (`secretNameBagFor`),
+ * which `provisionResource` binds as a PRINTING bag around the row's whole
+ * body. The child engine deploys inside that body, so the needles a read
+ * records (a parent-passed `GetAtt SecretQueue.Arn`) mask the child's
+ * resolver, provider and engine lines, and the row's own provider lines,
+ * through the logger's sink, without reaching the child's `inheritedSecrets`.
+ * A no-op for every other type.
  */
 export function printNestedStackReadsOnly(
   context: import('../intrinsic-function-resolver.js').ResolverContext,
-  resourceType: string
+  resourceType: string,
+  rowPrintingRegistry: RecordedSecretValues
 ): void {
-  if (resourceType === 'AWS::CloudFormation::Stack') context.printingSecrets = new Map();
+  if (resourceType === 'AWS::CloudFormation::Stack') context.printingSecrets = rowPrintingRegistry;
 }
 
 /** The logical id an `Fn::GetAtt` input node reads. */

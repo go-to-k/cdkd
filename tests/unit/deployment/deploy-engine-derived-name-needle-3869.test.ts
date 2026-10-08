@@ -17,7 +17,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
-import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
+import { hasMaskableValues, recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
+import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
@@ -111,7 +114,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
 
   const events: Array<Record<string, unknown>> = [];
 
-  function makeEngine(): DeployEngine {
+  function makeEngine(levels: string[][] = [['Role']]): DeployEngine {
     return new DeployEngine(
       stateBackend as never,
       {
@@ -120,7 +123,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       } as never,
       {
         buildGraph: vi.fn().mockReturnValue({}),
-        getExecutionLevels: vi.fn().mockReturnValue([['Role']]),
+        getExecutionLevels: vi.fn().mockReturnValue(levels),
         getDirectDependencies: vi.fn().mockReturnValue([]),
       } as never,
       diffCalculator as never,
@@ -412,6 +415,86 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(provisioning).toHaveLength(1);
     expect(provisioning[0]!['printingSecrets'] instanceof Map).toBe(printOnly);
   });
+
+  it.each(['CREATE', 'UPDATE'] as const)(
+    "a nested-stack %s row's reads mask the child's lines and its own, never reaching its inheritedSecrets",
+    async (changeType) => {
+      // The parent passes `GetAtt SecretQueue.Arn` to the child: the read is
+      // recorded into the row's print-only bag, which must be the registry
+      // bound around the row's body, since the child engine deploys inside the
+      // provider call and prints the value on its resolver and provider lines.
+      const queueArn = 'arn:aws:sqs:us-east-1:123456789012:team-secret-queue-name';
+      const type = 'AWS::CloudFormation::Stack';
+      stateBackend.getState!.mockResolvedValue(
+        changeType === 'CREATE'
+          ? { state: null, etag: undefined }
+          : {
+              state: {
+                version: STATE_SCHEMA_VERSION_CURRENT,
+                stackName,
+                region: 'us-east-1',
+                resources: {
+                  NestedRow: {
+                    physicalId: 'child-stack',
+                    resourceType: type,
+                    properties: { A: 'a' },
+                  },
+                },
+                outputs: {},
+                lastModified: 1,
+              },
+              etag: 'etag-old',
+            }
+      );
+      diffCalculator.calculateDiff!.mockResolvedValue(
+        new Map<string, ResourceChange>([
+          [
+            'NestedRow',
+            {
+              logicalId: 'NestedRow',
+              changeType,
+              resourceType: type,
+              desiredProperties: { A: 'b' },
+              ...(changeType === 'UPDATE' && {
+                currentProperties: { A: 'a' },
+                propertyChanges: [
+                  { path: 'A', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+                ],
+              }),
+            },
+          ],
+        ])
+      );
+      resolveSpy.mockImplementation((value: unknown, ctx: Record<string, unknown>) => {
+        if (Array.isArray(ctx['redactedAttributeReads'])) {
+          recordLogOnlyValue(ctx['printingSecrets'] as Map<string, string>, queueArn);
+        }
+        return Promise.resolve(value);
+      });
+      let childLine: string | undefined;
+      let inherited: Map<string, string> | undefined;
+      const childDeploy = (): Promise<{ physicalId: string }> => {
+        childLine = currentLogLineMasker()?.(`Resolved Ref to parameter: QueueArn -> ${queueArn}`);
+        inherited = getCurrentResourceSecrets() as Map<string, string> | undefined;
+        // The row's OWN provider line, through the logger's sink.
+        getLogger().debug(`Creating nested stack NestedRow with QueueArn ${queueArn}`);
+        return Promise.resolve({ physicalId: 'child-stack' });
+      };
+      provider.create!.mockImplementation(childDeploy);
+      provider.update!.mockImplementation(childDeploy);
+
+      await makeEngine([['NestedRow']]).deploy(stackName, {
+        Resources: { NestedRow: { Type: type, Properties: { A: 'b' } } },
+      });
+
+      expect(childLine).toBe('Resolved Ref to parameter: QueueArn -> ***');
+      expect(logLines).toContain('debug Creating nested stack NestedRow with QueueArn ***');
+      expect(logLines.join('\n')).not.toContain('team-secret-queue-name');
+      // The child's `inheritedSecrets` (the row's own bag) holds no read needle.
+      expect(inherited).toBeDefined();
+      expect(hasMaskableValues(inherited!)).toBe(false);
+    }
+  );
 
   it('a stack-wide NoEcho value an id contains by chance is no evidence, for a reader or a deleted reader', async () => {
     const noEcho = new Map<string, string>();
