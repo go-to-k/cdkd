@@ -352,8 +352,12 @@ describe('a write-only create-only property holding a plain reference (go-to-k/c
     expect(readers).toEqual([]);
   });
 
-  it('does not list a Fn::GetAtt of a recreated custom resource, whose Data may be NoEcho', async () => {
-    for (const type of ['Custom::Thing', 'AWS::CloudFormation::CustomResource']) {
+  it('does not list a Fn::GetAtt of a recreated custom resource or nested stack, which may be NoEcho', async () => {
+    for (const type of [
+      'Custom::Thing',
+      'AWS::CloudFormation::CustomResource',
+      'AWS::CloudFormation::Stack',
+    ]) {
       const readers = await readersOf(
         { Type: type, Properties: { ServiceToken: 'arn:fn' } },
         {
