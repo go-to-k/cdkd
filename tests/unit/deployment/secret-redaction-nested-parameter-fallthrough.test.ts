@@ -28,6 +28,10 @@ import {
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import {
+  positionByEmbeddedSpan,
+  rendersLiteralTo,
+} from '../../../src/deployment/secret-redaction/positions.js';
 import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -388,6 +392,282 @@ describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#234
       unknown
     >;
     expect(persisted['V']).toBe(`postgres://u:${EXPR_A}@host`);
+  });
+});
+
+/**
+ * The REVERSED parent order of the integ shape (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)): the parent resolves
+ * the two-token `ConnA` FIRST and the whole-token `SecretB` LAST, so the
+ * password's survivor is `EXPR_B`. Before the fix nothing positioned the
+ * two-token literal, so the parent's own row, the child's `{Ref}` leaf and the
+ * diff side all took the survivor `...{{B}}@host`, while `cdkd diff
+ * --recursive` -- binding the parameter to its literal -- renders `...{{A}}@host`.
+ */
+describe('a two-token literal parameter persists its own spelling in either parent order (#4644)', () => {
+  const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+  const USER = 'us3r-f4llthru-4644';
+  const USER_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:fallthruuser::}}';
+  const CONN = `postgres://${USER}:${SHARED}@host`;
+  const SPELLING = `postgres://${USER_EXPR}:${EXPR_A}@host`;
+  const SOURCE_ROW = { Parameters: { [PARAM_A]: SPELLING, [PARAM_B]: EXPR_B } };
+  const RESOLVED_ROW = { Parameters: { [PARAM_A]: CONN, [PARAM_B]: SHARED } };
+
+  /**
+   * The parent pass with `ConnA` resolved first: pairs in resolution order,
+   * the map's last write per plaintext the survivor.
+   */
+  function reversedParent(): RecordedSecretValues {
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [USER_EXPR, USER],
+      [EXPR_A, SHARED],
+      [EXPR_B, SHARED],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      RESOLVED_ROW,
+      SOURCE_ROW
+    );
+    return parent;
+  }
+
+  function childContext(parent: RecordedSecretValues) {
+    const ctx = makeContext(parent);
+    ctx.parameters = { [PARAM_A]: CONN, [PARAM_B]: SHARED };
+    return ctx;
+  }
+
+  it('premise: the parent survivor for the password is the SIBLING expression', () => {
+    const parent = reversedParent();
+    expect(parent.get(SHARED)).toBe(EXPR_B);
+    expect(redactSecretsForState(CONN, parent)).toBe(`postgres://${USER_EXPR}:${EXPR_B}@host`);
+  });
+
+  it("the PARENT's own row persists the literal spelling, not the survivor", () => {
+    const parent = reversedParent();
+    const persisted = redactSecretsForState(RESOLVED_ROW, parent, SOURCE_ROW) as {
+      Parameters: Record<string, unknown>;
+    };
+    expect(persisted.Parameters[PARAM_A]).toBe(SPELLING);
+    expect(persisted.Parameters[PARAM_B]).toBe(EXPR_B);
+  });
+
+  for (const childOrder of [
+    ['Description', 'Value'],
+    ['Value', 'Description'],
+  ] as const) {
+    it(`the diff side, the persisted {Ref} leaf and the literal agree, child order ${childOrder.join(' then ')}`, async () => {
+      const parent = reversedParent();
+      const ctx = childContext(parent);
+      const refs = { Description: { Ref: PARAM_A }, Value: { Ref: PARAM_B } };
+      const source = { [childOrder[0]]: refs[childOrder[0]], [childOrder[1]]: refs[childOrder[1]] };
+      const resolved = await resolver.resolve(source, ctx);
+      const persisted = redactSecretsForState(resolved, ctx.recordedSecretValues, source) as Record<
+        string,
+        unknown
+      >;
+      const desired = diffBinding4644(parent);
+
+      expect(desired[PARAM_A]).toBe(SPELLING);
+      expect(persisted['Description']).toBe(SPELLING);
+      expect(desired[PARAM_B]).toBe(EXPR_B);
+      expect(persisted['Value']).toBe(EXPR_B);
+      expect(JSON.stringify(persisted)).not.toContain(SHARED);
+      expect(JSON.stringify(persisted)).not.toContain(USER);
+    });
+  }
+
+  function diffBinding4644(parent: RecordedSecretValues): Record<string, unknown> {
+    const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+    return redactParametersForDiff.call(engine, { [PARAM_A]: CONN, [PARAM_B]: SHARED });
+  }
+
+  it('REFUSES a value the spelling does not render to: the recorder writes nothing and the diff side keeps the scan', () => {
+    // The parent resolved `ConnA` to a user the pair table does not vouch for.
+    const OTHER = `postgres://someone-else:${SHARED}@host`;
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [USER_EXPR, USER],
+      [EXPR_A, SHARED],
+      [EXPR_B, SHARED],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { [PARAM_A]: OTHER, [PARAM_B]: SHARED } },
+      SOURCE_ROW
+    );
+    expect(redactInheritedParameterValue(parent, PARAM_A, OTHER)).toBe(
+      redactSecretsForState(OTHER, parent)
+    );
+    expect(redactInheritedParameterValue(parent, PARAM_A, OTHER)).toBe(
+      `postgres://someone-else:${EXPR_B}@host`
+    );
+  });
+
+  it('REFUSES at READ time a value other than the one recorded', () => {
+    const parent = reversedParent();
+    // Same plaintexts, different literal text: whole-value identity fails.
+    const moved = `postgres://${USER}:${SHARED}@elsewhere`;
+    expect(redactInheritedParameterValue(parent, PARAM_A, moved)).toBe(
+      `postgres://${USER_EXPR}:${EXPR_B}@elsewhere`
+    );
+    // Positive control on the same bag.
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+  });
+
+  it('rendersLiteralTo: a copy carries no pairs, and a value the spelling does not render to is refused', () => {
+    // A copy is a different pass: it carries the entries but none of the pairs.
+    const parent = reversedParent();
+    const copy: RecordedSecretValues = new Map(parent);
+    expect(rendersLiteralTo(SPELLING, parent, CONN)).toBe(true);
+    expect(rendersLiteralTo(SPELLING, copy, CONN)).toBe(false);
+    expect(rendersLiteralTo(SPELLING, parent, `postgres://someone-else:${SHARED}@host`)).toBe(false);
+  });
+
+  it('REFUSES at READ time once the recorded pairs no longer render the value (the reader re-asks the bag)', () => {
+    const parent = reversedParent();
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+    // The same pass sees `EXPR_A` resolve to a second value: its pair is now
+    // CONFLICTING and vouches for nothing.
+    recordResolvedPair(parent, EXPR_A, 'a-different-value-4644');
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+      redactSecretsForState(CONN, parent)
+    );
+  });
+
+  it('records NOTHING for a leaf the position pass refused, even when the spelling renders to the value', () => {
+    // The straddling needle below makes the persist walk keep the scan's
+    // answer on the parent's row; the child must not be handed the spelling
+    // the parent's own record does not hold.
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [USER_EXPR, USER],
+      [EXPR_A, SHARED],
+      [EXPR_B, SHARED],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    parent.set(`:${SHARED.slice(0, 4)}`, '{{resolve:secretsmanager:other:SecretString:x::}}');
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      RESOLVED_ROW,
+      SOURCE_ROW
+    );
+    // The premise: the spelling renders, so only the identity proof refuses.
+    expect(rendersLiteralTo(SPELLING, parent, CONN)).toBe(true);
+    expect(
+      (redactSecretsForState(RESOLVED_ROW, parent, SOURCE_ROW) as { Parameters: Record<string, unknown> })
+        .Parameters[PARAM_A]
+    ).toBe(redactSecretsForState(CONN, parent));
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+      redactSecretsForState(CONN, parent)
+    );
+  });
+
+  it('REFUSES a source holding a PUBLIC token (never paired): the parent row and the diff side keep the scan', () => {
+    const PUBLIC_USER_EXPR = '{{resolve:ssm:/app/public-user}}';
+    const spelling = `postgres://${PUBLIC_USER_EXPR}:${EXPR_A}@host`;
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [EXPR_A, SHARED],
+      [EXPR_B, SHARED],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    const sourceRow = { Parameters: { [PARAM_A]: spelling, [PARAM_B]: EXPR_B } };
+    recordNestedStackParameterExpressions(parent, 'AWS::CloudFormation::Stack', RESOLVED_ROW, sourceRow);
+    const scanned = `postgres://${USER}:${EXPR_B}@host`;
+    expect(
+      (redactSecretsForState(RESOLVED_ROW, parent, sourceRow) as { Parameters: Record<string, unknown> })
+        .Parameters[PARAM_A]
+    ).toBe(scanned);
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(scanned);
+  });
+
+  it('REFUSES a spelling whose literal text holds a plaintext the bag would rewrite', () => {
+    const parent = reversedParent();
+    // `SHARED` spelled as literal text beside the tokens: returning the
+    // spelling would persist it.
+    const leaky = `postgres://${USER_EXPR}:${EXPR_A}@${SHARED}`;
+    const value = `postgres://${USER}:${SHARED}@${SHARED}`;
+    expect(rendersLiteralTo(leaky, parent, value)).toBe(false);
+    // ...and the same tokens without it render.
+    expect(rendersLiteralTo(SPELLING, parent, CONN)).toBe(true);
+  });
+
+  it('rendersLiteralTo REFUSES a spelling with no token: there is nothing to render', () => {
+    const parent = reversedParent();
+    expect(rendersLiteralTo('postgres://plain@host', parent, 'postgres://plain@host')).toBe(false);
+  });
+
+  it('rendersLiteralTo REFUSES a token paired to an EMPTY plaintext', () => {
+    const parent = reversedParent();
+    const EMPTY_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:empty::}}';
+    recordResolvedPair(parent, EMPTY_EXPR, '');
+    const spelling = `postgres://${USER_EXPR}:${EMPTY_EXPR}@host`;
+    // The render would match: only the empty-plaintext refusal stops it.
+    expect(rendersLiteralTo(spelling, parent, `postgres://${USER}:@host`)).toBe(false);
+  });
+
+  it('rendersLiteralTo REFUSES a token paired to ITSELF (the self-referential #1917 shape)', () => {
+    const parent = reversedParent();
+    const SELF_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:self::}}';
+    parent.set(SELF_EXPR, SELF_EXPR);
+    recordResolvedPair(parent, SELF_EXPR, SELF_EXPR);
+    const spelling = `postgres://${USER_EXPR}:${SELF_EXPR}@host`;
+    // The render would match and the scan spares a match inside a span: only
+    // the token-shaped-plaintext refusal stops it.
+    expect(rendersLiteralTo(spelling, parent, `postgres://${USER}:${SELF_EXPR}@host`)).toBe(false);
+  });
+
+  it('positionByEmbeddedSpan: the scan bound refuses a needle straddling literal text and a plaintext', () => {
+    const parent = reversedParent();
+    // A recorded plaintext starting in the literal `:` and overlapping the
+    // password: the scan takes it first (leftmost), so the leaf keeps the
+    // scan's answer rather than the spelling. The spelling itself holds no
+    // plaintext, so only the bound can refuse here.
+    const STRADDLE = `:${SHARED.slice(0, 4)}`;
+    parent.set(STRADDLE, '{{resolve:secretsmanager:other:SecretString:x::}}');
+    expect(positionByEmbeddedSpan(CONN, SPELLING, parent, true)).toBe(
+      redactSecretsForState(CONN, parent)
+    );
+    expect(positionByEmbeddedSpan(CONN, SPELLING, parent, true)).not.toBe(SPELLING);
+  });
+
+  it('positionByEmbeddedSpan: a SUB-FLOOR plaintext takes the spelling only on a MARKED bag', () => {
+    const PIN = 'q7';
+    const PIN_EXPR = '{{resolve:secretsmanager:prod/pin:SecretString:pin::}}';
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [USER_EXPR, USER],
+      [PIN_EXPR, PIN],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    const spelling = `${USER_EXPR}:${PIN_EXPR}`;
+    const value = `${USER}:${PIN}`;
+    // The scan leaves `q7` in place.
+    expect(redactSecretsForState(value, parent)).toBe(`${USER_EXPR}:${PIN}`);
+    expect(positionByEmbeddedSpan(value, spelling, parent, false)).toBe(`${USER_EXPR}:${PIN}`);
+    expect(positionByEmbeddedSpan(value, spelling, parent, true)).toBe(spelling);
+  });
+
+  it('positionByEmbeddedSpan: a two-token leaf whose render matches persists the source (positive control)', () => {
+    const parent = reversedParent();
+    expect(positionByEmbeddedSpan(CONN, SPELLING, parent, false)).toBe(SPELLING);
   });
 });
 

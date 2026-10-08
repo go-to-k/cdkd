@@ -2,6 +2,7 @@ import {
   DYNAMIC_REFERENCE_INNER_CHAR,
   escapeRegExp,
   isSingleDynamicReferenceToken,
+  MIN_NEEDLE_LENGTH,
 } from './rules.js';
 import { type RecordedSecretValues, resolvedPlaintextOf, resolvedExpressionsOf } from './pairs.js';
 import { redactSecretsForState } from './redact-state.js';
@@ -555,9 +556,13 @@ export function singleSpanFrame(
  * to the bag it is written back as itself — an expression, and the leaf's own,
  * where the scan wrote the survivor. Stated so it is not mistaken for a leak.
  *
- * Everything else keeps the pre-#2485 fall-through: two or more spans (which
- * span produced which value is genuinely ambiguous when they share one), a
- * frame mismatch, a middle that is itself a complete token (an
+ * TWO OR MORE SPANS take {@link certifiesRenderedLiteral} instead (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)): no frame can say which
+ * span produced which value, so the source is RENDERED with each token's
+ * pass-local plaintext and kept verbatim only where that rendering IS the bag.
+ *
+ * Everything else keeps the pre-#2485 fall-through: a multi-span source that
+ * certificate refuses, a frame mismatch, a middle that is itself a complete token (an
  * already-redacted record, per the same refusal {@link learnMixedLeafNeedle}
  * makes), and a middle this pass cannot vouch for. An `Fn::Sub` / `Fn::Join`
  * source (an object, not this arm at all) is
@@ -586,12 +591,149 @@ export function positionByEmbeddedSpan(
   bagIsSameGeneration: boolean
 ): string {
   const frame = singleSpanFrame(bag, source);
-  if (frame === undefined) return redactSecretsForState(bag, secrets);
+  if (frame === undefined) {
+    if (
+      dynamicReferenceSpans(source).length >= 2 &&
+      certifiesRenderedLiteral(bag, source, secrets, bagIsSameGeneration)
+    ) {
+      return source;
+    }
+    return redactSecretsForState(bag, secrets);
+  }
   const recorded = resolvedPlaintextOf(secrets, frame.token);
   if (recorded === undefined || recorded !== frame.middle) {
     return redactSecretsForState(bag, secrets);
   }
   return writeFramedTokenWithinScanBound(bag, secrets, frame, bagIsSameGeneration);
+}
+
+/**
+ * Each `{{resolve:...}}` span of a LITERAL `source` with the plaintext the
+ * pass owning `secrets` resolved its token to ({@link recordResolvedPair}), or
+ * `undefined` when the source holds no token or ANY token lacks a pair. The
+ * pair table holds only what the resolver resolved as SECRET -- a collapsed
+ * loser and an unpinned `ssm` token included -- so a PUBLIC token (never
+ * paired, issue #1901) refuses the whole source rather than being rendered
+ * from a guess. An empty plaintext distinguishes nothing, and one that is
+ * itself a token is a persisted answer rather than a plaintext (the
+ * self-referential #1917 shape, which {@link singleSpanFrame} refuses too).
+ */
+function pairedSpans(
+  source: string,
+  secrets: RecordedSecretValues
+): Array<{ start: number; end: number; plaintext: string }> | undefined {
+  const spans = dynamicReferenceSpans(source);
+  if (spans.length === 0) return undefined;
+  const out: Array<{ start: number; end: number; plaintext: string }> = [];
+  for (const span of spans) {
+    const plaintext = resolvedPlaintextOf(secrets, source.slice(span.start, span.end));
+    if (plaintext === undefined || plaintext === '') return undefined;
+    if (isSingleDynamicReferenceToken(plaintext)) return undefined;
+    out.push({ ...span, plaintext });
+  }
+  return out;
+}
+
+/** `source` with span `i` replaced by `textOf(i)`, its literal text kept. */
+function renderSpans(
+  source: string,
+  spans: ReadonlyArray<{ start: number; end: number }>,
+  textOf: (index: number) => string
+): string {
+  let out = '';
+  let cursor = 0;
+  spans.forEach((span, index) => {
+    out += source.slice(cursor, span.start) + textOf(index);
+    cursor = span.end;
+  });
+  return out + source.slice(cursor);
+}
+
+/**
+ * Does the LITERAL `spelling` render, through this pass's own pairs, to
+ * EXACTLY `value` -- and is its literal text free of every plaintext `secrets`
+ * would rewrite (issue [#4644](https://github.com/go-to-k/cdkd/issues/4644))?
+ *
+ * The certificate `mixedLeafProvenPublic` (`redact-path.ts`) applies to a
+ * public readback, over secret pairs: every character of the value is either
+ * text the spelling states or the plaintext THIS pass resolved the token at
+ * that span to. Exact equality only -- no search, no substring, nothing taken
+ * from anywhere but the spelling -- so it can only CONFIRM a spelling, never
+ * find one. `redactSecretsForState(spelling, secrets) === spelling` keeps a
+ * plaintext out of the literal text: returning the spelling would otherwise
+ * persist it. The value scan spares a match strictly inside a resolvable span,
+ * so the spelling's own tokens pass.
+ *
+ * Read by {@link certifiesRenderedLiteral} at persist time and by the
+ * nested-stack parameter reader, which re-asks it of the parent's bag at read
+ * time rather than trusting what the recorder saw.
+ */
+export function rendersLiteralTo(
+  spelling: string,
+  secrets: RecordedSecretValues,
+  value: string
+): boolean {
+  const spans = pairedSpans(spelling, secrets);
+  if (spans === undefined) return false;
+  if (renderSpans(spelling, spans, (i) => spans[i]!.plaintext) !== value) return false;
+  return redactSecretsForState(spelling, secrets) === spelling;
+}
+
+/**
+ * Position a literal source leaf EMBEDDING two or more `{{resolve:...}}`
+ * tokens -- `postgres://{{resolve:...user}}:{{resolve:...password}}@host` --
+ * by persisting the SOURCE verbatim when it provably IS the bag (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)).
+ *
+ * WHY. {@link singleSpanFrame} positions one span; with two there is no frame
+ * to read, so the leaf fell to the value scan, which writes the map's
+ * SURVIVOR per plaintext. Where a same-plaintext sibling resolved last, the
+ * leaf persisted the sibling's spelling for a template that spells its own --
+ * and a nested-stack child's `{Ref}` to such a parameter persisted the same
+ * survivor, while `cdkd diff --recursive` renders the parameter's literal:
+ * a change on every run that no deploy clears.
+ *
+ * THE EVIDENCE is {@link rendersLiteralTo}: every token paired in THIS pass,
+ * the rendering equal to the bag, and no plaintext in the literal text. A
+ * previous generation's bag fails it unless every plaintext coincides, the
+ * same claim the one-span arm states for its middle.
+ *
+ * THE BOUND, the one-span arm's ({@link writeFramedTokenWithinScanBound})
+ * per span: accepted only where the value scan rewrites the bag to the source
+ * with each token replaced by the map's survivor for its plaintext, so the
+ * answer stays a CHOICE among this pass's expressions -- an interfering
+ * needle (a whole-leaf plaintext, one straddling literal text and a
+ * plaintext) makes the scan answer differently and the leaf keeps the scan's
+ * answer. Below the scan's floor a plaintext is left by the scan, and that
+ * silence is accepted only on a bag {@link markSameGenerationBag} marked,
+ * exactly as for one span. Strictly narrower than the scan: it never rewrites
+ * a leaf the scan would leave, nor a character the scan would not.
+ */
+export function certifiesRenderedLiteral(
+  bag: string,
+  source: string,
+  secrets: RecordedSecretValues,
+  bagIsSameGeneration: boolean
+): boolean {
+  if (!rendersLiteralTo(source, secrets, bag)) return false;
+  const spans = pairedSpans(source, secrets)!;
+  const survivors: string[] = [];
+  for (const span of spans) {
+    const survivor = secrets.get(span.plaintext);
+    // A type-narrowing formality, as in the one-span bound: the resolver's
+    // seams `set` the entry beside every pair.
+    if (survivor === undefined) return false;
+    survivors.push(survivor);
+  }
+  const scanned = redactSecretsForState(bag, secrets);
+  if (scanned === renderSpans(source, spans, (i) => survivors[i]!)) return true;
+  if (!bagIsSameGeneration) return false;
+  return (
+    scanned ===
+    renderSpans(source, spans, (i) =>
+      spans[i]!.plaintext.length >= MIN_NEEDLE_LENGTH ? survivors[i]! : spans[i]!.plaintext
+    )
+  );
 }
 
 /**

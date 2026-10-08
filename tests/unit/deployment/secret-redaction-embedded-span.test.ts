@@ -412,9 +412,12 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       return redactSecretsForState(leaf, secrets);
     }
 
-    it('for a source with TWO spans (which span produced which value is ambiguous)', () => {
+    it('for a source with TWO spans one of which this pass never paired', () => {
+      // Since #4644 a two-span source whose rendering through this pass's
+      // pairs IS the leaf persists verbatim (pinned in
+      // `secret-redaction-nested-parameter-fallthrough.test.ts`); a token with
+      // no pair cannot be rendered, so the leaf keeps the scan's answer.
       const secrets = collapsedOnto(NAME_V1);
-      recordResolvedPair(secrets, NAME, PW);
       recordResolvedPair(secrets, NAME_V1, PW);
       const source = `${PREFIX}${NAME}:${NAME_V1}${SUFFIX}`;
       const leaf = `${PREFIX}${PW}:${PW}${SUFFIX}`;
@@ -423,6 +426,18 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         Dsn: fallThrough(leaf, secrets),
       });
       expect(fallThrough(leaf, secrets)).toBe(`${PREFIX}${NAME_V1}:${NAME_V1}${SUFFIX}`);
+    });
+
+    it('NOT for a source with TWO spans both paired to the leaf: the source states each span (#4644)', () => {
+      const secrets = collapsedOnto(NAME_V1);
+      recordResolvedPair(secrets, NAME, PW);
+      recordResolvedPair(secrets, NAME_V1, PW);
+      const source = `${PREFIX}${NAME}:${NAME_V1}${SUFFIX}`;
+      const leaf = `${PREFIX}${PW}:${PW}${SUFFIX}`;
+
+      expect(redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: source })).toEqual({
+        Dsn: source,
+      });
     });
 
     it('for a frame mismatch (the bag does not have the source shape)', () => {

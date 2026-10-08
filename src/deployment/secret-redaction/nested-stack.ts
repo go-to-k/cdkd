@@ -28,6 +28,7 @@ import {
   UNKNOWN_PART,
   UNKNOWN_PART_PLACEHOLDER,
   singleSpanFrame,
+  rendersLiteralTo,
 } from './positions.js';
 import { dynamicReferenceSpans, deepEqualJsonValue } from './redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './anchors.js';
@@ -81,6 +82,26 @@ const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  * must not outlive the pass that fetched them.
  */
 const nestedStackParameterExpressions = new WeakMap<RecordedSecretValues, CrossStackAssociations>();
+
+/**
+ * The parent's LITERAL spelling of each `Parameters` entry whose resolved value
+ * EMBEDS its tokens -- `postgres://{{U}}:{{A}}@host` -- keyed by the pass's bag,
+ * then by the child's parameter name (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)).
+ *
+ * A separate table from {@link nestedStackParameterExpressions} because its
+ * reader asks a different question: that table certifies a value that IS a
+ * recorded plaintext (or the sub-floor carry's entry), this one a value that
+ * merely CONTAINS plaintexts, by re-rendering the spelling
+ * ({@link rendersLiteralTo}). It is never inherited into the child's
+ * {@link crossStackAssociations}, whose readers require a whole plaintext; it is
+ * read only through {@link inheritedParameterExpression}, so the diff side, the
+ * persist side and the carry see it through the one function they share.
+ */
+const renderedParameterSpellings = new WeakMap<
+  RecordedSecretValues,
+  Map<string, { readonly spelling: string; readonly value: string }>
+>();
 
 /**
  * Condition (iv)'s key (see {@link recordNestedStackParameterExpressions}) for
@@ -431,6 +452,28 @@ export function recordNestedStackParameterExpressions(
   ) as Record<string, unknown>;
 
   let table = nestedStackParameterExpressions.get(secrets);
+  // THE RENDERED SPELLING (issue #4644): a LITERAL source that is not one whole
+  // token and that the position pass returned VERBATIM -- the identity proof
+  // refusal 2b reads -- which for an embedding literal means the span arm or
+  // the multi-span render certificate fired (`positionByEmbeddedSpan`). Only
+  // the spelling is recorded here; {@link inheritedParameterExpression}
+  // re-asks {@link rendersLiteralTo} of this bag at every read. A two-token
+  // value has no per-name answer otherwise (refusal 2 below, and the
+  // sub-floor carry's single span), so the child's `{Ref}` leaf and the diff
+  // side fell to the parent value scan's SURVIVOR, which `cdkd diff
+  // --recursive` -- binding the literal -- never renders.
+  for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
+    const sourceLeaf = sourceParameters[name];
+    if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
+    if (isSingleDynamicReferenceToken(sourceLeaf) || positioned[name] !== sourceLeaf) continue;
+    if (!rendersLiteralTo(sourceLeaf, secrets, resolvedValue)) continue;
+    let rendered = renderedParameterSpellings.get(secrets);
+    if (rendered === undefined) {
+      rendered = new Map();
+      renderedParameterSpellings.set(secrets, rendered);
+    }
+    rendered.set(name, { spelling: sourceLeaf, value: resolvedValue });
+  }
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     // Refusal 1.
     //
@@ -993,7 +1036,9 @@ export function inheritedParameterExpression(
   resolvedValue: unknown
 ): string | unknown[] | undefined {
   const association = nestedStackParameterExpressions.get(parentSecrets)?.get(parameterName);
-  if (association === undefined || typeof association === 'symbol') return undefined;
+  if (association === undefined || typeof association === 'symbol') {
+    return renderedParameterSpelling(parentSecrets, parameterName, resolvedValue);
+  }
 
   // A LIST-typed parameter (issue #2327). `coerceParameterTypedValue` split the
   // parent's STRING into an array before this side ever saw it, so the answer
@@ -1008,7 +1053,42 @@ export function inheritedParameterExpression(
     return certifiedListForLeaf(parentSecrets, association, resolvedValue);
   }
 
+  // No rendered-spelling fallback here: an association needs a value that IS a
+  // plaintext positioned to one whole token, a rendered spelling one positioned
+  // VERBATIM to a multi-span literal, and the recorder sees each parameter
+  // once per bag (each nested-stack row resolves into its own bag).
   return certifiedExpressionForLeaf(parentSecrets, association, resolvedValue);
+}
+
+/**
+ * The parent's literal spelling of `parameterName` when it EMBEDS the value's
+ * plaintexts (issue [#4644](https://github.com/go-to-k/cdkd/issues/4644)), or
+ * `undefined`. Two tests, both against the bag this is asked of:
+ *
+ * 1. WHOLE-VALUE identity: the recorder saw this parameter resolve to exactly
+ *    `resolvedValue`. The carry asks per PLAINTEXT, which a value embedding
+ *    one never equals, so the carry is unchanged by this table. Implied by 2
+ *    while the pairs stand (a pair is never rewritten, only poisoned, so a
+ *    spelling renders to one value), and stated so the answer never rests on
+ *    that table's write rule alone.
+ * 2. The spelling RE-RENDERS to the value through the bag's own pairs and
+ *    holds no plaintext in its literal text ({@link rendersLiteralTo}): the
+ *    recorder's word is not taken alone.
+ *
+ * Nothing is fabricated: the answer is a string the parent's template spells
+ * at this parameter, and whose every non-literal character is a plaintext the
+ * parent pass resolved that very token to.
+ */
+function renderedParameterSpelling(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  resolvedValue: unknown
+): string | undefined {
+  if (typeof resolvedValue !== 'string') return undefined;
+  const rendered = renderedParameterSpellings.get(parentSecrets)?.get(parameterName);
+  if (rendered === undefined || rendered.value !== resolvedValue) return undefined;
+  if (!rendersLiteralTo(rendered.spelling, parentSecrets, resolvedValue)) return undefined;
+  return rendered.spelling;
 }
 
 /**

@@ -193,6 +193,7 @@ CHILD_HANDOFF_PARAM="cdkd-nested-child-handoff-${ACCOUNT_ID}"
 CHILD_HANDOFF_SUB_PARAM="cdkd-nested-child-handoffsub-${ACCOUNT_ID}"
 CHILD_HANDOFF_MIXED_PARAM="cdkd-nested-child-handoffmixed-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_PARAM="cdkd-nested-child-fallthrough-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_REV_PARAM="cdkd-nested-child-fallthroughrev-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -249,6 +250,13 @@ FALL_USER_VALUE="falluser2349"
 FALL_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:fall::}}"
 FALL_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:fall:AWSCURRENT:}}"
 FALL_USER_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:falluser::}}"
+# The #4644 pair. Its OWN JSON keys (`fall2`, `fall2user`), so the #2349 pair's
+# survivor premise does not depend on this arm's parent order.
+FALL2_PW_VALUE="fall2pw4644"
+FALL2_USER_VALUE="fall2user4644"
+FALL2_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:fall2::}}"
+FALL2_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:fall2:AWSCURRENT:}}"
+FALL2_USER_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:fall2user::}}"
 # The #2298 pair. Its OWN JSON key (`embed`), for the reason `mixed` has one.
 EMBED_PW_VALUE="embedpw2298"
 EMBED_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:embed::}}"
@@ -391,7 +399,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE MIXED_PW_VALUE SPANS_PW_VALUE FALL_PW_VALUE FALL_USER_VALUE EMBED_PW_VALUE MULTI_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE MIXED_PW_VALUE SPANS_PW_VALUE FALL_PW_VALUE FALL_USER_VALUE FALL2_PW_VALUE FALL2_USER_VALUE EMBED_PW_VALUE MULTI_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -437,7 +445,7 @@ diag_output() {
   # The BARE 2-character pin is in this regex on purpose, unlike in the FAIL
   # scans: here a false match only withholds diagnostics (the safe direction),
   # while there it would fail a green run on ordinary text.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}" <<<"${text}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -495,6 +503,10 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
   fi
   if grep -qF "${FALL_PW_VALUE}" <<<"${scan}" || grep -qF "${FALL_USER_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries a resolved #2349 fall plaintext" >&2
+    exit 1
+  fi
+  if grep -qF "${FALL2_PW_VALUE}" <<<"${scan}" || grep -qF "${FALL2_USER_VALUE}" <<<"${scan}"; then
+    echo "FAIL: ${label}: the child's state.json carries a resolved #4644 fall2 plaintext" >&2
     exit 1
   fi
   # The #2298 pair resolves inside the CHILD, like the shared pair above.
@@ -566,7 +578,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   # resolver now masks a sub-floor secret on that line by position (issue
   # #3100), so the exception is gone (issue #3113) and the line itself is
   # asserted masked below.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${text}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -626,6 +638,7 @@ cleanup() {
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
              "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
+             "${CHILD_FALLTHROUGH_REV_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -683,7 +696,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"mixed\":\"${MIXED_PW_VALUE}\",\"spans\":\"${SPANS_PW_VALUE}\",\"fall\":\"${FALL_PW_VALUE}\",\"falluser\":\"${FALL_USER_VALUE}\",\"embed\":\"${EMBED_PW_VALUE}\",\"multi\":\"${MULTI_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\",\"pinjoin\":\"${PIN_JOIN_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"mixed\":\"${MIXED_PW_VALUE}\",\"spans\":\"${SPANS_PW_VALUE}\",\"fall\":\"${FALL_PW_VALUE}\",\"falluser\":\"${FALL_USER_VALUE}\",\"fall2\":\"${FALL2_PW_VALUE}\",\"fall2user\":\"${FALL2_USER_VALUE}\",\"embed\":\"${EMBED_PW_VALUE}\",\"multi\":\"${MULTI_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\",\"pinjoin\":\"${PIN_JOIN_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -1292,7 +1305,7 @@ assert_eq "the parent's nested-stack row keeps SubFloorPinSsm as its FRAMED expr
   "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SubFloorPinSsm')" \
   "port:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
 
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -1386,6 +1399,51 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4644: the two-token literal keeps its own spelling in the REVERSED order -
+# `FallthroughPairReversed` is `FallthroughPair` with the PARENT order flipped:
+# `FallConnA2` resolves first and `FallSecretB2` last, so the password's parent
+# survivor is the WHOLE token's spelling (`fall2:AWSCURRENT:`). Nothing
+# positioned a two-token literal, so the parent's own row, the child's `{Ref}`
+# leaf and the deploy's diff side all took that survivor, while
+# `cdkd diff --recursive` renders the parameter's literal (`fall2::`): phase 2's
+# `--fail` exited 1 on an unchanged tree.
+echo "==> #4644: a two-token literal parameter keeps its own spelling in the reversed parent order"
+FALL2_SPELLING="postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}@host"
+FALL2_SURVIVOR_SPELLING="postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_B}@host"
+assert_eq "premise: FallthroughPairReversed's synthesized Description is a Ref to FallConnA2, its Value a Ref to FallSecretB2" \
+  "$(jq -c '.Resources.FallthroughPairReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Ref":"FallConnA2"},{"Ref":"FallSecretB2"}]'
+assert_eq "premise: the parent hands FallConnA2 BEFORE FallSecretB2, so FallSecretB2's token resolves last" \
+  "$(jq -r '.Resources.Child.Properties.Parameters | keys_unsorted | (index("FallConnA2") < index("FallSecretB2"))' "${SYNTH_TEMPLATE}")" \
+  "true"
+assert_eq "premise: the parent hands FallConnA2 / FallSecretB2 down as a two-token literal and a whole token" \
+  "$(jq -c '.Resources.Child.Properties.Parameters | [.FallConnA2, .FallSecretB2]' "${SYNTH_TEMPLATE}")" \
+  "$(jq -cn --arg a "${FALL2_SPELLING}" --arg b "${FALL2_EXPR_B}" '[$a, $b]')"
+LIVE_FALL2_VALUE=$(aws ssm get-parameter --name "${CHILD_FALLTHROUGH_REV_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+LIVE_FALL2_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_REV_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the LIVE FallthroughPairReversed Value holds the resolved fall2 secret" \
+  "${LIVE_FALL2_VALUE}" "${FALL2_PW_VALUE}"
+assert_eq "the LIVE FallthroughPairReversed Description holds the resolved connection string" \
+  "${LIVE_FALL2_DESC}" "postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}@host"
+FALL2_PARENT_ROW="$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.FallConnA2')"
+FALL2_DESC_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughPairReversed.properties.Description')"
+# THE NAMED DEFECT FIRST, on both records.
+if [ "${FALL2_PARENT_ROW}" = "${FALL2_SURVIVOR_SPELLING}" ] || [ "${FALL2_DESC_STATE}" = "${FALL2_SURVIVOR_SPELLING}" ]; then
+  echo "FAIL: the two-token FallConnA2 persisted the parent survivor's spelling, not its own literal (issue #4644)" >&2
+  exit 1
+fi
+assert_eq "the parent's Child.Parameters.FallConnA2 persists its own literal spelling" \
+  "${FALL2_PARENT_ROW}" "${FALL2_SPELLING}"
+assert_eq "the parent's Child.Parameters.FallSecretB2 persists its own token" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.FallSecretB2')" "${FALL2_EXPR_B}"
+assert_eq "FallthroughPairReversed.Description persists the parameter's literal spelling" \
+  "${FALL2_DESC_STATE}" "${FALL2_SPELLING}"
+assert_eq "FallthroughPairReversed.Value persists FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPairReversed.properties.Value')" "${FALL2_EXPR_B}"
+
 # --- #4446: embedding leaves the #2320 template parse refuses ----------------
 # `HandoffSpans` holds `Description: Fn::Join` with TWO parts whose text the
 # template cannot state (the region and stack-name pseudo parameters) around
@@ -1477,7 +1535,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -1686,7 +1744,7 @@ if [ "${PIN_JOIN_STATE3}" = "${PIN_JOIN_FRAMED_VALUE}" ]; then
   exit 1
 fi
 assert_eq "PinJoinParam is STILL the framed expression after the UPDATE" "${PIN_JOIN_STATE3}" "${PIN_JOIN_FRAMED_EXPR}"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
@@ -1723,10 +1781,12 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # `PinJoinParam`; twelve since the #2320 arm's `HandoffMixed`; fourteen since
 # the #4446 arm's `HandoffSpans` / `HandoffSpansIf`; fifteen since the #2298
 # arm's `EmbedSecretPair`; sixteen since the #4527 arm's
-# `MultiUnknownSecretPair`; seventeen since the #2349 arm's `FallthroughPair`.
+# `MultiUnknownSecretPair`; seventeen since the #2349 arm's `FallthroughPair`;
+# eighteen since the #4644 arm's `FallthroughPairReversed`.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
          "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
          "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
+             "${CHILD_FALLTHROUGH_REV_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do
