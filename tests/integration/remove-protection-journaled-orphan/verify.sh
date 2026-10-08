@@ -415,6 +415,11 @@ sed 's/^/  /' "${RUN_LOG}"
 # Captured BEFORE any FAIL below, so the trap can clear the protection on and
 # delete the load balancer no later check reached.
 COMPLETED_LB_ARN="$( (aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - || true) | jq -r '.resources.CompletedLb.physicalId // ""' 2>/dev/null || true)"
+# A state save that failed after the deploy still leaves the journal's
+# completed CREATE: fall back to it so the trap can always reach the LB.
+if [ -z "${COMPLETED_LB_ARN}" ]; then
+  COMPLETED_LB_ARN="$( (aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - || true) | jq -r '[.segments[]?.operations[]? | select(.logicalId == "CompletedLb")] | last | .physicalId // ""' 2>/dev/null || true)"
+fi
 if [ "${DEPLOY_RC}" -eq 0 ]; then
   echo "FAIL: the COMPLETED_LB deploy unexpectedly SUCCEEDED (SSM should refuse FailLater's value against its AllowedPattern)" >&2
   exit 1
