@@ -93,7 +93,9 @@ describe('resolveAssemblyPath', () => {
   it('refuses a `..` chain that leaves it far above', () => {
     const dir = tmp();
 
-    const result = refused(resolveAssemblyPath(dir, '../../../../../../../../etc/passwd'));
+    // Enough `..` to reach the root from any temp-dir depth (the run's own
+    // TMPDIR already sits seven levels deep on macOS); resolve clamps at `/`.
+    const result = refused(resolveAssemblyPath(dir, `${'../'.repeat(32)}etc/passwd`));
 
     expect(result.escape).toBe('lexical');
     expect(result.path).toBe(path.resolve('/etc/passwd'));
