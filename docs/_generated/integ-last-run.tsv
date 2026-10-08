@@ -248,7 +248,7 @@ nested-stack-3level	2026-10-06T09:20:08Z	PASS	516	verify.sh	rc ok, orph clean (#
 nested-stack-deep	2026-10-05T18:26:04Z	PASS	100	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
 nested-stack-rollback	2026-10-07T12:02:58Z	PASS	105	verify.sh	rc ok, orph clean; first run FAILed step 3b on SQS attribute propagation (CloudTrail shows VT=60 applied) (#4648)
-nested-stack-secret	2026-10-07T20:40:07Z	PASS	236	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
+nested-stack-secret	2026-10-08T10:57:57Z	PASS	245	verify.sh	PR #4715 (#4644 multi-token literal parameter spelling; new Reversed/Embed/Select arms; discrimination: FAIL on reverted src); rc 0, destroy clean, 0 surviving state versions
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-parameter-masking	2026-10-08T08:49:57Z	PASS	1910	verify.sh	rc ok, orph clean (PR #4700 Export.Name positional twin)

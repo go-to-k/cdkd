@@ -27,6 +27,12 @@ import { getCurrentProducerRegions } from '../../../src/deployment/producer-regi
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
+import {
+  recordNestedStackParameterExpressions,
+  recordResolvedPair,
+  redactSecretsForState,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).
@@ -588,6 +594,54 @@ describe('DeployEngine — nested-stack child inherits the parent secrets map (#
     ) => Promise<unknown>;
     await expect(diffResolveFn({ Ref: PARAM })).resolves.toBe('ordinary-public-config');
   });
+
+  // Issue #4731: the engine withdraws a literal-spelled parameter's #4644
+  // spelling BEFORE its diff binding when one child resource reads it beside a
+  // same-plaintext sibling, so the diff side and the carry agree whatever the
+  // resolution order. The control (the two reads in DIFFERENT resources) keeps
+  // the spelling, so the case reads the call, not an always-on fallback.
+  for (const mixed of [true, false]) {
+    it(`${mixed ? 'withdraws' : 'keeps'} the literal spelling at the DIFF binding when ${mixed ? 'one resource reads both parameters' : 'the reads are in different resources'} (#4731)`, async () => {
+      const EXPR_A = '{{resolve:secretsmanager:prod/db/cred:SecretString:engine4731::}}';
+      const EXPR_B = '{{resolve:secretsmanager:prod/db/cred:SecretString:engine4731:AWSCURRENT:}}';
+      const SHARED = 'sh4red-eng1ne-4731';
+      const SPELLING = `postgres://plainuser:${EXPR_A}@host`;
+      const CONN = `postgres://plainuser:${SHARED}@host`;
+      const parent: RecordedSecretValues = new Map();
+      for (const expression of [EXPR_A, EXPR_B]) {
+        parent.set(SHARED, expression);
+        recordResolvedPair(parent, expression, SHARED);
+      }
+      recordNestedStackParameterExpressions(
+        parent,
+        'AWS::CloudFormation::Stack',
+        { Parameters: { ConnA: CONN, SecretB: SHARED } },
+        { Parameters: { ConnA: SPELLING, SecretB: EXPR_B } }
+      );
+      const selA = { 'Fn::Select': [0, [{ Ref: 'ConnA' }]] };
+      const selB = { 'Fn::Select': [0, [{ Ref: 'SecretB' }]] };
+      const template: CloudFormationTemplate = {
+        Parameters: { ConnA: { Type: 'String' }, SecretB: { Type: 'String' } },
+        Resources: mixed
+          ? { ChildRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: selA, Description: selB } } }
+          : {
+              ChildRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: selA } },
+              Other: { Type: 'AWS::SSM::Parameter', Properties: { Value: selB } },
+            },
+      };
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(new Map<string, ResourceChange>());
+      mockDiffCalculator.hasChanges!.mockReturnValue(false);
+      const engine = makeChildEngine(parent, { ConnA: CONN, SecretB: SHARED });
+      await engine.deploy(childStackName, template);
+      const diffResolveFn = mockDiffCalculator.calculateDiff!.mock.calls.at(-1)![2] as (
+        v: unknown
+      ) => Promise<unknown>;
+      await expect(diffResolveFn({ Ref: 'ConnA' })).resolves.toBe(
+        mixed ? redactSecretsForState(CONN, parent) : SPELLING
+      );
+      expect(redactSecretsForState(CONN, parent)).not.toBe(SPELLING);
+    });
+  }
 
   // go-to-k/cdkd#4174: a nested-stack row's provider call must see THIS
   // engine's producer-region evidence, which `NestedStackProvider` hands the

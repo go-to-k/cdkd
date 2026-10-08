@@ -28,6 +28,8 @@ import {
   UNKNOWN_PART,
   UNKNOWN_PART_PLACEHOLDER,
   singleSpanFrame,
+  rendersLiteralTo,
+  renderedTokenOf,
 } from './positions.js';
 import { dynamicReferenceSpans, deepEqualJsonValue } from './redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './anchors.js';
@@ -81,6 +83,30 @@ const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  * must not outlive the pass that fetched them.
  */
 const nestedStackParameterExpressions = new WeakMap<RecordedSecretValues, CrossStackAssociations>();
+
+/**
+ * The parent's LITERAL spelling of each `Parameters` entry whose resolved value
+ * EMBEDS its tokens -- `postgres://{{U}}:{{A}}@host` -- keyed by the pass's bag,
+ * then by the child's parameter name (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)).
+ *
+ * A separate table from {@link nestedStackParameterExpressions} because its
+ * reader asks a different question: that table certifies a value that IS a
+ * recorded plaintext (or the sub-floor carry's entry), this one a value that
+ * merely CONTAINS plaintexts, by re-rendering the spelling
+ * ({@link rendersLiteralTo}). It is never inherited into the child's
+ * {@link crossStackAssociations}, whose readers require a whole plaintext; it is
+ * read only through {@link renderedParameterSpelling}: by
+ * {@link inheritedParameterExpression} (the diff side, a `{Ref}` leaf, the
+ * carry) and by {@link inheritedRenderedSpan} (a child leaf EMBEDDING the
+ * parameter, which the diff side renders from that same binding). A name
+ * recorded twice against a different entry is POISONED rather than
+ * overwritten.
+ */
+const renderedParameterSpellings = new WeakMap<
+  RecordedSecretValues,
+  Map<string, { readonly spelling: string; readonly value: string } | null>
+>();
 
 /**
  * Condition (iv)'s key (see {@link recordNestedStackParameterExpressions}) for
@@ -431,6 +457,32 @@ export function recordNestedStackParameterExpressions(
   ) as Record<string, unknown>;
 
   let table = nestedStackParameterExpressions.get(secrets);
+  // THE RENDERED SPELLING (issue #4644): a LITERAL source that is not one whole
+  // token and that the position pass returned VERBATIM -- the identity proof
+  // refusal 2b reads -- which for an embedding literal means the span arm or
+  // the multi-span render certificate fired (`positionByEmbeddedSpan`). Only
+  // the spelling is recorded here; {@link inheritedParameterExpression}
+  // re-asks {@link rendersLiteralTo} of this bag at every read. A two-token
+  // value has no per-name answer otherwise (refusal 2 below, and the
+  // sub-floor carry's single span), so the child's `{Ref}` leaf and the diff
+  // side fell to the parent value scan's SURVIVOR, which `cdkd diff
+  // --recursive` -- binding the literal -- never renders.
+  for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
+    const sourceLeaf = sourceParameters[name];
+    if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
+    if (isSingleDynamicReferenceToken(sourceLeaf) || positioned[name] !== sourceLeaf) continue;
+    if (!rendersLiteralTo(sourceLeaf, secrets, resolvedValue)) continue;
+    let rendered = renderedParameterSpellings.get(secrets);
+    if (rendered === undefined) {
+      rendered = new Map();
+      renderedParameterSpellings.set(secrets, rendered);
+    }
+    const previous = rendered.get(name);
+    if (previous === undefined) rendered.set(name, { spelling: sourceLeaf, value: resolvedValue });
+    else if (previous?.spelling !== sourceLeaf || previous.value !== resolvedValue) {
+      rendered.set(name, null);
+    }
+  }
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     // Refusal 1.
     //
@@ -993,7 +1045,10 @@ export function inheritedParameterExpression(
   resolvedValue: unknown
 ): string | unknown[] | undefined {
   const association = nestedStackParameterExpressions.get(parentSecrets)?.get(parameterName);
-  if (association === undefined || typeof association === 'symbol') return undefined;
+  if (association === undefined) {
+    return renderedParameterSpelling(parentSecrets, parameterName, resolvedValue);
+  }
+  if (typeof association === 'symbol') return undefined;
 
   // A LIST-typed parameter (issue #2327). `coerceParameterTypedValue` split the
   // parent's STRING into an array before this side ever saw it, so the answer
@@ -1008,7 +1063,133 @@ export function inheritedParameterExpression(
     return certifiedListForLeaf(parentSecrets, association, resolvedValue);
   }
 
+  // No rendered-spelling fallback here or on the poisoned arm above: an
+  // association needs a value that IS a recorded plaintext, which
+  // {@link renderedParameterSpelling} refuses.
   return certifiedExpressionForLeaf(parentSecrets, association, resolvedValue);
+}
+
+/**
+ * The parent's literal spelling of `parameterName` when it EMBEDS the value's
+ * plaintexts (issue [#4644](https://github.com/go-to-k/cdkd/issues/4644)), or
+ * `undefined`. Two tests, both against the bag this is asked of:
+ *
+ * 1. WHOLE-VALUE identity: the recorder saw this parameter resolve to exactly
+ *    `resolvedValue`, and that value is NOT itself a key of the bag. Such a
+ *    value belongs to the association table, and the carry asks per PLAINTEXT:
+ *    without the key test a value that a concatenation of tokens happens to
+ *    spell (`{{A}}{{B}}`, or another token resolving to the whole string)
+ *    would hand the child bag a multi-token entry. The identity half is
+ *    implied by 2 while the pairs stand (a pair is never rewritten, only
+ *    poisoned), and stated so the answer never rests on that table's write
+ *    rule alone.
+ * 2. The spelling RE-RENDERS to the value through the bag's own pairs and
+ *    holds no plaintext in its literal text ({@link rendersLiteralTo}): the
+ *    recorder's word is not taken alone.
+ *
+ * Nothing is fabricated: the answer is a string the parent's template spells
+ * at this parameter, and whose every non-literal character is a plaintext the
+ * parent pass resolved that very token to.
+ */
+function renderedParameterSpelling(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  resolvedValue: unknown
+): string | undefined {
+  if (typeof resolvedValue !== 'string' || parentSecrets.has(resolvedValue)) return undefined;
+  const rendered = renderedParameterSpellings.get(parentSecrets)?.get(parameterName);
+  if (rendered == null || rendered.value !== resolvedValue) return undefined;
+  if (!rendersLiteralTo(rendered.spelling, parentSecrets, resolvedValue)) return undefined;
+  return rendered.spelling;
+}
+
+/**
+ * The token `parameterName`'s rendered spelling (the answer
+ * {@link inheritedParameterExpression} gives for its whole `value`) spells at
+ * `plaintext`, for the nested-stack carry (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)); `undefined` when the
+ * parameter has no rendered spelling or it names no single token there.
+ *
+ * WHY THE CARRY. The diff side binds the parameter to that spelling at EVERY
+ * child read site -- `Fn::Select`, `Fn::Split`, an array, an `Fn::If` -- while
+ * the persist side positions only a bare `{Ref}` and the placeholder arms;
+ * every other shape falls to the child bag's value scan, which reads the
+ * carry's entry. Recording the spelling's own token there makes the scan
+ * agree with the diff side for any shape. Which plaintexts are carried (the
+ * #2087 scope) is untouched; only the expression attached changes, and only
+ * where this certifies one.
+ */
+export function inheritedRenderedToken(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  value: unknown,
+  plaintext: string
+): string | undefined {
+  const spelling = inheritedParameterExpression(parentSecrets, parameterName, value);
+  if (typeof spelling !== 'string' || isSingleDynamicReferenceToken(spelling)) return undefined;
+  return renderedTokenOf(spelling, parentSecrets, plaintext);
+}
+
+/**
+ * Withdraw `parameterName`'s rendered spelling from the pass owning
+ * `parentSecrets`, as a conflicting re-record does: every reader then answers
+ * as before issue [#4644](https://github.com/go-to-k/cdkd/issues/4644) -- the
+ * diff side, the `{Ref}` arm, {@link inheritedRenderedSpan} and the carry
+ * alike. Called by `poisonRenderedSpellingsCollidingIn` for a parameter one
+ * child resource reads beside a sibling the carry would record differently
+ * for the same plaintext (issue
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731)).
+ */
+export function withdrawRenderedParameterSpelling(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string
+): void {
+  const rendered = renderedParameterSpellings.get(parentSecrets);
+  if (rendered?.has(parameterName)) rendered.set(parameterName, null);
+}
+
+/**
+ * The parent's rendered spelling for a `{Ref: <Param>}` span of a child leaf
+ * that EMBEDS the parameter -- `Fn::Join ['x-', {Ref: Conn}]` -- keyed by the
+ * span's {@link crossStackSourceKey}, or `undefined` (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)). Read by the
+ * placeholder arms (`placeholder-positions.ts`) for a span no association
+ * certifies.
+ *
+ * The diff side substitutes {@link inheritedParameterExpression}'s answer for
+ * the parameter wherever the child template reads it, so an embedding leaf's
+ * desired value is the template's literals around that answer. Without this
+ * the persist side scanned such a span with the CHILD bag (its survivor for
+ * the plaintext) while the diff side held the parameter's own spelling: an
+ * UPDATE on every deploy.
+ *
+ * {@link positionByInheritedParameter}'s conditions, over the span: this
+ * resource's resolution READ the parameter while it carried an inherited
+ * secret (the #2087 scope), the span's text is the recorded value
+ * (`text`, when the caller has it), it carries no child-only plaintext, and
+ * the child bag would not rewrite the spelling. `value` is what the span
+ * renders to, for a caller aligning the template against the leaf.
+ */
+export function inheritedRenderedSpan(
+  childSecrets: RecordedSecretValues,
+  key: string,
+  text?: string
+): { readonly value: string; readonly spelling: string } | undefined {
+  const reads = inheritedParameterReads.get(childSecrets);
+  if (reads === undefined || typeof reads === 'symbol') return undefined;
+  for (const name of reads.names) {
+    if (crossStackSourceKey({ Ref: name }) !== key) continue;
+    const value = renderedParameterSpellings.get(reads.parent)?.get(name)?.value;
+    if (value === undefined || (text !== undefined && text !== value)) return undefined;
+    if (carriesChildOnlyPlaintext(value, childSecrets, reads.parent)) return undefined;
+    // THE function the diff side binds, so a parameter the parent's
+    // association table answers (or poisons) is answered here the same way.
+    const spelling = inheritedParameterExpression(reads.parent, name, value);
+    if (typeof spelling !== 'string') return undefined;
+    if (redactSecretsForState(spelling, childSecrets) !== spelling) return undefined;
+    return { value, spelling };
+  }
+  return undefined;
 }
 
 /**
