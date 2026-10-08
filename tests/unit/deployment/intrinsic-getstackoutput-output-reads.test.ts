@@ -175,6 +175,10 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
   ] as const)(
     'one producer read with and without a Region dedups across spellings (%s, #2209)',
     async (_label, regions, keptSpelling) => {
+      // Seeded under BOTH spellings on purpose. They are two S3 keys, and each
+      // read takes one: the Region-less read the RAW resolver region, the named
+      // one the folded value. With one key seeded, the other read misses and
+      // throws before it records anything, so the dedup is never reached.
       const state = producerState('Producer', 'us-east-1', { BucketArn: 'arn' });
       const backend = mockBackend(
         new Map([
