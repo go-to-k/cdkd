@@ -386,3 +386,26 @@ describe('the replay never deletes what the preview showed as a skip (go-to-k/cd
     expect(p.delete).toHaveBeenCalledOnce();
   });
 });
+
+describe('an interrupt during the re-check (go-to-k/cdkd#4754)', () => {
+  it('keeps the op pending: no identity read, no delete', async () => {
+    let interrupted = false;
+    const p = provider();
+    p.isSameResource!.mockImplementation(() => {
+      interrupted = true;
+      return Promise.resolve('different');
+    });
+    const op = orphan();
+    const state: Record<string, ResourceState> = { Orphan: fixForwardRecord() };
+
+    const result = await replayFailedOperations([op], state, 'S', ctxFor(p), {
+      isInterrupted: () => interrupted,
+    });
+
+    expect(p.isSameResource).toHaveBeenCalledOnce();
+    expect(p.resourceIdentity).not.toHaveBeenCalled();
+    expect(p.delete).not.toHaveBeenCalled();
+    expect(result.interrupted).toBe(true);
+    expect(result.remainingFailedOps).toEqual([op]);
+  });
+});

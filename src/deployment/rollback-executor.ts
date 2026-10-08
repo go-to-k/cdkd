@@ -711,6 +711,13 @@ async function replayFailedOperationsUnbound(
       ctx.foreignHolder === undefined
         ? classified
         : await recheckMismatchedFailedCreate(op, classified, stateResources, failedOps, ctx);
+    // The re-check can wait on AWS: an interrupt that arrived meanwhile keeps
+    // this op and the rest pending, as one seen before it would.
+    if (classified === 'skip-failed-mismatch' && options.isInterrupted?.()) {
+      result.interrupted = true;
+      for (let j = i; j >= 0; j--) pending.add(failedOps[j]!);
+      break;
+    }
     /**
      * This op's re-resolved secret bag — the twin of `replaySingle`'s, and
      * hoisted above this iteration's `try` for the same reason (issues #2038 /
