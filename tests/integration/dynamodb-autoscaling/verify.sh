@@ -128,7 +128,7 @@ cleanup
 
 # --- Phase 1: deploy baseline (MaxCapacity 10) ------------------------
 echo "==> Phase 1: deploy baseline (read+write autoscaling, min5/max10)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # Both ScalableTargets must exist with min 5 / max 10.
@@ -166,7 +166,7 @@ echo "    baseline table CreationDateTime=${CREATION_P1}"
 
 # --- Phase 2: raise MaxCapacity 10 -> 20 (in-place CC-API patch) -------
 echo "==> Phase 2: re-deploy raising MaxCapacity 10 -> 20"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_RENAME CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 for dim in ReadCapacityUnits WriteCapacityUnits; do
