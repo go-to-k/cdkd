@@ -1257,6 +1257,24 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
       hasSdkProvider,
     });
     expect(reverse.blockedAlreadyCcApi).toEqual([]);
+    // A type Cloud Control cannot create either (an escape-hatch type with no
+    // SDK provider) is refused once, with that reason, not also as a no-op.
+    const noHandlers = 'AWS::AppMesh::Mesh';
+    expect(hasSdkProvider(noHandlers)).toBe(false);
+    const unroutable = validate(noHandlers, 'sdk');
+    expect(unroutable.blockedNoCcRoute.map((t) => t.logicalId)).toEqual(['R']);
+    expect(unroutable.blockedAlreadyCcApi).toEqual([]);
+    // A Cloud Control-only record whose template now names a custom resource
+    // is a type change, not a no-op.
+    const toCustom = validateRecreateTargets({
+      template: { Resources: { R: { Type: 'Custom::Foo', Properties: {} } } },
+      state: st('S', { R: res(target, { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider,
+    });
+    expect(toCustom.blockedAlreadyCcApi).toEqual([]);
   });
 
   it('blockedAlreadyCcApi does NOT fire for the reverse direction (--recreate-via-sdk-provider on cc-api is the intended path)', () => {

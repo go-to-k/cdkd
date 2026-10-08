@@ -433,11 +433,15 @@ export function validateRecreateTargets(input: {
       // has no SDK provider, in the record or the template: it is managed
       // through Cloud Control whatever the record says (a record an earlier
       // `cdkd import` wrote). Recreated, an Application Auto Scaling target
-      // lost its scaling policies for an identical end state.
+      // lost its scaling policies for an identical end state. Not a type
+      // Cloud Control cannot create (refused above with that reason), nor a
+      // custom resource on either half.
       const onCcAnyway =
         input.hasSdkProvider !== undefined &&
         !nestedStackRow &&
+        noCcRoute === undefined &&
         !isCustomResource(resourceType) &&
+        !isCustomResource(templateResource.Type) &&
         !input.hasSdkProvider(resourceType) &&
         !input.hasSdkProvider(templateResource.Type);
       if (
