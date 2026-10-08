@@ -69,7 +69,7 @@ cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (
 cross-stack-secret-import	2026-10-05T15:24:10Z	PASS	396	verify.sh	rc ok, orph clean (#2868 PR #4588)
 custom-resource-getatt-data	2026-10-07T18:42:20Z	PASS	96	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 custom-resource-masked-service-token	2026-10-06T17:47:53Z	PASS	175	verify.sh	rc ok, orph clean (#3211 PR #4629)
-custom-resource-noecho-nested	2026-10-08T10:31:40Z	PASS	1493	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+custom-resource-noecho-nested	2026-10-08T11:22:30Z	PASS	1467	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
 custom-resource-provider	2026-10-07T18:57:50Z	PASS	691	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
@@ -130,7 +130,7 @@ eventbridge-pipes	2026-10-07T13:48:36Z	PASS	185	verify.sh	PR #4664 (#4639 data/s
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-08T10:09:13Z	PASS	241	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+export	2026-10-08T11:09:09Z	PASS	235	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
 export-nested-stack	2026-10-07T18:50:43Z	PASS	190	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
@@ -177,7 +177,7 @@ intrinsics-torture-2	2026-10-07T19:51:35Z	PASS	50	verify.sh	rc ok, orph clean (P
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-08T09:56:10Z	PASS	170	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+lambda	2026-10-08T11:11:04Z	PASS	115	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -307,7 +307,7 @@ s3-tables	2026-10-07T13:48:36Z	PASS	70	verify.sh	PR #4664 (#4639 data/streaming 
 s3-vectors	2026-10-07T13:48:36Z	PASS	66	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-10-03T04:25:53Z	PASS	122	verify.sh	rc ok, orph clean (#4283 PR #4449)
-schema-v10-to-v11-migration	2026-10-08T10:05:12Z	PASS	541	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+schema-v10-to-v11-migration	2026-10-08T11:05:13Z	PASS	430	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
@@ -358,7 +358,3 @@ vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-prov
 vpc-nat-gateway	2026-10-07T14:26:55Z	PASS	761	verify.sh	PR #4660 (#4655) regression: NAT/EIP fix-forward through the unique-id set; rc 0, destroy clean, orph clean
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
-custom-resource-noecho-nested 2026-10-08T11:22:30Z 1467		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
-schema-v10-to-v11-migration 2026-10-08T11:05:13Z 430		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
-export 2026-10-08T11:09:09Z 235		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
-lambda 2026-10-08T11:11:04Z 115		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
