@@ -3,7 +3,7 @@ import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { type AwsClients } from '../utils/aws-clients.js';
-import { canonicalizeRegion } from '../utils/aws-partition.js';
+import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
 import { SECRET_MASK } from './secret-redaction.js';
 import { markNonRetryable } from './retryable-errors.js';
@@ -748,7 +748,7 @@ export class IntrinsicFunctionResolver {
   ): IntrinsicFunctionResolver {
     if (!producerRegion) return this;
     const target = canonicalizeRegion(producerRegion);
-    if (target === canonicalizeRegion(this.explicitRegion)) return this;
+    if (sameRegion(target, this.explicitRegion)) return this;
 
     // The region as `regionLogText` spells it (issue #3150): a `Fn::GetStackOutput`
     // region or a secret ARN's region can be assembled around a short secret.

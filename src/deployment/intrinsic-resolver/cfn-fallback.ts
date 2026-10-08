@@ -5,6 +5,7 @@ import {
   clientDefaultsFor,
   credentialFingerprint,
 } from '../../utils/ambient-client-defaults.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { STACK_REF_MAX_CODE_POINTS, displayAwsMessage } from '../../utils/display-safe.js';
 import {
   MAX_LISTED_AVAILABLE_OUTPUTS,
@@ -191,9 +192,11 @@ export async function lookupCfnStackOutputs(
   // serves a RESOLVED OUTPUT BAG, so a hit answers one stack's
   // `Fn::GetStackOutput` with another stack's outputs.
   // The credential half is the reading `fetchCfnStackOutputs` builds its
-  // client from, before its first `await` (issue #3588).
+  // client from, before its first `await` (issue #3588). The region is folded
+  // as `getCfnClient` folds it (issue #2209): a `Region`-less read passes the
+  // RAW `resolverRegion`, a named one the folded template value.
   const cacheKey = injectiveKey(
-    region,
+    canonicalizeRegion(region),
     stackName,
     credentialFingerprint(ambientCredentialConfig())
   );
@@ -334,11 +337,19 @@ export async function fetchCfnStackOutputs(
  * `credentialConfig` degrades to the default chain rather than throwing.
  * Keyed by region AND credential fingerprint for the reason
  * {@link regionScopedClients} gives (issue #3588).
+ *
+ * The region is FOLDED first, for the key and the client alike (issue
+ * [#2209](https://github.com/go-to-k/cdkd/issues/2209)): `ListExports` passes
+ * the RAW `resolverRegion` while `DescribeStacks` passes a template `Region`
+ * folded, so one region held two entries, and a mis-cased spelling reached the
+ * SDK's case-sensitive endpoint resolution. {@link clientsForRegion} folds the
+ * same way.
  */
 export function getCfnClient(
   this: IntrinsicFunctionResolver,
-  region: string
+  rawRegion: string
 ): CloudFormationClient {
+  const region = canonicalizeRegion(rawRegion);
   const credentialConfig = ambientCredentialConfig();
   const key = clientCacheKey(region, credentialConfig);
   let client = this.cfnClients.get(key);

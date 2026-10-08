@@ -165,6 +165,57 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
     expect(recorded).toHaveLength(1);
   });
 
+  // Issue #2209: `region` is the RAW resolver region when the template names no
+  // `Region`, and the folded template value when it does, so one producer
+  // reached both ways arrives in two spellings. Both orders, since the first
+  // spelling is the one the bag keeps.
+  it.each([
+    ['Region-less first', [undefined, 'us-east-1'], 'US-EAST-1'],
+    ['named Region first', ['us-east-1', undefined], 'us-east-1'],
+  ] as const)(
+    'one producer read with and without a Region dedups across spellings (%s, #2209)',
+    async (_label, regions, keptSpelling) => {
+      // Seeded under BOTH spellings on purpose. They are two S3 keys, and each
+      // read takes one: the Region-less read the RAW resolver region, the named
+      // one the folded value. With one key seeded, the other read misses and
+      // throws before it records anything, so the dedup is never reached.
+      const state = producerState('Producer', 'us-east-1', { BucketArn: 'arn' });
+      const backend = mockBackend(
+        new Map([
+          ['Producer|us-east-1', state],
+          ['Producer|US-EAST-1', state],
+        ])
+      );
+      const recorded: StateOutputReadEntry[] = [];
+      const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+      const ctx = buildContext({ stateBackend: backend, recordedOutputReads: recorded });
+      for (const region of regions) {
+        await resolver.resolve(
+          {
+            'Fn::GetStackOutput': {
+              StackName: 'Producer',
+              OutputName: 'BucketArn',
+              ...(region ? { Region: region } : {}),
+            },
+          },
+          ctx
+        );
+      }
+      expect(recorded).toEqual([
+        { sourceStack: 'Producer', sourceRegion: keptSpelling, outputName: 'BucketArn' },
+      ]);
+    }
+  );
+
+  it('the dedup still separates two different regions (#2209)', () => {
+    const recorded: StateOutputReadEntry[] = [];
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const ctx = buildContext({ recordedOutputReads: recorded });
+    resolver.recordOutputRead(ctx, 'Producer', 'us-east-1', 'Out');
+    resolver.recordOutputRead(ctx, 'Producer', 'US-WEST-2', 'Out');
+    expect(recorded.map((e) => e.sourceRegion)).toEqual(['us-east-1', 'US-WEST-2']);
+  });
+
   it('different output names on the same producer emit distinct entries', async () => {
     const backend = mockBackend(
       new Map([
