@@ -6269,6 +6269,45 @@ describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
     ).toBe(true);
   });
 
+  it('the out-of-sync child drop carries the account it is handed (go-to-k/cdkd#4648)', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: { version: 10, stackName: 'Root', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 },
+      nestedChildren: new Map([
+        [
+          'Child',
+          {
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            state: { version: 10, stackName: 'Root~Child', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 },
+            nestedChildren: new Map(),
+          },
+        ],
+      ]),
+    };
+    const message = (() => {
+      try {
+        buildPerStackImportNodes(
+          'Root',
+          { Resources: { Child: { Type: 'AWS::CloudFormation::Stack' } } },
+          {},
+          'json',
+          tree,
+          { profile: 'prod', stateBucket: 'b', statePrefix: 'team-a' }
+        );
+        return '';
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+    })();
+    expect(
+      message.endsWith(
+        "\nRemove it with: cdkd state orphan 'Root~Child' --stack-region us-east-1 --profile prod --state-bucket b --state-prefix team-a"
+      )
+    ).toBe(true);
+  });
+
   it('loads a child template via the nested-template path index', () => {
     const childTemplate = { Resources: { Param: { Type: 'AWS::SSM::Parameter' } } };
     const childPath = fixturePath('child.template.json', childTemplate);

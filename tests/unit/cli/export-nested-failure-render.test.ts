@@ -778,6 +778,34 @@ describe('a nested phase-2 failure renders AWS text folded and bounded (go-to-k/
       "clean up its record the same way:\n  cdkd state orphan Root --stack-region us-east-1"
     );
   });
+
+  it('the per-stack drops carry the account they are handed (go-to-k/cdkd#4648)', async () => {
+    iamSend.mockResolvedValue({});
+    waitStackUpdate.mockRejectedValue(new Error(PLANTED));
+    const { tree, rootTemplate } = policyTree();
+    const err = await runPerStackImportLoop({
+      lockRecovery: { profile: 'prod', stateBucket: 'b', statePrefix: 'team-a' },
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree,
+      rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: deps(cfnClient()),
+      options: OPTIONS,
+    }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (e: unknown) => e as Error
+    );
+    expect(err.message).toContain(
+      'clean up its record the same way:\n  cdkd state orphan Root --stack-region us-east-1 ' +
+        '--profile prod --state-bucket b --state-prefix team-a'
+    );
+  });
 });
 
 describe('the tree-wide confirmation does not call the pre-deletes unchanged (go-to-k/cdkd#3910)', () => {

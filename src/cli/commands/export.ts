@@ -9500,8 +9500,18 @@ export async function runPerStackImportLoop(args: {
             // that name in EVERY region, which is wider than this list
             // describes and is the widening `orphanCommandFor` refuses to emit.
             `Recover with the command below, once per record.` +
-            `\nRecover with: cdkd state orphan ${commandHole('stack')} ` +
-            `--stack-region ${commandHole('region')}`
+            // The run's account flags (go-to-k/cdkd#4648), so each pasted drop
+            // removes the record in the bucket this export read.
+            ((clause) => (clause === '' ? '' : ` ${clause}`))(
+              withheldAccountClause(args.lockRecovery, 'the command below prints').trimEnd()
+            ) +
+            `\nRecover with: ${
+              pasteableCommand('cdkd state orphan', [
+                { hole: 'stack' },
+                { flag: '--stack-region', hole: 'region' },
+                ...accountArgs(args.lockRecovery),
+              ]).command
+            }`
         );
       }
 

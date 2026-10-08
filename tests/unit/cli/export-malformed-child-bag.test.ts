@@ -314,6 +314,21 @@ const SHAPES: Array<[string, unknown]> = [
 ];
 
 describe('cdkd export over a nested child whose resources bag is unreadable (issue #3188)', () => {
+  // go-to-k/cdkd#4648: the command's own tree walk hands the run's account to
+  // the missing-child refusal's `cdkd state orphan` drop.
+  it("a MISSING child's drop carries the run's account flags (go-to-k/cdkd#4648)", async () => {
+    mockGetState.mockImplementation(async (name: string) => (name === STACK ? rootRecord() : null));
+    const message = await runExport(['--dry-run', '--profile', 'prod']);
+    expect(message).toContain('missing nested-child');
+    expect(message).toMatch(
+      new RegExp(
+        `^Drop it with: cdkd state orphan ${STACK} --stack-region ${REGION} --profile prod --state-bucket test-bucket$`,
+        'm'
+      )
+    );
+    expectNothingWritten();
+  });
+
   it('negative control: the same tree with a readable child bag plans past the pre-flight', async () => {
     serveTree(HEALTHY_CHILD_BAG);
     // The healthy child template must not declare the Grandchild row, which

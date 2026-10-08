@@ -526,6 +526,15 @@ describe("orphanCommandFor's drop carries the account flags (go-to-k/cdkd#4648)"
     expect(await missingChild('us-east-1​')).toContain("'cdkd state list --json' and act on");
   });
 
+  it('the withheld template explains an account hole too', async () => {
+    const message = await missingChild('us-east-1\u200b', { profile: 'my profile', stateBucket: 'b' });
+    expect(message).toMatch(/^Drop it with: cdkd state orphan '<stack>' --stack-region '<region>' --profile '<profile>' --state-bucket b$/m);
+    expect(message).not.toContain('my profile');
+    const reason = message.indexOf("The '--profile' value this run was given is not a plain identifier");
+    expect(reason).toBeGreaterThan(-1);
+    expect(reason).toBeLessThan(message.indexOf('Drop it with:'));
+  });
+
   it('a refused --profile is a described hole, never echoed', async () => {
     const message = await missingChild('us-east-1', { profile: 'my profile', stateBucket: 'b' });
     expect(message).toMatch(/^Drop it with: cdkd state orphan Root --stack-region us-east-1 --profile '<profile>' --state-bucket b$/m);

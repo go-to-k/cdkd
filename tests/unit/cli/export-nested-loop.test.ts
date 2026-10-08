@@ -583,7 +583,10 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     expect(summary).not.toContain('--stack-region <region>');
     // ...and it is on its own labelled line rather than inside a prose quoted
     // span, which is the other half of the same rule.
-    expect(summary).toMatch(/^Recover with: cdkd state orphan '<stack>' --stack-region '<region>'$/m);
+    // With the run's account flags (go-to-k/cdkd#4648): this run's bucket.
+    expect(summary).toMatch(
+      /^Recover with: cdkd state orphan '<stack>' --stack-region '<region>' --state-bucket bkt$/m
+    );
     // The per-failure warn ends on its command, alone on a labelled line
     // after the sentence (go-to-k/cdkd#3436): on the sentence's own line an
     // apostrophe would flip the shell quote around a shell-quoted name.
