@@ -676,6 +676,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
         {
           ...makeStackInfo('Plain', (synthRegion as string | undefined) ?? 'us-east-1'),
           template: { Resources: {}, ...templateExtra },
+          nestedTemplates: { Child: '/tmp/cdk.out/child.template.json' },
         },
       ],
     });
@@ -687,6 +688,11 @@ describe('cdkd destroy: terminationProtection guard', () => {
     const ctx = mockRunDestroyForStack.mock.calls[0]?.[2] as Record<string, unknown>;
     if (threaded) {
       expect(ctx['noEchoReresolver']).toBeInstanceOf(TemplateNoEchoReresolver);
+      // The child template index rides along, so a nested row's child re-resolves too.
+      expect(
+        (ctx['noEchoReresolver'] as unknown as { options: { nestedTemplates?: unknown } }).options
+          .nestedTemplates
+      ).toEqual({ Child: '/tmp/cdk.out/child.template.json' });
     } else {
       expect(ctx).not.toHaveProperty('noEchoReresolver');
     }
