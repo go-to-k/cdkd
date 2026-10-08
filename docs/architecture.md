@@ -1185,8 +1185,10 @@ question.
   `noEchoAttributeNames`. The deploy still sends the real value; to decide
   whether it changed it reads the resource back from AWS (a record written
   before `version: 11` is compared with the value it still holds). A create-only
-  property such a value feeds is never replaced on a readback's word; the
-  deploy warns and names `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+  property such a value feeds is replaced on a readback only where an earlier
+  readback, handed the masked record, proved AWS reports it exactly
+  (`noEchoExactEchoLeaves`, issue #4656); otherwise the deploy warns and names
+  `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
   See [State Management](state-management.md#version-11-stores-noecho-values-as-current-writers).
 
 ## Limitations and Future Extensions

@@ -14,7 +14,9 @@ import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
  * go-to-k/cdkd#4043 / #2449 (schema v11, review M1): a writer that rebuilds a
  * `ResourceState` by an explicit field list must not drop the two v11 fields
  * where it carries a record forward. The writers that SPREAD a record keep
- * them by construction; these cases pin both kinds.
+ * them by construction; these cases pin both kinds. go-to-k/cdkd#4656's
+ * `noEchoExactEchoLeaves` describes `noEchoLeaves` coordinates, so it travels
+ * with them.
  */
 describe('v11 NoEcho fields survive the record writers', () => {
   const template: CloudFormationTemplate = {
@@ -33,6 +35,7 @@ describe('v11 NoEcho fields survive the record writers', () => {
           attributes: { Secret: SECRET_MASK, Plain: 'p' },
           noEchoLeaves: [['Token']],
           noEchoAttributeNames: ['Secret'],
+          noEchoExactEchoLeaves: [['Token']],
           dependencies: [],
         },
       },
@@ -84,6 +87,7 @@ describe('v11 NoEcho fields survive the record writers', () => {
 
   it('cdkd import does not carry noEchoLeaves: it rebuilds properties from the template', () => {
     expect(reimport('cr-1', {}).noEchoLeaves).toBeUndefined();
+    expect(reimport('cr-1', {}).noEchoExactEchoLeaves).toBeUndefined();
   });
 
   it('scrubResourceRecord (deploy, scrub, journal, orphan) spreads both fields through', () => {
@@ -91,6 +95,7 @@ describe('v11 NoEcho fields survive the record writers', () => {
     const scrubbed = scrubResourceRecord({ ...record, properties: { Token: 'x' } }, new Map([['x', '{{resolve:ssm-secure:/p}}']]));
     expect(scrubbed.noEchoLeaves).toEqual([['Token']]);
     expect(scrubbed.noEchoAttributeNames).toEqual(['Secret']);
+    expect(scrubbed.noEchoExactEchoLeaves).toEqual([['Token']]);
   });
 
   it('the rollback replay record rebuild spreads both fields through', () => {
@@ -102,6 +107,7 @@ describe('v11 NoEcho fields survive the record writers', () => {
     } as Parameters<typeof recordAfterRollbackUpdate>[1]);
     expect(rebuilt.noEchoLeaves).toEqual([['Token']]);
     expect(rebuilt.noEchoAttributeNames).toEqual(['Secret']);
+    expect(rebuilt.noEchoExactEchoLeaves).toEqual([['Token']]);
   });
 });
 
