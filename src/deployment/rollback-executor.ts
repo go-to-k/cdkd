@@ -977,8 +977,10 @@ async function replayFailedOperationsUnbound(
           );
           // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` and `cdkd
           // rollback --remove-protection` (incl. `--revert-failed`) reach a
-          // protected resource here; a deploy, its settle and a nested
-          // in-process revert never set the flag. Only on a
+          // protected resource here; a deploy and its settle never set the
+          // flag: a nested child's revert under a deploy's automatic rollback
+          // never sets it; under `cdkd rollback --remove-protection` the child
+          // replay does (go-to-k/cdkd#4703). Only on a
           // resource proven to be the one the failed CREATE made: AWS's refusal
           // is the last guard on a name another resource reused. ONE attempt,
           // no outer re-entry: the scope tells a protection flip's

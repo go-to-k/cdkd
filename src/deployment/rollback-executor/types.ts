@@ -223,16 +223,20 @@ export interface RollbackExecutorContext {
    * termination protection turned off first (go-to-k/cdkd#4678).
    * Set ONLY on an explicit flag: by the `cdkd destroy` / `cdkd state destroy`
    * journal sweep and by `cdkd rollback --remove-protection` (with or without
-   * `--revert-failed`). A deploy's automatic rollback, its success settle and a
-   * nested child's in-process revert never set it, so they never strip a
-   * protection the user did not ask to remove.
+   * `--revert-failed`). A deploy's automatic rollback and its success settle
+   * never set it, so they never strip a protection the user did not ask to
+   * remove: a nested child's revert under a deploy's automatic rollback never
+   * sets it; under `cdkd rollback --remove-protection` the child replay does
+   * (go-to-k/cdkd#4703).
    */
   removeProtection?: boolean | undefined;
   /**
    * go-to-k/cdkd#4678: who else holds a journaled orphan, asked before
    * `removeProtection` strips one (`makeForeignHolderScan`, scoped to this
-   * stack). Supplied with `removeProtection` by its two setters only;
-   * a `held` or `unreadable` answer keeps the protection on.
+   * stack). Supplied with `removeProtection` by its three setters only: the
+   * destroy journal sweep, `cdkd rollback`, and the nested child replay under
+   * `cdkd rollback --remove-protection` (go-to-k/cdkd#4703), scoped to the
+   * child; a `held` or `unreadable` answer keeps the protection on.
    */
   foreignHolder?:
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
