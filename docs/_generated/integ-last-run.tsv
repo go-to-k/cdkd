@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 acm-certificate	2026-10-06T02:22:44Z	PASS	115	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 agentcore-tools	2026-10-03T04:25:23Z	PASS	79	verify.sh	rc ok, orph clean (#4283 PR #4449)
-alb	2026-10-07T21:48:30Z	PASS	0	verify.sh	#4679 Phase 2.5: seeded cc-api listener returns to the SDK provider on the removal deploy, same ARN, server.enabled reset to true; #4606 Phase 4 PASS; destroy 0 errors, 0 orphans
+alb	2026-10-08T00:05:26Z	PASS	0	verify.sh	#4689 Phase 5: --recreate-via-cc-api of the listener replaces HealthRule onto the new listener (priority, path, full fixed response), no NotFound; #4679 Phase 2.5 + #4606 Phase 4 PASS; destroy 0 errors, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-10-02T07:20:09Z	PASS	66	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean

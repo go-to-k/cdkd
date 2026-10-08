@@ -20,6 +20,10 @@ Application Load Balancer deployment example for cdkd.
   removal phase drops the list), and registered IP `Targets` (10.0.0.100 →
   10.0.0.101 on update, exercising RegisterTargets + DeregisterTargets)
 - **Listener** - HTTP listener on port 80 forwarding to target group
+- **HealthRule** - a `ListenerRule` on the listener (`/health` -> fixed 200).
+  verify.sh Phase 5 (issue #4689) recreates the listener with
+  `--recreate-via-cc-api` and asserts the rule is replaced onto the new
+  listener with its priority and condition, not updated in place
 - **OrphanLb** (verify.sh Phase 4 only, issue #4606) - `INJECT_LB_ORPHAN=true`
   adds an internal load balancer whose CREATE fails after AWS made it
   (deletion protection on, then a malformed
