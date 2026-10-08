@@ -4264,6 +4264,7 @@
         "iam-propagation-stress",
         "iam-recreate-reattach",
         "iam-role-policies-drift-clean",
+        "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
         "migrate-from-cfn"
       ],
@@ -4284,6 +4285,9 @@
         ],
         "iam-role-policies-drift-clean": [
           "l1",
+          "literal"
+        ],
+        "iam-role-prefixed-name-update": [
           "literal"
         ],
         "iam-secret-derived-principals": [
@@ -4988,6 +4992,7 @@
         "gc-custom-asset-names",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "iam-role-prefixed-name-update",
         "import-attribute-readback",
         "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
@@ -5192,6 +5197,10 @@
         ],
         "iam-role-policies-drift-clean": [
           "l2"
+        ],
+        "iam-role-prefixed-name-update": [
+          "l2",
+          "literal"
         ],
         "import-attribute-readback": [
           "l2"
