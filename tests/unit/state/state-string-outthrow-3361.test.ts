@@ -124,10 +124,9 @@ describe('DeploymentEventsStore (#3361)', () => {
       'cdkd/S/us-east-1/deployments/run-3361.jsonl',
       'cdkd/S/us-east-1/deployments/index.json',
     ]);
-    expect(debugs().some((d) => d.includes('Deployment-events index unreadable'))).toBe(true);
-    expect(debugs().find((d) => d.includes('Deployment-events index unreadable'))).toContain(
-      PLACEHOLDER
-    );
+    const unreadable = debugs().filter((d) => d.includes('Deployment-events index unreadable'));
+    expect(unreadable).toHaveLength(1);
+    expect(unreadable[0]).toContain(PLACEHOLDER);
     expect(warnings()).toEqual([]);
   });
 });
@@ -300,7 +299,12 @@ describe('noncurrent-version purge (#3361)', () => {
     expect(String(warn.mock.calls[0]![0])).toContain(`${KEY_A} (${PLACEHOLDER})`);
   });
 
-  it('a whole-batch delete rejecting unconvertibly is reported as an incomplete purge', async () => {
+  it('a whole-batch delete rejecting unconvertibly is reported against its own keys', async () => {
+    // Unlike the listing arm, this one did not reject the purge: the batch
+    // catch's throw escaped into the per-prefix catch above it, which abandoned
+    // the rest of the prefix and recorded the PREFIX with the converter's
+    // TypeError as its reason. So the discriminator is the key and the
+    // placeholder in the warning, not the resolution.
     const warn = vi.fn();
     const prefix = 'cdkd/S/us-east-1/deployments/';
     const key = `${prefix}run-1.jsonl`;

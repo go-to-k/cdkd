@@ -239,9 +239,10 @@ function recordFailure(failed: Map<string, string[]>, key: string, reason: strin
 }
 
 // `.detail` rather than the bare ternary: `describe` runs INSIDE the catches
-// that record a failure and move on to the next prefix or batch, so a
-// rejection whose stringification throws turned "warn and continue" into a
-// rejected purge, against both entry points' "never throws" contract (#3361).
+// that record a failure and move on to the next prefix or batch. A rejection
+// whose stringification throws rejected the whole purge from the listing arm,
+// against both entry points' "never throws" contract, and from the batch arm
+// abandoned the rest of the prefix under the converter's TypeError (#3361).
 const describe = (error: unknown): string => describeAwsFailure(error).detail;
 
 /**
