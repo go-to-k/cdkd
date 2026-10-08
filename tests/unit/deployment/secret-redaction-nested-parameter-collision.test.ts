@@ -182,7 +182,7 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     expect(redactInheritedParameterValue(plainRow, PARAM_A, CONN)).toBe(SPELLING);
     const { persisted, desired } = await persistAndDesired(plainRow, template, { A: SEL_A });
     expect(persisted).toEqual(desired);
-    expect(desired['A']).toBe(`postgres://${USER_EXPR}:${EXPR_A}`.concat('@host'));
+    expect(desired['A']).toBe(SPELLING);
   });
 
   it('keeps the spelling where the two parameters are read by DIFFERENT resources', () => {
@@ -198,7 +198,9 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     ]) {
       const parent = parentRow(true);
       poisonRenderedSpellingsCollidingIn(childTemplate({ Mixed: { A: SEL_A, B: subRead } }), PARAMETERS, parent);
-      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).not.toBe(SPELLING);
+      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+        `postgres://${USER_EXPR}:${EXPR_B}@host`
+      );
     }
     // A literal `${!Name}` is no read.
     const parent = parentRow(true);
@@ -312,7 +314,9 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
       const other = dFirst ? { D: selD, A: SEL_A } : { A: SEL_A, D: selD };
       const template = childTemplate({ Mixed: { A: SEL_A, B: SEL_B }, Other: other });
       poisonRenderedSpellingsCollidingIn(template, params, parent);
-      expect(redactInheritedParameterValue(parent, PARAM_D, CONN_D)).not.toBe(SPELLING_D);
+      expect(redactInheritedParameterValue(parent, PARAM_D, CONN_D)).toBe(
+        `mysql://${USER_EXPR}:${EXPR_B}@other`
+      );
       const recordedSecretValues = new Map<string, string>();
       inheritNestedStackParameterAssociations(recordedSecretValues, parent);
       const resolved = await resolver.resolve(other, {
@@ -349,7 +353,9 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
         Outputs: outputs,
       } as CloudFormationTemplate;
       poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
-      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).not.toBe(SPELLING);
+      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+        `postgres://${USER_EXPR}:${EXPR_B}@host`
+      );
     }
   });
 

@@ -62,12 +62,13 @@ describe('cdkd scrub of a nested child withdraws a colliding literal spelling (#
     it(`${mixed ? 'withdraws' : 'keeps'} it when ${mixed ? 'one resource reads both parameters' : 'the reads are in different resources'}`, async () => {
       const parent = parentRow();
       expect(redactInheritedParameterValue(parent, 'ConnA', CONN)).toBe(SPELLING);
+      // ConnA resolves LAST, so without the withdrawal its token takes the slot.
       const selA = { 'Fn::Select': [0, [{ Ref: 'ConnA' }]] };
       const selB = { 'Fn::Select': [0, [{ Ref: 'SecretB' }]] };
       const template = {
         Parameters: { ConnA: { Type: 'String' }, SecretB: { Type: 'String' } },
         Resources: mixed
-          ? { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: selA, Description: selB } } }
+          ? { R: { Type: 'AWS::SSM::Parameter', Properties: { Description: selB, Value: selA } } }
           : {
               R: { Type: 'AWS::SSM::Parameter', Properties: { Value: selA } },
               S: { Type: 'AWS::SSM::Parameter', Properties: { Value: selB } },
@@ -78,16 +79,36 @@ describe('cdkd scrub of a nested child withdraws a colliding literal spelling (#
         version: 9,
         region: 'us-east-1',
         stackName: 'MyStack~Child',
-        resources: {},
+        resources: {
+          R: {
+            physicalId: 'r',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: mixed ? { Value: CONN, Description: SHARED } : { Value: CONN },
+            attributes: {},
+            dependencies: [],
+          },
+          ...(mixed
+            ? {}
+            : {
+                S: {
+                  physicalId: 's',
+                  resourceType: 'AWS::SSM::Parameter',
+                  properties: { Value: SHARED },
+                  attributes: {},
+                  dependencies: [],
+                },
+              }),
+        },
         outputs: {},
         lastModified: 0,
       } as StackState;
+      const saveState = vi.fn().mockResolvedValue('etag-2');
       await scrubStack(
         { stackName: 'MyStack~Child', template } as never,
         'us-east-1',
         {
           getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
-          saveState: vi.fn().mockResolvedValue('etag-2'),
+          saveState,
           purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
           listStacks: vi.fn().mockResolvedValue([]),
         } as never,
@@ -96,7 +117,7 @@ describe('cdkd scrub of a nested child withdraws a colliding literal spelling (#
           releaseLock: vi.fn().mockResolvedValue(undefined),
         } as never,
         {
-          dryRun: true,
+          dryRun: false,
           logger,
           nestedChild: {
             logicalId: 'Child',
@@ -109,6 +130,13 @@ describe('cdkd scrub of a nested child withdraws a colliding literal spelling (#
         mixed ? redactSecretsForState(CONN, parent) : SPELLING
       );
       expect(redactSecretsForState(CONN, parent)).not.toBe(SPELLING);
+      // What scrub REWROTE: the withdrawal precedes resource resolution.
+      const saved = saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.resources['R']!.properties).toEqual(
+        mixed
+          ? { Value: `postgres://plainuser:${EXPR_B}@host`, Description: EXPR_B }
+          : { Value: SPELLING }
+      );
     });
   }
 });
