@@ -2118,6 +2118,11 @@
       "scenarios": []
     },
     {
+      "name": "s3-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-lifecycle",
       "annotated": false,
       "scenarios": []
@@ -3311,6 +3316,7 @@
     "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",
     "s3-event-notification",
+    "s3-fix-forward-orphan",
     "s3-lifecycle",
     "s3-object-lock",
     "s3-replication-and-filter",

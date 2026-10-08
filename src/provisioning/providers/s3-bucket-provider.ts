@@ -52,6 +52,7 @@ import {
   ListBucketInventoryConfigurationsCommand,
   NoSuchBucket,
   ListBucketsCommand,
+  type Bucket,
   ListObjectVersionsCommand,
   DeleteObjectsCommand,
   type BucketLocationConstraint,
@@ -129,6 +130,7 @@ import {
   type CreateContext,
   type UpdateContext,
   type ResourceNotFound,
+  type ResourceIdentityVerdict,
 } from '../../types/resource.js';
 
 /**
@@ -1702,6 +1704,24 @@ function bucketLocationToRegion(constraint: string | null | undefined): string {
  * is what would let a probe failure re-authorize the destructive branch each
  * caller below is guarding.
  */
+/**
+ * A DNS-compatible general purpose bucket name (3-63 of `a-z 0-9 . -`,
+ * starting and ending alphanumeric). The identity answers above refuse
+ * anything else: a legacy mixed-case name, an ARN, a value cdkd would only
+ * be guessing about.
+ */
+function isPlainBucketName(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(value);
+}
+
+/**
+ * `ListBuckets` can lag a bucket created moments ago, which is when a failed
+ * CREATE's identity is read: re-read it this many times, this far apart,
+ * well inside the caller's 10s bound (`RESOURCE_IDENTITY_TIMEOUT_MS`).
+ */
+const BUCKET_LIST_IDENTITY_ATTEMPTS = 3;
+const BUCKET_LIST_IDENTITY_DELAY_MS = 1_500;
+
 function isNoSuchBucketError(error: unknown): boolean {
   return (error as { name?: unknown } | null)?.name === 'NoSuchBucket';
 }
@@ -2196,6 +2216,19 @@ export class S3BucketProvider implements ResourceProvider {
   private async ownsBucketNamed(
     bucketName: string
   ): Promise<{ owned: boolean } | { unknown: string }> {
+    const listed = await this.listOwnedBucket(bucketName);
+    return 'unknown' in listed ? listed : { owned: listed.bucket !== undefined };
+  }
+
+  /**
+   * This account's own `ListBuckets` entry for exactly `bucketName`, or
+   * `bucket: undefined` when the list (every page) does not hold it.
+   * `unknown` (the error CLASS; AWS's text goes to debug) when the list
+   * cannot be read through.
+   */
+  private async listOwnedBucket(
+    bucketName: string
+  ): Promise<{ bucket: Bucket | undefined } | { unknown: string }> {
     try {
       let token: string | undefined;
       for (let page = 0; page < 100; page++) {
@@ -2206,9 +2239,10 @@ export class S3BucketProvider implements ResourceProvider {
             ...(token !== undefined ? { ContinuationToken: token } : {}),
           })
         );
-        if ((out.Buckets ?? []).some((b) => b.Name === bucketName)) return { owned: true };
+        const found = (out.Buckets ?? []).find((b) => b.Name === bucketName);
+        if (found !== undefined) return { bucket: found };
         token = out.ContinuationToken || undefined;
-        if (token === undefined) return { owned: false };
+        if (token === undefined) return { bucket: undefined };
       }
       return { unknown: 'PaginationLimit' };
     } catch (error) {
@@ -8592,6 +8626,85 @@ export class S3BucketProvider implements ResourceProvider {
    * Returns `null` when nothing matches — caller treats this as
    * "not deployed yet" rather than a failure.
    */
+  /**
+   * go-to-k/cdkd#4606: whether the bucket a failed CREATE journaled is the one
+   * the record under the same logical id holds (a fix-forward that created a
+   * new one there under another name).
+   *
+   * Bucket names are globally unique and a bucket cannot be renamed, so two
+   * different names are two different buckets. Both must be plain
+   * DNS-compatible names (anything else is `'unknown'`); an equal pair is
+   * `'same'` without a read. A different pair is `'different'` only once the
+   * record's bucket reads back in `expectedRegion` from a client in that
+   * region: a record naming a bucket that is gone, elsewhere, or unreadable
+   * is `'unknown'`, which keeps the journaled one.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::S3::Bucket') return 'unknown';
+    if (!isPlainBucketName(journaledPhysicalId) || !isPlainBucketName(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const want = canonicalizeRegion(context.expectedRegion);
+    if (canonicalizeRegion(await this.getRegion()) !== want) return 'unknown';
+    const probe = await this.probeBucketRegion(record.physicalId);
+    return probe.kind === 'region' && probe.region === want ? 'different' : 'unknown';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: a token naming THIS bucket generation and no
+   * later one under the same name: `<name>|<region>|<CreationDate>`, the
+   * creation date read from this account's own `ListBuckets` entry. S3 gives a
+   * bucket no immutable id, so the creation date is what tells a bucket from
+   * one re-created under its name after it was deleted.
+   *
+   * Measured for #4606 (2026-10-09, us-east-1 and us-west-2): a bucket
+   * deleted and re-created under its name, at once or minutes later, reports
+   * the NEW create's second, which is what makes the token sound. The date
+   * has one-second precision, so a delete and re-create inside the same
+   * second as the identity read is the accepted window. It also moves:
+   * outside us-east-1 it becomes the second of each versioning, tagging,
+   * encryption or policy write (not in us-east-1), as S3 documents for a
+   * policy edit. So the token must be read after the failed CREATE's last
+   * write -- the deploy engine reads it once the create has thrown -- and a
+   * moved date reads as ANOTHER bucket, which keeps the journaled one and
+   * warns: the safe direction.
+   *
+   * `RESOURCE_NOT_FOUND` only when `GetBucketLocation` answers `NoSuchBucket`.
+   * `undefined` for another type, a name that is not plain, a client or bucket
+   * in another region than `expectedRegion`, a location that cannot be read,
+   * and a bucket this account's list does not show (another account's, or one
+   * the list has not caught up with yet, re-read briefly): never a token cdkd
+   * cannot vouch for.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::S3::Bucket' || !isPlainBucketName(physicalId)) return undefined;
+    const want = canonicalizeRegion(context.expectedRegion);
+    if (canonicalizeRegion(await this.getRegion()) !== want) return undefined;
+    const probe = await this.probeBucketRegion(physicalId);
+    if (probe.kind === 'absent') return RESOURCE_NOT_FOUND;
+    if (probe.kind !== 'region' || probe.region !== want) return undefined;
+    for (let attempt = 0; attempt < BUCKET_LIST_IDENTITY_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, BUCKET_LIST_IDENTITY_DELAY_MS));
+      const listed = await this.listOwnedBucket(physicalId);
+      if ('unknown' in listed) return undefined;
+      const created = listed.bucket?.CreationDate;
+      if (created instanceof Date && !Number.isNaN(created.getTime())) {
+        return `${physicalId}|${want}|${created.toISOString()}`;
+      }
+    }
+    return undefined;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'BucketName');
     if (explicit) {

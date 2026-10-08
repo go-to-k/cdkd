@@ -323,6 +323,7 @@
         "s3-analytics-inventory",
         "s3-cloudfront",
         "s3-event-notification",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
@@ -451,6 +452,7 @@
         "rollback-nested-cross-region-secret",
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
@@ -708,6 +710,7 @@
         "s3-cloudfront",
         "s3-directory-bucket",
         "s3-event-notification",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
@@ -1056,6 +1059,7 @@
         "s3-cloudfront",
         "s3-directory-bucket",
         "s3-event-notification",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
@@ -1165,7 +1169,8 @@
         "neptune-fix-forward-orphan",
         "rds-fix-forward-orphan",
         "remove-protection-compensation",
-        "rollback-command"
+        "rollback-command",
+        "s3-fix-forward-orphan"
       ]
     },
     {
@@ -1442,6 +1447,7 @@
         "s3-cloudfront",
         "s3-directory-bucket",
         "s3-event-notification",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
