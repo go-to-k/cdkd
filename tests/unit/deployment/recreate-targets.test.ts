@@ -1245,6 +1245,18 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
       hasSdkProvider,
     });
     expect(typeChange.blockedAlreadyCcApi).toEqual([]);
+    // ...nor the reverse: an SDK-provider record whose template now names a
+    // Cloud Control-only type (deleted through the SDK, created through Cloud
+    // Control).
+    const reverse = validateRecreateTargets({
+      template: { Resources: { R: { Type: target, Properties: {} } } },
+      state: st('S', { R: res('AWS::Lambda::Function', { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider,
+    });
+    expect(reverse.blockedAlreadyCcApi).toEqual([]);
   });
 
   it('blockedAlreadyCcApi does NOT fire for the reverse direction (--recreate-via-sdk-provider on cc-api is the intended path)', () => {
