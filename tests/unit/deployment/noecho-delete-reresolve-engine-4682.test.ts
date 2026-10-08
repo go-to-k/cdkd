@@ -12,8 +12,13 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { NoEchoDeleteValues } from '../../../src/deployment/noecho-delete-reresolution.js';
-import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
+import {
+  maskedInputFingerprint,
+  maskedPropertyFingerprint,
+  parameterInputsFor,
+} from '../../../src/deployment/masked-property-fingerprints.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -275,27 +280,54 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
     nothingPersistedOrLoggedCarries(VALUE);
   });
 
-  it("refuses a coordinate whose property's resolved non-secret INPUT moved since the deploy (#4543)", async () => {
+  it.each([
+    ['delivers the value while the INPUT fingerprint equals the one this deploy stamps', 'today'],
+    ["refuses it when the property's resolved non-secret INPUT moved since the deploy (#4543)", 'stale'],
+  ])('%s', async (_label, which) => {
     const recorded = state();
+    const parameters = {
+      Secret: { Type: 'String', NoEcho: true, Default: VALUE },
+      Host: { Type: 'String', Default: 'host-today' },
+    };
+    const node = { 'Fn::Join': [':', [{ Ref: 'Host' }, { Ref: 'Secret' }]] };
     const template = templateOf(
-      {
-        ServiceToken: TOKEN_ARN,
-        TopicName: 'old-name',
-        DisplayName: { 'Fn::Join': [':', [{ Ref: 'Host' }, { Ref: 'Secret' }]] },
-      },
-      {
-        Secret: { Type: 'String', NoEcho: true, Default: VALUE },
-        Host: { Type: 'String', Default: 'host-today' },
-      }
+      { ServiceToken: TOKEN_ARN, TopicName: 'old-name', DisplayName: node },
+      parameters
     );
-    const text = maskedPropertyFingerprint(template.Resources['Topic']!.Properties!['DisplayName']);
-    // The text is today's; the INPUT half was taken when `Host` was different.
+    const text = maskedPropertyFingerprint(node);
+    // What a deploy with `Host` = `host` stamps: the engine's own parameter
+    // classes, no resource read (the node reads none).
+    const stamped = async (host: string): Promise<string> =>
+      (await maskedInputFingerprint(node, {
+        template,
+        parameterInput: parameterInputsFor({ template, values: { Secret: VALUE, Host: host } })
+          .parameterInput,
+        resolve: () => Promise.reject(new Error('no resource read')),
+      }))!;
     recorded.resources['Topic']!.maskedPropertyFingerprints = { DisplayName: text };
     recorded.resources['Topic']!.maskedPropertyInputFingerprints = {
-      DisplayName: `inputs-sha256:${'0'.repeat(64)}+${text}`,
+      DisplayName: await stamped(which === 'today' ? 'host-today' : 'host-before'),
     };
     stateBackend.getState!.mockResolvedValue({ state: recorded, etag: 'etag-old' });
     await makeEngine(recreate).deploy(STACK, template);
-    expect(topicDeleteContext()).not.toHaveProperty('noEchoDeleteValues');
+    if (which === 'today') {
+      const values = topicDeleteContext()['noEchoDeleteValues'] as NoEchoDeleteValues;
+      expect(values.leaves).toEqual([
+        { coordinate: ['DisplayName'], value: `host-today:${VALUE}` },
+      ]);
+    } else {
+      expect(topicDeleteContext()).not.toHaveProperty('noEchoDeleteValues');
+    }
+  });
+  it('delivers the value on the update-failure fallback replacement (`--replace` after an unsupported update)', async () => {
+    stateBackend.getState!.mockResolvedValue({ state: state(), etag: 'etag-old' });
+    provider.update!.mockRejectedValue(new ResourceUpdateNotSupportedError(CR, 'Topic'));
+    await makeEngine({ replace: true }).deploy(
+      STACK,
+      templateOf({ ServiceToken: TOKEN_ARN, TopicName: 'changed', DisplayName: { Ref: 'Secret' } })
+    );
+    const values = topicDeleteContext()['noEchoDeleteValues'] as NoEchoDeleteValues;
+    expect(values.leaves).toEqual([{ coordinate: ['DisplayName'], value: VALUE }]);
+    nothingPersistedOrLoggedCarries(VALUE);
   });
 });

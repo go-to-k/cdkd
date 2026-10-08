@@ -401,6 +401,8 @@ export class TemplateNoEchoReresolver {
           parameters: bound,
           stackName: this.options.stackName,
           recordedSecretValues: secrets,
+          // As the deploy's sources: an input never resolves a reference.
+          skipDynamicReferences: true,
         });
         return { value, secrets };
       },

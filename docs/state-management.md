@@ -991,9 +991,14 @@ reads a `NoEcho` parameter there, for a resource of the same type, and, where
 the record holds the hashes the last deploy took of that property's template
 text and of its resolved non-secret inputs (`maskedPropertyFingerprints`,
 `maskedPropertyInputFingerprints`), only while today's are the same: a changed
-expression, `Default`, condition or list element is refused. A hash the record
-holds but cannot compare (a refused one, an input unknown today) refuses too;
-a property the record never hashed (an older cdkd) is accepted.
+expression, condition, list element, or `Default` of a non-`NoEcho` input is
+refused (a `NoEcho` parameter's own `Default` is not hashed, so a change to it
+is accepted and the handler gets today's value). A hash the record holds but
+cannot compare (a refused one, an input unknown today) refuses too; a property
+the record never hashed (an older cdkd) is accepted. On `cdkd destroy` an input
+that reads a resource is unknown, so a masked property that also reads one
+elsewhere (`Config: {Token: {Ref: P}, Bucket: {Ref: MyBucket}}`) is refused
+when the record hashed its inputs.
 On `cdkd destroy` the expression must be built from parameters, the pseudo
 parameters `AWS::Region`, `AWS::Partition`, `AWS::URLSuffix`, `AWS::AccountId`
 and `AWS::StackName`, and literals; a nested stack's child gets the value its
