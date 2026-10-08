@@ -261,9 +261,9 @@ export function poisonRenderedSpellingsCollidingIn(
   for (const [group, countBareRefs] of groups) {
     const reads = parameterReadsOf(group, names, countBareRefs);
     if (reads.size < 2) continue;
-    // plaintext -> expression -> the reading parameters that would carry it.
-    const byPlaintext = new Map<string, Map<string, { names: string[]; rendered: string[] }>>();
-    // plaintext -> whether any parameter carrying it is read through the slot.
+    // plaintext -> expression -> the RENDERED reading parameters carrying it.
+    const byPlaintext = new Map<string, Map<string, string[]>>();
+    // The plaintexts some parameter carrying them is read through the slot.
     const slotReadPlaintexts = new Set<string>();
     for (const [name, slotRead] of reads) {
       // `reads` holds own keys only (`names` is `Object.keys`); stated for the
@@ -280,20 +280,19 @@ export function poisonRenderedSpellingsCollidingIn(
           byExpression = new Map();
           byPlaintext.set(plaintext, byExpression);
         }
-        let entry = byExpression.get(expression);
-        if (entry === undefined) {
-          entry = { names: [], rendered: [] };
-          byExpression.set(expression, entry);
+        let renderedNames = byExpression.get(expression);
+        if (renderedNames === undefined) {
+          renderedNames = [];
+          byExpression.set(expression, renderedNames);
         }
-        entry.names.push(name);
-        if (rendered) entry.rendered.push(name);
+        if (rendered) renderedNames.push(name);
         if (slotRead) slotReadPlaintexts.add(plaintext);
       }
     }
     for (const [plaintext, byExpression] of byPlaintext) {
       if (byExpression.size < 2 || !slotReadPlaintexts.has(plaintext)) continue;
-      for (const entry of byExpression.values()) {
-        for (const name of entry.rendered) withdraw.add(name);
+      for (const renderedNames of byExpression.values()) {
+        for (const name of renderedNames) withdraw.add(name);
       }
     }
   }
