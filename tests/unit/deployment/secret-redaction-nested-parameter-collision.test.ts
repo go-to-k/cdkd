@@ -291,14 +291,20 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     }
   }
 
-  it('counts the Outputs as one reader, bare {Ref}s included', () => {
-    const parent = parentRow(true);
-    const template = {
-      ...childTemplate({ X: { A: SEL_A } }),
-      Outputs: { OA: { Value: SEL_A }, OB: { Value: { Ref: PARAM_B } } },
-    } as CloudFormationTemplate;
-    poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
-    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).not.toBe(SPELLING);
+  it('counts the Outputs as one reader, every read a slot read', () => {
+    for (const outputs of [
+      { OA: { Value: SEL_A }, OB: { Value: { Ref: PARAM_B } } },
+      // Two BARE reads: positioned in a resource, not in the Outputs.
+      { OA: { Value: { Ref: PARAM_A } }, OB: { Value: { Ref: PARAM_B } } },
+    ]) {
+      const parent = parentRow(true);
+      const template = {
+        ...childTemplate({ X: { A: SEL_A } }),
+        Outputs: outputs,
+      } as CloudFormationTemplate;
+      poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).not.toBe(SPELLING);
+    }
   });
 
   it('withdraws nothing where both parameters would carry the SAME expression', () => {
