@@ -374,6 +374,7 @@
         "cc-final-snapshot-handlers",
         "deletion-policy-snapshot",
         "diff-fail-on-destructive",
+        "dynamodb-autoscaling",
         "efs-immutable-replacement",
         "fallback-recreate-children",
         "glue-update-hardening",

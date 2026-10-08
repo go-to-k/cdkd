@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 import {
   findReplacedReadersOfRecreateTargets,
+  isPlainReferenceTo,
   refuseStatefulReplacedReaders,
 } from '../../../src/deployment/recreate-target-readers.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -253,6 +254,202 @@ describe('a write-only create-only reference the registry names (go-to-k/cdkd#46
       clearCreateOnlyPropertiesCache();
       clearWriteOnlyPropertiesCache();
     }
+  });
+});
+
+describe('a write-only create-only property holding a plain reference (go-to-k/cdkd#4701)', () => {
+  // Types the registry does not classify, with the schema fallback alone.
+  const SCALING_POLICY = 'AWS::ApplicationAutoScaling::ScalingPolicy';
+  const SCALABLE_TARGET = 'AWS::ApplicationAutoScaling::ScalableTarget';
+  const LOCATION_S3 = 'AWS::DataSync::LocationS3';
+  const SIMPLE_AD = 'AWS::DirectoryService::SimpleAD';
+  const LIVE: Readonly<Record<string, { createOnly: string[]; writeOnly: string[] }>> = {
+    // The live schemas, trimmed to the top-level keys these cases read.
+    [SCALING_POLICY]: {
+      createOnly: ['PolicyName', 'ScalingTargetId'],
+      writeOnly: ['ScalingTargetId'],
+    },
+    [LOCATION_S3]: { createOnly: ['S3BucketArn', 'Subdirectory'], writeOnly: ['S3BucketArn'] },
+    [SIMPLE_AD]: { createOnly: ['Password', 'Name'], writeOnly: ['Password'] },
+  };
+
+  async function withLiveSchemas<T>(run: () => Promise<T>): Promise<T> {
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    const fallback = mockCloudFormationSend.getMockImplementation()!;
+    mockCloudFormationSend.mockImplementation((command: { input?: { TypeName?: string } }) => {
+      const live = LIVE[command.input?.TypeName ?? ''];
+      return live === undefined
+        ? fallback(command)
+        : Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: live.createOnly.map((key) => `/properties/${key}`),
+              writeOnlyProperties: live.writeOnly.map((key) => `/properties/${key}`),
+            }),
+          });
+    });
+    try {
+      return await run();
+    } finally {
+      mockCloudFormationSend.mockImplementation(fallback);
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
+    }
+  }
+
+  async function readersOf(
+    target: CloudFormationTemplate['Resources'][string],
+    reader: CloudFormationTemplate['Resources'][string]
+  ): Promise<Array<{ logicalId: string; properties: string[] }>> {
+    return withLiveSchemas(() =>
+      findReplacedReadersOfRecreateTargets({
+        template: { Resources: { Target: target, Reader: reader } },
+        state: stateOf({ Target: record(target.Type), Reader: record(reader.Type) }),
+        targetIds: ['Target'],
+      })
+    );
+  }
+
+  const scalableTarget = { Type: SCALABLE_TARGET, Properties: { ResourceId: 'table/t' } };
+  const bucket = { Type: 'AWS::S3::Bucket', Properties: {} };
+
+  it('lists a scaling policy holding the recreated target in ScalingTargetId (Ref)', async () => {
+    const readers = await readersOf(scalableTarget, {
+      Type: SCALING_POLICY,
+      Properties: { PolicyName: 'p', ScalingTargetId: { Ref: 'Target' } },
+    });
+    expect(readers).toEqual([
+      expect.objectContaining({ logicalId: 'Reader', reads: 'Target', properties: ['ScalingTargetId'] }),
+    ]);
+  });
+
+  it('lists a reader holding a Fn::GetAtt of it, in either spelling', async () => {
+    for (const getAtt of [{ 'Fn::GetAtt': ['Target', 'Arn'] }, { 'Fn::GetAtt': 'Target.Arn' }]) {
+      const readers = await readersOf(bucket, {
+        Type: LOCATION_S3,
+        Properties: { S3BucketArn: getAtt, S3Config: { BucketAccessRoleArn: 'arn:role' } },
+      });
+      expect(readers).toEqual([
+        expect.objectContaining({ logicalId: 'Reader', properties: ['S3BucketArn'] }),
+      ]);
+    }
+  });
+
+  it('does not list a write-only value only built from the reference (go-to-k/cdkd#3803 kept)', async () => {
+    // A dynamic reference to a recreated secret: the resolved value is a
+    // secret AWS never returns there, so it stays an in-place update.
+    const readers = await readersOf(
+      { Type: 'AWS::SecretsManager::Secret', Properties: {} },
+      {
+        Type: SIMPLE_AD,
+        Properties: {
+          Name: 'corp.example.com',
+          Password: {
+            'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'Target' }, ':SecretString:pw}}']],
+          },
+        },
+      }
+    );
+    expect(readers).toEqual([]);
+  });
+
+  it('does not list a Fn::GetAtt of a recreated custom resource or nested stack, which may be NoEcho', async () => {
+    for (const type of [
+      'Custom::Thing',
+      'AWS::CloudFormation::CustomResource',
+      'AWS::CloudFormation::Stack',
+    ]) {
+      const readers = await readersOf(
+        { Type: type, Properties: { ServiceToken: 'arn:fn' } },
+        {
+          Type: SIMPLE_AD,
+          Properties: { Name: 'corp.example.com', Password: { 'Fn::GetAtt': ['Target', 'Text'] } },
+        }
+      );
+      expect(readers).toEqual([]);
+    }
+  });
+
+  it('still lists a NON-write-only create-only property whatever its shape (unchanged)', async () => {
+    const readers = await readersOf(
+      { Type: 'AWS::SecretsManager::Secret', Properties: {} },
+      {
+        Type: SIMPLE_AD,
+        Properties: { Name: { 'Fn::Join': ['.', [{ Ref: 'Target' }, 'example.com']] } },
+      }
+    );
+    expect(readers).toEqual([expect.objectContaining({ logicalId: 'Reader', properties: ['Name'] })]);
+  });
+
+  it('lists a plain Ref when the write-only list is unknown, and nothing else', async () => {
+    // DescribeType denied for every type: the create-only paths come from the
+    // committed snapshot, and the write-only list is unknown.
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    const fallback = mockCloudFormationSend.getMockImplementation()!;
+    mockCloudFormationSend.mockImplementation(() =>
+      Promise.reject(
+        Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+          name: 'AccessDeniedException',
+          $metadata: { httpStatusCode: 403 },
+        })
+      )
+    );
+    try {
+      const readers = await findReplacedReadersOfRecreateTargets({
+        template: {
+          Resources: {
+            Api: { Type: 'AWS::ApiGateway::RestApi', Properties: { Name: 'api' } },
+            Plain: {
+              Type: 'AWS::ApiGateway::Deployment',
+              Properties: { RestApiId: { Ref: 'Api' } },
+            },
+            Built: {
+              Type: 'AWS::ApiGateway::Stage',
+              Properties: { RestApiId: { 'Fn::Join': ['', [{ Ref: 'Api' }]] }, StageName: 's' },
+            },
+          },
+        },
+        state: stateOf({
+          Api: record('AWS::ApiGateway::RestApi'),
+          Plain: record('AWS::ApiGateway::Deployment'),
+          Built: record('AWS::ApiGateway::Stage'),
+        }),
+        targetIds: ['Api'],
+      });
+      expect(readers.map((r) => [r.logicalId, r.properties])).toEqual([['Plain', ['RestApiId']]]);
+    } finally {
+      mockCloudFormationSend.mockImplementation(fallback);
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
+    }
+  });
+});
+
+describe('isPlainReferenceTo (go-to-k/cdkd#4701)', () => {
+  const BUCKET = 'AWS::S3::Bucket';
+  it.each<[string, unknown, string | undefined, boolean]>([
+    ['Ref of the id', { Ref: 'T' }, BUCKET, true],
+    ['Ref of the id, producer a custom resource (its physical id is no NoEcho value)', { Ref: 'T' }, 'Custom::X', true],
+    ['Ref of another id', { Ref: 'T2' }, BUCKET, false],
+    ['GetAtt array', { 'Fn::GetAtt': ['T', 'Arn'] }, BUCKET, true],
+    ['GetAtt string', { 'Fn::GetAtt': 'T.Arn' }, BUCKET, true],
+    ['GetAtt string of a longer id', { 'Fn::GetAtt': 'T2.Arn' }, BUCKET, false],
+    ['GetAtt string with no attribute', { 'Fn::GetAtt': 'T.' }, BUCKET, false],
+    ['GetAtt array of another id', { 'Fn::GetAtt': ['T2', 'Arn'] }, BUCKET, false],
+    ['GetAtt array with a computed attribute', { 'Fn::GetAtt': ['T', { Ref: 'A' }] }, BUCKET, false],
+    ['GetAtt array of three', { 'Fn::GetAtt': ['T', 'Arn', 'x'] }, BUCKET, false],
+    ['GetAtt with an unknown producer type', { 'Fn::GetAtt': ['T', 'Arn'] }, undefined, false],
+    ['GetAtt of a custom resource', { 'Fn::GetAtt': ['T', 'Arn'] }, 'Custom::X', false],
+    ['GetAtt of a nested stack', { 'Fn::GetAtt': ['T', 'Outputs.X'] }, 'AWS::CloudFormation::Stack', false],
+    ['a two-key object', { Ref: 'T', Other: 1 }, BUCKET, false],
+    ['Fn::Join around the Ref', { 'Fn::Join': ['', [{ Ref: 'T' }]] }, BUCKET, false],
+    ['Fn::Sub of the id', { 'Fn::Sub': '${T}' }, BUCKET, false],
+    ['an array holding the Ref', [{ Ref: 'T' }], BUCKET, false],
+    ['a literal', 'T', BUCKET, false],
+    ['null', null, BUCKET, false],
+  ])('%s', (_name, value, type, expected) => {
+    expect(isPlainReferenceTo(value, 'T', type)).toBe(expected);
   });
 });
 
