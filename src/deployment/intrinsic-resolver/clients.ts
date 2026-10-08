@@ -1,7 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { getAwsClients, type AwsClients } from '../../utils/aws-clients.js';
-import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
@@ -148,6 +148,7 @@ export function clientsForRegion(
   // secret. The guest carries the region's masked text for exactly this.
   const loggedTarget =
     targetLogText ??
+    // allow-raw-region-compare: picks the log text of THIS exact string; another spelling of the region prints as `target`.
     (targetRegion === this.explicitRegion ? this.explicitRegionLogText : undefined) ??
     target;
   if (!isClientSafeRegion(target)) {
@@ -196,7 +197,7 @@ export function clientsForRegion(
 
   // ONLY a CONFIGURED ambient can be reused — see the note above on why a
   // region-less bag cannot answer for itself.
-  if (canonicalizeRegion(ambient.configuredRegion) === target) return ambient;
+  if (sameRegion(ambient.configuredRegion, target)) return ambient;
 
   const scoped = ambient.withRegion(target);
   this.regionScopedClients.set(cacheKey, scoped);

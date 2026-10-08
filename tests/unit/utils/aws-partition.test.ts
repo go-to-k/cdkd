@@ -3,6 +3,7 @@ import {
   PARTITION_TABLE,
   canonicalizeRegion,
   derivePartitionAndUrlSuffix,
+  sameRegion,
 } from '../../../src/utils/aws-partition.js';
 import { parseEcrRegistryHost } from '../../../src/utils/ecr-uri.js';
 
@@ -35,6 +36,27 @@ describe('canonicalizeRegion (issue #1795)', () => {
     // Every call site resolves through a `??` chain that can end undefined and
     // then WARNS about it; coercing to a string would silence that warning.
     expect(canonicalizeRegion(undefined)).toBeUndefined();
+  });
+});
+
+describe('sameRegion (issue #2209)', () => {
+  it('folds BOTH operands, in either order', () => {
+    // #1882's second miss folded only one operand, so each side is mis-cased in turn.
+    expect(sameRegion('US-EAST-1', 'us-east-1')).toBe(true);
+    expect(sameRegion('us-east-1', 'US-EAST-1')).toBe(true);
+    expect(sameRegion('Us-East-1', 'uS-eAST-1')).toBe(true);
+  });
+
+  it('separates two different regions, whatever their spelling', () => {
+    expect(sameRegion('us-east-1', 'us-west-2')).toBe(false);
+    expect(sameRegion('US-EAST-1', 'us-west-2')).toBe(false);
+  });
+
+  it('equals undefined only to undefined', () => {
+    expect(sameRegion(undefined, undefined)).toBe(true);
+    expect(sameRegion(undefined, 'us-east-1')).toBe(false);
+    expect(sameRegion('us-east-1', undefined)).toBe(false);
+    expect(sameRegion('', undefined)).toBe(false);
   });
 });
 

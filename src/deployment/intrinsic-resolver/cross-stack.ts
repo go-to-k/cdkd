@@ -2,6 +2,7 @@ import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.j
 import { markNonRetryable } from '../retryable-errors.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { importableOutputKeys } from '../../types/state.js';
+import { sameRegion } from '../../utils/aws-partition.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,
@@ -714,7 +715,10 @@ export async function resolveImportValue(
  * Push a resolved `Fn::ImportValue` into the consumer's recorded-imports
  * bag (when supplied by the caller). Skips duplicates within the
  * SAME bag — multiple references to the same `(exportName,
- * sourceStack, sourceRegion)` triple emit one entry.
+ * sourceStack, sourceRegion)` triple emit one entry. The region half compares
+ * through `sameRegion` (issue #2209): `producerRegion` is a state-key region
+ * on one arm and falls back to the RAW `resolverRegion` on another, so one
+ * producer can arrive in two spellings.
  *
  * Concurrency: the check + push pair is purely synchronous (no
  * `await` between `some()` and `push()`), so the JS event loop
@@ -746,7 +750,7 @@ export function recordImport(
     (e) =>
       e.exportName === exportName &&
       e.sourceStack === producerStack &&
-      e.sourceRegion === producerRegion
+      sameRegion(e.sourceRegion, producerRegion)
   );
   if (dup) return;
   context.recordedImports.push({

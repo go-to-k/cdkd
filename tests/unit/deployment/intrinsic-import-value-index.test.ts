@@ -235,6 +235,30 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
     expect(recorded).toHaveLength(1);
   });
 
+  it('deduplicates one producer reached in two region spellings (#2209)', async () => {
+    // The scan arm falls back to the RAW resolver region for a region-less
+    // (legacy) record; the index arm carries the index's own spelling. Both
+    // name the same producer, so the bag the deploy persists keeps one entry.
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    const recorded: StateImportEntry[] = [];
+    const legacyBackend = mockBackend([
+      { stackName: 'P', region: undefined as unknown as string, outputs: { X: 'v' } },
+    ]);
+    await resolver.resolve(
+      { 'Fn::ImportValue': 'X' },
+      buildContext({ stateBackend: legacyBackend, recordedImports: recorded })
+    );
+    const { store } = mockIndex({
+      X: { value: 'v', producerStack: 'P', producerRegion: 'us-east-1' },
+    });
+    await resolver.resolve(
+      { 'Fn::ImportValue': 'X' },
+      buildContext({ stateBackend: mockBackend([]), exportIndex: store, recordedImports: recorded })
+    );
+
+    expect(recorded).toEqual([{ sourceStack: 'P', sourceRegion: 'US-EAST-1', exportName: 'X' }]);
+  });
+
   it('the state scan does NOT match a plain Output name on a v9 record (#2193)', async () => {
     // `Fn::ImportValue: BucketArn` with no such export anywhere: the only
     // stack holding a `BucketArn` key declares it as a plain output. CFn
