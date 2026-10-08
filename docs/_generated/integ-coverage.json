@@ -4747,6 +4747,7 @@
       "integs": [
         "cloudtrail-trail",
         "composite-stack",
+        "cross-backend-same-stack",
         "drift-revert",
         "dynamodb-streams",
         "ecr-scanning",
@@ -4762,6 +4763,10 @@
           "l2"
         ],
         "composite-stack": [
+          "literal"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
           "literal"
         ],
         "drift-revert": [
@@ -6796,6 +6801,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "context-test",
+        "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
@@ -6903,6 +6909,10 @@
         ],
         "context-test": [
           "l2"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
+          "literal"
         ],
         "cross-backend-same-stack-migration": [
           "l1",

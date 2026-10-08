@@ -1,7 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
 /**
@@ -19,13 +21,29 @@ import type { Construct } from 'constructs';
  * `CDKD_4705_RETENTION_DAYS` sets the LogGroup's retention, so a second
  * deployment rewriting the first one's log group is observable (default 7).
  *
+ * The KMS Key is the resource the settle arm seeds as a proven failed-CREATE
+ * orphan in the OTHER prefix's journal: its physical id is a unique key id,
+ * so a successful deploy's settle deletes such an orphan without an identity
+ * read -- unless the cross-prefix check keeps it.
+ *
+ * `CDKD_4705_B_MINIMAL=1` synthesizes ONLY a harmless SSM parameter, for the
+ * settle arm's successful deploy under the other prefix: nothing in it
+ * collides with the first deployment's names.
+ *
  * covers: AWS::IAM::Role
  * covers: AWS::SQS::Queue
  * covers: AWS::Logs::LogGroup
+ * covers: AWS::KMS::Key
+ * covers: AWS::SSM::Parameter
  */
 export class CrossBackendSameStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    if (process.env.CDKD_4705_B_MINIMAL === '1') {
+      new ssm.StringParameter(this, 'MinimalParam', { stringValue: 'cdkd-4705-settle-arm' });
+      return;
+    }
 
     const retention = Number(process.env.CDKD_4705_RETENTION_DAYS ?? '7') as logs.RetentionDays;
 
@@ -40,6 +58,11 @@ export class CrossBackendSameStack extends cdk.Stack {
     new logs.LogGroup(this, 'LogGroup', {
       retention,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    new kms.Key(this, 'Key', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
     });
   }
 }

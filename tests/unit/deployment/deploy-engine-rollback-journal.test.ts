@@ -2363,6 +2363,69 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(warned.join('\n')).toContain('under another state prefix (team-b), whose record may hold it');
     });
 
+    it('asks the cross-prefix holder ONCE per stack, for two orphans (go-to-k/cdkd#4705)', async () => {
+      const crossPrefixHolder = vi.fn(async () => undefined);
+      const engine = buildEngine({
+        changes: new Map([['A', makeChange('A')]]),
+        deps: { A: [] },
+        currentEtag: 'e0',
+        crossPrefixHolder,
+      });
+      journal.loadRollbackJournal.mockResolvedValue({
+        journalVersion: 1,
+        stackName,
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [
+              orphanOp(),
+              orphanOp({ logicalId: 'Orphan2', physicalId: 'orphan-stream-2' }),
+            ],
+          },
+        ],
+      });
+
+      await engine.deploy(stackName, template);
+
+      expect(crossPrefixHolder).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks the same-prefix scan FIRST: a holder there never reaches the cross-prefix check (go-to-k/cdkd#4705)', async () => {
+      const crossPrefixHolder = vi.fn(async () => undefined);
+      const engine = buildEngine({
+        changes: new Map([['A', makeChange('A')]]),
+        deps: { A: [] },
+        currentEtag: 'e0',
+        crossPrefixHolder,
+      });
+      const backend = (
+        engine as unknown as {
+          stateBackend: { getState: ReturnType<typeof vi.fn>; listStacks: ReturnType<typeof vi.fn> };
+        }
+      ).stateBackend;
+      backend.listStacks.mockResolvedValue([{ stackName: 'OtherStack', region: 'us-east-1' }]);
+      const own = backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      backend.getState.mockImplementation((name: string, region: string) =>
+        name === 'OtherStack'
+          ? Promise.resolve({
+              state: {
+                resources: { R: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream' } },
+              },
+            })
+          : own(name, region)
+      );
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      await engine.deploy(stackName, template);
+
+      expect(crossPrefixHolder).not.toHaveBeenCalled();
+      expect(orphanDeletes(engine)).toHaveLength(0);
+    });
+
     it('deletes the orphan when no other state prefix records the stack (go-to-k/cdkd#4705)', async () => {
       const crossPrefixHolder = vi.fn(async () => undefined);
       const engine = buildEngine({

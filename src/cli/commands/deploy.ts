@@ -112,9 +112,7 @@ import {
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import {
   composeStateLoadedGates,
-  createCrossPrefixDeployGate,
-  createCrossPrefixDestructiveGate,
-  createCrossPrefixHolder,
+  crossPrefixEngineOptions,
   crossPrefixScanKey,
   deployStackRegion,
   startCrossPrefixScans,
@@ -599,20 +597,18 @@ async function deployCommand(
     // the backstop for a context this command did not build.
     refuseMalformedNestedTemplateTrees(targetStacks);
 
-    // go-to-k/cdkd#4705: is each stack, on its first deploy under this prefix,
-    // already recorded under ANOTHER prefix of the bucket? Started AFTER synth
-    // (it needs the deploy set) and awaited only by the engine's post-lock gate
-    // when it finds no record, so it overlaps macro expansion, STS, asset
-    // handling and the lock, not synth; a short run of the scan can outlast
-    // them. A stack this prefix already records stops after one parallel round
-    // of reads of its own keys and lists nothing. `deployStackRegion` is the
-    // ONE function both this and `runStackInner` (the engine's region) use.
+    // go-to-k/cdkd#4705: each stack's scan of the bucket's other state prefixes,
+    // started AFTER synth (it needs the deploy set) through one shared listing,
+    // so it overlaps macro expansion, STS, asset handling and the lock, not
+    // synth. Only a gate that awaits it acts on it: the first-deploy gate, the
+    // destructive-plan gate and the settle (`crossPrefixEngineOptions`).
+    // `deployStackRegion` is the ONE function both this and `runStackInner`
+    // (the engine's region) use.
     const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
-    const crossPrefixScans = startCrossPrefixScans(targetStacks, preflightStateBackend, (s) =>
+    const crossPrefixTarget = withSharedListing(preflightStateBackend);
+    const crossPrefixScans = startCrossPrefixScans(targetStacks, crossPrefixTarget, (s) =>
       deployStackRegion(s, baseRegion)
     );
-    // One listing shared by every destructive-plan check of this run.
-    const crossPrefixDestructiveTarget = withSharedListing(preflightStateBackend);
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
@@ -930,12 +926,13 @@ async function deployCommand(
           skipPrefix,
           yes: options.yes,
         });
-        const crossPrefixGate = createCrossPrefixDeployGate({
+        const crossPrefix = crossPrefixEngineOptions({
           stackName: stackInfo.stackName,
           region: stackRegion,
           bucket: stateBucket,
           recovery: refusalRecovery,
-          scan: crossPrefixScans.get(crossPrefixScanKey(stackInfo.stackName, stackRegion)),
+          scans: crossPrefixScans.get(crossPrefixScanKey(stackInfo.stackName, stackRegion)),
+          target: crossPrefixTarget,
         });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
@@ -1125,18 +1122,9 @@ async function deployCommand(
           refusalRecovery,
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
-          onCurrentStateLoaded: composeStateLoadedGates(crossPrefixGate, migrationGate),
-          onDestructivePlan: createCrossPrefixDestructiveGate({
-            region: stackRegion,
-            bucket: stateBucket,
-            recovery: refusalRecovery,
-            target: crossPrefixDestructiveTarget,
-          }),
-          crossPrefixHolder: createCrossPrefixHolder({
-            region: stackRegion,
-            bucket: stateBucket,
-            target: crossPrefixDestructiveTarget,
-          }),
+          onCurrentStateLoaded: composeStateLoadedGates(crossPrefix.firstDeployGate, migrationGate),
+          onDestructivePlan: crossPrefix.onDestructivePlan,
+          crossPrefixHolder: crossPrefix.crossPrefixHolder,
           // Issue #2719. Unconditional, unlike `recreateTargets` above: an
           // empty Set is the same as absent to every reader, and gating on
           // size only matters where the value's PRESENCE changes behaviour.

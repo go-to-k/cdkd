@@ -209,9 +209,42 @@ describe('recordUnderPrefix (strict)', () => {
     for (const get of gets) expect(get.input.ExpectedBucketOwner).toBe('999999999999');
   });
 
-  it('reads a zero-byte record as an empty one (not a failure)', async () => {
+  it('treats a zero-byte record (cdkd never writes one) as a failure that names the key', async () => {
     bodies.set(KEY_B, '');
-    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('empty');
+    const err = await backend.recordUnderPrefix('team-b', 'App', 'us-east-1').catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'CrossPrefixReadError', key: KEY_B, cause: { name: 'EmptyObject' } });
+    expect((err as Error).message).toContain(KEY_B);
+  });
+
+  it.each([
+    ['missing', (() => {
+      const { resources: _r, ...rest } = JSON.parse(record()) as Record<string, unknown>;
+      return JSON.stringify(rest);
+    })()],
+    ['null', record({ resources: null })],
+    ['a list', record({ resources: [] })],
+  ])('a record whose `resources` is %s proves nothing: holder', async (_what, body) => {
+    bodies.set(KEY_B, body);
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('holder');
+  });
+
+  it('a 503 on the probe listing reads as failed, naming the listed prefix', async () => {
+    errors.set('team-b/App/', serviceUnavailable());
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toMatchObject({
+      name: 'CrossPrefixReadError',
+      key: 'team-b/App/',
+    });
+    pages = [['cdkd/', 'team-b/']];
+    await expect(
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+    ).resolves.toMatchObject({ kind: 'failed' });
+  });
+
+  it("lists `<prefix>/App/` exactly: `App2`'s objects are not `App`'s", async () => {
+    bodies.set('team-b/App2/us-east-1/state.json', record({ resources: RESOURCE }));
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('absent');
+    expect(commandsOf(GetObjectCommand)).toHaveLength(0);
+    await expect(backend.recordUnderPrefix('team-b', 'App2', 'us-east-1')).resolves.toBe('holder');
   });
 
   it('names the object a failed read was reading', async () => {

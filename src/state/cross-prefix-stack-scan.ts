@@ -126,7 +126,9 @@ export class CrossPrefixReadError extends Error {
   readonly key: string;
   override readonly cause: unknown;
   constructor(key: string, cause: unknown) {
-    super(`reading ${key} failed (${errorName(cause, 'an unknown error')})`);
+    super(
+      `reading ${displayIdent(key, { maxCodePoints: 1024 })} failed (${errorName(cause, 'an unknown error')})`
+    );
     this.name = 'CrossPrefixReadError';
     this.key = key;
     this.cause = cause;

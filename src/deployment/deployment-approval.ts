@@ -96,16 +96,21 @@ export async function requireDeploymentApproval(args: {
 }
 
 /**
- * go-to-k/cdkd#4705: hand a plan that DESTROYS something to
+ * go-to-k/cdkd#4705: hand a plan that may destroy something to
  * `options.onDestructivePlan`, BEFORE the approval prompt (a user is never asked
- * and then refused) and any provider call. Destroys means a change classified
- * `WILL_DESTROY` or `WILL_REPLACE` by `findDestructiveChanges` (a
- * `--recreate-via-*` target is `WILL_REPLACE`); `MAY_REPLACE` and a retained
- * removal (`WILL_ORPHAN`) delete nothing, so they do not trigger it. A
- * nested-stack row being updated, replaced or removed also triggers it, since
- * the child's own plan is only known once its row runs, after the parent has
- * started changing things (children never run the hook themselves). Nothing is
- * computed when no hook is set.
+ * and then refused) and any provider call. The triggers, exactly:
+ *
+ * - a change `findDestructiveChanges` classifies `WILL_DESTROY`,
+ *   `WILL_REPLACE` (a `--recreate-via-*` target included) or `MAY_REPLACE` (a
+ *   replacement the deploy only learns about once a value resolves, so it may
+ *   delete the resource);
+ * - a nested-stack row being UPDATED (a replacement included) or DELETED: the
+ *   child's own plan is only known once its row runs, after the parent has
+ *   started changing things, and children never run the hook. A nested-stack
+ *   row being CREATED has nothing to destroy.
+ *
+ * A retained removal (`WILL_ORPHAN`) deletes nothing and does not trigger it.
+ * Nothing is computed when no hook is set.
  */
 export async function checkDestructivePlan(args: {
   options: Pick<DeployEngineOptions, 'onDestructivePlan'>;
@@ -126,8 +131,12 @@ export async function checkDestructivePlan(args: {
     args.records,
     args.template,
     new Set(args.recreateTargetIds ?? [])
-  ).filter((c) => c.impact === 'WILL_DESTROY' || c.impact === 'WILL_REPLACE');
-  const nestedRowChanges = changes.some((c) => c.resourceType === NESTED_STACK_TYPE);
+  ).filter((c) => c.impact !== 'WILL_ORPHAN');
+  const nestedRowChanges = changes.some(
+    (c) =>
+      c.resourceType === NESTED_STACK_TYPE &&
+      (c.changeType === 'UPDATE' || c.changeType === 'DELETE')
+  );
   if (destroying.length === 0 && !nestedRowChanges) return;
   await hook(args.stackName, destroying);
 }

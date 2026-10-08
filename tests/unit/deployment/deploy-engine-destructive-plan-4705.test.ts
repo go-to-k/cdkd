@@ -228,7 +228,7 @@ describe('DeployEngine onDestructivePlan (go-to-k/cdkd#4705)', () => {
     expect(hook).toHaveBeenCalled();
   });
 
-  it('is NOT called for a may-replace (an unresolved value) or a retained removal (orphan)', async () => {
+  it('is called for a MAY-replace (a replacement the deploy learns about once a value resolves)', async () => {
     const mayReplace: ResourceChange = {
       ...inPlaceUpdate,
       propertyChanges: [
@@ -241,13 +241,51 @@ describe('DeployEngine onDestructivePlan (go-to-k/cdkd#4705)', () => {
         },
       ],
     };
+    const template = arrange(mocks(), { Kept: record() }, [mayReplace]);
+    await makeEngine().deploy(STACK_NAME, template).catch(() => undefined);
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(
+      (hook.mock.calls[0]![1] as Array<{ impact: string }>).map((c) => c.impact)
+    ).toEqual(['MAY_REPLACE']);
+  });
+
+  it('is NOT called for a retained removal (it orphans, deletes nothing)', async () => {
     const template = arrange(
       mocks(),
       { Kept: record(), Gone: record({ physicalId: 'gone', deletionPolicy: 'Retain' }) },
-      [mayReplace, deletion]
+      [deletion]
     );
     await makeEngine().deploy(STACK_NAME, template).catch(() => undefined);
     expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('is NOT called for a nested-stack row CREATE (a new child has nothing to destroy)', async () => {
+    const nestedCreate: ResourceChange = {
+      logicalId: 'NewChild',
+      changeType: 'CREATE',
+      resourceType: 'AWS::CloudFormation::Stack',
+      desiredProperties: {},
+    };
+    const template = arrange(mocks(), { Kept: record() }, [nestedCreate]);
+    await makeEngine().deploy(STACK_NAME, template).catch(() => undefined);
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('is called for a nested-stack row DELETE', async () => {
+    const nestedDelete: ResourceChange = {
+      logicalId: 'OldChild',
+      changeType: 'DELETE',
+      resourceType: 'AWS::CloudFormation::Stack',
+      currentProperties: {},
+    };
+    const template = arrange(
+      mocks(),
+      { Kept: record(), OldChild: record({ resourceType: 'AWS::CloudFormation::Stack' }) },
+      [nestedDelete]
+    );
+    hook.mockRejectedValue(new Error('refused'));
+    await expect(makeEngine().deploy(STACK_NAME, template)).rejects.toThrow('refused');
+    expect(hook).toHaveBeenCalledTimes(1);
   });
 
   it('is called for a nested-stack row UPDATE, whose child plan the parent cannot see yet', async () => {

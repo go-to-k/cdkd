@@ -24,6 +24,9 @@
 #      the journal. Remove the journal seed.
 #   5. Negative control: redeploy A under PREFIX_A while the seeded B record
 #      still exists; it must succeed. Then remove that seed.
+#   5b. A successful deploy under PREFIX_B (a minimal template) whose journal
+#      holds a proven failed-CREATE orphan naming A's KMS key: the settle must
+#      KEEP the key (warn, exit 2), since PREFIX_A's record may hold it.
 #   6. Destroy A, delete the retained log group.
 #   7. Seed an EMPTY record plus a failed first deploy's journal under PREFIX_B:
 #      a fresh deploy and a destroy under PREFIX_A must succeed, and each
@@ -90,6 +93,7 @@ DEPLOY_REFUSAL_NEEDLE="is already recorded under another state prefix of bucket"
 DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
 STALE_NOTICE_NEEDLE="that owns no resource"
+SETTLE_KEEP_NEEDLE="also records this stack under another state prefix"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -104,6 +108,10 @@ fi
 QUEUE_URL_A=""
 LOG_GROUP_NAME=""
 ROLE_NAME_A=""
+# Every KMS key id this run's deploys recorded (the trap schedules any left).
+KEY_IDS=""
+# Phase 5b's SSM parameter under PREFIX_B, by the exact name B's record names.
+MINIMAL_PARAM_B=""
 RUN_LOG=""
 # Set just before this run's own first deploy: a pre-flight FAIL (a peer's run,
 # or a leftover holding these names) must leave those resources alone.
@@ -113,6 +121,11 @@ DEPLOYED_B=""
 EMPTY_RECORD=""
 # Set while Phase 4's seeded journal under PREFIX_A exists.
 SEEDED_JOURNAL_A=""
+
+# A KMS key's state (Enabled, PendingDeletion, ...).
+key_state() { # usage: key_state <key id>
+  aws kms describe-key --key-id "$1" --region "${REGION}" --query 'KeyMetadata.KeyState' --output text
+}
 
 # One field of A's or B's state, by resource type: `state_physical_id <key> <type>`.
 state_physical_id() {
@@ -220,6 +233,8 @@ rescan() {
     aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}-')].RoleName" --output text
   warn_left "log groups" \
     aws logs describe-log-groups --log-group-name-prefix "/cdkd/${STACK}-" --region "${REGION}" --query 'logGroups[].logGroupName' --output text
+  warn_left "SSM parameters" \
+    aws ssm describe-parameters --parameter-filters "Key=Name,Option=BeginsWith,Values=/${STACK}-" --region "${REGION}" --query 'Parameters[].Name' --output text
   for p in "${PREFIX_A}" "${PREFIX_B}"; do
     warn_left "objects under s3://${STATE_BUCKET:-}/${p}/" \
       aws s3api list-objects-v2 --bucket "${STATE_BUCKET:-}" --prefix "${p}/" --query 'Contents[].Key' --output text
@@ -249,6 +264,16 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${PREFIX_A}" --region "${REGION}" \
       --yes >/dev/null 2>&1
   fi
+  # Phase 5b's parameter, by the exact name B's record named.
+  case "${MINIMAL_PARAM_B:-}" in
+    *"${STACK}"-?*) aws ssm delete-parameter --name "${MINIMAL_PARAM_B}" --region "${REGION}" >/dev/null 2>&1 ;;
+  esac
+  # Every key this run recorded that is still enabled (a destroy schedules it).
+  for key_id in ${KEY_IDS:-}; do
+    if [ "$(key_state "${key_id}" 2>/dev/null)" = "Enabled" ]; then
+      aws kms schedule-key-deletion --key-id "${key_id}" --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
+    fi
+  done
   # The RETAINed log group, by the exact name A's state recorded.
   case "${LOG_GROUP_NAME:-}" in
     "/cdkd/${STACK}"-?*) aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}" >/dev/null 2>&1 ;;
@@ -297,6 +322,11 @@ CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}"
 QUEUE_URL_A="$(state_physical_id "${STATE_KEY_A}" 'AWS::SQS::Queue')"
 LOG_GROUP_NAME="$(state_physical_id "${STATE_KEY_A}" 'AWS::Logs::LogGroup')"
 ROLE_NAME_A="$(state_physical_id "${STATE_KEY_A}" 'AWS::IAM::Role')"
+KEY_ID_A="$(state_physical_id "${STATE_KEY_A}" 'AWS::KMS::Key')"
+case "${KEY_ID_A}" in
+  [0-9a-f]*-?*) KEY_IDS="${KEY_IDS} ${KEY_ID_A}" ;;
+  *) echo "FAIL: A's state does not record a KMS key id (got '${KEY_ID_A}')" >&2; exit 1 ;;
+esac
 case "${QUEUE_URL_A}" in
   https://*/"${STACK}"-?*) ;;
   *)
@@ -483,6 +513,51 @@ assert_gone "the seeded ${STATE_KEY_B} still exists after its removal" \
 echo "    OK: a stack its own prefix records redeploys beside another prefix's record; the seed is removed"
 
 echo ""
+echo "==> Phase 5b: a successful deploy under ${PREFIX_B} keeps a journaled orphan that ${PREFIX_A}'s record holds"
+# B's record (empty, so B's first-deploy check is not what is tested) and a
+# journal whose failed CREATE "recorded" A's KMS key as a proven orphan: the
+# settle after B's successful deploy would delete it (a KMS key needs no
+# identity read). The cross-prefix consult must keep it, warn, and exit 2.
+printf '%s' "${EMPTY_RECORD}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
+printf '%s' "{\"journalVersion\":1,\"stackName\":\"${STACK}\",\"region\":\"${REGION}\",\"segments\":[{\"timestamp\":1,\"reason\":\"no-rollback-failure\",\"initialDeploy\":false,\"operations\":[],\"failedOperations\":[{\"logicalId\":\"OrphanKey\",\"changeType\":\"CREATE\",\"resourceType\":\"AWS::KMS::Key\",\"provisionedBy\":\"sdk\",\"physicalId\":\"${KEY_ID_A}\",\"physicalIdRecoveredFromError\":true,\"attemptedProperties\":{}}]}]}" |
+  aws s3 cp - "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" >/dev/null
+set +e
+CDKD_4705_B_MINIMAL=1 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --yes >"${RUN_LOG}" 2>&1
+SETTLE_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+MINIMAL_PARAM_B="$( (aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_B}" - || true) | jq -r '[(.resources // {})[] | select(.resourceType == "AWS::SSM::Parameter") | .physicalId] | first // ""' 2>/dev/null || true)"
+echo "OBSERVE: settle-deploy-rc=${SETTLE_RC} minimal-param=${MINIMAL_PARAM_B:-<none>} key-state=$(key_state "${KEY_ID_A}")"
+if [ "${SETTLE_RC}" -ne 2 ]; then
+  echo "FAIL: the settle deploy under ${PREFIX_B} exited ${SETTLE_RC}, expected 2 (an orphan left unaddressed; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if [ "$(key_state "${KEY_ID_A}")" != "Enabled" ]; then
+  echo "FAIL: A's KMS key ${KEY_ID_A} is no longer Enabled after B's settle (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+# Copied from `createCrossPrefixHolder` in src/cli/commands/cross-prefix-gate.ts.
+if ! grep -qF "${SETTLE_KEEP_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
+  echo "FAIL: the settle did not say it kept the orphan for ${PREFIX_A}'s record ('${SETTLE_KEEP_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+queue_still="$(aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}" --query 'Attributes.QueueArn' --output text)"
+[ -n "${queue_still}" ] || { echo "FAIL: A's queue is gone after B's settle" >&2; exit 1; }
+case "${MINIMAL_PARAM_B}" in
+  *"${STACK}"-?*) aws ssm delete-parameter --name "${MINIMAL_PARAM_B}" --region "${REGION}" >/dev/null ;;
+  *) echo "FAIL: B's record does not name the minimal SSM parameter (got '${MINIMAL_PARAM_B}')" >&2; exit 1 ;;
+esac
+MINIMAL_PARAM_B=""
+node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" --state-bucket "${STATE_BUCKET:-}" \
+  --state-prefix "${PREFIX_B}" --force
+assert_gone "${STATE_KEY_B} still exists after the Phase 5b cleanup" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
+assert_gone "${JOURNAL_KEY_B} still exists after the Phase 5b cleanup" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}"
+echo "    OK: the settle kept A's key (exit 2, warned); B's parameter and record are removed"
+
+echo ""
 echo "==> Phase 6: destroy A; delete the retained log group"
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
@@ -510,6 +585,8 @@ STALE_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
 echo "OBSERVE: stale-leftover-deploy-rc=${STALE_RC}"
+KEY_ID_P7="$( (state_physical_id "${STATE_KEY_A}" 'AWS::KMS::Key') || true)"
+[ -z "${KEY_ID_P7}" ] || KEY_IDS="${KEY_IDS} ${KEY_ID_P7}"
 if [ "${STALE_RC}" -ne 0 ] || grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
   echo "FAIL: a fresh deploy under ${PREFIX_A} was refused or failed beside an EMPTY leftover record under ${PREFIX_B} (rc=${STALE_RC}; output above) (go-to-k/cdkd#4705)" >&2
   exit 1

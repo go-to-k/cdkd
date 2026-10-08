@@ -962,9 +962,9 @@ export class S3StateBackend {
    * Otherwise the region-scoped record, the legacy region-less record and the
    * rollback journal are read in parallel, STRICTLY, unlike {@link stateExists}:
    * a 404 is "not there", and every other answer (a 403, a 5xx, a body that
-   * will not parse) throws a `CrossPrefixReadError` naming the key, so the scan
-   * can tell "nothing there" from "could not look". A zero-byte body is read as
-   * an empty record. A legacy record counts only for its own region, by the
+   * will not parse, a zero-byte object cdkd never writes) throws a
+   * `CrossPrefixReadError` naming the key, so the scan can tell "nothing there"
+   * from "could not look". A legacy record counts only for its own region, by the
    * read gate `getState` applies. What was found is then classified by
    * `recordCanOwnResources`.
    */
@@ -1000,7 +1000,14 @@ export class S3StateBackend {
         throw new CrossPrefixReadError(key, error);
       }
       if (body === null) return null;
-      if (body.trim() === '') return {};
+      // cdkd never writes an empty object: it proves nothing, so it is a
+      // failure that names the key (and refuses), never an "empty" record.
+      if (body.trim() === '') {
+        throw new CrossPrefixReadError(
+          key,
+          Object.assign(new Error('empty object'), { name: 'EmptyObject' })
+        );
+      }
       let value: unknown;
       try {
         value = JSON.parse(body);
@@ -1027,14 +1034,10 @@ export class S3StateBackend {
       if (!bodyRegion || bodyRegion === region) record = legacy;
     }
     if (record === undefined && journal === null) return 'absent';
-    // A zero-byte record reads as `{}`, which names no resources.
-    const asRecord = record ?? { resources: {} };
-    return recordCanOwnResources(
-      { resources: asRecord['resources'] ?? {}, orphans: asRecord['orphans'] },
-      journal
-    )
-      ? 'holder'
-      : 'empty';
+    // The record as read: a missing, null or non-object `resources` proves
+    // nothing and classifies as a holder. Only a journal with NO record stands
+    // in for an empty one.
+    return recordCanOwnResources(record ?? { resources: {} }, journal) ? 'holder' : 'empty';
   }
 
   /**
