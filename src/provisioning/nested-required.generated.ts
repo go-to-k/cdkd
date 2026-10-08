@@ -106,6 +106,9 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
     new Map<string, readonly string[]>([
       ['EvaluatorConfig.CodeBased', ['LambdaConfig']],
       ['EvaluatorConfig.CodeBased.LambdaConfig', ['LambdaArn']],
+      ['EvaluatorConfig.Derived', ['BaseEvaluatorId', 'ModelConfig']],
+      ['EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig', ['ModelId']],
+      ['EvaluatorConfig.Derived.ModelConfig.ResponsesEvaluatorModelConfig', ['ModelId']],
       ['EvaluatorConfig.LlmAsAJudge', ['Instructions', 'ModelConfig', 'RatingScale']],
       ['EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig', ['ModelId']],
       ['EvaluatorConfig.LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig', ['ModelId']],
