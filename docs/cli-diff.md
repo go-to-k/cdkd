@@ -1198,8 +1198,8 @@ its replacement in the next.
 **A custom resource whose `ServiceToken` changes.** CloudFormation refuses it
 (`Modifying service token is not allowed`), and so does `cdkd deploy`, before
 any handler is invoked: sent as an update, the change would reach only the new
-handler and orphan what the old one created. The reason names the row and both
-tokens; where the recorded token is missing, the redaction mask `***` or a
+handler and orphan what the old one created. The reason names the row and the new
+token; where the recorded token is missing, the redaction mask `***` or a
 `{{resolve:...}}` reference and the template moves it, it says cdkd cannot compare it, which the
 deploy refuses too. Give the custom resource a new logical id (in CDK, a new construct
 id, or `overrideLogicalId`), which creates a new resource through the new

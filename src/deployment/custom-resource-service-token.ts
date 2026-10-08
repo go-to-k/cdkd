@@ -34,7 +34,9 @@
  * neither check can say the handler is the same, and a wrong guess orphans the
  * old handler's resources.
  *
- * A SYNTHETIC change over such a record is not refused. The diff promotes every
+ * A `noEchoPromoted` or `inPlacePropagated` change over such a record is not
+ * refused (a `replacementPropagated` one is: its referent is replaced, so the
+ * token moves). The diff promotes every
  * reader of a `NoEcho` parameter on every deploy (`noEchoPromoted`), so a token
  * fed by one, recorded as `***`, would otherwise refuse every deploy of the
  * stack, unchanged template included. Such a row keeps its pre-#4749 update.
@@ -104,12 +106,23 @@ function isSynthetic(pc: PropertyChange): boolean {
 }
 
 /**
- * Whether the diff computed a `ServiceToken` change from the template, as
- * opposed to a synthetic promotion whose value the deploy resolves.
+ * A promotion that does not say the token moved: every reader of a `NoEcho`
+ * parameter is promoted on every deploy, and an in-place-updated referent
+ * keeps its ARN. A `replacementPropagated` change is NOT one: its referent is
+ * replaced, so a token reading it moves.
+ */
+function isUnmovedPromotion(pc: PropertyChange): boolean {
+  return pc.noEchoPromoted === true || pc.inPlacePropagated === true;
+}
+
+/**
+ * Whether the plan's row says the token moved: a change the diff computed from
+ * the template, or a replaced referent. A record that cannot be compared is
+ * refused on this answer.
  */
 export function diffMovedServiceToken(change: ResourceChange): boolean {
   const pc = serviceTokenChange(change);
-  return pc !== undefined && !isSynthetic(pc);
+  return pc !== undefined && !isUnmovedPromotion(pc);
 }
 
 /**
@@ -143,7 +156,7 @@ export function findServiceTokenRefusals(input: {
     const recordedToken = record.properties?.[SERVICE_TOKEN];
     const recordedProblem = uncomparableToken(recordedToken);
     if (recordedProblem !== undefined) {
-      if (isSynthetic(pc)) continue;
+      if (isUnmovedPromotion(pc)) continue;
       refused.push({
         logicalId,
         resourceType: change.resourceType,

@@ -112,8 +112,14 @@ describe('findServiceTokenRefusals (plan time)', () => {
     ]);
   });
 
-  it('does NOT refuse a SYNTHETIC change over an unjudgeable record: a NoEcho-fed token is promoted every deploy', () => {
-    for (const flag of ['replacementPropagated', 'inPlacePropagated', 'noEchoPromoted'] as const) {
+  it('refuses a REPLACED referent over an unjudgeable record: the token moves', () => {
+    for (const token of ['***', undefined]) {
+      expect(find(row({ replacementPropagated: true, newValue: { Ref: 'Fn' } }), record(token)).refused, String(token)).toHaveLength(1);
+    }
+  });
+
+  it('does NOT refuse a NoEcho or in-place promotion over an unjudgeable record: a NoEcho-fed token is promoted every deploy', () => {
+    for (const flag of ['inPlacePropagated', 'noEchoPromoted'] as const) {
       expect(find(row({ [flag]: true, newValue: '***' }), record('***')), flag).toEqual({
         refused: [],
         deferred: [],
@@ -133,7 +139,8 @@ describe('findServiceTokenRefusals (plan time)', () => {
   it('diffMovedServiceToken counts only a change the diff computed from the template', () => {
     expect(diffMovedServiceToken(row({}))).toBe(true);
     expect(diffMovedServiceToken(row({ maskedExpressionChanged: true }))).toBe(true);
-    for (const flag of ['replacementPropagated', 'inPlacePropagated', 'noEchoPromoted'] as const) {
+    expect(diffMovedServiceToken(row({ replacementPropagated: true }))).toBe(true);
+    for (const flag of ['inPlacePropagated', 'noEchoPromoted'] as const) {
       expect(diffMovedServiceToken(row({ [flag]: true })), flag).toBe(false);
     }
     expect(diffMovedServiceToken(row({ path: 'Seed' }))).toBe(false);
