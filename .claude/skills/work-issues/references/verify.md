@@ -30,8 +30,8 @@ a stale PATH copy that dies `unknown hash "diff"` (#4477).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
-EXERCISES — a changed BRANCH its run takes, not a changed file (#4683): re-run
-it on the rebased head (#3726).
+EXERCISES (a code path its run takes, not merely a file it loads; #4683):
+re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
   scoped touch buys another real-AWS run. The one exception to §8-h's "nits
