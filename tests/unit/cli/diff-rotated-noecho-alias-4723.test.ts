@@ -44,6 +44,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { WITHHELD_NAME_DISPLAY } from '../../../src/deployment/outputs-export-alias/warnings.js';
 
 function stateWith(outputs: Record<string, unknown>, exportNames?: string[]): StackState {
   return {
@@ -67,11 +68,13 @@ function stateWith(outputs: Record<string, unknown>, exportNames?: string[]): St
 
 function templateOf(
   outputs: Record<string, unknown>,
-  options: { noEcho?: boolean; conditions?: Record<string, unknown> } = {}
+  options: { noEcho?: boolean; value?: string; conditions?: Record<string, unknown> } = {}
 ): CloudFormationTemplate {
   return {
     // Rotated: the stored aliases below were published while it held `ab`.
-    Parameters: { Short: { Type: 'String', NoEcho: options.noEcho ?? true, Default: 'cd' } },
+    Parameters: {
+      Short: { Type: 'String', NoEcho: options.noEcho ?? true, Default: options.value ?? 'cd' },
+    },
     ...(options.conditions !== undefined && { Conditions: options.conditions }),
     Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
     Outputs: outputs,
@@ -120,7 +123,7 @@ describe('cdkd diff withholds a stored alias spelling a ROTATED NoEcho value (go
     const result = await diffOf(stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']), templateOf(EXPORTER));
     expect(rows(result.outputChanges)).toEqual(['REMOVE x-ab-y (withheld)']);
     const { human, json } = rendered(result.outputChanges);
-    expect(human).toContain('-');
+    expect(human).toContain(WITHHELD_NAME_DISPLAY);
     expect(json).toContain('"changeType":"REMOVE"');
     expect(json).toContain('"nameRedacted":true');
     for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
@@ -183,6 +186,50 @@ describe('cdkd diff withholds a stored alias spelling a ROTATED NoEcho value (go
     expect(rows(result.outputChanges).sort()).toEqual(
       ['REMOVE Out', 'REMOVE x-cd-y (withheld)'].sort()
     );
+  });
+
+  it('names ADD and MODIFY rows of a pre-v9 record: only an unaccounted key is withheld', async () => {
+    const result = await diffOf(
+      stateWith({ Out: 'old', 'x-ab-y': 'v' }),
+      templateOf({ ...EXPORTER, Added: { Value: 'n' } })
+    );
+    expect(rows(result.outputChanges).sort()).toEqual(
+      ['ADD Added', 'MODIFY Out', 'REMOVE x-ab-y (withheld)'].sort()
+    );
+  });
+
+  describe('an Fn::If name whose NoEcho branch today\'s verdict drops', () => {
+    // Published under a past TRUE verdict; today's verdict selects the literal.
+    const ifTemplate = (options: { noEcho?: boolean; value?: string } = {}) =>
+      templateOf(
+        {
+          Out: {
+            Value: 'v',
+            Export: { Name: { 'Fn::If': ['IsProd', SUB_NAME, 'static-name'] } },
+          },
+        },
+        { ...options, conditions: { IsProd: { 'Fn::Equals': ['dev', 'prod'] } } }
+      );
+    const stored = () => stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']);
+
+    it('withholds the alias published under the old value', async () => {
+      const result = await diffOf(stored(), ifTemplate());
+      expect(rows(result.outputChanges).sort()).toEqual(
+        ['ADD static-name', 'REMOVE x-ab-y (withheld)'].sort()
+      );
+      const { human, json } = rendered(result.outputChanges);
+      for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
+    });
+
+    it('withholds the alias spelling the CURRENT value too', async () => {
+      const result = await diffOf(stored(), ifTemplate({ value: 'ab' }));
+      expect(rows(result.outputChanges)).toContain('REMOVE x-ab-y (withheld)');
+    });
+
+    it('prints the alias when the parameter is not NoEcho (negative control)', async () => {
+      const result = await diffOf(stored(), ifTemplate({ noEcho: false }));
+      expect(rows(result.outputChanges)).toContain('REMOVE x-ab-y');
+    });
   });
 
   it("withholds in a nested child whose parameter the parent fills from a NoEcho source", async () => {

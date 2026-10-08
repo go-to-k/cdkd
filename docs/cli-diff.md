@@ -465,7 +465,8 @@ the search above finds its secret: an alias made only of letters and digits,
 which reads as an Output logical ID; and any alias in a stack whose template no
 longer references a secret through `{{resolve:secretsmanager:` or
 `{{resolve:ssm-secure:` — including one whose only secret is a plain
-`{{resolve:ssm:...}}` to a `SecureString` parameter.
+`{{resolve:ssm:...}}` to a `SecureString` parameter. Both are withheld anyway while a declared
+`Export.Name` reads a `NoEcho` parameter (see the third point's limits).
 
 **Third, a `NoEcho: true` parameter's value is printed as `***`**, as a
 CloudFormation change set prints `****`. This covers a property's `old:` /
@@ -520,8 +521,9 @@ Limits:
   REMOVED in the same deploy that rotated the value, or a property that
   switched away from a `NoEcho` parameter in that deploy. The stored previous
   plaintext prints as its `old:` side. An export alias published under a
-  previous value is the exception: its REMOVE row's name is withheld while a
-  declared `Export.Name` still reads the parameter. Likewise a stored `Fn::Split` piece of
+  previous value is the exception: while any declared `Export.Name` reads a
+  `NoEcho` parameter (in any `Fn::If` branch), every stale alias's REMOVE row
+  name is withheld, an unrelated one included. Likewise a stored `Fn::Split` piece of
   the current value prints once no `Fn::Split` over the value by that delimiter
   is left in the template.
 - A `NoEcho` parameter fed a plain `{{resolve:ssm:...}}` reference to a

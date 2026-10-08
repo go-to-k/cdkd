@@ -234,10 +234,11 @@ export interface ResolvedTemplateOutputs {
    */
   refusedNoEchoExportNames: string[];
   /**
-   * True when ANY declared output -- condition-skipped and failed ones
-   * included -- has an intrinsic `Export.Name` reading a `NoEcho` parameter
-   * (go-to-k/cdkd#4723). An older binary published that name with the value
-   * it held THEN, so a stored alias may spell a value since rotated, which
+   * True when ANY declared output, a condition-skipped one included, has an
+   * intrinsic `Export.Name` that can read a `NoEcho` parameter under ANY
+   * `Fn::If` verdict (go-to-k/cdkd#4723). An older binary published that name
+   * with the value and the verdicts of THEN, so a stored alias may spell a
+   * value since rotated, or come from a branch today's verdict drops, which
    * neither {@link refusedNoEchoExportNames} nor the printing corpus (today's
    * value only) can match: {@link computeOutputsDiff} withholds the name of
    * every stored alias today's template cannot account for.
@@ -812,10 +813,15 @@ export async function resolveTemplateOutputs(
     declaredKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') declaredKeys.add(output.Export.Name);
     // Every declared output, not only those pass 3 decides: a condition-false
-    // or failed exporter's stored alias is a REMOVE or carried row too.
+    // exporter's stored alias is a REMOVE row too. And NO condition verdicts,
+    // unlike pass 3's refusal of today's name: the stored alias was published
+    // under a past verdict, so an `Fn::If` branch today drops still counts.
     if (
       !exportNameReadsNoEcho &&
-      exportNameNoEchoParameters(output.Export?.Name, outputsPass?.noEchoNameSources).length > 0
+      outputsPass?.noEchoNameSources !== undefined &&
+      exportNameNoEchoParameters(output.Export?.Name, {
+        parameters: outputsPass.noEchoNameSources.parameters,
+      }).length > 0
     ) {
       exportNameReadsNoEcho = true;
     }

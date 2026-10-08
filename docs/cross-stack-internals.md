@@ -194,8 +194,9 @@ deliberate divergence, the same one the secret refusal takes.
   not shown as an addition. An alias an earlier deploy published under a name
   now refused shows as a removal with its name withheld. So does any stale
   alias the template no longer accounts for while some declared `Export.Name`
-  reads a `NoEcho` parameter, since one published before the value rotated
-  spells the previous value, which the diff does not know
+  reads a `NoEcho` parameter in any `Fn::If` branch, since one published
+  before the value rotated, or under another verdict, spells a value the diff
+  does not know
   ([#4723](https://github.com/go-to-k/cdkd/issues/4723)).
 - **The warning** says when the name was refused only because it contains a
   `NoEcho` value, since that can be a coincidence: an export named
