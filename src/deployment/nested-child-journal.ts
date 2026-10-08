@@ -72,6 +72,7 @@ import {
   type RollbackExecutorContext,
 } from './rollback-executor.js';
 import { createOpMasker } from './rollback-executor/names.js';
+import { makeForeignHolderScan } from './rollback-executor/journaled-orphans.js';
 import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
 import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
@@ -714,6 +715,20 @@ export async function revertNestedChildFromJournal(args: {
       finalSnapshotClients: ctx.options?.finalSnapshotClients,
       skipFinalSnapshot:
         ctx.options?.skipFinalSnapshot === true || ctx.destroyOptions?.skipFinalSnapshot === true,
+      // go-to-k/cdkd#4703: `cdkd rollback --remove-protection` reaches a
+      // protected resource the failed deploy created inside this child. Read
+      // from `destroyOptions` alone, which `cdkd rollback` sets only on that
+      // flag; never from `ctx.options`: a deploy's automatic rollback, the
+      // other driver of this replay, carries the deploy's context, which has
+      // no such flag. The foreign-holder scan travels with it, scoped to the
+      // CHILD: its own record is not "another stack", every other one is.
+      ...(ctx.destroyOptions?.removeProtection === true && {
+        removeProtection: true,
+        foreignHolder: makeForeignHolderScan(ctx.stateBackend)({
+          stackName: childStackName,
+          region,
+        }),
+      }),
       importedProducerRegions: producerRegions.regions,
       producerRegionsIncomplete: !producerRegions.complete,
       // No `--orphan` reaches this replay: the flag feeds only the replay of
