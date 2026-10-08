@@ -16,6 +16,7 @@ import {
 } from './secret-redaction.js';
 import { canonicalJson } from './secret-redaction/noecho-leaves.js';
 import { getLogger } from '../utils/logger.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * Re-resolving a record's `NoEcho` coordinates into a custom resource's
@@ -66,7 +67,9 @@ export function applyNoEchoDeleteValues<T>(
 ): { payload: T; unresolved: NoEchoCoordinate[] } {
   const masked = maskedNoEchoCoordinates(properties, recordedLeaves);
   if (masked.length === 0) return { payload: properties, unresolved: [] };
-  const byKey = new Map((values?.leaves ?? []).map((leaf) => [canonicalJson(leaf.coordinate), leaf]));
+  const byKey = new Map(
+    (values?.leaves ?? []).map((leaf) => [canonicalJson(leaf.coordinate), leaf])
+  );
   const entries: { coordinate: NoEchoCoordinate; value: unknown }[] = [];
   const unresolved: NoEchoCoordinate[] = [];
   for (const coordinate of masked) {
@@ -184,7 +187,9 @@ function readsParametersOnly(
     const record = value as Record<string, unknown>;
     const keys = Object.keys(record);
     const intrinsic =
-      keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::')) ? keys[0]! : undefined;
+      keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'))
+        ? keys[0]!
+        : undefined;
     if (keys.includes('Condition')) return false;
     if (intrinsic === undefined) return Object.values(record).every(walk);
     if (!PARAMETER_ONLY_INTRINSICS.has(intrinsic)) return false;
@@ -281,7 +286,7 @@ export class TemplateNoEchoReresolver {
       })
       .catch(() => {
         this.logger.debug(
-          `Could not bind the parameters of ${this.options.stackName}'s template; NoEcho ` +
+          safeMsg`Could not bind the parameters of ${this.options.stackName}'s template; NoEcho ` +
             `coordinates are not re-resolved for its custom resources' deletes.`
         );
         return undefined;
@@ -294,7 +299,10 @@ export class TemplateNoEchoReresolver {
    * `undefined` when none could be re-resolved. A partial answer is returned
    * as such: the provider skips while any masked coordinate lacks a value.
    */
-  async valuesFor(logicalId: string, record: ResourceState): Promise<NoEchoDeleteValues | undefined> {
+  async valuesFor(
+    logicalId: string,
+    record: ResourceState
+  ): Promise<NoEchoDeleteValues | undefined> {
     const masked = maskedNoEchoCoordinates(record.properties, noEchoLeavesOf(record));
     if (masked.length === 0) return undefined;
     const resources = this.options.template.Resources as Record<string, unknown> | undefined;
@@ -335,7 +343,7 @@ export class TemplateNoEchoReresolver {
         });
       } catch {
         this.logger.debug(
-          `Could not re-resolve a NoEcho coordinate of ${logicalId} from today's template.`
+          safeMsg`Could not re-resolve a NoEcho coordinate of ${logicalId} from today's template.`
         );
         continue;
       }
@@ -409,7 +417,7 @@ export class TemplateNoEchoReresolver {
       });
     } catch {
       this.logger.debug(
-        `Could not load nested stack ${logicalId}'s template to re-resolve its NoEcho values.`
+        safeMsg`Could not load nested stack ${logicalId}'s template to re-resolve its NoEcho values.`
       );
       return undefined;
     }

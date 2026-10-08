@@ -1188,7 +1188,11 @@ question.
   property such a value feeds is replaced on a readback only where an earlier
   readback, handed the masked record, proved AWS reports it exactly
   (`noEchoExactEchoLeaves`, issue #4656); otherwise the deploy warns and names
-  `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+  `--recreate-via-cc-api` / `--recreate-via-sdk-provider`. A custom
+  resource's `Delete` is sent the real value only where cdkd holds the
+  template (`cdkd destroy` with the app, a deploy replacing the resource): it
+  re-resolves each position from today's template (issue #4682), in memory
+  only; elsewhere that delete is skipped.
   See [State Management](state-management.md#version-11-stores-noecho-values-as-current-writers).
 
 ## Limitations and Future Extensions

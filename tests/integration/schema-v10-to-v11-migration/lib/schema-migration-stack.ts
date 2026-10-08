@@ -33,9 +33,10 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   CDKD_V11_ADD_DEPENDENT  `1` adds a dependent reading the custom resource's
  *                           declared-NoEcho attribute (#2449's refusal)
  *   CDKD_V11_PARAM_CR       `1` adds ParamCr, a custom resource reading
- *                           TokenParam (review round 9): removing it must SKIP
- *                           the delete (its record holds `***`), so its
- *                           handler never writes the delete marker
+ *                           TokenParam (review round 9): removing it, or a
+ *                           template-less state destroy, must SKIP the delete
+ *                           (its record holds `***`); `cdkd destroy` with the
+ *                           app delivers it with the real Token (#4682)
  *
  * The SSM parameters and the topic are L1 constructs so the property bags are
  * exactly what verify.sh asserts on, by coordinate.
@@ -124,13 +125,16 @@ export class SchemaV10ToV11MigrationStack extends cdk.Stack {
       code: lambda.Code.fromInline(`
 exports.handler = async (event) => {
   if (event.RequestType === 'Delete') {
-    // ParamCr only: a Delete that reaches the handler writes this marker,
-    // which verify.sh asserts is NEVER written (cdkd skips that delete).
-    const marker = (event.ResourceProperties || {}).MarkerName;
+    // ParamCr only: a Delete that reaches the handler writes this marker. Its
+    // value is a DIGEST of the Token it received, never the Token, so
+    // verify.sh can tell the real value (#4682) from the mask.
+    const props = event.ResourceProperties || {};
+    const marker = props.MarkerName;
     if (marker) {
+      const digest = require('crypto').createHash('sha256').update(String(props.Token)).digest('hex');
       const { SSMClient, PutParameterCommand } = require('@aws-sdk/client-ssm');
       await new SSMClient({}).send(
-        new PutParameterCommand({ Name: marker, Value: 'delete-reached-handler', Type: 'String', Overwrite: true })
+        new PutParameterCommand({ Name: marker, Value: 'delete-reached-handler:' + digest.slice(0, 16), Type: 'String', Overwrite: true })
       );
     }
     return { Status: 'SUCCESS', PhysicalResourceId: event.PhysicalResourceId || 'cr-v11' };
@@ -176,8 +180,10 @@ exports.handler = async (event) => {
 
     if (process.env.CDKD_V11_PARAM_CR === '1') {
       // A custom resource reading the NoEcho parameter: its record holds `***`
-      // at `Token`, named in `noEchoLeaves`, so its Delete is skipped rather
-      // than sent the mask (maintainer decision, #4043 round 8).
+      // at `Token`, named in `noEchoLeaves`. A deploy that removes it, and a
+      // template-less `cdkd state destroy`, skip its Delete rather than send the
+      // mask (#4043 round 8); `cdkd destroy` with this app re-resolves the
+      // Token and delivers it (#4682).
       new cdk.CustomResource(this, 'ParamCr', {
         serviceToken: handler.functionArn,
         properties: { Token: token.valueAsString, MarkerName: markerName },

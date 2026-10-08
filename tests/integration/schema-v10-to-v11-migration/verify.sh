@@ -61,11 +61,15 @@
 #   7e `cdkd state orphan --resource ParamCr` drops the record (it manages
 #      nothing beyond the marker it never wrote).
 #   7f re-add ParamCr (CDKD_V11_PARAM_CR stays 1 from here on, through the
-#      destroy), so phase 8 exercises the `cdkd destroy` arm of the skip.
-#   8  destroy: the first one exits 2 with ParamCr's delete skipped, its
-#      record kept with `***` and the marker never written; `state orphan
-#      --resource ParamCr`; the second destroy exits 0, and every resource and
-#      the state file are gone.
+#      destroys), so phase 8 exercises both destroy arms.
+#   8  `cdkd destroy` with the app RE-RESOLVES ParamCr's Token (#4682): it
+#      exits 0, the handler's Delete wrote the marker holding a digest of the
+#      REAL rotated token (never the token itself, and not the mask's digest),
+#      no skip line is printed, and everything is gone.
+#   8b redeploy, then a template-less `cdkd state destroy` keeps the skip:
+#      exit 2, ParamCr's record kept with `***`, the marker never written;
+#      `state orphan --resource ParamCr`; the second state destroy exits 0,
+#      and every resource and the state file are gone.
 #   9  every object version written since phase 3 is scanned for the values,
 #      then every version under the stack prefix is purged and asserted gone.
 #
@@ -945,33 +949,94 @@ assert_gone "the delete marker ${MARKER_PARAM_NAME} exists before the destroy" \
 pass "no delete marker before the destroy"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 8: destroy"
+echo "==> Phase 8: cdkd destroy with the app delivers ParamCr's Delete (#4682)"
 # ---------------------------------------------------------------------------
+# What the handler writes for a Token it received (lib/schema-migration-stack.ts).
+delete_marker_for() { # <token>
+  printf 'delete-reached-handler:%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-16)"
+}
 # The custom-resource handler and its role, by TYPE (CDK hashes their ids).
-CR_HANDLER_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .physicalId][0] // ""')"
-CR_ROLE_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::IAM::Role") | .physicalId][0] // ""')"
-[ -n "${CR_HANDLER_NAME}" ] || fail "no AWS::Lambda::Function record before destroy"
-[ -n "${CR_ROLE_NAME}" ] || fail "no AWS::IAM::Role record before destroy"
-pass "the custom-resource handler and its role are recorded before destroy"
+record_handler_names() { # <label>
+  CR_HANDLER_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .physicalId][0] // ""')"
+  CR_ROLE_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::IAM::Role") | .physicalId][0] // ""')"
+  [ -n "${CR_HANDLER_NAME}" ] || fail "$1: no AWS::Lambda::Function record"
+  [ -n "${CR_ROLE_NAME}" ] || fail "$1: no AWS::IAM::Role record"
+  pass "$1: the custom-resource handler and its role are recorded"
+}
+assert_handler_gone() { # <label>
+  assert_gone "$1: the custom-resource handler ${CR_HANDLER_NAME} still exists" \
+    aws lambda get-function --region "${REGION}" --function-name "${CR_HANDLER_NAME}"
+  pass "$1: the custom-resource handler is gone"
+  assert_gone "$1: the handler role ${CR_ROLE_NAME} still exists" \
+    aws iam get-role --role-name "${CR_ROLE_NAME}"
+  pass "$1: the handler role is gone"
+}
+record_handler_names "before the destroy"
+# The template is synthesized from the same env, so TokenParam's Default is
+# the rotated token ParamCr was last deployed with.
+run_cdkd ok "v11 destroy re-resolving ParamCr" "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_log_has_no_tokens "v11 destroy re-resolving ParamCr"
+if grep -qF -- "Custom resource ${PARAM_CR_ID} is recorded in state with" "${DEPLOY_LOG}"; then
+  redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
+  fail "v11 destroy re-resolving ParamCr: the delete was still skipped (#4682 regressed)"
+fi
+pass "v11 destroy re-resolving ParamCr: no skip line"
+MARKER_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}" \
+  --query Parameter.Value --output text)" \
+  || fail "the handler's Delete wrote no marker ${MARKER_PARAM_NAME} (or the read failed)"
+# Equal to the REAL token's digest: the mask (or nothing) fails it.
+assert_eq "the handler's Delete received the real rotated token (digest in ${MARKER_PARAM_NAME})" \
+  "${MARKER_VALUE}" "$(delete_marker_for "${TOKEN_ROTATED}")"
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+pass "the state file is gone after the destroy"
+assert_handler_gone "after the destroy"
+aws ssm delete-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}" >/dev/null
+
+# ---------------------------------------------------------------------------
+echo "==> Phase 8b: a template-less cdkd state destroy keeps ParamCr's skip"
+# ---------------------------------------------------------------------------
+run_cdkd ok "v11 redeploy for the state-destroy arm" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_log_has_no_tokens "v11 redeploy for the state-destroy arm"
+fetch_state "v11 redeploy for the state-destroy arm"
+assert_eq "v11 redeploy for the state-destroy arm: ${PARAM_CR_ID}.properties.Token" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+assert_gone "the delete marker ${MARKER_PARAM_NAME} exists before the template-less destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+pass "no delete marker before the template-less destroy"
+record_handler_names "before the template-less destroy"
 # The stack-destroy arm of the custom-resource skip (stackDestroy: the record
 # is KEPT and the run exits 2, as CloudFormation leaves DELETE_FAILED).
-run_cdkd_rc 2 "v11 destroy with ParamCr" "${LOCAL_DIST}" destroy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
-assert_log_has "destroy: ParamCr delete skip" "Custom resource ${PARAM_CR_ID} is recorded in state with Token holding the '***' mask"
-assert_log_has "destroy: ParamCr delete skip (record kept)" "cdkd is KEEPING the state record and the run exits non-zero"
-assert_log_has_no_tokens "v11 destroy with ParamCr"
-fetch_state "v11 destroy with ParamCr"
-assert_eq "v11 destroy with ParamCr: the record is KEPT with the mask" \
+# A template-less destroy, spelled out so the state-bucket lint sees the binary.
+run_state_destroy_rc() { # <rc> <label>
+  local rc
+  set +e
+  AWS_REGION="${REGION}" node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >"${DEPLOY_LOG}" 2>&1
+  rc=$?
+  set -e
+  if [ "${rc}" -ne "$1" ]; then
+    redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
+    fail "$2: exited ${rc}, expected $1"
+  fi
+  pass "$2: exited ${rc}"
+}
+run_state_destroy_rc 2 "v11 template-less destroy with ParamCr"
+assert_log_has "template-less destroy: ParamCr delete skip" "Custom resource ${PARAM_CR_ID} is recorded in state with Token holding the '***' mask"
+assert_log_has "template-less destroy: ParamCr delete skip (record kept)" "cdkd is KEEPING the state record and the run exits non-zero"
+assert_log_has_no_tokens "v11 template-less destroy with ParamCr"
+fetch_state "v11 template-less destroy with ParamCr"
+assert_eq "v11 template-less destroy with ParamCr: the record is KEPT with the mask" \
   "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
-assert_gone "the destroy's skipped delete reached the handler (marker ${MARKER_PARAM_NAME} written)" \
+assert_gone "the template-less skipped delete reached the handler (marker ${MARKER_PARAM_NAME} written)" \
   aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
-pass "the destroy's skipped delete never reached the handler"
+pass "the template-less skipped delete never reached the handler"
 # The remedy the skip names: drop the record (ParamCr manages nothing beyond
-# the marker it never wrote), then the destroy completes.
-run_cdkd ok "state orphan --resource ${PARAM_CR_ID} after the destroy" "${LOCAL_DIST}" state orphan "${STACK}" \
+# the marker it never wrote), then the state destroy completes.
+run_cdkd ok "state orphan --resource ${PARAM_CR_ID} after the template-less destroy" "${LOCAL_DIST}" state orphan "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --resource "${PARAM_CR_ID}" --yes
-run_cdkd ok "v11 destroy" "${LOCAL_DIST}" destroy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+run_state_destroy_rc 0 "v11 template-less destroy"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 pass "the state file is gone"
@@ -989,12 +1054,7 @@ assert_eq "the DB parameter group is gone after destroy" \
   "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "<absent>"
 assert_eq "no DB parameter group exists under the rotated name after destroy" \
   "$(group_name_in_aws "${GROUP_NAME_ROTATED_LOWER}")" "<absent>"
-assert_gone "the custom-resource handler ${CR_HANDLER_NAME} still exists after destroy" \
-  aws lambda get-function --region "${REGION}" --function-name "${CR_HANDLER_NAME}"
-pass "the custom-resource handler is gone"
-assert_gone "the handler role ${CR_ROLE_NAME} still exists after destroy" \
-  aws iam get-role --role-name "${CR_ROLE_NAME}"
-pass "the handler role is gone"
+assert_handler_gone "after the template-less destroy"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 9: no object version written since the migration carries a value; sweep"
@@ -1025,11 +1085,11 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 142 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 142 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 153 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 153 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi
 
 echo ""
-echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, a rotated create-only value replaced only where the readback is proven exact, a custom resource reading a NoEcho parameter never sent a Delete holding the mask); ${ASSERTIONS_RUN} assertions executed"
+echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, a rotated create-only value replaced only where the readback is proven exact, a custom resource reading a NoEcho parameter never sent a Delete holding the mask, and sent the real value by cdkd destroy with the app); ${ASSERTIONS_RUN} assertions executed"

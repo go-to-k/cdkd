@@ -984,7 +984,30 @@ report it" row above:
 | request | what the handler receives |
 | --- | --- |
 | `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position |
-| `Delete` | not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
+| `Delete` | `cdkd destroy` with the app, and a deploy that replaces the resource while it is still in the template: `ResourceProperties` holds the real value, re-resolved from today's template and parameters. Otherwise not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
+
+On a `Delete`, cdkd re-resolves a position only while today's template still
+reads a `NoEcho` parameter there, for a resource of the same type. On
+`cdkd destroy` the expression must be built from parameters, the pseudo
+parameters `AWS::Region`, `AWS::Partition`, `AWS::URLSuffix`, `AWS::AccountId`
+and `AWS::StackName`, and literals; a nested stack's child gets the value its
+parent's row hands it. The handler receives the value bound TODAY, as a deploy
+of that template would send it: if the parameter's value changed since the
+last deploy, it is the new one. The delete stays skipped when:
+
+- the command holds no template: `cdkd state destroy`, a deploy that removed
+  the resource, and a rollback;
+- the position holds an attribute a custom resource or nested stack declared
+  `NoEcho`: there is no template value to re-resolve;
+- the template no longer reads a `NoEcho` parameter there, the resource changed
+  type, or the template carries a `Transform` (destroy does not expand macros);
+- the record holds `***` at a position its `noEchoLeaves` does not name (one
+  embedded through `Fn::Join`, a record an earlier cdkd wrote, or one
+  `cdkd import` / `cdkd scrub` wrote): nothing names what it stood for.
+
+The value goes into the handler's request only. The record keeps `***`, and a
+warning, error or handler log line cdkd prints shows `***` where the value
+stood.
 
 A handler whose `Update` is not idempotent, or that compares the two bags to
 decide what to do, should take a name or an ARN (for example of a Secrets
@@ -1038,7 +1061,9 @@ count as a change for `--fail`.
   the deploy warns once per such resource.
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target, or any property of a custom resource, whose handler would
-  receive `***`) cannot be addressed from its record, which holds `***`.
+  receive `***`) cannot be addressed from its record, which holds `***`
+  (except a custom resource's, re-resolved as described in
+  [Custom resources that read a `NoEcho` parameter](#custom-resources-that-read-a-noecho-parameter)).
   `cdkd destroy`, and a deploy that removes the resource, skip that delete,
   keep the record and exit non-zero (a deploy exits zero with
   `--allow-unaddressed`); delete the resource by hand (for a custom resource,

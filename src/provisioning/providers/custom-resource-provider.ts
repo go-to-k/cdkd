@@ -126,11 +126,12 @@ export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
  * A record whose recorded `ResourceProperties` hold the `***` mask at a
  * coordinate its `noEchoLeaves` names (go-to-k/cdkd#4043, schema v11): a
  * `NoEcho` parameter value, or an attribute its producer declared `NoEcho`,
- * that cdkd does not keep and does not re-resolve on delete. Sending the mask would hand the handler a `Delete` request whose
- * properties are not the ones it was created with, and a handler that tears
- * down by a property value would act on `***`. Skipped instead, the record
- * kept, the same shape as the redacted-address skip. Re-resolving the value
- * into the `Delete` payload is go-to-k/cdkd#4682.
+ * that cdkd does not keep. Sending the mask would hand the handler a `Delete`
+ * request whose properties are not the ones it was created with, and a
+ * handler that tears down by a property value would act on `***`. Skipped
+ * instead, the record kept, the same shape as the redacted-address skip,
+ * unless the caller re-resolved EVERY such coordinate from the template it
+ * holds (`DeleteContext.noEchoDeleteValues`, go-to-k/cdkd#4682).
  */
 export const CR_NOECHO_PROPERTIES_SKIP_REASON =
   'NoEcho mask in recorded properties — Delete handler not invoked';
@@ -143,7 +144,7 @@ export const CR_NOECHO_PROPERTIES_SKIP_REASON =
  * re-resolved, and sending it is the hazard the NoEcho skip exists for.
  */
 export const CR_MASKED_PROPERTIES_SKIP_REASON =
-  'redaction mask in recorded properties — Delete handler not invoked';
+  'redaction mask in properties — Delete handler not invoked';
 
 /** When a NoEcho coordinate IS re-resolved on delete (go-to-k/cdkd#4682). */
 const NOECHO_RERESOLUTION_BOUND =
