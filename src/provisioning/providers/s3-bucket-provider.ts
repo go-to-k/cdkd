@@ -68,7 +68,11 @@ import {
   s3BucketWebsiteUrl,
 } from '../../utils/s3-endpoints.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
-import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
+import {
+  markNameCollision,
+  markNonRetryable,
+  markRedactedCause,
+} from '../../deployment/retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -2055,8 +2059,10 @@ export class S3BucketProvider implements ResourceProvider {
    * The refusal therefore names the bucket and LEADS with read commands
    * (`list-buckets` shows whether this account owns it at all), then a delete
    * conditional on the bucket being this account's empty orphan, then the
-   * re-run (a fresh deploy takes the cold path, which adopts an owned bucket
-   * and fails on another account's). `markNonRetryable` because the engine's
+   * way to keep it: for a generated name a re-run (a fresh deploy takes the
+   * cold path, which adopts an owned bucket and fails on another account's),
+   * for an explicit one `cdkd import`, since the cold path refuses an explicit
+   * name a bucket already holds (go-to-k/cdkd#4684). `markNonRetryable` because the engine's
    * next attempt would see the same bucket with no window and adopt it -- the
    * outcome this refuses. Avoids the
    * literal `does not exist`, which reads as transient
@@ -2067,7 +2073,8 @@ export class S3BucketProvider implements ResourceProvider {
     resourceType: string,
     bucketName: string,
     region: string,
-    via: { cause: Error } | { preflight: 'region' | 'indeterminate' }
+    via: { cause: Error } | { preflight: 'region' | 'indeterminate' },
+    explicitName: boolean
   ): never {
     const aws = pasteableAwsCommand(this.shownMask);
     const regionArg = region ? aws` --region ${region}` : aws``;
@@ -2097,12 +2104,72 @@ export class S3BucketProvider implements ResourceProvider {
           `is listed there, its CreationDate matches the failed attempt, it is empty, and ` +
           `nobody else on your team uses this name, it is this deploy's orphan: delete it ` +
           `with ${deletion} (S3 refuses with BucketNotEmpty if anything is left in it) and ` +
-          `re-run the deploy. If it is a bucket you mean this stack to own, re-run the ` +
-          `deploy to adopt it.`,
+          `re-run the deploy. ` +
+          (explicitName
+            ? `If it is a bucket you mean this stack to own, adopt it with \`cdkd import\` and ` +
+              `re-run: its BucketName is set explicitly, so a re-run alone refuses it.`
+            : `If it is a bucket you mean this stack to own, re-run the deploy to adopt it.`),
         resourceType,
         logicalId,
         bucketName,
         'cause' in via ? via.cause : undefined
+      )
+    );
+  }
+
+  /**
+   * Refuse a create whose EXPLICIT `BucketName` a bucket already holds
+   * (go-to-k/cdkd#4684): S3 answered `BucketAlreadyOwnedByYou`, or, in
+   * us-east-1, the pre-flight found the bucket, where `CreateBucket` would
+   * answer 200 OK and reset its ACLs. Either way this create did not make it,
+   * and a name is not attribution (`docs/provider-rules.md`, "Adopt only on
+   * EXACT attribution"): the bucket may be a hand-made one or another stack's,
+   * and adopting it would reconfigure it and hand it to this stack's
+   * `cdkd destroy`. CloudFormation fails the same create. A generated name
+   * keeps adopting: it is derived from the stack and logical id, so its holder
+   * is presumed this stack's own (go-to-k/cdkd#4345).
+   *
+   * The deploy engine asks the same question before a plain create
+   * (go-to-k/cdkd#4180) and before a replacement onto a new name
+   * (go-to-k/cdkd#3937); this catches the creates neither asks for (a
+   * replacement keeping its name, a rollback's re-create of a replaced
+   * bucket) and a bucket made between that lookup and `CreateBucket`.
+   *
+   * Marked a NAME COLLISION (`markNameCollision`): the create-first
+   * replacement and the rollback's reverse replacement read that verdict, and
+   * each acts on it only once the state records prove which resource holds
+   * the name (`replacementOldHoldsSentName`, `reverseReplacementNewHoldsName`).
+   * `markNonRetryable`: the next attempt meets the same bucket. Avoids the
+   * literal `does not exist`, which reads as transient.
+   */
+  private refuseExplicitNameHeld(
+    logicalId: string,
+    resourceType: string,
+    bucketName: string,
+    via: { cause: Error } | { preflightRegion: string }
+  ): never {
+    const evidence =
+      'cause' in via
+        ? `S3 answered BucketAlreadyOwnedByYou: this account already owns a bucket of that name`
+        : `a bucket of that name is already in ${via.preflightRegion}, where CreateBucket ` +
+          `answers 200 OK over a bucket you own and resets its access control lists, so it ` +
+          `was not sent`;
+    throw markNonRetryable(
+      markNameCollision(
+        new ProvisioningError(
+          `Refusing to adopt S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} ` +
+            `(${resourceType}): its BucketName is set explicitly and ${evidence}. This create ` +
+            `did not make that bucket, so cdkd cannot tell it from one made outside this stack, ` +
+            `and CloudFormation fails the same create. Nothing was applied to it. Choose a ` +
+            `bucket name no other bucket holds. If the bucket is this stack's own (left by an ` +
+            `interrupted deploy, or kept by DeletionPolicy: Retain), delete it, or adopt it ` +
+            `with \`cdkd import\`, and re-run; confirm it is yours first, since adopting a ` +
+            `bucket hands it to this stack's \`cdkd destroy\`.`,
+          resourceType,
+          logicalId,
+          bucketName,
+          'cause' in via ? via.cause : undefined
+        )
       )
     );
   }
@@ -6564,6 +6631,9 @@ export class S3BucketProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    // go-to-k/cdkd#4684: the same truthiness as the `||` below, so "explicit"
+    // means exactly "the name sent is the template's, not a generated one".
+    const explicitBucketName = Boolean(properties['BucketName']);
     const bucketName =
       (properties['BucketName'] as string | undefined) ||
       generateResourceName(logicalId, {
@@ -6765,8 +6835,9 @@ export class S3BucketProvider implements ResourceProvider {
       // collision that reaches this is not exotic.
       //
       // The probe never licenses an ADOPTION in place of the `CreateBucket`
-      // call: it informs the cleanup gate, and -- after an ambiguous attempt of
-      // this same create -- a refusal that adopts nothing (issue #4639, below).
+      // call: it informs the cleanup gate, and two refusals that adopt nothing
+      // -- after an ambiguous attempt of this same create (issue #4639), and
+      // over an explicit `BucketName` (go-to-k/cdkd#4684), both below.
       // `CreateBucket` is the authoritative OWNERSHIP
       // oracle (a bucket held by another account fails it with
       // `BucketAlreadyExists`), while `GetBucketLocation` can succeed against a
@@ -6816,8 +6887,24 @@ export class S3BucketProvider implements ResourceProvider {
         // it unattributed. A pre-flight placing it in another region keeps
         // the foreign-region refusal below.
         windowSpent = true;
-        this.refuseAmbiguousCreateAdopt(logicalId, resourceType, bucketName, canonicalRegion, {
-          preflight: preflight.kind,
+        this.refuseAmbiguousCreateAdopt(
+          logicalId,
+          resourceType,
+          bucketName,
+          canonicalRegion,
+          { preflight: preflight.kind },
+          explicitBucketName
+        );
+      }
+      if (explicitBucketName && preflight.kind === 'region' && preflight.region === 'us-east-1') {
+        // go-to-k/cdkd#4684: the us-east-1 analogue of the explicit-name
+        // refusal in the `BucketAlreadyOwnedByYou` arm below, refused BEFORE
+        // the send so the legacy 200 never resets the bucket's ACLs. A
+        // pre-flight that could not answer still sends (nothing proves the
+        // name is taken), and one placing the bucket in another region keeps
+        // the foreign-region refusal.
+        this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, {
+          preflightRegion: preflight.region,
         });
       }
       try {
@@ -6921,11 +7008,22 @@ export class S3BucketProvider implements ResourceProvider {
           );
           // Issue #4639: a same-region bucket we own, after an ambiguous
           // attempt of THIS create, is not attributable -- refuse rather than
-          // adopt. Without a preceding ambiguous attempt the adoption below is
-          // unchanged (go-to-k/cdkd#4684 tracks that cold path).
+          // adopt.
           if (ambiguousWindow !== undefined) {
             windowSpent = true;
-            this.refuseAmbiguousCreateAdopt(logicalId, resourceType, bucketName, canonicalRegion, {
+            this.refuseAmbiguousCreateAdopt(
+              logicalId,
+              resourceType,
+              bucketName,
+              canonicalRegion,
+              { cause: createError },
+              explicitBucketName
+            );
+          }
+          // go-to-k/cdkd#4684: nor is one holding an EXPLICIT name; only a
+          // generated name's holder is presumed this stack's own and adopted.
+          if (explicitBucketName) {
+            this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, {
               cause: createError,
             });
           }

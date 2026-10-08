@@ -70,7 +70,26 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NoSuchBucket } from '@aws-sdk/client-s3';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+
+/**
+ * Every send answers `{}`, except the us-east-1 create pre-flight's
+ * `GetBucketLocation`, which finds no bucket: a bucket the pre-flight finds
+ * under an explicit `BucketName` is refused as already held
+ * (go-to-k/cdkd#4684).
+ */
+function sendAnsweringNoBucket(cmd: unknown): Promise<unknown> {
+  if ((cmd as { constructor: { name: string } }).constructor.name === 'GetBucketLocationCommand') {
+    return Promise.reject(
+      new NoSuchBucket({
+        message: 'The specified bucket does not exist',
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+  }
+  return Promise.resolve({});
+}
 
 const BUCKET_NAME = 'my-bucket';
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
@@ -82,7 +101,7 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
     vi.clearAllMocks();
     childLogger.child.mockReturnValue(childLogger);
     provider = new S3BucketProvider();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
   });
 
   describe('write side: EventBridgeEnabled -> SDK block presence', () => {
@@ -341,7 +360,7 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       notification: Record<string, unknown>
     ): Promise<Record<string, unknown>> => {
       vi.clearAllMocks();
-      mockSend.mockResolvedValue({});
+      mockSend.mockImplementation(sendAnsweringNoBucket);
       await provider.update(
         'L',
         BUCKET_NAME,

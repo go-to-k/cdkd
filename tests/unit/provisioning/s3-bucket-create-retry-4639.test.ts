@@ -48,6 +48,7 @@ import {
 import { withRetry } from '../../../src/deployment/retry.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { generateResourceName } from '../../../src/provisioning/resource-name.js';
 import {
   advancingSleep,
   configsOf,
@@ -172,6 +173,30 @@ const PROPS = {
   VersioningConfiguration: { Status: 'Enabled' },
 };
 
+/** The same bucket with NO `BucketName`: the provider generates one. */
+const GENERATED_PROPS = { VersioningConfiguration: { Status: 'Enabled' } };
+/** The name the provider generates for `Res` (its own `generateResourceName` call). */
+const GENERATED = generateResourceName('Res', {
+  maxLength: 63,
+  lowercase: true,
+  allowedPattern: /[^a-z0-9.-]/g,
+});
+
+/**
+ * The COLD path's answer for an explicit `BucketName` a bucket already holds
+ * (go-to-k/cdkd#4684): refused as held -- never the #4639 ambiguous-attempt
+ * refusal, whose window these cases prove spent -- with nothing configured.
+ */
+function expectColdExplicitRefusal(error: unknown, aws: FakeS3): void {
+  expect(error).toBeInstanceOf(Error);
+  const message = (error as Error).message;
+  expect(message).toContain(`Refusing to adopt S3 bucket ${BUCKET}`);
+  expect(message).toContain('its BucketName is set explicitly');
+  expect(message).not.toContain('ended without a definite answer');
+  expect(isMarkedNonRetryable(error)).toBe(true);
+  expect(aws.calls).not.toContain('PutBucketVersioningCommand');
+}
+
 /** S3's 409 for a conflicting operation on the same name: retryable, not ambiguous. */
 const operationAborted = (): Error =>
   Object.assign(
@@ -257,10 +282,27 @@ describe('S3 bucket CreateBucket after an ambiguous attempt (issue #4639)', () =
       'it is empty, and nobody else on your team uses this name'
     );
     expect(message.slice(deletion)).toContain('BucketNotEmpty');
+    // An explicit name is not adopted by a re-run (go-to-k/cdkd#4684), so the
+    // refusal points at `cdkd import` instead.
     expect(message.slice(deletion)).toContain(
-      'If it is a bucket you mean this stack to own, re-run the deploy to adopt it'
+      'If it is a bucket you mean this stack to own, adopt it with `cdkd import` and re-run'
     );
+    expect(message).not.toContain('re-run the deploy to adopt it');
     expect(message).toContain('the bucket now exists');
+  });
+
+  it('keeps the re-run advice for a GENERATED name, which a re-run still adopts', async () => {
+    aws.loseCreateResponse = transient500();
+
+    const error = await createWithRetry(new S3BucketProvider(), GENERATED_PROPS).catch(
+      (e: unknown) => e
+    );
+
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    const message = (error as Error).message;
+    expect(message).toContain(`Refusing to adopt S3 bucket ${GENERATED}`);
+    expect(message).toContain('re-run the deploy to adopt it');
+    expect(message).not.toContain('cdkd import');
   });
 
   it('still refuses when a second ambiguous attempt came between the first and the collision', async () => {
@@ -333,7 +375,7 @@ describe('S3 bucket CreateBucket after an ambiguous attempt (issue #4639)', () =
     expect(aws.configurationCalls()).toEqual([]);
   });
 
-  it('a fresh create spends the window: the bucket it made is adopted on the re-run', async () => {
+  it('a fresh create spends the window: the re-run takes the cold path', async () => {
     aws.failCreateBefore = transient500();
     aws.failing = {
       PutBucketVersioningCommand: accessDenied(),
@@ -344,10 +386,25 @@ describe('S3 bucket CreateBucket after an ambiguous attempt (issue #4639)', () =
     // This attempt's own bucket, left behind and named for the journal.
     expect(hasCreatedBeforeFailure(first)).toBe(true);
     aws.failing = {};
+    aws.calls.length = 0;
 
-    const result = await createWithRetry(provider);
+    expectColdExplicitRefusal(await createWithRetry(provider).catch((e: unknown) => e), aws);
+  });
 
-    expect(result.physicalId).toBe(BUCKET);
+  it('a fresh create spends the window: a generated name is adopted on the re-run', async () => {
+    aws.failCreateBefore = transient500();
+    aws.failing = {
+      PutBucketVersioningCommand: accessDenied(),
+      DeleteBucketCommand: accessDenied(),
+    };
+    const provider = new S3BucketProvider();
+    const first = await createWithRetry(provider, GENERATED_PROPS).catch((e: unknown) => e);
+    expect(hasCreatedBeforeFailure(first)).toBe(true);
+    aws.failing = {};
+
+    const result = await createWithRetry(provider, GENERATED_PROPS);
+
+    expect(result.physicalId).toBe(GENERATED);
   });
 
   it("BucketAlreadyExists is the oracle's answer: the window is spent, not held", async () => {
@@ -368,10 +425,12 @@ describe('S3 bucket CreateBucket after an ambiguous attempt (issue #4639)', () =
     // Later, a bucket of ours under the name is the cold path again.
     aws.foreign.clear();
     aws.buckets.set(BUCKET, STACK_REGION);
+    aws.calls.length = 0;
 
-    const result = await provider.create('Res', TYPE, PROPS);
-
-    expect(result.physicalId).toBe(BUCKET);
+    expectColdExplicitRefusal(
+      await provider.create('Res', TYPE, PROPS).catch((e: unknown) => e),
+      aws
+    );
   });
 
   it('creates normally when the 5xx attempt made nothing, and attributes THAT bucket', async () => {
@@ -389,56 +448,90 @@ describe('S3 bucket CreateBucket after an ambiguous attempt (issue #4639)', () =
     expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
-  it('a definite failure arms nothing: the next create of a bucket already there adopts it', async () => {
+  it('a definite failure arms nothing: the next create of a bucket already there takes the cold path', async () => {
     const provider = new S3BucketProvider();
     aws.failCreateBefore = accessDenied();
     await expect(provider.create('Res', TYPE, PROPS)).rejects.toThrow();
     aws.buckets.set(BUCKET, STACK_REGION);
 
-    const result = await provider.create('Res', TYPE, PROPS);
+    expectColdExplicitRefusal(
+      await provider.create('Res', TYPE, PROPS).catch((e: unknown) => e),
+      aws
+    );
+  });
 
-    expect(result.physicalId).toBe(BUCKET);
+  it('a definite failure arms nothing: a generated name already there is adopted', async () => {
+    const provider = new S3BucketProvider();
+    aws.failCreateBefore = accessDenied();
+    await expect(provider.create('Res', TYPE, GENERATED_PROPS)).rejects.toThrow();
+    aws.buckets.set(GENERATED, STACK_REGION);
+
+    const result = await provider.create('Res', TYPE, GENERATED_PROPS);
+
+    expect(result.physicalId).toBe(GENERATED);
     expect(aws.calls).toContain('PutBucketVersioningCommand');
   });
 
-  it('the latch is spent by the refusal: a re-run adopts the bucket', async () => {
+  it('the latch is spent by the refusal: a re-run takes the cold path', async () => {
     aws.loseCreateResponse = transient500();
     const provider = new S3BucketProvider();
     await createWithRetry(provider).catch(() => undefined);
+    aws.calls.length = 0;
 
-    const result = await createWithRetry(provider);
+    expectColdExplicitRefusal(await createWithRetry(provider).catch((e: unknown) => e), aws);
+  });
 
-    expect(result.physicalId).toBe(BUCKET);
+  it('the latch is spent by the refusal: a re-run adopts a generated name', async () => {
+    aws.loseCreateResponse = transient500();
+    const provider = new S3BucketProvider();
+    await createWithRetry(provider, GENERATED_PROPS).catch(() => undefined);
+
+    const result = await createWithRetry(provider, GENERATED_PROPS);
+
+    expect(result.physicalId).toBe(GENERATED);
     expect(aws.calls).toContain('PutBucketVersioningCommand');
   });
 });
 
-describe('S3 bucket cold BucketAlreadyOwnedByYou, unchanged (go-to-k/cdkd#4684 owns it)', () => {
+describe('S3 bucket cold BucketAlreadyOwnedByYou (go-to-k/cdkd#4684)', () => {
   let aws: FakeS3;
   let restore: () => void;
   beforeEach(() => ({ aws, restore } = useRegion(STACK_REGION)));
   afterEach(() => restore());
 
-  it('adopts and configures a same-region bucket that was there before any attempt', async () => {
+  it('refuses an explicit name a same-region bucket held before any attempt', async () => {
     aws.buckets.set(BUCKET, STACK_REGION);
 
-    const result = await createWithRetry(new S3BucketProvider());
+    const error = await createWithRetry(new S3BucketProvider()).catch((e: unknown) => e);
 
-    expect(result.physicalId).toBe(BUCKET);
+    expectColdExplicitRefusal(error, aws);
+    expect(aws.calls.filter((c) => c === 'CreateBucketCommand')).toHaveLength(1);
+    expect(hasCreatedBeforeFailure(error)).toBe(false);
+    expect(aws.buckets.get(BUCKET)).toBe(STACK_REGION);
+  });
+
+  it('adopts and configures a generated name a same-region bucket held before any attempt', async () => {
+    aws.buckets.set(GENERATED, STACK_REGION);
+
+    const result = await createWithRetry(new S3BucketProvider(), GENERATED_PROPS);
+
+    expect(result.physicalId).toBe(GENERATED);
     expect(aws.calls.filter((c) => c === 'CreateBucketCommand')).toHaveLength(1);
     expect(aws.calls).toContain('PutBucketVersioningCommand');
   });
 
   it('a configuration failure after that adoption carries no created mark and deletes nothing', async () => {
-    aws.buckets.set(BUCKET, STACK_REGION);
+    aws.buckets.set(GENERATED, STACK_REGION);
     aws.failing = { PutBucketVersioningCommand: accessDenied() };
 
-    const error = await createWithRetry(new S3BucketProvider()).catch((e: unknown) => e);
+    const error = await createWithRetry(new S3BucketProvider(), GENERATED_PROPS).catch(
+      (e: unknown) => e
+    );
 
     expect(error).toBeInstanceOf(Error);
     expect(hasCreatedBeforeFailure(error)).toBe(false);
     expect(aws.calls).not.toContain('DeleteBucketCommand');
-    expect(aws.buckets.get(BUCKET)).toBe(STACK_REGION);
+    expect(aws.buckets.get(GENERATED)).toBe(STACK_REGION);
   });
 });
 
@@ -462,6 +555,23 @@ describe('S3 bucket CreateBucket in us-east-1 after an ambiguous attempt (issue 
     expect(message).toContain('the bucket now exists');
     expect(message).toContain(`aws s3api list-buckets --prefix ${BUCKET}`);
     expect(message).toContain(`aws s3api delete-bucket --bucket ${BUCKET} --region us-east-1`);
+    // An explicit name is not adopted by a re-run (go-to-k/cdkd#4684).
+    expect(message).toContain('adopt it with `cdkd import` and re-run');
+    expect(message).not.toContain('re-run the deploy to adopt it');
+  });
+
+  it('keeps the re-run advice for a GENERATED name, which a re-run still adopts', async () => {
+    aws.loseCreateResponse = transient500();
+
+    const error = await createWithRetry(new S3BucketProvider(), GENERATED_PROPS).catch(
+      (e: unknown) => e
+    );
+
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    const message = (error as Error).message;
+    expect(message).toContain('the bucket now exists');
+    expect(message).toContain('re-run the deploy to adopt it');
+    expect(message).not.toContain('cdkd import');
   });
 
   it('refuses at an unanswered pre-flight without sending, so nothing unattributed is created', async () => {
@@ -510,12 +620,24 @@ describe('S3 bucket CreateBucket in us-east-1 after an ambiguous attempt (issue 
     expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
-  it('a cold create over a bucket already there is still the legacy-200 adoption', async () => {
+  it('a cold create of an explicit name over a bucket already there is refused before the send', async () => {
     aws.buckets.set(BUCKET, 'us-east-1');
 
-    const result = await createWithRetry(new S3BucketProvider());
+    const error = await createWithRetry(new S3BucketProvider()).catch((e: unknown) => e);
 
-    expect(result.physicalId).toBe(BUCKET);
+    // go-to-k/cdkd#4684: no legacy 200 (which would reset the bucket's ACLs).
+    expect(aws.calls.filter((c) => c === 'CreateBucketCommand')).toHaveLength(0);
+    expect(aws.configurationCalls()).toEqual([]);
+    expect((error as Error).message).toContain('its BucketName is set explicitly');
+    expect((error as Error).message).not.toContain('ended without a definite answer');
+  });
+
+  it('a cold create of a generated name over a bucket already there is still the legacy-200 adoption', async () => {
+    aws.buckets.set(GENERATED, 'us-east-1');
+
+    const result = await createWithRetry(new S3BucketProvider(), GENERATED_PROPS);
+
+    expect(result.physicalId).toBe(GENERATED);
     expect(aws.calls.filter((c) => c === 'CreateBucketCommand')).toHaveLength(1);
     expect(aws.calls).toContain('PutBucketVersioningCommand');
   });
@@ -559,6 +681,9 @@ describe('S3 bucket CreateBucket client (issue #4639)', () => {
 
     await expect(provider.create('Res', TYPE, PROPS)).rejects.toThrow(/region unresolved/);
     await provider.create('Res', TYPE, PROPS);
+    // Gone again, so the third create makes it afresh rather than meeting the
+    // second's bucket under its explicit name (go-to-k/cdkd#4684).
+    aws.buckets.clear();
     await provider.create('Res', TYPE, PROPS);
 
     expect(built() - before).toBe(1);

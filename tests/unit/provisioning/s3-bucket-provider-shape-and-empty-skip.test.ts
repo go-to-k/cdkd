@@ -101,8 +101,27 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NoSuchBucket } from '@aws-sdk/client-s3';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+
+/**
+ * Every send answers `{}`, except the us-east-1 create pre-flight's
+ * `GetBucketLocation`, which finds no bucket: a bucket the pre-flight finds
+ * under an explicit `BucketName` is refused as already held
+ * (go-to-k/cdkd#4684).
+ */
+function sendAnsweringNoBucket(cmd: unknown): Promise<unknown> {
+  if ((cmd as { constructor: { name: string } }).constructor.name === 'GetBucketLocationCommand') {
+    return Promise.reject(
+      new NoSuchBucket({
+        message: 'The specified bucket does not exist',
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+  }
+  return Promise.resolve({});
+}
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'shape-and-empty-skip-bucket';
@@ -114,7 +133,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   childLogger.child.mockReturnValue(childLogger);
   provider = new S3BucketProvider();
-  mockSend.mockResolvedValue({});
+  mockSend.mockImplementation(sendAnsweringNoBucket);
 });
 
 function sentCommands<T>(
@@ -529,7 +548,7 @@ describe('#1713 UPDATE: an empty BucketEncryption / OwnershipControls collection
     // bytes are IDENTICAL to a template's condition-collapsed array while
     // meaning the opposite. Without the flag this row and the two skip rows
     // above cannot both pass.
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     const properties = {
       BucketName: BUCKET,
       BucketEncryption: { ServerSideEncryptionConfiguration: [] },
@@ -565,7 +584,7 @@ describe('#1713 UPDATE: an empty BucketEncryption / OwnershipControls collection
     // as the new baseline. Pre-existing (#1671) rather than a regression here, but
     // the enumerate-every-caller rule this change wrote does not get to skip its
     // own siblings.
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     const properties = {
       BucketName: BUCKET,
       LifecycleConfiguration: { Rules: [] },

@@ -54,6 +54,30 @@ export class S3LifecycleStack extends cdk.Stack {
       new s3.CfnBucket(this, 'DepArmReplaceBucket', { bucketName: depArmReplaceBucket });
     }
 
+    // go-to-k/cdkd#4684 phase 2d: present ONLY while `verify.sh` sets the
+    // variable. The phase renames it (a replacement that creates the new bucket
+    // and deletes the old one), fails the deploy on the queue below
+    // (`--no-rollback`), plants a bucket under the OLD name, and runs
+    // `cdkd rollback`: the reverse replacement's re-create must refuse that
+    // bucket rather than adopt it. The tag is what an adoption would overwrite.
+    // Per-run unique names, as above.
+    const renameArmBucketName = process.env.CDKD_RENAME_ARM_BUCKET;
+    if (renameArmBucketName) {
+      const renameArm = new s3.CfnBucket(this, 'RenameArmBucket', {
+        bucketName: renameArmBucketName,
+        tags: [{ key: 'cdkd-integ-arm', value: 'template' }],
+      });
+      // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later step correctly omit it.
+      if (process.env.CDKD_RENAME_ARM_FAIL === 'true') {
+        const renameArmFailing = new sqs.CfnQueue(this, 'RenameArmFailingQueue', {
+          queueName: `${cdk.Stack.of(this).stackName}-rename-arm-failing`,
+          messageRetentionPeriod: 9999999,
+        });
+        // After the replacement, old bucket deleted included.
+        renameArmFailing.addDependency(renameArm);
+      }
+    }
+
     const rules: s3.LifecycleRule[] = [
       {
         id: 'archive',

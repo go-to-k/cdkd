@@ -281,17 +281,22 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
       expectNamed(transcript(), SHORT, SHORT_ID);
     });
 
-    it('masks the adopted-bucket warning (us-east-1 legacy 200)', async () => {
+    // go-to-k/cdkd#4684: an explicit name a bucket already holds is refused,
+    // not adopted, so the adopt lines these two cases used to mask are now the
+    // refusal's thrown message, which names the bucket.
+    it('masks the explicit-name refusal it throws (us-east-1 pre-flight found the bucket)', async () => {
       answer({ GetBucketLocationCommand: { LocationConstraint: null } });
 
-      await provider.create('Bucket', RESOURCE_TYPE, { BucketName: SHORT }, { maskSecrets });
+      const error = await provider
+        .create('Bucket', RESOURCE_TYPE, { BucketName: SHORT }, { maskSecrets })
+        .then(() => new Error('resolved instead of rejecting'))
+        .catch((e: unknown) => e as Error);
 
-      const text = transcript();
-      expect(text).toContain('was ADOPTED');
-      expectMasked(text, SHORT);
+      expect(error.message).toContain('Refusing to adopt S3 bucket');
+      expectMasked(error.message, SHORT);
     });
 
-    it('masks the already-owned line (BucketAlreadyOwnedByYou in the stack region)', async () => {
+    it('masks the explicit-name refusal it throws (BucketAlreadyOwnedByYou in the stack region)', async () => {
       clientRegion.value = 'eu-west-1';
       answer({
         CreateBucketCommand: Object.assign(new Error('you already own it'), {
@@ -300,11 +305,14 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
         GetBucketLocationCommand: { LocationConstraint: 'eu-west-1' },
       });
 
-      await provider.create('Bucket', RESOURCE_TYPE, { BucketName: SHORT }, { maskSecrets });
+      const error = await provider
+        .create('Bucket', RESOURCE_TYPE, { BucketName: SHORT }, { maskSecrets })
+        .then(() => new Error('resolved instead of rejecting'))
+        .catch((e: unknown) => e as Error);
 
-      const text = transcript();
-      expect(text).toContain('already exists and is owned by you');
-      expectMasked(text, SHORT);
+      expect(error.message).toContain('Refusing to adopt S3 bucket');
+      expect(error.message).toContain('BucketAlreadyOwnedByYou');
+      expectMasked(error.message, SHORT);
     });
 
     it('masks the foreign-region adopt refusal it throws', async () => {

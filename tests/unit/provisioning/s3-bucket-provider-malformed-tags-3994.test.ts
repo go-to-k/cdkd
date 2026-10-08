@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   DeleteBucketTaggingCommand,
+  GetBucketLocationCommand,
   GetBucketTaggingCommand,
+  NoSuchBucket,
   PutBucketTaggingCommand,
 } from '@aws-sdk/client-s3';
 
@@ -93,9 +95,14 @@ describe('S3BucketProvider Tags (go-to-k/cdkd#3994)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     liveTags = LIVE;
-    mockSend.mockImplementation(async (cmd: unknown) =>
-      cmd instanceof GetBucketTaggingCommand ? { TagSet: liveTags } : {}
-    );
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      // go-to-k/cdkd#4684: the us-east-1 create pre-flight finds no bucket, or
+      // the explicit BucketName reads as already held and is refused.
+      if (cmd instanceof GetBucketLocationCommand) {
+        throw new NoSuchBucket({ message: 'no such bucket', $metadata: { httpStatusCode: 404 } });
+      }
+      return cmd instanceof GetBucketTaggingCommand ? { TagSet: liveTags } : {};
+    });
     provider = new S3BucketProvider();
   });
 

@@ -113,6 +113,13 @@ const CREATE_PROPS = {
 };
 
 /**
+ * The same bucket with a GENERATED name. Only such a bucket is still adopted
+ * through the legacy 200: one the pre-flight finds under an explicit
+ * `BucketName` is refused before the send (go-to-k/cdkd#4684).
+ */
+const GENERATED_PROPS = { VersioningConfiguration: { Status: 'Enabled' } };
+
+/**
  * Issue [#2241](https://github.com/go-to-k/cdkd/issues/2241).
  *
  * The partial-create cleanup added by issue #376 is gated on
@@ -157,7 +164,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockResolvedValueOnce({}); // CreateBucket: the legacy 200 over that same bucket
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
-      await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
+      await expect(provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS)).rejects.toThrow(
         'Failed to create S3 bucket'
       );
 
@@ -180,12 +187,12 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValue({});
 
-      await provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS);
+      const { physicalId } = await provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS);
 
       const message = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(message).toContain('already existed in us-east-1 and was ADOPTED, not created');
       expect(message).toContain('access control lists');
-      expect(message).toContain(BUCKET);
+      expect(message).toContain(physicalId);
     });
 
     // The three spellings S3 uses for "this bucket is in us-east-1". ABSENT
@@ -205,11 +212,27 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
         mockSend.mockResolvedValueOnce({});
         mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
-        await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
+        await expect(provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS)).rejects.toThrow(
           'Failed to create S3 bucket'
         );
 
         expect(sentCommands()).not.toContain('DeleteBucketCommand');
+      });
+
+      // go-to-k/cdkd#4684: under an EXPLICIT name the same answer refuses
+      // before the send, so the legacy 200 never resets the bucket's ACLs.
+      it(`reads ${label} as "already in us-east-1" and refuses an explicit name before the send`, async () => {
+        mockSend.mockResolvedValueOnce(response);
+
+        const error = await provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS).then(
+          () => expect.fail('create resolved'),
+          (e: unknown) => e as Error
+        );
+
+        expect(error.message).toContain(`Refusing to adopt S3 bucket ${BUCKET}`);
+        expect(error.message).toContain('already in us-east-1');
+        expect(sentCommands()).toEqual(['GetBucketLocationCommand']);
+        expect(warnSpy).not.toHaveBeenCalled();
       });
     }
   });
@@ -593,12 +616,13 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       // that fix: `region` is still the raw spelling where the probe gate reads
       // it, so the PROBE gate's own `canonicalizeRegion` is what makes the
       // pre-flight fire for the one region it exists for.
+      // A generated name, which the legacy 200 still adopts (go-to-k/cdkd#4684).
       clientRegion.value = 'US-EAST-1';
       mockSend.mockResolvedValueOnce({}); // pre-flight: the bucket is already there
       mockSend.mockResolvedValueOnce({}); // legacy 200
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
-      await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
+      await expect(provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS)).rejects.toThrow(
         'Failed to create S3 bucket'
       );
 
@@ -620,8 +644,8 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
   // `cdkd rollback --revert-failed`; the us-east-1 legacy 200 over an existing
   // bucket, or an unanswered probe, must never mark it.
   describe('createdBeforeFailure mark (go-to-k/cdkd#4583)', () => {
-    async function failure(): Promise<unknown> {
-      return provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS).then(
+    async function failure(props: Record<string, unknown> = CREATE_PROPS): Promise<unknown> {
+      return provider.create('MyBucket', RESOURCE_TYPE, props).then(
         () => expect.fail('create resolved'),
         (e: unknown) => e
       );
@@ -632,7 +656,8 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockResolvedValueOnce({}); // CreateBucket: legacy 200
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
-      const error = await failure();
+      // A generated name, the only one the legacy 200 still adopts (go-to-k/cdkd#4684).
+      const error = await failure(GENERATED_PROPS);
 
       // The wiring call was reached, so the undefined below is the adopt gate.
       expect(sentCommands()).toEqual([
