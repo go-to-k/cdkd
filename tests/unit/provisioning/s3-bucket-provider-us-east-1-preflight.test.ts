@@ -338,7 +338,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       // exactly the delete this issue is about, so the probe's two failure
       // shapes are kept distinct.
       mockSend.mockRejectedValueOnce(accessDenied());
-      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
+      mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -351,7 +351,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
     it('names the manual cleanup, so the orphan it declines to delete is recoverable', async () => {
       mockSend.mockRejectedValueOnce(accessDenied());
-      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
+      mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -517,7 +517,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       // another: it is what tells the operator whether the probe was denied by
       // IAM or by a bucket policy.
       mockSend.mockRejectedValueOnce(accessDeniedNamingTheCaller());
-      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
+      mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -676,7 +676,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
     it('does not mark when the probe could not answer (cleanup withheld)', async () => {
       mockSend.mockRejectedValueOnce(accessDenied());
-      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
+      mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 

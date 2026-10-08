@@ -2159,9 +2159,9 @@ export class S3BucketProvider implements ResourceProvider {
         ? `S3 answered BucketAlreadyOwnedByYou: a bucket of that name already exists, and ` +
           `this account owns it`
         : 'listed' in via
-          ? `a bucket of that name already exists in this account's bucket list, where ` +
-            `CreateBucket in us-east-1 answers 200 OK and resets its access control lists, so ` +
-            `it was not sent`
+          ? `a bucket of that name already exists in this account's bucket list (a us-east-1 ` +
+            `CreateBucket would answer 200 OK over it and reset its access control lists), so ` +
+            `CreateBucket was not sent`
           : `a bucket of that name already exists in ${via.preflightRegion}, where ` +
             `CreateBucket answers 200 OK over a bucket you own and resets its access control ` +
             `lists, so it was not sent`;
@@ -6959,12 +6959,18 @@ export class S3BucketProvider implements ResourceProvider {
       // that cannot answer either is the create sent, and the warning below
       // says what that may have done.
       let ownershipUnknown: string | undefined;
+      // The list proving the name free proves a 200 a fresh create too: the
+      // legacy 200 answers only over a bucket the caller owns, and another
+      // account's answers BucketAlreadyExists. So that bucket is this create's
+      // own, for the cleanup and the created-before-failure mark.
+      let listedFree = false;
       if (explicitBucketName && preflight.kind === 'indeterminate') {
         const owned = await this.ownsBucketNamed(bucketName);
         if ('owned' in owned && owned.owned) {
           this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, { listed: true });
         }
         if ('unknown' in owned) ownershipUnknown = owned.unknown;
+        else listedFree = true;
       }
       try {
         const attemptStartMs = Date.now();
@@ -6974,7 +6980,7 @@ export class S3BucketProvider implements ResourceProvider {
           createBucketLatch.noteFailure(logicalId, sendError, attemptStartMs, ambiguousWindow);
           throw sendError;
         }
-        createdNewBucket = preflight.kind === 'absent';
+        createdNewBucket = preflight.kind === 'absent' || listedFree;
         bucketLeftBehind = createdNewBucket;
         // A fresh create answers the question: the earlier attempt made nothing.
         if (createdNewBucket) windowSpent = true;

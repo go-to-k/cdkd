@@ -48,7 +48,10 @@ import {
   isRetryableTransientError,
 } from '../../../../src/deployment/retryable-errors.js';
 import { withRetry } from '../../../../src/deployment/retry.js';
-import { hasCreatedBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
+import {
+  createdBeforeFailure,
+  hasCreatedBeforeFailure,
+} from '../../../../src/provisioning/auxiliary-failure.js';
 
 const TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'held-explicit-bucket-4684';
@@ -338,6 +341,34 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
         'CreateBucketCommand',
       ]);
       expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('a bucket the list proved free is this create\'s own: a wiring failure cleans it up', async () => {
+      answer({
+        GetBucketLocationCommand: denied(),
+        ListBucketsCommand: { Buckets: [] },
+        PutBucketVersioningCommand: new Error('wiring boom'),
+        DeleteBucketCommand: new Error('cleanup boom'),
+      });
+
+      const error = await refusal(provider.create('MyBucket', TYPE, EXPLICIT));
+
+      // The cleanup ran (it failed, so the bucket is named for the journal).
+      expect(sent()).toContain('DeleteBucketCommand');
+      expect(createdBeforeFailure(error, 'MyBucket', TYPE)).toBe(BUCKET);
+    });
+
+    it('a bucket of UNKNOWN ownership is not: the cleanup is withheld and nothing is marked', async () => {
+      answer({
+        GetBucketLocationCommand: denied(),
+        ListBucketsCommand: denied(),
+        PutBucketVersioningCommand: new Error('wiring boom'),
+      });
+
+      const error = await refusal(provider.create('MyBucket', TYPE, EXPLICIT));
+
+      expect(sent()).not.toContain('DeleteBucketCommand');
+      expect(hasCreatedBeforeFailure(error)).toBe(false);
     });
 
     it('sends when the list cannot answer either, then warns by error class, masked', async () => {

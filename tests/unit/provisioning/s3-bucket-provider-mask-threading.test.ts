@@ -383,6 +383,9 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
     it('masks the indeterminate-probe lines, AWS text included', async () => {
       answer({
         GetBucketLocationCommand: awsError('AccessDenied', `no location for ${LONG}`),
+        // go-to-k/cdkd#4684: the bucket list cannot answer either, so the
+        // indeterminate lines (and the unknown-ownership warning) run.
+        ListBucketsCommand: awsError('AccessDenied', `no list for ${LONG}`),
         PutBucketVersioningCommand: new Error('boom'),
       });
 
@@ -426,6 +429,7 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
     it('masks a SHORT name on the indeterminate-probe lines, and withholds the command', async () => {
       answer({
         GetBucketLocationCommand: awsError('AccessDenied', 'no location'),
+        ListBucketsCommand: awsError('AccessDenied', 'no list'),
         PutBucketVersioningCommand: new Error('boom'),
       });
 
