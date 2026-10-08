@@ -78,7 +78,9 @@ export default defineConfig({
     // measured RED without this and green locally only by accident. It runs
     // whatever the entry point, which a task `dependsOn` does not: `vp test
     // run` invokes vitest directly. See the file's own header.
-    globalSetup: ['./tests/assemble-changelog-setup.ts'],
+    // run-tmpdir-setup points TMPDIR at a per-run directory and removes it at
+    // the end, so suites that never clean their mkdtemp dirs leak nothing.
+    globalSetup: ['./tests/assemble-changelog-setup.ts', './tests/run-tmpdir-setup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
