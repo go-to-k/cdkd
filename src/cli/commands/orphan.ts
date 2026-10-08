@@ -11,6 +11,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
@@ -548,8 +549,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
           // `StatusReason` and the context-provider failure text take this
           // helper rather than bare `displaySafe`.
           logger.warn(
-            `Failed to release lock: ` +
-              `${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
+            `Failed to release lock: ${displayAwsMessage(describeAwsFailure(err).detail)}`
           );
         });
       }

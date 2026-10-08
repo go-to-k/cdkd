@@ -8,6 +8,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import {
   UNRENDERABLE,
@@ -121,7 +122,7 @@ async function forceUnlockCommand(
           await lockManager.forceReleaseLock(stackName, r);
           logger.info(`✓ Lock released for stack: ${where}`);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeAwsFailure(error).detail;
           if (message.includes('No lock found') || message.includes('NoSuchKey')) {
             logger.info(`No lock found for stack: ${where}`);
           } else {

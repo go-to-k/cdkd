@@ -5,6 +5,7 @@ import { ECRClient, DescribeImagesCommand, BatchDeleteImageCommand } from '@aws-
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { Logger } from '../../types/config.js';
 import { withErrorHandling, CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -1588,7 +1589,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
         throw new CdkdError(
           `Failed to delete abandoned custom-resource response placeholder(s) ` +
             `from ${bucketName}: ` +
-            `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
+            `${describeAwsFailure(deleteError).detail}`,
           'GC_DELETE_FAILED'
         );
       } finally {
@@ -1615,7 +1616,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
               `Could not purge noncurrent versions of the collected custom-resource ` +
                 `response placeholder(s) in ${bucketName}; their previous versions survive ` +
                 `and remain readable via GetObject with a VersionId. Underlying error: ` +
-                `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+                `${describeAwsFailure(purgeError).detail}`
             )
           );
       }
