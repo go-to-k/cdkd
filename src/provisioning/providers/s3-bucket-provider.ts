@@ -1664,6 +1664,25 @@ function bucketLocationToRegion(constraint: string | null | undefined): string {
 }
 
 /**
+ * A DNS-compatible general purpose bucket name (3-63 of `a-z 0-9 . -`,
+ * starting and ending alphanumeric). The identity answers (`isSameResource`, `resourceIdentity`) refuse
+ * anything else: a legacy mixed-case name, an ARN, a value cdkd would only
+ * be guessing about.
+ */
+function isPlainBucketName(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(value);
+}
+
+/**
+ * `ListBuckets` can lag a bucket created moments ago, which is when a failed
+ * CREATE's identity is read: re-read it this many times, this far apart,
+ * well inside the caller's 10s bound (`RESOURCE_IDENTITY_TIMEOUT_MS`).
+ */
+const BUCKET_LIST_IDENTITY_ATTEMPTS = 3;
+const BUCKET_LIST_IDENTITY_DELAY_MS = 1_500;
+const BUCKET_LIST_IDENTITY_BUDGET_MS = 6_000;
+
+/**
  * Whether an error from `GetBucketLocation` means "no bucket of that name".
  *
  * The test is the wire error CODE, which the SDK lifts onto `name`.
@@ -1704,24 +1723,6 @@ function bucketLocationToRegion(constraint: string | null | undefined): string {
  * is what would let a probe failure re-authorize the destructive branch each
  * caller below is guarding.
  */
-/**
- * A DNS-compatible general purpose bucket name (3-63 of `a-z 0-9 . -`,
- * starting and ending alphanumeric). The identity answers above refuse
- * anything else: a legacy mixed-case name, an ARN, a value cdkd would only
- * be guessing about.
- */
-function isPlainBucketName(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(value);
-}
-
-/**
- * `ListBuckets` can lag a bucket created moments ago, which is when a failed
- * CREATE's identity is read: re-read it this many times, this far apart,
- * well inside the caller's 10s bound (`RESOURCE_IDENTITY_TIMEOUT_MS`).
- */
-const BUCKET_LIST_IDENTITY_ATTEMPTS = 3;
-const BUCKET_LIST_IDENTITY_DELAY_MS = 1_500;
-
 function isNoSuchBucketError(error: unknown): boolean {
   return (error as { name?: unknown } | null)?.name === 'NoSuchBucket';
 }
@@ -2246,8 +2247,11 @@ export class S3BucketProvider implements ResourceProvider {
       }
       return { unknown: 'PaginationLimit' };
     } catch (error) {
+      // No bucket name: the identity read reaches here outside any operation's
+      // masker (the success settle), and a name can be secret-derived. AWS's
+      // text names no bucket either (`s3:ListAllMyBuckets` is account-wide).
       this.logger.debug(
-        safeMsg`ListBuckets failed while checking S3 bucket ${this.shown(bucketName)}: ` +
+        safeMsg`ListBuckets failed while reading this account's bucket list: ` +
           safeMsg`${describeAwsFailure(error).detail}`
       );
       return { unknown: error instanceof Error ? error.name : typeof error };
@@ -8617,16 +8621,6 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Adopt an existing S3 bucket into cdkd state.
-   *
-   * Lookup order:
-   *  1. `--resource <id>=<name>` override or `Properties.BucketName` → use directly,
-   *     verify with `HeadBucket`.
-   *
-   * Returns `null` when nothing matches — caller treats this as
-   * "not deployed yet" rather than a failure.
-   */
-  /**
    * go-to-k/cdkd#4606: whether the bucket a failed CREATE journaled is the one
    * the record under the same logical id holds (a fix-forward that created a
    * new one there under another name).
@@ -8663,7 +8657,7 @@ export class S3BucketProvider implements ResourceProvider {
    * bucket no immutable id, so the creation date is what tells a bucket from
    * one re-created under its name after it was deleted.
    *
-   * Measured for #4606 (2026-10-09, us-east-1 and us-west-2): a bucket
+   * Measured for #4606 (2026-10-08, us-east-1 and us-west-2): a bucket
    * deleted and re-created under its name, at once or minutes later, reports
    * the NEW create's second, which is what makes the token sound. The date
    * has one-second precision, so a delete and re-create inside the same
@@ -8693,8 +8687,14 @@ export class S3BucketProvider implements ResourceProvider {
     const probe = await this.probeBucketRegion(physicalId);
     if (probe.kind === 'absent') return RESOURCE_NOT_FOUND;
     if (probe.kind !== 'region' || probe.region !== want) return undefined;
+    const started = Date.now();
     for (let attempt = 0; attempt < BUCKET_LIST_IDENTITY_ATTEMPTS; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, BUCKET_LIST_IDENTITY_DELAY_MS));
+      if (attempt > 0) {
+        // Never past the caller's 10s bound, which stops waiting but cannot
+        // stop this loop.
+        if (Date.now() - started > BUCKET_LIST_IDENTITY_BUDGET_MS) return undefined;
+        await new Promise((r) => setTimeout(r, BUCKET_LIST_IDENTITY_DELAY_MS));
+      }
       const listed = await this.listOwnedBucket(physicalId);
       if ('unknown' in listed) return undefined;
       const created = listed.bucket?.CreationDate;
@@ -8705,6 +8705,16 @@ export class S3BucketProvider implements ResourceProvider {
     return undefined;
   }
 
+  /**
+   * Adopt an existing S3 bucket into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<name>` override or `Properties.BucketName` → use directly,
+   *     verify with `HeadBucket`.
+   *
+   * Returns `null` when nothing matches — caller treats this as
+   * "not deployed yet" rather than a failure.
+   */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'BucketName');
     if (explicit) {

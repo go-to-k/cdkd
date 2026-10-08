@@ -15,7 +15,11 @@
 #      nor delete it. A `--no-rollback` deploy run as that role with
 #      WITH_ORPHANS=true creates `OrphanA`'s and `OrphanC`'s buckets, enables
 #      their versioning, fails on the tagging call that follows, and the
-#      provider's own cleanup cannot delete them. Asserted: the
+#      provider's own cleanup cannot delete them. (The AccessDenied is retried
+#      as IAM propagation; the retry meets the bucket and refuses it as an
+#      explicit name already held, so the deploy's last line for each is that
+#      refusal, while the first attempt's created-bucket mark is carried to
+#      the journal.) Asserted: the
 #      deploy failed, both buckets exist, no state record holds them, and the
 #      rollback journal carries each as a proven orphan with its identity
 #      `<name>|<region>|<CreationDate>`, equal to what ListBuckets reports.
@@ -33,7 +37,7 @@
 #      prefix's object versions are swept.
 #
 # Region: us-west-2 by default, the stricter case. Measured for #4606 (us-east-1
-# and us-west-2, 2026-10-09): outside us-east-1 a bucket's `CreationDate` moves
+# and us-west-2, 2026-10-08): outside us-east-1 a bucket's `CreationDate` moves
 # to the second of a versioning, tagging, encryption or policy write, while in
 # us-east-1 it does not. The failed CREATE above writes versioning before it
 # fails, so the identity it journals must already carry that moved date: the
@@ -116,8 +120,6 @@ BUCKET_A_B="cdkd-s3ffo-a-b-${ACCOUNT_ID}"
 BUCKET_C="cdkd-s3ffo-c-${ACCOUNT_ID}"
 BUCKET_C_B="cdkd-s3ffo-c-b-${ACCOUNT_ID}"
 ALL_BUCKETS=("${BASE_BUCKET}" "${BUCKET_A}" "${BUCKET_A_B}" "${BUCKET_C}" "${BUCKET_C_B}")
-# Never created: the deny probe's subject.
-PROBE_BUCKET="cdkd-s3ffo-probe-${ACCOUNT_ID}"
 
 DENY_ROLE="${STACK}-no-tagging"
 DENY_POLICY_NAME="create-without-configure"
@@ -319,11 +321,15 @@ case "${DENY_ARN}" in
 esac
 # The EXPLICIT deny must already bind: before the inline policy propagates,
 # the role is refused everything implicitly, and the deploy below would then
-# fail before any CREATE for the wrong reason. Probed on a name never created.
+# fail before any CREATE for the wrong reason. Probed on BaseBucket, which
+# EXISTS: S3 answers NoSuchBucket for a bucket that does not, before any
+# policy. The probe cannot delete it: no statement allows DeleteBucket, so it
+# is refused implicitly before the policy binds and explicitly after.
 DENY_PROBE=""
 for _ in $(seq 1 24); do
-  if DENY_PROBE="$(as_deny_role aws s3api delete-bucket --bucket "${PROBE_BUCKET}" --region "${REGION}" 2>&1)"; then
-    DENY_PROBE=""
+  if DENY_PROBE="$(as_deny_role aws s3api delete-bucket --bucket "${BASE_BUCKET}" --region "${REGION}" 2>&1)"; then
+    echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${BASE_BUCKET} (its policy must refuse DeleteBucket)" >&2
+    exit 1
   elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
     break
   fi
