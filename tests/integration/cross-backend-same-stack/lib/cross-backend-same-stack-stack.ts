@@ -30,6 +30,12 @@ import type { Construct } from 'constructs';
  * settle arm's successful deploy under the other prefix: nothing in it
  * collides with the first deployment's names.
  *
+ * `CDKD_4705_B_AUTOROLLBACK=1` synthesizes the Queue exactly as above (so its
+ * CreateQueue hands back the first deployment's queue) and `FailLater`, an
+ * SSM parameter whose value does not match its own `AllowedPattern`, created
+ * after the Queue: the deploy fails and its AUTOMATIC rollback must not
+ * delete the queue it was handed.
+ *
  * covers: AWS::IAM::Role
  * covers: AWS::SQS::Queue
  * covers: AWS::Logs::LogGroup
@@ -39,6 +45,19 @@ import type { Construct } from 'constructs';
 export class CrossBackendSameStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    if (process.env.CDKD_4705_B_AUTOROLLBACK === '1') {
+      const queue = new sqs.Queue(this, 'Queue', {
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      const failLater = new ssm.CfnParameter(this, 'FailLater', {
+        type: 'String',
+        value: 'not-a-number',
+        allowedPattern: '^[0-9]+$',
+      });
+      failLater.node.addDependency(queue);
+      return;
+    }
 
     if (process.env.CDKD_4705_B_MINIMAL === '1') {
       new ssm.StringParameter(this, 'MinimalParam', { stringValue: 'cdkd-4705-settle-arm' });

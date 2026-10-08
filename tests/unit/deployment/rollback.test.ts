@@ -80,6 +80,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
   let mockStateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    listStacks?: ReturnType<typeof vi.fn>;
   };
 
   function buildEngine(opts: {
@@ -112,6 +113,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'etag-0' }),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      listStacks: vi.fn().mockResolvedValue([]),
     };
 
     const mockLockManager = {
@@ -373,6 +375,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
         etag: 'etag-0',
       }),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      listStacks: vi.fn().mockResolvedValue([]),
     };
 
     const mockLockManager = {

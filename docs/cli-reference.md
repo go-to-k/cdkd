@@ -537,7 +537,7 @@ collapse it into the general `1` bucket.
 | Command | The partial-failure case |
 | --- | --- |
 | `cdkd destroy`, `cdkd state destroy` | Per-resource delete failures, and per-resource **skips**. |
-| `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, a replacement's surviving predecessor, or a journaled resource a failed CREATE made whose delete failed. Suppressible with `--allow-unaddressed`. |
+| `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, a replacement's surviving predecessor, a replacement refused because another state prefix records the stack, or a journaled resource a failed CREATE made whose delete failed. Suppressible with `--allow-unaddressed`. |
 | `cdkd state refresh-observed` | Per-resource read-back failures, and resources AWS reports as not found (deleted outside cdkd); the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
 | `cdkd rollback` | Per-op failures, which keep the journal so the run can be repeated; ops skipped with a warning, each recorded as a `ROLLBACK_RESOURCE_SKIPPED` event; or reverted ops that left an untracked resource behind (a retained new copy, a failed delete of one) or were not fully reversed (a re-create that returned the live new resource), recorded as a `ROLLBACK_RESOURCE_SUCCEEDED` event with a `reason`. |

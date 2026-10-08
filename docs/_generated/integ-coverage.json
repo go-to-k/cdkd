@@ -6955,6 +6955,7 @@
           "l2"
         ],
         "cross-backend-same-stack": [
+          "l1",
           "l2",
           "literal"
         ],

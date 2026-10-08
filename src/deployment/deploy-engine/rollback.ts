@@ -396,7 +396,13 @@ export async function performRollback(
     [{ operations: completedOperations, failedOperations: orphanOps }],
     priorOrphans
   );
-  const ctx = this.rollbackExecutorContext(previousState, stackName);
+  const ctx = {
+    ...this.rollbackExecutorContext(previousState, stackName),
+    // go-to-k/cdkd#4705: a create may have adopted a resource another record
+    // owns (its own stack under another state prefix included), so each
+    // delete asks first. The scans run only when something is to be deleted.
+    createdResourceHolder: foreignHolderResolver(this)({ stackName, region: this.stackRegion }),
+  };
   // go-to-k/cdkd#4225: one record of completed writes across both replays.
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
   // Issue #3754: a nested-stack row reverted here replays its child's
@@ -463,6 +469,34 @@ export async function performRollback(
 }
 
 /**
+ * Who else holds a resource, for the automatic rollback and the success
+ * settle alike: one same-prefix scan of the bucket's other stacks
+ * (`makeForeignHolderScan`, made lazily on the first question), then, only
+ * when it found no holder, the bucket's OTHER state prefixes
+ * (`options.crossPrefixHolder`, go-to-k/cdkd#4705), asked once per stack.
+ */
+function foreignHolderResolver(
+  engine: DeployEngine
+): (self: {
+  stackName: string;
+  region: string;
+}) => (resourceType: string, physicalId: string) => Promise<ForeignHolding> {
+  const sameBucketHolderFor = makeForeignHolderScan(engine.stateBackend);
+  const crossPrefixHolder = engine.options.crossPrefixHolder;
+  const crossPrefixAnswers = new Map<string, Promise<ForeignHolding>>();
+  return (self) => async (resourceType, physicalId) => {
+    const held = await sameBucketHolderFor(self)(resourceType, physicalId);
+    if (held !== undefined || crossPrefixHolder === undefined) return held;
+    let answer = crossPrefixAnswers.get(self.stackName);
+    if (answer === undefined) {
+      answer = crossPrefixHolder(self.stackName);
+      crossPrefixAnswers.set(self.stackName, answer);
+    }
+    return answer;
+  };
+}
+
+/**
  * The journal on a SUCCESSFUL deploy (issue #3754 split the one answer in
  * two).
  *
@@ -502,24 +536,7 @@ export async function settleJournalAfterSuccess(
     return 0;
   }
   let nestedLeft = 0;
-  // One bucket scan, made only when some journal holds an orphan to delete.
-  const sameBucketHolderFor = makeForeignHolderScan(this.stateBackend);
-  // go-to-k/cdkd#4705: then the bucket's OTHER state prefixes, once per stack,
-  // asked only when the same-prefix scan found no holder.
-  const crossPrefixHolder = this.options.crossPrefixHolder;
-  const crossPrefixAnswers = new Map<string, Promise<ForeignHolding>>();
-  const foreignHolderFor =
-    (self: { stackName: string; region: string }) =>
-    async (resourceType: string, physicalId: string): Promise<ForeignHolding> => {
-      const held = await sameBucketHolderFor(self)(resourceType, physicalId);
-      if (held !== undefined || crossPrefixHolder === undefined) return held;
-      let answer = crossPrefixAnswers.get(self.stackName);
-      if (answer === undefined) {
-        answer = crossPrefixHolder(self.stackName);
-        crossPrefixAnswers.set(self.stackName, answer);
-      }
-      return answer;
-    };
+  const foreignHolderFor = foreignHolderResolver(this);
   const deployRunId = this.options.eventRecorder?.runId;
   const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([

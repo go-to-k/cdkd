@@ -27,6 +27,10 @@
 #   5b. A successful deploy under PREFIX_B (a minimal template) whose journal
 #      holds a proven failed-CREATE orphan naming A's KMS key: the settle must
 #      KEEP the key (warn, exit 2), since PREFIX_A's record may hold it.
+#   5c. A pre-fix pair whose redeploy under PREFIX_B (an empty record, so not a
+#      first deploy, and a plan that only creates) ADDS the Queue -- handed A's
+#      queue -- and a resource that fails after it: the AUTOMATIC rollback must
+#      KEEP A's queue, warn naming PREFIX_A, and the deploy exits non-zero.
 #   6. Destroy A, delete the retained log group.
 #   7. Seed an EMPTY record plus a failed first deploy's journal under PREFIX_B:
 #      a fresh deploy and a destroy under PREFIX_A must succeed, and each
@@ -94,6 +98,8 @@ DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
 STALE_NOTICE_NEEDLE="that owns no resource"
 SETTLE_KEEP_NEEDLE="also records this stack under another state prefix"
+# Copied from `keptForAnotherHolder` in src/deployment/rollback-executor/messages.ts.
+AUTO_ROLLBACK_KEEP_NEEDLE="Rollback: Keeping created resource"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -110,7 +116,8 @@ LOG_GROUP_NAME=""
 ROLE_NAME_A=""
 # Every KMS key id this run's deploys recorded (the trap schedules any left).
 KEY_IDS=""
-# Phase 5b's SSM parameter under PREFIX_B, by the exact name B's record names.
+# Phase 5b's SSM parameter under PREFIX_B, by the exact name B's record names
+# (Phase 5c reuses it for a FailLater parameter that unexpectedly got created).
 MINIMAL_PARAM_B=""
 RUN_LOG=""
 # Set just before this run's own first deploy: a pre-flight FAIL (a peer's run,
@@ -560,6 +567,60 @@ assert_gone "${JOURNAL_KEY_B} still exists after the Phase 5b cleanup" \
 echo "    OK: the settle kept A's key (exit 2, warned); B's parameter and record are removed"
 
 echo ""
+echo "==> Phase 5c: the AUTOMATIC rollback of a failed deploy under ${PREFIX_B} keeps the queue ${PREFIX_A}'s record holds"
+# B's record is empty, so B's deploy is not a first deploy, and its plan only
+# CREATEs (the Queue, then FailLater): neither check before the deploy runs.
+# The Queue's CreateQueue hands back A's queue; FailLater fails; the automatic
+# rollback would delete the "created" queue unless the cross-prefix consult
+# keeps it.
+printf '%s' "${EMPTY_RECORD}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
+set +e
+CDKD_4705_B_AUTOROLLBACK=1 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --yes >"${RUN_LOG}" 2>&1
+AUTO_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+B_QUEUE="$( (state_physical_id "${STATE_KEY_B}" 'AWS::SQS::Queue') || true)"
+MINIMAL_PARAM_B="$( (state_physical_id "${STATE_KEY_B}" 'AWS::SSM::Parameter') || true)"
+echo "OBSERVE: auto-rollback-deploy-rc=${AUTO_RC} b-queue=${B_QUEUE:-<none>} fail-later-param=${MINIMAL_PARAM_B:-<none>}"
+if [ "${AUTO_RC}" -eq 0 ]; then
+  echo "FAIL: the deploy under ${PREFIX_B} with a failing FailLater exited 0 (output above)" >&2
+  exit 1
+fi
+# The premise: B's create was handed A's queue (otherwise nothing is tested).
+if [ "${B_QUEUE}" != "${QUEUE_URL_A}" ]; then
+  echo "FAIL: premise: B's record names queue '${B_QUEUE}', not A's ${QUEUE_URL_A} (output above)" >&2
+  exit 1
+fi
+if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
+  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's automatic rollback (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if ! grep -qF "${AUTO_ROLLBACK_KEEP_NEEDLE}" "${RUN_LOG}" || ! grep -qF "${SETTLE_KEEP_NEEDLE}" "${RUN_LOG}" ||
+  ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
+  echo "FAIL: the automatic rollback did not say it kept the queue for ${PREFIX_A}'s record ('${AUTO_ROLLBACK_KEEP_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+case "${MINIMAL_PARAM_B}" in
+  "") ;;
+  *"${STACK}"-?*) aws ssm delete-parameter --name "${MINIMAL_PARAM_B}" --region "${REGION}" >/dev/null ;;
+  *) echo "FAIL: B's record names an unexpected SSM parameter '${MINIMAL_PARAM_B}'" >&2; exit 1 ;;
+esac
+MINIMAL_PARAM_B=""
+# Only B's record and journal: the queue they name is A's.
+node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" --state-bucket "${STATE_BUCKET:-}" \
+  --state-prefix "${PREFIX_B}" --force
+assert_gone "${STATE_KEY_B} still exists after the Phase 5c cleanup" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
+assert_gone "${JOURNAL_KEY_B} still exists after the Phase 5c cleanup" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}"
+if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
+  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after the Phase 5c cleanup" >&2
+  exit 1
+fi
+echo "    OK: the automatic rollback kept A's queue (warned, rc ${AUTO_RC}); B's record and journal are removed"
+
+echo ""
 echo "==> Phase 6: destroy A; delete the retained log group"
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
@@ -628,4 +689,4 @@ trap - EXIT INT TERM
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 rescan
-echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy and a rollback of a paired record were refused, an empty leftover record blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"
+echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy and a rollback of a paired record were refused, a failed deploy's automatic rollback kept the queue it was handed, an empty leftover record blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"

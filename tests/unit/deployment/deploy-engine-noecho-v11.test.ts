@@ -16,6 +16,11 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import {
+  CrossPrefixScanCache,
+  type CrossPrefixScanResult,
+} from '../../../src/state/cross-prefix-stack-scan.js';
+import { createCrossPrefixDestructiveGate } from '../../../src/cli/commands/cross-prefix-gate.js';
 import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
@@ -1614,30 +1619,75 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
       });
 
-      it('a refusal keeps the resource, warns it in full, and the deploy goes on', async () => {
-        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
-        const refusal = 'Refusing to replace a resource of stack S: recorded under team-b.';
-        const onDestructivePlan = vi.fn(async () => {
-          throw new CdkdError(refusal, 'STACK_UNDER_OTHER_PREFIX');
+      // The real gate over a scan of each kind (review R5-2).
+      const gateOver = (result: CrossPrefixScanResult) => {
+        const cache = new CrossPrefixScanCache({
+          prefix: 'cdkd',
+          ownRecordExists: vi.fn(),
+          listTopLevelPrefixes: vi.fn(),
+          recordUnderPrefix: vi.fn(),
         });
-        const approveDeployment = vi.fn(async () => true);
-        await makeEngine({
-          onDestructivePlan,
-          requireApproval: 'destructive',
-          approveDeployment,
+        vi.spyOn(cache, 'full').mockResolvedValue(result);
+        return vi.fn(createCrossPrefixDestructiveGate({ region: 'us-east-1', bucket: 'b', cache }));
+      };
+
+      it.each([
+        ['found', { kind: 'found', prefixes: ['team-b'] }, /recorded under another state prefix/],
+        [
+          'failed',
+          { kind: 'failed', error: new Error('boom') },
+          /could not check whether the bucket/,
+        ],
+      ] as const)(
+        'a %s refusal keeps the resource, warns it in full, and counts as unaddressed (exit 2)',
+        async (_kind, scan, needle) => {
+          stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+          const onDestructivePlan = gateOver(scan as CrossPrefixScanResult);
+          const approveDeployment = vi.fn(async () => true);
+          const result = await makeEngine({
+            onDestructivePlan,
+            requireApproval: 'destructive',
+            approveDeployment,
+          }).deploy(STACK, rotatedTemplate());
+          expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+          expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+          // Refused before the late approval prompt.
+          expect(approveDeployment).not.toHaveBeenCalled();
+          // The CLI exits 2 on a non-zero deleteSkipped (unless --allow-unaddressed).
+          expect(result.deleteSkipped).toBe(1);
+          const warned = lines(logger.warn);
+          expect(
+            warned.filter((l) => l.startsWith('Refusing to replace a resource of stack'))
+          ).toHaveLength(1);
+          expect(warned.join('\n')).toMatch(needle);
+          const topic = warned.filter((l) => l.includes('Topic.TopicName'));
+          expect(topic).toHaveLength(1);
+          expect(topic[0]).toContain(
+            '(differs; the replacement was refused: see the state-prefix warning above)'
+          );
+          expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+        }
+      );
+
+      it('denied (403): warns and the replacement proceeds, counting nothing', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const denied = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+        const result = await makeEngine({
+          onDestructivePlan: gateOver({ kind: 'denied', error: denied, stage: 'list' }),
         }).deploy(STACK, rotatedTemplate());
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+        expect(result.deleteSkipped).toBe(0);
+      });
+
+      it('an unrelated CdkdError from the hook fails the deploy (review R5-3)', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const onDestructivePlan = vi.fn(async () => {
+          throw new CdkdError('something else', 'SOME_OTHER_CODE');
+        });
+        await expect(
+          makeEngine({ onDestructivePlan }).deploy(STACK, rotatedTemplate())
+        ).rejects.toThrow(/Failed to update resource Topic/);
         expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
-        expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
-        // Refused before the late approval prompt.
-        expect(approveDeployment).not.toHaveBeenCalled();
-        const warned = lines(logger.warn);
-        expect(warned).toContain(refusal);
-        const topic = warned.filter((l) => l.includes('Topic.TopicName'));
-        expect(topic).toHaveLength(1);
-        expect(topic[0]).toContain(
-          '(differs; the replacement was refused: see the state-prefix warning above)'
-        );
-        expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
       });
 
       it('an error that is not a refusal still fails the deploy', async () => {

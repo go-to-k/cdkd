@@ -457,6 +457,59 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('UsStack');
   });
 
+  it('pre-starts every target record\'s scan before the first destroy, only for the records it destroys (go-to-k/cdkd#4705 review R5-8)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+      { stackName: 'B', region: 'eu-west-1' },
+      { stackName: 'Legacy', region: undefined },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name, 'us-east-1'),
+      etag: '"x"',
+    }));
+    const { CrossPrefixScanCache } = await import('../../../src/state/cross-prefix-stack-scan.js');
+    const order: string[] = [];
+    const fullSpy = vi
+      .spyOn(CrossPrefixScanCache.prototype, 'full')
+      .mockImplementation(async (name: string, region: string) => {
+        order.push(`scan:${name}:${region}`);
+        return { kind: 'clear' };
+      });
+    mockRunDestroyForStack.mockImplementation(async (name: string) => {
+      order.push(`destroy:${name}`);
+      return {
+        stackName: name,
+        cancelled: false,
+        deletedCount: 0,
+        errorCount: 0,
+        skippedCount: 0,
+        retainedCount: 0,
+        guardIndeterminateCount: 0,
+        skippedEmpty: false,
+        interrupted: false,
+      };
+    });
+
+    await runStateDestroy(['destroy', 'A', 'B', 'Legacy', '--stack-region', 'us-east-1', '--yes']);
+    fullSpy.mockRestore();
+
+    const firstDestroy = order.findIndex((o) => o.startsWith('destroy:'));
+    expect(order.slice(0, firstDestroy)).toEqual([
+      'scan:A:us-east-1',
+      'scan:B:us-east-1',
+      'scan:Legacy:us-east-1',
+    ]);
+    // B's eu-west-1 record is not destroyed, so it is not scanned.
+    expect(order.filter((o) => o.startsWith('scan:'))).toHaveLength(3);
+    expect(new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].crossPrefixCheck?.cache)).size).toBe(1);
+    // Review R5-8: `setupStateBackend`'s dispose destroys the client of the
+    // backend the destroys (and the scans) ran on, once.
+    const backends = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].stateBackend));
+    expect(backends.size).toBe(1);
+    expect([...backends][0].destroyClient).toHaveBeenCalledTimes(1);
+  });
+
   it('--stack-region tolerates state without a region tag (legacy layout)', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Legacy', region: undefined }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Legacy'), etag: '"x"' });

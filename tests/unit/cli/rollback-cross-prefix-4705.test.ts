@@ -162,12 +162,17 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     const probed = setup.stateBackend.recordUnderPrefix.mock.calls.map((c: unknown[]) => c[0]);
     expect(probed).toContain('team-b');
     expect(probed).not.toContain('cdkd');
+    // Review R5-8: the command's teardown disposes ITS backend (whose client
+    // `setupStateBackend`'s dispose destroys), refused or not.
+    expect(setup.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('replays as before when no other prefix records the stack', async () => {
     install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'] });
+    const setup = (await setupMock())!;
     await rollbackCommand('S', { ...BASE });
     expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(setup.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('warns and replays when S3 denies the LISTING', async () => {

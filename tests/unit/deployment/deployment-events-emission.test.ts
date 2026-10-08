@@ -103,6 +103,7 @@ describe('DeployEngine - #808 deployment events', () => {
     const mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'etag-0' }),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      listStacks: vi.fn().mockResolvedValue([]),
     };
     const mockLockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(true),

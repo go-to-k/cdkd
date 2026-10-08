@@ -54,17 +54,22 @@ const scanCalls = vi.hoisted(() => ({
   lists: 0,
   ownRecord: false,
   probeNever: false,
-  destroyedClients: 0,
+  /** Every backend deploy.ts built, in order: the first is the preflight one. */
+  backends: [] as Array<{ destroyClient: ReturnType<typeof vi.fn>; probes: number }>,
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn().mockImplementation(() => {
+    // Like a real S3Client: destroying it rejects the requests still in flight.
+    const aborts: Array<(e: Error) => void> = [];
+    const backend = {
     prefix: 'cdkd',
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
     getState: vi.fn(async () => null),
     destroyClient: vi.fn(() => {
-      scanCalls.destroyedClients++;
+      for (const abort of aborts.splice(0)) abort(new Error('client destroyed'));
     }),
+    probes: 0,
     ownRecordExists: vi.fn(async (stack: string, region: string) => {
       scanCalls.own.push([stack, region]);
       return scanCalls.ownRecord;
@@ -75,10 +80,16 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     }),
     recordUnderPrefix: vi.fn(async (prefix: string, stack: string, region: string) => {
       scanCalls.probes.push([prefix, stack, region]);
-      if (scanCalls.probeNever) return new Promise(() => {});
+      backend.probes++;
+      if (scanCalls.probeNever) {
+        return new Promise<never>((_resolve, reject) => aborts.push(reject));
+      }
       return prefix === 'team-b' ? 'holder' : 'absent';
     }),
-  })),
+    };
+    scanCalls.backends.push(backend);
+    return backend;
+  }),
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
@@ -261,7 +272,7 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
     scanCalls.lists = 0;
     scanCalls.ownRecord = false;
     scanCalls.probeNever = false;
-    scanCalls.destroyedClients = 0;
+    scanCalls.backends.length = 0;
   });
 
   afterEach(async () => {
@@ -325,9 +336,14 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
     } finally {
       process.removeListener('unhandledRejection', unhandled);
     }
-    // A first deploy's scan was started and never answered.
-    expect(scanCalls.probes.length).toBeGreaterThan(0);
-    expect(scanCalls.destroyedClients).toBeGreaterThan(0);
+    // A first deploy's scan was started on the PREFLIGHT backend (the first
+    // one built) and was still pending when the command ended.
+    const preflight = scanCalls.backends[0]!;
+    expect(preflight.probes).toBeGreaterThan(0);
+    expect(scanCalls.backends.slice(1).every((b) => b.probes === 0)).toBe(true);
+    // That backend's client is destroyed at command end, which rejects the
+    // pending probe; the scan absorbs it, so nothing is unhandled.
+    expect(preflight.destroyClient).toHaveBeenCalledTimes(1);
     expect(unhandled).not.toHaveBeenCalled();
   });
 });

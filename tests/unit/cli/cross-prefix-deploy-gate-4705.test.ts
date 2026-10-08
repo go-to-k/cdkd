@@ -180,6 +180,25 @@ describe('the deploy wiring (lazy scans, go-to-k/cdkd#4705 review R4-1)', () => 
     expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
   });
 
+  it('serves the cap by rank: every probe of the first-asked stack starts before any later stack takes a slot (review R5-4)', async () => {
+    const t = fakeTarget();
+    t.listTopLevelPrefixes.mockResolvedValue(Array.from({ length: 15 }, (_, i) => `p${i}`));
+    const cache = new CrossPrefixScanCache(t);
+    // Pre-started in loop order, as `destroy --all` does.
+    const names = ['A', 'B', 'C'];
+    const scans = names.map((name) => cache.full(name, 'us-east-1'));
+    await Promise.all(scans);
+    const order = t.recordUnderPrefix.mock.calls.map((c) => c[1]);
+    expect(order).toHaveLength(3 * 30);
+    // Each stack's probes form one contiguous run, in rank order.
+    expect(order).toEqual([
+      ...Array(30).fill('A'),
+      ...Array(30).fill('B'),
+      ...Array(30).fill('C'),
+    ]);
+    expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
+  });
+
   it('keys one stack name in two regions apart', () => {
     expect(crossPrefixScanKey('A', 'us-east-1')).not.toBe(crossPrefixScanKey('A', 'us-west-2'));
   });

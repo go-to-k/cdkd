@@ -86,7 +86,7 @@ describe('DeployEngine rollback context threading (#1363)', () => {
       validateResourceProperties: vi.fn(),
     };
     return new DeployEngine(
-      { getState: vi.fn(), saveState: vi.fn() } as unknown as never,
+      { getState: vi.fn(), saveState: vi.fn(), listStacks: vi.fn(async () => []) } as unknown as never,
       { acquireLockWithRetry: vi.fn(), releaseLock: vi.fn() } as unknown as never,
       { buildGraph: vi.fn(), getExecutionLevels: vi.fn(), getDirectDependencies: vi.fn() } as never,
       { calculateDiff: vi.fn(), hasChanges: vi.fn(), filterByType: vi.fn() } as never,

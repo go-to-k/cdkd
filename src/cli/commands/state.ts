@@ -213,6 +213,21 @@ const STATE_READ_REASONS: Record<StateReadErrorKind, string> = {
  * object ({@link RESOURCES_MALFORMED_REASON}). An absent or `null` bag counts
  * as zero, the tolerance `docs/cli-state.md` documents for it.
  */
+/**
+ * The records `cdkd state destroy` destroys for one stack: with
+ * `--stack-region`, every record in that region (a legacy record with no
+ * region included); without, the only record. `undefined` when there are
+ * several and none is chosen (the command refuses). The cross-prefix
+ * pre-start (go-to-k/cdkd#4705) and the loop share it.
+ */
+export function stateDestroyTargets<T extends { region?: string | undefined }>(
+  refs: readonly T[],
+  stackRegion: string | undefined
+): T[] | undefined {
+  if (stackRegion) return refs.filter((r) => r.region === stackRegion || !r.region);
+  return refs.length === 1 ? [...refs] : undefined;
+}
+
 function resourceCountOrNull(resources: unknown): number | null {
   if (resources === undefined || resources === null) return 0;
   if (typeof resources !== 'object' || Array.isArray(resources)) return null;
@@ -2984,11 +2999,13 @@ async function stateDestroyCommand(
     // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
     // sequential loop (one listing, one run-wide probe cap); each stack's
     // destroy then awaits its own memoized result.
+    // Only for the records the loop below destroys (`stateDestroyTargets`).
     const crossPrefixCheck = { cache: new CrossPrefixScanCache(setup.stateBackend) };
-    for (const ref of stateRefs) {
-      if (!stackNames.includes(ref.stackName) || ref.region === undefined) continue;
-      if (options.stackRegion && ref.region !== options.stackRegion) continue;
-      void crossPrefixCheck.cache.full(ref.stackName, ref.region);
+    for (const name of stackNames) {
+      const refs = stateRefs.filter((r) => r.stackName === name);
+      for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
+        void crossPrefixCheck.cache.full(name, ref.region ?? setup.region);
+      }
     }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
@@ -2998,8 +3015,9 @@ async function stateDestroyCommand(
       // - If multiple regions exist and no --stack-region, error out (ambiguous).
       const refs = stateRefs.filter((r) => r.stackName === stackName);
       let targets: typeof refs;
+      const planned = stateDestroyTargets(refs, options.stackRegion);
       if (options.stackRegion) {
-        targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
+        targets = planned ?? [];
         if (targets.length === 0) {
           logger.warn(
             // The stack name is NAMED only when plain, described otherwise: the
@@ -3014,8 +3032,8 @@ async function stateDestroyCommand(
           );
           continue;
         }
-      } else if (refs.length === 1) {
-        targets = refs;
+      } else if (planned !== undefined) {
+        targets = planned;
       } else {
         // The candidate regions are raw `listStacks()` key segments
         // (go-to-k/cdkd#3027); the shared builder gives each its boundary.

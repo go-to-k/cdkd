@@ -468,10 +468,17 @@ describe('cdkd destroy: terminationProtection guard', () => {
     await runDestroy(['--all', '--yes']);
     fullSpy.mockRestore();
 
+    // Present (a removed pre-start loop leaves -1, which is "less than" too).
+    expect(order.filter((o) => o.startsWith('scan:'))).toEqual(['scan:Plain', 'scan:Unguarded']);
     expect(order.indexOf('scan:Plain')).toBeLessThan(order.findIndex((o) => o.startsWith('destroy:')));
     expect(order.indexOf('scan:Unguarded')).toBeLessThan(order.findIndex((o) => o.startsWith('destroy:')));
     const caches = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].crossPrefixCheck?.cache));
     expect(caches.size).toBe(1);
+    // Review R5-8: the command's finally destroys the client of the backend
+    // the destroys (and the scans) ran on, once.
+    const backends = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].stateBackend));
+    expect(backends.size).toBe(1);
+    expect([...backends][0].destroyClient).toHaveBeenCalledTimes(1);
 
     // Both stacks flow through the runner — guard does not fire.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
@@ -481,6 +488,60 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(dispatched).toEqual(new Set(['Plain', 'Unguarded']));
     // No partial-failure exit on the happy path.
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('pre-starts a scan only in the region the run destroys, and none for a protected stack (go-to-k/cdkd#4705 review R5-5)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [
+        makeStackInfo('Multi', 'eu-west-1'),
+        makeStackInfo('Guarded', 'us-east-1', true),
+      ],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: 'eu-west-1' },
+      { stackName: 'Guarded', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name),
+      etag: '"x"',
+    }));
+    const { CrossPrefixScanCache } = await import('../../../src/state/cross-prefix-stack-scan.js');
+    const fullSpy = vi
+      .spyOn(CrossPrefixScanCache.prototype, 'full')
+      .mockResolvedValue({ kind: 'clear' });
+    mockRunDestroyForStack.mockImplementation(async (name: string) => ({
+      stackName: name,
+      cancelled: false,
+      deletedCount: 0,
+      errorCount: 0,
+      skippedCount: 0,
+      retainedCount: 0,
+      guardIndeterminateCount: 0,
+      skippedEmpty: false,
+      interrupted: false,
+    }));
+
+    await runDestroy(['--all', '--yes']).catch(() => undefined);
+    const calls = fullSpy.mock.calls.map((c) => [c[0], c[1]]);
+    fullSpy.mockRestore();
+
+    expect(calls).toEqual([['Multi', 'eu-west-1']]);
+  });
+
+  it('plannedDestroyRegion: the only region, the CLI region for a legacy record, the synth region among several, else none', async () => {
+    const { plannedDestroyRegion } = await import('../../../src/cli/commands/destroy.js');
+    expect(plannedDestroyRegion([{ region: 'eu-west-1' }], 'us-east-1', 'ap-1')).toBe('eu-west-1');
+    expect(plannedDestroyRegion([{}], undefined, 'ap-1')).toBe('ap-1');
+    expect(
+      plannedDestroyRegion([{ region: 'us-east-1' }, { region: 'eu-west-1' }], 'eu-west-1', 'ap-1')
+    ).toBe('eu-west-1');
+    expect(
+      plannedDestroyRegion([{ region: 'us-east-1' }, { region: 'eu-west-1' }], 'ap-1', 'ap-1')
+    ).toBeUndefined();
+    expect(plannedDestroyRegion([], 'us-east-1', 'ap-1')).toBeUndefined();
   });
 
   it('names a region-scoped state orphan when resources failed (go-to-k/cdkd#3996)', async () => {

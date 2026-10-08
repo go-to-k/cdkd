@@ -1006,7 +1006,7 @@ record you are not keeping with the `cdkd state orphan ... --state-prefix
 re-run. See
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 If S3 denies the listing or a read, the destroy warns and continues. `--all`
-starts every stack's check at once. Its cost grows with the bucket's top-level
+starts every stack's check at once, in the order it destroys them. Its cost grows with the bucket's top-level
 prefixes, so a large shared state bucket slows every destroy; prefer a
 dedicated one.
 

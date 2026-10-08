@@ -66,6 +66,7 @@ import { printNestedStackReadsOnly } from './resolver-context.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
 import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
+import { STACK_UNDER_OTHER_PREFIX } from '../../state/cross-prefix-stack-scan.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -736,8 +737,10 @@ export async function provisionUpdate(
   // `--recreate-via-*` target), the up-front prompt already asked about: it is
   // replaced without a second question, and nothing says it is kept.
   // go-to-k/cdkd#4705: the plan-time cross-prefix check never saw this
-  // replacement either, so it is asked first (`stage` 'late'); its refusal is
-  // warned in full and keeps the resource, as a "no" does.
+  // replacement either, so it is asked first (`stage` 'late'). Its refusal
+  // (another prefix records the stack, or the check failed) is warned in full
+  // and keeps the resource, as a "no" does, but counts as unaddressed: the
+  // deploy exits 2 unless --allow-unaddressed. A 403 warns and proceeds.
   let replacedAnyway = false;
   let lateApproval: Promise<boolean> | undefined;
   let lateCrossPrefixRefused = false;
@@ -759,8 +762,9 @@ export async function provisionUpdate(
             'late'
           );
         } catch (error) {
-          if (!(error instanceof CdkdError)) throw error;
+          if (!(error instanceof CdkdError) || error.code !== STACK_UNDER_OTHER_PREFIX) throw error;
           lateCrossPrefixRefused = true;
+          if (counts) counts.deleteSkipped++;
           this.logger.warn(error.message);
           return false;
         }

@@ -255,34 +255,82 @@ export async function scanOtherPrefixesForStack(
   return { kind: 'clear', ...extra };
 }
 
+/** {@link withSharedListing}'s target, which also orders the scans through it. */
+export interface SharedScanTarget extends CrossPrefixScanTarget {
+  /**
+   * Queue the scan of `stackName` in `region` behind every scan queued before
+   * it, until {@link done}: none of its probes takes a slot while an earlier
+   * one is unfinished. The first scan asked for is the one its command needs
+   * first (`destroy --all` walks its stacks in that order).
+   */
+  rank(stackName: string, region: string): void;
+  /** The scan {@link rank} queued has finished: the next one may probe. */
+  done(stackName: string, region: string): void;
+}
+
 /**
  * The same target with ONE bucket listing shared by every scan through it, and
  * ONE run-wide cap of {@link PROBE_CONCURRENCY} probes in flight across all of
  * them, for a command that scans several stacks at once (`deploy --all`,
  * `destroy --all`). The listing starts on the first scan that needs it.
+ *
+ * The cap serves the ranked scans in order: a probe takes a slot only when
+ * every scan ranked before its own has finished, so the first stack's scan
+ * never waits behind a later one's. The total work is the same. A probe of a
+ * scan nobody ranked waits for none.
  */
-export function withSharedListing(target: CrossPrefixScanTarget): CrossPrefixScanTarget {
+export function withSharedListing(target: CrossPrefixScanTarget): SharedScanTarget {
   let listing: Promise<string[]> | undefined;
   let inFlight = 0;
-  const waiting: Array<() => void> = [];
-  const acquire = async (): Promise<void> => {
-    if (inFlight < PROBE_CONCURRENCY) {
+  const keyOf = (stackName: string, region: string): string => JSON.stringify([stackName, region]);
+  const ranks = new Map<string, number>();
+  const unfinished = new Set<number>();
+  const eligible = (rank: number | undefined): boolean => {
+    if (rank === undefined) return true;
+    for (const r of unfinished) if (r < rank) return false;
+    return true;
+  };
+  const waiting: Array<{ rank: number | undefined; resolve: () => void }> = [];
+  const admit = (): void => {
+    for (let i = 0; i < waiting.length && inFlight < PROBE_CONCURRENCY;) {
+      const w = waiting[i]!;
+      if (!eligible(w.rank)) {
+        i++;
+        continue;
+      }
+      waiting.splice(i, 1);
+      inFlight++;
+      w.resolve();
+    }
+  };
+  const acquire = async (rank: number | undefined): Promise<void> => {
+    if (inFlight < PROBE_CONCURRENCY && eligible(rank)) {
       inFlight++;
       return;
     }
-    await new Promise<void>((resolve) => waiting.push(resolve));
+    await new Promise<void>((resolve) => waiting.push({ rank, resolve }));
   };
   const release = (): void => {
-    const next = waiting.shift();
-    if (next) next();
-    else inFlight--;
+    inFlight--;
+    admit();
   };
   return {
     prefix: target.prefix,
+    rank: (stackName, region) => {
+      const key = keyOf(stackName, region);
+      if (ranks.has(key)) return;
+      ranks.set(key, ranks.size);
+      unfinished.add(ranks.size - 1);
+    },
+    done: (stackName, region) => {
+      const rank = ranks.get(keyOf(stackName, region));
+      if (rank === undefined || !unfinished.delete(rank)) return;
+      admit();
+    },
     ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
     listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),
     recordUnderPrefix: async (prefix, stackName, region) => {
-      await acquire();
+      await acquire(ranks.get(keyOf(stackName, region)));
       try {
         return await target.recordUnderPrefix(prefix, stackName, region);
       } finally {
@@ -296,11 +344,12 @@ export function withSharedListing(target: CrossPrefixScanTarget): CrossPrefixSca
  * One command run's cross-prefix scans, memoized per stack AND region, through
  * one shared listing and one run-wide probe cap ({@link withSharedListing}).
  * A scan starts the first time {@link full} is asked for it -- lazily, so a
- * deploy that never needs one issues no request -- or when a caller pre-starts
- * it with the same call. It never rejects.
+ * deploy that never needs one issues no listing and no probe -- or when a
+ * caller pre-starts it with the same call, which also ranks it
+ * ({@link SharedScanTarget.rank}). It never rejects.
  */
 export class CrossPrefixScanCache {
-  readonly target: CrossPrefixScanTarget;
+  readonly target: SharedScanTarget;
   private readonly scans = new Map<string, Promise<CrossPrefixScanResult>>();
 
   constructor(target: CrossPrefixScanTarget) {
@@ -312,7 +361,10 @@ export class CrossPrefixScanCache {
     const key = JSON.stringify([stackName, region]);
     let scan = this.scans.get(key);
     if (scan === undefined) {
-      scan = scanOtherPrefixesForStack(this.target, stackName, region, { checkOwnRecord: false });
+      this.target.rank(stackName, region);
+      scan = scanOtherPrefixesForStack(this.target, stackName, region, {
+        checkOwnRecord: false,
+      }).finally(() => this.target.done(stackName, region));
       this.scans.set(key, scan);
     }
     return scan;

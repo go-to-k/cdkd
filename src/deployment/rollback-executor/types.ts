@@ -242,6 +242,18 @@ export interface RollbackExecutorContext {
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
     | undefined;
   /**
+   * go-to-k/cdkd#4705: who else holds a resource the failed deploy created,
+   * asked by a deploy's AUTOMATIC rollback (`performRollback`, its only
+   * setter) before it deletes a completed CREATE or a proven failed-CREATE
+   * orphan. A create can adopt a resource that already existed under its
+   * name, so another stack's record (same prefix), or the same stack under
+   * another state prefix, may own it. `held` or `unreadable` keeps the
+   * resource: a skip, which keeps the journal and warns.
+   */
+  createdResourceHolder?:
+    | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
+    | undefined;
+  /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,
    * as produced by {@link producerRegionsFromState} (issue

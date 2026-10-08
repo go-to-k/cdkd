@@ -81,8 +81,9 @@ cdkd refuses the case it can see, before touching any resource:
   that only creates, updates in place, creates a nested stack, or removes a
   retained resource is not checked, and lists nothing. A replacement the deploy
   decides only on reading a resource back (a create-only value fed by a `NoEcho`
-  parameter) is checked then: a refusal keeps that resource, warns, and lets
-  the rest of the deploy go on.
+  parameter) is checked then: a refusal keeps that resource, warns, lets the
+  rest of the deploy go on, and counts as unaddressed (exit 2 unless
+  `--allow-unaddressed`).
 - `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same check
   every time and refuse, since the other record may name the same resources —
   a rollback deletes what the failed deploy created, which for such a pair can
@@ -94,6 +95,11 @@ cdkd refuses the case it can see, before touching any resource:
   question first. When another prefix records the stack, or the check fails,
   it keeps that resource, warns, and exits 2. When S3 refuses the check (403),
   it warns and deletes the resource as it did before the check existed.
+- A failed deploy's automatic rollback asks the same before deleting a
+  resource the deploy created, since a create can take over a resource that
+  already existed under its name: when another stack's record, or the stack
+  under another prefix, may hold it, the rollback keeps it, warns naming who,
+  and leaves it in the rollback journal. A 403 warns and deletes, as above.
 
 A record under another prefix blocks only when it can own a resource: it lists
 resources or rollback-orphaned resources, or its rollback journal holds a
@@ -111,8 +117,11 @@ the number of top-level prefixes in the bucket. A deploy runs it only when a
 check above needs it: for a first deploy it starts once synthesis has
 finished, overlapping asset publishing and the lock; for a plan that destroys,
 and before the deletion of a journaled orphan, it runs then. An ordinary
-redeploy lists nothing. A destroy and a rollback run it each time; `destroy
---all` starts every stack's scan at once.
+redeploy or one with no changes lists nothing and probes nothing (it reads
+only its own three keys), unless a journaled orphan is to be deleted or the
+automatic rollback has something to delete. A destroy and a rollback run it
+each time; `destroy --all` starts every stack's scan at once and serves them
+in the order it destroys the stacks.
 
 **Keep the bucket small.** Because that cost grows with the bucket's top-level
 prefixes, a large shared bucket slows every destroy and rollback and every

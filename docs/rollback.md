@@ -15,6 +15,11 @@ stays consistent:
   ([full table](cli-rollback.md#deletionpolicy-on-a-rolled-back-create)):
   `Retain` leaves the resource in AWS, and `Snapshot` takes a final
   snapshot before deleting.
+  A created resource another stack's record, or the same stack under
+  another state prefix, may hold (a create can take over a resource that
+  already existed under its name) is kept instead, with a warning naming
+  who, and the journal keeps it
+  ([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)).
 - A `Retain`ed resource moves out of the record's resources into a
   rollback-orphan record. The next deploy re-adopts it — rather than
   colliding with the name it still holds — provided its template still

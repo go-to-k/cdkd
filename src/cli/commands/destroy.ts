@@ -160,6 +160,26 @@ export function orderConsumersBeforeProducers(
  * from the destroy loop so the gating is unit-testable without the full
  * synth / AWS-client harness.
  */
+/**
+ * The region `cdkd destroy` destroys a stack in, from its state records: the
+ * only one (a legacy record with no region falls back to the CLI region), or,
+ * with several, the synthesized stack's region when one of them matches.
+ * `undefined` when there is no record, or several and none is chosen (the
+ * loop refuses). The cross-prefix pre-start (go-to-k/cdkd#4705) and the loop
+ * share it, so a scan never runs for a region the run will not destroy.
+ */
+export function plannedDestroyRegion(
+  refs: ReadonlyArray<{ region?: string | undefined }>,
+  synthRegion: string | undefined,
+  cliRegion: string
+): string | undefined {
+  if (refs.length === 1) return refs[0]?.region || cliRegion;
+  if (refs.length > 1 && synthRegion && refs.some((r) => r.region === synthRegion)) {
+    return synthRegion;
+  }
+  return undefined;
+}
+
 export async function purgeEventsAfterDestroy(
   reader: Pick<DeploymentEventsReader, 'pruneRuns'>,
   stackName: string,
@@ -757,11 +777,14 @@ async function destroyCommand(
     // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
     // sequential loop (one listing, one run-wide probe cap); each stack's
     // destroy then awaits its own memoized result.
+    // Only in the region the loop will destroy, and not for a stack its
+    // termination protection skips.
     const crossPrefixCheck = { cache: new CrossPrefixScanCache(stateBackend) };
     for (const name of stackNames) {
-      for (const ref of stateRefsByName.get(name) ?? []) {
-        if (ref.region !== undefined) void crossPrefixCheck.cache.full(name, ref.region);
-      }
+      const synth = appStacks.find((s) => s.stackName === name);
+      if (synth?.terminationProtection === true && !options.removeProtection) continue;
+      const planned = plannedDestroyRegion(stateRefsByName.get(name) ?? [], synth?.region, region);
+      if (planned !== undefined) void crossPrefixCheck.cache.full(name, planned);
     }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
@@ -798,20 +821,13 @@ async function destroyCommand(
           continue;
         }
       }
+      const plannedRegion = plannedDestroyRegion(refs, synthRegion, region);
       let stackTargetRegion: string;
       if (refs.length === 0) {
         logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
-      } else if (refs.length === 1) {
-        const onlyRegion = refs[0]?.region;
-        if (!onlyRegion) {
-          // Legacy state with no recorded region: fall back to the CLI region.
-          stackTargetRegion = region;
-        } else {
-          stackTargetRegion = onlyRegion;
-        }
-      } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
-        stackTargetRegion = synthRegion;
+      } else if (plannedRegion !== undefined) {
+        stackTargetRegion = plannedRegion;
       } else {
         // Regions come from S3 KEY segments and sit beside a labelled line, so
         // each is named only when it is a plain identifier (go-to-k/cdkd#3759).
