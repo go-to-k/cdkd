@@ -95,8 +95,10 @@ export function replacementRequestsDifferentName(input: {
  * API reference) or
  * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or the
  * provider reads the refusal as success and configures the existing resource
- * (S3's `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200; CloudWatch
- * Logs' `ResourceAlreadyExistsException`). A replacement renamed onto such a name "succeeds" with
+ * (CloudWatch Logs' `ResourceAlreadyExistsException`; S3's
+ * `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200 for a generated
+ * bucket name only -- an explicit one is refused by the provider too,
+ * go-to-k/cdkd#4684). A replacement renamed onto such a name "succeeds" with
  * someone else's resource, which the deploy then records as its own and a
  * later destroy deletes (go-to-k/cdkd#3937); a plain CREATE under such a name
  * does the same (go-to-k/cdkd#4180). The create cannot tell a fresh

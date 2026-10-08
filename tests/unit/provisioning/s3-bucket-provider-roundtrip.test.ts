@@ -66,8 +66,27 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NoSuchBucket } from '@aws-sdk/client-s3';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
+
+/**
+ * Every send answers `{}`, except the us-east-1 create pre-flight's
+ * `GetBucketLocation`, which finds no bucket: a bucket the pre-flight finds
+ * under an explicit `BucketName` is refused as already held
+ * (go-to-k/cdkd#4684).
+ */
+function sendAnsweringNoBucket(cmd: unknown): Promise<unknown> {
+  if ((cmd as { constructor: { name: string } }).constructor.name === 'GetBucketLocationCommand') {
+    return Promise.reject(
+      new NoSuchBucket({
+        message: 'The specified bucket does not exist',
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+  }
+  return Promise.resolve({});
+}
 
 /** The single mocked child logger every provider instance resolves to. */
 const childLogger = (getLogger() as unknown as { child: () => { warn: ReturnType<typeof vi.fn> } }).child();
@@ -90,7 +109,7 @@ describe('S3BucketProvider read-update round-trip', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new S3BucketProvider();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
   });
 
   // -------------------------------------------------------------------
@@ -182,7 +201,7 @@ describe('S3BucketProvider read-update round-trip', () => {
     // applyConfiguration unconditionally fires PutBucketVersioning +
     // PutPublicAccessBlock (both safe no-ops with the observed shape).
     // BucketEncryption is now skipped on empty rules (Class 2 fix).
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', observed, observed);
 
@@ -224,7 +243,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', observed, observed);
 
@@ -243,7 +262,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', observed, observed);
 
@@ -260,7 +279,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', observed, observed);
 
@@ -286,7 +305,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       Tags: [{ Key: 'NewTag', Value: 'fromConsole' }],
     };
 
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     // --revert: drive AWS back to state ([])
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', stateProps, awsCurrent);
@@ -309,7 +328,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', observed, observed);
 
@@ -322,7 +341,7 @@ describe('S3BucketProvider read-update round-trip', () => {
     // The `cdkd drift --revert` direction: desired side is cdkd state, previous
     // side is the AWS-observed value. The Put must still carry the AWS-accepted
     // `Status: 'Suspended'` shape, not an AWS-rejection shape.
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
 
     await provider.update(
       'L',
@@ -392,7 +411,7 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new S3BucketProvider();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
   });
 
   /**
@@ -2082,7 +2101,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new S3BucketProvider();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
   });
 
   function callsOf(cmdClass: new (...args: never[]) => unknown): { input: unknown }[] {
@@ -2177,7 +2196,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await update(base, { ...base, OwnershipControls: { Rules: [] } });
     expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
   });
@@ -2218,7 +2237,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await update(base, { ...base, BucketEncryption: placeholder });
     expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
   });
@@ -2344,7 +2363,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await update(
       { ...base, BucketEncryption: { ServerSideEncryptionConfiguration: [] } },
       { ...base, BucketEncryption: sseKms }
@@ -2365,7 +2384,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await update({ ...base }, { ...base, BucketEncryption: sseKms });
     expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
   });
@@ -2568,7 +2587,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     ];
     for (const { label, key, malformed, real } of cases) {
       vi.clearAllMocks();
-      mockSend.mockResolvedValue({});
+      mockSend.mockImplementation(sendAnsweringNoBucket);
       // Assert the LOUD path explicitly rather than swallowing. "No delete"
       // alone is too weak: silently SKIPPING a malformed value -- the sibling
       // failure mode that existed on the CREATE path until this PR -- also
@@ -2638,7 +2657,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await update({ ...base, OwnershipControls: {} as never }, {
       ...base,
       OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
@@ -2657,7 +2676,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await update(base, {
       ...base,
       ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
@@ -2836,7 +2855,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
 
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    mockSend.mockImplementation(sendAnsweringNoBucket);
     await expect(
       update({ ...base, BucketEncryption: '' as never }, { ...base, BucketEncryption: sseKms })
     ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);

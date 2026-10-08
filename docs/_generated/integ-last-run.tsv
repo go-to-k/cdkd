@@ -70,7 +70,7 @@ cross-stack-secret-import	2026-10-05T15:24:10Z	PASS	396	verify.sh	rc ok, orph cl
 custom-resource-getatt-data	2026-10-07T18:42:20Z	PASS	96	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 custom-resource-masked-service-token	2026-10-06T17:47:53Z	PASS	175	verify.sh	rc ok, orph clean (#3211 PR #4629)
 custom-resource-noecho-nested	2026-10-08T11:22:30Z	PASS	1467	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
-custom-resource-provider	2026-10-07T18:57:50Z	PASS	691	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
+custom-resource-provider	2026-10-08T17:12:09Z	PASS	662	verify.sh	rc ok, orph clean
 custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
@@ -300,7 +300,7 @@ s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 
 s3-cloudfront	2026-10-07T16:21:49Z	PASS	245	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 s3-directory-bucket	2026-10-07T13:48:36Z	PASS	106	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 s3-event-notification	2026-10-03T04:26:03Z	PASS	87	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-lifecycle	2026-10-06T12:30:56Z	PASS	401	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
+s3-lifecycle	2026-10-08T17:12:09Z	PASS	501	verify.sh	rc ok, orph clean; #4684 phase 2d refuses rollback re-create over a planted same-name bucket
 s3-object-lock	2026-10-07T22:40:53Z	PASS	75	verify.sh	PR #4686 on v11 (#4639 S3 CreateBucket replay refusal); rc 0, destroy clean, orph clean
 s3-replication-and-filter	2026-10-03T04:26:27Z	PASS	108	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-subconfig-removal	2026-10-07T22:40:53Z	PASS	95	verify.sh	PR #4686 on v11 (#4639 S3 CreateBucket replay refusal); rc 0, destroy clean, orph clean

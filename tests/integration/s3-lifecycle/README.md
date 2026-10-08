@@ -143,6 +143,16 @@ failed against real S3).
    rule (`big-objects`, `ObjectSizeGreaterThan`). Assert the new values reached
    AWS, there are 3 rules, and the bucket was **not** replaced (same
    `CreationDate`).
+   - **Phase 2d** (issue [#4684](https://github.com/go-to-k/cdkd/issues/4684)):
+     `RenameArmBucket` (`CDKD_RENAME_ARM_BUCKET`) is renamed by a deploy that
+     then fails on a queue depending on it (`CDKD_RENAME_ARM_FAIL`,
+     `--no-rollback`), so the replacement created the new bucket and deleted
+     the old one. A bucket is planted under the OLD name with a marker tag, and
+     `cdkd rollback` must refuse to re-create the old bucket over it: the
+     provider refuses an explicit name a bucket it did not make holds, and the
+     executor, whose records show the live new bucket does not hold that name,
+     refuses the revert with nothing deleted. The planted bucket keeps its
+     marker, the new bucket survives, and state still records it.
 3. **Destroy** and assert the bucket is gone and the cdkd state file is removed.
 
 ## Run
