@@ -20,6 +20,7 @@ import {
 } from '../../../src/deployment/orphan-adoption.js';
 import { dropNestedChildJournals } from '../../../src/deployment/nested-child-journal.js';
 import { WorkGraph, type WorkNode } from '../../../src/deployment/work-graph.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import { probeStatefulRecreateTargetsAsync } from '../../../src/deployment/recreate-targets/probe.js';
 import type { RecreateTarget } from '../../../src/deployment/recreate-targets/validate.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
@@ -223,6 +224,7 @@ describe('WorkGraph.execute (#3361)', () => {
     // the summary built from the collected errors) became an unhandled
     // rejection and `execute()` never settled -- the dependent's skip and the
     // independent node's run were never reported.
+    vi.mocked(getLogger().error).mockClear();
     const graph = new WorkGraph();
     graph.addNode(node('Broken'));
     graph.addNode(node('Dependent', ['Broken']));
@@ -236,6 +238,10 @@ describe('WorkGraph.execute (#3361)', () => {
       })
     ).rejects.toThrow(`1 node(s) failed, 1 skipped:\n  - Broken: ${PLACEHOLDER}`);
     expect(ran.sort()).toEqual(['Broken', 'Independent']);
+    // The per-node line is its own site: with only the summary fixed, the
+    // summary above still renders while this line is never written.
+    const errorLines = vi.mocked(getLogger().error).mock.calls.map((c) => String(c[0]));
+    expect(errorLines).toEqual([`Failed: Broken: ${PLACEHOLDER}`]);
   });
 });
 
