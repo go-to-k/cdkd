@@ -1508,6 +1508,48 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(engine.noEchoExactEchoes.has('Topic')).toBe(false);
     });
 
+    it('asks ONCE per resource, however many of its paths proved a change, and one "no" keeps all of them', async () => {
+      const state = v11State();
+      state.resources['Role'] = {
+        physicalId: 'old-role',
+        resourceType: 'AWS::IAM::Role',
+        properties: { RoleName: '***', Path: '***', AssumeRolePolicyDocument: {} },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['Path'], ['RoleName']],
+        noEchoExactEchoLeaves: [['Path'], ['RoleName']],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === 'old-role'
+            ? { RoleName: 'old-role', Path: '/old/', AssumeRolePolicyDocument: {} }
+            : physicalId === TOPIC_ARN
+              ? { TopicName: TOPIC, DisplayName: 'd' }
+              : { Name: '/app/p', Type: 'String', Value: TOKEN }
+        )
+      );
+      const tpl = template(TOKEN, {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            RoleName: { Ref: 'RName' },
+            Path: { Ref: 'RPath' },
+            AssumeRolePolicyDocument: {},
+          },
+        },
+      });
+      tpl.Parameters!['RName'] = { Type: 'String', NoEcho: true, Default: 'new-role-name' };
+      tpl.Parameters!['RPath'] = { Type: 'String', NoEcho: true, Default: '/new-path/' };
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Role')).toHaveLength(0);
+      const warned = lines(logger.warn).filter((l) => l.startsWith('Role.'));
+      expect(warned).toHaveLength(2);
+      for (const line of warned) expect(line).toContain('the replacement was not approved');
+    });
+
     it('replaces once the late prompt approves (what --yes answers)', async () => {
       stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
       const approveDeployment = vi.fn(async () => true);

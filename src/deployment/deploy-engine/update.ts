@@ -64,8 +64,7 @@ import {
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
-import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
-import { enclosingDeadlineExpired, whileEnclosingDeadlinesPaused } from '../resource-deadline.js';
+import { approveLateReplacement } from '../deployment-approval.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -729,33 +728,24 @@ export async function provisionUpdate(
   };
   // A replacement the readback proves is decided here, after
   // `--require-approval` asked about the diff, which could not read AWS and
-  // showed none. So it is asked about now, as a destructive change of its own
-  // (`--yes` approves it). A "no", a refusal to ask (no terminal) or a
-  // deadline already past keeps the never-replace rule, and the warning says
-  // why; the rest of the deploy goes on.
-  const approveLateReplacement = async (pc: PropertyChange): Promise<boolean> => {
-    const approve = this.options.approveDeployment;
-    const level = this.options.requireApproval ?? 'never';
-    if (level === 'never' || approve === undefined) return true;
-    if (enclosingDeadlineExpired()) return false;
+  // showed none. So it is asked about now (`approveLateReplacement`), ONCE for
+  // the resource, whichever of its paths proved it: one answer replaces the
+  // resource or keeps it. A kept one warns why; the rest of the deploy goes on.
+  let lateApproval: Promise<boolean> | undefined;
+  const approveReplacementOf = (pc: PropertyChange): Promise<boolean> => {
     const { noEchoPromoted: _promoted, ...asReplacement } = pc;
-    const late: ResourceChange = {
-      ...change,
-      changeType: 'UPDATE',
-      propertyChanges: [{ ...asReplacement, requiresReplacement: true }],
-    };
-    try {
-      return await whileEnclosingDeadlinesPaused(() =>
-        approve({
-          stackName,
-          level,
-          counts: { create: 0, update: 1, delete: 0 },
-          destructiveChanges: findDestructiveChanges(stackName, [late], stateResources, template),
-        })
-      );
-    } catch {
-      return false;
-    }
+    lateApproval ??= approveLateReplacement({
+      options: this.options,
+      stackName,
+      change: {
+        ...change,
+        changeType: 'UPDATE',
+        propertyChanges: [{ ...asReplacement, requiresReplacement: true }],
+      },
+      records: stateResources,
+      template,
+    });
+    return lateApproval;
   };
   const lateReplacementDeclined = new Set<string>();
   // Why a `differs` on such a path is not acted on: the warning names it.
@@ -1059,7 +1049,7 @@ export async function provisionUpdate(
       } else if (
         verdict === 'differs' &&
         provenChangedAt(pc.path, read) &&
-        ((await approveLateReplacement(pc)) || (lateReplacementDeclined.add(pc.path), false))
+        (await approveReplacementOf(pc))
       ) {
         // go-to-k/cdkd#4656: the provider echoes this leaf exactly, so the
         // difference is the value's. The id, the path and the cause only.
@@ -1074,6 +1064,9 @@ export async function provisionUpdate(
         // value (a provider may normalize what it echoes). Every deploy says so,
         // and a `differs` names why it is not trusted (#4656).
         const staleOnly = staleCoordinates.some((coordinate) => coordinate[0] === pc.path);
+        if (verdict === 'differs' && provenChangedAt(pc.path, read)) {
+          lateReplacementDeclined.add(pc.path);
+        }
         const why = verdict === 'differs' ? differsWhy(pc.path) : verdict;
         this.logger.warn(
           staleOnly
