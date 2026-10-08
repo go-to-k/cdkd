@@ -262,6 +262,9 @@ export function poisonRenderedSpellingsCollidingIn(
     // plaintext -> expression -> the reading parameters that would carry it.
     const byPlaintext = new Map<string, Map<string, { names: string[]; rendered: string[] }>>();
     for (const name of reads) {
+      // `reads` holds own keys only (`names` is `Object.keys`); stated for the
+      // template-keyed bag check, a parameter name being template text.
+      if (!Object.hasOwn(parameterValues, name)) continue;
       const value = parameterValues[name];
       for (const [plaintext, survivor] of inheritedSecretsCarriedBy(value, inherited)) {
         const expression = carriedExpressionFor(inherited, name, value, plaintext, survivor);
