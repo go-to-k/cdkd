@@ -85,6 +85,15 @@ verify, clean up.
    `pgrep -f verify.sh` PID whose cwd (`lsof -a -p <pid> -d cwd`) ends
    in `tests/integration/<test-name>` is a live peer — wait for it to exit.
 
+   **A fixture whose assertion runs through the journaled-orphan settle,
+   `cdkd rollback` or `cdkd destroy` reads EVERY stack's record under its state
+   prefix, and fails closed on one it cannot read**, such as a peer session's
+   newer-schema record. Give such a run its own bucket:
+   `cdkd bootstrap --state-bucket <unique> --no-assets`, pass
+   `STATE_BUCKET=<unique>`, then empty its object versions and delete it after
+   step 6. A fixture already deploying under its own `--state-prefix`
+   (`remove-protection-journaled-orphan`) is immune.
+
 5. **Run the test(s)**
 
    **Dispatch**: a `verify.sh` in `tests/integration/<test-name>/` owns its own
