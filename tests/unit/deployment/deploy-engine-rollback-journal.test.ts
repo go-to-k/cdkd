@@ -998,6 +998,52 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(op.attemptedProperties).toEqual({ p: 'new' });
     });
 
+    // go-to-k/cdkd#4757: B's first attempt made its bucket and failed
+    // retryably; A's failure aborts the deploy while B's retry waits. The
+    // abort replaces B's error, and the journal must still name the bucket.
+    it('journals the marked id when a sibling failure aborts the create during its retry wait', async () => {
+      const changes = new Map([
+        ['A', makeChange('A')],
+        ['B', makeChange('B')],
+      ]);
+      const engine = buildEngine({ changes, deps: { A: [], B: [] }, noRollback: true, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation((logicalId: string) =>
+        logicalId === 'A'
+          ? Promise.reject(new Error('create failed: A'))
+          : (async () => {
+              // B fails only once A's failure has interrupted the engine, so
+              // its retry wait meets the interrupt whatever the scheduling.
+              const engineState = engine as unknown as { interrupted: boolean };
+              while (!engineState.interrupted) await new Promise((r) => setTimeout(r, 1));
+              throw markCreatedBeforeFailure(
+                new ProvisioningError(
+                  'User: arn:aws:sts::1:assumed-role/r/s is not authorized to perform: s3:PutBucketTagging',
+                  'AWS::S3::Bucket',
+                  'B',
+                  'b-1'
+                ),
+                'B',
+                'AWS::S3::Bucket',
+                'b-1'
+              );
+            })()
+      );
+
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      // Premise: B was attempted once and aborted, not retried.
+      expect(provider.create.mock.calls.filter((c) => c[0] === 'B')).toHaveLength(1);
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      const op = seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B');
+      expect(op.physicalId).toBe('b-1');
+      expect(op.physicalIdRecoveredFromError).toBe(true);
+    });
+
     // go-to-k/cdkd#4655: the provider's identity token, read once after the
     // failure, so a later settle can tell the resource from a name reuse.
     describe('the created resource identity (go-to-k/cdkd#4655)', () => {

@@ -658,7 +658,13 @@ export async function withRetry<T>(
       // Interruptible sleep: check for SIGINT every second during delay.
       for (let waited = 0; waited < delay; waited += 1000) {
         if (opts.isInterrupted?.()) {
-          throw opts.onInterrupted ? opts.onInterrupted() : new Error('Interrupted');
+          // go-to-k/cdkd#4757: the interrupt replaces this attempt's error, so
+          // it carries that error's created-before-failure mark, or the deploy
+          // engine journals the resource the attempt made with no id.
+          throw carryCreatedBeforeFailure(
+            previousError,
+            opts.onInterrupted ? opts.onInterrupted() : new Error('Interrupted')
+          );
         }
         await sleep(Math.min(1000, delay - waited));
       }
