@@ -17,9 +17,12 @@
 #         was PutLifecyclePolicy, after the create returned); state has no
 #         record of it; the journal's failed op carries physicalId = the
 #         repository name and physicalIdRecoveredFromError = true.
-#     E2. `cdkd rollback --force --revert-failed`: exit 0, the rollback says it
-#         deletes the partially-created OrphanRepo, the repository is gone, the
-#         journal is gone, and state.json is gone (initial-deploy rollback).
+#     E2. `cdkd rollback --force --revert-failed`: exit 2. An ECR repository's
+#         provider journals no creation identity, so nothing proves the
+#         repository under the name is the one the failed CREATE made
+#         (go-to-k/cdkd#4658): the rollback KEEPS it and warns naming it, and
+#         the journal and state.json are gone (initial-deploy rollback). The
+#         fixture then deletes the repository by hand.
 #   PHASE S (SNS, the provider deletes what it made, and the delete succeeds):
 #     S1. Deploy the SNS stack (--verbose): CreateTopic succeeds, SNS rejects
 #         the data protection policy, the provider's catch deletes the topic
@@ -271,23 +274,32 @@ if [ "${ECR_OP_FIELDS}" != "CREATE ${REPO_NAME} true" ]; then
 fi
 echo "[verify] phase E1 ok: repository created, its lifecycle policy rejected, the journal names it (recovered from the error)"
 
-echo "[verify] phase E2: cdkd rollback ${ECR_STACK} --force --revert-failed (expect exit 0, the repository deleted)"
+echo "[verify] phase E2: cdkd rollback ${ECR_STACK} --force --revert-failed (expect exit 2, the repository KEPT)"
 E2_RC="$(run_rollback "${ECR_STACK}" "${LOG_DIR}/e2.log")"
-if [ "${E2_RC}" -ne 0 ]; then
-  echo "[verify] FAIL: phase E2: the rollback exited ${E2_RC} (output above)" >&2
+if [ "${E2_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: phase E2: the rollback exited ${E2_RC} (expected 2: the repository is kept unproven -- output above)" >&2
   exit 1
 fi
-if ! grep -qF "deleting partially-created OrphanRepo" "${LOG_DIR}/e2.log"; then
-  echo "[verify] FAIL: phase E2: the rollback output does not mention deleting the partially-created OrphanRepo" >&2
+if ! grep -q "Skipping failed CREATE of OrphanRepo.*the journal recorded no identity for it" "${LOG_DIR}/e2.log"; then
+  echo "[verify] FAIL: phase E2: the rollback did not warn that nothing proves OrphanRepo is the repository the failed CREATE made" >&2
   exit 1
 fi
-# shellcheck disable=SC2046
-wait_gone "phase E2: ${REPO_NAME} still exists after the --revert-failed rollback" $(repo_probe)
+if grep -qF "deleting partially-created OrphanRepo" "${LOG_DIR}/e2.log"; then
+  echo "[verify] FAIL: phase E2: the rollback deleted a repository it had no identity for (go-to-k/cdkd#4658)" >&2
+  exit 1
+fi
+if ! aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: phase E2: ${REPO_NAME} is gone after the rollback that warned it was kept" >&2
+  exit 1
+fi
 assert_gone "phase E2: the rollback journal is still present" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ECR_JOURNAL_KEY}"
 assert_gone "phase E2: state.json is still present after the initial-deploy rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ECR_STATE_KEY}"
-echo "[verify] phase E2 ok: the orphaned repository was deleted, journal and state gone"
+aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null
+# shellcheck disable=SC2046
+wait_gone "phase E2: ${REPO_NAME} still exists after the fixture deleted it" $(repo_probe)
+echo "[verify] phase E2 ok: the unproven repository was kept and warned about (exit 2), journal and state gone"
 
 # ---------------------------------------------------------------------------
 # PHASE S: SNS — the provider deletes its own topic; nothing to journal or delete

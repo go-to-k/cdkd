@@ -193,6 +193,16 @@ export class RollbackInitialStack extends cdk.Stack {
       description: 'initialDeploy-path target for the cdkd rollback integ',
     });
 
+    // go-to-k/cdkd#4696: `cdkd import` adopts the Example stack's journaled
+    // orphan stream into THIS stack's state, so another stack's record holds
+    // it when the Example stack's rollback replays the journal.
+    if (process.env.ADOPT_ORPHAN_STREAM === 'true') {
+      new kinesis.CfnStream(this, 'AdoptedStream', {
+        name: 'CdkdRollbackCommandExample-orphan-stream',
+        shardCount: 1,
+      });
+    }
+
     if (process.env.INJECT_FAIL === 'true') {
       const failing = new sqs.CfnQueue(this, 'FailingQueue', {
         queueName: `${this.stackName}-failing-queue`,

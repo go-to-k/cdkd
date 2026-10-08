@@ -65,6 +65,17 @@
 #         with the AWS CLI, then a successful deploy: it exits 2, warns that
 #         the live identity differs, keeps the new stream ACTIVE and drops the
 #         journal; the fixture deletes it.
+#     O10. O9's name reuse met by a PLAIN `cdkd rollback --force`
+#         (go-to-k/cdkd#4658): exit 2, the mismatch warned, the new stream kept
+#         ACTIVE, journal gone; the fixture deletes it.
+#     O11. --no-rollback, then `cdkd import` the stream into the second stack
+#         (ADOPT_ORPHAN_STREAM=true), then a PLAIN `cdkd rollback --force`
+#         (go-to-k/cdkd#4696): exit 2, the holder warned, the stream kept
+#         ACTIVE, journal gone; destroying the second stack removes it.
+#     O12. --no-rollback, then the stream's journaled identity stripped (the
+#         shape every name-keyed type without one journals), then a PLAIN
+#         `cdkd rollback --force` (go-to-k/cdkd#4658): exit 2, the "no
+#         identity" warning, the stream kept ACTIVE, journal gone.
 #   PHASE P (a replacement whose NEW resource was created, then failed,
 #   go-to-k/cdkd#4604):
 #     P0. Deploy with WITH_REPLACE_STREAM=true: ReplaceStream `-replace-stream-a`.
@@ -1176,6 +1187,223 @@ if ! delete_orphan_stream; then
   exit 1
 fi
 echo "[verify] step O9 ok: the stream that reused the name was kept and warned about (exit 2), journal gone"
+
+# go-to-k/cdkd#4658: O9's name reuse, met by a PLAIN `cdkd rollback` instead
+# of a successful deploy. The replay reads the live identity before its delete
+# and keeps the stream that reused the name: a warned skip, exit 2. Before
+# #4658 it deleted it by its physical id alone. O5 is the control: the same
+# rollback over the stream the failed CREATE made deletes it.
+echo "[verify] step O10: --no-rollback, delete the stream by hand, re-create its name, then a PLAIN cdkd rollback (the new stream KEPT)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-reuse-rb.log 2>&1
+O10_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse-rb.log || true
+if [ "${O10_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O10"
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} could not be deleted by hand in step O10"
+  exit 1
+fi
+aws kinesis create-stream --stream-name "${ORPHAN_STREAM_NAME}" --shard-count 1 --region "${REGION}"
+aws kinesis wait stream-exists --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+O10_CREATED="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-reuse-rb-2.log 2>&1
+O10_RB_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse-rb-2.log || true
+if [ "${O10_RB_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the plain rollback after the name reuse exited ${O10_RB_RC} (expected 2: the stream under the name is not the one the failed CREATE made -- output above)"
+  exit 1
+fi
+# The MISMATCH reason, printed only when the live identity was read and
+# differs; the "nothing proves" one (no token, or no answer) would pass the
+# exit-2 and kept-stream checks without proving the comparison.
+if ! grep -q 'Skipping failed CREATE of OrphanStream.*the resource now under that id is another one' \
+  /tmp/rollback-cmd-orphan-reuse-rb-2.log; then
+  echo "[verify] FAIL: the rollback did not report that the stream under OrphanStream's name has another identity (output above)"
+  if grep -q 'OrphanStream.*nothing proves the resource now under that id' /tmp/rollback-cmd-orphan-reuse-rb-2.log; then
+    echo "         (it kept the stream without reading a live identity to compare)"
+  fi
+  exit 1
+fi
+if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-reuse-rb-2.log; then
+  echo "[verify] FAIL: the rollback deleted the stream that reused OrphanStream's name (output above)"
+  exit 1
+fi
+if ! O10_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+  echo "[verify] FAIL: the stream that reused ${ORPHAN_STREAM_NAME} is gone -- the rollback deleted a resource the failed deploy never created"
+  exit 1
+fi
+if [ "${O10_STATUS}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: the stream that reused ${ORPHAN_STREAM_NAME} is ${O10_STATUS} (expected ACTIVE -- a delete was started)"
+  exit 1
+fi
+if [ "$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)" != "${O10_CREATED}" ]; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is not the stream step O10 created by hand (creation time differs from ${O10_CREATED})"
+  exit 1
+fi
+# A warned skip is settled, as every other one: the entry leaves the journal.
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the rollback warned about the reused name"
+  exit 1
+fi
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream after step O10 (expected no record)"
+  exit 1
+fi
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: the stream that reused ${ORPHAN_STREAM_NAME} could not be removed after step O10"
+  exit 1
+fi
+echo "[verify] step O10 ok: the plain rollback kept the stream that reused the name and warned (exit 2), journal gone"
+
+# go-to-k/cdkd#4696: a later `cdkd import` adopted the journaled orphan into
+# ANOTHER stack (${INIT_STACK}, ADOPT_ORPHAN_STREAM=true) before the rollback.
+# The stream IS the one the failed CREATE made, so only the foreign-holder
+# check keeps it: before #4696 the plain rollback deleted the stream another
+# stack's state records.
+echo "[verify] step O11: --no-rollback, cdkd import the stream into ${INIT_STACK}, then a PLAIN cdkd rollback (the stream KEPT)"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${INIT_STATE_KEY}"; then
+  echo "[verify] FAIL: ${INIT_STACK} already has a state record before step O11 (PHASE 2 needs it absent)"
+  exit 1
+fi
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-held.log 2>&1
+O11_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-held.log || true
+if [ "${O11_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O11"
+O11_CREATED="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)"
+ADOPT_ORPHAN_STREAM=true \
+  ${CLI} import "${INIT_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --resource "AdoptedStream=${ORPHAN_STREAM_NAME}" --yes
+O11_HELD="$(aws s3 cp "s3://${STATE_BUCKET}/${INIT_STATE_KEY}" - | jq -r '.resources.AdoptedStream.physicalId // "<absent>"')"
+if [ "${O11_HELD}" != "${ORPHAN_STREAM_NAME}" ]; then
+  echo "[verify] FAIL: ${INIT_STACK}'s state does not hold ${ORPHAN_STREAM_NAME} after the import (AdoptedStream=${O11_HELD})"
+  exit 1
+fi
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-held-rb.log 2>&1
+O11_RB_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-held-rb.log || true
+if [ "${O11_RB_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the plain rollback of an orphan ${INIT_STACK} holds exited ${O11_RB_RC} (expected 2 -- output above)"
+  exit 1
+fi
+if ! grep -q "Skipping failed CREATE of OrphanStream.*${INIT_STACK}.* holds a resource of that type" \
+  /tmp/rollback-cmd-orphan-held-rb.log; then
+  echo "[verify] FAIL: the rollback did not report that ${INIT_STACK}'s state record holds the stream (output above)"
+  exit 1
+fi
+if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-held-rb.log; then
+  echo "[verify] FAIL: the rollback deleted the stream ${INIT_STACK}'s state records (output above)"
+  exit 1
+fi
+if ! O11_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is gone -- the rollback deleted a stream ${INIT_STACK}'s state records"
+  exit 1
+fi
+if [ "${O11_STATUS}" != "ACTIVE" ] || [ "$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" \
+  --region "${REGION}" --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)" != "${O11_CREATED}" ]; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is ${O11_STATUS} or not the stream the failed CREATE made (expected ACTIVE, created ${O11_CREATED})"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the rollback warned about the held stream"
+  exit 1
+fi
+# ${INIT_STACK} owns the stream now: its destroy removes both.
+ADOPT_ORPHAN_STREAM=true \
+  ${CLI} destroy "${INIT_STACK}" --state-bucket "${STATE_BUCKET}" --force
+wait_orphan_stream_gone
+assert_gone "${ORPHAN_STREAM_NAME} still exists after the destroy of ${INIT_STACK}, which held it" \
+  aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${INIT_STATE_KEY}"; then
+  echo "[verify] FAIL: ${INIT_STACK}'s state record is still present after its destroy in step O11"
+  exit 1
+fi
+echo "[verify] step O11 ok: the plain rollback kept the stream ${INIT_STACK} holds and warned (exit 2), journal gone"
+
+# go-to-k/cdkd#4658: a journaled orphan with NO creation identity -- what every
+# name-keyed type whose provider reads none journals (an SQS queue, an S3
+# bucket, an IAM role, ...), and what a journal an older cdkd wrote holds. This
+# fixture's only orphan-producing resource is the Kinesis stream, whose
+# provider does journal one, so the step strips it from the journal to stand
+# for that class. The plain rollback must keep the stream (nothing proves it is
+# the one the failed CREATE made), warn naming it, and exit 2. Before #4658 it
+# deleted it by its physical id.
+echo "[verify] step O12: --no-rollback, strip the journaled identity, then a PLAIN cdkd rollback (the stream KEPT)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-notoken.log 2>&1
+O12_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-notoken.log || true
+if [ "${O12_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O12"
+O12_JOURNAL="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - \
+  | jq '(.segments[].failedOperations[]? | select(.logicalId == "OrphanStream")) |= del(.createdResourceIdentity)' \
+  > "${O12_JOURNAL}"
+if [ "$(jq '[.segments[].failedOperations[]? | select(.logicalId == "OrphanStream" and has("createdResourceIdentity"))] | length' "${O12_JOURNAL}")" != "0" ]; then
+  echo "[verify] FAIL: could not strip OrphanStream's createdResourceIdentity from the journal"
+  rm -f "${O12_JOURNAL}"
+  exit 1
+fi
+aws s3 cp "${O12_JOURNAL}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" --content-type application/json >/dev/null
+rm -f "${O12_JOURNAL}"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-notoken-rb.log 2>&1
+O12_RB_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-notoken-rb.log || true
+if [ "${O12_RB_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the plain rollback of an orphan with no journaled identity exited ${O12_RB_RC} (expected 2 -- output above)"
+  exit 1
+fi
+if ! grep -q 'Skipping failed CREATE of OrphanStream.*the journal recorded no identity for it' \
+  /tmp/rollback-cmd-orphan-notoken-rb.log; then
+  echo "[verify] FAIL: the rollback did not report that nothing proves the stream is the one the failed CREATE made (output above)"
+  exit 1
+fi
+if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-notoken-rb.log; then
+  echo "[verify] FAIL: the rollback deleted a stream it had no identity for (output above)"
+  exit 1
+fi
+if ! O12_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)" || [ "${O12_STATUS}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is not ACTIVE after the rollback (${O12_STATUS:-gone}) -- it was deleted with no identity"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the rollback warned about the unproven stream"
+  exit 1
+fi
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} could not be removed after step O12"
+  exit 1
+fi
+echo "[verify] step O12 ok: the plain rollback kept a stream with no journaled identity and warned (exit 2), journal gone"
 
 # ---------------------------------------------------------------------------
 # PHASE P: a replacement whose NEW resource was created, then failed

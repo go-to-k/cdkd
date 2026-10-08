@@ -56,12 +56,16 @@
 #      LOAD-BEARING for the Schedules: each delete runs through the recorded
 #      identity (the --verbose line naming it is asserted).
 #   6b. A failed-CREATE orphan named from the secret (go-to-k/cdkd#3869): deploy
-#      CdkdSecretDerivedOrphan with --no-rollback (ECR makes the repository,
-#      then rejects its lifecycle policy, so the journal records it), then
-#      destroy that stack: its --verbose log does not name the repository,
-#      whose delete runs from the journal alone.
-#   6c. The same failed deploy again, then a plain `cdkd rollback`: its log
-#      does not name the repository either (its failed-op replay, go-to-k/cdkd#3869),
+#      CdkdSecretDerivedOrphan with --no-rollback and SDIN_ORPHAN_STREAM=true
+#      (Kinesis makes the stream, then rejects its retention, so the journal
+#      records it with its creation identity), then destroy that stack: it
+#      deletes the stream from the journal, and its --verbose log, the
+#      provider's DELETE line included, does not name it.
+#   6c. The ECR variant (ECR makes the repository, then rejects its lifecycle
+#      policy), then a plain `cdkd rollback`: the repository journals no
+#      creation identity, so it is kept (exit 2, go-to-k/cdkd#4658) and the
+#      fixture deletes it by hand; the log does not name it either (the
+#      failed-op replay's warning, go-to-k/cdkd#3869),
 #      nor SecretRollbackQueue, the completed CREATE each rollback deletes
 #      (the completed-op replay); 6d checks the same queue.
 #   6d. The same deploy WITHOUT --no-rollback: the automatic rollback deletes the
@@ -205,6 +209,8 @@ FILTER_NAME="sdin-mf-${SUFFIX}"
 FILTER_NAME_ROTATED="sdin-mfr-${SUFFIX}"
 # ECR repository names are lower-case.
 REPO_NAME="sdin-repo-${SUFFIX}"
+# Step 6b's orphan, a Kinesis stream (SDIN_ORPHAN_STREAM=true).
+STREAM_NAME="sdin-stream-${SUFFIX}"
 # The orphan stack's completed CREATE, which each rollback deletes.
 RB_QUEUE_NAME="sdin-rbq-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
@@ -284,6 +290,7 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${ORPHAN_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null 2>&1
+    aws kinesis delete-stream --region "${REGION}" --stream-name "${STREAM_NAME}" --enforce-consumer-deletion >/dev/null 2>&1
     LEFT_RB_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${RB_QUEUE_NAME}" \
       --query QueueUrl --output text 2>/dev/null)"
     if [ -n "${LEFT_RB_QUEUE_URL}" ] && [ "${LEFT_RB_QUEUE_URL}" != "None" ]; then
@@ -345,8 +352,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -610,8 +617,8 @@ done
 
 echo "==> Step 3b: rotate the secret's filter field only"
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -848,25 +855,39 @@ wait_queue_name_cooldown() {
   fi
 }
 
-# Deploys the orphan stack, which must FAIL after ECR made the repository, and
+# Deploys the orphan stack, which must FAIL after AWS made the orphan, and
 # checks the journal records it as a proven orphan (no state record holds it).
-# Used by step 6b (destroy) and step 6c (rollback).
+# `orphan_deploy_failing` makes the ECR repository (steps 6c, 6d's premise);
+# `orphan_deploy_failing stream` makes the Kinesis stream (step 6b).
 orphan_deploy_failing() {
+  local kind="${1:-repo}" lid="SecretOrphanRepo"
+  [ "${kind}" = "stream" ] && lid="SecretOrphanStream"
   ORPHAN_DEPLOYED=1
   wait_queue_name_cooldown
   set +e
-  node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
+  if [ "${kind}" = "stream" ]; then
+    SDIN_ORPHAN_STREAM=true node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
+  else
+    node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+      --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
+  fi
   ORPHAN_DEPLOY_RC=$?
   set -e
   if [ "${ORPHAN_DEPLOY_RC}" -eq 0 ]; then
-    echo "FAIL: premise: the orphan stack's deploy exited 0; ECR accepted the invalid lifecycle policy" >&2
+    echo "FAIL: premise: the orphan stack's deploy exited 0; AWS accepted the ${kind}'s invalid follow-up" >&2
     tail -40 "${ORPHAN_LOG}" >&2
     exit 1
   fi
-  # PREMISE: ECR made the repository, and the journal records it as a proven
+  # PREMISE: AWS made the orphan, and the journal records it as a proven
   # orphan (no state record holds it).
-  if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}" >/dev/null; then
+  if [ "${kind}" = "stream" ]; then
+    if ! aws kinesis describe-stream-summary --region "${REGION}" --stream-name "${STREAM_NAME}" >/dev/null; then
+      echo "FAIL: premise: the failed deploy left no stream ${STREAM_NAME} (Kinesis refused the create itself?)" >&2
+      tail -40 "${ORPHAN_LOG}" >&2
+      exit 1
+    fi
+  elif ! aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}" >/dev/null; then
     echo "FAIL: premise: the failed deploy left no repository ${REPO_NAME} (ECR refused the create itself?)" >&2
     tail -40 "${ORPHAN_LOG}" >&2
     exit 1
@@ -874,14 +895,14 @@ orphan_deploy_failing() {
   # `|| echo`: a missing or unparseable journal must reach the FAIL below, not
   # end the run at the assignment with no diagnostic.
   ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - \
-    | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
+    | jq -r --arg lid "${lid}" '[.segments[].failedOperations[]? | select(.logicalId == $lid and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
     || echo "unreadable journal")"
   if [ "${ORPHAN_PROVEN}" != "1" ]; then
-    echo "FAIL: premise: the journal holds ${ORPHAN_PROVEN} proven SecretOrphanRepo orphan(s), expected 1" >&2
+    echo "FAIL: premise: the journal holds ${ORPHAN_PROVEN} proven ${lid} orphan(s), expected 1" >&2
     tail -40 "${ORPHAN_LOG}" >&2
     exit 1
   fi
-  echo "    OK: the failed deploy journaled the repository as a proven orphan"
+  echo "    OK: the failed deploy journaled the ${kind} as a proven orphan"
 }
 
 # Asserts a rollback log deleted SecretRollbackQueue (the orphan stack's
@@ -913,11 +934,16 @@ assert_rollback_queue_deleted() { # usage: assert_rollback_queue_deleted <which>
   QUEUE_DELETED_AT="$(date +%s)"
 }
 
-echo "==> Step 6b: a failed-CREATE orphan named from the secret, destroyed from the journal"
-orphan_deploy_failing
+echo "==> Step 6b: a failed-CREATE orphan named from the secret, deleted by a destroy from the journal"
+# go-to-k/cdkd#3869: the journal-path delete runs under the batch's printing
+# bag, so the provider's DELETE line must not name the stream. A Kinesis
+# stream journals its creation identity, so the destroy proves it is the one
+# the failed deploy made and deletes it (go-to-k/cdkd#4658); step 6c keeps the
+# ECR repository, which journals none.
+orphan_deploy_failing stream
 set +e
-node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --force --verbose > "${ORPHAN_LOG}" 2>&1
+SDIN_ORPHAN_STREAM=true node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --force --verbose > "${ORPHAN_LOG}" 2>&1
 ORPHAN_DESTROY_RC=$?
 set -e
 if [ "${ORPHAN_DESTROY_RC}" -ne 0 ]; then
@@ -926,18 +952,23 @@ if [ "${ORPHAN_DESTROY_RC}" -ne 0 ]; then
   exit 1
 fi
 # PREMISE: the provider's delete line for the orphan is in the log.
-if ! grep -qF -- "Deleting ECR Repository SecretOrphanRepo: " "${ORPHAN_LOG}"; then
-  echo "FAIL: premise: the destroy log has no 'Deleting ECR Repository SecretOrphanRepo: ' line (the --verbose debug stream is missing, the orphan was not deleted, or the wording drifted)" >&2
+if ! grep -qF -- "Deleting Kinesis stream SecretOrphanStream: " "${ORPHAN_LOG}"; then
+  echo "FAIL: premise: the destroy log has no 'Deleting Kinesis stream SecretOrphanStream: ' line (the --verbose debug stream is missing, the orphan was not deleted, or the wording drifted)" >&2
   tail -60 "${ORPHAN_LOG}" >&2
   exit 1
 fi
-if grep -qF -- "${REPO_NAME}" "${ORPHAN_LOG}"; then
-  HIT_LINES="$(grep -nF -- "${REPO_NAME}" "${ORPHAN_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
-  echo "FAIL: the orphan stack's destroy log names the secret-derived repository name in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+if grep -qF -- "${STREAM_NAME}" "${ORPHAN_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${STREAM_NAME}" "${ORPHAN_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the orphan stack's destroy log names the secret-derived stream name in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
-assert_gone "orphan repository ${REPO_NAME} still exists after destroy" \
-  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+# DeleteStream is asynchronous: the stream sits in DELETING first.
+for _i in $(seq 1 30); do
+  gone_probe aws kinesis describe-stream-summary --region "${REGION}" --stream-name "${STREAM_NAME}" && break
+  sleep 5
+done
+assert_gone "orphan stream ${STREAM_NAME} still exists after destroy" \
+  aws kinesis describe-stream-summary --region "${REGION}" --stream-name "${STREAM_NAME}"
 for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
   assert_gone "${key} still exists after the orphan stack's destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
@@ -946,25 +977,27 @@ done
 QUEUE_DELETED_AT="$(date +%s)"
 echo "    OK: the journaled orphan was deleted, and the destroy log withholds its name"
 
-echo "==> Step 6c: the same orphan, deleted by a plain cdkd rollback from the journal"
+echo "==> Step 6c: the same orphan, kept by a plain cdkd rollback from the journal"
 # go-to-k/cdkd#3869: a plain rollback replays the journal's proven orphans
 # through its own failed-op replay, which ran under no printing bag. The stack
 # is gone after step 6b, so this deploy is an initial one and the rollback
-# removes state.json and the journal with it.
+# removes state.json and the journal with it. go-to-k/cdkd#4658: it keeps the
+# unproven repository (exit 2) and warns naming it, masked; the fixture
+# deletes it by hand.
 orphan_deploy_failing
 set +e
 node "${LOCAL_DIST}" rollback "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
   --stack-region "${REGION}" --force --verbose > "${ORPHAN_LOG}" 2>&1
 ORPHAN_ROLLBACK_RC=$?
 set -e
-if [ "${ORPHAN_ROLLBACK_RC}" -ne 0 ]; then
-  echo "FAIL: the orphan stack's rollback exited ${ORPHAN_ROLLBACK_RC}" >&2
+if [ "${ORPHAN_ROLLBACK_RC}" -ne 2 ]; then
+  echo "FAIL: the orphan stack's rollback exited ${ORPHAN_ROLLBACK_RC} (expected 2: the unproven repository is kept)" >&2
   tail -60 "${ORPHAN_LOG}" >&2
   exit 1
 fi
-# PREMISE: the provider's delete line for the orphan is in the log.
-if ! grep -qF -- "Deleting ECR Repository SecretOrphanRepo: " "${ORPHAN_LOG}"; then
-  echo "FAIL: premise: the rollback log has no 'Deleting ECR Repository SecretOrphanRepo: ' line (the --verbose debug stream is missing, the orphan was not deleted, or the wording drifted)" >&2
+# PREMISE: the warning that keeps the orphan is in the log.
+if ! grep -q -- "Skipping failed CREATE of SecretOrphanRepo.*the journal recorded no identity for it" "${ORPHAN_LOG}"; then
+  echo "FAIL: premise: the rollback log has no warning keeping SecretOrphanRepo (the orphan was deleted, or the wording drifted)" >&2
   tail -60 "${ORPHAN_LOG}" >&2
   exit 1
 fi
@@ -973,14 +1006,19 @@ if grep -qF -- "${REPO_NAME}" "${ORPHAN_LOG}"; then
   echo "FAIL: the orphan stack's rollback log names the secret-derived repository name in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
-assert_gone "orphan repository ${REPO_NAME} still exists after the rollback" \
-  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}" >/dev/null; then
+  echo "FAIL: orphan repository ${REPO_NAME} is gone after the rollback that warned it was kept" >&2
+  exit 1
+fi
 for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
   assert_gone "${key} still exists after the orphan stack's initial-deploy rollback" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
 assert_rollback_queue_deleted rollback
-echo "    OK: the rollback deleted the journaled orphan and the completed CREATE, and its log withholds both names"
+aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null
+assert_gone "orphan repository ${REPO_NAME} still exists after the fixture deleted it" \
+  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+echo "    OK: the rollback kept the unproven orphan, deleted the completed CREATE, and its log withholds both names"
 
 echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic rollback deletes the orphan"
 # go-to-k/cdkd#3869: the deploy engine's own rollback replays the orphan

@@ -131,12 +131,15 @@ function install(
   });
 }
 
-const queueOp = {
-  logicalId: 'Queue',
+// A KMS key: its physical id is never reused, so deleting the orphan needs
+// no identity proof (go-to-k/cdkd#4729), and these cases test only the
+// cross-prefix check.
+const orphanOp = {
+  logicalId: 'Key',
   changeType: 'CREATE',
-  resourceType: 'AWS::SQS::Queue',
+  resourceType: 'AWS::KMS::Key',
   provisionedBy: 'sdk',
-  physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/S-Queue',
+  physicalId: '1234abcd-12ab-34cd-56ef-1234567890ab',
   physicalIdRecoveredFromError: true,
 };
 
@@ -149,7 +152,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   });
 
   it('refuses before any replay when another prefix records the stack, and releases the lock', async () => {
-    install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'], holders: ['cdkd', 'team-b'] });
+    install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd', 'team-b'], holders: ['cdkd', 'team-b'] });
     const setup = (await setupMock())!;
     await expect(rollbackCommand('S', { ...BASE })).rejects.toThrow(
       /Refusing to roll back stack S \(us-east-1\): it is also recorded under another state prefix of bucket b \(team-b\)/
@@ -168,7 +171,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   });
 
   it('replays as before when no other prefix records the stack', async () => {
-    install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'] });
+    install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd', 'team-b'] });
     const setup = (await setupMock())!;
     await rollbackCommand('S', { ...BASE });
     expect(provider.delete).toHaveBeenCalledTimes(1);
@@ -176,7 +179,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   });
 
   it('warns and replays when S3 denies the LISTING', async () => {
-    install(structuredClone(queueOp), {}, {}, {
+    install(structuredClone(orphanOp), {}, {}, {
       listed: Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }),
     });
     await rollbackCommand('S', { ...BASE });
@@ -187,7 +190,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   });
 
   it('warns and replays when S3 denies a READ under a listed prefix', async () => {
-    install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'] });
+    install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd', 'team-b'] });
     const setup = (await setupMock())!;
     setup.stateBackend.recordUnderPrefix.mockImplementation(async () => {
       throw Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
@@ -200,7 +203,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   });
 
   it('refuses before the confirmation prompt (no --force), under the lock, and releases it', async () => {
-    install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'], holders: ['team-b'] });
+    install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd', 'team-b'], holders: ['team-b'] });
     const setup = (await setupMock())!;
     question.mockReset().mockResolvedValue('y');
     const original = process.stdin.isTTY;

@@ -184,7 +184,8 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
   });
 
   // E.g. a later `cdkd import` adopted the load balancer into stack B.
-  it("keeps the protection of an orphan another stack's record holds", async () => {
+  // go-to-k/cdkd#4696: kept, delete and all, not only its protection.
+  it("sends no delete to an orphan another stack's record holds", async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'B', region: REGION }]);
     mockGetState.mockImplementation(async (name: string) =>
       name === 'B'
@@ -205,11 +206,10 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
         : null
     );
     await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx({ removeProtection: true }));
-    expect(seen.has('OrphanLb')).toBe(true);
-    expect(seen.get('OrphanLb')?.context).not.toHaveProperty('removeProtection');
+    expect(seen.has('OrphanLb')).toBe(false);
     expect(seen.get('R')?.context['removeProtection']).toBe(true);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'the state record of stack B (us-east-1) holds it now'
+      'the state record of stack B (us-east-1) holds a resource of that type'
     );
   });
 

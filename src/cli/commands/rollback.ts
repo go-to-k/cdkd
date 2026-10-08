@@ -1186,12 +1186,12 @@ export async function rollbackCommand(
         recordEvent: (e) => eventRecorder.record(maskEventTextWithBoundBags(e)),
         finalSnapshotClients,
         skipFinalSnapshot: options.skipFinalSnapshot === true,
-        // go-to-k/cdkd#4678: only on an explicit flag, and never on an orphan
-        // another stack's record holds now (the scan is lazy: no flag, no read).
-        ...(options.removeProtection === true && {
-          removeProtection: true,
-          foreignHolder: makeForeignHolderScan(setup.stateBackend)({ stackName, region }),
-        }),
+        // go-to-k/cdkd#4678: only on an explicit flag.
+        ...(options.removeProtection === true && { removeProtection: true }),
+        // go-to-k/cdkd#4696: a journaled orphan another stack's record holds
+        // now is not deleted, nor stripped of protection. Lazy: read only
+        // when such an orphan reaches its delete.
+        foreignHolder: makeForeignHolderScan(setup.stateBackend)({ stackName, region }),
         // Issue #2057: the producer regions this stack read across. A replayed
         // `{{resolve:...}}` expression that a cross-region read put in this
         // record carries no region of its own, so without this the replay
