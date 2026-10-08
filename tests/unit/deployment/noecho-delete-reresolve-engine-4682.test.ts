@@ -149,7 +149,11 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
         Topic: {
           physicalId: 'arn:aws:sns:us-east-1:123456789012:old-name',
           resourceType,
-          properties: { TopicName: 'old-name', DisplayName: SECRET_MASK },
+          properties: {
+            ...(resourceType === CR ? { ServiceToken: TOKEN_ARN } : {}),
+            TopicName: 'old-name',
+            DisplayName: SECRET_MASK,
+          },
           attributes: {},
           dependencies: [],
           noEchoLeaves: [['DisplayName']],
