@@ -11,6 +11,7 @@ import {
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -24,6 +25,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceIdentityVerdict,
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
@@ -92,6 +94,15 @@ function instanceAttributes(
     'Endpoint.Port': stringifyIfAssigned(instance?.Endpoint?.Port),
     Arn: instance?.DBInstanceArn,
   });
+}
+
+/**
+ * A DB cluster or DB instance identifier: a letter, then letters, digits and
+ * single hyphens, not ending in one, at most 63 characters. Either case, as a
+ * template may spell it (the service lower-cases it).
+ */
+function isDbIdentifier(id: string): boolean {
+  return id.length <= 63 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
 }
 
 /**
@@ -332,6 +343,9 @@ export class DocDBProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
+    // go-to-k/cdkd#4606: the `DbClusterResourceId` CreateDBCluster returned,
+    // carried on the failure's mark as the orphan's identity.
+    let createdResourceId: string | undefined;
     try {
       const response = await this.getCreateClient().send(
         new CreateDBClusterCommand({
@@ -362,6 +376,7 @@ export class DocDBProvider implements ResourceProvider {
         })
       );
       clusterCreated = true;
+      createdResourceId = response.DBCluster?.DbClusterResourceId;
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -398,7 +413,13 @@ export class DocDBProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateDBCluster returned (another owner's name).
       if (clusterCreated) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbClusterIdentifier);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          dbClusterIdentifier,
+          createdResourceId
+        );
       }
       throw thrown;
     }
@@ -634,7 +655,15 @@ export class DocDBProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DocDB DBCluster ${logicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  DocDB DB cluster ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`DocDB DBCluster ${logicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -665,6 +694,9 @@ export class DocDBProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
+    // go-to-k/cdkd#4606: the `DbiResourceId` CreateDBInstance returned,
+    // carried on the failure's mark as the orphan's identity.
+    let createdResourceId: string | undefined;
     try {
       const response = await this.getCreateClient().send(
         new CreateDBInstanceCommand({
@@ -682,6 +714,7 @@ export class DocDBProvider implements ResourceProvider {
         })
       );
       instanceCreated = true;
+      createdResourceId = response.DBInstance?.DbiResourceId;
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -717,7 +750,13 @@ export class DocDBProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
       if (instanceCreated) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbInstanceIdentifier);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          dbInstanceIdentifier,
+          createdResourceId
+        );
       }
       throw thrown;
     }
@@ -824,7 +863,15 @@ export class DocDBProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DocDB DBInstance ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  DocDB DB instance ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`DocDB DBInstance ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -856,6 +903,136 @@ export class DocDBProvider implements ResourceProvider {
       })
     );
     return response.DBInstances?.[0];
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the DocDB DB cluster or DB instance a failed
+   * CREATE journaled is the one the record under the same logical id holds (a
+   * fix-forward that created a new one there under another identifier).
+   *
+   * Reached on the SDK route only (`disableCcApiFallback`: these types have no
+   * Cloud Control route). Both ids must be DB identifiers; anything else is
+   * `'unknown'`. An identifier names at most one cluster (or instance) per
+   * account and region at a time, in a namespace DocumentDB shares with RDS
+   * and Neptune, and identifiers compare case-insensitively (stored
+   * lower-cased), so two spellings equal modulo case are `'same'` without a
+   * read. After the region check the record's resource must read back (else
+   * `'unknown'`); the journaled one is `'same'` when it reads back under the
+   * record's `DbClusterResourceId` / `DbiResourceId` (immutable, unique),
+   * `'different'` under another, and `'different'` when AWS reports its
+   * identifier gone: the record's resource answers to its own, other,
+   * identifier. A read answering with another engine's resource (the shared
+   * describe returns RDS and Neptune resources too) throws, which the caller
+   * reads as `'unknown'`: this provider's delete would remove that resource.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::DocDB::DBCluster' && resourceType !== 'AWS::DocDB::DBInstance') {
+      return 'unknown';
+    }
+    if (!isDbIdentifier(journaledPhysicalId) || !isDbIdentifier(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordResourceId = await this.readDbResourceIdIfExists(resourceType, record.physicalId);
+    if (recordResourceId === undefined) return 'unknown';
+    const journaledResourceId = await this.readDbResourceIdIfExists(
+      resourceType,
+      journaledPhysicalId
+    );
+    if (journaledResourceId === undefined) return 'different';
+    return journaledResourceId === recordResourceId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4606: the cluster's `DbClusterResourceId` or the instance's
+   * `DbiResourceId`, which AWS generates, never changes and never gives a
+   * later resource. A resource re-created under the identifier, by any engine
+   * and in any case spelling, answers with another id (or, for another
+   * engine, throws), so the settle keeps it rather than deleting it as the
+   * failed CREATE's orphan. A failed CREATE's own token comes from its create
+   * response, on the failure's mark (`markCreatedBeforeFailure`); this is the
+   * live read.
+   *
+   * `undefined` for another type, an id that is not a DB identifier, or a
+   * client in another region than `expectedRegion`. `RESOURCE_NOT_FOUND` only
+   * on the describe's not-found fault NAME (or an empty list); any other
+   * failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::DocDB::DBCluster' && resourceType !== 'AWS::DocDB::DBInstance') {
+      return undefined;
+    }
+    if (!isDbIdentifier(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const live = await this.readDbResourceIdIfExists(resourceType, physicalId);
+    return live === undefined ? RESOURCE_NOT_FOUND : live;
+  }
+
+  /**
+   * The DocDB cluster's `DbClusterResourceId` (or the instance's
+   * `DbiResourceId`), or `undefined` when AWS reports the identifier gone (its
+   * not-found fault NAME, or an empty describe list). Any other failure, a
+   * response naming another identifier, another engine than `docdb`, or no
+   * resource id throws: "could not read" never reads as "gone", and an RDS or
+   * Neptune resource under the identifier is never this provider's.
+   */
+  private async readDbResourceIdIfExists(
+    resourceType: 'AWS::DocDB::DBCluster' | 'AWS::DocDB::DBInstance',
+    identifier: string
+  ): Promise<string | undefined> {
+    const isCluster = resourceType === 'AWS::DocDB::DBCluster';
+    let found:
+      | {
+          identifier: string | undefined;
+          engine: string | undefined;
+          resourceId: string | undefined;
+        }
+      | undefined;
+    try {
+      if (isCluster) {
+        const cluster = await this.describeDBCluster(identifier);
+        found = cluster && {
+          identifier: cluster.DBClusterIdentifier,
+          engine: cluster.Engine,
+          resourceId: cluster.DbClusterResourceId,
+        };
+      } else {
+        const instance = await this.describeDBInstance(identifier);
+        found = instance && {
+          identifier: instance.DBInstanceIdentifier,
+          engine: instance.Engine,
+          resourceId: instance.DbiResourceId,
+        };
+      }
+    } catch (error) {
+      const notFound = isCluster ? 'DBClusterNotFoundFault' : 'DBInstanceNotFoundFault';
+      if ((error as { name?: unknown } | null)?.name === notFound) return undefined;
+      throw error;
+    }
+    if (found === undefined) return undefined;
+    const api = isCluster ? 'DescribeDBClusters' : 'DescribeDBInstances';
+    if (found.identifier?.toLowerCase() !== identifier.toLowerCase()) {
+      throw new Error(`${api} answered for another identifier`);
+    }
+    if (found.engine !== 'docdb') {
+      throw new Error(`${api} answered with a resource of another engine`);
+    }
+    if (typeof found.resourceId !== 'string' || found.resourceId === '') {
+      throw new Error(`${api} returned no resource id`);
+    }
+    return found.resourceId;
   }
 
   /**
