@@ -789,6 +789,20 @@ export async function recheckMismatchedFailedCreate(
   timeoutMs: number = RESOURCE_IDENTITY_TIMEOUT_MS,
   preview = false
 ): Promise<FailedOpActionKind> {
+  if (preview && action === 'skip-failed-mismatch') {
+    // Every skip the preview shows is remembered unless proven, gated or not:
+    // the replay's record may pass a gate the preview's copy did not.
+    const rechecked = await recheckMismatchedFailedCreate(
+      op,
+      action,
+      stateResources,
+      siblings,
+      ctx,
+      timeoutMs
+    );
+    if (rechecked === action) undecidedAtPreview.add(op);
+    return rechecked;
+  }
   if (
     action !== 'skip-failed-mismatch' ||
     op.changeType !== 'CREATE' ||
@@ -845,7 +859,6 @@ export async function recheckMismatchedFailedCreate(
     clearTimeout(timer);
   }
   if (verdict !== 'different') {
-    if (preview) undecidedAtPreview.add(op);
     return action;
   }
   markProvenDistinctFromRecord(op, record);

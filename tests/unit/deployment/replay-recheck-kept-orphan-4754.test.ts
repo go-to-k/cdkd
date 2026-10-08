@@ -352,6 +352,30 @@ describe('the replay never deletes what the preview showed as a skip (go-to-k/cd
     expect(result.skipped).toBe(0);
   });
 
+  it('keeps an op the preview skipped at a gate, even when the replay record passes it', async () => {
+    const op = orphan();
+    const atPreview = provider();
+    const preview = await recheckFailedPlan(
+      planFailedOps([op], { Orphan: { ...fixForwardRecord(), physicalId: '' } }),
+      { Orphan: { ...fixForwardRecord(), physicalId: '' } },
+      ctxFor(atPreview)
+    );
+    expect(atPreview.isSameResource).not.toHaveBeenCalled();
+    expect(preview[0]!.action).toBe('skip-failed-mismatch');
+
+    const p = provider();
+    const result = await replayFailedOperations(
+      [op],
+      { Orphan: fixForwardRecord() },
+      'S',
+      ctxFor(p),
+      {}
+    );
+    expect(p.isSameResource).not.toHaveBeenCalled();
+    expect(p.delete).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+  });
+
   it('a replay with no preview still asks', async () => {
     const op = orphan();
     const state: Record<string, ResourceState> = { Orphan: fixForwardRecord() };
