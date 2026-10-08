@@ -1451,10 +1451,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       async (level) => {
         stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
         const approveDeployment = vi.fn(async (_request: unknown) => false);
-        await makeEngine({ requireApproval: level, approveDeployment }).deploy(
-          STACK,
-          rotatedTemplate()
-        );
+        const tpl = rotatedTemplate();
+        tpl.Resources['Topic']!.Metadata = { 'aws:cdk:path': 'Stack/NamedTopic/Resource' };
+        await makeEngine({ requireApproval: level, approveDeployment }).deploy(STACK, tpl);
         // The up-front prompt saw a promotion only; the late one names the replacement.
         expect(approveDeployment).toHaveBeenCalledTimes(1);
         const request = approveDeployment.mock.calls[0]![0] as {
@@ -1463,6 +1462,10 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         };
         expect(request.level).toBe(level);
         expect(request.destructiveChanges.map((c) => c.logicalId)).toEqual(['Topic']);
+        // Rendered from the deploy's template, as the up-front prompt is.
+        expect(
+          (request.destructiveChanges[0] as { constructPath?: string }).constructPath
+        ).toBe('Stack/NamedTopic/Resource');
         expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
         expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
         const warned = lines(logger.warn).filter((l) => l.includes('Topic.TopicName'));
@@ -1518,6 +1521,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         dependencies: [],
         noEchoLeaves: [['Path'], ['RoleName']],
         noEchoExactEchoLeaves: [['Path'], ['RoleName']],
+        constructPath: 'Stack/Role/Resource',
       };
       stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
       provider.readCurrentState.mockImplementation((physicalId: string) =>
@@ -1544,6 +1548,11 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const approveDeployment = vi.fn(async () => false);
       await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
       expect(approveDeployment).toHaveBeenCalledTimes(1);
+      // No template metadata: the prompt names the RECORD's construct path.
+      const asked = (approveDeployment.mock.calls[0] as unknown[])[0] as {
+        destructiveChanges: { constructPath?: string }[];
+      };
+      expect(asked.destructiveChanges[0]?.constructPath).toBe('Stack/Role/Resource');
       expect(callsFor(provider.create, 'Role')).toHaveLength(0);
       const warned = lines(logger.warn).filter((l) => l.startsWith('Role.'));
       expect(warned).toHaveLength(2);
