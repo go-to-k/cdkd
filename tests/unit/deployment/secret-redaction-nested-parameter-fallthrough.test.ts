@@ -595,6 +595,17 @@ describe('a two-token literal parameter persists its own spelling in either pare
     expect(inheritedRenderedSpan(child, key, CONN)).toBeUndefined();
   });
 
+  it('a name recorded twice against the SAME entry still answers (a reused bag is not poisoned)', () => {
+    const parent = reversedParent();
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      RESOLVED_ROW,
+      SOURCE_ROW
+    );
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+  });
+
   it('a name recorded twice against DIFFERENT spellings is poisoned: the reader keeps the scan', () => {
     const parent = reversedParent();
     expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);

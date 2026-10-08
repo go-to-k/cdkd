@@ -1450,6 +1450,11 @@ assert_eq "FallthroughPairReversed.Value persists FallSecretB2's OWN expression"
 assert_eq "premise: FallthroughEmbedReversed's synthesized Description embeds a Ref to FallConnA2" \
   "$(jq -c '.Resources.FallthroughEmbedReversed.Properties.Description' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
   '{"Fn::Join":["",["x-",{"Ref":"FallConnA2"}]]}'
+LIVE_FALL2_EMBED_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the LIVE FallthroughEmbedReversed Description holds the resolved connection string inside its own text" \
+  "${LIVE_FALL2_EMBED_DESC}" "x-postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}@host"
 FALL2_EMBED_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughEmbedReversed.properties.Description')"
 if [ "${FALL2_EMBED_STATE}" = "x-${FALL2_SURVIVOR_SPELLING}" ]; then
   echo "FAIL: the EMBEDDING FallthroughEmbedReversed.Description persisted the survivor's spelling (issue #4644)" >&2
