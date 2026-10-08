@@ -151,9 +151,6 @@
     "AWS::ElastiCache::CacheCluster": [
       "SnapshotArns"
     ],
-    "AWS::ElasticLoadBalancingV2::Listener": [
-      "Tags"
-    ],
     "AWS::Glue::Connection": [
       "Tags"
     ],

@@ -225,6 +225,23 @@ describe('createCrossPrefixDestructiveGate', () => {
     );
   });
 
+  it('a late replacement (stage late) is refused in its own words: the resource is kept, the deploy goes on', async () => {
+    const gate = createCrossPrefixDestructiveGate({
+      region: 'us-east-1',
+      bucket: 'b',
+      cache: new CrossPrefixScanCache(fakeTarget({ 'team-b|App': true }, true)),
+    });
+    const refusal = gate('App', [], 'late');
+    await expect(refusal).rejects.toThrow(
+      /^Refusing to replace a resource of stack App \(us-east-1\) \(a replacement this deploy found only on reading the resource back\), and the stack is also recorded .*\(team-b\)\..*That resource is kept, so the new value is not applied; the rest of the deploy goes on\./s
+    );
+    const message = await refusal.then(
+      () => '',
+      (error: unknown) => (error as Error).message
+    );
+    expect(message).not.toContain('No resource of this stack was changed');
+  });
+
   it('scans for the name the engine passes and ignores its own record', async () => {
     const t = fakeTarget({}, true);
     const gate = createCrossPrefixDestructiveGate({

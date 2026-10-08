@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 135,
-    "enriched": 48,
-    "noComputedAttr": 17,
+    "enriched": 47,
+    "noComputedAttr": 18,
     "unenrichedGap": 0,
     "sdkFallbackGap": 70,
-    "allowListedTypes": 85
+    "allowListedTypes": 84
   },
   "types": [
     {
@@ -412,6 +412,8 @@
         "CreatedAt",
         "EvaluatorArn",
         "EvaluatorId",
+        "EvaluatorType",
+        "Provider",
         "Status",
         "UpdatedAt"
       ],
@@ -431,6 +433,14 @@
           "status": "gap"
         },
         {
+          "name": "EvaluatorType",
+          "status": "gap"
+        },
+        {
+          "name": "Provider",
+          "status": "gap"
+        },
+        {
           "name": "Status",
           "status": "gap"
         },
@@ -442,6 +452,8 @@
       "gaps": [
         "CreatedAt",
         "EvaluatorId",
+        "EvaluatorType",
+        "Provider",
         "Status",
         "UpdatedAt"
       ]
@@ -1846,19 +1858,11 @@
     },
     {
       "resourceType": "AWS::Glue::Table",
-      "bucket": "enriched",
+      "bucket": "no-computed-attr",
       "sdkBacked": true,
-      "readOnlyProperties": [
-        "Id"
-      ],
+      "readOnlyProperties": [],
       "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "Id",
-          "status": "allow-listed",
-          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
-        }
-      ],
+      "attributes": [],
       "gaps": []
     },
     {

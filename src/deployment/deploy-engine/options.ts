@@ -468,11 +468,18 @@ export interface DeployEngineOptions {
    * the approval prompt and any provider call, only when the plan may destroy
    * (`WILL_DESTROY` / `WILL_REPLACE` / `MAY_REPLACE`) or updates a
    * nested-stack row (`checkDestructivePlan`). Throwing
-   * aborts the stack before anything changes. NOT inherited by nested children:
-   * the spread site sets it to `undefined`.
+   * aborts the stack before anything changes. Called again with `stage`
+   * `'late'` for a replacement the deploy decides only on reading a resource
+   * back (`approveLateReplacement`, #4656): there a throw keeps that resource
+   * and the deploy goes on. NOT inherited by nested children: the spread site
+   * sets it to `undefined`.
    */
   onDestructivePlan?:
-    | ((stackName: string, destructive: readonly DestructiveChange[]) => Promise<void>)
+    | ((
+        stackName: string,
+        destructive: readonly DestructiveChange[],
+        stage?: 'late'
+      ) => Promise<void>)
     | undefined;
 
   /**

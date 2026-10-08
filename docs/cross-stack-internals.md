@@ -192,7 +192,13 @@ deliberate divergence, the same one the secret refusal takes.
     ([#4657](https://github.com/go-to-k/cdkd/issues/4657)).
 - **Preview.** `cdkd diff` previews the same verdict, so a refused alias is
   not shown as an addition. An alias an earlier deploy published under a name
-  now refused shows as a removal with its name withheld.
+  now refused shows as a removal with its name withheld. So does any stale
+  alias the template no longer accounts for while some declared `Export.Name`
+  reads a `NoEcho` parameter or custom-resource attribute in any `Fn::If`
+  branch, since one published
+  before the value rotated, or under another verdict, spells a value the diff
+  does not know
+  ([#4723](https://github.com/go-to-k/cdkd/issues/4723)).
 - **The warning** says when the name was refused only because it contains a
   `NoEcho` value, since that can be a coincidence: an export named
   `prod-VpcId` is refused when some `NoEcho` parameter is `prod`. Rename the

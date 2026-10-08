@@ -1171,6 +1171,9 @@ export async function updateInPlace(
     resourceType,
     resultProvisionedBy
   );
+  // go-to-k/cdkd#4656: what this deploy read of the OLD resource does not
+  // describe a resource the fallback replaced.
+  if (result.wasReplaced) this.noEchoExactEchoes.delete(logicalId);
   stateResources[logicalId] = {
     physicalId: result.physicalId,
     resourceType,
@@ -1194,6 +1197,13 @@ export async function updateInPlace(
     ...(!result.wasReplaced &&
       currentResource.noEchoAttributeNames !== undefined && {
         noEchoAttributeNames: currentResource.noEchoAttributeNames,
+      }),
+    // go-to-k/cdkd#4656: the same resource keeps its provider's proven echo
+    // fidelity (the save drops an entry no longer marked); a replacement
+    // here took no echo-fidelity readback, so it starts with none.
+    ...(!result.wasReplaced &&
+      currentResource.noEchoExactEchoLeaves !== undefined && {
+        noEchoExactEchoLeaves: currentResource.noEchoExactEchoLeaves,
       }),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...this.extractTemplateAttributes(template, logicalId),

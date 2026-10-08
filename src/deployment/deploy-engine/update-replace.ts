@@ -973,6 +973,15 @@ export async function updateByReplacement(
     provisionedBy: replaceDecision.provisionedBy,
   };
   this.recordInlinePolicyWrite(logicalId, 'create');
+  // go-to-k/cdkd#4656: a new resource, so its echo fidelity is read afresh
+  // (whatever this deploy read of the old one is dropped).
+  await this.establishNoEchoEchoFidelity(
+    logicalId,
+    stateResources[logicalId]!,
+    resolvedProps,
+    stateResources,
+    updateSecrets
+  );
 
   this.kickOffObservedCapture(
     replaceProvider,

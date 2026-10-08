@@ -141,6 +141,47 @@ export async function checkDestructivePlan(args: {
   await hook(args.stackName, destroying);
 }
 
+/**
+ * The LATE question for a replacement the deploy decided after
+ * {@link requireDeploymentApproval} asked about the diff (go-to-k/cdkd#4656):
+ * a create-only `NoEcho` value whose readback proved it changed, which a diff
+ * that cannot read AWS showed as no replacement. `change` is the resource's
+ * change as a replacement. `true` when nothing asks (`never`, no approver);
+ * otherwise only an approval is `true`: a "no", a refusal to ask (no
+ * terminal) and a deadline already past are `false`, never a throw, since the
+ * caller keeps the resource instead. The enclosing deadlines pause while the
+ * question is open, as for the up-front prompt.
+ */
+export async function approveLateReplacement(args: {
+  options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
+  stackName: string;
+  change: ResourceChange;
+  records: Readonly<Record<string, ResourceState>>;
+  template?: CloudFormationTemplate | undefined;
+}): Promise<boolean> {
+  const level = args.options.requireApproval ?? 'never';
+  const approve = args.options.approveDeployment;
+  if (level === 'never' || approve === undefined) return true;
+  if (enclosingDeadlineExpired()) return false;
+  try {
+    return await whileEnclosingDeadlinesPaused(() =>
+      approve({
+        stackName: args.stackName,
+        level,
+        counts: { create: 0, update: 1, delete: 0 },
+        destructiveChanges: findDestructiveChanges(
+          args.stackName,
+          [args.change],
+          args.records,
+          args.template
+        ),
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
 function approvalAfterTimeout(stackName: string): Error {
   return markNonRetryable(
     new CdkdError(

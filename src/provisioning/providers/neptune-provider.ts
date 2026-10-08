@@ -32,12 +32,14 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceIdentityVerdict,
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
   ProtectionFlipRegistry,
@@ -97,6 +99,15 @@ function instanceAttributes(
     'Endpoint.Port': stringifyIfAssigned(instance?.Endpoint?.Port),
     Arn: instance?.DBInstanceArn,
   });
+}
+
+/**
+ * A DB cluster or DB instance identifier: a letter, then letters, digits and
+ * single hyphens, not ending in one, at most 63 characters. Either case, as a
+ * template may spell it (Neptune lower-cases it).
+ */
+function isDbIdentifier(id: string): boolean {
+  return id.length <= 63 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
 }
 
 /**
@@ -514,6 +525,9 @@ export class NeptuneProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
+    // go-to-k/cdkd#4606: the `DbClusterResourceId` CreateDBCluster returned,
+    // carried on the failure's mark as the orphan's identity.
+    let createdResourceId: string | undefined;
     try {
       const response = await this.getCreateClient().send(
         new CreateDBClusterCommand({
@@ -551,6 +565,7 @@ export class NeptuneProvider implements ResourceProvider {
         })
       );
       clusterCreated = true;
+      createdResourceId = response.DBCluster?.DbClusterResourceId;
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -586,7 +601,13 @@ export class NeptuneProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateDBCluster returned (another owner's name).
       if (clusterCreated) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbClusterIdentifier);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          dbClusterIdentifier,
+          createdResourceId
+        );
       }
       throw thrown;
     }
@@ -827,7 +848,15 @@ export class NeptuneProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Neptune DBCluster ${logicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  Neptune DB cluster ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`Neptune DBCluster ${logicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -858,6 +887,9 @@ export class NeptuneProvider implements ResourceProvider {
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
+    // go-to-k/cdkd#4606: the `DbiResourceId` CreateDBInstance returned,
+    // carried on the failure's mark as the orphan's identity.
+    let createdResourceId: string | undefined;
     try {
       const response = await this.getCreateClient().send(
         new CreateDBInstanceCommand({
@@ -878,6 +910,7 @@ export class NeptuneProvider implements ResourceProvider {
         })
       );
       instanceCreated = true;
+      createdResourceId = response.DBInstance?.DbiResourceId;
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -913,7 +946,13 @@ export class NeptuneProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
       if (instanceCreated) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbInstanceIdentifier);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          dbInstanceIdentifier,
+          createdResourceId
+        );
       }
       throw thrown;
     }
@@ -1098,7 +1137,15 @@ export class NeptuneProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Neptune DBInstance ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  Neptune DB instance ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`Neptune DBInstance ${physicalId} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1157,6 +1204,138 @@ export class NeptuneProvider implements ResourceProvider {
     return (
       name === faultName || message.includes('not found') || message.includes('does not exist')
     );
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the DB cluster or DB instance a failed CREATE
+   * journaled is the one the record under the same logical id holds (a
+   * fix-forward that created a new one there under another identifier).
+   *
+   * Reached on the SDK route only (Cloud Control's provider has no
+   * `isSameResource`, so a Cloud Control-routed orphan is `'unknown'`). Both
+   * ids must be DB identifiers; an ARN or anything else is `'unknown'`, as
+   * is a DBSubnetGroup. An identifier names at most one cluster (or
+   * instance) per account and region at a time, across Neptune, RDS and
+   * DocumentDB, and is compared case-insensitively (stored lower-cased), so
+   * two spellings equal modulo case are `'same'` without a read. After the
+   * region check the record's resource must read back as a Neptune one (else
+   * `'unknown'`); the journaled one is `'same'` when it reads back under the
+   * record's `DbClusterResourceId` / `DbiResourceId` (immutable, unique,
+   * unchanged by a rename), `'different'` under another, and `'different'`
+   * when AWS reports its identifier gone: the record's resource answers to
+   * its own, other, identifier, so the gone one cannot name it. A read
+   * answering with another engine's resource throws (`'unknown'` to the
+   * caller): the identifier is no longer a Neptune one.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::Neptune::DBCluster' && resourceType !== 'AWS::Neptune::DBInstance') {
+      return 'unknown';
+    }
+    if (!isDbIdentifier(journaledPhysicalId) || !isDbIdentifier(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordResourceId = await this.readDbResourceIdIfExists(resourceType, record.physicalId);
+    if (recordResourceId === undefined) return 'unknown';
+    const journaledResourceId = await this.readDbResourceIdIfExists(
+      resourceType,
+      journaledPhysicalId
+    );
+    if (journaledResourceId === undefined) return 'different';
+    return journaledResourceId === recordResourceId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4606: the cluster's `DbClusterResourceId` or the instance's
+   * `DbiResourceId`, which AWS generates, never changes (a rename keeps it)
+   * and never gives a later resource. A cluster or instance re-created under
+   * the identifier, in any case spelling and by any of the engines sharing
+   * the namespace, answers with another id (or, for another engine, throws),
+   * so the settle keeps it rather than deleting it as the failed CREATE's
+   * orphan. A failed CREATE's own token comes from its create response, on
+   * the failure's mark (`markCreatedBeforeFailure`); this is the live read.
+   *
+   * `undefined` for another type, an id that is not a DB identifier, or a
+   * client in another region than `expectedRegion`. `RESOURCE_NOT_FOUND`
+   * only on the describe's not-found fault NAME (or an empty list); any
+   * other failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::Neptune::DBCluster' && resourceType !== 'AWS::Neptune::DBInstance') {
+      return undefined;
+    }
+    if (!isDbIdentifier(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const live = await this.readDbResourceIdIfExists(resourceType, physicalId);
+    return live === undefined ? RESOURCE_NOT_FOUND : live;
+  }
+
+  /**
+   * The Neptune cluster's `DbClusterResourceId` (or the instance's
+   * `DbiResourceId`), or `undefined` when AWS reports the identifier gone
+   * (its not-found fault NAME, or an empty describe list). Any other
+   * failure, a response naming another identifier, one whose engine is not
+   * `neptune` (the describe also answers for RDS and DocumentDB resources)
+   * and one naming no resource id throw: "could not read" never reads as
+   * "gone".
+   */
+  private async readDbResourceIdIfExists(
+    resourceType: 'AWS::Neptune::DBCluster' | 'AWS::Neptune::DBInstance',
+    identifier: string
+  ): Promise<string | undefined> {
+    const isCluster = resourceType === 'AWS::Neptune::DBCluster';
+    let found:
+      | {
+          identifier: string | undefined;
+          engine: string | undefined;
+          resourceId: string | undefined;
+        }
+      | undefined;
+    try {
+      if (isCluster) {
+        const cluster = await this.describeDBCluster(identifier);
+        found = cluster && {
+          identifier: cluster.DBClusterIdentifier,
+          engine: cluster.Engine,
+          resourceId: cluster.DbClusterResourceId,
+        };
+      } else {
+        const instance = await this.describeDBInstance(identifier);
+        found = instance && {
+          identifier: instance.DBInstanceIdentifier,
+          engine: instance.Engine,
+          resourceId: instance.DbiResourceId,
+        };
+      }
+    } catch (error) {
+      const notFound = isCluster ? 'DBClusterNotFoundFault' : 'DBInstanceNotFoundFault';
+      if ((error as { name?: unknown } | null)?.name === notFound) return undefined;
+      throw error;
+    }
+    if (found === undefined) return undefined;
+    const api = isCluster ? 'DescribeDBClusters' : 'DescribeDBInstances';
+    if (found.identifier?.toLowerCase() !== identifier.toLowerCase()) {
+      throw new Error(`${api} answered for another identifier`);
+    }
+    if (found.engine !== 'neptune') {
+      throw new Error(`${api} answered for a resource of another engine`);
+    }
+    if (typeof found.resourceId !== 'string' || found.resourceId === '') {
+      throw new Error(`${api} returned no resource id`);
+    }
+    return found.resourceId;
   }
 
   private async describeDBCluster(dbClusterIdentifier: string) {

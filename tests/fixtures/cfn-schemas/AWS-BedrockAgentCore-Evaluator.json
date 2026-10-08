@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Evaluator",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-08",
   "properties": [
     "CreatedAt",
     "Description",
@@ -8,8 +8,10 @@
     "EvaluatorConfig",
     "EvaluatorId",
     "EvaluatorName",
+    "EvaluatorType",
     "KmsKeyArn",
     "Level",
+    "Provider",
     "Status",
     "Tags",
     "UpdatedAt"
@@ -18,6 +20,8 @@
     "CreatedAt",
     "EvaluatorArn",
     "EvaluatorId",
+    "EvaluatorType",
+    "Provider",
     "Status",
     "UpdatedAt"
   ],
@@ -25,6 +29,11 @@
     "EvaluatorName"
   ],
   "createOnlyPropertyPaths": [
+    [
+      "EvaluatorConfig",
+      "Derived",
+      "BaseEvaluatorId"
+    ],
     [
       "EvaluatorName"
     ]
@@ -35,10 +44,12 @@
   "nestedProperties": {
     "EvaluatorConfig": [
       "AdditionalModelRequestFields",
+      "BaseEvaluatorId",
       "BedrockEvaluatorModelConfig",
       "Categorical",
       "CodeBased",
       "Definition",
+      "Derived",
       "Effort",
       "InferenceConfig",
       "Instructions",
@@ -70,6 +81,23 @@
       "CodeBased.LambdaConfig",
       "CodeBased.LambdaConfig.LambdaArn",
       "CodeBased.LambdaConfig.LambdaTimeoutInSeconds",
+      "Derived",
+      "Derived.BaseEvaluatorId",
+      "Derived.ModelConfig",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.MaxTokens",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.Temperature",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.TopP",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.ModelId",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig.MaxOutputTokens",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig.ModelId",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning.Effort",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig.Temperature",
+      "Derived.ModelConfig.ResponsesEvaluatorModelConfig.TopP",
       "LlmAsAJudge",
       "LlmAsAJudge.Instructions",
       "LlmAsAJudge.ModelConfig",
@@ -109,6 +137,8 @@
       "Description": "scalar",
       "EvaluatorConfig": "object",
       "Level": "scalar",
+      "EvaluatorType": "scalar",
+      "Provider": "scalar",
       "Status": "scalar",
       "CreatedAt": "scalar",
       "UpdatedAt": "scalar",
@@ -117,7 +147,12 @@
     },
     "EvaluatorConfig": {
       "LlmAsAJudge": "object",
-      "CodeBased": "object"
+      "CodeBased": "object",
+      "Derived": "object"
+    },
+    "DerivedEvaluatorConfig": {
+      "BaseEvaluatorId": "scalar",
+      "ModelConfig": "object"
     },
     "CodeBasedEvaluatorConfig": {
       "LambdaConfig": "object"
@@ -179,6 +214,10 @@
       "EvaluatorName",
       "Level"
     ],
+    "DerivedEvaluatorConfig": [
+      "BaseEvaluatorId",
+      "ModelConfig"
+    ],
     "CodeBasedEvaluatorConfig": [
       "LambdaConfig"
     ],
@@ -217,6 +256,16 @@
     "EvaluatorConfig.CodeBased.LambdaConfig": [
       "LambdaArn"
     ],
+    "EvaluatorConfig.Derived": [
+      "BaseEvaluatorId",
+      "ModelConfig"
+    ],
+    "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig": [
+      "ModelId"
+    ],
+    "EvaluatorConfig.Derived.ModelConfig.ResponsesEvaluatorModelConfig": [
+      "ModelId"
+    ],
     "EvaluatorConfig.LlmAsAJudge": [
       "Instructions",
       "ModelConfig",
@@ -246,6 +295,13 @@
     "EvaluatorConfig": "object",
     "EvaluatorConfig.CodeBased": "object",
     "EvaluatorConfig.CodeBased.LambdaConfig": "object",
+    "EvaluatorConfig.Derived": "object",
+    "EvaluatorConfig.Derived.ModelConfig": "object",
+    "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig": "object",
+    "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields": "object",
+    "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig": "object",
+    "EvaluatorConfig.Derived.ModelConfig.ResponsesEvaluatorModelConfig": "object",
+    "EvaluatorConfig.Derived.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning": "object",
     "EvaluatorConfig.LlmAsAJudge": "object",
     "EvaluatorConfig.LlmAsAJudge.ModelConfig": "object",
     "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig": "object",

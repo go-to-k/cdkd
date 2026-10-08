@@ -15,6 +15,8 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
+import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 
@@ -85,6 +87,25 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
 });
 
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+
+// A knob for the lost-child arm (go-to-k/cdkd#4656 review): when set, the
+// named resource reads as a child whose parent this deploy re-created.
+const lostChildKnob = vi.hoisted(() => ({
+  forType: undefined as string | undefined,
+}));
+vi.mock('../../../src/deployment/child-of-recreated-parent.js', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('../../../src/deployment/child-of-recreated-parent.js')>();
+  return {
+    ...original,
+    childLostWithRecreatedParent: (
+      input: Parameters<typeof original.childLostWithRecreatedParent>[0]
+    ) =>
+      lostChildKnob.forType === input.resourceType
+        ? { parent: 'Param', property: 'DisplayName', mode: 'recreate' as const }
+        : original.childLostWithRecreatedParent(input),
+  };
+});
 
 const STACK = 'noecho-v11-stack';
 const REGION = 'us-east-1';
@@ -178,6 +199,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
   const logger = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
+    lostChildKnob.forType = undefined;
     describeType.writeOnly.clear();
     describeType.fail = false;
     clearCreateOnlyPropertiesCache();
@@ -225,6 +247,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         getRegisteredTypes: vi.fn().mockReturnValue([]),
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
       } as never,
       { dryRun: false, captureObservedState: false, ...options },
       REGION,
@@ -565,10 +588,15 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
   });
 
   describe('the migration witness (a record a pre-v11 binary wrote)', () => {
-    it('skips an unchanged value with NO readback, and the save migrates the record', async () => {
+    it('skips an unchanged value with no comparison readback, and the save migrates the record', async () => {
       stateBackend.getState.mockResolvedValue({ state: v10State(), etag: 'etag-old' });
       await makeEngine().deploy(STACK, template());
-      expect(provider.readCurrentState).not.toHaveBeenCalled();
+      // The witness settles both values. The only read is the create-only
+      // topic's echo-fidelity readback (go-to-k/cdkd#4656), handed a copy of
+      // the record with the stored plaintext pre-masked.
+      expect(provider.readCurrentState.mock.calls).toEqual([
+        [TOPIC_ARN, 'Topic', 'AWS::SNS::Topic', { TopicName: '***', DisplayName: 'd' }],
+      ]);
       expect(callsFor(provider.update, 'Param')).toHaveLength(0);
       expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
@@ -1226,6 +1254,693 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const out = engine.applyNoEchoPersist('Cr', record, record, undefined, {});
       expect(out.noEchoAttributeNames).toEqual(['Fresh', 'Kept']);
       expect(out.attributes).toEqual({ Kept: '***', Public: 'now-public', Fresh: '***' });
+    });
+  });
+
+  describe('echo fidelity of a create-only NoEcho value (go-to-k/cdkd#4656)', () => {
+    const ROTATED = 'topic-v11-rotated-0002';
+    const rotatedTemplate = (): CloudFormationTemplate => {
+      const tpl = template();
+      tpl.Parameters!['TopicName'] = { Type: 'String', NoEcho: true, Default: ROTATED };
+      return tpl;
+    };
+    const exactState = (): StackState =>
+      v11State({ Topic: { noEchoExactEchoLeaves: [['TopicName']] } });
+    const topicReads = (): unknown[][] =>
+      provider.readCurrentState.mock.calls.filter((c) => c[1] === 'Topic');
+    beforeEach(() => {
+      // A replacement gets the ARN of the name it was created under.
+      provider.create.mockImplementation(
+        (logicalId: string, _type: string, props: Record<string, unknown>) =>
+          Promise.resolve({
+            physicalId:
+              logicalId === 'Topic'
+                ? `arn:aws:sns:us-east-1:123456789012:${String(props['TopicName'])}`
+                : `${logicalId}-phys`,
+            attributes: {},
+          })
+      );
+      // An SNS readback reports the name as its ARN's tail, as the provider does.
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId.startsWith('arn:aws:sns:')
+            ? { TopicName: physicalId.split(':').pop(), DisplayName: 'd' }
+            : { Name: '/app/p', Type: 'String', Value: TOKEN }
+        )
+      );
+    });
+
+    it('sets the flag when the create readback, handed the masked record, reports the value exactly', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      await makeEngine().deploy(STACK, template());
+      expect(topicReads()).toEqual([
+        [TOPIC_ARN, 'Topic', 'AWS::SNS::Topic', { TopicName: '***', DisplayName: 'd' }],
+      ]);
+      const saved = lastSaved();
+      expect(saved.resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+      // An updatable property is never judged (no create-only path).
+      expect(saved.resources['Param']!.noEchoExactEchoLeaves).toBeUndefined();
+      expect(provider.readCurrentState.mock.calls.some((c) => c[1] === 'Param')).toBe(false);
+    });
+
+    it('never sets it for a provider that echoes the record it was handed', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      provider.readCurrentState.mockImplementation(
+        (_p: string, _l: string, _t: string, props: Record<string, unknown>) =>
+          Promise.resolve({ ...props })
+      );
+      await makeEngine().deploy(STACK, template());
+      expect(topicReads()).toHaveLength(1);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
+
+    it('never sets it for a provider that normalizes what it reports', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === TOPIC_ARN
+            ? { TopicName: TOPIC.toUpperCase(), DisplayName: 'd' }
+            : { Name: '/app/p', Value: TOKEN }
+        )
+      );
+      await makeEngine().deploy(STACK, template());
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
+
+    it('leaves it absent on a failed create readback, and sets it on the next readback that holds', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        physicalId === TOPIC_ARN
+          ? Promise.reject(new Error('throttled'))
+          : Promise.resolve({ Name: '/app/p', Value: TOKEN })
+      );
+      await makeEngine().deploy(STACK, template());
+      const first = lastSaved();
+      expect(first.resources['Topic']!.noEchoLeaves).toEqual([['TopicName']]);
+      expect(first.resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === TOPIC_ARN
+            ? { TopicName: TOPIC, DisplayName: 'd' }
+            : { Name: '/app/p', Value: TOKEN }
+        )
+      );
+      stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-1' });
+      await makeEngine().deploy(STACK, template());
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+    });
+
+    it('computes it at the migration deploy against a PRE-MASKED copy: an echoing provider sets nothing', async () => {
+      stateBackend.getState.mockResolvedValue({ state: v10State(), etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation(
+        (_p: string, _l: string, _t: string, props: Record<string, unknown>) =>
+          Promise.resolve({ ...props })
+      );
+      await makeEngine().deploy(STACK, template());
+      // The record held the plaintext; the provider was handed the mask.
+      expect(topicReads()).toEqual([
+        [TOPIC_ARN, 'Topic', 'AWS::SNS::Topic', { TopicName: '***', DisplayName: 'd' }],
+      ]);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+    });
+
+    it('computes it at the migration deploy when AWS reports the value exactly', async () => {
+      stateBackend.getState.mockResolvedValue({ state: v10State(), etag: 'etag-old' });
+      await makeEngine().deploy(STACK, template());
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+    });
+
+    it('REPLACES a rotated value through the create-first path when the flag is set', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      await makeEngine().deploy(STACK, rotatedTemplate());
+      const creates = callsFor(provider.create, 'Topic');
+      expect(creates).toHaveLength(1);
+      expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(ROTATED);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
+      expect(provider.create.mock.invocationCallOrder[0]!).toBeLessThan(
+        provider.delete.mock.invocationCallOrder[0]!
+      );
+      expect(lines(logger.warn).filter((l) => l.includes('Topic.TopicName'))).toEqual([
+        'Topic.TopicName is a create-only property fed by a NoEcho parameter, and AWS, which reports it exactly, holds a different value: Topic is replaced.',
+      ]);
+      const saved = lastSaved().resources['Topic']!;
+      expect(saved.properties['TopicName']).toBe('***');
+      // The NEW resource's own readback set the flag again.
+      expect(saved.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+      expect(allSaved()).not.toContain(`"${ROTATED}"`);
+    });
+
+    it('a replacement reads its echo fidelity afresh: the old flag is not carried onto it', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === TOPIC_ARN
+            ? { TopicName: TOPIC, DisplayName: 'd' }
+            : physicalId.startsWith('arn:aws:sns:')
+              ? { TopicName: ROTATED.toUpperCase(), DisplayName: 'd' }
+              : { Name: '/app/p', Type: 'String', Value: TOKEN }
+        )
+      );
+      await makeEngine().deploy(STACK, rotatedTemplate());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
+
+    it('replaces under --require-approval when nothing can be asked (no approver)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      await makeEngine({ requireApproval: 'destructive' }).deploy(STACK, rotatedTemplate());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+    });
+
+    it('never replaces without the flag, and the warning names why', async () => {
+      stateBackend.getState.mockResolvedValue({ state: v11State(), etag: 'etag-old' });
+      await makeEngine().deploy(STACK, rotatedTemplate());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+      const warned = lines(logger.warn).filter((l) => l.includes('Topic.TopicName'));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain(
+        '(differs; the provider is not known to report this property exactly, so the difference may be its normalization)'
+      );
+      // A differing read never sets the flag.
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
+
+    it('never replaces on a coordinate the flag does not name', async () => {
+      stateBackend.getState.mockResolvedValue({
+        state: v11State({ Topic: { noEchoExactEchoLeaves: [['DisplayName']] } }),
+        etag: 'etag-old',
+      });
+      await makeEngine().deploy(STACK, rotatedTemplate());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+    });
+
+    it('a create or replacement verdict REPLACES what the deploy noted of the old resource', () => {
+      const engine = makeEngine() as unknown as {
+        noteNoEchoExactEchoes: (...args: unknown[]) => void;
+        noEchoExactEchoes: Map<string, { physicalId: string; coordinates: string[][] }>;
+      };
+      const candidates = [{ coordinate: ['TopicName'], plaintext: TOPIC }];
+      const handed = { TopicName: '***' };
+      const ok = { live: { TopicName: TOPIC } };
+      const failed = { failure: 'read-failed' };
+      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, ok, handed, candidates, 'add');
+      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
+      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, failed, handed, candidates, 'add');
+      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
+      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, failed, handed, candidates, 'set');
+      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([]);
+    });
+
+    it('never replaces on a report that is the mask itself (a projected read), flag or not', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation(
+        (_p: string, _l: string, _t: string, props: Record<string, unknown>) =>
+          Promise.resolve({ ...props })
+      );
+      await makeEngine().deploy(STACK, rotatedTemplate());
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+      // `differs` keeps the flag it had.
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+    });
+
+    it.each(['destructive', 'any-change'] as const)(
+      'asks again under --require-approval=%s, whose up-front prompt saw no replacement; a "no" keeps the resource and the flag',
+      async (level) => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const approveDeployment = vi.fn(async (_request: unknown) => false);
+        const tpl = rotatedTemplate();
+        tpl.Resources['Topic']!.Metadata = { 'aws:cdk:path': 'Stack/NamedTopic/Resource' };
+        await makeEngine({ requireApproval: level, approveDeployment }).deploy(STACK, tpl);
+        // The up-front prompt saw a promotion only; the late one names the replacement.
+        expect(approveDeployment).toHaveBeenCalledTimes(1);
+        const request = approveDeployment.mock.calls[0]![0] as {
+          level: string;
+          destructiveChanges: { logicalId: string }[];
+        };
+        expect(request.level).toBe(level);
+        expect(request.destructiveChanges.map((c) => c.logicalId)).toEqual(['Topic']);
+        // Rendered from the deploy's template, as the up-front prompt is.
+        expect(
+          (request.destructiveChanges[0] as { constructPath?: string }).constructPath
+        ).toBe('Stack/NamedTopic/Resource');
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+        expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+        const warned = lines(logger.warn).filter((l) => l.includes('Topic.TopicName'));
+        expect(warned).toHaveLength(1);
+        expect(warned[0]).toContain(
+          `(differs; the replacement was not approved (--require-approval=${level}))`
+        );
+        expect(warned[0]).not.toContain(ROTATED);
+        expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+      }
+    );
+
+    describe('the cross-prefix check of a late replacement (go-to-k/cdkd#4705)', () => {
+      it('asks onDestructivePlan with stage late, which the plan never called, then replaces', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const onDestructivePlan = vi.fn(async (..._args: unknown[]) => undefined);
+        await makeEngine({ onDestructivePlan }).deploy(STACK, rotatedTemplate());
+        // The plan saw a promotion only, so the ONE call is the late one.
+        expect(onDestructivePlan).toHaveBeenCalledTimes(1);
+        const [stackName, destructive, stage] = onDestructivePlan.mock.calls[0]!;
+        expect(stackName).toBe(STACK);
+        expect((destructive as { logicalId: string }[]).map((c) => c.logicalId)).toEqual([
+          'Topic',
+        ]);
+        expect(stage).toBe('late');
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      });
+
+      it('a refusal keeps the resource, warns it in full, and the deploy goes on', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const refusal = 'Refusing to replace a resource of stack S: recorded under team-b.';
+        const onDestructivePlan = vi.fn(async () => {
+          throw new CdkdError(refusal, 'STACK_UNDER_OTHER_PREFIX');
+        });
+        const approveDeployment = vi.fn(async () => true);
+        await makeEngine({
+          onDestructivePlan,
+          requireApproval: 'destructive',
+          approveDeployment,
+        }).deploy(STACK, rotatedTemplate());
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+        expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+        // Refused before the late approval prompt.
+        expect(approveDeployment).not.toHaveBeenCalled();
+        const warned = lines(logger.warn);
+        expect(warned).toContain(refusal);
+        const topic = warned.filter((l) => l.includes('Topic.TopicName'));
+        expect(topic).toHaveLength(1);
+        expect(topic[0]).toContain(
+          '(differs; the replacement was refused: see the state-prefix warning above)'
+        );
+        expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+      });
+
+      it('an error that is not a refusal still fails the deploy', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const onDestructivePlan = vi.fn(async () => {
+          throw new TypeError('boom');
+        });
+        await expect(
+          makeEngine({ onDestructivePlan }).deploy(STACK, rotatedTemplate())
+        ).rejects.toThrow();
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      });
+    });
+
+    it('asks nothing under --require-approval=never, even with an approver', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({ requireApproval: 'never', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(approveDeployment).not.toHaveBeenCalled();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+    });
+
+    it('an `add` verdict on another physical resource replaces, never unions, and a create readback starts afresh', async () => {
+      const engine = makeEngine() as unknown as {
+        noteNoEchoExactEchoes: (...args: unknown[]) => void;
+        establishNoEchoEchoFidelity: (...args: unknown[]) => Promise<void>;
+        noEchoExactEchoes: Map<string, { physicalId: string; coordinates: string[][] }>;
+      };
+      const handed = { TopicName: '***', DisplayName: '***' };
+      const both = [
+        { coordinate: ['TopicName'], plaintext: TOPIC },
+        { coordinate: ['DisplayName'], plaintext: 'd' },
+      ];
+      engine.noteNoEchoExactEchoes('Topic', 'old', { live: { TopicName: TOPIC } }, handed, both, 'add');
+      engine.noteNoEchoExactEchoes('Topic', 'new', { live: { DisplayName: 'd' } }, handed, both, 'add');
+      expect(engine.noEchoExactEchoes.get('Topic')).toEqual({
+        physicalId: 'new',
+        coordinates: [['DisplayName']],
+      });
+      // No template bag for the id: nothing to judge, and nothing noted survives.
+      await engine.establishNoEchoEchoFidelity('Topic', v11State().resources['Topic'], {}, {}, new Map());
+      expect(engine.noEchoExactEchoes.has('Topic')).toBe(false);
+    });
+
+    it('asks ONCE per resource, however many of its paths proved a change, and one "no" keeps all of them', async () => {
+      const state = v11State();
+      state.resources['Role'] = {
+        physicalId: 'old-role',
+        resourceType: 'AWS::IAM::Role',
+        properties: { RoleName: '***', Path: '***', AssumeRolePolicyDocument: {} },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['Path'], ['RoleName']],
+        noEchoExactEchoLeaves: [['Path'], ['RoleName']],
+        constructPath: 'Stack/Role/Resource',
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === 'old-role'
+            ? { RoleName: 'old-role', Path: '/old/', AssumeRolePolicyDocument: {} }
+            : physicalId === TOPIC_ARN
+              ? { TopicName: TOPIC, DisplayName: 'd' }
+              : { Name: '/app/p', Type: 'String', Value: TOKEN }
+        )
+      );
+      const tpl = template(TOKEN, {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            RoleName: { Ref: 'RName' },
+            Path: { Ref: 'RPath' },
+            AssumeRolePolicyDocument: {},
+          },
+        },
+      });
+      tpl.Parameters!['RName'] = { Type: 'String', NoEcho: true, Default: 'new-role-name' };
+      tpl.Parameters!['RPath'] = { Type: 'String', NoEcho: true, Default: '/new-path/' };
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      // No template metadata: the prompt names the RECORD's construct path.
+      const asked = (approveDeployment.mock.calls[0] as unknown[])[0] as {
+        destructiveChanges: { constructPath?: string }[];
+      };
+      expect(asked.destructiveChanges[0]?.constructPath).toBe('Stack/Role/Resource');
+      expect(callsFor(provider.create, 'Role')).toHaveLength(0);
+      const warned = lines(logger.warn).filter((l) => l.startsWith('Role.'));
+      expect(warned).toHaveLength(2);
+      for (const line of warned) expect(line).toContain('the replacement was not approved');
+    });
+
+    it('asks nothing more when another path replaces the resource anyway, and says nothing is kept', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      // Yes to the up-front prompt (it covers the template's create-only edit),
+      // no to anything after it.
+      let asked = 0;
+      const approveDeployment = vi.fn(async () => ++asked === 1);
+      const tpl = rotatedTemplate();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = true;
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      const creates = callsFor(provider.create, 'Topic');
+      expect(creates).toHaveLength(1);
+      // The rotated value reaches the new resource.
+      expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(ROTATED);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('asks nothing for a --recreate-via-cc-api target, which is replaced anyway', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      // The flag's own question is never reached, so a "no" changes nothing.
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({
+        requireApproval: 'destructive',
+        approveDeployment,
+        recreateTargets: { stackName: STACK, viaCcApi: new Set(['Topic']), viaSdkProvider: new Set() },
+      }).deploy(STACK, rotatedTemplate());
+      expect(approveDeployment).not.toHaveBeenCalled();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('asks nothing for a child whose re-created parent took it, which is re-created anyway', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      lostChildKnob.forType = 'AWS::SNS::Topic';
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(approveDeployment).not.toHaveBeenCalled();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('asks nothing more when another NoEcho create-only path MOVED under a replacement ceiling, which replaces anyway', async () => {
+      // FifoTopic reads Dep, which this deploy replaces (its create-only name
+      // changed), so the diff raises a replacement ceiling on it; its template
+      // text also moved around the NoEcho value (its recorded fingerprint,
+      // #4451), so the ceiling stands. TopicName's readback proves a change
+      // through the flag.
+      const state = exactState();
+      state.resources['Topic'] = {
+        ...state.resources['Topic']!,
+        properties: { TopicName: '***', DisplayName: 'd', FifoTopic: '***' },
+        dependencies: ['Dep'],
+        noEchoLeaves: [['FifoTopic'], ['TopicName']],
+        maskedPropertyFingerprints: {
+          FifoTopic: maskedPropertyFingerprint({ 'Fn::Sub': '${Fifo}+${Dep}' }),
+        },
+      };
+      state.resources['Dep'] = {
+        physicalId: 'dep-old-phys',
+        resourceType: 'AWS::SNS::Topic',
+        properties: { TopicName: 'dep-old' },
+        attributes: {},
+        dependencies: [],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      const tpl = rotatedTemplate();
+      tpl.Parameters!['Fifo'] = { Type: 'String', NoEcho: true, Default: 'fifo-flag-value' };
+      tpl.Resources['Dep'] = { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'dep-new' } };
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = {
+        'Fn::Sub': '${Fifo}-${Dep}',
+      };
+      // Yes to the up-front prompt (it covers Dep's replacement), no after it.
+      let asked = 0;
+      const approveDeployment = vi.fn(async () => ++asked === 1);
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('replaces once the late prompt approves (what --yes answers)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const approveDeployment = vi.fn(async () => true);
+      await makeEngine({ requireApproval: 'any-change', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
+    });
+
+    it('keeps the resource when the late prompt cannot be asked (no terminal), and the deploy goes on', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const approveDeployment = vi.fn(async () => {
+        throw new Error('stdin is not interactive');
+      });
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        true
+      );
+    });
+
+    it('never applies a verdict on one physical resource to a record of another (a rollback restoring the old record)', () => {
+      const engine = makeEngine() as unknown as {
+        noteNoEchoExactEchoes: (...args: unknown[]) => void;
+        withNoEchoExactEchoes: (id: string, record: ResourceState) => ResourceState;
+      };
+      engine.noteNoEchoExactEchoes(
+        'Topic',
+        `${TOPIC_ARN}-new`,
+        { live: { TopicName: TOPIC } },
+        { TopicName: '***' },
+        [{ coordinate: ['TopicName'], plaintext: TOPIC }],
+        'set'
+      );
+      const old = v11State().resources['Topic']!;
+      expect(engine.withNoEchoExactEchoes('Topic', old).noEchoExactEchoLeaves).toBeUndefined();
+      expect(
+        engine.withNoEchoExactEchoes('Topic', { ...old, physicalId: `${TOPIC_ARN}-new` })
+          .noEchoExactEchoLeaves
+      ).toEqual([['TopicName']]);
+    });
+
+    it('a replacement whose own readback fails keeps no flag, though the migration read of the old resource was exact', async () => {
+      const state = v10State();
+      state.resources['Topic']!.properties['FifoTopic'] = false;
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      let topicRead = 0;
+      provider.readCurrentState.mockImplementation((physicalId: string) => {
+        if (!physicalId.startsWith('arn:aws:sns:')) {
+          return Promise.resolve({ Name: '/app/p', Type: 'String', Value: TOKEN });
+        }
+        topicRead++;
+        return topicRead === 1
+          ? Promise.resolve({ TopicName: TOPIC, DisplayName: 'd' })
+          : Promise.reject(new Error('throttled'));
+      });
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve({
+          physicalId: logicalId === 'Topic' ? `${TOPIC_ARN}-v2` : `${logicalId}-phys`,
+          attributes: {},
+        })
+      );
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = true;
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(topicRead).toBe(2);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
+
+    it('a replacement the flag proves still meets the stateful guard', async () => {
+      const state = v11State();
+      state.resources['Named'] = {
+        physicalId: '/app/old-name',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: '***', Type: 'String', Value: 'v' },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['Name']],
+        noEchoExactEchoLeaves: [['Name']],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === TOPIC_ARN
+            ? { TopicName: TOPIC, DisplayName: 'd' }
+            : physicalId === '/app/old-name'
+              ? { Name: '/app/old-name', Type: 'String', Value: 'v' }
+              : { Name: '/app/p', Type: 'String', Value: TOKEN }
+        )
+      );
+      const tpl = template(TOKEN, {
+        Named: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: { Ref: 'PName' }, Type: 'String', Value: 'v' },
+        },
+      });
+      tpl.Parameters!['PName'] = { Type: 'String', NoEcho: true, Default: '/app/new-name' };
+      const error = await makeEngine()
+        .deploy(STACK, tpl)
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(error).toBeDefined();
+      const text = String(error) + lines(logger.error).join('\n');
+      expect(text).toContain('it is a stateful resource');
+      expect(callsFor(provider.create, 'Named')).toHaveLength(0);
+      expect(callsFor(provider.delete, 'Named')).toHaveLength(0);
+    });
+
+    it('a readback that cannot report the property leaves the flag as it was, carried through an in-place update', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        Promise.resolve(
+          physicalId === TOPIC_ARN ? { DisplayName: 'd' } : { Name: '/app/p', Value: TOKEN }
+        )
+      );
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['DisplayName'] = 'd2';
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.update, 'Topic')).toHaveLength(1);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+    });
+
+    it('an update the provider turned into a replacement keeps no flag', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      provider.update.mockImplementation((logicalId: string, physicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Topic'
+            ? { physicalId: `${TOPIC_ARN}-new`, wasReplaced: true }
+            : { physicalId, wasReplaced: false }
+        )
+      );
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['DisplayName'] = 'd2';
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.update, 'Topic')).toHaveLength(1);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toBeUndefined();
+    });
+
+    it('an in-place update of the same resource keeps the flag; the save drops an entry no longer marked', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      const tpl = template();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['DisplayName'] = 'd2';
+      await makeEngine().deploy(STACK, tpl);
+      expect(callsFor(provider.update, 'Topic')).toHaveLength(1);
+      expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+
+      // The save keeps only entries the record still marks.
+      const engine = makeEngine() as unknown as Record<string, unknown> & {
+        applyNoEchoPersist: (...args: unknown[]) => ResourceState;
+      };
+      engine['constructPathTemplate'] = template();
+      const record: ResourceState = {
+        physicalId: TOPIC_ARN,
+        resourceType: 'AWS::SNS::Topic',
+        properties: { TopicName: '***', DisplayName: 'd' },
+        noEchoLeaves: [['TopicName']],
+        noEchoExactEchoLeaves: [['TopicName'], ['DisplayName']],
+      };
+      expect(
+        engine.applyNoEchoPersist('Topic', record, record, undefined, {}).noEchoExactEchoLeaves
+      ).toEqual([['TopicName']]);
+      const unmarked = { ...record, noEchoLeaves: [['Other']] };
+      expect(
+        engine.applyNoEchoPersist('Topic', unmarked, unmarked, undefined, {}).noEchoExactEchoLeaves
+      ).toBeUndefined();
+    });
+
+    it('reads a malformed field as absent, and judges only whole string leaves under a create-only path by object keys', async () => {
+      const { noEchoExactEchoLeavesOf, echoFidelityCandidates, echoesExactlyAt, provesEchoChangeAt } =
+        await import('../../../src/deployment/deploy-engine/noecho.js');
+      // Only a readback HANDED the mask at the coordinate reports anything: one
+      // handed a plaintext (or anything else) may have projected it.
+      const candidate = { coordinate: ['A', 'B'], plaintext: 'v-1234' };
+      const masked = { A: { B: '***' } };
+      expect(echoesExactlyAt({ A: { B: 'v-1234' } }, masked, candidate)).toBe(true);
+      expect(echoesExactlyAt({ A: { B: 'v-1234' } }, { A: { B: 'v-1234' } }, candidate)).toBe(false);
+      expect(echoesExactlyAt({ A: { B: 'V-1234' } }, masked, candidate)).toBe(false);
+      expect(provesEchoChangeAt({ A: { B: 'w-1234' } }, masked, candidate)).toBe(true);
+      expect(provesEchoChangeAt({ A: { B: 'w-1234' } }, { A: { B: 'x' } }, candidate)).toBe(false);
+      expect(provesEchoChangeAt({ A: { B: '***' } }, masked, candidate)).toBe(false);
+      expect(provesEchoChangeAt({ A: { B: 7 } }, masked, candidate)).toBe(false);
+      expect(provesEchoChangeAt({ A: {} }, masked, candidate)).toBe(false);
+      expect(noEchoExactEchoLeavesOf({ noEchoExactEchoLeaves: [['A'], ['B', 0]] })).toBeUndefined();
+      expect(noEchoExactEchoLeavesOf({ noEchoExactEchoLeaves: [[]] })).toBeUndefined();
+      expect(noEchoExactEchoLeavesOf({ noEchoExactEchoLeaves: 'A' })).toBeUndefined();
+      expect(noEchoExactEchoLeavesOf({ noEchoExactEchoLeaves: [['A', 'b']] })).toEqual([['A', 'b']]);
+      const resolved = {
+        Name: 'n-1234',
+        List: ['a-1234', 'b-1234'],
+        Nested: { Key: 'k-1234' },
+        Port: 7,
+        Masked: '***',
+        Updatable: 'u-1234',
+      };
+      const createOnly = [['Name'], ['List'], ['Nested'], ['Port'], ['Masked']];
+      expect(
+        echoFidelityCandidates(
+          [['Name'], ['List'], ['List', 0], ['Nested', 'Key'], ['Port'], ['Masked'], ['Updatable']],
+          resolved,
+          createOnly
+        )
+      ).toEqual([
+        { coordinate: ['Name'], plaintext: 'n-1234' },
+        { coordinate: ['Nested', 'Key'], plaintext: 'k-1234' },
+      ]);
     });
   });
 });

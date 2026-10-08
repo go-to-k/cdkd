@@ -410,18 +410,26 @@ function releaseRemedy(
 }
 
 /** What each command calls itself, and what it did not do. */
-export type CrossPrefixAction = 'deploy' | 'destroy' | 'rollback' | 'deploy-destructive';
+export type CrossPrefixAction =
+  | 'deploy'
+  | 'destroy'
+  | 'rollback'
+  | 'deploy-destructive'
+  | 'deploy-late-replace';
 const VERB: Record<CrossPrefixAction, string> = {
   deploy: 'deploy',
   destroy: 'destroy',
   rollback: 'roll back',
   'deploy-destructive': 'deploy',
+  'deploy-late-replace': 'replace a resource of',
 };
 const NOTHING: Record<CrossPrefixAction, string> = {
   deploy: 'No resource of this stack was created.',
   destroy: 'Nothing was deleted.',
   rollback: 'Nothing was reverted or deleted.',
   'deploy-destructive': 'No resource of this stack was changed.',
+  'deploy-late-replace':
+    'That resource is kept, so the new value is not applied; the rest of the deploy goes on.',
 };
 
 /** The deploy refusal: the stack's first deploy under this prefix. */
@@ -464,12 +472,18 @@ export function destroyUnderOtherPrefixMessage(
  */
 export function destructiveDeployUnderOtherPrefixMessage(
   s: CrossPrefixSubject,
-  prefixes: readonly string[]
+  prefixes: readonly string[],
+  action: 'deploy-destructive' | 'deploy-late-replace' = 'deploy-destructive'
 ): string {
+  const what =
+    action === 'deploy-late-replace'
+      ? `Refusing to replace a resource of stack ${subjectText(s)} (a replacement this deploy ` +
+        `found only on reading the resource back)`
+      : `Refusing to deploy stack ${subjectText(s)}: this deploy deletes or replaces resources`;
   return (
-    `Refusing to deploy stack ${subjectText(s)}: this deploy deletes or replaces resources, and ` +
+    `${what}, and ` +
     `the stack is also recorded under another state prefix of bucket ${displayIdent(s.bucket)} ` +
-    `(${prefixesText(prefixes)}). ${UNSUPPORTED_SENTENCE} ${NOTHING['deploy-destructive']} ` +
+    `(${prefixesText(prefixes)}). ${UNSUPPORTED_SENTENCE} ${NOTHING[action]} ` +
     `Keep one record per stack name and region: once you have confirmed which record describes ` +
     `the deployment you want to keep, ${releaseRemedy(s, prefixes, false)} Then re-run.`
   );
@@ -565,8 +579,8 @@ export function applyCrossPrefixScan(
       const message =
         action === 'deploy'
           ? deployUnderOtherPrefixMessage(s, result.prefixes)
-          : action === 'deploy-destructive'
-            ? destructiveDeployUnderOtherPrefixMessage(s, result.prefixes)
+          : action === 'deploy-destructive' || action === 'deploy-late-replace'
+            ? destructiveDeployUnderOtherPrefixMessage(s, result.prefixes, action)
             : destroyUnderOtherPrefixMessage(s, result.prefixes, action);
       throw new CdkdError(message, STACK_UNDER_OTHER_PREFIX);
     }

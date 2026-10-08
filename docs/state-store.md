@@ -79,7 +79,10 @@ cdkd refuses the case it can see, before touching any resource:
   it runs; a nested stack deleted is a resource deleted). The check runs before
   the `--require-approval` prompt, so a refused deploy never asks first. A plan
   that only creates, updates in place, creates a nested stack, or removes a
-  retained resource is not checked, and lists nothing.
+  retained resource is not checked, and lists nothing. A replacement the deploy
+  decides only on reading a resource back (a create-only value fed by a `NoEcho`
+  parameter) is checked then: a refusal keeps that resource, warns, and lets
+  the rest of the deploy go on.
 - `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same check
   every time and refuse, since the other record may name the same resources —
   a rollback deletes what the failed deploy created, which for such a pair can

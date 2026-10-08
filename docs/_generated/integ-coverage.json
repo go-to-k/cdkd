@@ -1278,6 +1278,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1413,6 +1414,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-fix-forward-orphan": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -1500,6 +1504,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1625,6 +1630,9 @@
           "l2"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-fix-forward-orphan": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1741,6 +1749,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1876,6 +1885,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-fix-forward-orphan": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1967,6 +1979,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2100,6 +2113,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-fix-forward-orphan": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2399,6 +2415,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -2544,6 +2561,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-fix-forward-orphan": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -2655,6 +2675,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2783,6 +2804,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-fix-forward-orphan": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -2872,6 +2896,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -3030,6 +3055,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-fix-forward-orphan": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -3140,6 +3168,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-fix-forward-orphan",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -3274,6 +3303,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-fix-forward-orphan": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -5688,7 +5720,8 @@
       "resourceType": "AWS::Neptune::DBCluster",
       "integs": [
         "cc-final-snapshot-handlers",
-        "docdb-neptune"
+        "docdb-neptune",
+        "neptune-fix-forward-orphan"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
@@ -5697,16 +5730,23 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-fix-forward-orphan": [
+          "l1"
         ]
       }
     },
     {
       "resourceType": "AWS::Neptune::DBInstance",
       "integs": [
-        "docdb-neptune"
+        "docdb-neptune",
+        "neptune-fix-forward-orphan"
       ],
       "signals": {
         "docdb-neptune": [
+          "l1"
+        ],
+        "neptune-fix-forward-orphan": [
           "l1"
         ]
       }
@@ -5715,13 +5755,17 @@
       "resourceType": "AWS::Neptune::DBSubnetGroup",
       "integs": [
         "cc-final-snapshot-handlers",
-        "docdb-neptune"
+        "docdb-neptune",
+        "neptune-fix-forward-orphan"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
           "l1"
         ],
         "docdb-neptune": [
+          "l1"
+        ],
+        "neptune-fix-forward-orphan": [
           "l1"
         ]
       }
@@ -7516,6 +7560,7 @@
     "AWS::Logs::SubscriptionFilter",
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
+    "AWS::RDS::DBParameterGroup",
     "AWS::RDS::GlobalCluster",
     "AWS::Redshift::Cluster",
     "AWS::ResourceGroups::Group",

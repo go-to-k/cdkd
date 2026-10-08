@@ -1788,6 +1788,11 @@
       ]
     },
     {
+      "name": "neptune-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nested-required-preflight",
       "annotated": false,
       "scenarios": []
@@ -3293,6 +3298,7 @@
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",
     "lost-child-after-failed-deploy",
+    "neptune-fix-forward-orphan",
     "nested-required-preflight",
     "nested-stack",
     "nested-stack-deep",

@@ -1,4 +1,5 @@
 import { freshNoEchoParametersWithDeclared } from './noecho.js';
+import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -369,6 +370,9 @@ export async function doDeployWithPrefetch(
     this.logger.debug(
       `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
     );
+    // Issue #4731: before the diff binding and any resource resolution, so
+    // both read one answer per parameter whatever order resources resolve in.
+    poisonRenderedSpellingsCollidingIn(template, parameterValues, this.options.inheritedSecrets);
     // go-to-k/cdkd#4043 (review round 9): a nested child positions each
     // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
     // here on (every save, the journal, the outputs pass).

@@ -13,7 +13,8 @@
  * - {@link createCrossPrefixDestructiveGate} (`onDestructivePlan`): a plan that
  *   deletes, replaces or may replace a resource, or updates a nested-stack row
  *   (`checkDestructivePlan`), starts (or reuses) the scan on demand, before the
- *   approval prompt.
+ *   approval prompt; so does a replacement decided late, on a readback
+ *   (`stage` `'late'`), whose refusal keeps that resource.
  * - {@link createCrossPrefixHolder} (`crossPrefixHolder`): a successful deploy's
  *   settle starts (or reuses) it before deleting a journaled orphan.
  *
@@ -125,12 +126,16 @@ export function createCrossPrefixDestructiveGate(opts: {
   bucket: string;
   recovery?: LockRecoveryContext | undefined;
   cache: CrossPrefixScanCache;
-}): (stackName: string, destructive: readonly DestructiveChange[]) => Promise<void> {
-  return async (stackName) => {
+}): (
+  stackName: string,
+  destructive: readonly DestructiveChange[],
+  stage?: 'late'
+) => Promise<void> {
+  return async (stackName, _destructive, stage) => {
     applyCrossPrefixScan(
       await opts.cache.full(stackName, opts.region),
       { stackName, region: opts.region, bucket: opts.bucket, recovery: opts.recovery },
-      'deploy-destructive',
+      stage === 'late' ? 'deploy-late-replace' : 'deploy-destructive',
       (message) => getLogger().warn(message),
       (message) => getLogger().info(message)
     );
@@ -201,7 +206,8 @@ export function crossPrefixEngineOptions(opts: {
   firstDeployGate: (stackName: string, state: StackState | undefined) => Promise<void>;
   onDestructivePlan: (
     stackName: string,
-    destructive: readonly DestructiveChange[]
+    destructive: readonly DestructiveChange[],
+    stage?: 'late'
   ) => Promise<void>;
   crossPrefixHolder: (stackName: string) => Promise<ForeignHolding>;
 } {

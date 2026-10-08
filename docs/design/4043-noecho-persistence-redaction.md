@@ -373,7 +373,7 @@ Verdicts for a leaf a parameter served:
 | Verdict | Updatable path | Create-only path |
 | --- | --- | --- |
 | `held` | nothing to send; skip if nothing else moved | lowered to in place, as #3729 |
-| `differs` | UPDATE | not replaced; warns on every deploy and names `--recreate-via-*` (decision 1 as amended, §9) |
+| `differs` | UPDATE | not replaced; warns on every deploy and names `--recreate-via-*` (decision 1 as amended, §9). Replaced where `noEchoExactEchoLeaves` records that the provider reports the leaf exactly (#4656, §9 decision 9) |
 | `not-readable` (write-only, or the provider has no `readCurrentState`) | UPDATE: the value is re-sent on every deploy, with one info line per resource (maintainer decision 4, §9) | not replaced; every deploy warns that a change goes undetected and names `--recreate-via-*` (maintainer decision 1, §9) |
 | `read-failed` | UPDATE | the resource fails with a retry message; no replacement on a transient error |
 
@@ -571,14 +571,20 @@ the bucket-wide exports index, which any stack's reader can list.
   - **Phase B** makes the value a map entry of the name's own bag. Its
     wholesale arm then refuses it, still from 4 characters, because the
     mask-only floor applies.
-- **The positional twin (Phase B).** A name whose `Export.Name` intrinsic
-  references a `NoEcho` parameter is refused, whatever the value's length. It
-  needs the raw intrinsic and the template's `Parameters`, which only the
-  engine's outputs pass holds.
-- The existing skip-and-warn applies (`secretBearingExportNameWarning`). The
-  deploy succeeds, the alias is not published, and the next exports-index
-  update drops a previously published entry.
-- The residual note at `outputs-export-alias.ts:119-128` is replaced.
+- **The positional twin (landed in #4700, #4657).** A name whose
+  `Export.Name` intrinsic reads a `NoEcho` parameter (a `Ref`, an `Fn::Sub`
+  variable, or any intrinsic over one; an `Fn::If` by the branch its
+  condition selects) is refused, whatever the value's length
+  (`exportNameNoEchoParameters`). It needs the raw intrinsic and the
+  template's `Parameters` (plus a nested child's inherited `NoEcho`
+  parameters); the deploy's outputs pass 3 and `cdkd diff`'s Outputs pass both
+  decide it. It warns with its own `noEchoParameterExportNameWarning`, naming
+  the output and the parameter(s), never the resolved name.
+- A containment refusal keeps the skip-and-warn (`secretBearingExportNameWarning`).
+  In every refusal the deploy succeeds, the alias is not published, and the
+  next exports-index update drops a previously published entry.
+- The residual note at `outputs-export-alias.ts` was replaced: it now lives in
+  that file's "KNOWN RESIDUALS" list (the `NoEcho` bullet).
 - **The containment scan is pass-wide from Phase A on.** The corpus
   `printingCorpusOf(nameSecrets)` holds the log-only set the whole outputs pass
   shares (`deploy-engine/outputs.ts`). When a name is decided, that set holds the
@@ -604,9 +610,9 @@ the bucket-wide exports index, which any stack's reader can list.
   | Residual | Closed by |
   | --- | --- |
   | A name holding a value that only a LATER output's `Export.Name` reads | Closed in Phase B: pass 2 resolves every name, pass 3 decides every alias (`deploy-engine/outputs.ts`), and the diff follows |
-  | A 1-3 character value embedded in a longer name, even one substituted into it | Phase B: the positional twin above |
+  | A 1-3 character value embedded in a longer name, even one substituted into it | Closed by #4700 (#4657) for a name whose intrinsic READS the parameter (`exportNameNoEchoParameters`, deploy and diff, any length, `Fn::If` by verdict). Still published: a literal name, or one reaching the value through an attribute, a nested output or `Fn::ImportValue`, which the containment floor cannot see |
   | A value reaching the name without a `Ref`: an echoed attribute, a nested output, `Fn::ImportValue` | Phase B's seed refuses this stack's own raw value by any route. Still published: a DERIVED spelling (an `Fn::Split` piece, an `Fn::Base64` encoding) a resource or nested child computes and an attribute echoes, closed in Phase B by the declared-attribute mechanism (section 3.3); a hand-authored child's own `NoEcho`, also Phase B (section 3.3); and another stack's value through `Fn::ImportValue`, closed in Phase B by the cross-stack recovery (section 4.7, in `intrinsic-resolver/cross-stack.ts` and `deploy-engine/masking.ts`, Phase B's resolver and engine files) |
-  | A failed output's alias the no-change merge carries forward (`no-change-outputs-merge.ts`) | Phase B: the merge re-runs this verdict over each carried alias name |
+  | A failed output's alias the no-change merge carries forward (`no-change-outputs-merge.ts`) | Closed by #4700 (#4657): `mergeNoChangeOutputs` runs `refusesCarriedAlias` (`carriedExportAliasExposure` → `exportNameSecretExposure`) on every carried alias, the self-named export included; a refused one is dropped and warned. Still published, unwarned: the keep-whole refusals (`intrinsic-export-name`, `mixed-generation`) keep the previous bag with its aliases unchecked, so it republishes them until a deploy that resolves every output; and a carried literal name embedding a 1-3 character value passes the containment floor |
   | A LITERAL name spelling a value only a resource reads | Closed in Phase B: the verdict is seeded with every `NoEcho` parameter value, at the #1919 floor (maintainer decision on #4043); the cost is that an unrelated name containing a short or common value is refused |
   | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview. Phase B's seeding makes it moot for the value itself; a derived needle (an `Fn::Base64` encoding, an `Fn::Split` piece) can still differ |
   | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes. That corpus also holds the pieces of an `Fn::Split` the parent's diff resolved over the value (#4049), so a piece can be refused the same way | Closed in Phase B for a value the parent's row reads by `Ref` or an `Fn::Sub` variable: both sides seed a child's verdict with each parent `NoEcho` value a child parameter carries. The deploy's inherited bag holds only what the row read by `Ref`, while the diff's corpus holds every parent value up front (and their split pieces), so a value reaching a child parameter another way (an echoed `Fn::GetAtt`) is published by the deploy and refused by the preview (fail-closed); closed in Phase B by the declared-attribute mechanism (section 3.3) |
@@ -614,9 +620,10 @@ the bucket-wide exports index, which any stack's reader can list.
   | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Phase C, with the rollback replay |
 - **An `Fn::Split` piece of a value is a log-only needle too** (#4049): the
   resolver records each piece's share of the value, so a name built from one
-  (`Fn::Select` over the split) is refused at the same floor as the value. A
-  1-3 character piece embedded in a longer name is the positional-twin row
-  above. The cost is the value's own, now per piece, and pass-wide: `admin:hunter2`
+  (`Fn::Select` over the split) is refused at the same floor as the value, and
+  refused positionally at any length when the name reads the split `NoEcho`
+  parameter (#4657). A 1-3 character piece reaching the name another way (a
+  literal, an echoed attribute) stays published, as in the row above. The cost is the value's own, now per piece, and pass-wide: `admin:hunter2`
   split on `:` refuses any name containing `admin`, and a URL split by `:`
   makes its scheme name and port needles too, so `cdkd diff` over-masks rows
   (a short piece masks every equal leaf, and a masked new side withholds the
@@ -759,7 +766,8 @@ Section 5 lists what Phase A leaves and which phase closes each item.
 **Phase B status.** Implemented in the Phase B PR together with #2449, with
 the amendments in section 9 ("Phase B decisions"): no create-only replacement
 on a readback, the drift report bucket pulled in, and the `Export.Name`
-positional twin and the carried-alias verdict moved to #4657. A held
+positional twin and the carried-alias verdict moved to #4657 (landed in
+#4700). A held
 producer's declared attribute is served to its readers by a per-resolution
 side map (`ResolverContext.noEchoAttributeOverrides`). The Phase B PR also
 masks the coordinates `cdkd state refresh-observed` writes and the declared
@@ -851,7 +859,8 @@ lanes once B merges.
     per resource (maintainer decision 4, §9);
   - write-only create-only (`not-readable`): no replacement, and a warning
     naming `--recreate-via-*` on every deploy (maintainer decision 1, §9);
-  - create-only `differs`: no replacement, the decision 1 warning (§9);
+  - create-only `differs`: no replacement, the decision 1 warning (§9),
+    unless `noEchoExactEchoLeaves` names the leaf (decision 9);
   - `read-failed` on create-only: no replacement;
   - pre-v11 witness equal: skipped with NO readback call;
   - pre-v11 witness different: UPDATE;
@@ -952,14 +961,15 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    unchanged value. A `read-failed` fails the resource. The custom-resource
    (#3729) class keeps its own table. Restoring the
    auto-replacement where a masked-record readback proves the provider echoes
-   exactly is follow-up #4656.
+   exactly landed in #4656 (decision 9).
 2. One coordinate field, `noEchoLeaves` (section 3.2).
 3. `noEchoAttributeNames` comes from the declaration (section 3.2).
 4. The drift REPORT bucket (section 4.3, "Report") moved into Phase B, exit
    code unchanged, so a release between B and C does not fail every
    `cdkd drift --fail` on a `NoEcho` stack. `--accept` / `--revert` stay in C.
 5. The `Export.Name` positional twin and the no-change merge's carried-alias
-   verdict (section 5) moved to follow-up #4657. A value of 4 or more
+   verdict (section 5) moved to follow-up #4657, which landed in #4700. A
+   value of 4 or more
    characters is still refused wholesale through its map entry.
 6. **Maintainer decision** (round 8 on #4043): a pre-v11 record's migration
    witness that DIFFERS on a create-only property keeps the replacement, and
@@ -985,6 +995,25 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    off the parent template, so a value under the needle floor counts), the
    child engine unions them with the inherited fresh marks, and `cdkd diff`
    derives the same set from the parent row.
+
+9. **Landed in #4656** (maintainer decision on #4043): decision 1's
+   auto-replacement is restored where a one-bit echo-fidelity flag,
+   `ResourceState.noEchoExactEchoLeaves` (optional, no bump), records that a
+   readback handed the masked record reported the leaf exactly. Set by the
+   readback at the create or create-only replacement, at the migration deploy
+   (against a copy with the witness coordinates pre-masked) and by a later
+   `held` (a replacement a provider's update falls back to takes no
+   readback, so it starts without the flag); `differs` never changes it,
+   `not-readable` / `read-failed` leave it absent. Only a whole string leaf under a create-only path, reached by
+   object keys, is eligible. Flag set and `differs`: the existing create-first
+   replacement and its guards. Flag absent: decision 1, the warning naming
+   the reason. Lane decisions (not the maintainer's), recorded in PR #4699:
+   a path that also carries a custom-resource leaf keeps decision 1; under
+   `--require-approval=destructive` / `any-change` the deploy asks again
+   before such a replacement, since the up-front prompt saw none (a "no" keeps
+   decision 1). Residual: a provider that reports a value exactly right after
+   create but normalizes it later would replace on every deploy; nothing
+   value-derived is stored to tell that from a change.
 
 ### Design decisions (#4043 comments 5903984771, 5904913259)
 

@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as rds from 'aws-cdk-lib/aws-rds';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -24,6 +25,10 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *                           key it, only the positional arm masks it)
  *   CDKD_V11_TOPIC_NAME     TopicParam's Default (the SNS topic's create-only
  *                           TopicName)
+ *   CDKD_V11_GROUP_NAME     GroupParam's Default (a DB parameter group's
+ *                           create-only name, MIXED case: RDS stores it
+ *                           lowercased, the readback normalization #4656
+ *                           must not mistake for a change)
  *   CDKD_V11_CR_SEED        the NoEcho custom resource's Seed property
  *   CDKD_V11_ADD_DEPENDENT  `1` adds a dependent reading the custom resource's
  *                           declared-NoEcho attribute (#2449's refusal)
@@ -62,6 +67,11 @@ export class SchemaV10ToV11MigrationStack extends cdk.Stack {
       noEcho: true,
       default: required('CDKD_V11_TOPIC_NAME'),
     });
+    const groupName = new cdk.CfnParameter(this, 'GroupParam', {
+      type: 'String',
+      noEcho: true,
+      default: required('CDKD_V11_GROUP_NAME'),
+    });
     // The negative control: an ordinary parameter stays in the clear.
     const plain = new cdk.CfnParameter(this, 'PlainParam', {
       type: 'String',
@@ -88,9 +98,19 @@ export class SchemaV10ToV11MigrationStack extends cdk.Stack {
       value: plain.valueAsString,
     });
 
-    // Create-only: v11 never replaces it on a readback's word (maintainer
-    // decision 1 on #4043), and the migration deploy must not replace it.
+    // Create-only, and the SNS readback reports the name exactly (the ARN's
+    // tail): the migration deploy records that (`noEchoExactEchoLeaves`,
+    // #4656) without replacing it, and a ROTATED name replaces it.
     new sns.CfnTopic(this, 'NamedTopic', { topicName: topicName.valueAsString });
+
+    // Create-only, and RDS reports the name LOWERCASED: never proven exact, so
+    // a rotated name is never replaced on the readback's word (decision 1 on
+    // #4043); every deploy warns instead.
+    new rds.CfnDBParameterGroup(this, 'NormalizedGroup', {
+      dbParameterGroupName: groupName.valueAsString,
+      family: 'postgres16',
+      description: 'cdkd schema v11 echo-fidelity control',
+    });
 
     new cdk.CfnOutput(this, 'TokenOut', { value: token.valueAsString });
 

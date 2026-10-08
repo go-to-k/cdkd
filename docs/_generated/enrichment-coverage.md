@@ -17,11 +17,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 ## Summary
 
 - Classified types (cached schema): **135**
-- Fully enriched: **48**
-- No computed attribute (Ref == physicalId is correct): **17**
+- Fully enriched: **47**
+- No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **70**
-- Types with allow-listed (not-a-gap) attributes: **85**
+- Types with allow-listed (not-a-gap) attributes: **84**
 
 ## Pure-CC latent gaps
 
@@ -39,7 +39,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::AutoScaling::AutoScalingGroup` | `AutoScalingGroupARN` |
 | `AWS::BedrockAgentCore::Browser` | `BrowserId`, `Name`, `Status` |
 | `AWS::BedrockAgentCore::CodeInterpreter` | `CodeInterpreterId`, `Status` |
-| `AWS::BedrockAgentCore::Evaluator` | `CreatedAt`, `EvaluatorId`, `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::Evaluator` | `CreatedAt`, `EvaluatorId`, `EvaluatorType`, `Provider`, `Status`, `UpdatedAt` |
 | `AWS::BedrockAgentCore::Runtime` | `AgentRuntimeArn`, `AgentRuntimeVersion`, `CreatedAt`, `FailureReason`, `LastUpdatedAt`, `Status`, `WorkloadIdentityDetails` |
 | `AWS::CloudFormation::Stack` | `ChangeSetId`, `CreationTime`, `LastUpdateTime`, `Outputs`, `ParentId`, `RootId`, `StackStatus` |
 | `AWS::CloudFront::Distribution` | `DomainName` |
@@ -127,7 +127,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::AutoScaling::AutoScalingGroup` | yes | sdk-fallback-gap | `AutoScalingGroupARN` (GAP) |
 | `AWS::BedrockAgentCore::Browser` | yes | sdk-fallback-gap | `BrowserArn` (allow), `BrowserId` (GAP), `Name` (GAP), `Status` (GAP) |
 | `AWS::BedrockAgentCore::CodeInterpreter` | yes | sdk-fallback-gap | `CodeInterpreterArn` (allow), `CodeInterpreterId` (GAP), `Status` (GAP) |
-| `AWS::BedrockAgentCore::Evaluator` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `EvaluatorArn` (allow), `EvaluatorId` (GAP), `Status` (GAP), `UpdatedAt` (GAP) |
+| `AWS::BedrockAgentCore::Evaluator` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `EvaluatorArn` (allow), `EvaluatorId` (GAP), `EvaluatorType` (GAP), `Provider` (GAP), `Status` (GAP), `UpdatedAt` (GAP) |
 | `AWS::BedrockAgentCore::Runtime` | yes | sdk-fallback-gap | `AgentRuntimeArn` (GAP), `AgentRuntimeId` (allow), `AgentRuntimeVersion` (GAP), `CreatedAt` (GAP), `FailureReason` (GAP), `LastUpdatedAt` (GAP), `Status` (GAP), `WorkloadIdentityDetails` (GAP) |
 | `AWS::Budgets::Budget` | yes | enriched | `Id` (allow) |
 | `AWS::CertificateManager::Certificate` | yes | enriched | `CertificateArn` (allow) |
@@ -186,7 +186,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Glue::Database` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Job` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::SecurityConfiguration` | yes | no-computed-attr | _(none)_ |
-| `AWS::Glue::Table` | yes | enriched | `Id` (allow) |
+| `AWS::Glue::Table` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Trigger` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Workflow` | yes | no-computed-attr | _(none)_ |
 | `AWS::IAM::AccessKey` | yes | sdk-fallback-gap | `Id` (allow), `SecretAccessKey` (GAP) |

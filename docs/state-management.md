@@ -914,13 +914,14 @@ A string that only CONTAINS the value is stored as `***` whole, as for a
 `NoEcho` custom-resource response (see
 [`NoEcho` custom-resource responses](#noecho-custom-resource-responses)).
 
-Two optional per-resource fields record what was masked, and neither holds any
-part of a value:
+Two optional per-resource fields record what was masked, and a third how AWS
+reports it; none holds any part of a value:
 
 | field | meaning |
 | --- | --- |
 | `noEchoLeaves` | the positions in `properties` (and so in `observedProperties`) stored as `***` because a `NoEcho` parameter, or an attribute declared `NoEcho`, supplied them; each position is a list of keys and array indexes |
 | `noEchoAttributeNames` | the record's own `attributes` its provider declared `NoEcho`: every attribute of a custom resource that answered `NoEcho: true`, a nested stack's masked outputs, and an attribute that echoes a `NoEcho` value. Each is stored as `***` whatever its type or length |
+| `noEchoExactEchoLeaves` | the `noEchoLeaves` positions, under a create-only property, at which AWS was seen to report exactly what cdkd sent (no version bump; see the table below) |
 
 An ABSENT field means "not known", which is every record an older cdkd wrote.
 
@@ -935,8 +936,41 @@ re-resolved on every deploy, and:
 | --- | --- |
 | can be updated, and AWS reports it back | reads the resource back; an unchanged value is skipped, a changed one updated |
 | can be updated, but AWS does not report it (write-only, such as an RDS `MasterUserPassword`, or a type cdkd cannot read back) | sends it on every deploy, with one info line per resource saying why |
-| cannot change without a replacement (create-only), including a write-only one or one whose type schema cdkd could not look up | never replaced: when the readback cannot confirm the value, every deploy warns, and `--recreate-via-cc-api` / `--recreate-via-sdk-provider` is how to apply a new value |
+| cannot change without a replacement (create-only), and AWS was seen to report it exactly | reads the resource back; an unchanged value is skipped, a changed one REPLACES the resource, as before `version: 11` |
+| create-only otherwise, including a write-only one or one whose type schema cdkd could not look up | never replaced: when the readback cannot confirm the value, every deploy warns, and `--recreate-via-cc-api` / `--recreate-via-sdk-provider` is how to apply a new value |
 | create-only, and the readback FAILED | the resource fails with a message to re-run; it is never replaced on a failed read |
+
+"Seen to report it exactly" is recorded per position in `noEchoExactEchoLeaves`:
+a readback handed the
+record, which holds `***` there, reported exactly the string cdkd sent. It
+describes how the provider reports the property, never the value. The deploy
+that creates the resource, or replaces it on a create-only change, reads it
+back once to set it, and so does the migration deploy below; any later
+readback that holds the value sets it too. A replacement a provider's update
+falls back to takes no such readback: the new resource starts without it until
+a later readback holds the value. A readback that differs never clears it, and one that fails or cannot
+report the property leaves it unset. Only a whole string value under a
+create-only property is eligible: a list, a number, or a value inside a list is
+never trusted, since a provider may reorder or retype what it reports. Without
+it, a provider that normalizes what it reports (lowercases a name, reorders a
+list) would read `differs` on an unchanged value and replace the resource on
+every deploy, so the warning says the provider is not known to report the
+property exactly.
+
+The replacement goes through the same create-first path, stateful-resource
+guard (`--force-stateful-recreation`) and name-collision checks as any other.
+The approval prompt before the deploy sees no replacement in a diff that
+cannot read AWS, so under `--require-approval=destructive` or `any-change` the
+deploy asks again when it reaches such a replacement (`--yes` approves it). A
+"no", a terminal that cannot be asked, or a resource deadline that already
+expired keeps the resource and warns, and
+`--recreate-via-*` applies the value.
+
+One case the flag cannot catch: a provider whose readback right after a create
+reports exactly what was sent, while AWS normalizes the value later. Each
+rotation-free deploy then reads a different value and replaces the resource.
+cdkd stores nothing derived from the value, so it cannot tell this from a
+change; the stateful-resource guard still stops a stateful type.
 
 A stack whose resources read a `NoEcho` parameter, with nothing else changed,
 is reported as `No changes`: those resources are compared as above and do not
@@ -1002,8 +1036,10 @@ count as a change for `--fail`.
   `noEchoLeaves`, and leave a value shorter than 4 characters, a number, or a
   value other than the current `Default` in plain text. The next `cdkd deploy`
   masks every position and writes the field.
-- A resource's physical id is never masked. A `NoEcho` value used as a NAME is
-  published by AWS, and the deploy warns once per such resource.
+- A resource's physical id is never masked, whether it embeds a `NoEcho` value
+  or IS one (a name-identified resource, such as an RDS parameter group named
+  by the parameter). A `NoEcho` value used as a NAME is published by AWS, and
+  the deploy warns once per such resource.
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target, or any property of a custom resource, whose handler would
   receive `***`) cannot be addressed from its record, which holds `***`.
@@ -1054,9 +1090,11 @@ as before, a replacement included when it feeds a create-only property. The
 warning names the cause, never the value: "a NoEcho parameter's value changed
 since the last deploy" where the property is the parameter itself, otherwise
 "the value at its NoEcho position changed since the last deploy". The recorded
-plaintext is exact evidence. Later
-deploys compare against `***`, and never replace a create-only property on a
-readback.
+plaintext is exact evidence. The same deploy reads each create-only resource
+it reaches back once, handed a copy of the record with the plaintext already
+masked, to record whether AWS reports the value exactly (above). Later deploys
+compare against `***`, and replace a create-only property on a readback only
+where that was recorded.
 
 **Rotate any `NoEcho` value a stack ever held in the clear.** Earlier object
 versions of `state.json` written before the upgrade still contain it, and cdkd
@@ -1797,6 +1835,7 @@ interface ResourceState {
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
   noEchoLeaves?: (string | number)[][]         // v11+: positions in `properties` stored as `***` for a NoEcho value
   noEchoAttributeNames?: string[]              // v11+: `attributes` the provider declared NoEcho, each stored as `***`
+  noEchoExactEchoLeaves?: string[][]           // optional, no bump: `noEchoLeaves` positions AWS reports exactly
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)

@@ -290,6 +290,34 @@ describe('DeployEngine - a nested child fed a parent NoEcho value (review round 
     expect(lastSaved().resources['Cr']).toBeDefined();
   });
 
+  it('(c) a child resource sets, and then acts on, the echo-fidelity flag of a create-only value its parent fed (go-to-k/cdkd#4656)', async () => {
+    stateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
+    const child = {
+      Parameters: { Token: { Type: 'String' } },
+      Resources: { Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { Ref: 'Token' } } } },
+    } as unknown as CloudFormationTemplate;
+    provider.create.mockImplementation((_id: string, _type: string, props: Record<string, unknown>) =>
+      Promise.resolve({ physicalId: `arn:aws:sns:us-east-1:1:${String(props['TopicName'])}`, attributes: {} })
+    );
+    provider.readCurrentState.mockImplementation((physicalId: string) =>
+      Promise.resolve({ TopicName: physicalId.split(':').pop() })
+    );
+    await makeEngine(inheritedFor({ Token: TOKEN }), { Token: TOKEN }).deploy(STACK, child);
+    const created = lastSaved();
+    expect(created.resources['Topic']!.properties['TopicName']).toBe('***');
+    expect(created.resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+
+    // The parent rotates the value it passes: the child replaces the topic.
+    const ROTATED = `${TOKEN}-rotated`;
+    stateBackend.getState!.mockResolvedValue({ state: created, etag: 'e2' });
+    await makeEngine(inheritedFor({ Token: ROTATED }), { Token: ROTATED }).deploy(STACK, child);
+    const creates = provider.create.mock.calls.filter((c) => c[0] === 'Topic');
+    expect(creates).toHaveLength(2);
+    expect((creates[1]![2] as Record<string, unknown>)['TopicName']).toBe(ROTATED);
+    expect(provider.delete.mock.calls.filter((c) => c[0] === 'Topic')).toHaveLength(1);
+    expect(allSaved()).not.toContain(`"${ROTATED}"`);
+  });
+
   it('the PARENT records which child parameters its nested-stack row fills from a NoEcho source', async () => {
     stateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
     let passed: ReadonlySet<string> | undefined;
