@@ -24,6 +24,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
@@ -2710,7 +2711,7 @@ async function stateOrphanResources(
     } finally {
       await setup.lockManager.releaseLock(stackName, region).catch((err: unknown) => {
         logger.warn(
-          safeMsg`Failed to release lock: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
+          safeMsg`Failed to release lock: ${displayAwsMessage(describeAwsFailure(err).detail)}`
         );
       });
     }
@@ -4479,7 +4480,7 @@ async function refreshObservedForStack(
           logger.warn(
             safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
               safeMsg`(${displayIdent(resource.resourceType)}): ` +
-              safeMsg`readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
+              safeMsg`readCurrentState failed — ${describeAwsFailure(err).detail}`
           );
         }
       });
@@ -4516,7 +4517,7 @@ async function refreshObservedForStack(
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(
-        safeMsg`Failed to release lock for ${ref}: ${err instanceof Error ? err.message : String(err)}`
+        safeMsg`Failed to release lock for ${ref}: ${describeAwsFailure(err).detail}`
       );
     });
   }
