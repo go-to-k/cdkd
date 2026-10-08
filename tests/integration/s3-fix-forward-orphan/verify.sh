@@ -461,7 +461,13 @@ aws s3api put-object --bucket "${BUCKET_D}" --region "${REGION}" --key "${D_OBJE
 # Premise: an object write does not move the bucket's CreationDate (not part
 # of the #4606 measurement). If it did, OrphanD would read as another bucket
 # and be kept for that reason, and step 3 would measure the wrong guard.
-D_CREATED_AFTER="$(listed_creation_date "${BUCKET_D}")"
+# Polled for ~15s: a late-landing date move must fail here, by name.
+D_CREATED_AFTER=""
+for _ in 1 2 3 4 5; do
+  D_CREATED_AFTER="$(listed_creation_date "${BUCKET_D}")"
+  [ "${D_CREATED_AFTER}" != "${D_CREATED}" ] && break
+  sleep 3
+done
 if [ -z "${D_CREATED}" ] || [ "${D_CREATED_AFTER}" != "${D_CREATED}" ]; then
   echo "[verify] FAIL: premise -- ${BUCKET_D}'s CreationDate moved from '${D_CREATED}' to '${D_CREATED_AFTER}' on an object write, so step 3 could not tell the never-empty guard from an identity mismatch" >&2
   exit 1
