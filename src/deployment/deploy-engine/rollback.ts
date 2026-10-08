@@ -496,7 +496,13 @@ export async function settleJournalAfterSuccess(
       [],
       NESTED_PENDING_PARENT_REASON,
       initialDeploy,
-      nestedPendingSnapshot(previousState)
+      // go-to-k/cdkd#4043 Phase C: an alias the previous record exported is
+      // snapshotted only while this deploy's export-name verdict still
+      // publishes it; with no verdict (no outputs pass ran), none is.
+      nestedPendingSnapshot(previousState, (name) => {
+        const verdict = this.carriedExportAliasRefusal;
+        return verdict === undefined || verdict(name, name) !== undefined;
+      })
     );
     return 0;
   }

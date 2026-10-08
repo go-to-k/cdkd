@@ -1,6 +1,13 @@
 import { CdkdError } from '../../utils/error-handler.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
-import { carriesSecretMask, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
+import {
+  carriesSecretMask,
+  isMarkedCoordinate,
+  maskedLeafCoordinatesOf,
+  SECRET_MASK,
+  type NoEchoCoordinate,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
 import { defineOwnKey } from '../../utils/own-keys.js';
 import {
   ReplayResolvers,
@@ -183,9 +190,18 @@ export async function resolveReplayProps(
  */
 export function refuseMaskedReplayBaseline(
   props: Record<string, unknown> | undefined,
-  logicalId: string
+  logicalId: string,
+  inert: readonly NoEchoCoordinate[] = []
 ): void {
   if (props === undefined || !carriesSecretMask(props)) return;
+  // go-to-k/cdkd#4043 Phase C: a marked NoEcho leaf no call sends (see
+  // `NoEchoReplaySubstitution.inert`) is no reason to refuse.
+  if (
+    inert.length > 0 &&
+    maskedLeafCoordinatesOf(props).every((coordinate) => isMarkedCoordinate(coordinate, inert))
+  ) {
+    return;
+  }
   // THREE POPULATIONS REACH THIS REFUSAL, each with its own remedy, because
   // nothing in the record says which wrote the mask (issue
   // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). Naming only the

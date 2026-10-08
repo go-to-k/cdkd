@@ -112,6 +112,10 @@ import {
   updateWithRollbackRetry,
   recordAfterRollbackUpdate,
 } from './rollback-executor/replay-retry.js';
+import {
+  maskRestoredNoEchoRecord,
+  substituteMarkedNoEchoLeaves,
+} from './rollback-executor/replay-noecho.js';
 import type { ReplayOpScope } from './rollback-executor/replay-scope.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { deleteLeftInPlace } from './delete-outcome.js';
@@ -1216,22 +1220,34 @@ async function replayFailedOperationsUnbound(
           // `revert` arm (retry / disableOuterRetry / interrupt). `secrets` is
           // this iteration's bag, hoisted above the `try` so the shared catch
           // can mask with it too.
-          const desiredProps = await resolveReplayProps(
-            prev.properties,
-            resolver,
-            secrets,
+          // go-to-k/cdkd#4043 Phase C, the `revert` arm's twin: a marked
+          // NoEcho leaf takes the value AWS holds, or the op refuses.
+          const noEcho = await substituteMarkedNoEchoLeaves({
+            desired: await resolveReplayProps(
+              prev.properties,
+              resolver,
+              secrets,
+              ctx,
+              op.logicalId
+            ),
+            baseline: prev,
+            live: current,
+            logicalId: op.logicalId,
             ctx,
-            op.logicalId
-          );
+            secrets,
+          });
+          const desiredProps = noEcho.desired;
           // Issue #2274: the `--revert-failed` twin of the `revert` arm's
           // refusal. Desired side only, same reason.
-          refuseMaskedReplayBaseline(desiredProps, op.logicalId);
-          const attemptedProps = await resolveReplayProps(
-            op.attemptedProperties ?? current.properties,
-            resolver,
-            secrets,
-            ctx,
-            op.logicalId
+          refuseMaskedReplayBaseline(desiredProps, op.logicalId, noEcho.inert);
+          const attemptedProps = noEcho.onPreviousSide(
+            await resolveReplayProps(
+              op.attemptedProperties ?? current.properties,
+              resolver,
+              secrets,
+              ctx,
+              op.logicalId
+            )
           );
           // Issue #2291, the `--revert-failed` twin of the two arms in
           // `replaySingle` — see the long note on the `revert` arm for why the
@@ -1325,10 +1341,13 @@ async function replayFailedOperationsUnbound(
           if (revertFailedResult) {
             recordNoEchoAttributeValues(revertFailedResult, secrets, desiredProps);
           }
-          stateResources[op.logicalId] = redactRollbackRecord(
-            recordAfterRollbackUpdate(prev, revertFailedResult),
-            secrets,
-            prev.properties
+          stateResources[op.logicalId] = maskRestoredNoEchoRecord(
+            redactRollbackRecord(
+              recordAfterRollbackUpdate(prev, revertFailedResult),
+              secrets,
+              prev.properties
+            ),
+            prev
           );
           // go-to-k/cdkd#4225, the `revert` arm's twin: its previous side is
           // the failed attempt's bag.

@@ -6564,6 +6564,7 @@
         "multi-resource",
         "nested-required-preflight",
         "nested-stack-rollback",
+        "noecho-parameter-masking",
         "rename-refactor",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6697,6 +6698,9 @@
           "literal"
         ],
         "nested-stack-rollback": [
+          "l1"
+        ],
+        "noecho-parameter-masking": [
           "l1"
         ],
         "rename-refactor": [
