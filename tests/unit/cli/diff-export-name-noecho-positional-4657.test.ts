@@ -76,21 +76,21 @@ function templateOf(
   } as unknown as CloudFormationTemplate;
 }
 
+async function diffOf(
+  state: StackState,
+  template: CloudFormationTemplate,
+  options: Record<string, unknown> = {}
+) {
+  const backend = { getState: async () => null } as unknown as S3StateBackend;
+  return computeStackDiff(state, template, 'us-east-1', 'S', backend, new DiffCalculator(), options);
+}
+
 async function outputChangesOf(
   state: StackState,
   template: CloudFormationTemplate,
   options: Record<string, unknown> = {}
 ): Promise<string[]> {
-  const backend = { getState: async () => null } as unknown as S3StateBackend;
-  const result = await computeStackDiff(
-    state,
-    template,
-    'us-east-1',
-    'S',
-    backend,
-    new DiffCalculator(),
-    options
-  );
+  const result = await diffOf(state, template, options);
   return result.outputChanges.map((c) => `${c.changeType} ${c.name}`);
 }
 
@@ -105,6 +105,7 @@ describe('cdkd diff previews the positional NoEcho export-name refusal (go-to-k/
       'an Fn::Select over a list holding the Ref',
       { 'Fn::Join': ['', ['x-', { 'Fn::Select': [0, [{ Ref: 'Short' }, 'b']] }, '-y']] },
     ],
+    ['an Fn::Sub variable bound to the Ref', { 'Fn::Sub': ['x-${V}-y', { V: { Ref: 'Short' } }] }],
   ];
 
   for (const [label, name] of shapes) {
@@ -132,10 +133,34 @@ describe('cdkd diff previews the positional NoEcho export-name refusal (go-to-k/
     );
     expect(await outputChangesOf(stateWith({ Out: 'v' }), off)).toEqual(['ADD public-name']);
     const on = templateOf(
-      { Out: { Value: 'v', Export: { Name: ifName } } },
+      { Out: { Value: 'v', Export: { Name: ifName } }, ...INNOCENT },
       { conditions: { UseSecret: { 'Fn::Equals': ['a', 'a'] } } }
     );
-    expect(await outputChangesOf(stateWith({ Out: 'v' }), on)).toEqual([]);
+    // The innocent sibling proves the outputs pass ran.
+    expect(await outputChangesOf(stateWith(STORED), on)).toEqual(['ADD plain-export']);
+  });
+
+  it('reads BOTH branches of an Fn::If whose condition the diff cannot evaluate (fail-closed)', async () => {
+    // `UseSecret` reads `Unbound`, a parameter with no value, so the diff has
+    // no verdict; its resolver takes the FALSE branch (`public-name`), while
+    // the deploy may take the NoEcho one. The preview must not show it added.
+    const template = templateOf(
+      {
+        Out: {
+          Value: 'v',
+          Export: {
+            Name: { 'Fn::If': ['UseSecret', { 'Fn::Sub': 'x-${Short}-y' }, 'public-name'] },
+          },
+        },
+      },
+      { conditions: { UseSecret: { 'Fn::Equals': [{ Ref: 'Unbound' }, 'yes'] } } }
+    );
+    (template.Parameters as Record<string, unknown>)['Unbound'] = { Type: 'String' };
+    const changes = await outputChangesOf(stateWith({ Out: 'v' }), template);
+    expect(changes).not.toContain('ADD public-name');
+    // Premise: with a known FALSE verdict the same template previews the add.
+    (template.Conditions as Record<string, unknown>)['UseSecret'] = { 'Fn::Equals': ['a', 'b'] };
+    expect(await outputChangesOf(stateWith({ Out: 'v' }), template)).toEqual(['ADD public-name']);
   });
 
   it('leaves a LITERAL name to the containment arms, as the deploy does', async () => {
@@ -172,7 +197,12 @@ describe('cdkd diff previews the carried-alias verdict of the no-change merge (g
 
   it('previews the refused carried alias leaving, and carries the innocent one', async () => {
     const template = templateOf(outputs, { value: NOECHO });
-    expect(await outputChangesOf(stored(), template)).toEqual([`REMOVE ${LEAKY}`]);
+    const result = await diffOf(stored(), template);
+    expect(result.outputChanges.map((c) => `${c.changeType} ${c.name}`)).toEqual([`REMOVE ${LEAKY}`]);
+    // The row's DISPLAY never prints the value its name holds.
+    const shown = result.outputChanges[0]!.nameDisplay;
+    expect(shown).toBeDefined();
+    expect(JSON.stringify(shown)).not.toContain(NOECHO);
   });
 
   it('carries both when the parameter is not NoEcho (negative control)', async () => {
