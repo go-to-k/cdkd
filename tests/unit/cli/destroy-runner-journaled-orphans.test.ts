@@ -62,7 +62,9 @@ const IDENTITY_TYPES = new Set([
   'AWS::RDS::DBCluster',
   'AWS::RDS::DBInstance',
   'AWS::DocDB::DBCluster',
-  'AWS::DocDB::DBInstance', 'AWS::Neptune::DBCluster', 'AWS::Neptune::DBInstance',
+  'AWS::DocDB::DBInstance',
+  'AWS::Neptune::DBCluster',
+  'AWS::Neptune::DBInstance',
 ]);
 
 const orphanOp = {

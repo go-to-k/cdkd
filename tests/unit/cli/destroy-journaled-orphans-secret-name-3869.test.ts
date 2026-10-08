@@ -144,7 +144,15 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
         // go-to-k/cdkd#4658: the live identity matches the journaled token.
         // Real-shaped: only these types' providers read a creation identity.
         getProviderFor: ({ resourceType }: { resourceType: string }) => ({
-          provider: ['AWS::Kinesis::Stream','AWS::RDS::DBCluster','AWS::RDS::DBInstance','AWS::DocDB::DBCluster','AWS::DocDB::DBInstance', 'AWS::Neptune::DBCluster', 'AWS::Neptune::DBInstance'].includes(resourceType)
+          provider: [
+            'AWS::Kinesis::Stream',
+            'AWS::RDS::DBCluster',
+            'AWS::RDS::DBInstance',
+            'AWS::DocDB::DBCluster',
+            'AWS::DocDB::DBInstance',
+            'AWS::Neptune::DBCluster',
+            'AWS::Neptune::DBInstance',
+          ].includes(resourceType)
             ? { delete: providerDelete, resourceIdentity: async () => 'created-token' }
             : { delete: providerDelete },
           provisionedBy: 'sdk',
