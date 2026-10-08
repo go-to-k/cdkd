@@ -962,12 +962,16 @@ describe('every child read shape of a literal-spelled parameter persists what th
   });
 
   it('the carry keeps the SURVIVOR where the literal spells the plaintext with two DIFFERENT tokens', async () => {
+    // A THIRD token resolves last, so the survivor is neither of the
+    // literal's two: taking either the first or the last would show.
+    const EXPR_C = '{{resolve:secretsmanager:prod/db/cred:SecretString:fallthru:AWSPREVIOUS:}}';
     const spelling = `${EXPR_A}/${EXPR_B}`;
     const value = `${SHARED}/${SHARED}`;
     const parent: RecordedSecretValues = new Map();
     for (const [expression, plaintext] of [
       [EXPR_A, SHARED],
       [EXPR_B, SHARED],
+      [EXPR_C, SHARED],
     ] as const) {
       parent.set(plaintext, expression);
       recordResolvedPair(parent, expression, plaintext);
@@ -984,7 +988,7 @@ describe('every child read shape of a literal-spelled parameter persists what th
     const ctx = makeContext(parent);
     ctx.parameters = { [PARAM_A]: value, [PARAM_B]: SHARED };
     await resolver.resolve({ Leaf: { 'Fn::Select': [0, [{ Ref: PARAM_A }]] } }, ctx);
-    expect(ctx.recordedSecretValues.get(SHARED)).toBe(EXPR_B);
+    expect(ctx.recordedSecretValues.get(SHARED)).toBe(EXPR_C);
   });
 });
 
