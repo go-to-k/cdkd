@@ -91,8 +91,8 @@ verify, clean up.
    newer-schema record. Give such a run its own bucket:
    `cdkd bootstrap --state-bucket <unique> --no-assets`, pass
    `STATE_BUCKET=<unique>`, then empty its object versions and delete it after
-   step 6. A fixture already deploying under its own `--state-prefix` is
-   immune (go-to-k/cdkd#4653).
+   step 6. A fixture already deploying under its own `--state-prefix`
+   (`remove-protection-journaled-orphan`) is immune.
 
 5. **Run the test(s)**
 
