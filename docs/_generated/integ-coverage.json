@@ -4988,6 +4988,7 @@
         "gc-custom-asset-names",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "iam-role-prefixed-name-update",
         "import-attribute-readback",
         "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
@@ -5192,6 +5193,10 @@
         ],
         "iam-role-policies-drift-clean": [
           "l2"
+        ],
+        "iam-role-prefixed-name-update": [
+          "l2",
+          "literal"
         ],
         "import-attribute-readback": [
           "l2"

@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 
 /**
  * Regression fixture for the `--no-prefix-user-supplied-names` migration-check
@@ -25,7 +26,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * "no change"), so pre-fix the live role silently kept both values;
  * IAMRoleProvider.update() must reset them to the CFn defaults ('' / 3600).
  *
- * covers: AWS::IAM::Role
+ * The PATH phases (gated on CDKD_TEST_ROLE_PATH, issue #4739) move an UNNAMED
+ * role -- cdkd generates its name, `${stackName}-<logicalId>` -- that a named
+ * function runs as from the default path `/` to `/cdkd-4739/`. `Path` is
+ * createOnly and the role's name stays the same, so a plain deploy is refused
+ * with the replacement-collision guidance, and `--replace` deletes the role and
+ * re-creates it on the new path, re-pointing the function at the new ARN.
+ *
+ * covers: AWS::IAM::Role, AWS::Lambda::Function
  */
 export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -35,6 +43,8 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
     // CDKD_TEST_REMOVAL drops description + maxSessionDuration so the only
     // template diff vs phase 2 is the two removed fields (issue #1160).
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // CDKD_TEST_ROLE_PATH moves PathRole to another path (issue #4739).
+    const rolePath = process.env.CDKD_TEST_ROLE_PATH === 'true';
 
     const statements = [
       new iam.PolicyStatement({
@@ -64,6 +74,19 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
             description: 'cdkd f1160 removal-reset probe',
             maxSessionDuration: cdk.Duration.hours(2),
           }),
+    });
+
+    // No roleName: cdkd generates the name, which a Path change leaves as it is.
+    const pathRole = new iam.Role(this, 'PathRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      ...(rolePath ? { path: '/cdkd-4739/' } : {}),
+    });
+    new lambda.Function(this, 'PathFn', {
+      functionName: `${cdk.Stack.of(this).stackName}-path-fn`,
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => ({ ok: true });'),
+      role: pathRole,
     });
   }
 }
