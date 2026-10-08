@@ -752,6 +752,18 @@ describe('DeployEngine - an Export.Name intrinsic reading a NoEcho parameter is 
     expect(r.last.exportNames).toEqual(['x-ab-y']);
   });
 
+  it('masks a NoEcho value the OUTPUT KEY happens to spell in the refusal line', async () => {
+    const r = await deployedWith('Leaky1234', true, {
+      EchoLeaky1234: { Value: 'v', Export: { Name: { 'Fn::Sub': 'x-${Secret}' } } },
+    });
+    expect(r.last.exportNames).toEqual([]);
+    expect(r.lines).toContain(
+      'Output Echo*** has an Export.Name that reads the NoEcho template parameter Secret'
+    );
+    const refusal = r.lines.split('\n').filter((line) => line.includes('reads the NoEcho'));
+    expect(refusal.join('\n')).not.toContain('Leaky1234');
+  });
+
   it("refuses a nested child's name reading a parameter its parent fills from a NoEcho source", async () => {
     // The child declares `Secret` plain; the parent's row marked it.
     const r = await deployedWith(
