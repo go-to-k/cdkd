@@ -31,6 +31,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getCdkdVersion } from '../version.js';
 import type { S3StateBackend } from './s3-state-backend.js';
 import type { PrefixPurgeResult } from './s3-noncurrent-version-purge.js';
@@ -380,7 +381,7 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
   private enqueueWrite(op: () => Promise<void>): Promise<void> {
     const next = this.writeChain.then(op).catch((err: unknown) => {
       this.warnOnce(
-        `Failed to persist deployment events for run ${this.runId}: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to persist deployment events for run ${this.runId}: ${describeAwsFailure(err).detail}`
       );
     });
     this.writeChain = next;
@@ -422,7 +423,7 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
       }
     } catch (err) {
       this.logger.debug(
-        `Deployment-events index unreadable, rewriting: ${err instanceof Error ? err.message : String(err)}`
+        `Deployment-events index unreadable, rewriting: ${describeAwsFailure(err).detail}`
       );
     }
     return [];

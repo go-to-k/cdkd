@@ -2,6 +2,7 @@ import { pasteableCommand } from '../../utils/pasteable-command.js';
 import type { ResourceCreateResult, ResourceProvider } from '../../types/resource.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
 import { reverseReplacementNewHoldsName } from '../replacement-name-holder.js';
+import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
@@ -1103,9 +1104,13 @@ async function deleteMarkedRecreate(error: unknown, s: MarkedRecreateScope): Pro
   if (madeId === undefined) return false;
   const shown = `${shownLogicalId(s.op.logicalId)} (${refusalResourceType(s.oldType)})`;
   const id = s.mask(madeId);
+  // Under the type's case rule (go-to-k/cdkd#4692).
   if (
     Object.values(s.stateResources).some(
-      (r) => r?.resourceType === s.oldType && r.physicalId === madeId
+      (r) =>
+        r?.resourceType === s.oldType &&
+        typeof r.physicalId === 'string' &&
+        samePhysicalId(s.oldType, r.physicalId, madeId)
     )
   ) {
     return false;

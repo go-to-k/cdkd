@@ -21,14 +21,22 @@
 #      0, deletes both earlier resources (`deleting partially-created ...`),
 #      never warns about them, drops the journal, and the state records hold
 #      the new, live resources. Before #4606 it exited 2, warned and left both.
-#   4. Destroy, and everything (both generations, the subnet group, the VPC,
-#      the state file) is gone. The state prefix's object versions are swept:
+#      go-to-k/cdkd#4692: step 2 also leaves `HeldCluster` (`...-held-cluster`)
+#      journaled. Before step 3, `cdkd import` adopts that SAME cluster into
+#      `AdoptedCluster` under its mixed-case spelling (`<Stack>-Held-Cluster`),
+#      which RDS matches case-insensitively. Asserted: the fix-forward keeps
+#      it (still available, never deleted, still in state), and the journal is
+#      dropped all the same. Before #4692 no record held the exact string, so
+#      the settle deleted the cluster the record holds.
+#   4. Destroy, and everything (both generations, the held cluster, the subnet
+#      group, the VPC, the state file) is gone. The state prefix's object versions are swept:
 #      the template's literal master password is in the journal's history.
 #
 # Cost: one Aurora cluster with no instance and one db.t3.micro instance per
-# generation. A run takes roughly 40 minutes (two instance creates and two
-# deletes). On any failure, cleanup deletes all four by identifier, destroys
-# the stack and deletes the role.
+# generation, plus the held Aurora cluster (no instance). A run takes roughly
+# 45 minutes (two instance creates and two deletes dominate; the held cluster
+# adds one cluster create and delete). On any failure, cleanup deletes all five
+# by identifier, destroys the stack and deletes the role.
 set -euo pipefail
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
@@ -90,11 +98,14 @@ CLUSTER_A="${ID_PREFIX}-orphan-cluster"
 CLUSTER_B="${ID_PREFIX}-orphan-cluster-b"
 DB_A="${ID_PREFIX}-orphan-db"
 DB_B="${ID_PREFIX}-orphan-db-b"
+# go-to-k/cdkd#4692: one cluster, journaled lower-case and adopted mixed-case.
+CLUSTER_HELD="${ID_PREFIX}-held-cluster"
+CLUSTER_HELD_ADOPTED="${STACK}-Held-Cluster"
 
 DENY_ROLE="${STACK}-no-rds-describe"
 DENY_POLICY_NAME="create-without-describe"
 DENY_ROLE_CREATED=""
-# Set once the preconditions below pass: before that, the four identifiers or
+# Set once the preconditions below pass: before that, the five identifiers or
 # the stack may belong to a concurrent or earlier run, which a failure-path
 # delete must not tear down.
 CLEANUP_ARMED=""
@@ -153,6 +164,7 @@ cleanup() {
     delete_instance_by_id "${DB_B}"
     delete_cluster_by_id "${CLUSTER_A}"
     delete_cluster_by_id "${CLUSTER_B}"
+    delete_cluster_by_id "${CLUSTER_HELD}"
     # From the fixture directory: a failure before the script's own `cd`
     # would otherwise synthesize whatever app the caller's cwd holds.
     (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force "${TIMEOUT_OVERRIDES[@]}")
@@ -189,7 +201,7 @@ elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exi
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
-for id in "${CLUSTER_A}" "${CLUSTER_B}"; do
+for id in "${CLUSTER_A}" "${CLUSTER_B}" "${CLUSTER_HELD}"; do
   assert_gone "precondition: DB cluster ${id} already exists (left by an earlier run); delete it first" \
     aws rds describe-db-clusters --db-cluster-identifier "${id}" --region "${REGION}"
 done
@@ -293,7 +305,7 @@ if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
   exit 1
 fi
 
-echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: both CREATEs fail after AWS made the resource"
+echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: all three CREATEs fail after AWS made the resource"
 set +e
 as_deny_role env -u ORPHAN_FIX_FORWARD WITH_ORPHANS=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --no-rollback "${TIMEOUT_OVERRIDES[@]}" > "${LOG_DIR}/inject.log" 2>&1
@@ -320,13 +332,18 @@ if ! CLUSTER_A_RID="$(aws rds describe-db-clusters --db-cluster-identifier "${CL
   echo "[verify] FAIL: DB cluster ${CLUSTER_A} does not exist after step 2 -- its CREATE failed before CreateDBCluster returned (output above)" >&2
   exit 1
 fi
+if ! CLUSTER_HELD_RID="$(aws rds describe-db-clusters --db-cluster-identifier "${CLUSTER_HELD}" --region "${REGION}" \
+  --query 'DBClusters[0].DbClusterResourceId' --output text)"; then
+  echo "[verify] FAIL: DB cluster ${CLUSTER_HELD} does not exist after step 2 -- its CREATE failed before CreateDBCluster returned (output above)" >&2
+  exit 1
+fi
 if ! DB_A_RID="$(aws rds describe-db-instances --db-instance-identifier "${DB_A}" --region "${REGION}" \
   --query 'DBInstances[0].DbiResourceId' --output text)"; then
   echo "[verify] FAIL: DB instance ${DB_A} does not exist after step 2 -- its CREATE failed before CreateDBInstance returned (output above)" >&2
   exit 1
 fi
 STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
-for lid in OrphanCluster OrphanInstance; do
+for lid in OrphanCluster OrphanInstance HeldCluster; do
   if [ "$(printf '%s' "${STATE_2}" | jq --arg l "${lid}" '.resources | has($l)')" != "false" ]; then
     echo "[verify] FAIL: state records ${lid} after step 2 (expected no record for a CREATE that threw)" >&2
     exit 1
@@ -352,18 +369,50 @@ case "${CLUSTER_A_RID}" in cluster-?*) ;; *)
   echo "[verify] FAIL: ${CLUSTER_A}'s DbClusterResourceId reads '${CLUSTER_A_RID}' (expected cluster-...)" >&2
   exit 1 ;;
 esac
+case "${CLUSTER_HELD_RID}" in cluster-?*) ;; *)
+  echo "[verify] FAIL: ${CLUSTER_HELD}'s DbClusterResourceId reads '${CLUSTER_HELD_RID}' (expected cluster-...)" >&2
+  exit 1 ;;
+esac
 case "${DB_A_RID}" in db-?*) ;; *)
   echo "[verify] FAIL: ${DB_A}'s DbiResourceId reads '${DB_A_RID}' (expected db-...)" >&2
   exit 1 ;;
 esac
 assert_journaled OrphanCluster "${CLUSTER_A}" "${CLUSTER_A_RID}"
 assert_journaled OrphanInstance "${DB_A}" "${DB_A_RID}"
-echo "[verify] step 2 ok: ${CLUSTER_A} and ${DB_A} are in AWS, journaled with their resource ids, with no state record"
+assert_journaled HeldCluster "${CLUSTER_HELD}" "${CLUSTER_HELD_RID}"
+echo "[verify] step 2 ok: ${CLUSTER_A}, ${DB_A} and ${CLUSTER_HELD} are in AWS, journaled with their resource ids, with no state record"
 
 # A user fixes forward minutes later, once both are up; an RDS resource still
 # `creating` may refuse its delete, which is not what this step measures.
 aws rds wait db-cluster-available --db-cluster-identifier "${CLUSTER_A}" --region "${REGION}"
 aws rds wait db-instance-available --db-instance-identifier "${DB_A}" --region "${REGION}"
+aws rds wait db-cluster-available --db-cluster-identifier "${CLUSTER_HELD}" --region "${REGION}"
+
+echo "[verify] step 3a: cdkd import adopts ${CLUSTER_HELD} as AdoptedCluster, spelled ${CLUSTER_HELD_ADOPTED} (go-to-k/cdkd#4692)"
+# The fix-forward template, so the deploy below finds the record it declares.
+if ! env WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true ${CLI} import "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --resource "AdoptedCluster=${CLUSTER_HELD_ADOPTED}" \
+  --yes > "${LOG_DIR}/import.log" 2>&1; then
+  sed 's/^/  /' "${LOG_DIR}/import.log" || true
+  echo "[verify] FAIL: cdkd import of AdoptedCluster=${CLUSTER_HELD_ADOPTED} failed (output above)" >&2
+  exit 1
+fi
+sed 's/^/  /' "${LOG_DIR}/import.log" || true
+STATE_3A="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+ADOPTED_PID="$(printf '%s' "${STATE_3A}" | jq -r '.resources.AdoptedCluster.physicalId // "<absent>"')"
+ADOPTED_RID="$(printf '%s' "${STATE_3A}" | jq -r '.resources.AdoptedCluster.attributes.DBClusterResourceId // "<absent>"')"
+# The arm's premise: the record spells the id in another case than the
+# journal, and names the very cluster the journal names.
+if [ "${ADOPTED_PID}" != "${CLUSTER_HELD_ADOPTED}" ] || [ "${ADOPTED_PID}" = "${CLUSTER_HELD}" ]; then
+  echo "[verify] FAIL: state records AdoptedCluster as '${ADOPTED_PID}' (expected the mixed-case ${CLUSTER_HELD_ADOPTED})" >&2
+  exit 1
+fi
+if [ "${ADOPTED_RID}" != "${CLUSTER_HELD_RID}" ]; then
+  echo "[verify] FAIL: AdoptedCluster's DBClusterResourceId is '${ADOPTED_RID}', not ${CLUSTER_HELD}'s ${CLUSTER_HELD_RID}: the record does not hold the journaled cluster" >&2
+  exit 1
+fi
+echo "[verify] step 3a ok: AdoptedCluster records ${ADOPTED_PID}, the cluster journaled as ${CLUSTER_HELD}"
 
 echo "[verify] step 3: the fix-forward (same logical ids, other identifiers)"
 set +e
@@ -373,7 +422,7 @@ FF_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/fix-forward.log" || true
 if [ "${FF_RC}" -ne 0 ]; then
-  echo "[verify] FAIL: the fix-forward deploy exited ${FF_RC} (expected 0: the earlier cluster and instance are proven other resources and deleted -- output above)" >&2
+  echo "[verify] FAIL: the fix-forward deploy exited ${FF_RC} (expected 0: the earlier cluster and instance are proven other resources and deleted, and AdoptedCluster's record tracks the held cluster -- output above)" >&2
   echo "         (before go-to-k/cdkd#4606 it exited 2 and left both)" >&2
   exit 1
 fi
@@ -394,6 +443,16 @@ if [ "${FF_CLUSTER_STATUS}" != "available" ] || [ "${FF_DB_STATUS}" != "availabl
   echo "[verify] FAIL: the fix-forward cluster ${CLUSTER_B} is '${FF_CLUSTER_STATUS}' and instance ${DB_B} is '${FF_DB_STATUS}' (expected both available -- the settle must not delete the records' resources)" >&2
   exit 1
 fi
+# go-to-k/cdkd#4692: the journaled cluster a record holds in another case is
+# kept. Decided on AWS's answer; before the fix the settle deleted it.
+if ! HELD_STATUS="$(aws rds describe-db-clusters --db-cluster-identifier "${CLUSTER_HELD}" --region "${REGION}" \
+  --query "join(' ', [DBClusters[0].Status, DBClusters[0].DbClusterResourceId])" --output text 2>&1)"; then
+  HELD_STATUS="<describe failed: ${HELD_STATUS}>"
+fi
+if [ "${HELD_STATUS}" != "available ${CLUSTER_HELD_RID}" ]; then
+  echo "[verify] FAIL: the cluster AdoptedCluster holds (${CLUSTER_HELD}, ${CLUSTER_HELD_RID}) reads '${HELD_STATUS}' after the fix-forward (expected available -- the settle deleted a cluster a state record holds in another case, go-to-k/cdkd#4692)" >&2
+  exit 1
+fi
 STATE_3="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 assert_record() { # usage: assert_record <logicalId> <identifier>
   local pid by
@@ -406,6 +465,7 @@ assert_record() { # usage: assert_record <logicalId> <identifier>
 }
 assert_record OrphanCluster "${CLUSTER_B}"
 assert_record OrphanInstance "${DB_B}"
+assert_record AdoptedCluster "${CLUSTER_HELD_ADOPTED}"
 SUBNET_GROUP="$(printf '%s' "${STATE_3}" | jq -r '.resources.SubnetGroup.physicalId // empty')"
 VPC_ID="$(printf '%s' "${STATE_3}" | jq -r '[.resources[] | select(.resourceType == "AWS::EC2::VPC") | .physicalId] | first // empty')"
 if [ -z "${SUBNET_GROUP}" ] || [ -z "${VPC_ID}" ]; then
@@ -425,7 +485,11 @@ for lid in OrphanCluster OrphanInstance; do
     exit 1
   fi
 done
-echo "[verify] step 3 ok: the fix-forward deleted ${CLUSTER_A} and ${DB_A}, kept ${CLUSTER_B} and ${DB_B}, exited 0 and dropped the journal"
+if grep -q "partially-created HeldCluster" "${LOG_DIR}/fix-forward.log"; then
+  echo "[verify] FAIL: the fix-forward deploy acted on HeldCluster, which AdoptedCluster holds (go-to-k/cdkd#4692; output above)" >&2
+  exit 1
+fi
+echo "[verify] step 3 ok: the fix-forward deleted ${CLUSTER_A} and ${DB_A}, kept ${CLUSTER_B}, ${DB_B} and the adopted ${CLUSTER_HELD}, exited 0 and dropped the journal"
 
 echo "[verify] step 4: destroy"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force "${TIMEOUT_OVERRIDES[@]}"
@@ -433,6 +497,8 @@ assert_gone "DB cluster ${CLUSTER_B} still exists after destroy" \
   aws rds describe-db-clusters --db-cluster-identifier "${CLUSTER_B}" --region "${REGION}"
 assert_gone "DB instance ${DB_B} still exists after destroy" \
   aws rds describe-db-instances --db-instance-identifier "${DB_B}" --region "${REGION}"
+assert_gone "DB cluster ${CLUSTER_HELD} (AdoptedCluster) still exists after destroy" \
+  aws rds describe-db-clusters --db-cluster-identifier "${CLUSTER_HELD}" --region "${REGION}"
 assert_gone "DB subnet group ${SUBNET_GROUP} still exists after destroy" \
   aws rds describe-db-subnet-groups --db-subnet-group-name "${SUBNET_GROUP}" --region "${REGION}"
 assert_gone "VPC ${VPC_ID} still exists after destroy" \
@@ -447,4 +513,4 @@ rm -rf "${LOG_DIR}"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-fix-forward-orphan state teardown"
 
-echo "[verify] PASS -- the fix-forward deleted the earlier failed CREATE's DB cluster and DB instance (go-to-k/cdkd#4606)"
+echo "[verify] PASS -- the fix-forward deleted the earlier failed CREATE's DB cluster and DB instance (go-to-k/cdkd#4606) and kept the one a record holds in another case (go-to-k/cdkd#4692)"

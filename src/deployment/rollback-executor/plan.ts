@@ -26,6 +26,7 @@ import {
   rollbackCannotAddress,
 } from './messages.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
+import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
 
 /** The two places a journal can name the old resource's type, each `undefined` when unusable. */
 function journaledOldTypes(op: OldTypeSources): {
@@ -411,7 +412,16 @@ export function classifyFailedOp(
       // resource is no later owner of this one. go-to-k/cdkd#4606: nor is a
       // record a successful deploy's settle proved holds another resource.
       if (current) {
-        if (current.physicalId === op.physicalId) return 'skip-failed-noop';
+        // go-to-k/cdkd#4692: under the type's case rule, as every check below
+        // whose match keeps the orphan.
+        if (
+          current.physicalId === op.physicalId ||
+          (current.resourceType === op.resourceType &&
+            typeof current.physicalId === 'string' &&
+            samePhysicalId(op.resourceType, current.physicalId, op.physicalId))
+        ) {
+          return 'skip-failed-noop';
+        }
         if (!isReplacedRecord(op, current) && !isProvenDistinctRecord(op, current)) {
           return 'skip-failed-mismatch';
         }
@@ -599,14 +609,20 @@ function replacedResourceDeleted(
   );
 }
 
-/** Whether any state record of `resourceType` holds `physicalId`. */
+/**
+ * Whether any state record of `resourceType` holds `physicalId`, under the
+ * type's case rule (go-to-k/cdkd#4692).
+ */
 function stateHoldsPhysicalId(
   stateResources: Record<string, ResourceState>,
   resourceType: string,
   physicalId: string
 ): boolean {
   return Object.values(stateResources).some(
-    (r) => r?.resourceType === resourceType && r.physicalId === physicalId
+    (r) =>
+      r?.resourceType === resourceType &&
+      typeof r.physicalId === 'string' &&
+      samePhysicalId(resourceType, r.physicalId, physicalId)
   );
 }
 
@@ -661,7 +677,8 @@ export function demoteSupersededOrphans(
         orphans.some(
           (o) =>
             o?.logicalId === op.logicalId ||
-            (o?.state?.resourceType === op.resourceType && o.state?.physicalId === op.physicalId)
+            (o?.state?.resourceType === op.resourceType &&
+              holdsSameId(op.resourceType, o.state?.physicalId, op.physicalId))
         );
       if (superseded) {
         op.physicalIdRecoveredFromError = false;
@@ -687,8 +704,17 @@ type SupersedeCandidate = {
 function mayOwn(o: SupersedeCandidate, orphan: FailedOperation, completed: boolean): boolean {
   if (o?.resourceType !== orphan.resourceType) return false;
   if (completed && o.changeType === 'CREATE') return true;
-  if (o.physicalId === orphan.physicalId) return true;
-  return o.previousState?.physicalId === orphan.physicalId;
+  if (holdsSameId(orphan.resourceType, o.physicalId, orphan.physicalId)) return true;
+  return holdsSameId(orphan.resourceType, o.previousState?.physicalId, orphan.physicalId);
+}
+
+/**
+ * Whether `held` names the orphan's resource `orphanId`, under the type's case
+ * rule (go-to-k/cdkd#4692). Two absent ids match, as the exact comparison did.
+ */
+function holdsSameId(resourceType: string, held: unknown, orphanId: string | undefined): boolean {
+  if (typeof held !== 'string' || typeof orphanId !== 'string') return held === orphanId;
+  return samePhysicalId(resourceType, held, orphanId);
 }
 
 /**

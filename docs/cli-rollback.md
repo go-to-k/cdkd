@@ -205,6 +205,15 @@ does not count as an owner of the new one, and acting on the new one leaves it
 in place. A record naming anything else still skips the new resource with a
 warning.
 
+Wherever a path above asks whether a record holds the resource under its
+physical id, a type whose identifiers AWS matches regardless of case compares
+them that way: a record holding `mycluster` (a `cdkd import` that spelled it
+so, say) holds the cluster the journal names `MyCluster`, and the resource is
+kept. These are RDS, DocumentDB and Neptune DB clusters, DB instances and
+subnet groups, ElastiCache cache clusters and subnet groups, IAM roles, users,
+groups, instance profiles and managed policies, and a Glue table (ASCII
+letters only). Every other type compares the id exactly.
+
 An `AWS::SQS::QueuePolicy` or `AWS::SNS::TopicPolicy` that wrote its
 policy to some queues or topics and then failed is journaled under exactly
 those queues or topics. When any path above deletes it, each queue is cleared, and each topic
