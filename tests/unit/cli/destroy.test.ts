@@ -50,6 +50,7 @@ const mockGetState =
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
     verifyBucketExists: mockVerifyBucketExists,
@@ -449,7 +450,28 @@ describe('cdkd destroy: terminationProtection guard', () => {
       etag: '"x"',
     }));
 
+    // go-to-k/cdkd#4705 (review R4-3): every target stack's scan starts before
+    // the first stack's destroy, through the run's one cache.
+    const { CrossPrefixScanCache } = await import('../../../src/state/cross-prefix-stack-scan.js');
+    const order: string[] = [];
+    const fullSpy = vi
+      .spyOn(CrossPrefixScanCache.prototype, 'full')
+      .mockImplementation(async (name: string) => {
+        order.push(`scan:${name}`);
+        return { kind: 'clear' };
+      });
+    mockRunDestroyForStack.mockImplementation(async (name: string) => {
+      order.push(`destroy:${name}`);
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+
     await runDestroy(['--all', '--yes']);
+    fullSpy.mockRestore();
+
+    expect(order.indexOf('scan:Plain')).toBeLessThan(order.findIndex((o) => o.startsWith('destroy:')));
+    expect(order.indexOf('scan:Unguarded')).toBeLessThan(order.findIndex((o) => o.startsWith('destroy:')));
+    const caches = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].crossPrefixCheck?.cache));
+    expect(caches.size).toBe(1);
 
     // Both stacks flow through the runner — guard does not fire.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
@@ -617,7 +639,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // go-to-k/cdkd#2115: a top-level destroy is a whole-stack teardown.
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].stackDestroy).toBe(true);
     // go-to-k/cdkd#4705: a top-level destroy checks the bucket's other state prefixes.
-    expect(mockRunDestroyForStack.mock.calls[0]?.[2].crossPrefixCheck?.target).toBeDefined();
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2].crossPrefixCheck?.cache).toBeDefined();
 
     // No exit-2 on the bypass path.
     expect(exitSpy).not.toHaveBeenCalled();

@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixScanCache } from '../../state/cross-prefix-stack-scan.js';
 import {
   commandHole,
   pasteableCommand,
@@ -318,6 +318,9 @@ async function destroyCommand(
     throw error;
   }
 
+  // go-to-k/cdkd#4705 (review R4-2): the backend may REPLACE its client with a
+  // bucket-region one, which `awsClients.destroy()` does not reach.
+  let stateBackendForCleanup: S3StateBackend | undefined;
   try {
     // 1. Initialize components
     const stateConfig = {
@@ -330,6 +333,7 @@ async function destroyCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });
+    stateBackendForCleanup = stateBackend;
     // Fail fast if the state bucket is missing, before synth or any destructive work.
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
@@ -750,8 +754,15 @@ async function destroyCommand(
     // 3. Process each stack via the shared destroy runner. The cross-stack
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
-    // go-to-k/cdkd#4705: one bucket listing for every stack this run destroys.
-    const crossPrefixCheck = { target: withSharedListing(stateBackend) };
+    // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
+    // sequential loop (one listing, one run-wide probe cap); each stack's
+    // destroy then awaits its own memoized result.
+    const crossPrefixCheck = { cache: new CrossPrefixScanCache(stateBackend) };
+    for (const name of stackNames) {
+      for (const ref of stateRefsByName.get(name) ?? []) {
+        if (ref.region !== undefined) void crossPrefixCheck.cache.full(name, ref.region);
+      }
+    }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
 
@@ -1172,6 +1183,7 @@ async function destroyCommand(
     interruptWatch.dispose();
     // Cleanup AWS clients
     awsClients.destroy();
+    stateBackendForCleanup?.destroyClient();
   }
 }
 

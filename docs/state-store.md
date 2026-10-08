@@ -75,11 +75,11 @@ cdkd refuses the case it can see, before touching any resource:
 - `cdkd deploy` of a stack this prefix already records checks the same, but
   only when its plan may destroy something: a resource deleted, a resource
   replaced, a resource that MAY be replaced (the deploy only learns once a
-  value resolves), or a nested stack updated or deleted (whose own plan is only
-  known once it runs). The check runs before the `--require-approval` prompt,
-  so a refused deploy never asks first. A plan that only creates, updates in
-  place, creates a nested stack, or removes a retained resource is not
-  checked.
+  value resolves), or a nested stack updated (whose own plan is only known once
+  it runs; a nested stack deleted is a resource deleted). The check runs before
+  the `--require-approval` prompt, so a refused deploy never asks first. A plan
+  that only creates, updates in place, creates a nested stack, or removes a
+  retained resource is not checked, and lists nothing.
 - `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same check
   every time and refuse, since the other record may name the same resources —
   a rollback deletes what the failed deploy created, which for such a pair can
@@ -104,10 +104,21 @@ for each top-level prefix `p`, one listing of `p/<stack>/`; only where that
 finds something are the stack's record, legacy record and rollback journal read
 (three reads, in parallel). The trailing-slash forms `p/` are probed the same
 way in a second pass, only when no `p` held the stack. So the work grows with
-the number of top-level prefixes in the bucket. A deploy starts one such scan
-per stack once synthesis has finished, so it overlaps asset publishing and the
-lock, and the checks above wait for it only when they need it. A destroy and a
-rollback run it each time.
+the number of top-level prefixes in the bucket. A deploy runs it only when a
+check above needs it: for a first deploy it starts once synthesis has
+finished, overlapping asset publishing and the lock; for a plan that destroys,
+and before the deletion of a journaled orphan, it runs then. An ordinary
+redeploy lists nothing. A destroy and a rollback run it each time; `destroy
+--all` starts every stack's scan at once.
+
+**Keep the bucket small.** Because that cost grows with the bucket's top-level
+prefixes, a large shared bucket slows every destroy and rollback and every
+deploy that deletes. Give the state a dedicated bucket rather than one shared
+with unrelated data. In CI, a fresh `--state-prefix` per run with stable stack
+names accumulates prefixes and leaves records behind that refuse the next first
+deploy of the same stack name: prefer a stable prefix, or remove a finished
+run's records (`cdkd state orphan <stack> --state-prefix <prefix>`, or a
+destroy) before the next run.
 
 **What it sees, and what it does not.** It sees a record under any top-level
 prefix of the same bucket, including one written with a trailing slash
@@ -120,10 +131,10 @@ prefix of the same bucket, including one written with a trailing slash
   under another prefix: neither has a record yet when the other looks.
 
 When S3 refuses the check — the bucket listing (an identity whose policy only
-covers its own prefix) or a read under another prefix — the command warns, on
-every run, and continues. A read that fails otherwise (a server error, a record
-that will not parse, an empty object, which cdkd never writes) refuses, naming
-the object it could not read. A record whose `resources` is missing or not an
+covers its own prefix) or a read under another prefix — the command warns
+whenever the check runs, and continues. A read that fails otherwise (a server
+error, a record that will not parse, an empty object, which cdkd never writes)
+refuses, naming the object it could not read. A record whose `resources` is missing or not an
 object proves nothing and blocks.
 
 ## Records outlive the binary that wrote them

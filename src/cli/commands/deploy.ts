@@ -117,7 +117,7 @@ import {
   deployStackRegion,
   startCrossPrefixScans,
 } from './cross-prefix-gate.js';
-import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixScanCache } from '../../state/cross-prefix-stack-scan.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
@@ -408,6 +408,11 @@ async function deployCommand(
   // and the providers' poll-abort listeners).
   const unforwardSigterm = forwardSigtermToSigint();
 
+  // go-to-k/cdkd#4705 (review R4-2): the preflight backend may REPLACE its S3
+  // client with a bucket-region one (`ensureClientForBucket`), which
+  // `awsClients.destroy()` does not reach; a cross-prefix scan still pending at
+  // the end of the run must not keep the process alive on it.
+  let preflightBackendForCleanup: S3StateBackend | undefined;
   try {
     // 1. Synthesize CDK app (or read a pre-synthesized assembly when --app
     // points at an existing directory — synthesis is skipped in that case).
@@ -436,6 +441,7 @@ async function deployCommand(
       statePrepPromise,
     ]);
     const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;
+    preflightBackendForCleanup = preflightStateBackend;
     // The deferred macro-expander (expandMacrosForStacks, below) needs the
     // resolved state bucket for its > 51,200-byte template upload path (#463).
     synthOptions.stateBucket = stateBucket;
@@ -597,16 +603,16 @@ async function deployCommand(
     // the backstop for a context this command did not build.
     refuseMalformedNestedTemplateTrees(targetStacks);
 
-    // go-to-k/cdkd#4705: each stack's scan of the bucket's other state prefixes,
-    // started AFTER synth (it needs the deploy set) through one shared listing,
-    // so it overlaps macro expansion, STS, asset handling and the lock, not
-    // synth. Only a gate that awaits it acts on it: the first-deploy gate, the
-    // destructive-plan gate and the settle (`crossPrefixEngineOptions`).
-    // `deployStackRegion` is the ONE function both this and `runStackInner`
-    // (the engine's region) use.
+    // go-to-k/cdkd#4705: the run's cross-prefix scans, LAZY and memoized per
+    // stack and region (one shared listing, one run-wide probe cap). Here, after
+    // synth, only a stack this prefix does not record yet (a first deploy) has
+    // its scan started, overlapping macro expansion, STS, asset handling and the
+    // lock; the destructive-plan gate and the settle start one on demand. An
+    // ordinary redeploy lists nothing. `deployStackRegion` is the ONE function
+    // both this and `runStackInner` (the engine's region) use.
     const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
-    const crossPrefixTarget = withSharedListing(preflightStateBackend);
-    const crossPrefixScans = startCrossPrefixScans(targetStacks, crossPrefixTarget, (s) =>
+    const crossPrefixCache = new CrossPrefixScanCache(preflightStateBackend);
+    const crossPrefixFirstDeploy = startCrossPrefixScans(targetStacks, crossPrefixCache, (s) =>
       deployStackRegion(s, baseRegion)
     );
 
@@ -931,8 +937,10 @@ async function deployCommand(
           region: stackRegion,
           bucket: stateBucket,
           recovery: refusalRecovery,
-          scans: crossPrefixScans.get(crossPrefixScanKey(stackInfo.stackName, stackRegion)),
-          target: crossPrefixTarget,
+          firstDeploy: crossPrefixFirstDeploy.get(
+            crossPrefixScanKey(stackInfo.stackName, stackRegion)
+          ),
+          cache: crossPrefixCache,
         });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
@@ -1516,6 +1524,7 @@ async function deployCommand(
     unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
     awsClients.destroy();
+    preflightBackendForCleanup?.destroyClient();
   }
 }
 

@@ -542,8 +542,10 @@ if ! grep -qF "${SETTLE_KEEP_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_A})"
   echo "FAIL: the settle did not say it kept the orphan for ${PREFIX_A}'s record ('${SETTLE_KEEP_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-queue_still="$(aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}" --query 'Attributes.QueueArn' --output text)"
-[ -n "${queue_still}" ] || { echo "FAIL: A's queue is gone after B's settle" >&2; exit 1; }
+if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
+  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's settle (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
 case "${MINIMAL_PARAM_B}" in
   *"${STACK}"-?*) aws ssm delete-parameter --name "${MINIMAL_PARAM_B}" --region "${REGION}" >/dev/null ;;
   *) echo "FAIL: B's record does not name the minimal SSM parameter (got '${MINIMAL_PARAM_B}')" >&2; exit 1 ;;

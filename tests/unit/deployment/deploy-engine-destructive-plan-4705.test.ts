@@ -271,7 +271,26 @@ describe('DeployEngine onDestructivePlan (go-to-k/cdkd#4705)', () => {
     expect(hook).not.toHaveBeenCalled();
   });
 
-  it('is called for a nested-stack row DELETE', async () => {
+  it('is NOT called for a RETAINED nested-stack row DELETE: the child and its resources stay', async () => {
+    const nestedDelete: ResourceChange = {
+      logicalId: 'OldChild',
+      changeType: 'DELETE',
+      resourceType: 'AWS::CloudFormation::Stack',
+      currentProperties: {},
+    };
+    const template = arrange(
+      mocks(),
+      {
+        Kept: record(),
+        OldChild: record({ resourceType: 'AWS::CloudFormation::Stack', deletionPolicy: 'Retain' }),
+      },
+      [nestedDelete]
+    );
+    await makeEngine().deploy(STACK_NAME, template).catch(() => undefined);
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('is called for a nested-stack row DELETE (a WILL_DESTROY of the child)', async () => {
     const nestedDelete: ResourceChange = {
       logicalId: 'OldChild',
       changeType: 'DELETE',

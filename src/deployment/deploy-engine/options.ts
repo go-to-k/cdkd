@@ -466,7 +466,7 @@ export interface DeployEngineOptions {
   /**
    * go-to-k/cdkd#4705: called after the diff and the `--dry-run` return, BEFORE
    * the approval prompt and any provider call, only when the plan may destroy
-   * (`WILL_DESTROY` / `WILL_REPLACE` / `MAY_REPLACE`) or updates or deletes a
+   * (`WILL_DESTROY` / `WILL_REPLACE` / `MAY_REPLACE`) or updates a
    * nested-stack row (`checkDestructivePlan`). Throwing
    * aborts the stack before anything changes. NOT inherited by nested children:
    * the spread site sets it to `undefined`.

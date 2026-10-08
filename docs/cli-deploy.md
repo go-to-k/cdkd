@@ -579,10 +579,11 @@ deployment per account and region, as in CloudFormation — see
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
 for why, what the check cannot see, and the remedies the refusal prints. A
 stack the prefix already records skips that check; it is checked again only
-when its plan deletes, replaces or may replace a resource, or updates or
-deletes a nested stack, before the `--require-approval` prompt and before
-anything is changed. If S3 denies the listing or a read, the deploy warns and
-continues.
+when its plan deletes, replaces or may replace a resource, or updates a nested
+stack, before the `--require-approval` prompt and before anything is changed;
+an ordinary redeploy lists nothing. If S3 denies the listing or a read, the
+deploy warns and continues. The check's cost grows with the bucket's top-level
+prefixes, so prefer a dedicated state bucket.
 
 ## Exit codes
 

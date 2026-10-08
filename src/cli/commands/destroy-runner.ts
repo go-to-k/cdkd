@@ -33,8 +33,7 @@ import type { LockRecoveryContext } from '../../state/lock-contention-message.js
 import { acquireStackLock } from './stack-lock-guard.js';
 import {
   applyCrossPrefixScan,
-  scanOtherPrefixesForStack,
-  type CrossPrefixScanTarget,
+  type CrossPrefixScanCache,
 } from '../../state/cross-prefix-stack-scan.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
@@ -215,10 +214,11 @@ export interface DestroyRunnerContext {
    * region under ANOTHER state prefix. Set by `cdkd destroy` and
    * `cdkd state destroy` for a top-level stack; never for a nested child,
    * whose parent was checked (`src/state/cross-prefix-stack-scan.ts`). The
-   * `target` is shared by every stack of one command run, so `--all` lists the
-   * bucket once (`withSharedListing`).
+   * `cache` is the command run's: its caller pre-starts every target stack's
+   * scan before the sequential loop (one listing, one run-wide probe cap), and
+   * this awaits the stack's own memoized result.
    */
-  crossPrefixCheck?: { target: CrossPrefixScanTarget };
+  crossPrefixCheck?: { cache: CrossPrefixScanCache };
 
   /**
    * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
@@ -572,11 +572,7 @@ export async function runDestroyForStack(
   const regionForState = state.region ?? ctx.baseRegion;
   // go-to-k/cdkd#4705: started now, awaited before anything is deleted or
   // prompted for. Never rejects.
-  const crossPrefixScan = ctx.crossPrefixCheck
-    ? scanOtherPrefixesForStack(ctx.crossPrefixCheck.target, stackName, regionForState, {
-        checkOwnRecord: false,
-      })
-    : undefined;
+  const crossPrefixScan = ctx.crossPrefixCheck?.cache.full(stackName, regionForState);
   // The account every pasteable command in the malformed-record refusals below
   // must address (go-to-k/cdkd#3909): without it the `cdkd state show` /
   // `cdkd state list --json` lines they print read the DEFAULT profile's

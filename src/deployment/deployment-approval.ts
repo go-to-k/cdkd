@@ -104,10 +104,12 @@ export async function requireDeploymentApproval(args: {
  *   `WILL_REPLACE` (a `--recreate-via-*` target included) or `MAY_REPLACE` (a
  *   replacement the deploy only learns about once a value resolves, so it may
  *   delete the resource);
- * - a nested-stack row being UPDATED (a replacement included) or DELETED: the
- *   child's own plan is only known once its row runs, after the parent has
- *   started changing things, and children never run the hook. A nested-stack
- *   row being CREATED has nothing to destroy.
+ * - a nested-stack row being UPDATED (a replacement included): the child's own
+ *   plan is only known once its row runs, after the parent has started
+ *   changing things, and children never run the hook. A nested-stack row being
+ *   CREATED has nothing to destroy; one being DELETED is already a
+ *   `WILL_DESTROY` above, or, retained, a `WILL_ORPHAN` that leaves the child
+ *   and its resources in place.
  *
  * A retained removal (`WILL_ORPHAN`) deletes nothing and does not trigger it.
  * Nothing is computed when no hook is set.
@@ -133,9 +135,7 @@ export async function checkDestructivePlan(args: {
     new Set(args.recreateTargetIds ?? [])
   ).filter((c) => c.impact !== 'WILL_ORPHAN');
   const nestedRowChanges = changes.some(
-    (c) =>
-      c.resourceType === NESTED_STACK_TYPE &&
-      (c.changeType === 'UPDATE' || c.changeType === 'DELETE')
+    (c) => c.resourceType === NESTED_STACK_TYPE && c.changeType === 'UPDATE'
   );
   if (destroying.length === 0 && !nestedRowChanges) return;
   await hook(args.stackName, destroying);

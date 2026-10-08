@@ -53,6 +53,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 });
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { CrossPrefixScanCache } from '../../../src/state/cross-prefix-stack-scan.js';
 
 const REGION = 'us-east-1';
 
@@ -110,7 +111,9 @@ function makeCtx(opts: {
       baseRegion: REGION,
       stateBucket: 'cdkd-state-123456789012',
       skipConfirmation: opts.skipConfirmation ?? true,
-      ...(opts.crossPrefixCheck === true && { crossPrefixCheck: { target: stateBackend } }),
+      ...(opts.crossPrefixCheck === true && {
+        crossPrefixCheck: { cache: new CrossPrefixScanCache(stateBackend) },
+      }),
     } as unknown as Parameters<typeof runDestroyForStack>[2],
   };
 }

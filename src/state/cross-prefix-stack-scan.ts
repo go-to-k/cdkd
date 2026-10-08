@@ -256,18 +256,67 @@ export async function scanOtherPrefixesForStack(
 }
 
 /**
- * The same target with ONE bucket listing shared by every scan through it, for
- * a command that scans several stacks. Started on the first scan that needs it.
+ * The same target with ONE bucket listing shared by every scan through it, and
+ * ONE run-wide cap of {@link PROBE_CONCURRENCY} probes in flight across all of
+ * them, for a command that scans several stacks at once (`deploy --all`,
+ * `destroy --all`). The listing starts on the first scan that needs it.
  */
 export function withSharedListing(target: CrossPrefixScanTarget): CrossPrefixScanTarget {
   let listing: Promise<string[]> | undefined;
+  let inFlight = 0;
+  const waiting: Array<() => void> = [];
+  const acquire = async (): Promise<void> => {
+    if (inFlight < PROBE_CONCURRENCY) {
+      inFlight++;
+      return;
+    }
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  };
+  const release = (): void => {
+    const next = waiting.shift();
+    if (next) next();
+    else inFlight--;
+  };
   return {
     prefix: target.prefix,
     ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
     listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),
-    recordUnderPrefix: (prefix, stackName, region) =>
-      target.recordUnderPrefix(prefix, stackName, region),
+    recordUnderPrefix: async (prefix, stackName, region) => {
+      await acquire();
+      try {
+        return await target.recordUnderPrefix(prefix, stackName, region);
+      } finally {
+        release();
+      }
+    },
   };
+}
+
+/**
+ * One command run's cross-prefix scans, memoized per stack AND region, through
+ * one shared listing and one run-wide probe cap ({@link withSharedListing}).
+ * A scan starts the first time {@link full} is asked for it -- lazily, so a
+ * deploy that never needs one issues no request -- or when a caller pre-starts
+ * it with the same call. It never rejects.
+ */
+export class CrossPrefixScanCache {
+  readonly target: CrossPrefixScanTarget;
+  private readonly scans = new Map<string, Promise<CrossPrefixScanResult>>();
+
+  constructor(target: CrossPrefixScanTarget) {
+    this.target = withSharedListing(target);
+  }
+
+  /** The scan of every other prefix for `stackName` in `region` (`checkOwnRecord: false`). */
+  full(stackName: string, region: string): Promise<CrossPrefixScanResult> {
+    const key = JSON.stringify([stackName, region]);
+    let scan = this.scans.get(key);
+    if (scan === undefined) {
+      scan = scanOtherPrefixesForStack(this.target, stackName, region, { checkOwnRecord: false });
+      this.scans.set(key, scan);
+    }
+    return scan;
+  }
 }
 
 /** The refusal's error code. */

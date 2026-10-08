@@ -22,7 +22,11 @@ import {
   deployStackRegion,
   startCrossPrefixScans,
 } from '../../../src/cli/commands/cross-prefix-gate.js';
-import type { CrossPrefixScanTarget } from '../../../src/state/cross-prefix-stack-scan.js';
+import {
+  CrossPrefixScanCache,
+  PROBE_CONCURRENCY,
+  type CrossPrefixScanTarget,
+} from '../../../src/state/cross-prefix-stack-scan.js';
 import type { CrossPrefixScanResult } from '../../../src/state/cross-prefix-stack-scan.js';
 import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
 
@@ -81,38 +85,99 @@ describe('createCrossPrefixDeployGate', () => {
 });
 
 function fakeTarget(holders: Record<string, boolean> = {}, own = false) {
-  return {
+  let inFlight = 0;
+  let max = 0;
+  const t = {
     prefix: 'cdkd',
     ownRecordExists: vi.fn(async () => own),
-    listTopLevelPrefixes: vi.fn(async () => ['cdkd', 'team-b']),
-    recordUnderPrefix: vi.fn(async (p: string, stackName: string) =>
-      holders[`${p}|${stackName}`] ? ('holder' as const) : ('absent' as const)
-    ),
-  } satisfies CrossPrefixScanTarget;
+    listTopLevelPrefixes: vi.fn(async () => ['cdkd', 'team-b', 'team-c', 'team-d']),
+    recordUnderPrefix: vi.fn(async (p: string, stackName: string) => {
+      inFlight++;
+      max = Math.max(max, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return holders[`${p}|${stackName}`] ? ('holder' as const) : ('absent' as const);
+    }),
+    maxInFlight: () => max,
+  };
+  return t satisfies CrossPrefixScanTarget;
 }
 
-describe('the deploy wiring (deploy.ts)', () => {
-  it('scans every stack of the set through ONE listing, keyed by stack AND region, in the region given', async () => {
+describe('the deploy wiring (lazy scans, go-to-k/cdkd#4705 review R4-1)', () => {
+  it('a first deploy (no own record) pre-starts its scan, keyed by stack AND region, in the region given', async () => {
     const t = fakeTarget({ 'team-b|A': true });
-    const regionOf = vi.fn((s: { region?: string | undefined }) => s.region || 'eu-west-1');
-    const scans = startCrossPrefixScans(
-      [{ stackName: 'A' }, { stackName: 'B', region: 'us-west-2' }],
-      t,
-      regionOf
-    );
-    expect([...scans.keys()]).toEqual([
+    const cache = new CrossPrefixScanCache(t);
+    const regionOf = (s: { region?: string | undefined }) => s.region || 'eu-west-1';
+    const first = startCrossPrefixScans([{ stackName: 'A' }, { stackName: 'B', region: 'us-west-2' }], cache, regionOf);
+    expect([...first.keys()]).toEqual([
       crossPrefixScanKey('A', 'eu-west-1'),
       crossPrefixScanKey('B', 'us-west-2'),
     ]);
-    await expect(scans.get(crossPrefixScanKey('A', 'eu-west-1'))!.firstDeploy).resolves.toMatchObject({
+    await expect(first.get(crossPrefixScanKey('A', 'eu-west-1'))).resolves.toMatchObject({
       kind: 'found',
     });
-    await expect(scans.get(crossPrefixScanKey('B', 'us-west-2'))!.firstDeploy).resolves.toEqual({
-      kind: 'clear',
-    });
+    await expect(first.get(crossPrefixScanKey('B', 'us-west-2'))).resolves.toEqual({ kind: 'clear' });
     expect(t.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
     expect(t.ownRecordExists).toHaveBeenCalledWith('A', 'eu-west-1');
     expect(t.ownRecordExists).toHaveBeenCalledWith('B', 'us-west-2');
+  });
+
+  it('a redeploy (own record) lists nothing and probes nothing, and a loaded record never awaits', async () => {
+    const t = fakeTarget({ 'team-b|App': true }, true);
+    const cache = new CrossPrefixScanCache(t);
+    const first = startCrossPrefixScans([{ stackName: 'App' }], cache, () => 'us-east-1');
+    const opts = crossPrefixEngineOptions({
+      stackName: 'App',
+      region: 'us-east-1',
+      bucket: 'b',
+      firstDeploy: first.get(crossPrefixScanKey('App', 'us-east-1')),
+      cache,
+    });
+    await expect(first.get(crossPrefixScanKey('App', 'us-east-1'))).resolves.toEqual({
+      kind: 'own-record',
+    });
+    await expect(opts.firstDeployGate('App', loaded)).resolves.toBeUndefined();
+    expect(t.listTopLevelPrefixes).not.toHaveBeenCalled();
+    expect(t.recordUnderPrefix).not.toHaveBeenCalled();
+  });
+
+  it('a destructive plan triggers exactly ONE on-demand scan, and the settle reuses it', async () => {
+    const t = fakeTarget({ 'team-b|App': true }, true);
+    const cache = new CrossPrefixScanCache(t);
+    const opts = crossPrefixEngineOptions({
+      stackName: 'App',
+      region: 'us-east-1',
+      bucket: 'b',
+      firstDeploy: undefined,
+      cache,
+    });
+    expect(t.listTopLevelPrefixes).not.toHaveBeenCalled();
+    await expect(opts.onDestructivePlan('App', [])).rejects.toThrow(/this deploy deletes or replaces/);
+    const probesAfterGate = t.recordUnderPrefix.mock.calls.length;
+    expect(t.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
+    await expect(opts.crossPrefixHolder('App')).resolves.toMatchObject({ kind: 'unreadable' });
+    expect(t.recordUnderPrefix.mock.calls.length).toBe(probesAfterGate);
+    expect(t.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
+  });
+
+  it('a first deploy and its later destructive gate share one scan', async () => {
+    const t = fakeTarget({}, false);
+    const cache = new CrossPrefixScanCache(t);
+    const first = startCrossPrefixScans([{ stackName: 'App' }], cache, () => 'us-east-1');
+    await first.get(crossPrefixScanKey('App', 'us-east-1'));
+    const probes = t.recordUnderPrefix.mock.calls.length;
+    await createCrossPrefixDestructiveGate({ region: 'us-east-1', bucket: 'b', cache })('App', []);
+    expect(t.recordUnderPrefix.mock.calls.length).toBe(probes);
+  });
+
+  it(`caps probes in flight at ${PROBE_CONCURRENCY} across EVERY stack of the run`, async () => {
+    const t = fakeTarget();
+    t.listTopLevelPrefixes.mockResolvedValue(Array.from({ length: 30 }, (_, i) => `p${i}`));
+    const cache = new CrossPrefixScanCache(t);
+    await Promise.all(['A', 'B', 'C', 'D'].map((name) => cache.full(name, 'us-east-1')));
+    expect(t.recordUnderPrefix.mock.calls.length).toBe(4 * 60);
+    expect(t.maxInFlight()).toBeLessThanOrEqual(PROBE_CONCURRENCY);
+    expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
   });
 
   it('keys one stack name in two regions apart', () => {
@@ -136,6 +201,16 @@ describe('the deploy wiring (deploy.ts)', () => {
     }, vi.fn());
     await expect(refusing('App', undefined)).rejects.toThrow('refused');
   });
+
+  it('never rejects: a failing target becomes a result, refused only when a gate awaits it', async () => {
+    const t = fakeTarget();
+    t.listTopLevelPrefixes.mockRejectedValue(Object.assign(new Error('x'), { name: 'SlowDown' }));
+    const cache = new CrossPrefixScanCache(t);
+    const first = startCrossPrefixScans([{ stackName: 'App' }], cache, () => 'us-east-1');
+    await expect(first.get(crossPrefixScanKey('App', 'us-east-1'))).resolves.toMatchObject({
+      kind: 'failed',
+    });
+  });
 });
 
 describe('createCrossPrefixDestructiveGate', () => {
@@ -143,16 +218,20 @@ describe('createCrossPrefixDestructiveGate', () => {
     const gate = createCrossPrefixDestructiveGate({
       region: 'us-east-1',
       bucket: 'b',
-      target: fakeTarget({ 'team-b|App': true }, true),
+      cache: new CrossPrefixScanCache(fakeTarget({ 'team-b|App': true }, true)),
     });
     await expect(gate('App', [])).rejects.toThrow(
       /Refusing to deploy stack App \(us-east-1\): this deploy deletes or replaces resources.*\(team-b\)/s
     );
   });
 
-  it('scans for the name the engine passes (a nested child) and ignores its own record', async () => {
+  it('scans for the name the engine passes and ignores its own record', async () => {
     const t = fakeTarget({}, true);
-    const gate = createCrossPrefixDestructiveGate({ region: 'us-east-1', bucket: 'b', target: t });
+    const gate = createCrossPrefixDestructiveGate({
+      region: 'us-east-1',
+      bucket: 'b',
+      cache: new CrossPrefixScanCache(t),
+    });
     await expect(gate('App~Child', [])).resolves.toBeUndefined();
     expect(t.ownRecordExists).not.toHaveBeenCalled();
     expect(t.recordUnderPrefix).toHaveBeenCalledWith('team-b', 'App~Child', 'us-east-1');
@@ -167,28 +246,14 @@ describe('deployStackRegion (the ONE region expression the engine and the scans 
     expect(deployStackRegion({}, 'us-east-1')).toBe('us-east-1');
     expect(deployStackRegion({ region: '' }, 'us-east-1')).toBe('us-east-1');
   });
-  it('the scans of a deploy set use it: a stack in another region is scanned in that region', async () => {
-    const t = fakeTarget();
-    startCrossPrefixScans(
-      [{ stackName: 'Here' }, { stackName: 'There', region: 'eu-west-1' }],
-      t,
-      (s) => deployStackRegion(s, 'us-east-1')
-    );
-    await new Promise((r) => setTimeout(r, 0));
-    expect(t.ownRecordExists).toHaveBeenCalledWith('Here', 'us-east-1');
-    expect(t.ownRecordExists).toHaveBeenCalledWith('There', 'eu-west-1');
-  });
 });
 
 describe('createCrossPrefixHolder (the settle of journaled orphans), one case per scan kind', () => {
-  const holderOver = (result: CrossPrefixScanResult) =>
-    createCrossPrefixHolder({
-      stackName: 'App',
-      region: 'us-east-1',
-      bucket: 'b',
-      target: fakeTarget(),
-      scan: Promise.resolve(result),
-    });
+  const holderOver = (result: CrossPrefixScanResult) => {
+    const cache = new CrossPrefixScanCache(fakeTarget());
+    vi.spyOn(cache, 'full').mockResolvedValue(result);
+    return createCrossPrefixHolder({ region: 'us-east-1', bucket: 'b', cache });
+  };
 
   it('found: keeps the orphan (unreadable), naming the other prefix', async () => {
     await expect(holderOver({ kind: 'found', prefixes: ['team-b'] })('App')).resolves.toEqual({
@@ -217,78 +282,5 @@ describe('createCrossPrefixHolder (the settle of journaled orphans), one case pe
 
   it('clear: answers nothing', async () => {
     await expect(holderOver({ kind: 'clear' })('App')).resolves.toBeUndefined();
-  });
-
-  it('awaits the pre-started scan for its own stack, and scans anew for another name', async () => {
-    const t = fakeTarget({ 'team-b|Other': true });
-    const holder = createCrossPrefixHolder({
-      stackName: 'App',
-      region: 'us-east-1',
-      bucket: 'b',
-      target: t,
-      scan: Promise.resolve({ kind: 'clear' }),
-    });
-    await expect(holder('App')).resolves.toBeUndefined();
-    expect(t.listTopLevelPrefixes).not.toHaveBeenCalled();
-    await expect(holder('Other')).resolves.toMatchObject({ kind: 'unreadable' });
-  });
-});
-
-describe('pre-started scans (crossPrefixEngineOptions over startCrossPrefixScans)', () => {
-  it('starts ONE scan per stack post-synth: the first-deploy view reuses its probes', async () => {
-    const t = fakeTarget({ 'team-b|App': true });
-    const scans = startCrossPrefixScans([{ stackName: 'App' }], t, () => 'us-east-1');
-    const s = scans.get(crossPrefixScanKey('App', 'us-east-1'))!;
-    await expect(s.firstDeploy).resolves.toMatchObject({ kind: 'found' });
-    await expect(s.full).resolves.toMatchObject({ kind: 'found' });
-    // One scan's probes: the first pass hits team-b and stops.
-    expect(t.recordUnderPrefix.mock.calls.filter((c) => c[1] === 'App')).toHaveLength(1);
-  });
-
-  it('a stack this prefix records: the first-deploy view is own-record; the full scan still ran', async () => {
-    const t = fakeTarget({ 'team-b|App': true }, true);
-    const s = startCrossPrefixScans([{ stackName: 'App' }], t, () => 'us-east-1').get(
-      crossPrefixScanKey('App', 'us-east-1')
-    )!;
-    await expect(s.firstDeploy).resolves.toEqual({ kind: 'own-record' });
-    await expect(s.full).resolves.toMatchObject({ kind: 'found' });
-  });
-
-  it('the gates await the pre-started scan; a deploy that needs none never awaits it', async () => {
-    let resolveFull: (r: CrossPrefixScanResult) => void = () => {};
-    const full = new Promise<CrossPrefixScanResult>((r) => {
-      resolveFull = r;
-    });
-    const opts = crossPrefixEngineOptions({
-      stackName: 'App',
-      region: 'us-east-1',
-      bucket: 'b',
-      scans: { full, firstDeploy: full },
-      target: fakeTarget(),
-    });
-    // A deploy that loaded its record and planned nothing destructive: the
-    // first-deploy gate returns without awaiting the (still pending) scan.
-    await expect(opts.firstDeployGate('App', loaded)).resolves.toBeUndefined();
-    // The destructive gate DOES await it.
-    let settled = false;
-    const gated = opts.onDestructivePlan('App', []).then(
-      () => (settled = true),
-      () => (settled = true)
-    );
-    await new Promise((r) => setTimeout(r, 5));
-    expect(settled).toBe(false);
-    resolveFull({ kind: 'found', prefixes: ['team-b'] });
-    await gated;
-    await expect(opts.onDestructivePlan('App', [])).rejects.toThrow(/this deploy deletes or replaces/);
-  });
-
-  it('never rejects: a failing target becomes a result, refused only when a gate awaits it', async () => {
-    const t = fakeTarget();
-    t.listTopLevelPrefixes.mockRejectedValue(Object.assign(new Error('x'), { name: 'SlowDown' }));
-    const s = startCrossPrefixScans([{ stackName: 'App' }], t, () => 'us-east-1').get(
-      crossPrefixScanKey('App', 'us-east-1')
-    )!;
-    await expect(s.full).resolves.toMatchObject({ kind: 'failed' });
-    await expect(s.firstDeploy).resolves.toMatchObject({ kind: 'failed' });
   });
 });

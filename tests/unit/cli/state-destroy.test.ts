@@ -44,6 +44,7 @@ const mockGetState = vi.fn<(stackName: string) => Promise<{ state: StackState; e
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
     verifyBucketExists: mockVerifyBucketExists,
@@ -303,7 +304,7 @@ describe('cdkd state destroy', () => {
     // go-to-k/cdkd#2115: a top-level state destroy is a whole-stack teardown.
     expect(callArgs?.[2].stackDestroy).toBe(true);
     // go-to-k/cdkd#4705: a top-level state destroy checks the bucket's other state prefixes.
-    expect(callArgs?.[2].crossPrefixCheck?.target).toBeDefined();
+    expect(callArgs?.[2].crossPrefixCheck?.cache).toBeDefined();
   });
 
   /**

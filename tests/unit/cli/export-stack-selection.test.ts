@@ -68,6 +68,7 @@ const mockSaveState = vi.hoisted(() => vi.fn<() => Promise<string>>());
 const mockDeleteState = vi.hoisted(() => vi.fn<() => Promise<void>>());
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => [{ stackName: 'Other', region: 'us-east-1' }]),
     getState: mockGetState,

@@ -4,7 +4,7 @@ import {
   plainOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixScanCache } from '../../state/cross-prefix-stack-scan.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -613,7 +613,12 @@ export async function setupStateBackend(options: {
     bucket,
     prefix,
     exportIndexStore,
-    dispose: () => awsClients.destroy(),
+    // The backend may have REPLACED its client with a bucket-region one, which
+    // `awsClients.destroy()` does not reach (go-to-k/cdkd#4705 review R4-2).
+    dispose: () => {
+      awsClients.destroy();
+      stateBackend.destroyClient();
+    },
   };
 }
 
@@ -2976,8 +2981,15 @@ async function stateDestroyCommand(
         if (!options.stackRegion) return laterRefs.length > 0;
         return laterRefs.some((r) => r.region === options.stackRegion || !r.region);
       });
-    // go-to-k/cdkd#4705: one bucket listing for every stack this run destroys.
-    const crossPrefixCheck = { target: withSharedListing(setup.stateBackend) };
+    // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
+    // sequential loop (one listing, one run-wide probe cap); each stack's
+    // destroy then awaits its own memoized result.
+    const crossPrefixCheck = { cache: new CrossPrefixScanCache(setup.stateBackend) };
+    for (const ref of stateRefs) {
+      if (!stackNames.includes(ref.stackName) || ref.region === undefined) continue;
+      if (options.stackRegion && ref.region !== options.stackRegion) continue;
+      void crossPrefixCheck.cache.full(ref.stackName, ref.region);
+    }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):

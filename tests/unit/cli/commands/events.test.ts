@@ -22,6 +22,7 @@ vi.mock('../../../../src/cli/config-loader.js', () => ({
 
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     prefix: 'cdkd',
     verifyBucketExists: vi.fn().mockResolvedValue(undefined),
     getRawObject: vi.fn(async (key: string) => objects.get(key) ?? null),

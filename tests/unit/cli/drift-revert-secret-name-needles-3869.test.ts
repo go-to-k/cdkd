@@ -46,6 +46,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 const mockGetState = vi.fn<() => Promise<{ state: StackState; etag: string } | null>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     getState: mockGetState,
     listStacks: vi.fn(async () => [{ stackName: 'TestStack', region: 'us-east-1' }]),
     verifyBucketExists: vi.fn(async () => undefined),

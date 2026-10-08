@@ -1005,7 +1005,10 @@ record you are not keeping with the `cdkd state orphan ... --state-prefix
 <prefix>` command the refusal prints, which never deletes a resource, and
 re-run. See
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
-If S3 denies the listing or a read, the destroy warns and continues.
+If S3 denies the listing or a read, the destroy warns and continues. `--all`
+starts every stack's check at once. Its cost grows with the bucket's top-level
+prefixes, so a large shared state bucket slows every destroy; prefer a
+dedicated one.
 
 ## A malformed `resources` map refuses the destroy
 
