@@ -971,6 +971,8 @@ async function destroyCommand(
                 // cannot confirm keeps its record (CloudFormation DELETE_FAILED);
                 // a deploy-engine delete never sets it.
                 stackDestroy: true,
+                // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
+                crossPrefixCheck: true,
                 exportIndexStore,
                 ...(options.allowUnsupportedTypes?.length && {
                   allowUnsupportedTypes: options.allowUnsupportedTypes,

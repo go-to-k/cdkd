@@ -3123,6 +3123,8 @@ async function stateDestroyCommand(
                   resolveSecretDerivedPrincipals: {},
                   // go-to-k/cdkd#2115: a whole-stack teardown (see destroy.ts).
                   stackDestroy: true,
+                  // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
+                  crossPrefixCheck: true,
                   exportIndexStore: setup.exportIndexStore,
                   ...(options.allowUnsupportedTypes?.length && {
                     allowUnsupportedTypes: options.allowUnsupportedTypes,

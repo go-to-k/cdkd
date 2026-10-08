@@ -110,6 +110,8 @@ import {
   renderNoStackMatch,
 } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
+import { createCrossPrefixDeployGate } from './cross-prefix-gate.js';
+import { scanOtherPrefixesForStack } from '../../state/cross-prefix-stack-scan.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
@@ -589,6 +591,23 @@ async function deployCommand(
     // the backstop for a context this command did not build.
     refuseMalformedNestedTemplateTrees(targetStacks);
 
+    // go-to-k/cdkd#4705: is each stack, on its first deploy under this prefix,
+    // already recorded under ANOTHER prefix of the bucket? Started here and
+    // awaited only by the engine's post-lock gate when it finds no record, so
+    // it overlaps macro expansion, asset publishing and the lock; a stack this
+    // prefix already holds stops at one HEAD and lists nothing.
+    const crossPrefixScans = new Map(
+      targetStacks.map((s) => [
+        s.stackName,
+        scanOtherPrefixesForStack(
+          preflightStateBackend,
+          s.stackName,
+          s.region || (namedCliRegion(options.region) ?? 'us-east-1'),
+          { checkOwnRecord: true }
+        ),
+      ])
+    );
+
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
     // dependency stacks), mutating each template in place before the
@@ -906,6 +925,12 @@ async function deployCommand(
           skipPrefix,
           yes: options.yes,
         });
+        const crossPrefixGate = createCrossPrefixDeployGate({
+          stackName: stackInfo.stackName,
+          region: stackRegion,
+          bucket: stateBucket,
+          scan: crossPrefixScans.get(stackInfo.stackName),
+        });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
         // companion `--force-stateful-recreation`) against the synth
@@ -1094,7 +1119,10 @@ async function deployCommand(
           refusalRecovery,
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
-          ...(migrationGate && { onCurrentStateLoaded: migrationGate }),
+          onCurrentStateLoaded: async (gateStackName, loadedState) => {
+            await crossPrefixGate(gateStackName, loadedState);
+            if (migrationGate) await migrationGate(gateStackName, loadedState);
+          },
           // Issue #2719. Unconditional, unlike `recreateTargets` above: an
           // empty Set is the same as absent to every reader, and gating on
           // size only matters where the value's PRESENCE changes behaviour.

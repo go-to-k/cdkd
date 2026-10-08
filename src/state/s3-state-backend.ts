@@ -888,6 +888,62 @@ export class S3StateBackend {
   }
 
   /**
+   * Does this prefix hold a state record (either layout) OR a rollback journal
+   * for the stack? A journal alone is an interrupted first deploy of this
+   * prefix (go-to-k/cdkd#4705, `cross-prefix-stack-scan.ts`). Errors propagate.
+   */
+  async ownRecordExists(stackName: string, region: string): Promise<boolean> {
+    if (await this.stateExists(stackName, region)) return true;
+    return this.headObject(this.getRollbackJournalKey(stackName, region));
+  }
+
+  /**
+   * The bucket's top-level key prefixes, decoded and without their trailing
+   * `/` (`ListObjectsV2` with `Delimiter: '/'`, every page). An empty
+   * `--state-prefix` keys records under `/`, which lists here as `''`. Errors
+   * propagate (go-to-k/cdkd#4705).
+   */
+  async listTopLevelPrefixes(): Promise<string[]> {
+    await this.ensureClientForBucket();
+    const out: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Delimiter: '/',
+          EncodingType: LISTING_ENCODING_TYPE,
+          ...(continuationToken && { ContinuationToken: continuationToken }),
+        })
+      );
+      for (const cp of response.CommonPrefixes ?? []) {
+        const decoded = decodeListingKey(cp.Prefix);
+        if (decoded === undefined || !decoded.endsWith('/')) continue;
+        out.push(decoded.slice(0, -1));
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return out;
+  }
+
+  /**
+   * Does `prefix` (another prefix of this bucket) hold a state record for the
+   * stack in `region`? Same answer as {@link stateExists} under that prefix,
+   * through this backend's already-resolved client (go-to-k/cdkd#4705).
+   */
+  async recordExistsUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean> {
+    await this.ensureClientForBucket();
+    const sibling = new S3StateBackend(
+      this.s3Client,
+      { ...this.config, prefix },
+      this.clientOpts
+    );
+    sibling.clientResolved = true;
+    return sibling.stateExists(stackName, region);
+  }
+
+  /**
    * Raw sidecar-object write under the state bucket. Used for non-state
    * auxiliary files that share the bucket + region-resolution plumbing
    * (e.g. deployment-event JSONL streams + their `index.json`, issue

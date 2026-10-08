@@ -31,6 +31,10 @@ import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { acquireStackLock } from './stack-lock-guard.js';
+import {
+  applyCrossPrefixScan,
+  scanOtherPrefixesForStack,
+} from '../../state/cross-prefix-stack-scan.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -204,6 +208,14 @@ export interface DestroyRunnerContext {
    * the parent's producer regions, which its own state does not record.
    */
   resolveSecretDerivedPrincipals?: { inheritedProducerRegions?: readonly string[] };
+
+  /**
+   * go-to-k/cdkd#4705: refuse when the bucket also records this stack and
+   * region under ANOTHER state prefix. Set by `cdkd destroy` and
+   * `cdkd state destroy` for a top-level stack; never for a nested child,
+   * whose parent was checked (`src/state/cross-prefix-stack-scan.ts`).
+   */
+  crossPrefixCheck?: boolean;
 
   /**
    * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
@@ -555,6 +567,13 @@ export async function runDestroyForStack(
   // recorded one. Resolved HERE, above the two refusals, because both name the
   // record they refuse and neither may be reached with the count already taken.
   const regionForState = state.region ?? ctx.baseRegion;
+  // go-to-k/cdkd#4705: started now, awaited before anything is deleted or
+  // prompted for. Never rejects.
+  const crossPrefixScan = ctx.crossPrefixCheck
+    ? scanOtherPrefixesForStack(ctx.stateBackend, stackName, regionForState, {
+        checkOwnRecord: false,
+      })
+    : undefined;
   // The account every pasteable command in the malformed-record refusals below
   // must address (go-to-k/cdkd#3909): without it the `cdkd state show` /
   // `cdkd state list --json` lines they print read the DEFAULT profile's
@@ -696,6 +715,14 @@ export async function runDestroyForStack(
   // refused separately just above (go-to-k/cdkd#3161) so the message a user
   // sees names the container that is actually broken.
   refuseMalformedOutputsForDestroy(state, stackName, regionForState, refusalRecovery);
+  if (crossPrefixScan) {
+    applyCrossPrefixScan(
+      await crossPrefixScan,
+      { stackName, region: regionForState, bucket: ctx.stateBucket },
+      'destroy',
+      (message) => logger.warn(message)
+    );
+  }
   if (resourceCount === 0 && orphanCount === 0 && journaledOrphans.count === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
