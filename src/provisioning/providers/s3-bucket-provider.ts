@@ -131,6 +131,7 @@ import {
   type UpdateContext,
   type ResourceNotFound,
   type ResourceIdentityVerdict,
+  type ResourceDeleteResult,
 } from '../../types/resource.js';
 
 /**
@@ -1661,6 +1662,21 @@ function bucketLocationToRegion(constraint: string | null | undefined): string {
   if (value === '') return 'us-east-1';
   if (value === 'eu') return 'eu-west-1';
   return value;
+}
+
+/**
+ * go-to-k/cdkd#4606: the skip reason of a failed CREATE's orphan bucket that
+ * is not empty, which `delete()` never empties. A FIXED constant, plain prose
+ * without the already-deleted phrases (`.claude/rules/provider-delete-path.md`).
+ */
+export const FAILED_CREATE_ORPHAN_NOT_EMPTY_SKIP_REASON =
+  'the bucket a failed create left behind is not empty, and cdkd never empties such a bucket: ' +
+  'something wrote to it after that create, so it may hold data or have been adopted by ' +
+  'another deployment. Empty and delete it yourself if it is not in use';
+
+/** `deleteBucketWithEmptyRetry`'s refusal of a non-empty bucket it may not empty. */
+class BucketNotEmptyRefusal extends Error {
+  override name = 'BucketNotEmptyRefusal';
 }
 
 /**
@@ -7483,8 +7499,17 @@ export class S3BucketProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting S3 bucket ${displaySafe(logicalId)}: ${displaySafe(physicalId)}`);
+
+    // go-to-k/cdkd#4606: a bucket a failed CREATE left behind (a journaled
+    // proven orphan, deleted by the automatic rollback, `cdkd rollback`,
+    // `cdkd destroy` or a later deploy's settle) is NEVER emptied, whatever
+    // the attempted template declared. It is empty unless something wrote to
+    // it after that CREATE, and then it is no longer provably cdkd's alone:
+    // another deployment of the stack (another state prefix) may have adopted
+    // it under its generated name, which its identity token cannot tell.
+    const failedCreateOrphan = context?.failedCreateOrphan === true;
 
     // CloudFormation-parity data guard (issue #1340): a non-empty bucket is
     // only auto-emptied when the user opted in — CDK's `autoDeleteObjects`
@@ -7492,8 +7517,9 @@ export class S3BucketProvider implements ResourceProvider {
     // consent on a replacement delete. Otherwise the not-empty error
     // surfaces exactly like CloudFormation's DELETE_FAILED.
     const allowAutoEmpty =
-      context?.forceDataDelete === true ||
-      hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG);
+      !failedCreateOrphan &&
+      (context?.forceDataDelete === true ||
+        hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG));
 
     // Confirm the recorded physical id denotes a bucket in the region this
     // state record is for, BEFORE anything destructive happens — ahead of the
@@ -7530,6 +7556,11 @@ export class S3BucketProvider implements ResourceProvider {
     try {
       await this.deleteBucketWithEmptyRetry(logicalId, physicalId, allowAutoEmpty);
     } catch (error) {
+      if (failedCreateOrphan && error instanceof BucketNotEmptyRefusal) {
+        // Kept, not failed: the journal keeps the entry and the run warns,
+        // naming the bucket, and exits 2.
+        return { outcome: 'skipped', reason: FAILED_CREATE_ORPHAN_NOT_EMPTY_SKIP_REASON };
+      }
       if (error instanceof NoSuchBucket) {
         const clientRegion = await this.s3Client.config.region();
         assertRegionMatch(
@@ -8771,7 +8802,7 @@ export class S3BucketProvider implements ResourceProvider {
         const msg = describeAwsFailure(error).detail;
         if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
           if (!allowAutoEmpty) {
-            throw new Error(
+            throw new BucketNotEmptyRefusal(
               `bucket ${displaySafe(bucketName)} is not empty. Matching CloudFormation, cdkd does not ` +
                 `delete a non-empty bucket unless it opted into automatic emptying ` +
                 `(CDK's autoDeleteObjects: true, i.e. the '${S3_AUTO_DELETE_OBJECTS_TAG}' tag). ` +

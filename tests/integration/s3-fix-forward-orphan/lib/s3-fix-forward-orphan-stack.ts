@@ -15,7 +15,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   as proven orphans, with the bucket's identity (name, region and this
  *   account's `ListBuckets` `CreationDate`, which outside us-east-1 the
  *   versioning write has already moved).
- * - `ORPHAN_FIX_FORWARD=true` keeps both logical ids under other names
+ * - `OrphanD` is a third such bucket, declaring CDK's autoDeleteObjects
+ *   opt-in; verify.sh writes an object into it before the fix-forward, which
+ *   must keep it rather than empty it.
+ * - `ORPHAN_FIX_FORWARD=true` keeps every orphan logical id under other names
  *   (`-b`), so the fix-forward deploy creates two new buckets. Before it,
  *   verify.sh deletes `OrphanC`'s bucket and re-creates the name itself (one
  *   made outside the stack): the fix-forward must delete `OrphanA`'s bucket
@@ -40,10 +43,17 @@ export class S3FixForwardOrphanStack extends cdk.Stack {
       for (const [logicalId, stem] of [
         ['OrphanA', 'a'],
         ['OrphanC', 'c'],
+        ['OrphanD', 'd'],
       ] as const) {
         new s3.CfnBucket(this, logicalId, {
           bucketName: `cdkd-s3ffo-${stem}${suffix}-${account}`,
           versioningConfiguration: { status: 'Enabled' },
+          // OrphanD declares CDK's autoDeleteObjects opt-in (the tag the S3
+          // provider reads): a failed CREATE's orphan must still never be
+          // emptied.
+          ...(stem === 'd' && {
+            tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }],
+          }),
         });
       }
     }
