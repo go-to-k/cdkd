@@ -2826,6 +2826,67 @@ describe('reportDriftBaselineGaps', () => {
 
   // go-to-k/cdkd#4159: the warning's `cdkd state show` pointer carries the
   // run's account flags, handed in by both `exportCommand` call sites.
+  // go-to-k/cdkd#4648: the baseline-gap commands carry the account too — the
+  // `cdkd state refresh-observed` remedy WRITES — and an account hole neither
+  // suppresses the command nor borrows the identity-hole sentence.
+  describe('the baseline-gap commands carry the account flags (go-to-k/cdkd#4648)', () => {
+    const RECOVERY = { profile: 'prod', stateBucket: 'my-bucket', statePrefix: 'team-a' };
+    const FLAGS = '--profile prod --state-bucket my-bucket --state-prefix team-a';
+    const LOADED = { stackName: 'S', region: 'us-east-1' };
+    const run = (
+      version: number,
+      resources: Record<string, unknown>,
+      recovery?: { profile?: string; stateBucket?: string; statePrefix?: string }
+    ): string[] => {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        { version, stackName: 'S', region: 'us-east-1', resources: resources as never, outputs: {}, lastModified: 0 },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+        LOADED,
+        undefined,
+        recovery
+      );
+      return logger.warn.mock.calls.map((c) => String(c[0]));
+    };
+    const missing = { R: { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} } };
+
+    for (const version of [2, 10]) {
+      it(`schema v${version}: the refresh-observed remedy carries the flags`, () => {
+        const text = run(version, missing, RECOVERY).join('\n');
+        expect(text).toContain(`cdkd state refresh-observed S --stack-region us-east-1 ${FLAGS}`);
+        expect(text).not.toContain('value this run was given');
+      });
+
+      it(`schema v${version}: CONTROL — no context, no account flag`, () => {
+        const text = run(version, missing).join('\n');
+        expect(text).toContain('cdkd state refresh-observed S --stack-region us-east-1');
+        expect(text).not.toContain('--state-bucket');
+      });
+
+      it(`schema v${version}: a refused --profile is a hole, explained, and the command still offered`, () => {
+        const text = run(version, missing, { profile: 'my profile', stateBucket: 'b' }).join('\n');
+        expect(text).toContain(`cdkd state refresh-observed S --stack-region us-east-1 --profile '<profile>' --state-bucket b`);
+        expect(text).not.toContain('my profile');
+        const reason = text.indexOf("The '--profile' value this run was given is not a plain identifier");
+        expect(reason).toBeGreaterThan(-1);
+        expect(reason).toBeLessThan(text.indexOf('cdkd state refresh-observed S'));
+        // Not the identity sentence: the stack and region were named.
+        expect(text).not.toContain('The command is not printed');
+      });
+    }
+
+    it('the unreadable-entry inspect line carries the flags after --json, and an account hole gets its own sentence', () => {
+      const warns = run(10, { Bad: null }, RECOVERY);
+      expect(warns).toContain(`Inspect it with: cdkd state show S --stack-region us-east-1 --json ${FLAGS}`);
+      const holed = run(10, { Bad: null }, { profile: 'my profile' });
+      expect(holed).toContain(`Inspect it with: cdkd state show S --stack-region us-east-1 --json --profile '<profile>'`);
+      const prose = holed.join('\n');
+      expect(prose).toContain("The '--profile' value this run was given is not a plain identifier");
+      // The identity-hole sentence stays silent: the identity was named.
+      expect(prose).not.toContain("A quoted '<...>' hole in the command after the list below");
+    });
+  });
+
   it('the unreadable-bag warning carries the account flags it is handed, and none without them', async () => {
     const { readFileSync } = await import('node:fs');
     const run = (recovery?: { profile: string; stateBucket: string; statePrefix: string }) => {

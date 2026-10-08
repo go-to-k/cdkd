@@ -1877,4 +1877,19 @@ describe("state.ts's read-only renders carry the account flags (go-to-k/cdkd#415
       expect(warned()).not.toContain('--profile');
     });
   }
+
+  // go-to-k/cdkd#4648: `--show-nested` builds its tree through export.ts's
+  // walker, whose missing-child refusal prints a `cdkd state orphan` drop.
+  it('state show --show-nested: the missing-child drop carries the account flags (go-to-k/cdkd#4648)', async () => {
+    bucket.state = nestedParent();
+    // No child seeded: the harness answers NoSuchKey, as the real bucket does.
+    const { error } = await runState([
+      'show', 'MyStack', '--show-nested', '--profile', 'prod', '--state-prefix', 'team-a',
+    ]);
+    const text = failureText(error);
+    expect(text).toContain('cdkd state is missing nested-child');
+    expect(text).toMatch(
+      /^Drop it with: cdkd state orphan MyStack --stack-region us-east-1 --profile prod --state-bucket test-bucket --state-prefix team-a$/m
+    );
+  });
 });

@@ -375,14 +375,16 @@ afterEach(() => {
 /** `orphanCommandFor`'s note for a stack name that is not a string (go-to-k/cdkd#3924 M4). */
 const NONSTRING_STACK_NOTE =
   "The next line's command names neither value, because its record's stack name is not a " +
-  "string. List the records with 'cdkd state list --json' and act on the one whose " +
+  "string. List the records with 'cdkd state list --json' run with the same account flags " +
+  "as the next line's command, and act on the one whose " +
   'stackName and region match, replacing each quoted hole, quotes included, with the ' +
   'value decoded from its JSON string, then shell-quoted.';
 
 /** `orphanCommandFor`'s note for a region that is not a string (go-to-k/cdkd#3924 M4). */
 const NONSTRING_NOTE =
   "The next line's command names neither value, because its record's region is not a " +
-  "string. List the records with 'cdkd state list --json' and act on the one whose " +
+  "string. List the records with 'cdkd state list --json' run with the same account flags " +
+  "as the next line's command, and act on the one whose " +
   'stackName and region match, replacing each quoted hole, quotes included, with the ' +
   'value decoded from its JSON string, then shell-quoted.';
 
@@ -390,7 +392,10 @@ const NONSTRING_NOTE =
 const REGION_ALT_NOTE =
   "The next line's command names neither value, because its record's region does NOT " +
   'render exactly (another record may render identically). List the records with ' +
-  "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
+  // Every run carries a resolved bucket, so the listing pointer says to carry
+  // the same account flags (go-to-k/cdkd#4648).
+  "'cdkd state list --json' run with the same account flags as the next line's command, and " +
+  "act on the one whose stackName and region match, replacing " +
   'each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted.';
 
 describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', () => {
@@ -588,7 +593,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     expect(
       warnLine.endsWith(
         'The stack IS CFn-managed; clean up its state record.\n' +
-          'Clean up with: cdkd state orphan Root --stack-region us-east-1'
+          'Clean up with: cdkd state orphan Root --stack-region us-east-1 --state-bucket bkt'
       )
     ).toBe(true);
   });
@@ -705,7 +710,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         'The stack IS CFn-managed; clean up its state record. ' +
           REGION_ALT_NOTE +
           '\n' +
-          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>'"
+          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>' --state-bucket bkt"
       )
     ).toBe(true);
   });
@@ -767,7 +772,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         'The stack IS CFn-managed; clean up its state record. ' +
           NONSTRING_NOTE +
           '\n' +
-          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>'"
+          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>' --state-bucket bkt"
       )
     ).toBe(true);
   });
@@ -830,7 +835,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
         'The stack IS CFn-managed; clean up its state record. ' +
           NONSTRING_STACK_NOTE +
           '\n' +
-          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>'"
+          "Clean up with: cdkd state orphan '<stack>' --stack-region '<region>' --state-bucket bkt"
       )
     ).toBe(true);
   });

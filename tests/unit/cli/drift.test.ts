@@ -2445,6 +2445,52 @@ describe('cdkd drift', () => {
       expect(output).toContain('Plan (--revert)');
     });
 
+    // go-to-k/cdkd#4648: the plan's `cdkd state refresh-observed` WRITES, so it
+    // carries the run's account flags; a refused one is a hole explained above it.
+    for (const [label, extra, line, absent] of [
+      [
+        'carries --profile, the bucket and the prefix',
+        ['--profile', 'prod', '--state-prefix', 'team-a'],
+        '--profile prod --state-bucket test-bucket --state-prefix team-a',
+        undefined,
+      ],
+      ['holes a refused --profile, never echoing it', ['--profile', 'my profile'], "--profile '<profile>' --state-bucket test-bucket", 'my profile'],
+    ] as const) {
+      it(`--revert's refresh-observed line ${label} (go-to-k/cdkd#4648)`, async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Table1: makeResource({
+              physicalId: 't',
+              resourceType: 'AWS::Glue::Table',
+              properties: { Parameters: { classification: 'parquet' } },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            Parameters: { classification: 'json', table_type: 'ICEBERG' },
+          }),
+          update: vi.fn(),
+        });
+        const { output, error } = await runDrift([
+          'TestStack', '--revert', '--dry-run', '--yes', ...extra,
+        ]);
+        expect(error).toBeUndefined();
+        expect(output).toContain(
+          `      Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1 ${line}\n`
+        );
+        if (absent !== undefined) {
+          expect(output).not.toContain(absent);
+          const reason = output.indexOf("The '--profile' value this run was given is not a plain identifier");
+          expect(reason).toBeGreaterThan(-1);
+          expect(reason).toBeLessThan(output.indexOf('Populate with:'));
+        } else {
+          expect(output).not.toContain('value this run was given');
+        }
+      });
+    }
+
     it('--revert REPORTS the AWS-authored values it leaves untouched when state has no observedProperties (issue #1478 / #1626)', async () => {
       // End-to-end wiring, not just the pure helper: the warning has to reach
       // the PLAN, which is what the user sees before confirming and what
@@ -2483,7 +2529,7 @@ describe('cdkd drift', () => {
       // `isPasteableIdent` in conjunction with the command gate. `for this
       // stack` named neither, which is the harm the issue states.
       expect(output).toMatch(
-        /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+        /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1 --state-bucket test-bucket$/m
       );
       expect(output).toContain('Populate observedProperties with the command below');
       // Nothing runnable left inside a prose quoted span.

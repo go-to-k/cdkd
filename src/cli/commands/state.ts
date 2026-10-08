@@ -1474,7 +1474,10 @@ async function stateShowCommand(
         stackName,
         ref.region,
         setup.stateBackend,
-        stateResult.state
+        stateResult.state,
+        // The account flags of the missing-child refusal's drop command
+        // (go-to-k/cdkd#4648).
+        renderRecovery(options, setup)
       );
       const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
 

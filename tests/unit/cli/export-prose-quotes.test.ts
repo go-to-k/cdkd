@@ -486,3 +486,52 @@ describe('cdkd export puts no state or template value inside its own quotes (go-
     }, 120_000);
   });
 });
+
+// go-to-k/cdkd#4648: `orphanCommandFor`'s `cdkd state orphan` drop carries the
+// run's account flags, on the named command and on the withheld template, and
+// a refused account value is a hole the note explains.
+describe("orphanCommandFor's drop carries the account flags (go-to-k/cdkd#4648)", () => {
+  const nested = { Child: 'AWS::CloudFormation::Stack' };
+  const missingChild = (region: string, recovery?: Parameters<typeof buildCdkdStateStackTree>[4]) =>
+    refusal(() =>
+      buildCdkdStateStackTree(
+        'Root',
+        region,
+        backend({ [`Root|${region}`]: stateOf({ stackName: 'Root', region, resources: nested }) }),
+        undefined,
+        recovery
+      )
+    );
+  const RECOVERY = { profile: 'prod', stateBucket: 'my-bucket', statePrefix: 'team-a' };
+  const FLAGS = '--profile prod --state-bucket my-bucket --state-prefix team-a';
+
+  it('the named drop carries the flags; CONTROL without a context', async () => {
+    expect(await missingChild('us-east-1', RECOVERY)).toMatch(
+      new RegExp(`^Drop it with: cdkd state orphan Root --stack-region us-east-1 ${FLAGS}$`, 'm')
+    );
+    const bare = await missingChild('us-east-1');
+    expect(bare).toMatch(/^Drop it with: cdkd state orphan Root --stack-region us-east-1$/m);
+  });
+
+  it('the withheld template carries them too, and the listing pointer says to', async () => {
+    // A region that does not render exactly withholds the identity.
+    const message = await missingChild('us-east-1​', RECOVERY);
+    expect(message).toMatch(
+      new RegExp(`^Drop it with: cdkd state orphan '<stack>' --stack-region '<region>' ${FLAGS}$`, 'm')
+    );
+    expect(message).toContain(
+      "'cdkd state list --json' run with the same account flags as the next line's command"
+    );
+    // Without a context the pointer is the bare listing.
+    expect(await missingChild('us-east-1​')).toContain("'cdkd state list --json' and act on");
+  });
+
+  it('a refused --profile is a described hole, never echoed', async () => {
+    const message = await missingChild('us-east-1', { profile: 'my profile', stateBucket: 'b' });
+    expect(message).toMatch(/^Drop it with: cdkd state orphan Root --stack-region us-east-1 --profile '<profile>' --state-bucket b$/m);
+    expect(message).not.toContain('my profile');
+    const reason = message.indexOf("The '--profile' value this run was given is not a plain identifier");
+    expect(reason).toBeGreaterThan(-1);
+    expect(reason).toBeLessThan(message.indexOf('Drop it with:'));
+  });
+});
