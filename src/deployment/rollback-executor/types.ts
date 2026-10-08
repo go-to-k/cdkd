@@ -218,8 +218,9 @@ export interface RollbackExecutorContext {
    */
   skipFinalSnapshot?: boolean | undefined;
   /**
-   * `--remove-protection`: a failed CREATE's resource is deleted with its
-   * deletion / termination protection turned off first (go-to-k/cdkd#4678).
+   * `--remove-protection`: a failed CREATE's resource, and under `cdkd
+   * rollback` one a completed CREATE made, is deleted with its deletion /
+   * termination protection turned off first (go-to-k/cdkd#4678).
    * Set ONLY on an explicit flag: by the `cdkd destroy` / `cdkd state destroy`
    * journal sweep and by `cdkd rollback --remove-protection` (with or without
    * `--revert-failed`). A deploy's automatic rollback, its success settle and a
