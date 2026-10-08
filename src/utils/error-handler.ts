@@ -9,6 +9,7 @@ import {
 import { displayAwsMessage, isPasteableIdent, plainIdentOr, safeMsg } from './display-safe.js';
 import { hasResourceTypeShape, TIMEOUT_FLAG_RESOURCE_TYPE } from './resource-type-shape.js';
 import { getLogger } from './logger.js';
+import { safeStringify } from './aws-failure-text.js';
 
 /**
  * Base error class for cdkd
@@ -1052,7 +1053,7 @@ export function formatError(error: unknown): string {
     return `${error.name}: ${error.message}`;
   }
 
-  return String(error);
+  return safeStringify(error);
 }
 
 /**
@@ -1191,7 +1192,7 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
   if (!(err instanceof Error)) {
     // Chained too: the error-cause critic counts `normalizeAwsError(err)` as
     // threading `err`, so no arm may drop it (go-to-k/cdkd#2075).
-    return new Error(String(err), { cause: err });
+    return new Error(safeStringify(err), { cause: err });
   }
 
   // Detect the AWS SDK v3 "Unknown" synthetic exception. Other errors pass

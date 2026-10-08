@@ -24,6 +24,7 @@
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import type { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from './logger.js';
+import { safeStringify } from './aws-failure-text.js';
 import { awsClientDefaults } from './aws-client-defaults.js';
 
 /**
@@ -167,7 +168,7 @@ export function resolveExpectedBucketOwner(client: S3Client): Promise<string | u
       });
     } catch (error) {
       getLogger().debug(
-        `ExpectedBucketOwner resolution skipped (header omitted): ${String(error)}`
+        `ExpectedBucketOwner resolution skipped (header omitted): ${safeStringify(error)}`
       );
       // Do NOT keep a failed resolution cached — a transient STS throttle at
       // process start must not silently disable the header for the rest of
@@ -222,7 +223,7 @@ export async function recordResolvedAccountId(
     if (credentialsCache.has(accessKeyId)) return;
     credentialsCache.set(accessKeyId, Promise.resolve(accountId));
   } catch (error) {
-    getLogger().debug(`ExpectedBucketOwner seed skipped: ${String(error)}`);
+    getLogger().debug(`ExpectedBucketOwner seed skipped: ${safeStringify(error)}`);
   }
 }
 
