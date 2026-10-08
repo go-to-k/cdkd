@@ -656,6 +656,159 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
     });
   });
 
+  describe('a create the SDK replayed inside one send (issue #4687, detection only)', () => {
+    /**
+     * Stage `command`'s next create as the SDK's in-`send` replay: with
+     * `attempts > 1` the first attempt makes a resource whose answer is lost,
+     * the replay makes a second, and the output names only the second and
+     * carries `$metadata.attempts`. `attempts: undefined` returns no `$metadata`.
+     */
+    const stageCreate = (command: string, attempts: number | undefined): void => {
+      mockSend.mockImplementation(async (cmd: Parameters<typeof aws.send>[0]) => {
+        if (cmd.constructor.name !== command) return aws.send(cmd);
+        if (attempts !== undefined && attempts > 1) await aws.send(cmd);
+        const out = await aws.send(cmd);
+        return attempts === undefined ? out : { ...out, $metadata: { attempts } };
+      });
+    };
+    const replayReportFor = (action: string): string | undefined =>
+      warnLines().find((l) =>
+        l.includes(
+          `The ${action} call for Child succeeded only after the AWS SDK sent it again, following an attempt that failed without a definite answer`
+        )
+      );
+
+    it('CreateAuthorizer: names the first attempt authorizer, not the returned one, and adopts or deletes nothing', async () => {
+      stageCreate('CreateAuthorizerCommand', 2);
+
+      const result = await provider.create('Child', 'AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+      expect(result.physicalId).toBe('auth2');
+      expect(aws.authorizers.map((a) => a.id)).toEqual(['auth1', 'auth2']);
+      expect(aws.calls).toEqual([
+        'CreateAuthorizerCommand',
+        'CreateAuthorizerCommand',
+        'GetAuthorizersCommand',
+      ]);
+      const line = replayReportFor('CreateAuthorizer')!;
+      expect(line).toContain('1 authorizer(s) match that this deploy did not record: auth1.');
+      expect(line).not.toContain('auth2');
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).not.toContain('Creating a new one now.');
+      expect(line).toContain(
+        'aws apigateway get-authorizer --rest-api-id rest1 --authorizer-id auth1 --region ap-southeast-2'
+      );
+      expect(reportFor('CreateAuthorizer')).toBeUndefined();
+    });
+
+    it.each([
+      ['attempts: 1', 1],
+      ['no $metadata', undefined],
+    ] as const)(
+      'CreateAuthorizer with %s sends no GetAuthorizers',
+      async (_label, attempts) => {
+        stageCreate('CreateAuthorizerCommand', attempts);
+
+        const result = await provider.create('Child', 'AWS::ApiGateway::Authorizer', AUTH_PROPS);
+
+        expect(result.physicalId).toBe('auth1');
+        expect(aws.calls).toEqual(['CreateAuthorizerCommand']);
+        expect(warnLines()).toEqual([]);
+      }
+    );
+
+    it('CreateDeployment: names the first attempt deployment, not the returned one, and adopts or deletes nothing', async () => {
+      stageCreate('CreateDeploymentCommand', 2);
+
+      const result = await provider.create('Child', 'AWS::ApiGateway::Deployment', DEP_PROPS);
+
+      expect(result.physicalId).toBe('dep2');
+      expect(aws.deployments.map((d) => d.id)).toEqual(['dep1', 'dep2']);
+      expect(aws.calls).toEqual([
+        'CreateDeploymentCommand',
+        'CreateDeploymentCommand',
+        'GetDeploymentsCommand',
+      ]);
+      const line = replayReportFor('CreateDeployment')!;
+      expect(line).toContain(
+        '1 deployment(s) were created between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:05.000Z that this deploy did not record: dep1.'
+      );
+      expect(line).not.toContain('dep2');
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).toContain(
+        'aws apigateway delete-deployment --rest-api-id rest1 --deployment-id dep1 --region ap-southeast-2'
+      );
+      expect(reportFor('CreateDeployment')).toBeUndefined();
+    });
+
+    it('CreateDeployment: the window opens at the attempt start minus the skew margin', async () => {
+      aws.deployments.push(
+        {
+          id: 'stale',
+          restApiId: 'rest1',
+          description: 'v1',
+          createdDate: new Date(Date.now() - 5_001),
+        },
+        {
+          id: 'edge',
+          restApiId: 'rest1',
+          description: 'v1',
+          createdDate: new Date(Date.now() - 5_000),
+        }
+      );
+      stageCreate('CreateDeploymentCommand', 2);
+
+      await provider.create('Child', 'AWS::ApiGateway::Deployment', DEP_PROPS);
+
+      const line = replayReportFor('CreateDeployment')!;
+      expect(line).toContain('2 deployment(s) were created');
+      expect(line).toContain('edge');
+      expect(line).toContain('dep1');
+      expect(line).not.toContain('stale');
+    });
+
+    it('CreateDeployment: the window floor is the attempt START minus 5 s, not the end of a send that took 2 s', async () => {
+      const attemptStart = Date.now();
+      aws.deployments.push(
+        { id: 'stale', restApiId: 'rest1', description: 'v1', createdDate: new Date(attemptStart - 5_001) },
+        { id: 'edge', restApiId: 'rest1', description: 'v1', createdDate: new Date(attemptStart - 5_000) }
+      );
+      mockSend.mockImplementation(async (cmd: Parameters<typeof aws.send>[0]) => {
+        if (cmd.constructor.name !== 'CreateDeploymentCommand') return aws.send(cmd);
+        await aws.send(cmd);
+        const out = await aws.send(cmd);
+        // The replayed send returns 2 s after it started: a floor taken from
+        // the send's END would be attemptStart - 3 s and drop `edge`.
+        vi.setSystemTime(attemptStart + 2_000);
+        return { ...out, $metadata: { attempts: 2 } };
+      });
+
+      await provider.create('Child', 'AWS::ApiGateway::Deployment', DEP_PROPS);
+
+      const line = replayReportFor('CreateDeployment')!;
+      expect(line).toContain('between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z');
+      expect(line).toContain('2 deployment(s) were created');
+      expect(line).toContain('edge');
+      expect(line).not.toContain('stale');
+    });
+
+    it.each([
+      ['attempts: 1', 1],
+      ['no $metadata', undefined],
+    ] as const)(
+      'CreateDeployment with %s sends no GetDeployments',
+      async (_label, attempts) => {
+        stageCreate('CreateDeploymentCommand', attempts);
+
+        const result = await provider.create('Child', 'AWS::ApiGateway::Deployment', DEP_PROPS);
+
+        expect(result.physicalId).toBe('dep1');
+        expect(aws.calls).toEqual(['CreateDeploymentCommand']);
+        expect(warnLines()).toEqual([]);
+      }
+    );
+  });
+
   it('two creates on a cold provider build ONE create client', async () => {
     const { APIGatewayClient } = await import('@aws-sdk/client-api-gateway');
     const before = vi.mocked(APIGatewayClient).mock.calls.length;

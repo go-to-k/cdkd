@@ -12,7 +12,8 @@
  * `AllocateAddress` (naming their service through
  * {@link OrphanLookup.service}). The latch, the 5xx-refusing
  * client and the window come from `ambiguous-create.ts`; this module is only
- * the lookup-and-report step a provider runs at the top of the next attempt.
+ * the lookup-and-report step a provider runs at the top of the next attempt,
+ * or after a create the SDK replayed inside its `send` (issue #4687).
  *
  * Detection only: it never adopts and never deletes. Nothing a listing
  * returns attributes a resource to THIS create -- names are the template's
@@ -27,7 +28,7 @@
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { MaskedLogSinks } from '../masked-retry-logger.js';
 import type { PasteableAwsCommand, pasteableAwsCommand } from '../replacement-protection-advice.js';
-import type { AmbiguousCreateWindow } from './ambiguous-create.js';
+import { ambiguousAttemptLead, type AmbiguousCreateWindow } from './ambiguous-create.js';
 
 /**
  * ` --region <r>` for a report's pasteable commands, built with the report's
@@ -124,7 +125,9 @@ export async function collectOrphanIds<T>(
  * After an attempt at a tokenless create ended AMBIGUOUS (in practice a 5xx,
  * the only ambiguous failure the engine retries: the service may have made the
  * resource and lost the answer), name the resources that could be its orphan,
- * before the create is sent again.
+ * before the create is sent again -- or, for a window marked
+ * `replayedInSend`, after a create that succeeded only once the SDK replayed
+ * it (issue #4687).
  *
  * A dated lookup (`remove` present) lists only resources created inside the
  * window and adds a delete command after the read command, conditional on
@@ -148,7 +151,13 @@ export async function reportPossibleOrphans(
   const until = new Date(window.ceilingMs).toISOString();
   const remove = lookup.remove;
   const service = lookup.service ?? 'API Gateway';
-  const afterward = lookup.afterward ?? 'Creating a new one now.';
+  // After a replayed SUCCESS nothing is created next: the create is done and
+  // its own resource recorded.
+  const afterward =
+    window.replayedInSend === true
+      ? 'cdkd recorded the one the create returned.'
+      : (lookup.afterward ?? 'Creating a new one now.');
+  const lead = ambiguousAttemptLead(lookup.action, logicalId, window);
   const when = remove !== undefined ? `between ${since} and ${until}` : `at ${since}`;
   let found: OrphanIds;
   try {
@@ -157,7 +166,7 @@ export async function reportPossibleOrphans(
     const failure = describeAwsFailure(error);
     log.debug(`${lookup.listAction} failed with: ${log.value(failure.detail)}`);
     log.warn(
-      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), so ${service} may have created ${lookup.subject} that no cdkd state records, and cdkd could not look for it (${lookup.listAction}: ${failure.summary}). Creating it again; check for a duplicate.`
+      `${lead} (${when}), so ${service} may have created ${lookup.subject} that no cdkd state records, and cdkd could not look for it (${lookup.listAction}: ${failure.summary}). ${window.replayedInSend === true ? 'Check' : 'Creating it again; check'} for a duplicate.`
     );
     return;
   }
@@ -166,7 +175,7 @@ export async function reportPossibleOrphans(
     ? ` The search was incomplete: the list was cut at ${MAX_ORPHAN_LIST_PAGES} pages.`
     : '';
   if (found.ids.length === 0) {
-    const line = `No listed ${lookup.noun} matching ${lookup.subject} is unrecorded by this deploy, so the listing shows no orphan of the earlier ambiguous ${lookup.action} attempt for ${logicalId} (${when}).${incomplete}`;
+    const line = `No listed ${lookup.noun} matching ${lookup.subject} is unrecorded by this deploy, so the listing shows no orphan of the ${window.replayedInSend === true ? 'replayed' : 'earlier ambiguous'} ${lookup.action} attempt for ${logicalId} (${when}).${incomplete}`;
     if (found.truncated) {
       log.warn(line);
     } else {
@@ -185,11 +194,11 @@ export async function reportPossibleOrphans(
     // withholds every candidate's command identically.
     const deletion = [...new Set(shown.map((id) => remove(id)))].join(' ; ');
     log.warn(
-      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer, and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} were created ${when} that this deploy did not record: ${shown.join(', ')}${more}. cdkd does not adopt or delete them: nothing listed proves which deploy created one. ${afterward} First inspect each candidate: ${inspect}. Only after confirming one is this deploy's orphan and not another deploy's, ${lookup.removeVerb ?? 'delete it'}: ${deletion}.${incomplete}`
+      `${lead}, and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} were created ${when} that this deploy did not record: ${shown.join(', ')}${more}. cdkd does not adopt or delete them: nothing listed proves which deploy created one. ${afterward} First inspect each candidate: ${inspect}. Only after confirming one is this deploy's orphan and not another deploy's, ${lookup.removeVerb ?? 'delete it'}: ${deletion}.${incomplete}`
     );
     return;
   }
   log.warn(
-    `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} match that this deploy did not record: ${shown.join(', ')}${more}. ${service} reports no creation time for them, so any of them may instead be this stack's own recorded one, another stack's, or older than this deploy; cdkd does not adopt or delete them. ${afterward} Inspect each before deleting anything: ${inspect}.${incomplete}`
+    `${lead} (${when}), and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} match that this deploy did not record: ${shown.join(', ')}${more}. ${service} reports no creation time for them, so any of them may instead be this stack's own recorded one, another stack's, or older than this deploy; cdkd does not adopt or delete them. ${afterward} Inspect each before deleting anything: ${inspect}.${incomplete}`
   );
 }

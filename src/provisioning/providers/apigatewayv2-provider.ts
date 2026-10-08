@@ -96,7 +96,9 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 
 /**
@@ -606,11 +608,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // Issue #2080: after an earlier ambiguous attempt, name the API it may
       // have made before a second CreateApi is sent. Detection only -- see
       // `orphan-report.ts`.
-      const orphanWindow = createApiLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'CreateApi',
           listAction: 'GetApis',
           subject: `an API named ${log.value(name)} (protocol ${log.value(protocolType)})`,
@@ -630,7 +631,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
                 a.ApiId &&
                 a.Name === name &&
                 a.ProtocolType === protocolType &&
-                isInsideWindow(a.CreatedDate, orphanWindow) &&
+                isInsideWindow(a.CreatedDate, lookupWindow) &&
                 !apisCreatedByThisProcess.has(a.ApiId)
                   ? a.ApiId
                   : undefined
@@ -638,6 +639,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           inspect: (id) => aws`aws apigatewayv2 get-api --api-id ${id}${regionArg}`.render(),
           remove: (id) => aws`aws apigatewayv2 delete-api --api-id ${id}${regionArg}`.render(),
         });
+      };
+      const orphanWindow = createApiLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await reportOrphans(orphanWindow);
       }
       const attemptStartMs = Date.now();
       let response: CreateApiCommandOutput;
@@ -676,6 +681,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const apiId = response.ApiId!;
       apisCreatedByThisProcess.add(apiId);
+      // Issue #4687: the SDK replayed this CreateApi inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await reportOrphans(replayWindow);
+      }
       const apiEndpoint = response.ApiEndpoint!;
       log.debug(`Successfully created API Gateway V2 Api ${logicalId}: ${apiId}`);
 
@@ -969,11 +980,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // Issue #2080: after an earlier ambiguous attempt, name the integration
       // it may have made before a second CreateIntegration is sent. Detection
       // only -- see `orphan-report.ts`.
-      const orphanWindow = createIntegrationLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'CreateIntegration',
           listAction: 'GetIntegrations',
           subject: `an integration of type ${log.value(integrationType)}${integrationUri !== undefined ? ` to ${log.value(integrationUri)}` : ''} in API ${log.value(apiId)}`,
@@ -1001,6 +1011,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           inspect: (id) =>
             aws`aws apigatewayv2 get-integration --api-id ${apiId} --integration-id ${id}${regionArg}`.render(),
         });
+      };
+      const orphanWindow = createIntegrationLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await reportOrphans(orphanWindow);
       }
       const attemptStartMs = Date.now();
       let response: CreateIntegrationCommandOutput;
@@ -1042,6 +1056,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const integrationId = response.IntegrationId!;
       integrationsCreatedByThisProcess.add(injectiveKey(apiId, integrationId));
+      // Issue #4687: the SDK replayed this CreateIntegration inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await reportOrphans(replayWindow);
+      }
       log.debug(`Successfully created API Gateway V2 Integration ${logicalId}: ${integrationId}`);
 
       return {
@@ -1270,11 +1290,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // Issue #2080: after an earlier ambiguous attempt, name the authorizer
       // it may have made before a second CreateAuthorizer is sent. Detection
       // only -- see `orphan-report.ts`.
-      const orphanWindow = createAuthorizerLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'CreateAuthorizer',
           listAction: 'GetAuthorizers',
           subject: `an authorizer named ${log.value(name)} (type ${log.value(authorizerType)}) in API ${log.value(apiId)}`,
@@ -1302,6 +1321,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           inspect: (id) =>
             aws`aws apigatewayv2 get-authorizer --api-id ${apiId} --authorizer-id ${id}${regionArg}`.render(),
         });
+      };
+      const orphanWindow = createAuthorizerLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await reportOrphans(orphanWindow);
       }
       const attemptStartMs = Date.now();
       let response: CreateAuthorizerCommandOutput;
@@ -1344,6 +1367,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const authorizerId = response.AuthorizerId!;
       authorizersCreatedByThisProcess.add(injectiveKey(apiId, authorizerId));
+      // Issue #4687: the SDK replayed this CreateAuthorizer inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await reportOrphans(replayWindow);
+      }
       log.debug(`Successfully created API Gateway V2 Authorizer ${logicalId}: ${authorizerId}`);
 
       return {

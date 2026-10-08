@@ -1232,7 +1232,13 @@ resource is gone (returning `undefined` rather than `RESOURCE_NOT_FOUND`),
 - **Send the create through a client that refuses the SDK's 5xx retry**
   (`withoutServerErrorRetries`; [#4639](https://github.com/go-to-k/cdkd/issues/4639)).
   The SDK's replay inside one `send` SUCCEEDS with a second resource, so the
-  failure path, and the reconcile in it, never runs.
+  failure path, and the reconcile in it, never runs. The SDK still replays a
+  socket reset or timeout, so ALSO run the reconcile on a success whose output
+  `replayFollowedAmbiguousAttempt` reports, after recording the returned id in
+  the set below ([#4687](https://github.com/go-to-k/cdkd/issues/4687)). Not on
+  `replayedInSend` alone: that is also true after a throttle the SDK retried,
+  which minted nothing, and every needless reconcile is one more chance to
+  delete another process's fresh key.
 - **Require a creation timestamp at or after the attempt started**, with a small
   margin for clock skew between you and the service.
 - **Keep a set of ids this process created successfully and never delete one.**
@@ -1278,7 +1284,13 @@ shared report is `orphan-report.ts`):
   next attempt `take`s it before creating again. A definite refusal (a 4xx, a
   throttle, IAM propagation's `not authorized`) costs no lookup. Pass the taken
   window back to `noteFailure`, so two ambiguous attempts in a row are both
-  covered.
+  covered. A create that SUCCEEDS after the SDK replayed it inside its `send`
+  (`replayedInSend`: `$metadata.attempts > 1`, e.g. after a socket reset) runs
+  the same lookup right after the create, over `replayedSendWindow`, never
+  offering the returned id as a candidate: exclude it by id when it joins the
+  provider's `RecentIdSet` only after follow-up calls, so a resource a failed
+  rollback leaves behind stays nameable by a later lookup
+  ([#4687](https://github.com/go-to-k/cdkd/issues/4687)).
 - **Bound the window on BOTH ends.** The latch records the ambiguous
   attempt's start AND end (each widened by a skew margin) and expires after
   `AMBIGUOUS_LATCH_TTL_MS`: where the resource carries a creation date, a

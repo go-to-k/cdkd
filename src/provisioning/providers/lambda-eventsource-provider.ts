@@ -42,6 +42,7 @@ import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -674,6 +675,18 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         throw new Error('CreateEventSourceMapping did not return UUID');
       }
       mappingsCreatedByThisProcess.add(uuid);
+      // Issue #4687: the SDK replayed this CreateEventSourceMapping inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleMappingOrphans(
+          logicalId,
+          replayWindow,
+          log,
+          functionName,
+          params.EventSourceArn
+        );
+      }
 
       log.debug(`Successfully created event source mapping ${logicalId}: ${uuid}`);
 

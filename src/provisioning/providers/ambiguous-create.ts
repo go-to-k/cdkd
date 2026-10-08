@@ -95,7 +95,146 @@ export interface AmbiguousCreateWindow {
    * (`src/deployment/retry.ts`), and should it start to, revisit this bound.
    */
   readonly ceilingMs: number;
+  /**
+   * `true` when the window is not an earlier failed attempt's but the
+   * SUCCESSFUL create's own, whose `send` the AWS SDK replayed
+   * ({@link replayedSendWindow}): the lookup runs after the create, and the
+   * resource it returned is already recorded. Only changes the report's wording.
+   */
+  readonly replayedInSend?: true;
 }
+
+/**
+ * `true` when the SDK replayed the request inside the `send` that produced
+ * `output` (issue #4687). The retry middleware stamps every successful output
+ * with `$metadata.attempts`, so more than one attempt means an earlier attempt
+ * failed and was sent again -- and when that earlier attempt reached the
+ * service (a socket reset or timeout after the request was sent; a 5xx is
+ * refused by {@link withoutServerErrorRetries}), a create with no idempotency
+ * token and no unique name has now made TWO resources, of which the output
+ * names only the second. A replay after a throttle or a refused connection
+ * reads `true` as well, so the report-only lookup it feeds runs then too. For a
+ * type with a creation date that lookup finds nothing; for an undated type it
+ * can name an unrelated resource of the same name (the warning already says it
+ * may be another stack's). A caller that DELETES on this signal reads
+ * {@link replayFollowedAmbiguousAttempt} instead.
+ */
+export const replayedInSend = (output: unknown): boolean => {
+  const attempts = (output as { $metadata?: { attempts?: unknown } } | undefined)?.$metadata
+    ?.attempts;
+  return typeof attempts === 'number' && attempts > 1;
+};
+
+const isObject = (value: unknown): value is object => typeof value === 'object' && value !== null;
+
+/**
+ * The finalize-step `args` of each `send` on a {@link withoutServerErrorRetries}
+ * client that has had an AMBIGUOUS attempt. The SDK's retry middleware hands
+ * the SAME `args` object to every attempt of one `send` and builds a new one
+ * for every `send`, so this is per-send state, never shared by two sends.
+ */
+const sendsAfterAmbiguous = new WeakSet<object>();
+
+/** The outputs {@link replayFollowedAmbiguousAttempt} reads `true` for. */
+const outputsAfterAmbiguous = new WeakSet<object>();
+
+/**
+ * Record that the successful `send` producing `output` replayed an attempt that
+ * ended AMBIGUOUS. Called by {@link withoutServerErrorRetries}'s middleware; a
+ * unit test that stubs `send` calls it to model such an output.
+ */
+export const markReplayFollowedAmbiguous = (output: unknown): void => {
+  if (isObject(output)) outputsAfterAmbiguous.add(output);
+};
+
+/**
+ * `true` only when the successful `send` that produced `output` replayed an
+ * attempt that ended AMBIGUOUS (`isAmbiguousOutcomeError`: a socket reset or
+ * timeout that may have reached the service) -- the narrow form of
+ * {@link replayedInSend}, which also reads `true` after a throttle or a refused
+ * connection the SDK retried, where the service did nothing. Only a
+ * {@link withoutServerErrorRetries} client records it. Read this before
+ * DELETING anything on the replay signal (`IAMAccessKeyProvider`): every extra
+ * reconcile widens the window in which another process's fresh resource could
+ * pass its checks. Keyed on the output object itself, so two concurrent sends
+ * on one client cannot read each other's answer.
+ */
+export const replayFollowedAmbiguousAttempt = (output: unknown): boolean =>
+  isObject(output) && outputsAfterAmbiguous.has(output);
+
+/** The part of Smithy's `MiddlewareStack` {@link withoutServerErrorRetries} needs. */
+interface MiddlewareStackLike {
+  addRelativeTo(
+    middleware: (
+      next: (args: object) => Promise<{ output?: unknown }>
+    ) => (args: object) => Promise<{ output?: unknown }>,
+    options: { name: string; relation: 'after'; toMiddleware: string; override: boolean }
+  ): void;
+}
+
+/**
+ * Sits directly inside the SDK's retry middleware, so it runs once per ATTEMPT
+ * and sees each attempt's raw error -- the object the retry strategy classifies.
+ */
+const AMBIGUOUS_REPLAY_MIDDLEWARE = 'cdkdAmbiguousReplayMiddleware';
+
+const trackAmbiguousReplays = (client: object): void => {
+  const stack = (client as { middlewareStack?: Partial<MiddlewareStackLike> }).middlewareStack;
+  if (typeof stack?.addRelativeTo !== 'function') return;
+  (stack as MiddlewareStackLike).addRelativeTo(
+    (next) => async (args) => {
+      try {
+        const result = await next(args);
+        if (sendsAfterAmbiguous.has(args)) markReplayFollowedAmbiguous(result.output);
+        return result;
+      } catch (error) {
+        if (isAmbiguousOutcomeError(error)) sendsAfterAmbiguous.add(args);
+        throw error;
+      }
+    },
+    {
+      name: AMBIGUOUS_REPLAY_MIDDLEWARE,
+      relation: 'after',
+      toMiddleware: 'retryMiddleware',
+      override: true,
+    }
+  );
+};
+
+/**
+ * The window to look for the duplicate of a create that SUCCEEDED after a
+ * {@link replayedInSend} replay, or `undefined` when the `send` made a single
+ * attempt -- the common case, which pays for no lookup. Call it right after the
+ * create's `send` returns: the duplicate, if any, was minted between
+ * `attemptStartMs` and now. The lookup it feeds must exclude the id the output
+ * returned: pass it as an explicit exclusion when the provider adds it to its
+ * {@link RecentIdSet} only after follow-up calls that can fail (a resource left
+ * behind by a failed rollback must stay nameable by a later lookup).
+ */
+export const replayedSendWindow = (
+  output: unknown,
+  attemptStartMs: number
+): AmbiguousCreateWindow | undefined =>
+  replayedInSend(output)
+    ? {
+        floorMs: attemptStartMs - CREATION_DATE_SKEW_MARGIN_MS,
+        ceilingMs: Date.now() + CREATION_DATE_SKEW_MARGIN_MS,
+        replayedInSend: true,
+      }
+    : undefined;
+
+/**
+ * The opening of an orphan report: what made the create's outcome ambiguous.
+ * `action` is the create call, e.g. `CreateKey`.
+ */
+export const ambiguousAttemptLead = (
+  action: string,
+  logicalId: string,
+  window: AmbiguousCreateWindow
+): string =>
+  window.replayedInSend === true
+    ? `The ${action} call for ${logicalId} succeeded only after the AWS SDK sent it again, following an attempt that failed without a definite answer`
+    : `An earlier ${action} attempt for ${logicalId} failed without a definite answer`;
 
 interface LatchEntry extends AmbiguousCreateWindow {
   readonly armedAtMs: number;
@@ -251,8 +390,13 @@ const isRetryStrategyV2 = (value: unknown): value is RetryStrategyV2Like =>
  * toward TRUE, so a reset on a stale pooled socket or a connect timeout,
  * neither of which reached the service, stamps as well: a genuine collision
  * then fails instead of being deleted first, the safe direction. A replay
- * that SUCCEEDS after such an attempt is the residual: for a create that is
- * not name-unique it is a second resource nobody reports (issue #4687).
+ * that SUCCEEDS after such an attempt makes a second resource when the create
+ * is not name-unique; the provider finds out from {@link replayedInSend} and
+ * runs its orphan lookup after the create (issue #4687). A middleware placed
+ * directly inside the retry middleware also records, per `send`, whether a
+ * successful output followed an ambiguous attempt
+ * ({@link replayFollowedAmbiguousAttempt}), for a caller that must not act on a
+ * throttle's replay.
  *
  * Works by wrapping the client's RESOLVED `config.retryStrategy` provider,
  * which the SDK's retry middleware re-reads on every `send`; a unit test runs
@@ -267,13 +411,13 @@ export function withoutServerErrorRetries<T extends object>(client: T): T {
   const config = (client as { config?: { retryStrategy?: unknown } }).config;
   const base = config?.retryStrategy;
   if (config === undefined || typeof base !== 'function') return client;
+  trackAmbiguousReplays(client);
   const resolveBase = base as () => Promise<unknown>;
   // The retry tokens of a `send` that already had an ambiguous attempt. The
   // middleware calls `refreshRetryTokenForRetry` on EVERY failed attempt, the
   // last one included, and rethrows that attempt's error object when it
   // rejects -- so stamping `errorInfo.error` here stamps what `send` throws.
   const afterAmbiguous = new WeakSet<object>();
-  const isObject = (value: unknown): value is object => typeof value === 'object' && value !== null;
   config.retryStrategy = async (): Promise<unknown> => {
     const strategy = await resolveBase();
     if (!isRetryStrategyV2(strategy)) return strategy;

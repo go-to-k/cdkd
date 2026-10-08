@@ -508,4 +508,99 @@ describe('ECSProvider RegisterTaskDefinition retry safety (issue #2080, detectio
     expect(reportLine()).toBeUndefined();
     expect(aws.count('ListTaskDefinitionsCommand')).toBe(1);
   });
+
+  describe('a register the SDK replayed inside its send (issue #4687)', () => {
+    /** Stamp the RegisterTaskDefinition output with `$metadata` (`undefined`: none at all). */
+    const stampRegister = (metadata: { attempts: number } | undefined): void => {
+      mockSend.mockImplementation(async (command: Parameters<FakeEcs['send']>[0]) => {
+        const output = await aws.send(command);
+        return command.constructor.name === 'RegisterTaskDefinitionCommand' && metadata
+          ? { ...output, $metadata: metadata }
+          : output;
+      });
+    };
+    const replayLine = (): string | undefined =>
+      warnLines().find((l) =>
+        l.includes(
+          'The RegisterTaskDefinition call for TaskDef succeeded only after the AWS SDK sent it again'
+        )
+      );
+
+    it('runs the lookup once and names the unrecorded revision, not the one the register returned', async () => {
+      aws.seed('web'); // web:1, the first (lost) attempt's revision
+      stampRegister({ attempts: 2 });
+
+      const result = await provider.create('TaskDef', 'AWS::ECS::TaskDefinition', PROPS);
+
+      expect(result.physicalId).toBe(arnOf('web', 2));
+      expect(aws.count('ListTaskDefinitionsCommand')).toBe(1);
+      expect(aws.calls).not.toContain('DeregisterTaskDefinitionCommand');
+      expect(aws.calls).not.toContain('DeleteTaskDefinitionsCommand');
+      expect(aws.revisions).toHaveLength(2);
+      const line = replayLine()!;
+      expect(line).toContain(
+        'following an attempt that failed without a definite answer, and ECS may have created a revision of task definition family web'
+      );
+      expect(line).toContain('1 task definition revision(s) were created between');
+      expect(line).toContain(
+        `aws ecs describe-task-definition --task-definition ${arnOf('web', 1)} --region us-east-1`
+      );
+      expect(line).not.toContain(arnOf('web', 2));
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).not.toContain('Creating a new one now.');
+      expect(line).toContain('does not adopt or delete');
+      expect(reportLine()).toBeUndefined();
+    });
+
+    it('a revision registered before the attempt start minus the skew margin is not named', async () => {
+      aws.seed('web', new Date(Date.now() - 5_001)); // web:1, just below the floor
+      aws.seed('web', new Date(Date.now() - 5_000)); // web:2, at the floor
+      stampRegister({ attempts: 2 });
+
+      await provider.create('TaskDef', 'AWS::ECS::TaskDefinition', PROPS); // web:3
+
+      const line = replayLine()!;
+      expect(line).toContain('1 task definition revision(s) were created between');
+      expect(line).toContain(arnOf('web', 2));
+      expect(line).not.toContain(arnOf('web', 1));
+      expect(line).not.toContain(arnOf('web', 3));
+    });
+
+    it('the window opens at the ATTEMPT start minus the skew margin, not at the send end', async () => {
+      const attemptStart = Date.now();
+      aws.seed('web', new Date(attemptStart - 5_001)); // web:1, just below the floor
+      aws.seed('web', new Date(attemptStart - 5_000)); // web:2, at the floor
+      // The replayed send takes 2 s: a floor taken from its END would be
+      // attemptStart - 3 s and drop web:2.
+      mockSend.mockImplementation(async (command: Parameters<FakeEcs['send']>[0]) => {
+        if (command.constructor.name !== 'RegisterTaskDefinitionCommand') return aws.send(command);
+        vi.setSystemTime(attemptStart + 2_000);
+        return { ...(await aws.send(command)), $metadata: { attempts: 2 } };
+      });
+
+      await provider.create('TaskDef', 'AWS::ECS::TaskDefinition', PROPS); // web:3
+
+      const line = replayLine()!;
+      expect(line).toContain(
+        'between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z'
+      );
+      expect(line).toContain('1 task definition revision(s) were created between');
+      expect(line).toContain(arnOf('web', 2));
+      expect(line).not.toContain(arnOf('web', 1));
+      expect(line).not.toContain(arnOf('web', 3));
+    });
+
+    it.each([
+      ['a single attempt', { attempts: 1 }],
+      ['no $metadata', undefined],
+    ])('%s sends no lookup', async (_label, metadata) => {
+      aws.seed('web');
+      stampRegister(metadata);
+
+      await provider.create('TaskDef', 'AWS::ECS::TaskDefinition', PROPS);
+
+      expect(aws.calls).toEqual(['RegisterTaskDefinitionCommand']);
+      expect(warnLines()).toEqual([]);
+    });
+  });
 });

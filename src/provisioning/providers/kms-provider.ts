@@ -49,8 +49,10 @@ import {
   AMBIGUOUS_LATCH_TTL_MS,
   AmbiguousCreateLatch,
   RecentIdSet,
+  ambiguousAttemptLead,
   createAttemptKey,
   isInsideWindow,
+  replayedSendWindow,
   setBounded,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
@@ -320,6 +322,14 @@ export class KMSProvider implements ResourceProvider {
         // Remembered BEFORE the follow-up calls below, so a failure in any of
         // them hands the retry this key rather than a second CreateKey.
         setBounded(pendingKeys, attemptKey, { keyId, keyArn, inputDigest, heldAtMs: Date.now() });
+        // Before the lookup below, so a throw in it still marks the key created.
+        createdKeyId = keyId;
+        // Issue #4687: the SDK replayed this CreateKey, so an earlier attempt
+        // may have made a key too. Report only; the held key above is excluded.
+        const replayWindow = replayedSendWindow(result, attemptStartMs);
+        if (replayWindow !== undefined) {
+          await this.reportPossibleOrphanKeys(logicalId, input, replayWindow);
+        }
       }
 
       createdKeyId = keyId;
@@ -476,9 +486,10 @@ export class KMSProvider implements ResourceProvider {
   /**
    * After a `CreateKey` whose outcome was AMBIGUOUS (in practice a 5xx, the
    * only ambiguous failure the engine retries -- AWS may have made the key
-   * and lost the answer), name the keys
-   * that could be its orphan. Detection only: this never adopts and never
-   * deletes (issue #2080).
+   * and lost the answer) -- or one that succeeded only after the SDK replayed
+   * it inside the same `send` (issue #4687) -- name the keys that could be
+   * its orphan. Detection only: this never adopts and never deletes (issue
+   * #2080).
    *
    * Why not adopt: a KMS key has no name and `CreateKey` has no token, so the
    * only evidence is circumstantial -- a customer-managed key, created inside
@@ -503,6 +514,7 @@ export class KMSProvider implements ResourceProvider {
   ): Promise<void> {
     const since = new Date(window.floorMs).toISOString();
     const until = new Date(window.ceilingMs).toISOString();
+    const lead = ambiguousAttemptLead('CreateKey', logicalId, window);
     const pendingIds = new Set([...pendingKeys.values()].map((entry) => entry.keyId));
     const ids: string[] = [];
     let listTruncated = false;
@@ -526,7 +538,7 @@ export class KMSProvider implements ResourceProvider {
       const failure = describeAwsFailure(error);
       this.logger.debug(safeMsg`ListKeys failed with: ${failure.detail}`);
       this.logger.warn(
-        safeMsg`An earlier CreateKey attempt for ${logicalId} failed without a definite answer, so KMS may have created a key that no cdkd state records, and cdkd could not list keys to look for it (${failure.summary}). Check the account's customer managed keys created between ${since} and ${until}.`
+        safeMsg`${lead}, so KMS may have created a key that no cdkd state records, and cdkd could not list keys to look for it (${failure.summary}). Check the account's customer managed keys created between ${since} and ${until}.`
       );
       return;
     }
@@ -591,7 +603,7 @@ export class KMSProvider implements ResourceProvider {
     if (candidates.length === 0) {
       // Said only of what was LISTED: `ListKeys` is eventually consistent, so
       // a key made moments ago can be missing from it.
-      const line = safeMsg`An earlier CreateKey attempt for ${logicalId} failed without a definite answer; no listed customer managed key matching it was created between ${since} and ${until}.${incomplete}`;
+      const line = safeMsg`${lead}; no listed customer managed key matching it was created between ${since} and ${until}.${incomplete}`;
       if (incomplete) {
         this.logger.warn(line);
       } else {
@@ -614,7 +626,7 @@ export class KMSProvider implements ResourceProvider {
       )
       .join(' ; ');
     this.logger.warn(
-      safeMsg`An earlier CreateKey attempt for ${logicalId} failed without a definite answer, and KMS may have created a key then that no cdkd state records. ${candidates.length} customer managed key(s) created between ${since} and ${until} match this key's settings: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them, because a key has no name or token that ties it to ${logicalId} -- another key with the same settings is indistinguishable. Creating a new key now, so the orphan (if any) and the new key will both exist. First inspect each candidate: ${inspect}. Only after confirming a key is this deploy's orphan and no other deploy uses it, schedule its deletion: ${deletion}.${incomplete}`
+      safeMsg`${lead}, and KMS may have created a key then that no cdkd state records. ${candidates.length} customer managed key(s) created between ${since} and ${until} match this key's settings: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them, because a key has no name or token that ties it to ${logicalId} -- another key with the same settings is indistinguishable. ${window.replayedInSend === true ? 'cdkd recorded the key the create returned, so the orphan (if any) and that key both exist.' : 'Creating a new key now, so the orphan (if any) and the new key will both exist.'} First inspect each candidate: ${inspect}. Only after confirming a key is this deploy's orphan and no other deploy uses it, schedule its deletion: ${deletion}.${incomplete}`
     );
   }
 

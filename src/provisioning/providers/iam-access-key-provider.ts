@@ -35,6 +35,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isRedactedRecordedValue } from '../redacted-delete-address.js';
+import { replayFollowedAmbiguousAttempt } from './ambiguous-create.js';
 
 /**
  * How far before an attempt's start a key's `CreateDate` may fall and still be
@@ -283,6 +284,32 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       // reconcile — this resource's or a sibling's — may delete it.
       this.accessKeyIdsCreatedByThisProcess.add(accessKeyId);
 
+      // Issue #4687: the SDK replayed this CreateAccessKey inside its `send`
+      // after an AMBIGUOUS attempt (a socket reset or timeout), so that attempt
+      // may have minted a key whose secret left with the lost response. Same
+      // reconcile, same three conditions, as a failed attempt: the key just
+      // returned is in the set above and so is never a candidate. Still under
+      // the user lock. It never fails the create: the key is recorded. NOT on
+      // `replayedInSend` alone: a throttle or a refused connection the SDK
+      // retried minted nothing, and every needless reconcile is one more chance
+      // to delete another process's fresh key that passes all three checks.
+      if (replayFollowedAmbiguousAttempt(response)) {
+        try {
+          await this.deleteOrphanFromFailedAttempt(
+            userName,
+            logicalId,
+            baseline,
+            attemptStartMs,
+            log,
+            'replayed'
+          );
+        } catch (reconcileError) {
+          log.warn(
+            `Could not check user ${v(userName)} for an access key left by the replayed CreateAccessKey for ${logicalId}: ${v(describeAwsFailure(reconcileError).detail)}. List the user's keys and delete any that no deploy records: ${aws`aws iam list-access-keys --user-name ${userName}`.render()}`
+          );
+        }
+      }
+
       return {
         physicalId: accessKeyId,
         attributes: {
@@ -384,7 +411,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    *  2. Its `CreateDate` is at or after this attempt started. IAM stamps that
    *     date from ITS clock and the floor comes from ours, so a margin absorbs
    *     ordinary skew; the residual risk is bounded by the length of ONE
-   *     `CreateAccessKey` call rather than by the retry schedule.
+   *     `CreateAccessKey` `send`, including the SDK's backoff between the
+   *     attempts it replays inside it, rather than by the retry schedule.
    *  3. cdkd did not create it successfully in this process. This is the one
    *     the baseline structurally cannot express — "newer than my snapshot" is
    *     equally true of my orphan and of somebody else's key.
@@ -396,8 +424,16 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    * deleted key, `cdkd drift` would report UNKNOWN rather than drift, so the
    * loss would not even be visible.
    *
+   * It also runs after a SUCCESSFUL create whose `send` the SDK replayed
+   * after an AMBIGUOUS attempt (issue #4687, `replayFollowedAmbiguousAttempt`):
+   * that attempt may have reached IAM and minted a key whose secret no one
+   * received. The conditions are the same; the returned key already satisfies
+   * none of them (condition 3). A replay after a throttle does not run it.
+   *
    * @param baseline `undefined` when the pre-create read failed, which disarms
    * the reconcile entirely — see {@link IAMAccessKeyProvider.tryListAccessKeyIds}.
+   * @param cause `replayed` after a successful but replayed create: only the
+   * wording differs.
    * @returns the key ids this reconcile deleted.
    */
   private async deleteOrphanFromFailedAttempt(
@@ -405,7 +441,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     logicalId: string,
     baseline: ReadonlySet<string> | undefined,
     attemptStartMs: number,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    cause: 'failed' | 'replayed' = 'failed'
   ): Promise<ReadonlySet<string>> {
     const { value: v } = log;
     const aws = pasteableAwsCommand(log.mask);
@@ -432,7 +469,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         continue;
       }
       log.warn(
-        `IAM access key ${v(accessKeyId)} was minted on user ${v(userName)} by this failed attempt at ${logicalId} and its secret was lost with the response, so it is unusable and unrecorded; deleting it before the retry`
+        cause === 'replayed'
+          ? `IAM access key ${v(accessKeyId)} was minted on user ${v(userName)} by the CreateAccessKey attempt for ${logicalId} that the AWS SDK then sent again, and its secret was lost with that attempt's response, so it is unusable and unrecorded; deleting it (the key the replay returned is recorded)`
+          : `IAM access key ${v(accessKeyId)} was minted on user ${v(userName)} by this failed attempt at ${logicalId} and its secret was lost with the response, so it is unusable and unrecorded; deleting it before the retry`
       );
       try {
         await this.iamClient.send(

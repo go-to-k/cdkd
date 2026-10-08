@@ -4,7 +4,11 @@ import {
   AmbiguousCreateLatch,
   CREATION_DATE_SKEW_MARGIN_MS,
   RecentIdSet,
+  ambiguousAttemptLead,
   isInsideWindow,
+  replayFollowedAmbiguousAttempt,
+  replayedInSend,
+  replayedSendWindow,
   withoutServerErrorRetries,
 } from '../../../src/provisioning/providers/ambiguous-create.js';
 import { Readable } from 'node:stream';
@@ -370,6 +374,121 @@ describe('withoutServerErrorRetries against a real SDK client', () => {
     expect(hasReplayMayCollide(error)).toBe(true);
   }, 20_000);
 
+  describe('replayedInSend on the output of a real send (issue #4687)', () => {
+    const ok = { status: 200, body: '{"KeyMetadata":{"KeyId":"k2"}}' };
+
+    it.each([
+      ['a reset after the send', fails('ECONNRESET', 'socket hang up')],
+      ['a socket timeout', fails('ETIMEDOUT', 'read ETIMEDOUT')],
+    ])('reads true when the create succeeded only on the replay after %s', async (_what, failure) => {
+      const { client, requests } = makeClient([failure, ok]);
+      withoutServerErrorRetries(client);
+
+      const output = await client.send(new CreateKeyCommand({}));
+
+      expect(requests).toHaveLength(2);
+      expect(output.$metadata.attempts).toBe(2);
+      expect(replayedInSend(output)).toBe(true);
+      expect(replayFollowedAmbiguousAttempt(output)).toBe(true);
+    }, 20_000);
+
+    it('reads false for a create that succeeded on its first attempt', async () => {
+      const { client, requests } = makeClient([ok]);
+      withoutServerErrorRetries(client);
+
+      const output = await client.send(new CreateKeyCommand({}));
+
+      expect(requests).toHaveLength(1);
+      expect(output.$metadata.attempts).toBe(1);
+      expect(replayedInSend(output)).toBe(false);
+      expect(replayFollowedAmbiguousAttempt(output)).toBe(false);
+    });
+
+    it.each([
+      ['a throttle', throttle as Stub],
+      ['a refused connection', fails('ECONNREFUSED', 'connect ECONNREFUSED')],
+    ])(
+      'a replay after %s reads as replayed but NOT as following an ambiguous attempt',
+      async (_what, failure) => {
+        const { client, requests } = makeClient([failure, ok]);
+        withoutServerErrorRetries(client);
+
+        const output = await client.send(new CreateKeyCommand({}));
+
+        expect(requests).toHaveLength(2);
+        expect(replayedInSend(output)).toBe(true);
+        expect(replayFollowedAmbiguousAttempt(output)).toBe(false);
+      },
+      20_000
+    );
+
+    it('an unwrapped client never reports a replay as following an ambiguous attempt', async () => {
+      const { client } = makeClient([fails('ECONNRESET', 'socket hang up'), ok]);
+
+      const output = await client.send(new CreateKeyCommand({}));
+
+      expect(replayedInSend(output)).toBe(true);
+      expect(replayFollowedAmbiguousAttempt(output)).toBe(false);
+    }, 20_000);
+
+    it('wrapping one client twice still sends once per attempt and still records the replay', async () => {
+      const { client, requests } = makeClient([fails('ECONNRESET', 'socket hang up'), ok]);
+      withoutServerErrorRetries(withoutServerErrorRetries(client));
+
+      const output = await client.send(new CreateKeyCommand({}));
+
+      expect(requests).toHaveLength(2);
+      expect(replayFollowedAmbiguousAttempt(output)).toBe(true);
+    }, 20_000);
+
+    it('two concurrent sends on ONE client: only the one that followed a reset reads true', async () => {
+      // Each send's responses are keyed by its own Description, so neither can
+      // consume the other's stub whatever order the attempts interleave in.
+      const queues: Record<string, Stub[]> = {
+        reset: [fails('ECONNRESET', 'socket hang up'), ok],
+        throttled: [throttle, ok],
+        plain: [ok],
+      };
+      const order: string[] = [];
+      const client = new KMSClient({
+        region: 'us-east-1',
+        credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
+        requestHandler: {
+          handle: async (request: { body?: unknown }) => {
+            const label = (JSON.parse(String(request.body)) as { Description: string }).Description;
+            order.push(label);
+            // Yield so every first attempt is in flight before any answers.
+            await new Promise((resolve) => setImmediate(resolve));
+            const next = queues[label]!.shift()!;
+            if ('throws' in next) throw next.throws;
+            return {
+              response: {
+                statusCode: next.status,
+                headers: { 'content-type': 'application/x-amz-json-1.1' },
+                body: Readable.from([Buffer.from(next.body)]),
+              },
+            };
+          },
+        } as never,
+      });
+      withoutServerErrorRetries(client);
+
+      const [reset, throttled, plain] = await Promise.all(
+        ['reset', 'throttled', 'plain'].map((Description) =>
+          client.send(new CreateKeyCommand({ Description }))
+        )
+      );
+
+      // All three first attempts went out before any replay: the sends overlapped.
+      expect(order.slice(0, 3).sort()).toEqual(['plain', 'reset', 'throttled']);
+      expect(order).toHaveLength(5);
+      expect([reset, throttled, plain].map((o) => o.$metadata.attempts)).toEqual([2, 2, 1]);
+      expect(replayFollowedAmbiguousAttempt(reset)).toBe(true);
+      expect(replayFollowedAmbiguousAttempt(throttled)).toBe(false);
+      expect(replayFollowedAmbiguousAttempt(plain)).toBe(false);
+    }, 20_000);
+  });
+
   describe('through the engine retry', () => {
     const LOGICAL_ID = 'Thing';
     const createThroughRetry = (client: KMSClient): Promise<unknown> =>
@@ -423,5 +542,60 @@ describe('withoutServerErrorRetries against a real SDK client', () => {
       expect(hasReplayMayCollide(error)).toBe(false);
       expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(true);
     }, 20_000);
+  });
+});
+
+describe('replayedInSend / replayedSendWindow (issue #4687)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    [{ $metadata: { attempts: 2 } }, true],
+    [{ $metadata: { attempts: 3 } }, true],
+    [{ $metadata: { attempts: 1 } }, false],
+    [{ $metadata: {} }, false],
+    [{ $metadata: { attempts: '2' } }, false],
+    [{}, false],
+    [undefined, false],
+  ])('replayedInSend(%j) is %s', (output, expected) => {
+    expect(replayedInSend(output)).toBe(expected);
+  });
+
+  it('a replayed send yields a window from the attempt start to now, skew-widened and marked', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0 + 3_000);
+
+    expect(replayedSendWindow({ $metadata: { attempts: 2 } }, T0)).toEqual({
+      floorMs: T0 - CREATION_DATE_SKEW_MARGIN_MS,
+      ceilingMs: T0 + 3_000 + CREATION_DATE_SKEW_MARGIN_MS,
+      replayedInSend: true,
+    });
+  });
+
+  it('a single-attempt send yields no window, so nothing is looked up', () => {
+    expect(replayedSendWindow({ $metadata: { attempts: 1 } }, T0)).toBeUndefined();
+  });
+
+  it('a latch window never carries the replay mark', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const latch = new AmbiguousCreateLatch('CreateKey');
+    latch.noteFailure('Key', transient500(), T0 - 1_000, {
+      floorMs: T0 - 9_000,
+      ceilingMs: T0 - 8_000,
+      replayedInSend: true,
+    });
+    expect(latch.take('Key')).not.toHaveProperty('replayedInSend');
+  });
+
+  it('the report lead names the replay for a replay window and the earlier attempt otherwise', () => {
+    const window = { floorMs: T0, ceilingMs: T0 };
+    expect(ambiguousAttemptLead('CreateKey', 'Key', window)).toBe(
+      'An earlier CreateKey attempt for Key failed without a definite answer'
+    );
+    expect(ambiguousAttemptLead('CreateKey', 'Key', { ...window, replayedInSend: true })).toBe(
+      'The CreateKey call for Key succeeded only after the AWS SDK sent it again, following an attempt that failed without a definite answer'
+    );
   });
 });

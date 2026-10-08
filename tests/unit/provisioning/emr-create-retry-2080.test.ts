@@ -172,6 +172,14 @@ class FakeEMR {
   ignoreDateFilter = false;
   /** Runs on every list call, to stage what the NEXT create does. */
   onList: (() => void) | undefined;
+  /** The next create's output carries this SDK `$metadata` (issue #4687). */
+  nextCreateMetadata: { attempts: number } | undefined;
+  /**
+   * The next create is an SDK replay inside one `send`: its first attempt made a
+   * resource whose response was lost, then the replay 2 s later made the one
+   * the output names (issue #4687).
+   */
+  duplicateInNextSend = false;
   private nextId = 1;
 
   send = async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
@@ -182,14 +190,17 @@ class FakeEMR {
     const input = command.input;
     switch (name) {
       case 'RunJobFlowCommand': {
-        const created: FakeCluster = {
-          Id: `j-${this.nextId++}`,
-          Name: input['Name'] as string,
-          Status: { State: 'WAITING', Timeline: { CreationDateTime: new Date(Date.now()) } },
-        };
-        this.clusters.push(created);
+        const created = this.replayable(() => {
+          const minted: FakeCluster = {
+            Id: `j-${this.nextId++}`,
+            Name: input['Name'] as string,
+            Status: { State: 'WAITING', Timeline: { CreationDateTime: new Date(Date.now()) } },
+          };
+          this.clusters.push(minted);
+          return minted;
+        });
         this.loseResponse();
-        return { JobFlowId: created.Id };
+        return { JobFlowId: created.Id, ...this.takeMetadata() };
       }
       case 'DescribeClusterCommand':
         return { Cluster: this.clusters.find((c) => c.Id === input['ClusterId']) };
@@ -212,18 +223,25 @@ class FakeEMR {
       }
       case 'AddInstanceFleetCommand': {
         const fleet = input['InstanceFleet'] as Record<string, unknown>;
-        const created: FakeFleet = {
-          ClusterId: input['ClusterId'] as string,
-          Id: `if-${this.nextId++}`,
-          ...(fleet['Name'] !== undefined && { Name: fleet['Name'] as string }),
-          InstanceFleetType: fleet['InstanceFleetType'] as string,
-          ProvisionedOnDemandCapacity: Number(fleet['TargetOnDemandCapacity'] ?? 0),
-          ProvisionedSpotCapacity: Number(fleet['TargetSpotCapacity'] ?? 0),
-          Status: { State: 'RUNNING', Timeline: { CreationDateTime: new Date(Date.now()) } },
-        };
-        this.fleets.push(created);
+        const created = this.replayable(() => {
+          const minted: FakeFleet = {
+            ClusterId: input['ClusterId'] as string,
+            Id: `if-${this.nextId++}`,
+            ...(fleet['Name'] !== undefined && { Name: fleet['Name'] as string }),
+            InstanceFleetType: fleet['InstanceFleetType'] as string,
+            ProvisionedOnDemandCapacity: Number(fleet['TargetOnDemandCapacity'] ?? 0),
+            ProvisionedSpotCapacity: Number(fleet['TargetSpotCapacity'] ?? 0),
+            Status: { State: 'RUNNING', Timeline: { CreationDateTime: new Date(Date.now()) } },
+          };
+          this.fleets.push(minted);
+          return minted;
+        });
         this.loseResponse();
-        return { ClusterId: created.ClusterId, InstanceFleetId: created.Id };
+        return {
+          ClusterId: created.ClusterId,
+          InstanceFleetId: created.Id,
+          ...this.takeMetadata(),
+        };
       }
       case 'ListInstanceFleetsCommand':
         this.onList?.();
@@ -235,17 +253,24 @@ class FakeEMR {
       case 'AddInstanceGroupsCommand': {
         const groups = input['InstanceGroups'] as Array<Record<string, unknown>>;
         const group = groups[0]!;
-        const created: FakeGroup = {
-          ClusterId: input['JobFlowId'] as string,
-          Id: `ig-${this.nextId++}`,
-          ...(group['Name'] !== undefined && { Name: group['Name'] as string }),
-          InstanceGroupType: group['InstanceRole'] as string,
-          RunningInstanceCount: Number(group['InstanceCount']),
-          Status: { State: 'RUNNING', Timeline: { CreationDateTime: new Date(Date.now()) } },
-        };
-        this.groups.push(created);
+        const created = this.replayable(() => {
+          const minted: FakeGroup = {
+            ClusterId: input['JobFlowId'] as string,
+            Id: `ig-${this.nextId++}`,
+            ...(group['Name'] !== undefined && { Name: group['Name'] as string }),
+            InstanceGroupType: group['InstanceRole'] as string,
+            RunningInstanceCount: Number(group['InstanceCount']),
+            Status: { State: 'RUNNING', Timeline: { CreationDateTime: new Date(Date.now()) } },
+          };
+          this.groups.push(minted);
+          return minted;
+        });
         this.loseResponse();
-        return { JobFlowId: created.ClusterId, InstanceGroupIds: [created.Id] };
+        return {
+          JobFlowId: created.ClusterId,
+          InstanceGroupIds: [created.Id],
+          ...this.takeMetadata(),
+        };
       }
       case 'ListInstanceGroupsCommand':
         this.onList?.();
@@ -258,6 +283,22 @@ class FakeEMR {
         return {};
     }
   };
+
+  /** Mint once, or twice 2 s apart when the next send is staged as an SDK replay. */
+  private replayable<T>(mint: () => T): T {
+    if (this.duplicateInNextSend) {
+      this.duplicateInNextSend = false;
+      mint();
+      vi.setSystemTime(Date.now() + 2000);
+    }
+    return mint();
+  }
+
+  private takeMetadata(): { $metadata?: { attempts: number } } {
+    const metadata = this.nextCreateMetadata;
+    this.nextCreateMetadata = undefined;
+    return metadata === undefined ? {} : { $metadata: metadata };
+  }
 
   private loseResponse(): void {
     if (this.loseNextCreateResponse) {
@@ -309,6 +350,13 @@ const GROUP_PROPS = {
 const CLUSTER = 'AWS::EMR::Cluster';
 const FLEET = 'AWS::EMR::InstanceFleetConfig';
 const GROUP = 'AWS::EMR::InstanceGroupConfig';
+
+/** Every send a single-attempt create makes, in order: the create, then its readiness poll. */
+const PLAIN_CALLS: Record<string, string[]> = {
+  [CLUSTER]: ['RunJobFlowCommand', 'DescribeClusterCommand'],
+  [FLEET]: ['AddInstanceFleetCommand', 'ListInstanceFleetsCommand'],
+  [GROUP]: ['AddInstanceGroupsCommand', 'ListInstanceGroupsCommand'],
+};
 
 describe('EMR tokenless create retry safety (issue #2080, detection only)', () => {
   let aws: FakeEMR;
@@ -874,5 +922,150 @@ describe('EMR tokenless create retry safety (issue #2080, detection only)', () =
     expect(await createConfig.region()).toBe('eu-west-3');
     // The shared client and one create client.
     expect(ctorArgs.map((o) => o.region)).toEqual(['eu-west-3', 'eu-west-3']);
+  });
+
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    const replayReport = (action: string): string | undefined =>
+      warnLines().find((l) =>
+        l.includes(
+          `The ${action} call for Res succeeded only after the AWS SDK sent it again, following an attempt that failed without a definite answer`
+        )
+      );
+
+    describe.each([
+      {
+        label: 'RunJobFlow',
+        type: CLUSTER,
+        props: CLUSTER_PROPS as Record<string, unknown>,
+        create: 'RunJobFlowCommand',
+        list: 'ListClustersCommand',
+        resources: (): Array<{ Id: string }> => aws.clusters,
+        duplicateId: 'j-1',
+        returnedId: 'j-2',
+        noun: 'cluster(s)',
+        inspect: 'aws emr describe-cluster --cluster-id j-1 --region eu-west-3',
+        remove: 'aws emr terminate-clusters --cluster-ids j-1 --region eu-west-3',
+      },
+      {
+        label: 'AddInstanceFleet',
+        type: FLEET,
+        props: FLEET_PROPS as Record<string, unknown>,
+        create: 'AddInstanceFleetCommand',
+        list: 'ListInstanceFleetsCommand',
+        resources: (): Array<{ Id: string }> => aws.fleets,
+        duplicateId: 'if-1',
+        returnedId: 'if-2',
+        noun: 'TASK instance fleet(s)',
+        inspect: 'aws emr list-instance-fleets --cluster-id j-PARENT --region eu-west-3',
+        remove:
+          'aws emr modify-instance-fleet --cluster-id j-PARENT --instance-fleet InstanceFleetId=if-1,TargetOnDemandCapacity=0,TargetSpotCapacity=0 --region eu-west-3',
+      },
+      {
+        label: 'AddInstanceGroups',
+        type: GROUP,
+        props: GROUP_PROPS as Record<string, unknown>,
+        create: 'AddInstanceGroupsCommand',
+        list: 'ListInstanceGroupsCommand',
+        resources: (): Array<{ Id: string }> => aws.groups,
+        duplicateId: 'ig-1',
+        returnedId: 'ig-2',
+        noun: 'TASK instance group(s)',
+        inspect: 'aws emr list-instance-groups --cluster-id j-PARENT --region eu-west-3',
+        remove:
+          'aws emr modify-instance-groups --cluster-id j-PARENT --instance-groups InstanceGroupId=ig-1,InstanceCount=0 --region eu-west-3',
+      },
+    ])('$label', (c) => {
+      it('a replayed success looks up once, after the create, and names the duplicate but not the returned one', async () => {
+        aws.duplicateInNextSend = true;
+        aws.nextCreateMetadata = { attempts: 2 };
+
+        const result = await providerFor(c.type).create('Res', c.type, c.props);
+
+        // Both resources exist and both are listed; only the returned one is recorded.
+        expect(c.resources().map((r) => r.Id)).toEqual([c.duplicateId, c.returnedId]);
+        expect(result.physicalId).toBe(c.returnedId);
+        // The lookup is the send right after the create, and it runs once.
+        const createdAt = aws.calls.indexOf(c.create);
+        expect(aws.calls[createdAt + 1]).toBe(c.list);
+        expect(aws.count(c.create)).toBe(1);
+        const line = replayReport(c.label)!;
+        expect(line).toBeDefined();
+        expect(warnLines().filter((l) => l.includes('AWS SDK sent it again'))).toHaveLength(1);
+        // The send started at 00:00:00 and returned 2 s later; skew-widened by 5 s.
+        expect(line).toContain('between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z');
+        expect(line).toContain(`1 ${c.noun} were created`);
+        expect(line).toContain(`: ${c.duplicateId}.`);
+        expect(line).toContain(c.inspect);
+        expect(line).toContain(c.remove);
+        expect(line).not.toContain(c.returnedId);
+        expect(line).toContain('cdkd recorded the one the create returned.');
+        expect(line).not.toContain('Creating a new one now');
+        expect(line).not.toContain('An earlier');
+        expect(line).toContain('does not adopt or delete');
+        // Detection only: nothing terminated, unprotected or scaled.
+        for (const sent of [
+          'TerminateJobFlowsCommand',
+          'SetTerminationProtectionCommand',
+          'ModifyClusterCommand',
+          'ModifyInstanceFleetCommand',
+          'ModifyInstanceGroupsCommand',
+        ]) {
+          expect(aws.calls).not.toContain(sent);
+        }
+      });
+
+      if (c.type === CLUSTER) {
+        it('asks ListClusters for the replayed send\'s window', async () => {
+          aws.duplicateInNextSend = true;
+          aws.nextCreateMetadata = { attempts: 2 };
+
+          await cluster.create('Res', CLUSTER, CLUSTER_PROPS);
+
+          const lists = mockSend.mock.calls
+            .map((m) => m[0] as { constructor: { name: string }; input: Record<string, unknown> })
+            .filter((m) => m.constructor.name === 'ListClustersCommand');
+          expect(lists).toHaveLength(1);
+          expect((lists[0]!.input['CreatedAfter'] as Date).toISOString()).toBe(
+            '2026-09-30T23:59:55.000Z'
+          );
+          expect((lists[0]!.input['CreatedBefore'] as Date).toISOString()).toBe(
+            '2026-10-01T00:00:07.000Z'
+          );
+        });
+      }
+
+      it.each([
+        ['a single attempt', { attempts: 1 }],
+        ['no $metadata', undefined],
+      ] as const)('%s sends no lookup', async (_label, metadata) => {
+        aws.nextCreateMetadata = metadata;
+
+        const result = await providerFor(c.type).create('Res', c.type, c.props);
+
+        expect(result.physicalId).toBe(c.resources()[0]!.Id);
+        expect(aws.calls).toEqual(PLAIN_CALLS[c.type]);
+        expect(replayReport(c.label)).toBeUndefined();
+        expect(warnLines()).toEqual([]);
+      });
+
+      if (c.type !== CLUSTER) {
+        it.each(['MASTER', 'CORE'])(
+          'a replayed %s create runs no lookup: a cluster holds at most one',
+          async (role) => {
+            aws.duplicateInNextSend = true;
+            aws.nextCreateMetadata = { attempts: 2 };
+            const typeKey = c.type === FLEET ? 'InstanceFleetType' : 'InstanceRole';
+
+            await providerFor(c.type).create('Res', c.type, { ...c.props, [typeKey]: role });
+
+            expect(aws.calls).toEqual(PLAIN_CALLS[c.type]);
+            expect(replayReport(c.label)).toBeUndefined();
+            expect(debugSpy.mock.calls.map((m) => String(m[0])).join('\n')).not.toContain(
+              'replayed'
+            );
+          }
+        );
+      }
+    });
   });
 });

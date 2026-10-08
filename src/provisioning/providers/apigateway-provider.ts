@@ -82,7 +82,9 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 
 /**
@@ -723,11 +725,10 @@ export class ApiGatewayProvider implements ResourceProvider {
       // Issue #2080: after an earlier ambiguous attempt, name the authorizer
       // it may have made before a second CreateAuthorizer is sent. Detection
       // only -- see `reportPossibleOrphans`.
-      const orphanWindow = createAuthorizerLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'CreateAuthorizer',
           listAction: 'GetAuthorizers',
           subject: `an authorizer named ${log.value(name)} (type ${log.value(type)}) in REST API ${log.value(restApiId)}`,
@@ -755,6 +756,10 @@ export class ApiGatewayProvider implements ResourceProvider {
           inspect: (id) =>
             aws`aws apigateway get-authorizer --rest-api-id ${restApiId} --authorizer-id ${id}${regionArg}`.render(),
         });
+      };
+      const orphanWindow = createAuthorizerLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await reportOrphans(orphanWindow);
       }
       const createClient = await this.getCreateClient();
       const attemptStartMs = Date.now();
@@ -785,6 +790,12 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const authorizerId = response.id!;
       authorizersCreatedByThisProcess.add(injectiveKey(restApiId, authorizerId));
+      // Issue #4687: the SDK replayed this CreateAuthorizer inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await reportOrphans(replayWindow);
+      }
       log.debug(`Successfully created API Gateway Authorizer ${logicalId}: ${authorizerId}`);
 
       return {
@@ -1245,11 +1256,10 @@ export class ApiGatewayProvider implements ResourceProvider {
       // Issue #2080: after an earlier ambiguous attempt, name the deployment
       // it may have made before a second CreateDeployment is sent. Detection
       // only -- see `reportPossibleOrphans`.
-      const orphanWindow = createDeploymentLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await this.orphanCommandRegionArg(aws);
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'CreateDeployment',
           listAction: 'GetDeployments',
           subject: `a deployment of REST API ${log.value(restApiId)}${description !== undefined ? ` described ${log.value(description)}` : ''}`,
@@ -1269,7 +1279,7 @@ export class ApiGatewayProvider implements ResourceProvider {
               (d) =>
                 d.id &&
                 (d.description ?? '') === (description ?? '') &&
-                isInsideWindow(d.createdDate, orphanWindow) &&
+                isInsideWindow(d.createdDate, lookupWindow) &&
                 !deploymentsCreatedByThisProcess.has(injectiveKey(restApiId, d.id))
                   ? d.id
                   : undefined
@@ -1279,6 +1289,10 @@ export class ApiGatewayProvider implements ResourceProvider {
           remove: (id) =>
             aws`aws apigateway delete-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
         });
+      };
+      const orphanWindow = createDeploymentLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await reportOrphans(orphanWindow);
       }
       const createClient = await this.getCreateClient();
       const attemptStartMs = Date.now();
@@ -1292,6 +1306,12 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const deploymentId = response.id!;
       deploymentsCreatedByThisProcess.add(injectiveKey(restApiId, deploymentId));
+      // Issue #4687: the SDK replayed this CreateDeployment inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await reportOrphans(replayWindow);
+      }
       log.debug(`Successfully created API Gateway Deployment ${logicalId}: ${deploymentId}`);
 
       return {

@@ -802,6 +802,219 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
     });
   });
 
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    /** Stamp `createName`'s output with `$metadata` (`undefined`: none at all). */
+    const stampCreate = (createName: string, metadata: { attempts: number } | undefined): void => {
+      mockSend.mockImplementation(async (command: Parameters<FakeLambda['send']>[0]) => {
+        const output = await aws.send(command);
+        return command.constructor.name === createName && metadata
+          ? { ...output, $metadata: metadata }
+          : output;
+      });
+    };
+    /**
+     * Stamp `createName`'s output as replayed AND advance the clock 2 s inside
+     * the send, so a window floor taken from the send's END (attempt start
+     * - 3 s) would differ from one taken from its START (attempt start - 5 s).
+     */
+    const stampSlowReplay = (createName: string, attemptStart: number): void => {
+      mockSend.mockImplementation(async (command: Parameters<FakeLambda['send']>[0]) => {
+        if (command.constructor.name !== createName) return aws.send(command);
+        vi.setSystemTime(attemptStart + 2_000);
+        return { ...(await aws.send(command)), $metadata: { attempts: 2 } };
+      });
+    };
+    const replayFor = (action: string): string | undefined =>
+      warnLines().find((l) =>
+        l.includes(`The ${action} call for Res succeeded only after the AWS SDK sent it again`)
+      );
+    const seedLayerVersion = (version: number, createdMs: number): string => {
+      const arn = `${LAYER_ARN_PREFIX}shared-libs:${version}`;
+      aws.versions.push({
+        LayerName: 'shared-libs',
+        Version: version,
+        LayerVersionArn: arn,
+        CreatedDate: layerDate(createdMs),
+      });
+      return arn;
+    };
+
+    describe('PublishLayerVersion', () => {
+      it('runs the lookup once and names the unrecorded version, not the one the publish returned', async () => {
+        const orphan = seedLayerVersion(1, Date.now()); // the first (lost) attempt's
+        stampCreate('PublishLayerVersionCommand', { attempts: 2 });
+
+        const result = await layer.create('Res', LAYER, LAYER_PROPS);
+
+        expect(result.physicalId).toBe(`${LAYER_ARN_PREFIX}shared-libs:2`);
+        expect(aws.count('ListLayerVersionsCommand')).toBe(1);
+        expect(aws.calls).not.toContain('DeleteLayerVersionCommand');
+        expect(aws.versions).toHaveLength(2);
+        const line = replayFor('PublishLayerVersion')!;
+        expect(line).toContain(
+          'following an attempt that failed without a definite answer, and Lambda may have created a version of layer shared-libs'
+        );
+        expect(line).toContain('1 layer version(s) were created between');
+        expect(line).toContain(`${orphan}.`);
+        expect(line).toContain(
+          'aws lambda get-layer-version --layer-name shared-libs --version-number 1 --region eu-west-3'
+        );
+        expect(line).not.toContain(result.physicalId);
+        expect(line).not.toContain('--version-number 2 ');
+        expect(line).toContain('cdkd recorded the one the create returned.');
+        expect(line).not.toContain('Creating a new one now.');
+        expect(line).toContain('does not adopt or delete');
+        expect(reportFor('PublishLayerVersion')).toBeUndefined();
+      });
+
+      it('a version created before the attempt start minus the skew margin is not named', async () => {
+        seedLayerVersion(1, Date.now() - 5_001);
+        seedLayerVersion(2, Date.now() - 5_000);
+        stampCreate('PublishLayerVersionCommand', { attempts: 2 });
+
+        await layer.create('Res', LAYER, LAYER_PROPS); // shared-libs:3
+
+        const line = replayFor('PublishLayerVersion')!;
+        expect(line).toContain('1 layer version(s) were created between');
+        expect(line).toContain('--version-number 2 ');
+        expect(line).not.toContain('--version-number 1 ');
+        expect(line).not.toContain('--version-number 3 ');
+      });
+
+      it('the window opens at the ATTEMPT start minus the skew margin, not at the send end', async () => {
+        const attemptStart = Date.now();
+        seedLayerVersion(1, attemptStart - 5_001);
+        seedLayerVersion(2, attemptStart - 5_000);
+        stampSlowReplay('PublishLayerVersionCommand', attemptStart);
+
+        await layer.create('Res', LAYER, LAYER_PROPS); // shared-libs:3
+
+        const line = replayFor('PublishLayerVersion')!;
+        expect(line).toContain('between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z');
+        expect(line).toContain('1 layer version(s) were created between');
+        expect(line).toContain('--version-number 2 ');
+        expect(line).not.toContain('--version-number 1 ');
+        expect(line).not.toContain('--version-number 3 ');
+      });
+
+      it.each([
+        ['a single attempt', { attempts: 1 }],
+        ['no $metadata', undefined],
+      ])('%s sends no lookup', async (_label, metadata) => {
+        seedLayerVersion(1, Date.now());
+        stampCreate('PublishLayerVersionCommand', metadata);
+
+        await layer.create('Res', LAYER, LAYER_PROPS);
+
+        expect(aws.calls).toEqual(['PublishLayerVersionCommand']);
+        expect(warnLines()).toEqual([]);
+      });
+    });
+
+    describe('CreateEventSourceMapping', () => {
+      it('runs the lookup once and names the unrecorded mapping, not the one the create returned', async () => {
+        // The first (lost) attempt's mapping.
+        aws.mappings.push({
+          UUID: 'uuid-LOST',
+          FunctionName: 'worker-fn',
+          LastModified: new Date(Date.now()),
+        });
+        stampCreate('CreateEventSourceMappingCommand', { attempts: 2 });
+
+        const result = await esm.create('Res', ESM, KAFKA_PROPS);
+
+        expect(result.physicalId).toBe('uuid-1');
+        expect(aws.count('ListEventSourceMappingsCommand')).toBe(1);
+        expect(aws.listInputs).toEqual([{ FunctionName: 'worker-fn' }]);
+        expect(aws.calls).not.toContain('DeleteEventSourceMappingCommand');
+        expect(aws.mappings).toHaveLength(2);
+        const line = replayFor('CreateEventSourceMapping')!;
+        expect(line).toContain(
+          'following an attempt that failed without a definite answer (at '
+        );
+        expect(line).toContain(
+          'Lambda may have created an event source mapping from a self-managed event source to function worker-fn'
+        );
+        expect(line).toContain('1 event source mapping(s) match');
+        expect(line).toContain('aws lambda get-event-source-mapping --uuid uuid-LOST --region eu-west-3');
+        expect(line).not.toContain('uuid-1');
+        expect(line).toContain('cdkd recorded the one the create returned.');
+        expect(line).not.toContain('Creating a new one now.');
+        expect(line).not.toContain('delete-event-source-mapping');
+        expect(reportFor('CreateEventSourceMapping')).toBeUndefined();
+      });
+
+      it('lists by function and source for an SQS source', async () => {
+        stampCreate('CreateEventSourceMappingCommand', { attempts: 2 });
+
+        await esm.create('Res', ESM, SQS_PROPS);
+
+        expect(aws.listInputs).toEqual([{ FunctionName: 'worker-fn', EventSourceArn: QUEUE_ARN }]);
+      });
+
+      it('a mapping untouched since before the attempt start minus the skew margin is not named', async () => {
+        aws.mappings.push({
+          UUID: 'uuid-BELOW',
+          FunctionName: 'worker-fn',
+          LastModified: new Date(Date.now() - 5_001),
+        });
+        aws.mappings.push({
+          UUID: 'uuid-AT',
+          FunctionName: 'worker-fn',
+          LastModified: new Date(Date.now() - 5_000),
+        });
+        stampCreate('CreateEventSourceMappingCommand', { attempts: 2 });
+
+        await esm.create('Res', ESM, KAFKA_PROPS);
+
+        const line = replayFor('CreateEventSourceMapping')!;
+        expect(line).toContain('1 event source mapping(s) match');
+        expect(line).toContain('--uuid uuid-AT ');
+        expect(line).not.toContain('uuid-BELOW');
+      });
+
+      it('the window opens at the ATTEMPT start minus the skew margin, not at the send end', async () => {
+        const attemptStart = Date.now();
+        aws.mappings.push({
+          UUID: 'uuid-BELOW',
+          FunctionName: 'worker-fn',
+          LastModified: new Date(attemptStart - 5_001),
+        });
+        aws.mappings.push({
+          UUID: 'uuid-AT',
+          FunctionName: 'worker-fn',
+          LastModified: new Date(attemptStart - 5_000),
+        });
+        stampSlowReplay('CreateEventSourceMappingCommand', attemptStart);
+
+        await esm.create('Res', ESM, KAFKA_PROPS);
+
+        const line = replayFor('CreateEventSourceMapping')!;
+        expect(line).toContain('1 event source mapping(s) match');
+        expect(line).toContain('--uuid uuid-AT ');
+        expect(line).not.toContain('uuid-BELOW');
+        expect(line).not.toContain('uuid-1');
+      });
+
+      it.each([
+        ['a single attempt', { attempts: 1 }],
+        ['no $metadata', undefined],
+      ])('%s sends no lookup', async (_label, metadata) => {
+        aws.mappings.push({
+          UUID: 'uuid-LOST',
+          FunctionName: 'worker-fn',
+          LastModified: new Date(Date.now()),
+        });
+        stampCreate('CreateEventSourceMappingCommand', metadata);
+
+        await esm.create('Res', ESM, KAFKA_PROPS);
+
+        expect(aws.calls).toEqual(['CreateEventSourceMappingCommand']);
+        expect(warnLines()).toEqual([]);
+      });
+    });
+  });
+
   it('parseLayerCreatedDate reads the documented +0000 spelling, and refuses what does not parse', () => {
     expect(parseLayerCreatedDate('2018-11-27T15:10:45.123+0000')?.toISOString()).toBe(
       '2018-11-27T15:10:45.123Z'

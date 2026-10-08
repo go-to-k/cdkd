@@ -121,6 +121,12 @@ class FakeCognito {
   pageSize = 60;
   /** The service clock's offset from ours, applied to every `CreationDate`. */
   skewMs = 0;
+  /**
+   * The `$metadata.attempts` the next successful CreateUserPool reports (issue
+   * #4687): each attempt past the first is an SDK replay whose earlier attempt
+   * reached Cognito, so it leaves one more pool behind first.
+   */
+  nextCreateAttempts: number | undefined;
   private nextId = 1;
 
   seed(pool: Partial<FakePool> & { Id: string; Name: string }): void {
@@ -139,6 +145,15 @@ class FakeCognito {
     const input = command.input;
     switch (name) {
       case 'CreateUserPoolCommand': {
+        const attempts = this.nextCreateAttempts;
+        this.nextCreateAttempts = undefined;
+        for (let i = 1; i < (attempts ?? 1); i++) {
+          this.seed({
+            Id: `us-east-1_pool${this.nextId++}`,
+            Name: input['PoolName'] as string,
+            CreationDate: new Date(Date.now() + this.skewMs),
+          });
+        }
         const id = `us-east-1_pool${this.nextId++}`;
         this.seed({
           Id: id,
@@ -150,7 +165,10 @@ class FakeCognito {
           this.loseNextCreateResponse = undefined;
           throw error;
         }
-        return { UserPool: { ...this.pools[this.pools.length - 1]! } };
+        return {
+          UserPool: { ...this.pools[this.pools.length - 1]! },
+          ...(attempts !== undefined && { $metadata: { attempts } }),
+        };
       }
       case 'ListUserPoolsCommand': {
         const start = input['NextToken'] === undefined ? 0 : Number(input['NextToken']);
@@ -508,6 +526,165 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
 
       const listConfig = sentVia.find(([name]) => name === 'ListUserPoolsCommand')![1];
       expect(await listConfig.retryStrategy()).toBe(baseStrategy);
+    });
+  });
+
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    const replayLine = (): string | undefined =>
+      warnLines().find((l) => l.includes('succeeded only after the AWS SDK sent it again'));
+    const createOnce = (props: Record<string, unknown> = {}) =>
+      withStackName(STACK, () => provider.create('Pool', 'AWS::Cognito::UserPool', props));
+
+    it('names the pool the first attempt left, never the one the create returned; nothing adopted or deleted', async () => {
+      aws.nextCreateAttempts = 2;
+
+      const result = await createOnce();
+
+      expect(aws.pools.map((p) => p.Id)).toEqual(['us-east-1_pool1', 'us-east-1_pool2']);
+      expect(result.physicalId).toBe('us-east-1_pool2');
+      expect(aws.calls).toEqual(['CreateUserPoolCommand', 'ListUserPoolsCommand']);
+      const line = replayLine();
+      expect(line).toContain('The CreateUserPool call for Pool succeeded only after');
+      expect(line).toContain('1 user pool(s) named MyStack-Pool');
+      expect(line).toContain('describe-user-pool --user-pool-id us-east-1_pool1');
+      expect(line).not.toContain('us-east-1_pool2');
+      expect(line).toContain(
+        'The pool the create returned and the candidate(s) above are ALL named MyStack-Pool'
+      );
+      expect(line).not.toContain('Creating a new');
+      expect(line).toContain('does not adopt or delete');
+      expect(orphanLine()).toBeUndefined();
+    });
+
+    it('a single-attempt create, or one with no $metadata, sends no lookup', async () => {
+      aws.nextCreateAttempts = 1;
+      await createOnce();
+      await withStackName(STACK, () => provider.create('Other', 'AWS::Cognito::UserPool', {}));
+
+      expect(aws.calls).toEqual(['CreateUserPoolCommand', 'CreateUserPoolCommand']);
+      expect(warnLines()).toEqual([]);
+    });
+
+    it('reports the duplicate before the follow-up call, so that call failing cannot skip it', async () => {
+      aws.nextCreateAttempts = 2;
+      aws.failNext.set('SetUserPoolMfaConfigCommand', [
+        Object.assign(new Error('bad MFA config'), {
+          name: 'InvalidParameterException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+
+      await expect(
+        createOnce({ MfaConfiguration: 'OPTIONAL', EnabledMfas: ['SOFTWARE_TOKEN_MFA'] })
+      ).rejects.toThrow();
+
+      expect(aws.calls.slice(0, 3)).toEqual([
+        'CreateUserPoolCommand',
+        'ListUserPoolsCommand',
+        'SetUserPoolMfaConfigCommand',
+      ]);
+      expect(replayLine()).toContain('describe-user-pool --user-pool-id us-east-1_pool1');
+    });
+
+    it('does not name a same-named pool created before the attempt started (a prior run)', async () => {
+      aws.seed({
+        Id: 'us-east-1_prior',
+        Name: `${STACK}-Pool`,
+        CreationDate: new Date(Date.now() - 60_000),
+      });
+      aws.nextCreateAttempts = 2;
+
+      await createOnce();
+
+      const line = replayLine();
+      expect(line).toContain('us-east-1_pool1');
+      expect(line).not.toContain('us-east-1_prior');
+    });
+
+    it('a failed ListUserPools after the replay warns with the replay lead and still returns the pool', async () => {
+      aws.nextCreateAttempts = 2;
+      aws.failNext.set('ListUserPoolsCommand', [
+        Object.assign(new Error('not authorized to perform: cognito-idp:ListUserPools'), {
+          name: 'AccessDeniedException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+
+      const result = await createOnce();
+
+      expect(result.physicalId).toBe('us-east-1_pool2');
+      expect(aws.calls).toEqual(['CreateUserPoolCommand', 'ListUserPoolsCommand']);
+      const line = replayLine()!;
+      expect(line).toContain('The CreateUserPool call for Pool succeeded only after');
+      expect(line).toContain('cdkd could not look for it');
+      expect(line).toContain('Check for a pool of that name created between');
+      expect(line).not.toContain('Creating a new');
+      expect(orphanLine()).toBeUndefined();
+    });
+
+    it('a pool a failed rollback left behind is still named by a later replayed create', async () => {
+      // First create: replayed (pool1 orphan, pool2 returned), then its MFA
+      // follow-up fails AND the rollback delete fails, so pool2 is left behind.
+      aws.nextCreateAttempts = 2;
+      const denied = (): Error =>
+        Object.assign(new Error('denied'), {
+          name: 'InvalidParameterException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        });
+      aws.failNext.set('SetUserPoolMfaConfigCommand', [denied()]);
+      aws.failNext.set('DeleteUserPoolCommand', [denied()]);
+      await expect(
+        createOnce({ MfaConfiguration: 'OPTIONAL', EnabledMfas: ['SOFTWARE_TOKEN_MFA'] })
+      ).rejects.toThrow();
+      expect(aws.pools.map((p) => p.Id)).toContain('us-east-1_pool2');
+      warnSpy.mockReset();
+
+      // Second create of the same name, replayed again: pool3 orphan, pool4 returned.
+      aws.nextCreateAttempts = 2;
+      const result = await createOnce();
+
+      expect(result.physicalId).toBe('us-east-1_pool4');
+      const line = replayLine()!;
+      // pool2 was excluded from the first lookup by id only, never added to
+      // the process set, so it stays nameable now.
+      expect(line).toContain('describe-user-pool --user-pool-id us-east-1_pool2');
+      expect(line).toContain('describe-user-pool --user-pool-id us-east-1_pool3');
+      expect(line).not.toContain('us-east-1_pool4');
+    });
+
+    it('the window opens at the ATTEMPT start minus the skew margin, not at the send end', async () => {
+      const attemptStart = Date.now();
+      aws.seed({
+        Id: 'us-east-1_edge',
+        Name: `${STACK}-Pool`,
+        CreationDate: new Date(attemptStart - 5_000),
+      });
+      aws.seed({
+        Id: 'us-east-1_stale',
+        Name: `${STACK}-Pool`,
+        CreationDate: new Date(attemptStart - 5_001),
+      });
+      // The replayed send takes 2 s: a floor taken at the send's END would be
+      // attemptStart - 3 s and miss the edge pool.
+      mockSend.mockImplementation(
+        async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.constructor.name === 'CreateUserPoolCommand') {
+            vi.setSystemTime(Date.now() + 2_000);
+          }
+          return aws.send(command);
+        }
+      );
+      aws.nextCreateAttempts = 2;
+
+      await createOnce();
+
+      const line = replayLine()!;
+      expect(line).toContain('between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z');
+      expect(line).toContain('us-east-1_edge');
+      expect(line).not.toContain('us-east-1_stale');
     });
   });
 });

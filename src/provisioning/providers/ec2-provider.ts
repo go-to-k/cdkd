@@ -137,6 +137,7 @@ import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -1641,6 +1642,12 @@ export class EC2Provider implements ResourceProvider {
 
       const vpcId = response.Vpc!.VpcId!;
       ec2IdsCreatedByThisProcess.add(vpcId);
+      // Issue #4687: the SDK replayed this CreateVpc inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const vpcReplayWindow = replayedSendWindow(response, attemptStartMs);
+      if (vpcReplayWindow !== undefined) {
+        await this.reportPossibleOrphanVpcs(logicalId, cidrBlock, vpcReplayWindow, context);
+      }
 
       // CreateVpcCommand has succeeded — AWS has now committed the VPC.
       // If any subsequent ModifyVpcAttribute / tag / read call throws, the
@@ -2021,6 +2028,18 @@ export class EC2Provider implements ResourceProvider {
 
       const subnetId = response.Subnet!.SubnetId!;
       ec2IdsCreatedByThisProcess.add(subnetId);
+      // Issue #4687: the SDK replayed this CreateSubnet inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const subnetReplayWindow = replayedSendWindow(response, attemptStartMs);
+      if (subnetReplayWindow !== undefined) {
+        await this.reportPossibleOrphanSubnets(
+          logicalId,
+          vpcId,
+          cidrBlock,
+          subnetReplayWindow,
+          context
+        );
+      }
       const availabilityZone = response.Subnet!.AvailabilityZone!;
 
       // CreateSubnetCommand has succeeded — AWS has now committed the
@@ -2388,6 +2407,12 @@ export class EC2Provider implements ResourceProvider {
       }
       const igwId = response.InternetGateway!.InternetGatewayId!;
       ec2IdsCreatedByThisProcess.add(igwId);
+      // Issue #4687: the SDK replayed this CreateInternetGateway inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const igwReplayWindow = replayedSendWindow(response, attemptStartMs);
+      if (igwReplayWindow !== undefined) {
+        await this.reportPossibleOrphanInternetGateways(logicalId, igwReplayWindow, context);
+      }
 
       // Apply tags
       await this.applyTags(igwId, desiredTags, logicalId);
@@ -2574,6 +2599,12 @@ export class EC2Provider implements ResourceProvider {
         createdId = allocationId;
       }
       ec2IdsCreatedByThisProcess.add(allocationId);
+      // Issue #4687: the SDK replayed this AllocateAddress inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const eipReplayWindow = replayedSendWindow(response, attemptStartMs);
+      if (eipReplayWindow !== undefined) {
+        await this.reportPossibleOrphanAddresses(logicalId, input, eipReplayWindow, context);
+      }
 
       await this.applyTags(allocationId, desiredTags, logicalId);
 

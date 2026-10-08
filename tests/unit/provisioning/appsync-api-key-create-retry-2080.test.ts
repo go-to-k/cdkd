@@ -121,6 +121,12 @@ class FakeAppSync {
   pageSize = 25;
   /** Runs on every `ListApiKeys`, to stage what the NEXT create does. */
   onList: (() => void) | undefined;
+  /**
+   * The `$metadata.attempts` the next successful CreateApiKey reports (issue
+   * #4687): each attempt past the first is an SDK replay whose earlier attempt
+   * reached AppSync, so it leaves one more key behind first.
+   */
+  nextCreateAttempts: number | undefined;
   private nextId = 1;
 
   seed(key: Omit<FakeKey, 'id'> & { id?: string }): string {
@@ -137,6 +143,16 @@ class FakeAppSync {
     const input = command.input;
     switch (name) {
       case 'CreateApiKeyCommand': {
+        const attempts = this.nextCreateAttempts;
+        this.nextCreateAttempts = undefined;
+        for (let i = 1; i < (attempts ?? 1); i++) {
+          this.seed({
+            apiId: input['apiId'] as string,
+            ...(input['description'] !== undefined && {
+              description: input['description'] as string,
+            }),
+          });
+        }
         const id = this.seed({
           apiId: input['apiId'] as string,
           ...(input['description'] !== undefined && {
@@ -153,7 +169,10 @@ class FakeAppSync {
           throw error;
         }
         const key = this.keys.find((k) => k.id === id)!;
-        return { apiKey: { id: key.id, description: key.description, expires: key.expires } };
+        return {
+          apiKey: { id: key.id, description: key.description, expires: key.expires },
+          ...(attempts !== undefined && { $metadata: { attempts } }),
+        };
       }
       case 'ListApiKeysCommand': {
         this.onList?.();
@@ -425,5 +444,59 @@ describe('AppSyncProvider CreateApiKey retry safety (issue #2080, detection only
 
     expect(reportLine()).toBeUndefined();
     expect(aws.count('ListApiKeysCommand')).toBe(1);
+  });
+
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    const replayLine = (): string | undefined =>
+      warnLines().find((l) => l.includes('succeeded only after the AWS SDK sent it again'));
+
+    it('names the key the first attempt left, never the one the create returned; nothing adopted or deleted', async () => {
+      aws.nextCreateAttempts = 2;
+
+      const result = await provider.create('Key', 'AWS::AppSync::ApiKey', KEY_PROPS);
+
+      expect(aws.keys.map((k) => k.id)).toEqual([keyId(1), keyId(2)]);
+      expect(result.physicalId).toBe(`api1|${keyId(2)}`);
+      expect(aws.calls).toEqual(['CreateApiKeyCommand', 'ListApiKeysCommand']);
+      const line = replayLine();
+      expect(line).toContain('The CreateApiKey call for Key succeeded only after');
+      expect(line).toContain('****0001');
+      expect(line).not.toContain('****0002');
+      expect(line).not.toContain(keyId(1));
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).not.toContain('Creating a new');
+      expect(line).toContain('does not adopt or delete');
+      expect(reportLine()).toBeUndefined();
+    });
+
+    it('a single-attempt create, or one with no $metadata, sends no lookup', async () => {
+      aws.nextCreateAttempts = 1;
+      await provider.create('Key', 'AWS::AppSync::ApiKey', KEY_PROPS);
+      await provider.create('Other', 'AWS::AppSync::ApiKey', KEY_PROPS);
+
+      expect(aws.calls).toEqual(['CreateApiKeyCommand', 'CreateApiKeyCommand']);
+      expect(warnLines()).toEqual([]);
+    });
+
+    it('a failed ListApiKeys after the replay warns with the replay lead and still returns the key', async () => {
+      aws.nextCreateAttempts = 2;
+      aws.failNext.set('ListApiKeysCommand', [
+        Object.assign(new Error('not authorized to perform: appsync:ListApiKeys'), {
+          name: 'AccessDeniedException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+
+      const result = await provider.create('Key', 'AWS::AppSync::ApiKey', KEY_PROPS);
+
+      expect(result.physicalId).toBe(`api1|${keyId(2)}`);
+      expect(aws.calls).toEqual(['CreateApiKeyCommand', 'ListApiKeysCommand']);
+      const line = replayLine()!;
+      expect(line).toContain('The CreateApiKey call for Key succeeded only after');
+      expect(line).toContain('cdkd could not look for it');
+      expect(line).toContain('. Check for a duplicate.');
+      expect(line).not.toContain('Creating it again');
+    });
   });
 });

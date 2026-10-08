@@ -40,6 +40,7 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -432,6 +433,12 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         throw new Error('CreateLifecyclePolicy did not return a PolicyId');
       }
       policiesCreatedByThisProcess.add(response.PolicyId);
+      // Issue #4687: the SDK replayed this CreateLifecyclePolicy inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleOrphanPolicies(logicalId, input, replayWindow, log);
+      }
 
       // The create response only carries PolicyId; fetch the ARN for the
       // `Fn::GetAtt Arn` attribute cache. Best-effort: a failure here MUST

@@ -132,6 +132,12 @@ class FakeKms {
   readonly failNext = new Map<string, Error[]>();
   /** CreateKey creates the key, THEN throws this (a lost response). */
   loseNextCreateResponse: Error | undefined;
+  /**
+   * The SDK replayed the next CreateKey inside its `send` (issue #4687): the
+   * first attempt minted a key and lost its response to a socket reset, the
+   * replay minted ANOTHER and returned it with `$metadata.attempts: 2`.
+   */
+  replayNextCreate = false;
   /** DisableKey takes effect, THEN throws this (a lost response). */
   loseNextDisableResponse: Error | undefined;
   /** Keys per `ListKeys` page. */
@@ -181,8 +187,14 @@ class FakeKms {
           this.loseNextCreateResponse = undefined;
           throw error;
         }
+        if (this.replayNextCreate) {
+          this.replayNextCreate = false;
+          this.seed({ KeyId: `key-${String(this.nextId++).padStart(3, '0')}` });
+          const replayed = this.keys[this.keys.length - 1]!;
+          return { KeyMetadata: { ...replayed }, $metadata: { attempts: 2 } };
+        }
         const key = this.keys[this.keys.length - 1]!;
-        return { KeyMetadata: { ...key } };
+        return { KeyMetadata: { ...key }, $metadata: { attempts: 1 } };
       }
       case 'DescribeKeyCommand': {
         const key = this.keys.find((k) => k.KeyId === input['KeyId']);
@@ -703,6 +715,134 @@ describe('KMSProvider CreateKey retry safety (issue #2080)', () => {
         .map((c) => String(c[0]))
         .find((l) => l.includes('could not list keys'));
       expect(line).toBeDefined();
+    });
+  });
+
+  describe('a CreateKey the SDK replayed inside its send (issue #4687)', () => {
+    const replayLine = (): string | undefined =>
+      warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes('succeeded only after the AWS SDK sent it again'));
+
+    it('names the key the first attempt made, never the returned one, and neither adopts nor deletes', async () => {
+      aws.replayNextCreate = true;
+
+      const result = await createWithRetry();
+
+      expect(result.physicalId).toBe('key-002');
+      expect(aws.keys.map((k) => k.KeyId)).toEqual(['key-001', 'key-002']);
+      expect(aws.count('CreateKeyCommand')).toBe(1);
+      expect(aws.calls).not.toContain('ScheduleKeyDeletionCommand');
+      const line = replayLine()!;
+      expect(line).toContain('The CreateKey call for Key succeeded only after');
+      expect(line).toContain('key-001');
+      expect(line).not.toContain('key-002');
+      expect(line).toContain('does not adopt or delete');
+      expect(line).toContain('cdkd recorded the key the create returned');
+      expect(line).not.toContain('Creating a new key now');
+    });
+
+    it('looks only inside the replayed attempt: an older key with the same settings is not named', async () => {
+      aws.seed({ KeyId: 'old-key', CreationDate: new Date(Date.now() - 60_000) });
+      aws.replayNextCreate = true;
+
+      await createWithRetry();
+
+      const line = replayLine()!;
+      expect(line).toContain('key-001');
+      expect(line).not.toContain('old-key');
+    });
+
+    it('reports before the follow-up calls, so a follow-up failure cannot skip it', async () => {
+      aws.replayNextCreate = true;
+      aws.failNext.set('EnableKeyRotationCommand', [propagationDenied()]);
+
+      const result = await createWithRetry();
+
+      expect(result.physicalId).toBe('key-002');
+      expect(aws.count('CreateKeyCommand')).toBe(1);
+      expect(replayLine()).toContain('key-001');
+    });
+
+    it('a single-attempt CreateKey runs no lookup', async () => {
+      aws.seed({ KeyId: 'unrelated' });
+
+      await createWithRetry();
+
+      expect(aws.calls).toEqual(['CreateKeyCommand', 'EnableKeyRotationCommand']);
+      expect(replayLine()).toBeUndefined();
+    });
+
+    it('a CreateKey output with NO $metadata runs no lookup', async () => {
+      aws.seed({ KeyId: 'unrelated' });
+      mockSend.mockImplementation(async (command: Parameters<typeof aws.send>[0]) => {
+        const out = (await aws.send(command)) as Record<string, unknown>;
+        if (command.constructor.name !== 'CreateKeyCommand') return out;
+        const { $metadata: _dropped, ...rest } = out;
+        return rest;
+      });
+
+      const result = await createWithRetry();
+
+      expect(result.physicalId).toBe('key-001');
+      expect(aws.calls).toEqual(['CreateKeyCommand', 'EnableKeyRotationCommand']);
+      expect(replayLine()).toBeUndefined();
+    });
+
+    it('the replay runs exactly ONE ListKeys, then the follow-up', async () => {
+      aws.replayNextCreate = true;
+
+      await createWithRetry();
+
+      expect(aws.count('ListKeysCommand')).toBe(1);
+      expect(aws.calls).toEqual([
+        'CreateKeyCommand',
+        'ListKeysCommand',
+        // key-001 only: the returned key-002 is held and never described.
+        'DescribeKeyCommand',
+        'EnableKeyRotationCommand',
+      ]);
+    });
+
+    it('a failed post-replay ListKeys warns with the replay lead and still returns the key', async () => {
+      aws.replayNextCreate = true;
+      aws.failNext.set('ListKeysCommand', [
+        Object.assign(new Error('not authorized to perform kms:ListKeys'), {
+          name: 'AccessDeniedException',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+
+      const result = await createWithRetry();
+
+      expect(result.physicalId).toBe('key-002');
+      expect(aws.count('CreateKeyCommand')).toBe(1);
+      const line = replayLine()!;
+      expect(line).toContain('The CreateKey call for Key succeeded only after the AWS SDK sent it again');
+      expect(line).toContain('cdkd could not list keys to look for it');
+      expect(line).not.toContain('An earlier');
+    });
+
+    it('opens the window at the attempt START minus 5 s, not at the end of a slow send', async () => {
+      // T0 is the attempt start; the send then takes 2 s.
+      aws.seed({ KeyId: 'edge', CreationDate: new Date(Date.now() - 5_000) });
+      aws.seed({ KeyId: 'stale', CreationDate: new Date(Date.now() - 5_001) });
+      aws.replayNextCreate = true;
+      mockSend.mockImplementation(async (command: Parameters<typeof aws.send>[0]) => {
+        if (command.constructor.name === 'CreateKeyCommand') {
+          vi.setSystemTime(Date.now() + 2_000);
+        }
+        return aws.send(command);
+      });
+
+      await createWithRetry();
+
+      const line = replayLine()!;
+      expect(line).toContain('between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z');
+      expect(line).toContain('edge');
+      expect(line).toContain('key-001');
+      expect(line).not.toContain('key-002');
+      expect(line).not.toContain('stale');
     });
   });
 

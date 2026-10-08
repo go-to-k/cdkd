@@ -511,4 +511,110 @@ describe('DLMLifecyclePolicyProvider CreateLifecyclePolicy retry safety (issue #
     expect(reportLine()).toBeUndefined();
     expect(aws.count('GetLifecyclePoliciesCommand')).toBe(1);
   });
+
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    /** Stamp the CreateLifecyclePolicy output with `$metadata` (`undefined`: none at all). */
+    const stampCreate = (metadata: { attempts: number } | undefined): void => {
+      mockSend.mockImplementation(async (command: Parameters<FakeDlm['send']>[0]) => {
+        const output = await aws.send(command);
+        return command.constructor.name === 'CreateLifecyclePolicyCommand' && metadata
+          ? { ...output, $metadata: metadata }
+          : output;
+      });
+    };
+    const replayLine = (): string | undefined =>
+      warnLines().find((l) =>
+        l.includes('The CreateLifecyclePolicy call for Policy succeeded only after the AWS SDK sent it again')
+      );
+
+    it('runs the lookup once and names the unrecorded policy, not the one the create returned', async () => {
+      // The first, lost attempt's policy.
+      const orphan = aws.seed({ description: 'nightly snapshots', defaultPolicy: false });
+      stampCreate({ attempts: 2 });
+
+      const result = await provider.create('Policy', 'AWS::DLM::LifecyclePolicy', PROPS);
+
+      expect(result.physicalId).toBe('policy-00000000000000002');
+      expect(aws.count('GetLifecyclePoliciesCommand')).toBe(1);
+      expect(aws.calls).not.toContain('DeleteLifecyclePolicyCommand');
+      expect(aws.policies).toHaveLength(2);
+      const line = replayLine()!;
+      expect(line).toContain(
+        'following an attempt that failed without a definite answer, and DLM may have created'
+      );
+      expect(line).toContain('1 lifecycle policy(ies) were created between');
+      expect(line).toContain(`aws dlm get-lifecycle-policy --policy-id ${orphan} --region us-east-1`);
+      expect(line).not.toContain(result.physicalId);
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).not.toContain('Creating a new one now.');
+      expect(line).toContain('does not adopt or delete');
+      expect(reportLine()).toBeUndefined();
+    });
+
+    it('a policy created before the attempt start minus the skew margin is not named', async () => {
+      aws.seed({
+        description: 'nightly snapshots',
+        defaultPolicy: false,
+        created: new Date(Date.now() - 5_001),
+      });
+      const inWindow = aws.seed({
+        description: 'nightly snapshots',
+        defaultPolicy: false,
+        created: new Date(Date.now() - 5_000),
+      });
+      stampCreate({ attempts: 2 });
+
+      await provider.create('Policy', 'AWS::DLM::LifecyclePolicy', PROPS);
+
+      const line = replayLine()!;
+      expect(line).toContain('1 lifecycle policy(ies) were created between');
+      expect(line).toContain(`--policy-id ${inWindow} `);
+      expect(line).not.toContain('policy-00000000000000001');
+    });
+
+    it('the window opens at the ATTEMPT start minus the skew margin, not at the send end', async () => {
+      const attemptStart = Date.now();
+      aws.seed({
+        description: 'nightly snapshots',
+        defaultPolicy: false,
+        created: new Date(attemptStart - 5_001),
+      });
+      const atFloor = aws.seed({
+        description: 'nightly snapshots',
+        defaultPolicy: false,
+        created: new Date(attemptStart - 5_000),
+      });
+      // The replayed send takes 2 s: a floor taken from its END would be
+      // attemptStart - 3 s and drop the policy at attemptStart - 5 s.
+      mockSend.mockImplementation(async (command: Parameters<FakeDlm['send']>[0]) => {
+        if (command.constructor.name !== 'CreateLifecyclePolicyCommand') return aws.send(command);
+        vi.setSystemTime(attemptStart + 2_000);
+        return { ...(await aws.send(command)), $metadata: { attempts: 2 } };
+      });
+
+      await provider.create('Policy', 'AWS::DLM::LifecyclePolicy', PROPS);
+
+      const line = replayLine()!;
+      expect(line).toContain(
+        'between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z'
+      );
+      expect(line).toContain('1 lifecycle policy(ies) were created between');
+      expect(line).toContain(`--policy-id ${atFloor} `);
+      expect(line).not.toContain('policy-00000000000000001');
+    });
+
+    it.each([
+      ['a single attempt', { attempts: 1 }],
+      ['no $metadata', undefined],
+    ])('%s sends no lookup', async (_label, metadata) => {
+      aws.seed({ description: 'nightly snapshots', defaultPolicy: false });
+      stampCreate(metadata);
+
+      await provider.create('Policy', 'AWS::DLM::LifecyclePolicy', PROPS);
+
+      // The create, then the best-effort ARN read; no GetLifecyclePolicies.
+      expect(aws.calls).toEqual(['CreateLifecyclePolicyCommand', 'GetLifecyclePolicyCommand']);
+      expect(warnLines()).toEqual([]);
+    });
+  });
 });

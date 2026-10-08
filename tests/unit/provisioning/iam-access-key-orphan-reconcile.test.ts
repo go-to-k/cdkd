@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy, infoSpy, errorSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   warnSpy: vi.fn(),
+  debugSpy: vi.fn(),
+  infoSpy: vi.fn(),
+  errorSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -13,25 +16,26 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
+    debug: debugSpy,
+    info: infoSpy,
     warn: warnSpy,
-    error: vi.fn(),
+    error: errorSpy,
     child: vi.fn().mockReturnThis(),
   };
   return {
     getLogger: () => ({
       child: () => childLogger,
-      debug: vi.fn(),
-      info: vi.fn(),
+      debug: debugSpy,
+      info: infoSpy,
       warn: warnSpy,
-      error: vi.fn(),
+      error: errorSpy,
     }),
   };
 });
 
 import { IAMAccessKeyProvider } from '../../../src/provisioning/providers/iam-access-key-provider.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { markReplayFollowedAmbiguous } from '../../../src/provisioning/providers/ambiguous-create.js';
 
 const transient500 = (): Error =>
   Object.assign(new Error('We encountered an internal error. Please try again.'), {
@@ -50,6 +54,21 @@ class FakeIam {
   private nextId = 1;
   /** Make the next CreateAccessKey mint its key and then lose the response. */
   loseNextCreateResponse = false;
+  /**
+   * The SDK replayed the next CreateAccessKey inside its `send` (issue #4687):
+   * the first attempt minted a key and lost its response to a socket reset, the
+   * replay minted ANOTHER and returned it with `$metadata.attempts: 2`, an
+   * output the 5xx-refusing client marks as following an ambiguous attempt.
+   */
+  replayNextCreate = false;
+  /**
+   * The SDK retried the next CreateAccessKey after a THROTTLE: IAM did nothing
+   * on the first attempt, so ONE key exists, returned with
+   * `$metadata.attempts: 2` and no ambiguous-attempt mark.
+   */
+  throttleNextCreate = false;
+  /** Make DeleteAccessKey fail. */
+  failDelete = false;
   /** Make ListAccessKeys fail (a role without `iam:ListAccessKeys`). */
   failList = false;
   /**
@@ -83,8 +102,27 @@ class FakeIam {
       this.loseNextCreateResponse = false;
       throw transient500();
     }
+    if (this.replayNextCreate) {
+      this.replayNextCreate = false;
+      const replayedId = `AKIA${String(this.nextId++).padStart(4, '0')}`;
+      this.keys.set(replayedId, new Date());
+      const output = {
+        AccessKey: { AccessKeyId: replayedId, SecretAccessKey: `secret-${replayedId}` },
+        $metadata: { attempts: 2 },
+      };
+      markReplayFollowedAmbiguous(output);
+      return output;
+    }
+    if (this.throttleNextCreate) {
+      this.throttleNextCreate = false;
+      return {
+        AccessKey: { AccessKeyId: accessKeyId, SecretAccessKey: `secret-${accessKeyId}` },
+        $metadata: { attempts: 2 },
+      };
+    }
     return {
       AccessKey: { AccessKeyId: accessKeyId, SecretAccessKey: `secret-${accessKeyId}` },
+      $metadata: { attempts: 1 },
     };
   }
 
@@ -105,6 +143,9 @@ class FakeIam {
       case 'CreateAccessKeyCommand':
         return this.createAccessKey(String(input['UserName']));
       case 'DeleteAccessKeyCommand': {
+        if (this.failDelete) {
+          return Promise.reject(new Error('AccessDenied: iam:DeleteAccessKey'));
+        }
         this.keys.delete(command.input['AccessKeyId'] as string);
         return Promise.resolve({});
       }
@@ -138,7 +179,7 @@ describe('IAMAccessKeyProvider orphaned-key reconcile (issue #2039)', () => {
     aws = new FakeIam();
     mockSend.mockReset();
     mockSend.mockImplementation(aws.send);
-    warnSpy.mockReset();
+    for (const spy of [warnSpy, debugSpy, infoSpy, errorSpy]) spy.mockReset();
     provider = new IAMAccessKeyProvider();
   });
 
@@ -361,5 +402,141 @@ describe('IAMAccessKeyProvider orphaned-key reconcile (issue #2039)', () => {
     );
 
     expect([...aws.keys.keys()].sort()).toEqual([first.physicalId, second.physicalId].sort());
+  });
+
+  describe('a CreateAccessKey the SDK replayed inside its send (issue #4687)', () => {
+    const create = () =>
+      withRetry(
+        () => provider.create('Key', 'AWS::IAM::AccessKey', { UserName: 'ci-user' }),
+        'Key',
+        { sleep: advancingSleep }
+      );
+    const warnings = (): string => warnSpy.mock.calls.map(([m]) => String(m)).join('\n');
+    const calls = (): string[] =>
+      mockSend.mock.calls.map(([c]) => (c as { constructor: { name: string } }).constructor.name);
+
+    it('deletes the key the first attempt minted and keeps the one the replay returned', async () => {
+      aws.replayNextCreate = true;
+
+      const result = await create();
+
+      expect(result.physicalId).toBe('AKIA0002');
+      expect([...aws.keys.keys()]).toEqual(['AKIA0002']);
+      expect(calls()).toEqual([
+        'ListAccessKeysCommand',
+        'CreateAccessKeyCommand',
+        'ListAccessKeysCommand',
+        'DeleteAccessKeyCommand',
+      ]);
+      const deleted = mockSend.mock.calls
+        .filter(([c]) => (c as { constructor: { name: string } }).constructor.name === 'DeleteAccessKeyCommand')
+        .map(([c]) => (c as { input: Record<string, unknown> }).input['AccessKeyId']);
+      expect(deleted).toEqual(['AKIA0001']);
+      expect(warnings()).toContain('AKIA0001 was minted on user ci-user by the CreateAccessKey attempt for Key that the AWS SDK then sent again');
+    });
+
+    it('never logs the returned key\'s secret nor the deleted key\'s, on any channel', async () => {
+      aws.replayNextCreate = true;
+
+      const result = await create();
+
+      // AKIA0001 is the deleted key; its secret (`secret-AKIA0001` in this
+      // fake's naming) left with the lost response.
+      expect(aws.keys.has('AKIA0001')).toBe(false);
+      const everything = [debugSpy, infoSpy, warnSpy, errorSpy]
+        .flatMap((spy) => spy.mock.calls.flat())
+        .map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
+        .join('\n');
+      // The channels did carry the reconcile, so the absence below is meaningful.
+      expect(everything).toContain('AKIA0001');
+      expect(result.attributes?.['SecretAccessKey']).toBe('secret-AKIA0002');
+      expect(everything).not.toContain('secret-AKIA0002');
+      expect(everything).not.toContain('secret-AKIA0001');
+      expect(everything).not.toContain('secret-');
+    });
+
+    it('a replay after a THROTTLE deletes nothing and makes no extra call', async () => {
+      // A key that appears mid-create, dated inside the attempt and unknown to
+      // this process, would pass all three conditions: only the gate keeps it.
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.constructor.name === 'CreateAccessKeyCommand') {
+            aws.keys.set('AKIA-OTHER-PROCESS', new Date());
+          }
+          return aws.send(command as never);
+        }
+      );
+      aws.throttleNextCreate = true;
+
+      const result = await create();
+
+      expect(result.physicalId).toBe('AKIA0001');
+      expect(calls()).toEqual(['ListAccessKeysCommand', 'CreateAccessKeyCommand']);
+      expect([...aws.keys.keys()].sort()).toEqual(['AKIA-OTHER-PROCESS', 'AKIA0001']);
+      expect(warnings()).toBe('');
+    });
+
+    it('never deletes a key the user already held, nor one dated before the attempt', async () => {
+      aws.keys.set('AKIA-PRE-EXISTING', new Date(Date.now() - 86_400_000));
+      const planted = 'AKIA-OUT-OF-BAND';
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.constructor.name === 'ListAccessKeysCommand' && aws.keys.size > 1) {
+            // Appears only on the post-replay read, dated well before the attempt.
+            aws.keys.set(planted, new Date(Date.now() - 3_600_000));
+          }
+          return aws.send(command as never);
+        }
+      );
+      aws.replayNextCreate = true;
+
+      const result = await create();
+
+      expect([...aws.keys.keys()].sort()).toEqual(
+        ['AKIA-PRE-EXISTING', planted, result.physicalId].sort()
+      );
+      expect(warnings()).toContain('cannot attribute it to this attempt');
+      expect(warnings()).toContain(
+        `aws iam delete-access-key --user-name ci-user --access-key-id ${planted}`
+      );
+    });
+
+    it('a single-attempt create reads the key list once (the baseline) and deletes nothing', async () => {
+      const result = await create();
+
+      expect(calls()).toEqual(['ListAccessKeysCommand', 'CreateAccessKeyCommand']);
+      expect([...aws.keys.keys()]).toEqual([result.physicalId]);
+    });
+
+    it('a failed delete warns with the command and still returns the recorded key', async () => {
+      aws.replayNextCreate = true;
+      aws.failDelete = true;
+
+      const result = await create();
+
+      expect(result.physicalId).toBe('AKIA0002');
+      expect(aws.keys.has('AKIA0001')).toBe(true);
+      expect(warnings()).toContain(
+        'aws iam delete-access-key --user-name ci-user --access-key-id AKIA0001'
+      );
+    });
+
+    it('a failed ListAccessKeys after the replay warns and still returns the recorded key', async () => {
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.constructor.name === 'ListAccessKeysCommand' && aws.keys.size > 0) {
+            return Promise.reject(new Error('AccessDenied: iam:ListAccessKeys'));
+          }
+          return aws.send(command as never);
+        }
+      );
+      aws.replayNextCreate = true;
+
+      const result = await create();
+
+      expect(result.physicalId).toBe('AKIA0002');
+      expect(calls()).not.toContain('DeleteAccessKeyCommand');
+      expect(warnings()).toContain('Could not list existing access keys for user ci-user');
+    });
   });
 });

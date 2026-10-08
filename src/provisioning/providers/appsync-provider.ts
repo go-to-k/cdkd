@@ -106,6 +106,8 @@ import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-fai
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
+  ambiguousAttemptLead,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -2912,6 +2914,22 @@ export class AppSyncProvider implements ResourceProvider {
       createdApiId = response.graphqlApi?.apiId;
 
       const apiId = response.graphqlApi!.apiId!;
+      // Issue #4687: the SDK replayed this CreateGraphqlApi inside its `send`,
+      // so an earlier attempt may have made an API too. Detection only, and
+      // before the follow-up call below, so its failure cannot skip it; the
+      // returned API is excluded from its own lookup. Excluded by id, NOT added
+      // to the process set yet: a follow-up failure whose rollback fails leaves
+      // this API behind, and a later lookup must still name it.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleOrphanApis(
+          logicalId,
+          input,
+          replayWindow,
+          maskerOrIdentity(context?.maskSecrets),
+          apiId
+        );
+      }
       const arn = response.graphqlApi!.arn!;
       const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'];
 
@@ -3026,9 +3044,12 @@ export class AppSyncProvider implements ResourceProvider {
     logicalId: string,
     input: CreateGraphqlApiCommandInput,
     window: AmbiguousCreateWindow,
-    mask: MaskerFn
+    mask: MaskerFn,
+    returnedId?: string
   ): Promise<void> {
     const since = new Date(window.floorMs).toISOString();
+    const lead = ambiguousAttemptLead('CreateGraphqlApi', logicalId, window);
+    const replayed = window.replayedInSend === true;
     const name = mask(String(input.name));
     const wantedType = input.apiType ?? 'GRAPHQL';
     const candidates: string[] = [];
@@ -3045,6 +3066,7 @@ export class AppSyncProvider implements ResourceProvider {
             api.apiId &&
             api.name === input.name &&
             (api.apiType ?? 'GRAPHQL') === wantedType &&
+            api.apiId !== returnedId &&
             !graphqlApisCreatedByThisProcess.has(api.apiId)
           ) {
             candidates.push(api.apiId);
@@ -3059,7 +3081,7 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(mask(`ListGraphqlApis failed with: ${failure.detail}`));
       this.logger.warn(
         mask(
-          `An earlier CreateGraphqlApi attempt for ${logicalId} failed without a definite answer (at ${since}), so AppSync may have created an API named ${name} that no cdkd state records, and cdkd could not list APIs to look for it (${failure.summary}). Creating a new API; check for another API of that name.`
+          `${lead} (at ${since}), so AppSync may have created an API named ${name} that no cdkd state records, and cdkd could not list APIs to look for it (${failure.summary}). ${replayed ? 'Check' : 'Creating a new API; check'} for another API of that name.`
         )
       );
       return;
@@ -3070,7 +3092,7 @@ export class AppSyncProvider implements ResourceProvider {
       : '';
     if (candidates.length === 0) {
       const line = mask(
-        `No listed GraphQL API named ${name} is unrecorded by this deploy, so the listing shows no orphan of the earlier ambiguous CreateGraphqlApi attempt for ${logicalId} (at ${since}).${incomplete}`
+        `No listed GraphQL API named ${name} is unrecorded by this deploy, so the listing shows no orphan of the ${replayed ? 'replayed' : 'earlier ambiguous'} CreateGraphqlApi attempt for ${logicalId} (at ${since}).${incomplete}`
       );
       if (truncated) {
         this.logger.warn(line);
@@ -3084,7 +3106,7 @@ export class AppSyncProvider implements ResourceProvider {
     const region = await this.regionArg(aws);
     this.logger.warn(
       mask(
-        `An earlier CreateGraphqlApi attempt for ${logicalId} failed without a definite answer (at ${since}), and AppSync may have created an API then that no cdkd state records. ${candidates.length} GraphQL API(s) named ${name} exist that this deploy did not record: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. AppSync reports no creation time, so any of them may instead be this stack's own recorded API, another stack's, or older than this deploy; cdkd does not adopt or delete them. Creating a new API. Inspect each before deleting anything: ${shown
+        `${lead} (at ${since}), and AppSync may have created an API then that no cdkd state records. ${candidates.length} GraphQL API(s) named ${name} exist that this deploy did not record: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. AppSync reports no creation time, so any of them may instead be this stack's own recorded API, another stack's, or older than this deploy; cdkd does not adopt or delete them. ${replayed ? 'cdkd recorded the API the create returned.' : 'Creating a new API.'} Inspect each before deleting anything: ${shown
           .map((apiId) => aws`aws appsync get-graphql-api --api-id ${apiId}${region}`.render())
           .join(' ; ')}${incomplete}`
       )
@@ -3560,6 +3582,17 @@ export class AppSyncProvider implements ResourceProvider {
 
       apiKeyId = response.apiKey!.id!;
       apiKeysCreatedByThisProcess.add(injectiveKey(apiId, apiKeyId));
+      // Issue #4687: the SDK replayed this CreateApiKey inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleOrphanApiKeys(
+          logicalId,
+          input,
+          replayWindow,
+          createMaskedLogSinks(this.logger, context?.maskSecrets)
+        );
+      }
       this.logger.debug(`Successfully created ApiKey ${logicalId}: ${apiKeyId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
