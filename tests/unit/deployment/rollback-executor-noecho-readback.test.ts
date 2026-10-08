@@ -445,6 +445,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       ['a list no identity field pairs, reordered', { L: ['b', 'a'] }, [['L', 1]], { L: ['a', SECRET_MASK] }],
       ['a null from AWS', { V: null }, [['V']], { V: SECRET_MASK }],
       ["a service's own placeholder", { V: '****' }, [['V']], { V: SECRET_MASK }],
+      ['a placeholder inside a list value', { V: ['a', '****'] }, [['V']], { V: [SECRET_MASK, SECRET_MASK] }],
     ])('%s is not readable', async (_label, live, leaves, properties) => {
       const update = vi.fn();
       const prev = res({ properties, noEchoLeaves: leaves as (string | number)[][] });
@@ -570,18 +571,52 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       expect(persisted(state)).not.toContain('q7z');
     });
 
-    it('a short value echoed under an UNDECLARED attribute name is masked in the restored record', async () => {
+    it('a short value echoed under the SAME-NAMED undeclared attribute is masked; an unrelated equal one and the physical id are not', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'q7z',
+        wasReplaced: false,
+        attributes: { Value: 'q7z', Port: 'q7z', Arn: 'q7z' },
+      });
+      const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: 'q7z' });
+      const { state, ops } = marked();
+      state['Param']!.physicalId = 'q7z';
+      ops[0]!.previousState!.physicalId = 'q7z';
+      ops[0]!.physicalId = 'q7z';
+
+      await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+      // Equal to the physical id: it only names the resource.
+      expect(state['Param']!.attributes?.['Value']).toBe('q7z');
+      expect(state['Param']!.attributes?.['Port']).toBe('q7z');
+      expect(state['Param']!.attributes?.['Arn']).toBe('q7z');
+    });
+
+    it('masks a same-named echoed attribute of a short value', async () => {
       const update = vi.fn().mockResolvedValue({
         physicalId: 'phys',
         wasReplaced: false,
-        attributes: { Echo: 'q7z', Other: 'kept' },
+        attributes: { Value: 'q7z', Other: 'q7z' },
       });
       const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: 'q7z' });
       const { state, ops } = marked();
 
       await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
 
-      expect(state['Param']!.attributes).toEqual({ Echo: SECRET_MASK, Other: 'kept' });
+      expect(state['Param']!.attributes).toEqual({ Value: SECRET_MASK, Other: 'q7z' });
+    });
+
+    // Decision 3: an element of a list no identity field pairs is not read by
+    // index, even in the same order (AWS may reorder such a list).
+    it('an element of a plain-string list is not readable, even in the same order', async () => {
+      const update = vi.fn();
+      const prev = res({ properties: { L: ['a', SECRET_MASK, 'c'] }, noEchoLeaves: [['L', 1]] });
+      const readCurrentState = vi.fn().mockResolvedValue({ L: ['a', 'list-live-0001', 'c'] });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'x' } }) };
+
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
     });
 
     it('hands the provider a reordered live list masked through the identity pairing', async () => {
@@ -624,6 +659,34 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       });
       const result = await replayRollback(
         [{ logicalId: 'Child', changeType: 'UPDATE', resourceType: NESTED, physicalId: 'child', previousState: row }],
+        { Child: { ...row, properties: { ...row.properties, Changed: 'x' } } },
+        'S',
+        makeCtx({ update })
+      );
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+    });
+
+    it('a nested stack row whose OP is routed to Cloud Control is not inert either', async () => {
+      const update = vi.fn();
+      const NESTED = 'AWS::CloudFormation::Stack';
+      const row = res({
+        physicalId: 'child',
+        resourceType: NESTED,
+        properties: { Parameters: { Token: SECRET_MASK } },
+        noEchoLeaves: [['Parameters', 'Token']],
+      });
+      const result = await replayRollback(
+        [
+          {
+            logicalId: 'Child',
+            changeType: 'UPDATE',
+            resourceType: NESTED,
+            physicalId: 'child',
+            provisionedBy: 'cc-api',
+            previousState: row,
+          },
+        ],
         { Child: { ...row, properties: { ...row.properties, Changed: 'x' } } },
         'S',
         makeCtx({ update })

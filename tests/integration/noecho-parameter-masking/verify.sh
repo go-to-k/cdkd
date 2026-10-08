@@ -1026,9 +1026,11 @@ consumer_field() { # consumer_field <Value|Description>
       --query 'Parameters[0].Description' --output text || return 1
   fi
 }
-# The checks both arms share, after the rollback: <phase> <token> <output>.
+# The checks both arms share, after the rollback: <phase> <token> <output> <min-reverted>.
 assert_noecho_rollback_kept() {
-  local phase="$1" tok="$2" out="$3" value description state leaf event_keys scanned=0 reverted=0
+  # <min-reverted>: the events recording NoEchoConsumer's revert so far, so a
+  # later arm cannot pass on an earlier arm's event.
+  local phase="$1" tok="$2" out="$3" min_reverted="$4" value description state leaf event_keys scanned=0 reverted=0
   if [[ "${out}" == *"${tok}"* ]] || [[ "${out}" == *"${TOKEN}"* ]]; then
     echo "FAIL: the Phase ${phase} rollback output carries a NoEcho value in plaintext (issue #4043)" >&2
     exit 1
@@ -1088,8 +1090,8 @@ assert_noecho_rollback_kept() {
       reverted=$((reverted + 1))
     fi
   done <<< "${event_keys}"
-  if [ "${reverted}" -lt 1 ]; then
-    echo "FAIL: no deployment-events object (of ${scanned}) records NoEchoConsumer's ROLLBACK_RESOURCE_SUCCEEDED -- the scan did not read the rollback's stream" >&2
+  if [ "${reverted}" -lt "${min_reverted}" ]; then
+    echo "FAIL: fewer than ${min_reverted} deployment-events object(s) (of ${scanned}) record NoEchoConsumer's ROLLBACK_RESOURCE_SUCCEEDED -- the scan did not read the Phase ${phase} rollback's stream" >&2
     exit 1
   fi
   echo "    OK: Phase ${phase}: the rollback kept NoEchoConsumer's value as AWS holds it and restored its Description; state holds ***; no event carries a value (${scanned} objects)"
@@ -1154,7 +1156,7 @@ if [ "${P2B_ROLLBACK_RC}" -ne 0 ]; then
   echo "FAIL: cdkd rollback exited ${P2B_ROLLBACK_RC} -- the marked NoEcho leaf was not read back (issue #4043 Phase C)" >&2
   exit 1
 fi
-assert_noecho_rollback_kept 2b "${TOKEN_RB}" "${ROLLBACK_OUT_P2B}"
+assert_noecho_rollback_kept 2b "${TOKEN_RB}" "${ROLLBACK_OUT_P2B}" 1
 
 echo "==> Phase 2c: the same failure under the deploy's automatic rollback"
 TOKEN_RB2="$(gen_rb_token rb2)"
@@ -1171,7 +1173,7 @@ if [[ "${DEPLOY_OUT_P2C}" == *"${TOKEN_RB}"* ]]; then
   echo "FAIL: the Phase 2c deploy output carries the Phase 2b NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
-assert_noecho_rollback_kept 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}"
+assert_noecho_rollback_kept 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}" 2
 
 # --- Phase 3a: cdkd diff renders the pending rename masked -------------------
 # BEFORE Phase 3 applies it, so state still holds the literal name and the

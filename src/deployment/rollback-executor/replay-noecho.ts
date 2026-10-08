@@ -73,13 +73,19 @@ export interface NoEchoReplaySubstitution {
    * its `Parameters.<P>` mask is inert and not refused.
    */
   readonly inert: readonly NoEchoCoordinate[];
-  /** The values substituted, for {@link maskRestoredNoEchoRecord}'s attribute arm. */
-  readonly substituted: readonly unknown[];
+  /** What was substituted where, for {@link maskRestoredNoEchoRecord}'s attribute arm. */
+  readonly substituted: readonly SubstitutedLeaf[];
 }
 
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
 type ReadFailure = 'not-readable' | 'read-failed';
+
+/** One value the revert put at a marked coordinate. */
+export interface SubstitutedLeaf {
+  readonly coordinate: NoEchoCoordinate;
+  readonly value: unknown;
+}
 
 function coordinatePath(coordinate: NoEchoCoordinate): string {
   let path = '';
@@ -274,8 +280,10 @@ export async function substituteMarkedNoEchoLeaves(input: {
   logicalId: string;
   ctx: RollbackExecutorContext;
   secrets: RecordedSecretValues;
+  /** The `provisionedBy` the arm's `update()` routes on (the op's, as a rule). */
+  routedVia: string | undefined;
 }): Promise<NoEchoReplaySubstitution> {
-  const { desired, baseline, live, logicalId, ctx, secrets } = input;
+  const { desired, baseline, live, logicalId, ctx, secrets, routedVia } = input;
   const identity: NoEchoReplaySubstitution = {
     desired,
     onPreviousSide: (bag) => bag,
@@ -287,11 +295,13 @@ export async function substituteMarkedNoEchoLeaves(input: {
     carriesSecretMask(valueAtCoordinate(desired, coordinate))
   );
   if (pending.length === 0) return identity;
-  // Not on a Cloud Control route, which WOULD send the row's properties.
+  // Not on a Cloud Control route, which WOULD send the row's properties:
+  // neither the record's nor the one the update is routed on.
   if (
     live.resourceType === NESTED_STACK_TYPE &&
     baseline.resourceType === NESTED_STACK_TYPE &&
-    live.provisionedBy !== 'cc-api'
+    live.provisionedBy !== 'cc-api' &&
+    routedVia !== 'cc-api'
   ) {
     return { ...identity, inert: pending };
   }
@@ -322,7 +332,7 @@ export async function substituteMarkedNoEchoLeaves(input: {
   }
   return {
     inert: [],
-    substituted: values.map(({ value }) => value),
+    substituted: values,
     desired: substituted,
     onPreviousSide: (bag) => {
       if (bag === undefined) return bag;
@@ -356,28 +366,49 @@ function declaredNoEchoAttributeNames(record: ResourceState): string[] {
 export function maskRestoredNoEchoRecord(
   record: ResourceState,
   baseline: ResourceState,
-  /** The values the revert substituted: an attribute EQUAL to one is masked too. */
-  substituted: readonly unknown[] = []
+  /**
+   * What the revert substituted. An attribute of the SAME NAME as a
+   * substituted coordinate's property that equals its value is masked too,
+   * whatever its type or length (the deploy's echo rule); one equal to the
+   * physical id stays, since that only names the resource. A string of needle
+   * length under another name is the value arm's.
+   */
+  substituted: readonly SubstitutedLeaf[] = []
 ): ResourceState {
   const marked = noEchoLeavesOf(baseline) ?? [];
   const names = declaredNoEchoAttributeNames(baseline);
   if (marked.length === 0 && names.length === 0 && substituted.length === 0) return record;
-  const spelled = new Set(substituted.map((value) => canonicalJson(value)));
+  const echoes = (name: string, value: unknown): boolean =>
+    value !== record.physicalId &&
+    substituted.some(
+      (leaf) => leaf.coordinate[0] === name && canonicalJson(leaf.value) === canonicalJson(value)
+    );
   let attributes = record.attributes;
   if (attributes !== undefined && attributes !== null && typeof attributes === 'object') {
     for (const [name, value] of Object.entries(attributes)) {
-      if (!names.includes(name) && !spelled.has(canonicalJson(value))) continue;
+      if (!names.includes(name) && !echoes(name, value)) continue;
       attributes = replaceAtCoordinate(attributes, [name], maskWholeValue(value));
     }
   }
-  // By index; and, where that does not give back the baseline (a provider's
-  // `effectiveProperties` returned a list in another order or shape), through
-  // the identity pairing too, which masks the whole list where nothing pairs.
+  // By index; and, for a coordinate whose LIST differs from the baseline's
+  // after that (a provider's `effectiveProperties` returned it in another
+  // order or shape), through the identity pairing too, which masks that whole
+  // list where nothing pairs. Decided per coordinate, so a difference
+  // elsewhere in the bag never masks a list that kept its order.
   const byIndex = maskAtCoordinates(record.properties, marked);
+  const reshaped = marked.filter((coordinate) => {
+    const list = coordinate.findIndex((segment) => typeof segment === 'number');
+    if (list < 0) return false;
+    const path = coordinate.slice(0, list);
+    return (
+      canonicalJson(valueAtCoordinate(byIndex, path)) !==
+      canonicalJson(valueAtCoordinate(baseline.properties, path))
+    );
+  });
   const properties =
-    marked.length === 0 || canonicalJson(byIndex) === canonicalJson(baseline.properties)
+    reshaped.length === 0
       ? byIndex
-      : maskReadbackAtCoordinates(byIndex, baseline.properties, marked);
+      : maskReadbackAtCoordinates(byIndex, baseline.properties, reshaped);
   return {
     ...record,
     properties,
