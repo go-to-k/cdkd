@@ -685,7 +685,7 @@ downgraded, since the downgrade would send the value.
 
 ```
 Refusing to deploy S: a custom resource's ServiceToken changes, which CloudFormation does not allow ("Modifying service token is not allowed") (issue #4749). Nothing was sent to either handler.
-  - Cr: ServiceToken changes from arn:aws:lambda:...:function:old to arn:aws:lambda:...:function:new.
+  - Cr: ServiceToken changes to arn:aws:lambda:...:function:new, away from the handler its record names.
 ```
 
 **Causes:**

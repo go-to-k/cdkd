@@ -70,6 +70,7 @@ import { printNestedStackReadsOnly } from './resolver-context.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
 import {
+  diffMovedServiceToken,
   renderServiceTokenRefusal,
   SERVICE_TOKEN_CHANGE_REFUSED,
   serviceTokenUpdateRefusal,
@@ -1439,7 +1440,7 @@ export async function provisionUpdate(
     recordedType: currentResource.resourceType,
     recorded: currentResource.properties?.['ServiceToken'],
     desired: resolvedProps['ServiceToken'],
-    diffSawTokenChange: (change.propertyChanges ?? []).some((pc) => pc.path === 'ServiceToken'),
+    diffSawTokenChange: diffMovedServiceToken(change),
   });
   if (serviceTokenRefusal !== undefined) {
     throw markRefusedBeforeApplying(

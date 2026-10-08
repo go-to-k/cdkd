@@ -548,9 +548,14 @@ handler, and the old handler would never get a `Delete` for what it created.
   CloudFormation's own rollback does. A `Ref` / `Fn::GetAtt` whose ARN did not
   change is not a change.
 - Where the recorded token is missing, the redaction mask `***` or a
-  `{{resolve:...}}` reference, cdkd cannot compare it, so a deploy that changes
-  it is refused too. If the handler did not change, put its Lambda function or
-  SNS topic ARN back as `ServiceToken` in `state.json` and re-deploy.
+  `{{resolve:...}}` reference, cdkd cannot compare it, so a deploy whose
+  template changes it (or the expression behind a masked one) is refused too.
+  If the handler did not change, put its Lambda function or SNS topic ARN back
+  as `ServiceToken` in `state.json` and re-deploy.
+- A `ServiceToken` fed by a `NoEcho` parameter is recorded only as `***`, so a
+  new VALUE of that parameter is not detected: the deploy updates the custom
+  resource as before, through whichever handler the value names. Feed
+  `ServiceToken` from a plain value to have such a change refused.
 
 To move a custom resource to another handler, give it a new logical id (in
 CDK, a new construct id, or `overrideLogicalId` on its `CfnResource`). The

@@ -16,6 +16,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { SERVICE_TOKEN_CHANGE_REFUSED } from '../../../src/deployment/custom-resource-service-token.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -192,7 +193,7 @@ describe('DeployEngine - a literal ServiceToken change (go-to-k/cdkd#4749)', () 
 
     expect(error.code).toBe(SERVICE_TOKEN_CHANGE_REFUSED);
     expect(isMarkedNonRetryable(error)).toBe(true);
-    expect(error.message).toContain(`Cr: ServiceToken changes from ${OLD_TOKEN} to ${NEW_TOKEN}.`);
+    expect(error.message).toContain(`Cr: ServiceToken changes to ${NEW_TOKEN}, away from the handler its record names.`);
     expect(error.message).toContain('Modifying service token is not allowed');
     expect(error.message).toContain('give it a new logical id');
     expect(error.message).toContain('overrideLogicalId');
@@ -274,8 +275,55 @@ describe('DeployEngine - a ServiceToken that reads the backing Lambda (go-to-k/c
     // PREMISE: the Lambda was replaced, so the refusal is the provisioning-time one.
     expect(callsFor(p.create, 'Fn').length).toBeGreaterThan(0);
     const refusal = chain(error).find((e) => e.code === SERVICE_TOKEN_CHANGE_REFUSED);
-    expect(refusal?.message).toContain(`Cr: ServiceToken changes from ${OLD_TOKEN} to ${NEW_TOKEN}.`);
+    expect(refusal?.message).toContain(`Cr: ServiceToken changes to ${NEW_TOKEN}, away from the handler its record names.`);
     for (const fn of [p.create, p.update, p.delete]) expect(callsFor(fn, 'Cr')).toHaveLength(0);
+    // Nothing was sent: the journal must not keep the bag as an attempt, and no retry may re-run it.
+    expect(isRefusedBeforeApplying(error, 'Cr')).toBe(true);
+    expect(isMarkedNonRetryable(refusal)).toBe(true);
+  });
+
+  it('rolls the Lambda replacement back after the refusal', async () => {
+    const p = provider();
+    const stateBackend = backend({ Fn: lambda('old-handler'), Cr: cr(OLD_TOKEN) });
+    await deployError(makeEngine(p, stateBackend), template('new-handler'));
+    // The replacement created the new function and deleted the old; the
+    // rollback re-creates the old one and deletes the new.
+    expect(callsFor(p.create, 'Fn').map((c) => (c[2] as Record<string, unknown>)['FunctionName'])).toEqual([
+      'new-handler',
+      'old-handler',
+    ]);
+    expect(callsFor(p.delete, 'Fn').map((c) => c[1])).toEqual(['old-handler', 'new-handler']);
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Fn']?.physicalId).toBe('old-handler');
+    expect(saved.resources['Cr']?.properties['ServiceToken']).toBe(OLD_TOKEN);
+  });
+});
+
+describe('DeployEngine - a ServiceToken fed by a NoEcho parameter (go-to-k/cdkd#4749 review)', () => {
+  // The record holds `***` and the diff promotes the row on EVERY deploy
+  // (`noEchoPromoted`), so refusing an unjudgeable record on a synthetic change
+  // blocked every deploy of such a stack, unchanged template included.
+  const template = (seed: string): CloudFormationTemplate => ({
+    Parameters: { Tok: { Type: 'String', NoEcho: true, Default: OLD_TOKEN } },
+    Resources: {
+      Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: { Ref: 'Tok' }, Seed: seed } },
+    },
+  });
+  const masked = (): ResourceState => ({ ...cr('***'), noEchoLeaves: [['ServiceToken']] }) as ResourceState;
+
+  it('deploys an unchanged template', async () => {
+    const p = provider();
+    await makeEngine(p, backend({ Cr: masked() })).deploy(STACK, template('a'));
+    expect(callsFor(p.create, 'Cr')).toHaveLength(0);
+    expect(callsFor(p.delete, 'Cr')).toHaveLength(0);
+  });
+
+  it('updates in place when another property changed', async () => {
+    const p = provider();
+    await makeEngine(p, backend({ Cr: masked() })).deploy(STACK, template('b'));
+    const updates = callsFor(p.update, 'Cr');
+    expect(updates).toHaveLength(1);
+    expect((updates[0]![3] as Record<string, unknown>)['ServiceToken']).toBe(OLD_TOKEN);
   });
 });
 

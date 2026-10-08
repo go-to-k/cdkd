@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  diffMovedServiceToken,
   findServiceTokenRefusals,
   renderServiceTokenRefusal,
   serviceTokenUpdateRefusal,
@@ -67,7 +68,7 @@ describe('uncomparableToken', () => {
 describe('findServiceTokenRefusals (plan time)', () => {
   it('refuses two different plain tokens', () => {
     expect(find(row({}), record(OLD)).refused).toEqual([
-      { logicalId: 'Cr', resourceType: 'Custom::Thing', kind: 'changed', recorded: OLD, desired: NEW },
+      { logicalId: 'Cr', resourceType: 'Custom::Thing', kind: 'changed', desired: NEW },
     ]);
   });
 
@@ -111,10 +112,31 @@ describe('findServiceTokenRefusals (plan time)', () => {
     ]);
   });
 
-  it('refuses a SYNTHETIC change over an unjudgeable record too: the deploy cannot judge it either', () => {
+  it('does NOT refuse a SYNTHETIC change over an unjudgeable record: a NoEcho-fed token is promoted every deploy', () => {
     for (const flag of ['replacementPropagated', 'inPlacePropagated', 'noEchoPromoted'] as const) {
-      expect(find(row({ [flag]: true }), record('***')).refused, flag).toHaveLength(1);
+      expect(find(row({ [flag]: true, newValue: '***' }), record('***')), flag).toEqual({
+        refused: [],
+        deferred: [],
+      });
     }
+  });
+
+  it('refuses a masked record whose template expression or inputs moved', () => {
+    expect(
+      find(row({ oldValue: '***', newValue: '***', maskedExpressionChanged: true }), record('***'))
+        .refused
+    ).toEqual([
+      { logicalId: 'Cr', resourceType: 'Custom::Thing', kind: 'unjudgeable', recorded: 'masked' },
+    ]);
+  });
+
+  it('diffMovedServiceToken counts only a change the diff computed from the template', () => {
+    expect(diffMovedServiceToken(row({}))).toBe(true);
+    expect(diffMovedServiceToken(row({ maskedExpressionChanged: true }))).toBe(true);
+    for (const flag of ['replacementPropagated', 'inPlacePropagated', 'noEchoPromoted'] as const) {
+      expect(diffMovedServiceToken(row({ [flag]: true })), flag).toBe(false);
+    }
+    expect(diffMovedServiceToken(row({ path: 'Seed' }))).toBe(false);
   });
 
   it('defers a token reading a replaced resource, and warns about it', () => {
@@ -204,12 +226,14 @@ describe('serviceTokenUpdateRefusal (provisioning time)', () => {
 describe('renderServiceTokenRefusal', () => {
   it('masks the printed tokens through the caller masker', () => {
     const message = renderServiceTokenRefusal(
-      [{ logicalId: 'Cr', resourceType: 'Custom::Thing', kind: 'changed', recorded: OLD, desired: NEW }],
+      [{ logicalId: 'Cr', resourceType: 'Custom::Thing', kind: 'changed', desired: NEW }],
       'S',
       (text) => text.replace('new', 'MASKED')
     );
     expect(message).toContain('function:MASKED');
     expect(message).not.toContain(NEW);
+    // The recorded token is never printed (a pre-v11 record may hold a NoEcho value).
+    expect(message).not.toContain(OLD);
   });
 
   it('renders the plural headline and the unjudgeable remedy only when a row needs it', () => {
@@ -217,7 +241,6 @@ describe('renderServiceTokenRefusal', () => {
       logicalId: 'A',
       resourceType: 'Custom::Thing',
       kind: 'changed' as const,
-      recorded: OLD,
       desired: NEW,
     };
     const single = renderServiceTokenRefusal([changed], 'S');

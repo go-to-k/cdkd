@@ -5153,7 +5153,7 @@ describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4
   it('blocks a literal token change, naming both tokens and the remedy', async () => {
     const node = await tree(crTemplate(NEW), { Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }) });
     expect(node.blocking).toEqual([
-      `Cr: ServiceToken changes from ${OLD} to ${NEW}. cdkd deploy refuses a changed ` +
+      `Cr: ServiceToken changes to ${NEW}, away from the handler its record names. cdkd deploy refuses a changed ` +
         `custom-resource ServiceToken, as CloudFormation does (issue #4749); give the custom ` +
         `resource a new logical id to move it to another handler.`,
     ]);

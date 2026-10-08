@@ -983,8 +983,8 @@ report it" row above:
 
 | request | what the handler receives |
 | --- | --- |
-| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position |
-| `Delete` | `cdkd destroy` with the app: `ResourceProperties` holds the real value, re-resolved from today's template and parameters. A deploy that replaces the resource while it is still in the template would re-resolve it the same way, but no `cdkd deploy` replaces a custom resource that is still in the template today (a `ServiceToken` change is not a replacement, and a `Type` change keeps the skip). Otherwise not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
+| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position. A `ServiceToken` fed this way is not compared with the record, so a changed value is not refused ([a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken)) |
+| `Delete` | `cdkd destroy` with the app: `ResourceProperties` holds the real value, re-resolved from today's template and parameters. A deploy that replaces the resource while it is still in the template would re-resolve it the same way, but no `cdkd deploy` replaces a custom resource that is still in the template today (a changed `ServiceToken` is refused, and a `Type` change keeps the skip). Otherwise not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
 
 On a `Delete`, cdkd re-resolves a position only while today's template still
 reads a `NoEcho` parameter there, for a resource of the same type, and, where

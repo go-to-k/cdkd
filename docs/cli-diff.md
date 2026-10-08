@@ -1200,8 +1200,8 @@ its replacement in the next.
 any handler is invoked: sent as an update, the change would reach only the new
 handler and orphan what the old one created. The reason names the row and both
 tokens; where the recorded token is missing, the redaction mask `***` or a
-`{{resolve:...}}` reference, it says cdkd cannot compare it, which the deploy
-refuses too. Give the custom resource a new logical id (in CDK, a new construct
+`{{resolve:...}}` reference and the template moves it, it says cdkd cannot compare it, which the
+deploy refuses too. Give the custom resource a new logical id (in CDK, a new construct
 id, or `overrideLogicalId`), which creates a new resource through the new
 handler and deletes the old one through its old handler. A token that reads a
 resource this deploy replaces or creates (a renamed backing Lambda) is known

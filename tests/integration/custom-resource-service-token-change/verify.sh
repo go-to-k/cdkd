@@ -228,8 +228,8 @@ if [ "${DIFF_RC}" -ne 3 ]; then
   echo "FAIL: cdkd diff exited ${DIFF_RC}, expected 3 (the deploy would refuse)" >&2
   exit 1
 fi
-if ! printf '%s' "${DIFF_TXT}" | grep -qF "${CR_ID}: ServiceToken changes from ${TOKEN_A} to"; then
-  echo "FAIL: cdkd diff did not name '${CR_ID}: ServiceToken changes from ${TOKEN_A}'" >&2
+if ! printf '%s' "${DIFF_TXT}" | grep -qF "${CR_ID}: ServiceToken changes to arn:"; then
+  echo "FAIL: cdkd diff did not name '${CR_ID}: ServiceToken changes to arn:...'" >&2
   exit 1
 fi
 echo "    OK: diff exits 3 with the ServiceToken row under Blocking"
@@ -254,8 +254,8 @@ if ! printf '%s' "${SWITCH_TXT}" | grep -qF 'Modifying service token is not allo
   echo "FAIL: deploy failed (rc=${SWITCH_RC}) without the #4749 refusal" >&2
   exit 1
 fi
-if ! printf '%s' "${SWITCH_TXT}" | grep -qF "${CR_ID}: ServiceToken changes from ${TOKEN_A} to"; then
-  echo "FAIL: the refusal does not name '${CR_ID}: ServiceToken changes from ${TOKEN_A}'" >&2
+if ! printf '%s' "${SWITCH_TXT}" | grep -qF "${CR_ID}: ServiceToken changes to arn:"; then
+  echo "FAIL: the refusal does not name '${CR_ID}: ServiceToken changes to arn:...'" >&2
   exit 1
 fi
 ETAG_AFTER=$(state_etag)
@@ -281,11 +281,14 @@ if [ "${RENAME_RC}" -eq 0 ]; then
   echo "FAIL: the deploy moving Cr to the renamed HandlerA succeeded (pre-#4749 behaviour)" >&2
   exit 1
 fi
-if ! printf '%s' "${RENAME_TXT}" | grep -qF "${CR_ID}: ServiceToken changes from ${TOKEN_A} to"; then
+if ! printf '%s' "${RENAME_TXT}" | grep -qF "${CR_ID}: ServiceToken changes to arn:"; then
   echo "FAIL: deploy failed (rc=${RENAME_RC}) without the #4749 refusal naming ${CR_ID}" >&2
   exit 1
 fi
 echo "    OK: refused once the token resolved"
+# cdkd's replacement creates the renamed function and deletes the OLD one
+# before Cr is reached; the rollback then RE-CREATES the old one under its
+# name. So "HandlerA exists" below means "was re-created", not "survived".
 if gone_probe aws lambda get-function --function-name "${FN_A}" --region "${REGION}"; then
   echo "FAIL: HandlerA (${FN_A}) is gone after the rollback" >&2
   exit 1

@@ -29,11 +29,17 @@
  * A token is COMPARABLE only as a non-empty string that holds neither the
  * redaction mask nor a `{{resolve:...}}` reference. When the RECORDED token
  * is not comparable (absent, the mask, a reference, not a string) and the
- * diff saw the token move (any `ServiceToken` property change, synthetic ones
- * included), the update is refused: neither check can say the handler is the
- * same, and a wrong guess orphans the old handler's resources. A record the
- * diff calls unchanged there is left alone, since the mask-aware diff already
- * judged it equal and refusing would block every update of such a resource.
+ * diff saw the TEMPLATE move it (a `ServiceToken` change it computed, including
+ * a masked property whose expression or inputs moved), the update is refused:
+ * neither check can say the handler is the same, and a wrong guess orphans the
+ * old handler's resources.
+ *
+ * A SYNTHETIC change over such a record is not refused. The diff promotes every
+ * reader of a `NoEcho` parameter on every deploy (`noEchoPromoted`), so a token
+ * fed by one, recorded as `***`, would otherwise refuse every deploy of the
+ * stack, unchanged template included. Such a row keeps its pre-#4749 update.
+ * The cost, stated: a changed `NoEcho` parameter VALUE behind a `***` record
+ * retargets the handler undetected, since cdkd keeps no value to compare.
  *
  * A DESIRED token the plan cannot judge (an intrinsic it could not resolve, a
  * dynamic reference `cdkd diff` leaves unresolved, a masked `NoEcho` value)
@@ -59,9 +65,13 @@ export const SERVICE_TOKEN_CHANGE_REFUSED = 'CUSTOM_RESOURCE_SERVICE_TOKEN_CHANG
 /** Why a recorded token cannot be compared. */
 export type UncomparableToken = 'absent' | 'masked' | 'reference' | 'not-a-string';
 
-/** One refused row. `changed` carries both tokens; `unjudgeable` says why. */
+/**
+ * One refused row. `changed` carries the new token (the recorded one is never
+ * printed: a pre-v11 record can hold a `NoEcho` value in the clear that no
+ * masker knows); `unjudgeable` says why the record cannot be compared.
+ */
 export type ServiceTokenRefusal =
-  | { logicalId: string; resourceType: string; kind: 'changed'; recorded: string; desired: string }
+  | { logicalId: string; resourceType: string; kind: 'changed'; desired: string }
   | { logicalId: string; resourceType: string; kind: 'unjudgeable'; recorded: UncomparableToken };
 
 /** A row whose token the plan cannot judge, which the deploy decides once it resolves it. */
@@ -91,6 +101,15 @@ function isSynthetic(pc: PropertyChange): boolean {
   return (
     pc.replacementPropagated === true || pc.inPlacePropagated === true || pc.noEchoPromoted === true
   );
+}
+
+/**
+ * Whether the diff computed a `ServiceToken` change from the template, as
+ * opposed to a synthetic promotion whose value the deploy resolves.
+ */
+export function diffMovedServiceToken(change: ResourceChange): boolean {
+  const pc = serviceTokenChange(change);
+  return pc !== undefined && !isSynthetic(pc);
 }
 
 /**
@@ -124,6 +143,7 @@ export function findServiceTokenRefusals(input: {
     const recordedToken = record.properties?.[SERVICE_TOKEN];
     const recordedProblem = uncomparableToken(recordedToken);
     if (recordedProblem !== undefined) {
+      if (isSynthetic(pc)) continue;
       refused.push({
         logicalId,
         resourceType: change.resourceType,
@@ -139,7 +159,6 @@ export function findServiceTokenRefusals(input: {
           logicalId,
           resourceType: change.resourceType,
           kind: 'changed',
-          recorded: recordedToken as string,
           desired: desired as string,
         });
       }
@@ -163,7 +182,8 @@ export function findServiceTokenRefusals(input: {
  * The provisioning-time verdict for one in-place update of a custom resource,
  * or `undefined` to proceed. `recorded` is the state record's token,
  * `desired` the fully resolved one, and `diffSawTokenChange` whether the
- * plan's row carried a `ServiceToken` change.
+ * plan's row carried a NON-synthetic `ServiceToken` change
+ * ({@link diffMovedServiceToken}).
  */
 export function serviceTokenUpdateRefusal(input: {
   logicalId: string;
@@ -195,7 +215,6 @@ export function serviceTokenUpdateRefusal(input: {
     logicalId: input.logicalId,
     resourceType: input.resourceType,
     kind: 'changed',
-    recorded: input.recorded as string,
     desired: input.desired as string,
   };
 }
@@ -214,8 +233,8 @@ function rowText(refusal: ServiceTokenRefusal, mask: Mask): string {
   const id = displayIdent(refusal.logicalId);
   if (refusal.kind === 'changed') {
     return (
-      `${id}: ServiceToken changes from ${displayIdent(mask(refusal.recorded))} to ` +
-      `${displayIdent(mask(refusal.desired))}.`
+      `${id}: ServiceToken changes to ${displayIdent(mask(refusal.desired))}, away from the ` +
+      `handler its record names.`
     );
   }
   return (
