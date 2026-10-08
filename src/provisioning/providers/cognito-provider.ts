@@ -15,6 +15,7 @@ import {
   type AuthFactorType,
   type UserPoolMfaType,
   type DeletionProtectionType,
+  type CreateUserPoolCommandOutput,
   type UserPoolType,
   type SchemaAttributeType,
   type LambdaConfigType,
@@ -48,7 +49,9 @@ import { generateResourceName } from '../resource-name.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
+  ambiguousAttemptLead,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -1972,21 +1975,37 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         );
       }
 
-      let userPool: Pick<UserPoolType, 'Id' | 'Arn'> | undefined;
+      let created: CreateUserPoolCommandOutput;
       const attemptStartMs = Date.now();
       try {
-        userPool = (await this.getCreateClient().send(new CreateUserPoolCommand(createParams)))
-          .UserPool;
+        created = await this.getCreateClient().send(new CreateUserPoolCommand(createParams));
       } catch (error) {
         createUserPoolLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
       }
+      const userPool: Pick<UserPoolType, 'Id' | 'Arn'> | undefined = created.UserPool;
       if (!userPool?.Id) {
         throw new Error('CreateUserPool did not return UserPool.Id');
       }
 
       const userPoolId = userPool.Id;
       createdUserPoolId = userPoolId;
+      // Issue #4687: the SDK replayed this CreateUserPool inside its `send`, so
+      // an earlier attempt may have made a pool too. Detection only, and before
+      // the follow-up calls below, so a failure in one of them cannot skip it;
+      // the returned pool is excluded from its own lookup. Excluded by id, NOT
+      // added to the process set yet: a follow-up failure whose rollback fails
+      // leaves this pool behind, and a later lookup must still name it.
+      const replayWindow = replayedSendWindow(created, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleOrphanPools(
+          logicalId,
+          poolName,
+          replayWindow,
+          createMaskedLogSinks(this.logger, context?.maskSecrets),
+          userPoolId
+        );
+      }
       const userPoolArn = userPool.Arn;
       const region = await this.getClient().config.region();
       // Suffix DERIVED from the region, not hardcoded (issue #1745): outside the
@@ -2127,11 +2146,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     logicalId: string,
     poolName: string,
     window: AmbiguousCreateWindow,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    returnedId?: string
   ): Promise<void> {
     const { value: v } = log;
     const since = new Date(window.floorMs).toISOString();
     const until = new Date(window.ceilingMs).toISOString();
+    const lead = ambiguousAttemptLead('CreateUserPool', logicalId, window);
+    const replayed = window.replayedInSend === true;
 
     const candidates: string[] = [];
     let truncated = false;
@@ -2147,6 +2169,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             pool.Id &&
             pool.Name === poolName &&
             isInsideWindow(pool.CreationDate, window) &&
+            pool.Id !== returnedId &&
             !userPoolsCreatedByThisProcess.has(pool.Id)
           ) {
             candidates.push(pool.Id);
@@ -2160,7 +2183,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       const failure = describeAwsFailure(error);
       log.debug(`ListUserPools failed with: ${v(failure.detail)}`);
       log.warn(
-        `An earlier CreateUserPool attempt for ${logicalId} failed without a definite answer, so Cognito may have created a user pool named ${v(poolName)} that no cdkd state records, and cdkd could not look for it (ListUserPools: ${failure.summary}). Creating a new pool; check for a pool of that name created between ${since} and ${until}.`
+        `${lead}, so Cognito may have created a user pool named ${v(poolName)} that no cdkd state records, and cdkd could not look for it (ListUserPools: ${failure.summary}). ${replayed ? 'Check' : 'Creating a new pool; check'} for a pool of that name created between ${since} and ${until}.`
       );
       return;
     }
@@ -2169,7 +2192,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       : '';
 
     if (candidates.length === 0) {
-      const line = `No listed user pool named ${v(poolName)} was created between ${since} and ${until}, where the earlier ambiguous CreateUserPool attempt for ${logicalId} ran.${incomplete}`;
+      const line = `No listed user pool named ${v(poolName)} was created between ${since} and ${until}, where the ${replayed ? 'replayed' : 'earlier ambiguous'} CreateUserPool attempt for ${logicalId} ran.${incomplete}`;
       if (truncated) {
         log.warn(line);
       } else {
@@ -2188,7 +2211,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       .map((id) => aws`aws cognito-idp delete-user-pool --user-pool-id ${id}${region}`.render())
       .join(' ; ');
     log.warn(
-      `An earlier CreateUserPool attempt for ${logicalId} failed without a definite answer, and Cognito may have created a pool then that no cdkd state records. ${candidates.length} user pool(s) named ${v(poolName)} were created between ${since} and ${until}: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them: a pool name does not prove which deploy created it. Creating a new pool now, so the new pool and the candidate(s) above will ALL be named ${v(poolName)} -- Cognito allows duplicate names. First inspect each candidate (its user count, creation date and tags): ${inspect}. Only after confirming a pool is this deploy's orphan and not another deploy's, delete it: ${deletion}.${incomplete}`
+      `${lead}, and Cognito may have created a pool then that no cdkd state records. ${candidates.length} user pool(s) named ${v(poolName)} were created between ${since} and ${until}: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them: a pool name does not prove which deploy created it. ${replayed ? `The pool the create returned and the candidate(s) above are ALL named ${v(poolName)}` : `Creating a new pool now, so the new pool and the candidate(s) above will ALL be named ${v(poolName)}`} -- Cognito allows duplicate names. First inspect each candidate (its user count, creation date and tags): ${inspect}. Only after confirming a pool is this deploy's orphan and not another deploy's, delete it: ${deletion}.${incomplete}`
     );
   }
 

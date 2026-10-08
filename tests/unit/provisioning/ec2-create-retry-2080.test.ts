@@ -802,6 +802,154 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
     });
   });
 
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    /** Stamp every create's output with `$metadata`, as the SDK's retry middleware does. */
+    const stampCreates = (metadata: Record<string, unknown> | undefined): void => {
+      mockSend.mockImplementation(async (command: Parameters<FakeEc2['send']>[0]) => {
+        const output = await aws.send(command);
+        return metadata !== undefined && REPLAY_SITES.some((s) => s.command === command.constructor.name)
+          ? { ...(output as object), $metadata: metadata }
+          : output;
+      });
+    };
+    const replayLines = (action: string): string[] =>
+      warnLines().filter((l) => l.includes(`The ${action} call for Res succeeded only after`));
+
+    interface ReplaySite {
+      readonly action: string;
+      readonly command: string;
+      readonly type: string;
+      readonly props: Record<string, unknown>;
+      readonly lookup: string;
+      readonly returned: string;
+      readonly orphan: string;
+      /** Puts an unrecorded, matching candidate where the lookup will list it. */
+      readonly stage: (aws: FakeEc2) => void;
+    }
+    const REPLAY_SITES: readonly ReplaySite[] = [
+      {
+        action: 'CreateVpc',
+        command: 'CreateVpcCommand',
+        type: 'AWS::EC2::VPC',
+        props: VPC_PROPS,
+        lookup: 'DescribeVpcsCommand',
+        returned: 'vpc-001',
+        orphan: 'vpc-orphan',
+        stage: (fake) =>
+          fake.vpcs.push({ VpcId: 'vpc-orphan', CidrBlock: '10.0.0.0/16', IsDefault: false, Tags: [] }),
+      },
+      {
+        action: 'CreateSubnet',
+        command: 'CreateSubnetCommand',
+        type: 'AWS::EC2::Subnet',
+        props: SUBNET_PROPS,
+        lookup: 'DescribeSubnetsCommand',
+        returned: 'subnet-001',
+        orphan: 'subnet-orphan',
+        // Staged at list time: present before the create, it would collide.
+        stage: (fake) => {
+          fake.onList = () => {
+            fake.subnets.push({
+              SubnetId: 'subnet-orphan',
+              VpcId: 'vpc-shared',
+              CidrBlock: '10.0.1.0/24',
+              AvailabilityZone: 'ap-southeast-2a',
+              Tags: [],
+            });
+            fake.onList = undefined;
+          };
+        },
+      },
+      {
+        action: 'CreateInternetGateway',
+        command: 'CreateInternetGatewayCommand',
+        type: 'AWS::EC2::InternetGateway',
+        props: IGW_PROPS,
+        lookup: 'DescribeInternetGatewaysCommand',
+        returned: 'igw-001',
+        orphan: 'igw-orphan',
+        stage: (fake) =>
+          fake.igws.push({ InternetGatewayId: 'igw-orphan', Attachments: [], Tags: [] }),
+      },
+      {
+        action: 'AllocateAddress',
+        command: 'AllocateAddressCommand',
+        type: 'AWS::EC2::EIP',
+        props: EIP_PROPS,
+        lookup: 'DescribeAddressesCommand',
+        returned: 'eipalloc-001',
+        orphan: 'eipalloc-orphan',
+        stage: (fake) =>
+          fake.addresses.push({
+            AllocationId: 'eipalloc-orphan',
+            PublicIp: '198.51.100.9',
+            Domain: 'vpc',
+            NetworkBorderGroup: 'ap-southeast-2',
+            PublicIpv4Pool: 'amazon',
+            Tags: [],
+          }),
+      },
+    ];
+
+    /** The calls a single-attempt create sends, with no lookup. */
+    const baselineCalls = async (site: ReplaySite): Promise<string[]> => {
+      const probe = new FakeEc2();
+      mockSend.mockImplementation(probe.send);
+      resetEc2CreateRetryStateForTests();
+      await new EC2Provider().create('Res', site.type, site.props);
+      resetEc2CreateRetryStateForTests();
+      return probe.calls;
+    };
+
+    it.each(REPLAY_SITES.map((s) => [s.action, s] as const))(
+      '%s: a replayed success looks once, names the unrecorded candidate and not the returned id',
+      async (_action, site) => {
+        const baseline = await baselineCalls(site);
+        site.stage(aws);
+        stampCreates({ attempts: 2 });
+
+        const result = await provider.create('Res', site.type, site.props);
+
+        expect(result.physicalId).toContain(site.returned);
+        // The baseline plus exactly one lookup, sent right after the create.
+        const at = baseline.indexOf(site.command) + 1;
+        expect(aws.calls).toEqual([...baseline.slice(0, at), site.lookup, ...baseline.slice(at)]);
+        expect(aws.lookups).toEqual([site.lookup]);
+        expect(aws.calls.filter((c) => /^(Delete|Release)/.test(c))).toEqual([]);
+        expect(reportFor(site.action)).toBeUndefined();
+        const lines = replayLines(site.action);
+        expect(lines).toHaveLength(1);
+        const line = lines[0]!;
+        expect(line).toContain(
+          `The ${site.action} call for Res succeeded only after the AWS SDK sent it again, following an attempt that failed without a definite answer`
+        );
+        expect(line).toContain(site.orphan);
+        expect(line).not.toContain(site.returned);
+        expect(line).toContain('cdkd recorded the one the create returned.');
+        expect(line).not.toContain('Creating a new one now');
+        expect(line).not.toContain('Creating it again');
+        expect(line).not.toContain('InvalidSubnet.Conflict');
+      }
+    );
+
+    it.each(
+      REPLAY_SITES.flatMap((s) => [
+        [s.action, 'attempts: 1', s, { attempts: 1 }] as const,
+        [s.action, 'no $metadata', s, undefined] as const,
+      ])
+    )('%s with %s sends no lookup', async (_action, _label, site, metadata) => {
+      const baseline = await baselineCalls(site);
+      site.stage(aws);
+      stampCreates(metadata);
+
+      await provider.create('Res', site.type, site.props);
+
+      expect(aws.calls).toEqual(baseline);
+      expect(aws.lookups).toEqual([]);
+      expect(warnLines()).toEqual([]);
+    });
+  });
+
   describe('the create client', () => {
     it.each([
       ['CreateVpcCommand', 'AWS::EC2::VPC', VPC_PROPS],

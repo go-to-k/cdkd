@@ -142,6 +142,7 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -1222,6 +1223,12 @@ export class ECSProvider implements ResourceProvider {
         throw new Error('RegisterTaskDefinition did not return task definition ARN');
       }
       taskDefinitionsRegisteredByThisProcess.add(taskDef.taskDefinitionArn);
+      // Issue #4687: the SDK replayed this RegisterTaskDefinition inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleOrphanTaskDefinitions(logicalId, family, replayWindow, log);
+      }
 
       log.debug(
         `Successfully created ECS task definition ${logicalId}: ${taskDef.taskDefinitionArn}`

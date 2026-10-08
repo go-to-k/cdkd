@@ -28,7 +28,9 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import type {
   CreateContext,
@@ -252,13 +254,12 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       // only -- see `orphan-report.ts`. Only a TASK instance group can
       // be duplicated: a cluster holds at most one MASTER and one CORE, so a
       // replay of either cannot add a second one.
-      const orphanWindow = addInstanceGroupsLatch.take(logicalId);
-      if (orphanWindow !== undefined && group.InstanceRole === 'TASK') {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
         const name = group.Name;
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'AddInstanceGroups',
           service: 'EMR',
           listAction: 'ListInstanceGroups',
@@ -279,7 +280,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
                 item.Id &&
                 item.InstanceGroupType === 'TASK' &&
                 (name === undefined || item.Name === name) &&
-                isInsideWindow(item.Status?.Timeline?.CreationDateTime, orphanWindow) &&
+                isInsideWindow(item.Status?.Timeline?.CreationDateTime, lookupWindow) &&
                 !groupsCreatedByThisProcess.has(item.Id)
                   ? item.Id
                   : undefined
@@ -292,6 +293,10 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
           removeVerb:
             'scale it to zero, which releases its instances (EMR has no call that removes an instance group; it ends with its cluster)',
         });
+      };
+      const orphanWindow = addInstanceGroupsLatch.take(logicalId);
+      if (orphanWindow !== undefined && group.InstanceRole === 'TASK') {
+        await reportOrphans(orphanWindow);
       }
       const attemptStartMs = Date.now();
       let response: AddInstanceGroupsCommandOutput;
@@ -308,7 +313,14 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       }
       const groupId = response.InstanceGroupIds?.[0];
       if (groupId) groupsCreatedByThisProcess.add(groupId);
+      // Before the lookup below, so a throw in it still marks the group created.
       createdGroupId = groupId;
+      // Issue #4687: the SDK replayed this AddInstanceGroups inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined && group.InstanceRole === 'TASK') {
+        await reportOrphans(replayWindow);
+      }
       if (!groupId) {
         throw new ProvisioningError(
           `EMR AddInstanceGroups for ${logicalId} returned no instance group id`,

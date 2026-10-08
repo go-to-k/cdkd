@@ -65,7 +65,9 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import type {
   CreateContext,
@@ -485,14 +487,13 @@ export class EMRClusterProvider implements ResourceProvider {
       // -- see `orphan-report.ts`. A duplicate cluster bills per
       // instance-hour, so the report carries a terminate command (after
       // confirming); cdkd never terminates a cluster it did not record.
-      const orphanWindow = runJobFlowLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
         const name = input.Name;
         const protectedCluster = input.Instances?.TerminationProtected === true;
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'RunJobFlow',
           service: 'EMR',
           listAction: 'ListClusters',
@@ -503,8 +504,8 @@ export class EMRClusterProvider implements ResourceProvider {
               async (marker) => {
                 const page = await this.getClient().send(
                   new ListClustersCommand({
-                    CreatedAfter: new Date(orphanWindow.floorMs),
-                    CreatedBefore: new Date(orphanWindow.ceilingMs),
+                    CreatedAfter: new Date(lookupWindow.floorMs),
+                    CreatedBefore: new Date(lookupWindow.ceilingMs),
                     // A cluster already terminating or gone bills nothing.
                     ClusterStates: LIVE_CLUSTER_STATES,
                     ...(marker && { Marker: marker }),
@@ -515,7 +516,7 @@ export class EMRClusterProvider implements ResourceProvider {
               (c) =>
                 c.Id &&
                 c.Name === name &&
-                isInsideWindow(c.Status?.Timeline?.CreationDateTime, orphanWindow) &&
+                isInsideWindow(c.Status?.Timeline?.CreationDateTime, lookupWindow) &&
                 !clustersCreatedByThisProcess.has(c.Id)
                   ? c.Id
                   : undefined
@@ -529,6 +530,10 @@ export class EMRClusterProvider implements ResourceProvider {
               `terminate it (this template turns termination protection on, so if describe-cluster shows it on for the candidate, first run ${aws`aws emr modify-cluster-attributes --cluster-id`.render()} ${commandHole('id')} ${aws`--no-termination-protected${regionArg}`.render()} with its id)`
             : 'terminate it',
         });
+      };
+      const orphanWindow = runJobFlowLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await reportOrphans(orphanWindow);
       }
       const attemptStartMs = Date.now();
       let response: RunJobFlowCommandOutput;
@@ -540,6 +545,12 @@ export class EMRClusterProvider implements ResourceProvider {
       }
       clusterId = response.JobFlowId;
       if (clusterId) clustersCreatedByThisProcess.add(clusterId);
+      // Issue #4687: the SDK replayed this RunJobFlow inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await reportOrphans(replayWindow);
+      }
       if (!clusterId) {
         throw new ProvisioningError(
           `EMR RunJobFlow for ${logicalId} returned no JobFlowId`,

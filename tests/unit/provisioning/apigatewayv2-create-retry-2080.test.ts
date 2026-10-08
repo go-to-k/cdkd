@@ -731,6 +731,189 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
     });
   });
 
+  describe('a create the SDK replayed inside one send (issue #4687, detection only)', () => {
+    /**
+     * Stage `command`'s next create as the SDK's in-`send` replay: with
+     * `attempts > 1` the first attempt makes a resource whose answer is lost,
+     * the replay makes a second, and the output names only the second and
+     * carries `$metadata.attempts`. `attempts: undefined` returns no `$metadata`.
+     */
+    const stageCreate = (command: string, attempts: number | undefined): void => {
+      mockSend.mockImplementation(async (cmd: Parameters<typeof aws.send>[0]) => {
+        if (cmd.constructor.name !== command) return aws.send(cmd);
+        if (attempts !== undefined && attempts > 1) await aws.send(cmd);
+        const out = await aws.send(cmd);
+        return attempts === undefined ? out : { ...out, $metadata: { attempts } };
+      });
+    };
+    const replayReportFor = (action: string): string | undefined =>
+      warnLines().find((l) =>
+        l.includes(
+          `The ${action} call for Res succeeded only after the AWS SDK sent it again, following an attempt that failed without a definite answer`
+        )
+      );
+
+    it('CreateApi: names the first attempt API, not the returned one, and adopts or deletes nothing', async () => {
+      stageCreate('CreateApiCommand', 2);
+
+      const result = await provider.create('Res', 'AWS::ApiGatewayV2::Api', API_PROPS);
+
+      expect(result.physicalId).toBe('api2');
+      expect(aws.apis.map((a) => a.ApiId)).toEqual(['api1', 'api2']);
+      expect(aws.calls).toEqual(['CreateApiCommand', 'CreateApiCommand', 'GetApisCommand']);
+      const line = replayReportFor('CreateApi')!;
+      expect(line).toContain(
+        '1 API(s) were created between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:05.000Z that this deploy did not record: api1.'
+      );
+      expect(line).not.toContain('api2');
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).not.toContain('Creating a new one now.');
+      expect(line).toContain('aws apigatewayv2 delete-api --api-id api1 --region eu-west-3');
+      expect(reportFor('CreateApi')).toBeUndefined();
+    });
+
+    it('CreateApi: the window opens at the attempt start minus the skew margin', async () => {
+      aws.apis.push(
+        {
+          ApiId: 'stale',
+          Name: 'orders-http',
+          ProtocolType: 'HTTP',
+          CreatedDate: new Date(Date.now() - 5_001),
+        },
+        {
+          ApiId: 'edge',
+          Name: 'orders-http',
+          ProtocolType: 'HTTP',
+          CreatedDate: new Date(Date.now() - 5_000),
+        }
+      );
+      stageCreate('CreateApiCommand', 2);
+
+      await provider.create('Res', 'AWS::ApiGatewayV2::Api', API_PROPS);
+
+      const line = replayReportFor('CreateApi')!;
+      expect(line).toContain('2 API(s) were created');
+      expect(line).toContain('edge');
+      expect(line).toContain('api1');
+      expect(line).not.toContain('stale');
+    });
+
+    it('CreateApi: the window floor is the attempt START minus 5 s, not the end of a send that took 2 s', async () => {
+      const attemptStart = Date.now();
+      aws.apis.push(
+        { ApiId: 'stale', Name: 'orders-http', ProtocolType: 'HTTP', CreatedDate: new Date(attemptStart - 5_001) },
+        { ApiId: 'edge', Name: 'orders-http', ProtocolType: 'HTTP', CreatedDate: new Date(attemptStart - 5_000) }
+      );
+      mockSend.mockImplementation(async (cmd: Parameters<typeof aws.send>[0]) => {
+        if (cmd.constructor.name !== 'CreateApiCommand') return aws.send(cmd);
+        await aws.send(cmd);
+        const out = await aws.send(cmd);
+        // The replayed send returns 2 s after it started: a floor taken from
+        // the send's END would be attemptStart - 3 s and drop `edge`.
+        vi.setSystemTime(attemptStart + 2_000);
+        return { ...out, $metadata: { attempts: 2 } };
+      });
+
+      await provider.create('Res', 'AWS::ApiGatewayV2::Api', API_PROPS);
+
+      const line = replayReportFor('CreateApi')!;
+      expect(line).toContain('between 2026-09-30T23:59:55.000Z and 2026-10-01T00:00:07.000Z');
+      expect(line).toContain('2 API(s) were created');
+      expect(line).toContain('edge');
+      expect(line).not.toContain('stale');
+    });
+
+    it('CreateApi: a failed lookup after the replay warns with the replay wording and still returns the API', async () => {
+      stageCreate('CreateApiCommand', 2);
+      const staged = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: Parameters<typeof aws.send>[0]) => {
+        if (cmd.constructor.name === 'GetApisCommand') {
+          aws.calls.push('GetApisCommand');
+          throw Object.assign(new Error('User is not authorized to perform: apigateway:GET'), {
+            name: 'AccessDeniedException',
+          });
+        }
+        return staged(cmd);
+      });
+
+      const result = await provider.create('Res', 'AWS::ApiGatewayV2::Api', API_PROPS);
+
+      expect(result.physicalId).toBe('api2');
+      expect(aws.calls).toEqual(['CreateApiCommand', 'CreateApiCommand', 'GetApisCommand']);
+      const lines = warnLines().filter((l) =>
+        l.includes('The CreateApi call for Res succeeded only after the AWS SDK sent it again')
+      );
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('cdkd could not look for it');
+      expect(lines[0]!.endsWith('Check for a duplicate.')).toBe(true);
+      expect(lines[0]).not.toContain('Creating it again');
+    });
+
+    it('CreateIntegration: names the first attempt integration, not the returned one, and adopts or deletes nothing', async () => {
+      stageCreate('CreateIntegrationCommand', 2);
+
+      const result = await provider.create('Res', 'AWS::ApiGatewayV2::Integration', INT_PROPS);
+
+      expect(result.physicalId).toBe('int2');
+      expect(aws.integrations.map((i) => i.IntegrationId)).toEqual(['int1', 'int2']);
+      expect(aws.calls).toEqual([
+        'CreateIntegrationCommand',
+        'CreateIntegrationCommand',
+        'GetIntegrationsCommand',
+      ]);
+      const line = replayReportFor('CreateIntegration')!;
+      expect(line).toContain('1 integration(s) match that this deploy did not record: int1.');
+      expect(line).not.toContain('int2');
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).toContain(
+        'aws apigatewayv2 get-integration --api-id httpapi1 --integration-id int1 --region eu-west-3'
+      );
+      expect(reportFor('CreateIntegration')).toBeUndefined();
+    });
+
+    it('CreateAuthorizer: names the first attempt authorizer, not the returned one, and adopts or deletes nothing', async () => {
+      stageCreate('CreateAuthorizerCommand', 2);
+
+      const result = await provider.create('Res', 'AWS::ApiGatewayV2::Authorizer', AUTH_PROPS);
+
+      expect(result.physicalId).toBe('auth2');
+      expect(aws.authorizers.map((a) => a.AuthorizerId)).toEqual(['auth1', 'auth2']);
+      expect(aws.calls).toEqual([
+        'CreateAuthorizerCommand',
+        'CreateAuthorizerCommand',
+        'GetAuthorizersCommand',
+      ]);
+      const line = replayReportFor('CreateAuthorizer')!;
+      expect(line).toContain('1 authorizer(s) match that this deploy did not record: auth1.');
+      expect(line).not.toContain('auth2');
+      expect(line).toContain('cdkd recorded the one the create returned.');
+      expect(line).toContain(
+        'aws apigatewayv2 get-authorizer --api-id httpapi1 --authorizer-id auth1 --region eu-west-3'
+      );
+      expect(reportFor('CreateAuthorizer')).toBeUndefined();
+    });
+
+    it.each([
+      ['CreateApi with attempts: 1', 'CreateApiCommand', 'AWS::ApiGatewayV2::Api', API_PROPS, 'api1', 1],
+      ['CreateApi with no $metadata', 'CreateApiCommand', 'AWS::ApiGatewayV2::Api', API_PROPS, 'api1', undefined],
+      ['CreateIntegration with attempts: 1', 'CreateIntegrationCommand', 'AWS::ApiGatewayV2::Integration', INT_PROPS, 'int1', 1],
+      ['CreateIntegration with no $metadata', 'CreateIntegrationCommand', 'AWS::ApiGatewayV2::Integration', INT_PROPS, 'int1', undefined],
+      ['CreateAuthorizer with attempts: 1', 'CreateAuthorizerCommand', 'AWS::ApiGatewayV2::Authorizer', AUTH_PROPS, 'auth1', 1],
+      ['CreateAuthorizer with no $metadata', 'CreateAuthorizerCommand', 'AWS::ApiGatewayV2::Authorizer', AUTH_PROPS, 'auth1', undefined],
+    ] as const)(
+      '%s sends no list call',
+      async (_label, command, type, props, id, attempts) => {
+        stageCreate(command, attempts);
+
+        const result = await provider.create('Res', type, props);
+
+        expect(result.physicalId).toBe(id);
+        expect(aws.calls).toEqual([command]);
+        expect(warnLines()).toEqual([]);
+      }
+    );
+  });
+
   it('builds the create client in the stack region, like the shared client', async () => {
     await provider.create('Res', 'AWS::ApiGatewayV2::Api', API_PROPS);
 

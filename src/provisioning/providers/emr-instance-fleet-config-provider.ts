@@ -27,7 +27,9 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import type {
   CreateContext,
@@ -307,13 +309,12 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       // only -- see `orphan-report.ts`. Only a TASK instance fleet can
       // be duplicated: a cluster holds at most one MASTER and one CORE, so a
       // replay of either cannot add a second one.
-      const orphanWindow = addInstanceFleetLatch.take(logicalId);
-      if (orphanWindow !== undefined && fleet.InstanceFleetType === 'TASK') {
+      const reportOrphans = async (lookupWindow: AmbiguousCreateWindow): Promise<void> => {
         const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
         const aws = pasteableAwsCommand(log.mask);
         const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
         const name = fleet.Name;
-        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+        await reportPossibleOrphans(logicalId, lookupWindow, log, {
           action: 'AddInstanceFleet',
           service: 'EMR',
           listAction: 'ListInstanceFleets',
@@ -334,7 +335,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
                 item.Id &&
                 item.InstanceFleetType === 'TASK' &&
                 (name === undefined || item.Name === name) &&
-                isInsideWindow(item.Status?.Timeline?.CreationDateTime, orphanWindow) &&
+                isInsideWindow(item.Status?.Timeline?.CreationDateTime, lookupWindow) &&
                 !fleetsCreatedByThisProcess.has(item.Id)
                   ? item.Id
                   : undefined
@@ -347,6 +348,10 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
           removeVerb:
             'scale it to zero, which releases its instances (EMR has no call that removes an instance fleet; it ends with its cluster)',
         });
+      };
+      const orphanWindow = addInstanceFleetLatch.take(logicalId);
+      if (orphanWindow !== undefined && fleet.InstanceFleetType === 'TASK') {
+        await reportOrphans(orphanWindow);
       }
       const attemptStartMs = Date.now();
       let response: AddInstanceFleetCommandOutput;
@@ -363,7 +368,14 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       }
       const fleetId = response.InstanceFleetId;
       if (fleetId) fleetsCreatedByThisProcess.add(fleetId);
+      // Before the lookup below, so a throw in it still marks the fleet created.
       createdFleetId = fleetId;
+      // Issue #4687: the SDK replayed this AddInstanceFleet inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined && fleet.InstanceFleetType === 'TASK') {
+        await reportOrphans(replayWindow);
+      }
       if (!fleetId) {
         throw new ProvisioningError(
           `EMR AddInstanceFleet for ${logicalId} returned no instance fleet id`,

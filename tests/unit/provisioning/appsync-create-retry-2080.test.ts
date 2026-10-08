@@ -132,6 +132,12 @@ class FakeAppSync {
   pageSize = 25;
   /** Runs on every `ListGraphqlApis`, to stage what the NEXT create does. */
   onList: (() => void) | undefined;
+  /**
+   * The `$metadata.attempts` the next successful CreateGraphqlApi reports
+   * (issue #4687): each attempt past the first is an SDK replay whose earlier
+   * attempt reached AppSync, so it leaves one more API behind first.
+   */
+  nextCreateAttempts: number | undefined;
   private nextId = 1;
 
   seed(api: Omit<FakeApi, 'arn'>): void {
@@ -146,6 +152,11 @@ class FakeAppSync {
     const input = command.input;
     switch (name) {
       case 'CreateGraphqlApiCommand': {
+        const attempts = this.nextCreateAttempts;
+        this.nextCreateAttempts = undefined;
+        for (let i = 1; i < (attempts ?? 1); i++) {
+          this.seed({ apiId: `api${this.nextId++}`, name: input['name'] as string });
+        }
         this.seed({
           apiId: `api${this.nextId++}`,
           name: input['name'] as string,
@@ -157,7 +168,10 @@ class FakeAppSync {
           throw error;
         }
         const api = this.apis[this.apis.length - 1]!;
-        return { graphqlApi: { ...api, uris: { GRAPHQL: `https://${api.apiId}/graphql` } } };
+        return {
+          graphqlApi: { ...api, uris: { GRAPHQL: `https://${api.apiId}/graphql` } },
+          ...(attempts !== undefined && { $metadata: { attempts } }),
+        };
       }
       case 'ListGraphqlApisCommand':
         this.onList?.();
@@ -418,5 +432,101 @@ describe('AppSyncProvider CreateGraphqlApi retry safety (issue #2080, detection 
     expect(aws.count('ListGraphqlApisCommand')).toBe(1);
     // The lost response's API and the one attempt 3 made; attempt 2 was refused.
     expect(aws.apis.map((a) => a.apiId)).toEqual(['api1', 'api2']);
+  });
+
+  describe('a create the SDK replayed inside its send (issue #4687)', () => {
+    const replayLine = (): string | undefined =>
+      warnLines().find((l) => l.includes('succeeded only after the AWS SDK sent it again'));
+
+    it('names the API the first attempt left, never the one the create returned; nothing adopted or deleted', async () => {
+      aws.nextCreateAttempts = 2;
+
+      const result = await provider.create('Api', 'AWS::AppSync::GraphQLApi', API_PROPS);
+
+      // The replayed create's first attempt reached AppSync: two APIs exist.
+      expect(aws.apis.map((a) => a.apiId)).toEqual(['api1', 'api2']);
+      expect(result.physicalId).toBe('api2');
+      expect(aws.calls).toEqual(['CreateGraphqlApiCommand', 'ListGraphqlApisCommand']);
+      const line = replayLine();
+      expect(line).toContain('The CreateGraphqlApi call for Api succeeded only after');
+      expect(line).toContain('aws appsync get-graphql-api --api-id api1 --region us-east-1');
+      expect(line).toContain('1 GraphQL API(s)');
+      expect(line).not.toContain('api2');
+      expect(line).toContain('cdkd recorded the API the create returned.');
+      expect(line).not.toContain('Creating a new');
+      expect(line).toContain('does not adopt or delete');
+      expect(warnLines().some((l) => l.includes('earlier CreateGraphqlApi attempt'))).toBe(false);
+    });
+
+    it('a single-attempt create, or one with no $metadata, sends no lookup', async () => {
+      aws.nextCreateAttempts = 1;
+      await provider.create('Api', 'AWS::AppSync::GraphQLApi', API_PROPS);
+      await provider.create('Other', 'AWS::AppSync::GraphQLApi', API_PROPS);
+
+      expect(aws.calls).toEqual(['CreateGraphqlApiCommand', 'CreateGraphqlApiCommand']);
+      expect(warnLines()).toEqual([]);
+    });
+
+    it('reports the duplicate before the follow-up call, so that call failing cannot skip it', async () => {
+      aws.nextCreateAttempts = 2;
+      aws.failNext.set('PutGraphqlApiEnvironmentVariablesCommand', [propagationDenied()]);
+
+      await expect(
+        provider.create('Api', 'AWS::AppSync::GraphQLApi', {
+          ...API_PROPS,
+          EnvironmentVariables: { STAGE: 'dev' },
+        })
+      ).rejects.toThrow();
+
+      expect(aws.calls.slice(0, 3)).toEqual([
+        'CreateGraphqlApiCommand',
+        'ListGraphqlApisCommand',
+        'PutGraphqlApiEnvironmentVariablesCommand',
+      ]);
+      expect(replayLine()).toContain('get-graphql-api --api-id api1');
+    });
+
+    it('a failed ListGraphqlApis after the replay warns with the replay lead and still returns the API', async () => {
+      aws.nextCreateAttempts = 2;
+      aws.failNext.set('ListGraphqlApisCommand', [propagationDenied()]);
+
+      const result = await provider.create('Api', 'AWS::AppSync::GraphQLApi', API_PROPS);
+
+      expect(result.physicalId).toBe('api2');
+      expect(aws.calls).toEqual(['CreateGraphqlApiCommand', 'ListGraphqlApisCommand']);
+      const line = replayLine()!;
+      expect(line).toContain('The CreateGraphqlApi call for Api succeeded only after');
+      expect(line).toContain('cdkd could not list APIs to look for it');
+      expect(line).toContain('Check for another API of that name.');
+      expect(line).not.toContain('Creating a new');
+    });
+
+    it('an API a failed rollback left behind is still named by a later replayed create', async () => {
+      // First create: replayed (api1 orphan, api2 returned), then its follow-up
+      // fails AND the rollback delete fails, so api2 is left behind.
+      aws.nextCreateAttempts = 2;
+      aws.failNext.set('PutGraphqlApiEnvironmentVariablesCommand', [propagationDenied()]);
+      aws.failNext.set('DeleteGraphqlApiCommand', [propagationDenied()]);
+      await expect(
+        provider.create('Api', 'AWS::AppSync::GraphQLApi', {
+          ...API_PROPS,
+          EnvironmentVariables: { STAGE: 'dev' },
+        })
+      ).rejects.toThrow();
+      expect(aws.calls).toContain('DeleteGraphqlApiCommand');
+      warnSpy.mockReset();
+
+      // Second create of the same name, replayed again: api3 orphan, api4 returned.
+      aws.nextCreateAttempts = 2;
+      const result = await provider.create('Api', 'AWS::AppSync::GraphQLApi', API_PROPS);
+
+      expect(result.physicalId).toBe('api4');
+      const line = replayLine()!;
+      // api2 was excluded from the first lookup by id only, never added to the
+      // process set, so it stays nameable now.
+      expect(line).toContain('get-graphql-api --api-id api2');
+      expect(line).toContain('get-graphql-api --api-id api3');
+      expect(line).not.toContain('api4');
+    });
   });
 });

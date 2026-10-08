@@ -2639,8 +2639,19 @@ deploy proceeds.
 
 A reset connection or a timeout is just as ambiguous, and the AWS SDK
 retries it inside one call. When that retry still ends in an error cdkd
-retries, the next attempt looks as above. When the SDK's retry SUCCEEDS, a
-duplicate the first request made is neither prevented nor reported.
+retries, the next attempt looks as above. When the SDK's retry SUCCEEDS, cdkd
+runs the same lookup right after the create, for the window from the first
+request to the reply, and reports at warn what the first request may have made
+(the warning says the call "succeeded only after the AWS SDK sent it again").
+It never names the resource the create returned, which cdkd records as usual,
+and it neither adopts nor deletes a candidate. A lookup this soon after the
+create may not list the duplicate yet (the list APIs are eventually
+consistent), so a clean result says only what was listed. A throttled request
+the SDK retried triggers the same lookup: for a type with a creation date it
+finds nothing, and for an undated type (AppSync, API Gateway authorizers and
+integrations, and the EC2 lookups that match on a name, CIDR or missing tag)
+it can name an unrelated resource of the same name -- the warning already says
+such a candidate may be another stack's.
 
 A related KMS warning -- "KMS key ... was created for ..., but a follow-up
 call failed" -- means `CreateKey` succeeded and a later call on the key
@@ -2671,7 +2682,7 @@ cdkd neither adopts nor deletes a candidate, and then creates the resource
 again. An orphaned authorizer, integration or deployment is deleted with its
 API. The lookup needs `apigateway:GET` (on the API, or on the API list for
 `CreateApi`); without it cdkd warns that
-it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the three creates above: looked for when the AWS SDK's in-call retry ends in an error cdkd retries, missed when it succeeds.
+it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the three creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
 
 ### A warning that an EMR cluster, instance fleet or instance group may be an orphan
 
@@ -2699,7 +2710,7 @@ cdkd neither adopts, terminates nor scales a candidate, and then creates the
 resource again. A MASTER or CORE fleet or group is not looked up: a cluster
 holds at most one of each. The cluster lookup needs
 `elasticmapreduce:ListClusters`; without it cdkd warns that it could not look,
-and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for when the AWS SDK's in-call retry ends in an error cdkd retries, missed when it succeeds.
+and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
 
 ### A warning that a Lambda layer version or event source mapping may be an orphan
 
@@ -2725,7 +2736,7 @@ source (it does for an SQS queue), that create fails with
 (`aws lambda delete-event-source-mapping --uuid <uuid>`) once you have
 confirmed it is this deploy's, and re-run the deploy. The lookup needs
 `lambda:ListLayerVersions` or `lambda:ListEventSourceMappings`; without it cdkd
-warns that it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for when the AWS SDK's in-call retry ends in an error cdkd retries, missed when it succeeds.
+warns that it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
 
 ### A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan
 
@@ -2750,7 +2761,7 @@ register a revision of the same family, in the same window. cdkd neither adopts
 nor deletes a candidate, and then creates the resource again. The lookup needs
 `dlm:GetLifecyclePolicies` + `dlm:GetLifecyclePolicy`, or
 `ecs:ListTaskDefinitions` + `ecs:DescribeTaskDefinition`; without them cdkd
-warns that it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for when the AWS SDK's in-call retry ends in an error cdkd retries, missed when it succeeds.
+warns that it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
 
 ### A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan
 
@@ -2782,7 +2793,7 @@ VPC either, so a replayed `CreateSecurityGroup` fails with
 it. An unassociated Elastic IP is billed until released. The lookup needs
 `ec2:DescribeVpcs`, `ec2:DescribeSubnets`, `ec2:DescribeInternetGateways` or
 `ec2:DescribeAddresses`; without it cdkd warns that it could not look, and the
-deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for when the AWS SDK's in-call retry ends in an error cdkd retries, missed when it succeeds.
+deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
 
 ### `EntityAlreadyExists` on an IAM create after a server error
 
@@ -2808,8 +2819,13 @@ it is not deleted first, and for a name cdkd derived from the logical id the
 error says it is most likely what this create's earlier attempt made. A reset
 can also happen before the request reached IAM, so the holder may still be
 another resource: confirm before deleting or importing. For `CreateAccessKey`
-a retry that succeeds after such a reset mints a second key that nothing
-reports, as for the creates above.
+a retry that succeeds after such a reset may have minted a second key whose
+secret nobody received: cdkd then lists the user's keys right after the create
+and deletes that key under the same three conditions, keeping the key the
+create returned, and a key it declines to delete is reported at warn with the
+`aws iam delete-access-key` command. It does so only when the SDK's retry
+followed a reset or timeout, never after a throttle or a refused connection,
+which minted nothing. The same eventual-consistency caveat applies.
 
 ### An "already exists" on a Lambda, EventBridge bus or ECR create after a server error
 

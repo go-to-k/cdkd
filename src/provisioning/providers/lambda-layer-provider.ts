@@ -38,6 +38,7 @@ import {
   AmbiguousCreateLatch,
   RecentIdSet,
   isInsideWindow,
+  replayedSendWindow,
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
@@ -306,6 +307,12 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
 
       const layerVersionArn = response.LayerVersionArn!;
       if (layerVersionArn) versionsPublishedByThisProcess.add(layerVersionArn);
+      // Issue #4687: the SDK replayed this PublishLayerVersion inside its `send`, so
+      // an earlier attempt may have made one too. Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleLayerOrphans(logicalId, replayWindow, log, layerName);
+      }
       log.debug(`Successfully created Lambda layer version ${logicalId}: ${layerVersionArn}`);
 
       return {
