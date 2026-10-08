@@ -308,7 +308,7 @@ s3-tables	2026-10-07T13:48:36Z	PASS	70	verify.sh	PR #4664 (#4639 data/streaming 
 s3-vectors	2026-10-07T13:48:36Z	PASS	66	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-10-03T04:25:53Z	PASS	122	verify.sh	rc ok, orph clean (#4283 PR #4449)
-schema-v10-to-v11-migration	2026-10-08T11:05:13Z	PASS	430	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
+schema-v10-to-v11-migration	2026-10-08T13:30:48Z	PASS	621	verify.sh	rc ok, orph clean (PR #4740 witness warning gate)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
