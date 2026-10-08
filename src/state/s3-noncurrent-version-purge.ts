@@ -1,5 +1,6 @@
 import { ListObjectVersionsCommand, DeleteObjectsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 import {
@@ -237,8 +238,11 @@ function recordFailure(failed: Map<string, string[]>, key: string, reason: strin
   else failed.set(key, [reason]);
 }
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+// `.detail` rather than the bare ternary: `describe` runs INSIDE the catches
+// that record a failure and move on to the next prefix or batch, so a
+// rejection whose stringification throws turned "warn and continue" into a
+// rejected purge, against both entry points' "never throws" contract (#3361).
+const describe = (error: unknown): string => describeAwsFailure(error).detail;
 
 /**
  * Which listed entries a walk may delete, and whom an incomplete walk blames.
