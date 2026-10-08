@@ -2882,6 +2882,25 @@ describe('reportDriftBaselineGaps', () => {
       });
     }
 
+    it('a held identity\'s listing pointer says to carry the account flags (go-to-k/cdkd#4648 review)', () => {
+      const warnsFor = (recovery?: typeof RECOVERY): string => {
+        const logger = makeLogger();
+        reportDriftBaselineGaps(
+          { version: 10, stackName: 'x', region: 'us-east-1', resources: { Bad: null } as never, outputs: {}, lastModified: 0 },
+          logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+          { stackName: 'a b', region: 'us-east-1' },
+          undefined,
+          recovery
+        );
+        return logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      };
+      expect(warnsFor(RECOVERY)).toContain(
+        "fill it from 'cdkd state list --json' run with the same account flags as the command after the list below, replacing"
+      );
+      // CONTROL: no context, the bare listing.
+      expect(warnsFor()).toContain("fill it from 'cdkd state list --json', replacing");
+    });
+
     it('the unreadable-entry inspect line carries the flags after --json, and an account hole gets its own sentence', () => {
       const warns = run(10, { Bad: null }, RECOVERY);
       expect(warns).toContain(`Inspect it with: cdkd state show S --stack-region us-east-1 --json ${FLAGS}`);

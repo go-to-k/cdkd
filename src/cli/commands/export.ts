@@ -4413,33 +4413,26 @@ function orphanCommandFor(
   recovery?: LockRecoveryContext
 ): OrphanCommand {
   const account = accountArgs(recovery);
-  const accountNote = ((clause) => (clause === '' ? '' : ` ${clause}`))(
-    withheldAccountClause(recovery, "the next line's command prints").trimEnd()
-  );
+  const accountNote = spacedAccountClause(recovery, "the next line's command prints");
   // `unknown`, and handed to the gate UNCONVERTED (go-to-k/cdkd#3369): a
   // non-string is withheld as `altered`, since `displaySafe` renders it as a
   // different value. Never `String(x)` — that would make `123` exact and name
   // it.
-  const built = pasteableCommand('cdkd state orphan', [
+  // ONE identity list (go-to-k/cdkd#4648 review): the verdict is taken from
+  // it alone, and the printed command is it plus the account, so the two
+  // cannot drift apart.
+  const identity: CommandArg[] = [
     // `plainIdent` (go-to-k/cdkd#3997): the command sits on a labelled line
     // or in a list, the shape go-to-k/cdkd#3328 / #3696 gate that way, since
     // a name that renders exactly can still spell a second line when a
     // terminal wraps its padding.
     { value: stackName as string, hole: 'stack', opts: { plainIdent: true } },
     { flag: '--stack-region', value: region as string, hole: 'region', opts: { plainIdent: true } },
-  ]);
+  ];
+  const built = pasteableCommand('cdkd state orphan', identity);
   if (built.exact) {
     return {
-      command: pasteableCommand('cdkd state orphan', [
-        { value: stackName as string, hole: 'stack', opts: { plainIdent: true } },
-        {
-          flag: '--stack-region',
-          value: region as string,
-          hole: 'region',
-          opts: { plainIdent: true },
-        },
-        ...account,
-      ]).command,
+      command: pasteableCommand('cdkd state orphan', [...identity, ...account]).command,
       note: accountNote,
     };
   }
@@ -7139,8 +7132,13 @@ export function reportDriftBaselineGaps(
               ? `print safely. This stack name begins with '-', which the CLI could read as an ` +
                 `option however it is quoted, so do not fill the stack hole with it: repair or ` +
                 `remove the record by hand. `
-              : `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
-                `included, with ${JSON_LISTING_HOLE_VALUE}. `)) +
+              : `print safely; fill it from 'cdkd state list --json'` +
+                // The listing reads this run's bucket only with the same flags
+                // (go-to-k/cdkd#4648 review).
+                (account.length > 0
+                  ? ` run with the same account flags as the command after the list below`
+                  : '') +
+                `, replacing the hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}. `)) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
@@ -9502,9 +9500,7 @@ export async function runPerStackImportLoop(args: {
             `Recover with the command below, once per record.` +
             // The run's account flags (go-to-k/cdkd#4648), so each pasted drop
             // removes the record in the bucket this export read.
-            ((clause) => (clause === '' ? '' : ` ${clause}`))(
-              withheldAccountClause(args.lockRecovery, 'the command below prints').trimEnd()
-            ) +
+            spacedAccountClause(args.lockRecovery, 'the command below prints') +
             `\nRecover with: ${
               pasteableCommand('cdkd state orphan', [
                 { hole: 'stack' },
@@ -10001,4 +9997,14 @@ function replaceAtCoordinate(
     return { ...record, [head]: replaceAtCoordinate(record[head], rest, replacement) };
   }
   return node;
+}
+
+/**
+ * {@link withheldAccountClause}'s sentence with one leading space, or `''`
+ * when no account value was withheld: the one spelling this file's messages
+ * join it into prose with (go-to-k/cdkd#4648).
+ */
+function spacedAccountClause(recovery: LockRecoveryContext | undefined, where: string): string {
+  const clause = withheldAccountClause(recovery, where).trimEnd();
+  return clause === '' ? '' : ` ${clause}`;
 }

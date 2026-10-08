@@ -8155,7 +8155,7 @@ export function printRevertPlan(
           const refreshAccountNote =
             refresh === undefined
               ? ''
-              : withheldAccountClause(recovery, 'the command below prints');
+              : withheldAccountClause(recovery, 'the command below prints').trimEnd();
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
@@ -8163,7 +8163,7 @@ export function printRevertPlan(
                 ? `Re-deploy if you want them reverted too; this record's identity cannot be ` +
                   `named safely in a command, so none is offered.\n`
                 : `Populate observedProperties with the command below, or re-deploy, if you ` +
-                  `want them reverted too.${refreshAccountNote === '' ? '' : ` ${refreshAccountNote.trimEnd()}`}\n`)
+                  `want them reverted too.${refreshAccountNote === '' ? '' : ` ${refreshAccountNote}`}\n`)
           );
           // go-to-k/cdkd#3307's `--stack-region` requirement for this site,
           // closed through go-to-k/cdkd#3436's fold-in. The issue's stated
@@ -8183,8 +8183,11 @@ export function printRevertPlan(
           // of it. Three sites deciding "may I name this target" by three
           // hand-built conditions is the defect go-to-k/cdkd#3499 closed one
           // module over; one predicate means one probe can red all three.
-          // `refresh !== undefined`, not `refresh.exact === true`: the second
-          // is SUBSUMED and no mutant can red it. `isPasteableIdent` requires
+          // `refresh !== undefined`, not `refresh.exact === true`: the IDENTITY
+          // half of `.exact` is subsumed by `mayNameTarget`, and its other half
+          // is the account holes (go-to-k/cdkd#4648), which must not suppress
+          // the command -- a refused `--profile` is a hole the note above
+          // explains, never a reason to drop the remedy. `isPasteableIdent` requires
           // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$` plus `displayIdent(v) === v`, which
           // is strictly stronger than the command gate on every arm — it starts
           // at an alphanumeric (no option), admits no `*` or `/` (no pattern),
