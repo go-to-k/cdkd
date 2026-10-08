@@ -195,6 +195,7 @@ CHILD_HANDOFF_MIXED_PARAM="cdkd-nested-child-handoffmixed-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_PARAM="cdkd-nested-child-fallthrough-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_REV_PARAM="cdkd-nested-child-fallthroughrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_EMBED_REV_PARAM="cdkd-nested-child-fallthroughembedrev-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_SELECT_REV_PARAM="cdkd-nested-child-fallthroughselectrev-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -640,6 +641,7 @@ cleanup() {
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
              "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
              "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
+             "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -1462,6 +1464,24 @@ if [ "${FALL2_EMBED_STATE}" = "x-${FALL2_SURVIVOR_SPELLING}" ]; then
 fi
 assert_eq "FallthroughEmbedReversed.Description persists the parameter's literal spelling inside its own text" \
   "${FALL2_EMBED_STATE}" "x-${FALL2_SPELLING}"
+# The Select/Split twin: no positioner owns `Fn::Select [0, Fn::Split ['@', Ref]]`,
+# so the value scan answers it from the inherited-secret carry. Before the
+# carry recorded the literal's own token, it held the survivor's.
+assert_eq "premise: FallthroughSelectReversed's synthesized Description is a Select over a Split of FallConnA2" \
+  "$(jq -c '.Resources.FallthroughSelectReversed.Properties.Description' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '{"Fn::Select":[0,{"Fn::Split":["@",{"Ref":"FallConnA2"}]}]}'
+LIVE_FALL2_SELECT_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the LIVE FallthroughSelectReversed Description holds the resolved text before the @" \
+  "${LIVE_FALL2_SELECT_DESC}" "postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}"
+FALL2_SELECT_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughSelectReversed.properties.Description')"
+if [ "${FALL2_SELECT_STATE}" = "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_B}" ]; then
+  echo "FAIL: the Select/Split FallthroughSelectReversed.Description persisted the survivor's spelling (issue #4644)" >&2
+  exit 1
+fi
+assert_eq "FallthroughSelectReversed.Description persists the literal's own tokens" \
+  "${FALL2_SELECT_STATE}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}"
 
 # --- #4446: embedding leaves the #2320 template parse refuses ----------------
 # `HandoffSpans` holds `Description: Fn::Join` with TWO parts whose text the
@@ -1801,12 +1821,13 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # the #4446 arm's `HandoffSpans` / `HandoffSpansIf`; fifteen since the #2298
 # arm's `EmbedSecretPair`; sixteen since the #4527 arm's
 # `MultiUnknownSecretPair`; seventeen since the #2349 arm's `FallthroughPair`;
-# nineteen since the #4644 arm's `FallthroughPairReversed` and
-# `FallthroughEmbedReversed`.
+# twenty since the #4644 arm's `FallthroughPairReversed`,
+# `FallthroughEmbedReversed` and `FallthroughSelectReversed`.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
          "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
          "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
          "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
+         "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do

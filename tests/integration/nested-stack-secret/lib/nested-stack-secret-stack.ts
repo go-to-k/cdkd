@@ -105,6 +105,10 @@ import { Construct } from 'constructs';
  *    `Description` of `x-${FallConnA2}` (an `Fn::Join` around the `Ref`). The
  *    diff side renders it from the parameter's own spelling, so its persisted
  *    span must take that spelling too, not the child bag's survivor.
+ *  - `FallthroughSelectReversed` (child) — the #4644 arm's `Fn::Select` /
+ *    `Fn::Split` twin, reading ONLY `FallConnA2`: no positioner owns that
+ *    shape, so the value scan answers it from the inherited-secret carry,
+ *    which must hold the literal's own token rather than the survivor.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -182,6 +186,7 @@ class SecretBearingChild extends cdk.NestedStack {
       fallthroughParamName: string;
       fallthroughReversedParamName: string;
       fallthroughEmbedReversedParamName: string;
+      fallthroughSelectReversedParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -476,6 +481,15 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     ((fallthroughEmbedReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
       'FallthroughEmbedReversed'
+    );
+    // The #4644 Select/Split twin: `postgres://<user>:<pw>` out of the literal.
+    const fallthroughSelectReversed = new ssm.StringParameter(this, 'FallthroughSelectReversed', {
+      parameterName: names.fallthroughSelectReversedParamName,
+      stringValue: 'fallselect4644',
+      description: cdk.Fn.select(0, cdk.Fn.split('@', fallConn2.valueAsString)),
+    });
+    ((fallthroughSelectReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
+      'FallthroughSelectReversed'
     );
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
@@ -884,6 +898,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         fallthroughParamName: `cdkd-nested-child-fallthrough-${account}`,
         fallthroughReversedParamName: `cdkd-nested-child-fallthroughrev-${account}`,
         fallthroughEmbedReversedParamName: `cdkd-nested-child-fallthroughembedrev-${account}`,
+        fallthroughSelectReversedParamName: `cdkd-nested-child-fallthroughselectrev-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,

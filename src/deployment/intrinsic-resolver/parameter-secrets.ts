@@ -96,6 +96,11 @@ declare module '../intrinsic-function-resolver.js' {
  *
  * Recording THIS parameter's own expression makes the value scan agree with
  * the diff side, so both halves move together.
+ * A parameter the parent spelled as a LITERAL embedding its tokens has no
+ * per-plaintext association; its own expression for a plaintext is the token
+ * that literal spells there (`inheritedRenderedToken`, issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)), which is what the
+ * diff side substitutes at every read site.
  *
  * ONE SLOT PER PLAINTEXT is still all this bag can hold, so when ONE
  * resource consumes two such parameters the slot holds whichever `Ref`
