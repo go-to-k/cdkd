@@ -1347,7 +1347,8 @@ async function replayFailedOperationsUnbound(
               secrets,
               prev.properties
             ),
-            prev
+            prev,
+            noEcho.substituted
           );
           // go-to-k/cdkd#4225, the `revert` arm's twin: its previous side is
           // the failed attempt's bag.

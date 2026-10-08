@@ -16,7 +16,6 @@ import { CdkdError } from '../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import {
   maskSecretsInError,
-  maskedLeafCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
@@ -141,12 +140,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // AWS call rather than after, so nothing is half-applied. A mask only at
   // the coordinates a NoEcho source served gets its own remedy
   // (go-to-k/cdkd#4043 Phase C): no live resource exists to read it from.
-  refuseMarkedNoEchoRecreate(
-    resolvedPrevProps,
-    noEchoLeavesOf(prev),
-    maskedLeafCoordinatesOf(resolvedPrevProps),
-    op.logicalId
-  );
+  refuseMarkedNoEchoRecreate(resolvedPrevProps, noEchoLeavesOf(prev), op.logicalId);
   refuseMaskedReplayBaseline(resolvedPrevProps, op.logicalId);
   // Issue #4037: the old name is PLAINTEXT now, so its derived spellings
   // (the old id, the names its provider sends) join the op's masker.

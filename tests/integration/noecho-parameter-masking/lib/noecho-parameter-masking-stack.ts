@@ -110,6 +110,12 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
       // frame would be DESCRIBED there and the arm could no longer see the
       // mask (go-to-k/cdkd#4161).
       value: cdk.Fn.sub('token-${NoEchoToken}'),
+      // go-to-k/cdkd#4043 Phase C: a non-NoEcho sibling the failing mode also
+      // changes, so a rollback that restores it proves the revert's update ran.
+      description:
+        process.env['CDKD_TEST_NOECHO_FAIL'] === 'true'
+          ? 'noecho-consumer-failing'
+          : 'noecho-consumer',
     });
 
     new sns.CfnTopic(this, 'NoEchoRenamed', {

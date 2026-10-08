@@ -2,8 +2,6 @@ import { CdkdError } from '../../utils/error-handler.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
 import {
   carriesSecretMask,
-  isMarkedCoordinate,
-  maskedLeafCoordinatesOf,
   SECRET_MASK,
   type NoEchoCoordinate,
   type RecordedSecretValues,
@@ -16,6 +14,7 @@ import {
 } from './replay-secrets.js';
 import { type RollbackExecutorContext } from './types.js';
 import { shownLogicalId } from './messages.js';
+import { masksOnlyAt } from './replay-noecho.js';
 
 /**
  * `provider.update()` for a rollback arm, retried unless the provider opts out.
@@ -196,12 +195,7 @@ export function refuseMaskedReplayBaseline(
   if (props === undefined || !carriesSecretMask(props)) return;
   // go-to-k/cdkd#4043 Phase C: a marked NoEcho leaf no call sends (see
   // `NoEchoReplaySubstitution.inert`) is no reason to refuse.
-  if (
-    inert.length > 0 &&
-    maskedLeafCoordinatesOf(props).every((coordinate) => isMarkedCoordinate(coordinate, inert))
-  ) {
-    return;
-  }
+  if (inert.length > 0 && masksOnlyAt(props, inert)) return;
   // THREE POPULATIONS REACH THIS REFUSAL, each with its own remedy, because
   // nothing in the record says which wrote the mask (issue
   // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). Naming only the

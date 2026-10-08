@@ -370,4 +370,302 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
     // The replaying-state arm reads none of these properties.
     expect((update.mock.calls[0]![5] as { replayingState?: boolean }).replayingState).toBe(true);
   });
+
+  describe('review round 1 (#4752)', () => {
+    /** A revert op over a baseline/current pair the case builds. */
+    const opFor = (prev: ResourceState): CompletedOperation[] => [
+      {
+        logicalId: 'Param',
+        changeType: 'UPDATE',
+        resourceType: prev.resourceType,
+        physicalId: 'phys',
+        previousState: prev,
+      },
+    ];
+
+    it('a readback that never settles refuses as read-failed once the cap passes, sending nothing', async () => {
+      vi.useFakeTimers();
+      try {
+        const update = vi.fn();
+        const readCurrentState = vi.fn(() => new Promise(() => {}));
+        const { state, ops } = marked();
+        const running = replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+        await vi.advanceTimersByTimeAsync(30_000);
+        const result = await running;
+        expect(update).not.toHaveBeenCalled();
+        expect(result.failures).toBe(1);
+        expect(lines.join('\n')).toContain('reading the resource back from AWS failed');
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('substitutes at a NESTED coordinate and inside a list paired by its identity field, without mutating the journal', async () => {
+      const update = vi.fn().mockResolvedValue({ physicalId: 'phys', wasReplaced: false });
+      const prev = res({
+        properties: {
+          Env: { Variables: { TOKEN: SECRET_MASK, PLAIN: 'p' } },
+          Tags: [
+            { Key: 'a', Value: 'x' },
+            { Key: 'secret', Value: SECRET_MASK },
+          ],
+        },
+        noEchoLeaves: [
+          ['Env', 'Variables', 'TOKEN'],
+          ['Tags', 1, 'Value'],
+        ],
+      });
+      const journal = JSON.stringify(prev);
+      // AWS returns the tags in another order.
+      const readCurrentState = vi.fn().mockResolvedValue({
+        Env: { Variables: { TOKEN: LIVE, PLAIN: 'p' } },
+        Tags: [
+          { Key: 'secret', Value: 'tag-live-value-4043' },
+          { Key: 'a', Value: 'x' },
+        ],
+      });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'by-failed-deploy' } }) };
+
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(result.failures).toBe(0);
+      const desired = update.mock.calls[0]![3] as {
+        Env: { Variables: Record<string, unknown> };
+        Tags: Array<Record<string, unknown>>;
+      };
+      expect(desired.Env.Variables).toEqual({ TOKEN: LIVE, PLAIN: 'p' });
+      expect(desired.Tags[1]).toEqual({ Key: 'secret', Value: 'tag-live-value-4043' });
+      expect(JSON.stringify(prev)).toBe(journal);
+      expect(persisted(state)).not.toContain(LIVE);
+      expect(persisted(state)).not.toContain('tag-live-value-4043');
+    });
+
+    it.each([
+      ['a list no identity field pairs, reordered', { L: ['b', 'a'] }, [['L', 1]], { L: ['a', SECRET_MASK] }],
+      ['a null from AWS', { V: null }, [['V']], { V: SECRET_MASK }],
+      ["a service's own placeholder", { V: '****' }, [['V']], { V: SECRET_MASK }],
+    ])('%s is not readable', async (_label, live, leaves, properties) => {
+      const update = vi.fn();
+      const prev = res({ properties, noEchoLeaves: leaves as (string | number)[][] });
+      const readCurrentState = vi.fn().mockResolvedValue(live);
+      const state = { Param: res({ properties: { ...structuredClone(properties), Changed: 'x' } }) };
+
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+      expect(lines.join('\n')).toContain('holds a NoEcho value only as the redaction mask');
+    });
+
+    it('a type the registry cannot route is not readable', async () => {
+      const update = vi.fn();
+      const { state, ops } = marked();
+      const ctx = makeCtx({ update });
+      ctx.providerRegistry = {
+        getProviderFor: vi
+          .fn()
+          .mockReturnValueOnce({ provider: { update } })
+          .mockImplementation(() => {
+            throw new Error('unroutable');
+          }),
+      } as unknown as RollbackExecutorContext['providerRegistry'];
+
+      const result = await replayRollback(ops, state, 'S', ctx);
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+      expect(lines.join('\n')).toContain('holds a NoEcho value only as the redaction mask');
+    });
+
+    it('names only the coordinates it could not read', async () => {
+      const update = vi.fn();
+      const prev = res({
+        properties: { Readable: SECRET_MASK, WriteOnly: SECRET_MASK },
+        noEchoLeaves: [['Readable'], ['WriteOnly']],
+      });
+      const readCurrentState = vi.fn().mockResolvedValue({ Readable: LIVE });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'by-failed-deploy' } }) };
+
+      await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      const text = lines.join('\n');
+      expect(text).toContain('at WriteOnly,');
+      expect(text).not.toContain('Readable');
+    });
+
+    it('--revert-failed refuses an unreadable leaf too, sending nothing', async () => {
+      const update = vi.fn();
+      const { prev, state } = marked();
+      const failed: FailedOperation[] = [
+        {
+          logicalId: 'Param',
+          changeType: 'UPDATE',
+          resourceType: PARAM_TYPE,
+          physicalId: 'phys',
+          previousState: prev,
+          attemptedProperties: { Name: '/app/token', Value: SECRET_MASK },
+        },
+      ];
+
+      const result = await replayFailedOperations(failed, state, 'S', makeCtx({ update }), {});
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+      expect(lines.join('\n')).toContain('holds a NoEcho value only as the redaction mask');
+    });
+
+    it('leaves a previous side that holds no mask as it is (an in-process plaintext)', async () => {
+      const update = vi.fn().mockResolvedValue({ physicalId: 'phys', wasReplaced: false });
+      const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: LIVE });
+      const { state, ops } = marked();
+      state['Param']!.properties['Value'] = 'failed-deploy-value';
+
+      await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect((update.mock.calls[0]![4] as Record<string, unknown>)['Value']).toBe(
+        'failed-deploy-value'
+      );
+    });
+
+    it('a list-valued leaf (CommaDelimitedList) is substituted whole and re-persisted as a list of masks', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'phys',
+        wasReplaced: false,
+        effectiveProperties: { Ids: ['list-live-0001', 'list-live-0002'] },
+      });
+      const prev = res({ properties: { Ids: [SECRET_MASK, SECRET_MASK] }, noEchoLeaves: [['Ids']] });
+      const readCurrentState = vi
+        .fn()
+        .mockResolvedValue({ Ids: ['list-live-0001', 'list-live-0002'] });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'by-failed-deploy' } }) };
+
+      await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect((update.mock.calls[0]![3] as Record<string, unknown>)['Ids']).toEqual([
+        'list-live-0001',
+        'list-live-0002',
+      ]);
+      expect(state['Param']!.properties['Ids']).toEqual([SECRET_MASK, SECRET_MASK]);
+      expect(persisted(state)).not.toContain('list-live');
+    });
+
+    it('a provider returning a reordered list in effectiveProperties still re-persists no value', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'phys',
+        wasReplaced: false,
+        effectiveProperties: { Tags: [{ Key: 's', Value: 'q7z' }, { Key: 'a', Value: 'x' }] },
+      });
+      const prev = res({
+        properties: { Tags: [{ Key: 'a', Value: 'x' }, { Key: 's', Value: SECRET_MASK }] },
+        noEchoLeaves: [['Tags', 1, 'Value']],
+      });
+      const readCurrentState = vi
+        .fn()
+        .mockResolvedValue({ Tags: [{ Key: 'a', Value: 'x' }, { Key: 's', Value: 'q7z' }] });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'by-failed-deploy' } }) };
+
+      await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(persisted(state)).not.toContain('q7z');
+    });
+
+    it('a short value echoed under an UNDECLARED attribute name is masked in the restored record', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'phys',
+        wasReplaced: false,
+        attributes: { Echo: 'q7z', Other: 'kept' },
+      });
+      const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: 'q7z' });
+      const { state, ops } = marked();
+
+      await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(state['Param']!.attributes).toEqual({ Echo: SECRET_MASK, Other: 'kept' });
+    });
+
+    it('hands the provider a reordered live list masked through the identity pairing', async () => {
+      const update = vi.fn();
+      const readCurrentState = vi.fn(
+        (_id: string, _l: string, _t: string, handed: Record<string, unknown>) =>
+          Promise.resolve(structuredClone(handed))
+      );
+      const prev = res({
+        properties: { Users: [{ Name: 'a', Password: SECRET_MASK }] },
+        noEchoLeaves: [['Users', 0, 'Password']],
+      });
+      // The failed deploy put another user first; its record still holds a plaintext.
+      const state = {
+        Param: res({
+          properties: {
+            Users: [
+              { Name: 'b', Password: 'other' },
+              { Name: 'a', Password: 'failed-deploy-pw' },
+            ],
+          },
+        }),
+      };
+
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+    });
+
+    it("a nested stack row routed to Cloud Control is NOT inert (its properties would be sent)", async () => {
+      const update = vi.fn();
+      const NESTED = 'AWS::CloudFormation::Stack';
+      const row = res({
+        physicalId: 'child',
+        resourceType: NESTED,
+        provisionedBy: 'cc-api',
+        properties: { Parameters: { Token: SECRET_MASK } },
+        noEchoLeaves: [['Parameters', 'Token']],
+      });
+      const result = await replayRollback(
+        [{ logicalId: 'Child', changeType: 'UPDATE', resourceType: NESTED, physicalId: 'child', previousState: row }],
+        { Child: { ...row, properties: { ...row.properties, Changed: 'x' } } },
+        'S',
+        makeCtx({ update })
+      );
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+    });
+
+    it('a nested stack row whose bag ALSO holds an unmarked mask keeps the general refusal', async () => {
+      const update = vi.fn();
+      const NESTED = 'AWS::CloudFormation::Stack';
+      const row = res({
+        physicalId: 'child',
+        resourceType: NESTED,
+        properties: { Parameters: { Token: SECRET_MASK, Other: SECRET_MASK } },
+        noEchoLeaves: [['Parameters', 'Token']],
+      });
+      const result = await replayRollback(
+        [{ logicalId: 'Child', changeType: 'UPDATE', resourceType: NESTED, physicalId: 'child', previousState: row }],
+        { Child: { ...row, properties: { ...row.properties, Changed: 'x' } } },
+        'S',
+        makeCtx({ update })
+      );
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+      expect(lines.join('\n')).toContain('four ways a baseline comes to hold it');
+    });
+
+    it('a re-create whose bag also holds an unmarked mask keeps the general refusal; a marked-only one names the path', async () => {
+      const { state, ops } = marked('phys-OLD');
+      state['Param']!.physicalId = 'phys-NEW';
+      ops[0]!.physicalId = 'phys-NEW';
+      ops[0]!.previousState!.properties['Other'] = SECRET_MASK;
+      await replayRollback(ops, state, 'S', makeCtx({ create: vi.fn(), delete: vi.fn() }));
+      expect(lines.join('\n')).toContain('four ways a baseline comes to hold it');
+
+      lines.length = 0;
+      const second = marked('phys-OLD');
+      second.state['Param']!.physicalId = 'phys-NEW';
+      second.ops[0]!.physicalId = 'phys-NEW';
+      await replayRollback(second.ops, second.state, 'S', makeCtx({ create: vi.fn(), delete: vi.fn() }));
+      expect(lines.join('\n')).toContain("('***') at Value,");
+    });
+  });
 });

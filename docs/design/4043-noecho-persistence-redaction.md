@@ -438,6 +438,12 @@ change, every migrated stack would drift forever.
 of its causes, with the remedy "restore the property with `cdkd deploy`". The
 readback substitution below is Phase C.
 
+**As built (Phase C, #4752):** the revert and `--revert-failed` arms substitute
+AWS's value at each marked coordinate (`rollback-executor/replay-noecho.ts`),
+the re-create of a reversed replacement refuses with the parameter remedy, and
+a nested stack row's marked `Parameters` entry is inert (its revert replays the
+child's journal and sends no property).
+
 - **Marked leaf of an existing resource** (revert and revert-failed, Phase C).
   The replay reads the resource back with the #3729 helper shape (routed by
   the record, handed the masked record) and substitutes the live value at each
@@ -617,7 +623,7 @@ the bucket-wide exports index, which any stack's reader can list.
   | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview. Phase B's seeding makes it moot for the value itself; a derived needle (an `Fn::Base64` encoding, an `Fn::Split` piece) can still differ |
   | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes. That corpus also holds the pieces of an `Fn::Split` the parent's diff resolved over the value (#4049), so a piece can be refused the same way | Closed in Phase B for a value the parent's row reads by `Ref` or an `Fn::Sub` variable: both sides seed a child's verdict with each parent `NoEcho` value a child parameter carries. The deploy's inherited bag holds only what the row read by `Ref`, while the diff's corpus holds every parent value up front (and their split pieces), so a value reaching a child parameter another way (an echoed `Fn::GetAtt`) is published by the deploy and refused by the preview (fail-closed); closed in Phase B by the declared-attribute mechanism (section 3.3) |
   | `cdkd scrub` keeping an unnamed possible-alias key when a declared alias is refused (fail-safe) | Phase C, with scrub's key report |
-  | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Closed in Phase C: the child's success snapshots a previous export name only while this deploy's verdict still publishes it (`nestedPendingSnapshot`) |
+  | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Closed in Phase C: the child's success snapshots a previous export name only while this deploy's verdict still publishes it (`nestedPendingSnapshot`). Residual: an alias spelling a PREVIOUS value this deploy changed is not refused (no process holds the old plaintext), and a record whose `exportNames` is malformed has no readable export set, so nothing is refused |
 - **An `Fn::Split` piece of a value is a log-only needle too** (#4049): the
   resolver records each piece's share of the value, so a name built from one
   (`Fn::Select` over the split) is refused at the same floor as the value, and

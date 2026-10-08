@@ -625,7 +625,8 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       secrets,
       previousState.properties
     ),
-    previousState
+    previousState,
+    noEcho.substituted
   );
   // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
   // the deploy side.

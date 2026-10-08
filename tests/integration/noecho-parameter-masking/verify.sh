@@ -50,11 +50,14 @@
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
-#   2b. A --no-rollback deploy with a second value updates NoEchoConsumer, then
-#      fails on NoEchoFailingQueue. `cdkd rollback` reads the parameter back
-#      (its baseline holds only `***`) and leaves it as AWS holds it: AWS keeps
-#      the second value, state holds `***` named in `noEchoLeaves`, and no
-#      deployments/*.jsonl object carries either value (#4043 Phase C).
+#   2b. A --no-rollback deploy with a second value (and a changed Description)
+#      updates NoEchoConsumer, then fails on NoEchoFailingQueue. The journal
+#      carries no value. `cdkd rollback` reads the parameter back (its baseline
+#      holds only `***`) and leaves the value as AWS holds it while it restores
+#      the Description: state holds `***` named in `noEchoLeaves`, and no
+#      deployments/*.jsonl object carries a value (#4043 Phase C).
+#   2c. The same with a third value under the deploy's automatic rollback.
+#      Phase 3 later asserts that the next deploy restores the first value.
 #   3a. `cdkd diff --verbose` and `cdkd diff --json --fail` with
 #      CDKD_TEST_NOECHO_RENAME=true, before the redeploy that applies it:
 #      NoEchoRenamed's TopicName row prints its new side masked and its old
@@ -994,19 +997,123 @@ if [ "${EVENTS_REJECTION}" -lt 1 ]; then
 fi
 echo "    OK: no deployment-events object carries the value (${EVENTS_SCANNED} objects, ${EVENTS_REJECTION} with the rejection)"
 
-# --- Phase 2b: cdkd rollback of a NoEcho-fed update (#4043 Phase C) ---------
-# A --no-rollback deploy changes the value, updates NoEchoConsumer, then fails
-# on NoEchoFailingQueue (created after it). The journal's NoEchoConsumer
-# baseline holds the value only as `***`, so `cdkd rollback` reads the
-# parameter back and leaves it as AWS holds it: it never sends `***`, state
-# keeps `***` with the leaf named in `noEchoLeaves`, and no deployments/*.jsonl
-# object carries either value.
+# --- Phase 2b / 2c: rollback of a NoEcho-fed update (#4043 Phase C) --------
+# A deploy changes the value AND NoEchoConsumer's Description, updates the
+# parameter, then fails on NoEchoFailingQueue (created after it). The
+# rollback's baseline holds the value only as `***`, so the revert reads the
+# parameter back and leaves the value as AWS holds it while it restores the
+# Description: it never sends `***`, state keeps `***` with the leaf named in
+# `noEchoLeaves`, and no journal or deployments/*.jsonl object carries a value.
+# 2b runs `cdkd rollback` after a --no-rollback deploy; 2c the deploy's own
+# automatic rollback, where the in-memory record may still hold the value.
+gen_rb_token() { # gen_rb_token <label>
+  local t
+  t="cdkd-noecho-$1-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  if [ "${#t}" -lt 20 ]; then
+    echo "FAIL: premise: could not generate the Phase $1 NoEcho value" >&2
+    exit 1
+  fi
+  printf '%s' "${t}"
+}
+consumer_field() { # consumer_field <Value|Description>
+  if [ "$1" = Value ]; then
+    aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}" \
+      --query 'Parameter.Value' --output text || return 1
+  else
+    # GetParameter returns no Description; DescribeParameters does.
+    aws ssm describe-parameters --region "${REGION}" \
+      --parameter-filters "Key=Name,Option=Equals,Values=${CONSUMER_NAME}" \
+      --query 'Parameters[0].Description' --output text || return 1
+  fi
+}
+# The checks both arms share, after the rollback: <phase> <token> <output>.
+assert_noecho_rollback_kept() {
+  local phase="$1" tok="$2" out="$3" value description state leaf event_keys scanned=0 reverted=0
+  if [[ "${out}" == *"${tok}"* ]] || [[ "${out}" == *"${TOKEN}"* ]]; then
+    echo "FAIL: the Phase ${phase} rollback output carries a NoEcho value in plaintext (issue #4043)" >&2
+    exit 1
+  fi
+  # Sentinel pair: the revert line, and no refusal of the masked baseline.
+  if ! grep -qF 'Rollback: NoEchoConsumer restored successfully' <<< "${out}"; then
+    echo "FAIL: premise: the Phase ${phase} rollback printed no 'NoEchoConsumer restored successfully' line -- the revert arm did not run" >&2
+    diag_output "${out}"
+    exit 1
+  fi
+  if grep -qF 'redaction mask' <<< "${out}"; then
+    echo "FAIL: the Phase ${phase} rollback refused a masked baseline (issue #4043 Phase C)" >&2
+    diag_output "${out}"
+    exit 1
+  fi
+  value=$(consumer_field Value) || { echo "FAIL: could not read ${CONSUMER_NAME}" >&2; exit 1; }
+  if [ "${value}" != "token-${tok}" ]; then
+    if [[ "${value}" == *'***'* ]]; then
+      echo "FAIL: the Phase ${phase} rollback wrote the mask to NoEchoConsumer (issue #4043 Phase C)" >&2
+    else
+      echo "FAIL: NoEchoConsumer no longer holds the value AWS held before the Phase ${phase} rollback (issue #4043 Phase C)" >&2
+    fi
+    exit 1
+  fi
+  description=$(consumer_field Description) || { echo "FAIL: could not read ${CONSUMER_NAME}" >&2; exit 1; }
+  if [ "${description}" != 'noecho-consumer' ]; then
+    echo "FAIL: the Phase ${phase} rollback did not restore NoEchoConsumer's Description (got '${description}') -- the revert's update did not run" >&2
+    exit 1
+  fi
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")
+  if [[ "${state}" == *"${tok}"* ]] || [[ "${state}" == *"${TOKEN}"* ]]; then
+    echo "FAIL: state.json after the Phase ${phase} rollback carries a NoEcho value (issue #4043 Phase C)" >&2
+    exit 1
+  fi
+  leaf=$(jq -c '[.resources.NoEchoConsumer.properties.Value, (.resources.NoEchoConsumer.noEchoLeaves // [] | index([["Value"]]) != null)]' <<< "${state}")
+  if [ "${leaf}" != '["***",true]' ]; then
+    echo "FAIL: state.json after the Phase ${phase} rollback does not hold *** at NoEchoConsumer.Value named in noEchoLeaves (got ${leaf})" >&2
+    exit 1
+  fi
+  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_PREFIX}rollback-journal.json"; then
+    echo "FAIL: the rollback journal survived the clean Phase ${phase} rollback" >&2
+    exit 1
+  fi
+  event_keys=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "${STATE_PREFIX}deployments/" --output json | jq -r '.Contents // [] | .[].Key') || return 1
+  while IFS= read -r event_key || [ -n "${event_key}" ]; do
+    [ -n "${event_key}" ] || continue
+    EVENT_FILE=$(mktemp)
+    SCRATCH_FILES+=("${EVENT_FILE}")
+    aws s3 cp "s3://${STATE_BUCKET}/${event_key}" "${EVENT_FILE}" --quiet
+    scanned=$((scanned + 1))
+    if grep -qF -- "${tok}" "${EVENT_FILE}" || grep -qF -- "${TOKEN}" "${EVENT_FILE}"; then
+      echo "FAIL: deployment events object ${event_key} carries a NoEcho value after the Phase ${phase} rollback (issue #4043 Phase C)" >&2
+      exit 1
+    fi
+    if grep -F '"ROLLBACK_RESOURCE_SUCCEEDED"' "${EVENT_FILE}" | grep -qF '"NoEchoConsumer"'; then
+      reverted=$((reverted + 1))
+    fi
+  done <<< "${event_keys}"
+  if [ "${reverted}" -lt 1 ]; then
+    echo "FAIL: no deployment-events object (of ${scanned}) records NoEchoConsumer's ROLLBACK_RESOURCE_SUCCEEDED -- the scan did not read the rollback's stream" >&2
+    exit 1
+  fi
+  echo "    OK: Phase ${phase}: the rollback kept NoEchoConsumer's value as AWS holds it and restored its Description; state holds ***; no event carries a value (${scanned} objects)"
+}
+# The failing deploy's premises: <phase> <token> <output> <rc>.
+assert_noecho_failed_deploy() {
+  local phase="$1" tok="$2" out="$3" rc="$4"
+  if [[ "${out}" == *"${tok}"* ]] || [[ "${out}" == *"${TOKEN}"* ]]; then
+    echo "FAIL: the Phase ${phase} deploy output carries a NoEcho value in plaintext (issue #4043)" >&2
+    exit 1
+  fi
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: premise: the Phase ${phase} deploy exited 0 -- NoEchoFailingQueue did not fail, so nothing is left to roll back" >&2
+    exit 1
+  fi
+  if ! grep -qF 'NoEchoFailingQueue' <<< "${out}"; then
+    echo "FAIL: premise: the Phase ${phase} deploy failed, but its output never names NoEchoFailingQueue -- it failed for another reason" >&2
+    diag_output "${out}"
+    exit 1
+  fi
+}
+
 echo "==> Phase 2b: --no-rollback deploy changing the NoEcho value fails; cdkd rollback"
-TOKEN_RB="cdkd-noecho-rb-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
-if [ "${#TOKEN_RB}" -lt 20 ]; then
-  echo "FAIL: premise: could not generate the Phase 2b NoEcho value (got ${#TOKEN_RB} characters)" >&2
-  exit 1
-fi
+TOKEN_RB="$(gen_rb_token rb)"
 set +e
 DEPLOY_OUT_P2B=$(CDKD_TEST_NOECHO_TOKEN="${TOKEN_RB}" CDKD_TEST_NOECHO_FAIL=true \
   env -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -1016,102 +1123,55 @@ DEPLOY_OUT_P2B=$(CDKD_TEST_NOECHO_TOKEN="${TOKEN_RB}" CDKD_TEST_NOECHO_FAIL=true
   --yes 2>&1)
 P2B_RC=$?
 set -e
-if [[ "${DEPLOY_OUT_P2B}" == *"${TOKEN_RB}"* ]] || [[ "${DEPLOY_OUT_P2B}" == *"${TOKEN}"* ]]; then
-  echo "FAIL: the Phase 2b deploy output carries a NoEcho value in plaintext (issue #4043)" >&2
-  exit 1
-fi
-if [ "${P2B_RC}" -eq 0 ]; then
-  echo "FAIL: premise: the Phase 2b deploy exited 0 -- NoEchoFailingQueue did not fail, so nothing is left to roll back" >&2
-  exit 1
-fi
+assert_noecho_failed_deploy 2b "${TOKEN_RB}" "${DEPLOY_OUT_P2B}" "${P2B_RC}"
 # PREMISE: the update reached AWS before the failure. Compared, never printed.
-P2B_LIVE=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text)
-if [ "${P2B_LIVE}" != "token-${TOKEN_RB}" ]; then
-  echo "FAIL: premise: NoEchoConsumer does not hold the Phase 2b value after the failed deploy -- the update did not run before the failure" >&2
+if [ "$(consumer_field Value)" != "token-${TOKEN_RB}" ] \
+  || [ "$(consumer_field Description)" != 'noecho-consumer-failing' ]; then
+  echo "FAIL: premise: NoEchoConsumer does not hold the Phase 2b value and Description after the failed deploy -- the update did not run before the failure" >&2
   exit 1
 fi
-aws s3api head-object --bucket "${STATE_BUCKET}" \
-  --key "${STATE_PREFIX}rollback-journal.json" >/dev/null || {
+# The journal holds the attempted bag between the deploy and the rollback.
+P2B_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_PREFIX}rollback-journal.json" - --region "${REGION}") || {
   echo "FAIL: premise: no rollback journal after the --no-rollback deploy" >&2
   exit 1
 }
+if ! grep -qF '"NoEchoConsumer"' <<< "${P2B_JOURNAL}"; then
+  echo "FAIL: premise: the rollback journal does not record NoEchoConsumer's update" >&2
+  exit 1
+fi
+if [[ "${P2B_JOURNAL}" == *"${TOKEN_RB}"* ]] || [[ "${P2B_JOURNAL}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the rollback journal carries a NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
 set +e
 # Synth-free: the journal and state are all it reads.
 ROLLBACK_OUT_P2B=$(node "${LOCAL_DIST}" rollback "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)
 P2B_ROLLBACK_RC=$?
 set -e
-if [[ "${ROLLBACK_OUT_P2B}" == *"${TOKEN_RB}"* ]] || [[ "${ROLLBACK_OUT_P2B}" == *"${TOKEN}"* ]]; then
-  echo "FAIL: the Phase 2b 'cdkd rollback' output carries a NoEcho value in plaintext (issue #4043)" >&2
-  exit 1
-fi
 if [ "${P2B_ROLLBACK_RC}" -ne 0 ]; then
+  if [[ "${ROLLBACK_OUT_P2B}" != *"${TOKEN_RB}"* ]]; then diag_output "${ROLLBACK_OUT_P2B}"; fi
   echo "FAIL: cdkd rollback exited ${P2B_ROLLBACK_RC} -- the marked NoEcho leaf was not read back (issue #4043 Phase C)" >&2
-  diag_output "${ROLLBACK_OUT_P2B}"
   exit 1
 fi
-# Sentinel pair: the revert line, and no refusal of the masked baseline.
-if ! grep -qF 'Rollback: NoEchoConsumer restored successfully' <<< "${ROLLBACK_OUT_P2B}"; then
-  echo "FAIL: premise: cdkd rollback printed no 'NoEchoConsumer restored successfully' line -- the revert arm did not run" >&2
-  diag_output "${ROLLBACK_OUT_P2B}"
+assert_noecho_rollback_kept 2b "${TOKEN_RB}" "${ROLLBACK_OUT_P2B}"
+
+echo "==> Phase 2c: the same failure under the deploy's automatic rollback"
+TOKEN_RB2="$(gen_rb_token rb2)"
+set +e
+DEPLOY_OUT_P2C=$(CDKD_TEST_NOECHO_TOKEN="${TOKEN_RB2}" CDKD_TEST_NOECHO_FAIL=true \
+  env -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1)
+P2C_RC=$?
+set -e
+assert_noecho_failed_deploy 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}" "${P2C_RC}"
+if [[ "${DEPLOY_OUT_P2C}" == *"${TOKEN_RB}"* ]]; then
+  echo "FAIL: the Phase 2c deploy output carries the Phase 2b NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
-if grep -qF 'redaction mask' <<< "${ROLLBACK_OUT_P2B}"; then
-  echo "FAIL: cdkd rollback refused a masked baseline (issue #4043 Phase C)" >&2
-  diag_output "${ROLLBACK_OUT_P2B}"
-  exit 1
-fi
-P2B_AFTER=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text)
-if [ "${P2B_AFTER}" != "token-${TOKEN_RB}" ]; then
-  if [ "${P2B_AFTER}" = '***' ] || [ "${P2B_AFTER}" = 'token-***' ]; then
-    echo "FAIL: cdkd rollback wrote the mask to NoEchoConsumer (issue #4043 Phase C)" >&2
-  else
-    echo "FAIL: NoEchoConsumer no longer holds the value AWS held before cdkd rollback (issue #4043 Phase C)" >&2
-  fi
-  exit 1
-fi
-STATE_P2B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")
-if [[ "${STATE_P2B}" == *"${TOKEN_RB}"* ]] || [[ "${STATE_P2B}" == *"${TOKEN}"* ]]; then
-  echo "FAIL: state.json after cdkd rollback carries a NoEcho value (issue #4043 Phase C)" >&2
-  exit 1
-fi
-P2B_LEAF=$(jq -c '[.resources.NoEchoConsumer.properties.Value, (.resources.NoEchoConsumer.noEchoLeaves // [] | index(["Value"]) != null)]' <<< "${STATE_P2B}")
-if [ "${P2B_LEAF}" != '["***",true]' ]; then
-  echo "FAIL: state.json after cdkd rollback does not hold *** at NoEchoConsumer.Value named in noEchoLeaves (got ${P2B_LEAF})" >&2
-  exit 1
-fi
-if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_PREFIX}rollback-journal.json"; then
-  :
-else
-  echo "FAIL: the rollback journal survived a clean cdkd rollback" >&2
-  exit 1
-fi
-P2B_EVENT_KEYS=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
-  --prefix "${STATE_PREFIX}deployments/" --output json | jq -r '.Contents // [] | .[].Key')
-P2B_SCANNED=0
-P2B_REVERTED=0
-while IFS= read -r event_key || [ -n "${event_key}" ]; do
-  [ -n "${event_key}" ] || continue
-  EVENT_FILE=$(mktemp)
-  SCRATCH_FILES+=("${EVENT_FILE}")
-  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" "${EVENT_FILE}" --quiet
-  P2B_SCANNED=$((P2B_SCANNED + 1))
-  if grep -qF -- "${TOKEN_RB}" "${EVENT_FILE}" || grep -qF -- "${TOKEN}" "${EVENT_FILE}"; then
-    echo "FAIL: deployment events object ${event_key} carries a NoEcho value after cdkd rollback (issue #4043 Phase C)" >&2
-    exit 1
-  fi
-  if jq -e 'select(.eventType == "ROLLBACK_RESOURCE_SUCCEEDED" and .logicalId == "NoEchoConsumer")' \
-    "${EVENT_FILE}" >/dev/null 2>&1; then
-    P2B_REVERTED=$((P2B_REVERTED + 1))
-  fi
-done <<< "${P2B_EVENT_KEYS}"
-if [ "${P2B_REVERTED}" -lt 1 ]; then
-  echo "FAIL: no deployment-events object (of ${P2B_SCANNED}) records NoEchoConsumer's ROLLBACK_RESOURCE_SUCCEEDED -- the scan did not read the rollback's stream" >&2
-  exit 1
-fi
-echo "    OK: cdkd rollback kept NoEchoConsumer's value as AWS holds it; state holds ***; no event carries a value (${P2B_SCANNED} objects)"
+assert_noecho_rollback_kept 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}"
 
 # --- Phase 3a: cdkd diff renders the pending rename masked -------------------
 # BEFORE Phase 3 applies it, so state still holds the literal name and the
@@ -1248,6 +1308,12 @@ if ! DEPLOY_OUT_P3=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT
   --yes 2>&1); then
   echo "FAIL: the Phase 3 deploy exited non-zero" >&2
   diag_output "${DEPLOY_OUT_P3}"
+  exit 1
+fi
+# Phase 2b/2c left the rollbacks' values in AWS; this ordinary deploy with the
+# first value must send it again (the "next deploy restores it" half).
+if [ "$(consumer_field Value)" != "token-${TOKEN}" ]; then
+  echo "FAIL: the Phase 3 deploy did not restore NoEchoConsumer's value after the Phase 2b/2c rollbacks (issue #4043 Phase C)" >&2
   exit 1
 fi
 # The REPLACEMENT lines only, not the whole log: the new topic's PHYSICAL id

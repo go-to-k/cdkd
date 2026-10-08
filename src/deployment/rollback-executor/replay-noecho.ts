@@ -5,6 +5,8 @@ import {
   carriesSecretMask,
   isMarkedCoordinate,
   maskAtCoordinates,
+  maskReadbackAtCoordinates,
+  maskedLeafCoordinatesOf,
   maskWholeValue,
   noEchoLeavesOf,
   readbackPathFor,
@@ -16,6 +18,7 @@ import {
   type NoEchoCoordinate,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
+import { canonicalJson } from '../secret-redaction/noecho-leaves.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { shownLogicalId } from './messages.js';
 import type { RollbackExecutorContext } from './types.js';
@@ -70,6 +73,8 @@ export interface NoEchoReplaySubstitution {
    * its `Parameters.<P>` mask is inert and not refused.
    */
   readonly inert: readonly NoEchoCoordinate[];
+  /** The values substituted, for {@link maskRestoredNoEchoRecord}'s attribute arm. */
+  readonly substituted: readonly unknown[];
 }
 
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
@@ -129,12 +134,11 @@ function unreadableNoEchoLeafRefusal(
 export function refuseMarkedNoEchoRecreate(
   props: Record<string, unknown> | undefined,
   marked: readonly NoEchoCoordinate[] | undefined,
-  masked: readonly NoEchoCoordinate[],
   logicalId: string
 ): void {
   if (props === undefined || marked === undefined || marked.length === 0) return;
-  if (masked.length === 0) return;
-  if (!masked.every((coordinate) => isMarkedCoordinate(coordinate, marked))) return;
+  const masked = maskedLeafCoordinatesOf(props);
+  if (masked.length === 0 || !masksOnlyAt(props, marked)) return;
   const shown = marked.filter((outer) =>
     masked.some((inner) => isMarkedCoordinate(inner, [outer]))
   );
@@ -146,6 +150,31 @@ export function refuseMarkedNoEchoRecreate(
       `'cdkd deploy', which sends the NoEcho parameter's value again.`,
     'ROLLBACK_REDACTED_BASELINE'
   );
+}
+
+/**
+ * Does every mask `props` carries sit at (or inside) one of `marked`? A mask
+ * is a whole `***` leaf, as {@link carriesSecretMask} reads it; one elsewhere
+ * is another population's, which keeps its own refusal.
+ */
+export function masksOnlyAt(
+  props: Record<string, unknown>,
+  marked: readonly NoEchoCoordinate[]
+): boolean {
+  return maskedLeafCoordinatesOf(props).every((c) => isMarkedCoordinate(c, marked));
+}
+
+/**
+ * A readback leaf that is no value: cdkd's mask, or a service's own
+ * all-asterisk placeholder (`****`), anywhere inside it.
+ */
+function holdsPlaceholder(value: unknown): boolean {
+  if (typeof value === 'string') return /^\*{3,}$/.test(value);
+  if (Array.isArray(value)) return value.some(holdsPlaceholder);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(holdsPlaceholder);
+  }
+  return false;
 }
 
 function replaceAtCoordinate<T>(bag: T, coordinate: NoEchoCoordinate, value: unknown): T {
@@ -178,6 +207,7 @@ function replaceAtCoordinate<T>(bag: T, coordinate: NoEchoCoordinate, value: unk
 
 async function readLive(
   live: ResourceState,
+  baseline: ResourceState,
   marked: readonly NoEchoCoordinate[],
   logicalId: string,
   ctx: RollbackExecutorContext
@@ -196,10 +226,14 @@ async function readLive(
   // The live record masked at every marked coordinate: in process it may
   // still hold the failed deploy's resolved value, and an echoing provider
   // must not hand that back as what AWS holds.
-  const handed = maskAtCoordinates(live.properties ?? {}, [
-    ...marked,
-    ...(noEchoLeavesOf(live) ?? []),
-  ]);
+  // Masked by index AND through the identity pairing the substitution reads
+  // by, so a list the failed deploy reordered cannot hand back an unmasked
+  // element (the whole list is masked where nothing pairs).
+  const handed = maskReadbackAtCoordinates(
+    maskAtCoordinates(live.properties ?? {}, [...marked, ...(noEchoLeavesOf(live) ?? [])]),
+    baseline.properties,
+    marked
+  );
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
@@ -246,16 +280,22 @@ export async function substituteMarkedNoEchoLeaves(input: {
     desired,
     onPreviousSide: (bag) => bag,
     inert: [],
+    substituted: [],
   };
   if (desired === undefined) return identity;
   const pending = (noEchoLeavesOf(baseline) ?? []).filter((coordinate) =>
     carriesSecretMask(valueAtCoordinate(desired, coordinate))
   );
   if (pending.length === 0) return identity;
-  if (live.resourceType === NESTED_STACK_TYPE && baseline.resourceType === NESTED_STACK_TYPE) {
+  // Not on a Cloud Control route, which WOULD send the row's properties.
+  if (
+    live.resourceType === NESTED_STACK_TYPE &&
+    baseline.resourceType === NESTED_STACK_TYPE &&
+    live.provisionedBy !== 'cc-api'
+  ) {
     return { ...identity, inert: pending };
   }
-  const read = await readLive(live, pending, logicalId, ctx);
+  const read = await readLive(live, baseline, pending, logicalId, ctx);
   if ('failure' in read) throw unreadableNoEchoLeafRefusal(logicalId, pending, read.failure);
   const values: Array<{ coordinate: NoEchoCoordinate; value: unknown }> = [];
   const unreadable: NoEchoCoordinate[] = [];
@@ -266,7 +306,7 @@ export async function substituteMarkedNoEchoLeaves(input: {
         ? valueAtCoordinate(read.live, path)
         : undefined;
     // `null` is no value either: AWS returning nothing there.
-    if (value === undefined || value === null || carriesSecretMask(value)) {
+    if (value === undefined || value === null || holdsPlaceholder(value)) {
       unreadable.push(coordinate);
       continue;
     }
@@ -282,6 +322,7 @@ export async function substituteMarkedNoEchoLeaves(input: {
   }
   return {
     inert: [],
+    substituted: values.map(({ value }) => value),
     desired: substituted,
     onPreviousSide: (bag) => {
       if (bag === undefined) return bag;
@@ -314,21 +355,32 @@ function declaredNoEchoAttributeNames(record: ResourceState): string[] {
  */
 export function maskRestoredNoEchoRecord(
   record: ResourceState,
-  baseline: ResourceState
+  baseline: ResourceState,
+  /** The values the revert substituted: an attribute EQUAL to one is masked too. */
+  substituted: readonly unknown[] = []
 ): ResourceState {
   const marked = noEchoLeavesOf(baseline) ?? [];
   const names = declaredNoEchoAttributeNames(baseline);
-  if (marked.length === 0 && names.length === 0) return record;
+  if (marked.length === 0 && names.length === 0 && substituted.length === 0) return record;
+  const spelled = new Set(substituted.map((value) => canonicalJson(value)));
   let attributes = record.attributes;
   if (attributes !== undefined && attributes !== null && typeof attributes === 'object') {
-    for (const name of names) {
-      if (!Object.hasOwn(attributes, name)) continue;
-      attributes = replaceAtCoordinate(attributes, [name], maskWholeValue(attributes[name]));
+    for (const [name, value] of Object.entries(attributes)) {
+      if (!names.includes(name) && !spelled.has(canonicalJson(value))) continue;
+      attributes = replaceAtCoordinate(attributes, [name], maskWholeValue(value));
     }
   }
+  // By index; and, where that does not give back the baseline (a provider's
+  // `effectiveProperties` returned a list in another order or shape), through
+  // the identity pairing too, which masks the whole list where nothing pairs.
+  const byIndex = maskAtCoordinates(record.properties, marked);
+  const properties =
+    marked.length === 0 || canonicalJson(byIndex) === canonicalJson(baseline.properties)
+      ? byIndex
+      : maskReadbackAtCoordinates(byIndex, baseline.properties, marked);
   return {
     ...record,
-    properties: maskAtCoordinates(record.properties, marked),
+    properties,
     ...(attributes !== record.attributes && { attributes }),
     ...(baseline.noEchoLeaves !== undefined && { noEchoLeaves: baseline.noEchoLeaves }),
   };
