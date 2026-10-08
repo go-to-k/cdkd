@@ -29,7 +29,7 @@ vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
         'AWS::RDS::DBCluster',
         'AWS::RDS::DBInstance',
         'AWS::DocDB::DBCluster',
-        'AWS::DocDB::DBInstance',
+        'AWS::DocDB::DBInstance', 'AWS::Neptune::DBCluster', 'AWS::Neptune::DBInstance',
       ].includes(resourceType)
         ? replayProvider
         : { delete: replayProvider.delete, update: replayProvider.update },
