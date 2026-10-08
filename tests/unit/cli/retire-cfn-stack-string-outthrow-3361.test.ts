@@ -242,7 +242,8 @@ describe('retire-cfn-stack (#3361)', () => {
 
     expect(thrown).toBeInstanceOf(RecursiveRetainInjectionError);
     const err = thrown as RecursiveRetainInjectionError;
-    expect(err.cleanups.length).toBeGreaterThanOrEqual(1);
+    // C1's upload, made before C2 failed -- exactly one.
+    expect(err.cleanups).toHaveLength(1);
     expect(err.message).toBe(PLACEHOLDER);
   });
 

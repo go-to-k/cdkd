@@ -119,6 +119,9 @@ let exitSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
   mockAcquireLock.mockResolvedValue(true);
+  // `mockReset`, not just `clearAllMocks`: it drains a `*Once` primer a case
+  // did not consume.
+  mockReleaseLock.mockReset();
   mockReleaseLock.mockResolvedValue(undefined);
   mockSaveState.mockResolvedValue('"new-etag"');
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
