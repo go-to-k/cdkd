@@ -5,9 +5,7 @@
 ### 8-a. Fix cascades — a round's fix producing the next round's blocker
 
 - **After round two, name what the rounds have in common**, then take the narrow
-  fix and FILE the structural one — across PRs too: narrowing a DELETE's
-  classifier met a deeper feeder each review; the bound was an ownership proof
-  at the deleting consumer (#3979). Ask for it first.
+  fix and FILE the structural one — across PRs too (#3979). Ask for it first.
 - **A cascade stops when the artifact CLAIMS LESS** — tally the blockers by
   PART of the diff and offer that part's DELETION; stop reviewing the patch and
   question its SHAPE.
@@ -32,7 +30,8 @@ a stale PATH copy that dies `unknown hash "diff"` (#4477).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
-EXERCISES: re-run it on the rebased head (#3726).
+EXERCISES (a code path its run takes, not merely a file it loads; #4683):
+re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
   scoped touch buys another real-AWS run. The one exception to §8-h's "nits
