@@ -6,6 +6,7 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 /**
  * covers: AWS::ElasticLoadBalancingV2::LoadBalancer
  * covers: AWS::ElasticLoadBalancingV2::Listener
+ * covers: AWS::ElasticLoadBalancingV2::ListenerRule
  * covers: AWS::ElasticLoadBalancingV2::TargetGroup
  * covers: AWS::EC2::SecurityGroupIngress
  */

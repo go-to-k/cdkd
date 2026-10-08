@@ -777,6 +777,7 @@
     {
       "flag": "--recreate-via-cc-api",
       "integs": [
+        "alb",
         "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute",
         "codebuild-project",
@@ -2007,6 +2008,7 @@
     "--layer-name",
     "--lb-port",
     "--listener-arn",
+    "--listener-arns",
     "--load-balancer-arn",
     "--load-balancer-arns",
     "--location-type",

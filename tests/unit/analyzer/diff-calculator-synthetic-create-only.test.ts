@@ -299,6 +299,157 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
     });
   });
 
+  describe('a write-only create-only REFERENCE the registry names (go-to-k/cdkd#4689)', () => {
+    // The live ListenerRule schema lists `ListenerArn` as create-only AND
+    // write-only. AWS deletes a listener's rules with it, so a rule reading a
+    // replaced listener must be replaced, not updated in place (NotFound).
+    const RULE = 'AWS::ElasticLoadBalancingV2::ListenerRule';
+    const LISTENER = 'AWS::ElasticLoadBalancingV2::Listener';
+    const LB = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
+    const OLD_LISTENER = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/a/1/old';
+
+    const liveSchema = (command: { input?: { TypeName?: string } }): Promise<unknown> => {
+      const type = command.input?.TypeName;
+      if (type === RULE) {
+        return Promise.resolve({
+          Schema: JSON.stringify({
+            createOnlyProperties: ['/properties/ListenerArn'],
+            writeOnlyProperties: [
+              '/properties/Actions/*/AuthenticateOidcConfig/ClientSecret',
+              '/properties/ListenerArn',
+            ],
+          }),
+        });
+      }
+      if (type === LISTENER) {
+        return Promise.resolve({
+          Schema: JSON.stringify({
+            createOnlyProperties: ['/properties/LoadBalancerArn'],
+            writeOnlyProperties: ['/properties/DefaultActions/*/AuthenticateOidcConfig/ClientSecret'],
+          }),
+        });
+      }
+      if (type === LB) {
+        return Promise.resolve({
+          Schema: JSON.stringify({
+            createOnlyProperties: ['/properties/Name', '/properties/Type', '/properties/Scheme'],
+            writeOnlyProperties: ['/properties/EnableCapacityReservationProvisionStabilize'],
+          }),
+        });
+      }
+      return fromSnapshot(command);
+    };
+
+    function listenerState(): StackState {
+      const state = baseState();
+      state.resources['Lb'] = {
+        physicalId: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/a/1',
+        resourceType: LB,
+        properties: { Name: 'lb-a', Type: 'application' },
+        attributes: {},
+      };
+      state.resources['Listener'] = {
+        physicalId: OLD_LISTENER,
+        resourceType: LISTENER,
+        properties: {
+          LoadBalancerArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/a/1',
+          Port: 80,
+          Protocol: 'HTTP',
+        },
+        attributes: { ListenerArn: OLD_LISTENER },
+      };
+      state.resources['Rule'] = {
+        physicalId: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/a/1/old/r',
+        resourceType: RULE,
+        properties: {
+          ListenerArn: OLD_LISTENER,
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/health'] } }],
+          Actions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
+        },
+        attributes: {},
+      };
+      return state;
+    }
+
+    function listenerTemplate(lbName: string): CloudFormationTemplate {
+      return {
+        Resources: {
+          Lb: { Type: LB, Properties: { Name: lbName, Type: 'application' } },
+          Listener: {
+            Type: LISTENER,
+            Properties: { LoadBalancerArn: { Ref: 'Lb' }, Port: 80, Protocol: 'HTTP' },
+          },
+          Rule: {
+            Type: RULE,
+            Properties: {
+              ListenerArn: { Ref: 'Listener' },
+              Priority: 10,
+              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/health'] } }],
+              Actions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
+            },
+          },
+        },
+      };
+    }
+
+    async function diffWithLiveSchema(
+      lbName: string,
+      forced: ReadonlySet<string> | undefined,
+      schema: typeof liveSchema = liveSchema
+    ): Promise<Map<string, { changeType?: string; propertyChanges?: PropertyChange[] }>> {
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
+      mockCloudFormationSend.mockImplementation(schema);
+      try {
+        const state = listenerState();
+        return await new DiffCalculator().calculateDiff(
+          state,
+          listenerTemplate(lbName),
+          makeResolver(state),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          forced
+        );
+      } finally {
+        mockCloudFormationSend.mockImplementation(fromSnapshot);
+        clearCreateOnlyPropertiesCache();
+        clearWriteOnlyPropertiesCache();
+      }
+    }
+
+    it('replaces the rule of a --recreate-via-* listener', async () => {
+      const changes = await diffWithLiveSchema('lb-a', new Set(['Listener']));
+
+      expect(changes.get('Rule')?.changeType).toBe('UPDATE');
+      const pc = changeOf(changes, 'Rule', 'ListenerArn');
+      expect(pc?.replacementPropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(true);
+    });
+
+    it('replaces it with DescribeType denied for the rule: the registry, not the schema, decides', async () => {
+      const changes = await diffWithLiveSchema('lb-a', new Set(['Listener']), (command) =>
+        command.input?.TypeName === RULE ? denied() : liveSchema(command)
+      );
+
+      expect(changeOf(changes, 'Rule', 'ListenerArn')?.requiresReplacement).toBe(true);
+    });
+
+    it('replaces the rule of a listener replaced by its create-only LoadBalancerArn', async () => {
+      // `Lb.Name` is create-only, so `Lb` is replaced; the listener reads it
+      // through create-only `LoadBalancerArn` (not write-only) and is replaced
+      // in turn; the rule must follow.
+      const changes = await diffWithLiveSchema('lb-b', undefined);
+
+      expect(changeOf(changes, 'Listener', 'LoadBalancerArn')?.requiresReplacement).toBe(true);
+      const pc = changeOf(changes, 'Rule', 'ListenerArn');
+      expect(pc?.replacementPropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(true);
+    });
+  });
+
   it('raises no ceiling when the write-only list cannot be looked up (fail closed)', async () => {
     // DescribeType denied: create-only paths still come from the snapshot,
     // but whether `Description` is write-only is unknown, so no ceiling.

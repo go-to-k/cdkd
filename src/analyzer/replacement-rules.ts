@@ -871,6 +871,19 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // ELBv2 ListenerRule — `ListenerArn` is create-only, and the live schema
+    // ALSO lists it write-only, which the schema fallback reads as a NoEcho
+    // value it must not replace on (go-to-k/cdkd#3803). It is a reference to
+    // the listener, not a secret: when the listener is replaced (a
+    // `--recreate-via-*` target, or a `LoadBalancerArn` change), AWS deletes
+    // its rules with the old one, so the rule must be re-created on the new
+    // listener — an in-place update of the deleted rule fails `NotFound`
+    // (go-to-k/cdkd#4689). Only `ListenerArn` is named: the other properties
+    // stay with the schema fallback.
+    this.rules.set('AWS::ElasticLoadBalancingV2::ListenerRule', {
+      replacementProperties: new Set(['ListenerArn']),
+    });
+
     // Add more resource types as needed
     this.logger.debug(`Initialized replacement rules for ${this.rules.size} resource types`);
   }

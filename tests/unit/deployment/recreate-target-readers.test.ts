@@ -40,6 +40,8 @@ import {
 } from '../../../src/deployment/recreate-target-readers.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
+import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
+import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -172,6 +174,85 @@ describe('findReplacedReadersOfRecreateTargets (go-to-k/cdkd#4383)', () => {
         targetIds: ['Missing'],
       })
     ).toEqual([]);
+  });
+});
+
+describe('a write-only create-only reference the registry names (go-to-k/cdkd#4689)', () => {
+  // The LIVE ListenerRule schema: `ListenerArn` is create-only AND write-only,
+  // so the schema fallback alone leaves it out. AWS deletes the rule with the
+  // old listener, so the recreate replaces it and the pre-flight must say so.
+  const RULE = 'AWS::ElasticLoadBalancingV2::ListenerRule';
+  const LISTENER = 'AWS::ElasticLoadBalancingV2::Listener';
+
+  const template: CloudFormationTemplate = {
+    Resources: {
+      Listener: {
+        Type: LISTENER,
+        Properties: { LoadBalancerArn: 'arn:lb', Port: 80, Protocol: 'HTTP' },
+      },
+      Rule: {
+        Type: RULE,
+        Properties: {
+          ListenerArn: { Ref: 'Listener' },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/h'] } }],
+          Actions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
+        },
+      },
+    },
+  };
+  const expected = [
+    {
+      logicalId: 'Rule',
+      resourceType: RULE,
+      reads: 'Listener',
+      properties: ['ListenerArn'],
+      statefulReason: null,
+    },
+  ];
+
+  it('lists it with DescribeType denied for the rule too: the registry, not the schema, decides', async () => {
+    // This file's default mock denies every non-API-Gateway type.
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    expect(
+      await findReplacedReadersOfRecreateTargets({
+        template,
+        state: stateOf({ Listener: record(LISTENER), Rule: record(RULE) }),
+        targetIds: ['Listener'],
+      })
+    ).toEqual(expected);
+  });
+
+  it('lists the rule of a recreated listener as replaced through ListenerArn', async () => {
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    const fallback = mockCloudFormationSend.getMockImplementation()!;
+    mockCloudFormationSend.mockImplementation((command: { input?: { TypeName?: string } }) =>
+      command.input?.TypeName === RULE
+        ? Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: ['/properties/ListenerArn'],
+              writeOnlyProperties: [
+                '/properties/Actions/*/AuthenticateOidcConfig/ClientSecret',
+                '/properties/ListenerArn',
+              ],
+            }),
+          })
+        : fallback(command)
+    );
+    try {
+      const readers = await findReplacedReadersOfRecreateTargets({
+        template,
+        state: stateOf({ Listener: record(LISTENER), Rule: record(RULE) }),
+        targetIds: ['Listener'],
+      });
+      expect(readers).toEqual(expected);
+    } finally {
+      mockCloudFormationSend.mockImplementation(fallback);
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
+    }
   });
 });
 
