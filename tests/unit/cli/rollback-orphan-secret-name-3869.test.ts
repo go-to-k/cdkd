@@ -48,6 +48,7 @@ const USER = 'team-secret-user';
 function install(userName: string, failedOperations?: unknown[], segments?: unknown[]): void {
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({

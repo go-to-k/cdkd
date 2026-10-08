@@ -243,6 +243,7 @@ function install(opts: {
   saveState.mockResolvedValue('etag-2');
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: KEY_REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState,

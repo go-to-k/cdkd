@@ -71,11 +71,15 @@ cdkd refuses the case it can see, before touching any resource:
 
 - `cdkd deploy` of a stack that has no record under this prefix yet checks the
   bucket's other top-level prefixes, and refuses when one already records the
-  same stack name and region. The check runs alongside the deploy's other
-  setup and only on that first deploy; a stack this prefix already records
-  pays nothing.
-- `cdkd destroy` and `cdkd state destroy` make the same check and refuse,
-  since the other record may name the same resources. Once you know which
+  same stack name and region. Only that first deploy pays for the listing,
+  and it starts once synthesis has finished, overlapping the rest of the
+  deploy's preparation (asset publishing, the lock), so what it adds is at most
+  a fraction of a second. A stack this prefix already records issues one
+  parallel round of reads of its own record and lists nothing.
+- `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same
+  check and refuse, since the other record may name the same resources — a
+  rollback deletes what the failed deploy created, which for such a pair can
+  be the other deployment's resource. Once you know which
   record you are keeping, drop the other with `cdkd state orphan <stack>
   --stack-region <region> --state-prefix <prefix>`, which removes only the
   record.

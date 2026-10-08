@@ -893,8 +893,21 @@ export class S3StateBackend {
    * prefix (go-to-k/cdkd#4705, `cross-prefix-stack-scan.ts`). Errors propagate.
    */
   async ownRecordExists(stackName: string, region: string): Promise<boolean> {
-    if (await this.stateExists(stackName, region)) return true;
-    return this.headObject(this.getRollbackJournalKey(stackName, region));
+    await this.ensureClientForBucket();
+    // The three probes are independent, so they run at once; the answer is the
+    // one the serial `stateExists() || journal HEAD` gives, read IN THAT ORDER
+    // from the settled results: the state HEAD's error wins over everything,
+    // then a hit, then the legacy record, then the journal HEAD.
+    const [state, legacy, journal] = await Promise.allSettled([
+      this.headObject(this.getStateKey(stackName, region)),
+      this.legacyBelongsToRegion(stackName, region),
+      this.headObject(this.getRollbackJournalKey(stackName, region)),
+    ]);
+    for (const probe of [state, legacy, journal]) {
+      if (probe.status === 'rejected') throw probe.reason;
+      if (probe.value) return true;
+    }
+    return false;
   }
 
   /**

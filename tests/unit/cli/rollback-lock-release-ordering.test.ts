@@ -121,6 +121,7 @@ function installSetup(
 ): void {
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({ state: { resources: {}, outputs: {} }, etag: 'e' }),
@@ -177,6 +178,7 @@ function installReplayableSetup(
 ): void {
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({

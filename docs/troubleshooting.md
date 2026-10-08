@@ -554,9 +554,10 @@ control the SDK's default region for provisioning.
 ### "Refusing to deploy stack X: it is already recorded under another state prefix"
 
 **Symptoms:** `cdkd deploy` (on a stack's first deploy under this prefix),
-`cdkd destroy` or `cdkd state destroy` stops with `Refusing to deploy stack` /
-`Refusing to destroy stack ... recorded under another state prefix of bucket`,
-and nothing is created or deleted.
+`cdkd destroy`, `cdkd state destroy` or `cdkd rollback` stops with
+`Refusing to deploy stack` / `Refusing to destroy stack` / `Refusing to roll
+back stack ... recorded under another state prefix of bucket`, and nothing is
+created, reverted or deleted.
 
 **Cause:** the same stack name and region is recorded under another
 `--state-prefix` of the state bucket. A stack name is one deployment per
@@ -570,7 +571,7 @@ cdkd-generated resource name and can delete each other's resources — see
   another name, or remove the other deployment first with the
   `cdkd state destroy` (deletes its resources) or `cdkd state orphan` (drops
   only its record) command the message prints.
-- Destroying: decide which record you are keeping, drop the other with the
+- Destroying or rolling back: decide which record you are keeping, drop the other with the
   `cdkd state orphan ... --state-prefix <prefix>` command the message prints
   (it never deletes a resource), and re-run.
 

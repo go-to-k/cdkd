@@ -149,6 +149,45 @@ describe('ownRecordExists', () => {
   it('is false when neither exists', async () => {
     await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(false);
   });
+
+  it('sends its three probes at once, not one after another', async () => {
+    const pending: Array<() => void> = [];
+    const original = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
+    client.send.mockImplementation(
+      (cmd: unknown) =>
+        new Promise((resolve, reject) => {
+          pending.push(() => {
+            original(cmd).then(resolve, reject);
+          });
+        })
+    );
+    const answer = backend.ownRecordExists('App', 'us-east-1');
+    // Nothing has answered yet, and all three requests are already out.
+    for (let i = 0; i < 50 && pending.length < 3; i++) await new Promise((r) => setTimeout(r, 1));
+    expect(pending).toHaveLength(3);
+    const sent = client.send.mock.calls.map((c) => c[0] as { input: { Key?: string } });
+    expect(sent.map((c) => c.input.Key).sort()).toEqual([
+      'cdkd/App/state.json',
+      'cdkd/App/us-east-1/rollback-journal.json',
+      'cdkd/App/us-east-1/state.json',
+    ]);
+    pending.forEach((go) => go());
+    await expect(answer).resolves.toBe(false);
+  });
+
+  it('answers as the serial order would: a failed state HEAD wins over a journal', async () => {
+    deniedKeys.add('cdkd/App/us-east-1/state.json');
+    objects.add('cdkd/App/us-east-1/rollback-journal.json');
+    await expect(backend.ownRecordExists('App', 'us-east-1')).rejects.toMatchObject({
+      name: 'Forbidden',
+    });
+  });
+
+  it('answers as the serial order would: a state record wins over a failed journal HEAD', async () => {
+    objects.add('cdkd/App/us-east-1/state.json');
+    deniedKeys.add('cdkd/App/us-east-1/rollback-journal.json');
+    await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(true);
+  });
 });
 
 describe('scanOtherPrefixesForStack against S3StateBackend', () => {
@@ -160,10 +199,11 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
       scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
     ).resolves.toEqual({ kind: 'own-record' });
     expect(commandsOf(ListObjectsV2Command)).toHaveLength(0);
-    // One HEAD, of this prefix's own record.
-    expect(commandsOf(HeadObjectCommand).map((c) => c.input.Key)).toEqual([
-      'cdkd/App/us-east-1/state.json',
-    ]);
+    // One parallel round of this prefix's own keys; nothing under another prefix.
+    const keys = [...commandsOf(HeadObjectCommand), ...commandsOf(GetObjectCommand)].map(
+      (c) => c.input.Key!
+    );
+    expect(keys.every((k) => k.startsWith('cdkd/'))).toBe(true);
   });
 
   it('a first deploy finds the record under another prefix', async () => {

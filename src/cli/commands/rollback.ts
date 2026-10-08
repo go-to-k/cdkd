@@ -1,4 +1,8 @@
 import { Command, Option } from 'commander';
+import {
+  applyCrossPrefixScan,
+  scanOtherPrefixesForStack,
+} from '../../state/cross-prefix-stack-scan.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { isIamRoleArn } from '../../utils/role-arn.js';
 import {
@@ -761,6 +765,15 @@ export async function rollbackCommand(
       return;
     }
 
+    // go-to-k/cdkd#4705: the replay deletes what the failed deploy created, and
+    // for a stack the bucket also records under another state prefix that can
+    // be the other deployment's resource (a create handed it back). Started
+    // here, awaited under the lock before the plan, the prompt and any replay.
+    // Never rejects.
+    const crossPrefixScan = scanOtherPrefixesForStack(setup.stateBackend, stackName, region, {
+      checkOwnRecord: false,
+    });
+
     // Region-pinned clients for the whole replay: the pre-delete final
     // snapshots a `DeletionPolicy: Snapshot` rolled-back CREATE takes (issue
     // #1358) AND the provider deletes those snapshots precede. Both must run
@@ -860,6 +873,12 @@ export async function rollbackCommand(
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
         );
       }
+      applyCrossPrefixScan(
+        await crossPrefixScan,
+        { stackName, region, bucket: setup.bucket },
+        'rollback',
+        (message) => logger.warn(message)
+      );
       if (!stateData) {
         throw new Error(
           `Rollback journal exists for ${safeStack(stackName)} (${safe(region)}) but its state.json is missing ` +

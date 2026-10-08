@@ -125,6 +125,7 @@ function install(orphans: unknown, resources?: unknown) {
   };
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({ state, etag: 'e' }),

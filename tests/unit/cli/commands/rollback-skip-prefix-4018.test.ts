@@ -162,6 +162,7 @@ function installRollback(opts: {
   };
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: 'us-east-1' }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({

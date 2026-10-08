@@ -595,10 +595,12 @@ async function deployCommand(
     refuseMalformedNestedTemplateTrees(targetStacks);
 
     // go-to-k/cdkd#4705: is each stack, on its first deploy under this prefix,
-    // already recorded under ANOTHER prefix of the bucket? Started here and
-    // awaited only by the engine's post-lock gate when it finds no record, so
-    // it overlaps macro expansion, asset publishing and the lock; a stack this
-    // prefix already holds stops at one HEAD and lists nothing.
+    // already recorded under ANOTHER prefix of the bucket? Started AFTER synth
+    // (it needs the deploy set) and awaited only by the engine's post-lock gate
+    // when it finds no record, so it overlaps macro expansion, STS, asset
+    // handling and the lock, not synth; a short run of the scan can outlast
+    // them. A stack this prefix already records stops after one parallel round
+    // of HEADs on its own keys and lists nothing.
     const crossPrefixTarget = withSharedListing(preflightStateBackend);
     const crossPrefixScans = new Map(
       targetStacks.map((s) => [

@@ -19,7 +19,9 @@
 #      cross-prefix refusal before any create, A's queue still exists, the log
 #      group keeps A's retention, and B has no state record or journal.
 #   4. Seed a pre-fix pair (A's state.json copied to B's key): `cdkd destroy`
-#      under PREFIX_A must be refused and leave A's queue. Remove the seed.
+#      under PREFIX_A must be refused and leave A's queue, and `cdkd rollback`
+#      under PREFIX_A (over a seeded, empty journal) must be refused and keep
+#      the journal. Remove both seeds.
 #   5. Negative control: redeploy A under PREFIX_A; it must succeed.
 #   6. Destroy A, delete the retained log group, and sweep.
 #
@@ -79,6 +81,7 @@ EVENTS_PREFIX_B="${PREFIX_B}/${STACK}/${REGION}/deployments/"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 DEPLOY_REFUSAL_NEEDLE="is already recorded under another state prefix of bucket"
 DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
+ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -98,6 +101,8 @@ RUN_LOG=""
 # or a leftover holding these names) must leave those resources alone.
 DEPLOYED_A=""
 DEPLOYED_B=""
+# Set while Phase 4's seeded journal under PREFIX_A exists.
+SEEDED_JOURNAL_A=""
 
 # One field of A's or B's state, by resource type: `state_physical_id <key> <type>`.
 state_physical_id() {
@@ -224,6 +229,10 @@ cleanup() {
     ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}" ); }; then
     node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" --state-bucket "${STATE_BUCKET:-}" \
       --state-prefix "${PREFIX_B}" --force >/dev/null 2>&1
+  fi
+  # Phase 4's seeded journal: an empty segment this run wrote, by its exact key.
+  if [ "${SEEDED_JOURNAL_A:-}" = "1" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY_A}" >/dev/null 2>&1
   fi
   if [ "${DEPLOYED_A:-}" = "1" ] && { ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}" ) ||
     ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_A}" ); }; then
@@ -410,10 +419,41 @@ if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KE
   echo "FAIL: A's state record is gone after a refused destroy (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
+echo "    OK: the destroy was refused; A's queue and record are intact"
+
+# The same pair makes `cdkd rollback` under PREFIX_A refuse. Its journal is a
+# seeded, EMPTY segment, so a rollback that wrongly ran would replay nothing.
+SEEDED_JOURNAL_A=1
+printf '%s' "{\"journalVersion\":1,\"stackName\":\"${STACK}\",\"region\":\"${REGION}\",\"segments\":[{\"timestamp\":1,\"reason\":\"no-rollback-failure\",\"initialDeploy\":false,\"operations\":[],\"failedOperations\":[]}]}" |
+  aws s3 cp - "s3://${STATE_BUCKET}/${JOURNAL_KEY_A}" >/dev/null
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force >"${RUN_LOG}" 2>&1
+PAIR_ROLLBACK_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+echo "OBSERVE: paired-rollback-rc=${PAIR_ROLLBACK_RC}"
+if [ "${PAIR_ROLLBACK_RC}" -eq 0 ]; then
+  echo "FAIL: cdkd rollback under ${PREFIX_A} exited 0 while ${PREFIX_B} records the same stack (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+# Copied from `destroyUnderOtherPrefixMessage` (rollback arm) in src/state/cross-prefix-stack-scan.ts.
+if ! grep -qF "${ROLLBACK_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: cdkd rollback did not fail with the cross-prefix refusal ('${ROLLBACK_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_A}"; then
+  echo "FAIL: the seeded journal ${JOURNAL_KEY_A} is gone after a refused rollback (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY_A}" >/dev/null
+SEEDED_JOURNAL_A=""
+assert_gone "the seeded journal ${JOURNAL_KEY_A} still exists after its removal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_A}"
+
 aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 assert_gone "the seeded ${STATE_KEY_B} still exists after its removal" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
-echo "    OK: the destroy was refused; A's queue and record are intact; the seed is removed"
+echo "    OK: the rollback was refused and kept its journal; both seeds are removed"
 
 echo ""
 echo "==> Phase 5: negative control -- redeploy A under ${PREFIX_A} (retention ${RETENTION_A})"
@@ -439,4 +479,4 @@ trap - EXIT INT TERM
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 rescan
-echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy of a paired record was refused, and deployment A's queue and log group stayed untouched (#4705)"
+echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy and a rollback of a paired record were refused, and deployment A's queue and log group stayed untouched (#4705)"

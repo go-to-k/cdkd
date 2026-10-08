@@ -9,8 +9,9 @@
  * rollback or a destroy of either deletes it. That configuration is
  * unsupported; this module detects the share of it cdkd can see cheaply — the
  * SAME bucket holding the stack under another prefix — so `deploy` (on a
- * stack's first deploy under this prefix) and `destroy` / `state destroy`
- * refuse it.
+ * stack's first deploy under this prefix), `destroy` / `state destroy` and
+ * `rollback` (whose replay deletes what a failed deploy created, which for a
+ * pair can be the other deployment's resource) refuse it.
  *
  * What it reads: one `ListObjectsV2` with `Delimiter: '/'` for the bucket's
  * top-level prefixes, then the stack's `state.json` (region-scoped key, plus
@@ -164,16 +165,33 @@ export function deployUnderOtherPrefixMessage(
   );
 }
 
-/** The destroy refusal: the record being destroyed has a twin under another prefix. */
+/** What each command calls itself, and what it did not do. */
+export type CrossPrefixAction = 'deploy' | 'destroy' | 'rollback';
+const VERB: Record<CrossPrefixAction, string> = {
+  deploy: 'deploy',
+  destroy: 'destroy',
+  rollback: 'roll back',
+};
+const NOTHING: Record<CrossPrefixAction, string> = {
+  deploy: 'Nothing was deployed.',
+  destroy: 'Nothing was deleted.',
+  rollback: 'Nothing was reverted or deleted.',
+};
+
+/**
+ * The destroy / rollback refusal: the record being destroyed, or whose journal
+ * is being replayed, has a twin under another prefix.
+ */
 export function destroyUnderOtherPrefixMessage(
   s: CrossPrefixSubject,
-  prefixes: readonly string[]
+  prefixes: readonly string[],
+  action: 'destroy' | 'rollback' = 'destroy'
 ): string {
   const first = prefixes[0]!;
   return (
-    `Refusing to destroy stack ${subjectText(s)}: it is also recorded under another state ` +
+    `Refusing to ${VERB[action]} stack ${subjectText(s)}: it is also recorded under another state ` +
     `prefix of bucket ${displayIdent(s.bucket)} (${prefixesText(prefixes)}). ` +
-    `${UNSUPPORTED_SENTENCE} Nothing was deleted. Keep one record per stack name and region: ` +
+    `${UNSUPPORTED_SENTENCE} ${NOTHING[action]} Keep one record per stack name and region: ` +
     `once you have confirmed which record describes the deployment you want to keep, drop the ` +
     `other with \`cdkd state orphan\` (it removes only the record, never a resource), e.g. ` +
     `\`${stateCommand('orphan', s, first)}\`, then re-run.`
@@ -199,7 +217,7 @@ export function crossPrefixDeniedWarning(s: CrossPrefixSubject, error: unknown):
 /** The refusal for a scan that failed otherwise. */
 export function crossPrefixFailedMessage(
   s: CrossPrefixSubject,
-  action: 'deploy' | 'destroy',
+  action: CrossPrefixAction,
   error: unknown
 ): string {
   const name =
@@ -209,9 +227,9 @@ export function crossPrefixFailedMessage(
       ? displaySafe((error as { name: string }).name, { asciiOnly: true })
       : 'an unknown error';
   return (
-    `Refusing to ${action} stack ${subjectText(s)}: cdkd could not check whether it is also ` +
+    `Refusing to ${VERB[action]} stack ${subjectText(s)}: cdkd could not check whether it is also ` +
     `recorded under another state prefix of bucket ${displayIdent(s.bucket)} (${name}). ` +
-    `${UNSUPPORTED_SENTENCE} Nothing was ${action === 'deploy' ? 'deployed' : 'deleted'}. ` +
+    `${UNSUPPORTED_SENTENCE} ${NOTHING[action]} ` +
     `Re-run once the check can succeed.`
   );
 }
@@ -223,7 +241,7 @@ export function crossPrefixFailedMessage(
 export function applyCrossPrefixScan(
   result: CrossPrefixScanResult,
   s: CrossPrefixSubject,
-  action: 'deploy' | 'destroy',
+  action: CrossPrefixAction,
   warn: (message: string) => void
 ): void {
   switch (result.kind) {
@@ -237,7 +255,7 @@ export function applyCrossPrefixScan(
       throw new CdkdError(
         action === 'deploy'
           ? deployUnderOtherPrefixMessage(s, result.prefixes)
-          : destroyUnderOtherPrefixMessage(s, result.prefixes),
+          : destroyUnderOtherPrefixMessage(s, result.prefixes, action),
         STACK_UNDER_OTHER_PREFIX
       );
     case 'failed':

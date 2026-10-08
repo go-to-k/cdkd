@@ -68,6 +68,7 @@ import { rollbackCommand } from '../../../../src/cli/commands/rollback.js';
 function install(stackName: string, stateExtra: Record<string, unknown>): void {
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
       listStacks: vi.fn().mockResolvedValue([{ stackName, region: 'us-east-1' }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({
