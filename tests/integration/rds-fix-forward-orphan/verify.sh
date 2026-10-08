@@ -105,7 +105,7 @@ CLUSTER_HELD_ADOPTED="${STACK}-Held-Cluster"
 DENY_ROLE="${STACK}-no-rds-describe"
 DENY_POLICY_NAME="create-without-describe"
 DENY_ROLE_CREATED=""
-# Set once the preconditions below pass: before that, the four identifiers or
+# Set once the preconditions below pass: before that, the five identifiers or
 # the stack may belong to a concurrent or earlier run, which a failure-path
 # delete must not tear down.
 CLEANUP_ARMED=""
@@ -305,7 +305,7 @@ if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
   exit 1
 fi
 
-echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: both CREATEs fail after AWS made the resource"
+echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: all three CREATEs fail after AWS made the resource"
 set +e
 as_deny_role env -u ORPHAN_FIX_FORWARD WITH_ORPHANS=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --no-rollback "${TIMEOUT_OVERRIDES[@]}" > "${LOG_DIR}/inject.log" 2>&1

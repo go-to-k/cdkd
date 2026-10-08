@@ -24,7 +24,7 @@ import * as rds from 'aws-cdk-lib/aws-rds';
  *   adopts with `cdkd import` before the fix-forward deploy. The deploy must
  *   keep that cluster: a record holds it, in another case.
  *
- * Every property set on the two is one the RDS SDK provider handles, so both
+ * Every property set on the three is one the RDS SDK provider handles, so all
  * stay on the SDK route (`provisionedBy: sdk`), where `isSameResource` lives.
  * The master password is a literal: no instance is reachable (isolated
  * subnets, no public access), and verify.sh sweeps the state prefix's object
