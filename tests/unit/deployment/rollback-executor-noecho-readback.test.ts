@@ -696,9 +696,10 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
     });
 
     it.each([
-      ['revert, the registry routing a hint-less record to Cloud Control', false],
-      ['--revert-failed, the op routed to Cloud Control', true],
-    ])('a nested stack row is not inert on %s', async (_label, failedArm) => {
+      ['revert, the registry routing a hint-less record to Cloud Control', false, true],
+      ['--revert-failed, the op routed to Cloud Control', true, false],
+      ['--revert-failed, the registry routing a hint-less record to Cloud Control', true, true],
+    ])('a nested stack row is not inert on %s', async (_label, failedArm, viaRegistry) => {
       const update = vi.fn();
       const NESTED = 'AWS::CloudFormation::Stack';
       const row = res({
@@ -709,7 +710,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       });
       const state = { Child: { ...row, properties: { ...row.properties, Changed: 'x' } } };
       const ctx = makeCtx({ update });
-      if (!failedArm) {
+      if (viaRegistry) {
         ctx.providerRegistry = {
           getProviderFor: () => ({ provider: { update }, provisionedBy: 'cc-api' }),
         } as unknown as RollbackExecutorContext['providerRegistry'];
@@ -722,7 +723,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
                 changeType: 'UPDATE',
                 resourceType: NESTED,
                 physicalId: 'child',
-                provisionedBy: 'cc-api',
+                ...(!viaRegistry && { provisionedBy: 'cc-api' }),
                 previousState: row,
                 attemptedProperties: state.Child.properties,
               },
