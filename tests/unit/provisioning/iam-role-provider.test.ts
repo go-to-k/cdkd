@@ -37,6 +37,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -369,6 +371,31 @@ describe('IAMRoleProvider', () => {
   });
 
   describe('update', () => {
+    // Issue #4739: a Path-only change keeps the role's name, which IAM holds
+    // whatever the path, so a re-create could only collide. It is refused as
+    // not updatable in place -- the engine's fallback replaces it under
+    // `--replace` -- before any call.
+    it('refuses a Path-only change as not updatable in place, sending nothing', async () => {
+      const doc = { Version: '2012-10-17', Statement: [] };
+      // In a stack scope the derived name IS the recorded one: only the Path moves.
+      const error = await withStackName('MyStack', () =>
+        provider.update(
+          'L',
+          'MyStack-L',
+          'AWS::IAM::Role',
+          { AssumeRolePolicyDocument: doc, Path: '/b/' },
+          { AssumeRolePolicyDocument: doc, Path: '/a/' }
+        )
+      ).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toMatch(/Path changed from \/a\/ to \/b\/.*--replace/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     // Issue #1819: a RoleName change is immutable, so the provider replaces --
     // create the new role, then delete the old. When that delete fails the old
     // role survives untracked, and before the outcome channel that was a bare

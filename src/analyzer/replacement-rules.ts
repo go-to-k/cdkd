@@ -148,6 +148,29 @@ export function budgetNameChanged(oldValue: unknown, newValue: unknown): boolean
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::IAM::Role.Path` (issue
+ * [#4739](https://github.com/go-to-k/cdkd/issues/4739)).
+ *
+ * `Path` is createOnly: IAM has no call that moves a role to another path, so
+ * a change is a replacement, and it goes through the engine's create-first
+ * replacement and its guards. Classified as updateable, it reached the
+ * provider's own re-create, which asks for the name the live role still holds
+ * (IAM role names are unique whatever the path) and fails `EntityAlreadyExists`.
+ *
+ * An absent or empty `Path` is the IAM default `/`, which the provider sends
+ * the same way, so `/` to absent (or back) is no change and replaces nothing.
+ * Any other difference, a non-string side included, is a replacement.
+ */
+export function iamRolePathChanged(oldValue: unknown, newValue: unknown): boolean {
+  const effective = (value: unknown): unknown =>
+    value === undefined || value === null || value === '' ? '/' : value;
+  const oldPath = effective(oldValue);
+  const newPath = effective(newValue);
+  if (typeof oldPath === 'string' && typeof newPath === 'string') return oldPath !== newPath;
+  return JSON.stringify(oldPath) !== JSON.stringify(newPath);
+}
+
+/**
  * Conditional-replacement predicate for `AWS::Glue::Table.TableInput` (issue
  * [#3750](https://github.com/go-to-k/cdkd/issues/3750)).
  *
@@ -476,11 +499,11 @@ export class ReplacementRulesRegistry {
         'Description',
         'ManagedPolicyArns',
         'MaxSessionDuration',
-        'Path',
         'PermissionsBoundary',
         'Policies',
         'Tags',
       ]),
+      conditionalReplacements: new Map([['Path', iamRolePathChanged]]),
     });
 
     // SNS Topic

@@ -26,7 +26,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -443,6 +443,25 @@ export class IAMRoleProvider implements ResourceProvider {
           resourceType,
           logicalId,
           physicalId
+        )
+      );
+    }
+
+    // Issue #4739: the re-create below asks for `newRoleName`, which a Path-only
+    // change leaves equal to the live role's name, and IAM role names are unique
+    // whatever the path, so CreateRole could only fail `EntityAlreadyExists`.
+    // The registry classifies a Path change as a replacement, so a deploy never
+    // routes one here; a caller that still does gets the update-not-supported
+    // refusal, which the engine's fallback turns into a delete-first replacement
+    // under `--replace`, before any call.
+    if (needsReplacement && newRoleName === physicalId) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        log.mask(
+          `Path changed from ${v(oldPath)} to ${v(newPath)}, and an IAM role cannot move to ` +
+            `another path; a replacement under the same name ${v(physicalId)} must delete the ` +
+            `role first — re-deploy with --replace, or give the role a new name`
         )
       );
     }
