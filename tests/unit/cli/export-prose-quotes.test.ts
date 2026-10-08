@@ -526,6 +526,29 @@ describe("orphanCommandFor's drop carries the account flags (go-to-k/cdkd#4648)"
     expect(await missingChild('us-east-1​')).toContain("'cdkd state list --json' and act on");
   });
 
+  it("a GRANDCHILD's missing record (the walker's recursion) carries them too", async () => {
+    const message = await refusal(() =>
+      buildCdkdStateStackTree(
+        'Root',
+        'us-east-1',
+        backend({
+          'Root|us-east-1': stateOf({ stackName: 'Root', region: 'us-east-1', resources: nested }),
+          'Root~Child|us-east-1': stateOf({
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            resources: { Grand: 'AWS::CloudFormation::Stack' },
+            parentStack: 'Root',
+          }),
+        }),
+        undefined,
+        RECOVERY
+      )
+    );
+    expect(message).toMatch(
+      new RegExp(`^Drop it with: cdkd state orphan 'Root~Child' --stack-region us-east-1 ${FLAGS}$`, 'm')
+    );
+  });
+
   it('the withheld template explains an account hole too', async () => {
     const message = await missingChild('us-east-1\u200b', { profile: 'my profile', stateBucket: 'b' });
     expect(message).toMatch(/^Drop it with: cdkd state orphan '<stack>' --stack-region '<region>' --profile '<profile>' --state-bucket b$/m);

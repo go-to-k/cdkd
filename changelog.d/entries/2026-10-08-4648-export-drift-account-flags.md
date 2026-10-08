@@ -1,0 +1,6 @@
+- **`cdkd export`'s and `cdkd drift`'s pasteable `cdkd state` commands now carry the run's `--profile`, resolved `--state-bucket` and non-default `--state-prefix` (issue [#4648](https://github.com/go-to-k/cdkd/issues/4648))**. Changed files: `src/cli/commands/export.ts`, `src/cli/commands/drift.ts` and `src/cli/commands/state.ts`. Before this change these commands were printed without the flags, so on a non-default bucket or profile a pasted one acted on the default profile's bucket:
+  - `cdkd export`'s `cdkd state refresh-observed` remedy, which WRITES the record, and its `cdkd state show` inspect line;
+  - `cdkd export`'s `cdkd state orphan` drops: the failed pre-delete / phase 2, the per-stack recovery list, the tree's `Recover with:` template, and a missing or out-of-sync nested child (also reached by `cdkd state show --show-nested`);
+  - `cdkd drift --revert`'s `Populate with: cdkd state refresh-observed` line.
+
+  The identity check that decides whether a command is offered is unchanged. Each account value goes through the same gate as #3909's: a refused one prints as a quoted hole such as `'<profile>'`, with a sentence naming the flag and the reason, and the value is never repeated. When a drop names no record, its `cdkd state list --json` pointer says to run it with the same flags. This completes #4648.

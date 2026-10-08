@@ -2840,7 +2840,14 @@ describe('reportDriftBaselineGaps', () => {
     ): string[] => {
       const logger = makeLogger();
       reportDriftBaselineGaps(
-        { version, stackName: 'S', region: 'us-east-1', resources: resources as never, outputs: {}, lastModified: 0 },
+        {
+          version: version as StackState['version'],
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: resources as never,
+          outputs: {},
+          lastModified: 0,
+        },
         logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
         LOADED,
         undefined,
