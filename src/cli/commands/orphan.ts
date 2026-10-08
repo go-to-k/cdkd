@@ -549,8 +549,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
           // `StatusReason` and the context-provider failure text take this
           // helper rather than bare `displaySafe`.
           logger.warn(
-            `Failed to release lock: ` +
-              `${displayAwsMessage(describeAwsFailure(err).detail)}`
+            `Failed to release lock: ${displayAwsMessage(describeAwsFailure(err).detail)}`
           );
         });
       }

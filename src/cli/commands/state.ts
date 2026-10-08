@@ -4516,9 +4516,7 @@ async function refreshObservedForStack(
     return { refreshed, unsupported, failed, notFound, refusedBaseline, refusedSticky };
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
-      logger.warn(
-        safeMsg`Failed to release lock for ${ref}: ${describeAwsFailure(err).detail}`
-      );
+      logger.warn(safeMsg`Failed to release lock for ${ref}: ${describeAwsFailure(err).detail}`);
     });
   }
 }
