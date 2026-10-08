@@ -783,7 +783,9 @@ describe('exportNameSecretExposure refuses an Export.Name holding a split piece 
     const last = refusedStates[refusedStates.length - 1]!;
     expect(last.exportNames).toEqual(['plain-export']);
     for (const state of refusedStates) expect(JSON.stringify(state)).not.toContain(`exp-${FIRST}`);
-    expect(lines()).toContain('Output Echo has an Export.Name that resolves to a value containing a secret');
+    // The name reads `Secret`, so the positional refusal decides it
+    // (go-to-k/cdkd#4657), ahead of the piece's containment arm.
+    expect(lines()).toContain('Output Echo has an Export.Name that reads the NoEcho template parameter Secret');
     expect(lines()).not.toContain(FIRST);
 
     const published = harness(SPLIT_PROPS, { Secret: NOECHO });

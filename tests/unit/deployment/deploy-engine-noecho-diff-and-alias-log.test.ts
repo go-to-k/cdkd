@@ -155,10 +155,10 @@ describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (
     expect(lines).toContain(
       `Property Name of AWS::SSM::Parameter requires replacement (from "(previous NoEcho value)" to "${SECRET_MASK}")`
     );
-    // The name IS the NoEcho value, so the secret-bearing-name refusal fires
-    // before the collision arm could (go-to-k/cdkd#4043).
+    // The name reads the NoEcho parameter, so the positional refusal fires
+    // (go-to-k/cdkd#4657) before the collision arm could (go-to-k/cdkd#4043).
     expect(lines).toContain(
-      `Output Echo has an Export.Name that resolves to a value containing a secret (masked: "${SECRET_MASK}")`
+      'Output Echo has an Export.Name that reads the NoEcho template parameter Secret'
     );
     expect(lines).not.toContain('which is also the name of another output');
     // The value AWS receives is the real one.

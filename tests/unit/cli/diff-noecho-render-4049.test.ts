@@ -312,7 +312,8 @@ describe('cdkd diff masks a NoEcho parameter value it prints (#4049)', () => {
     // Only the alias moves: the output's own row is unchanged.
     expect(result.outputChanges).toHaveLength(1);
     expect(result.outputChanges[0]!.changeType).toBe('REMOVE');
-    expect(result.outputChanges[0]!.nameDisplay).toEqual({ kind: 'masked', text: 'app-***' });
+    // Refused for a NoEcho reason, so withheld outright (go-to-k/cdkd#4657).
+    expect(result.outputChanges[0]!.nameDisplay).toEqual({ kind: 'withheld' });
   });
 
   it('leaves a NoEcho parameter fed a dynamic reference printed as its expression', async () => {

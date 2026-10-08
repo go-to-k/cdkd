@@ -15,7 +15,14 @@
  *    stays absent otherwise. A failed key never writes, so a good stored value
  *    is never overwritten with nothing, which is all the #875 guard asked for.
  *    An output's literal `Export.Name` alias is carried with it, but only when
- *    the previous record already published that alias.
+ *    the previous record already published that alias AND this pass's
+ *    export-name verdict still publishes it (go-to-k/cdkd#4657): a name an
+ *    earlier binary published can hold a value today's verdict refuses (a
+ *    `NoEcho` parameter's), and carrying it unchecked would republish it. A
+ *    refused alias is dropped like a removed key and reported in
+ *    `refusedAliases`. The keep-whole refusals below still keep the previous
+ *    bag, aliases and all: that is the never-redeployed stack's residual,
+ *    which a deploy that resolves every output repairs.
  * 3. A key this pass did not produce at all is REMOVED: an output deleted from
  *    the template, or suppressed by a false condition. The changed-resources
  *    path drops such a key too, and carrying it would turn a deletion into a
@@ -122,6 +129,11 @@ export type NoChangeOutputsMerge =
       exportNames: string[];
       /** Keys whose stored value was carried rather than rewritten. */
       carriedKeys: string[];
+      /**
+       * Export names the merge would have carried and the verdict refused,
+       * each with the verdict's reason, for the caller to report.
+       */
+      refusedAliases: Array<{ outputKey: string; exportName: string; reason: string }>;
     }
   | { kind: 'kept'; reason: NoChangeOutputsKeptReason };
 
@@ -140,6 +152,13 @@ export interface NoChangeOutputsMergeInput {
   previousExportNames: ReadonlySet<string>;
   /** The export aliases this pass wrote, in the order it wrote them. */
   resolvedExportNames: readonly string[];
+  /**
+   * This pass's export-name verdict over a name the merge would CARRY
+   * (go-to-k/cdkd#4657): a reason to refuse it, or `undefined` to carry it.
+   * A callback so this module stays a leaf; both callers run
+   * `exportNameSecretExposure` against their outputs pass's corpora.
+   */
+  refusesCarriedAlias: (outputKey: string, exportName: string) => string | undefined;
 }
 
 function hasOwn(bag: object, key: string): boolean {
@@ -152,7 +171,14 @@ function hasOwn(bag: object, key: string): boolean {
  * refusals.
  */
 export function mergeNoChangeOutputs(input: NoChangeOutputsMergeInput): NoChangeOutputsMerge {
-  const { persisted, resolved, declaredOutputs, previousExportNames, resolvedExportNames } = input;
+  const {
+    persisted,
+    resolved,
+    declaredOutputs,
+    previousExportNames,
+    resolvedExportNames,
+    refusesCarriedAlias,
+  } = input;
   const failedKeys = Object.keys(resolved).filter((key) => resolved[key] === undefined);
 
   const exportNameOf = (outputKey: string): unknown =>
@@ -186,6 +212,15 @@ export function mergeNoChangeOutputs(input: NoChangeOutputsMergeInput): NoChange
   const addExport = (name: string): void => {
     exportNames.push(name);
   };
+  const refusedAliases: Array<{ outputKey: string; exportName: string; reason: string }> = [];
+  // The alias pass's verdict, re-run over the carried name: a refused one is
+  // neither exported nor (as an alias key) carried.
+  const carryAllowed = (outputKey: string, exportName: string): boolean => {
+    const reason = refusesCarriedAlias(outputKey, exportName);
+    if (reason === undefined) return true;
+    refusedAliases.push({ outputKey, exportName, reason });
+    return false;
+  };
   for (const outputKey of failedKeys) {
     const exportName = exportNameOf(outputKey);
     // A failed key is never already in `outputs`: nothing above wrote it, and
@@ -195,7 +230,14 @@ export function mergeNoChangeOutputs(input: NoChangeOutputsMergeInput): NoChange
       carriedKeys.push(outputKey);
       // A self-named export stays exported only if the template still says so
       // AND the previous record already served it.
-      if (exportName === outputKey && previousExportNames.has(outputKey)) addExport(outputKey);
+      // The key itself is an output NAME and is carried either way.
+      if (
+        exportName === outputKey &&
+        previousExportNames.has(outputKey) &&
+        carryAllowed(outputKey, outputKey)
+      ) {
+        addExport(outputKey);
+      }
     }
     // A self-named name needs no case of its own below: it is a key `resolved`
     // holds, which the collision gate already refuses.
@@ -210,7 +252,8 @@ export function mergeNoChangeOutputs(input: NoChangeOutputsMergeInput): NoChange
       previousExportNames.has(exportName) &&
       hasOwn(persisted, exportName) &&
       !hasOwn(resolved, exportName) &&
-      !hasOwn(outputs, exportName)
+      !hasOwn(outputs, exportName) &&
+      carryAllowed(outputKey, exportName)
     ) {
       outputs[exportName] = persisted[exportName];
       carriedKeys.push(exportName);
@@ -226,7 +269,7 @@ export function mergeNoChangeOutputs(input: NoChangeOutputsMergeInput): NoChange
     return { kind: 'kept', reason: 'mixed-generation' };
   }
 
-  return { kind: 'merged', outputs, exportNames, carriedKeys };
+  return { kind: 'merged', outputs, exportNames, carriedKeys, refusedAliases };
 }
 
 /**

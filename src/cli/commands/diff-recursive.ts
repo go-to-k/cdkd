@@ -52,6 +52,7 @@ import {
 } from '../../analyzer/outputs-diff.js';
 import {
   WITHHELD_NAME_DISPLAY,
+  carriedExportAliasExposure,
   displayTextOrWithheld,
   isWholeDynamicReferenceValue,
   noEchoParameterValueSeed,
@@ -2140,6 +2141,23 @@ export async function computeStackDiff(
     currentState.skippedOutputs,
     changedLogicalIds
   );
+  // The deploy's seed (go-to-k/cdkd#4043, Phase B): every `NoEcho` value,
+  // and on a nested child each parent one a parameter carries. A whole
+  // `{{resolve:...}}` token is no plaintext, as for the print corpus.
+  const noEchoSeed = noEchoParameterValueSeed(
+    effectiveTemplate.Parameters,
+    mergedParameters,
+    inheritedForResolver,
+    parameters
+  );
+  // The condition verdicts this diff KNOWS: an `Fn::If` on an unknown one is
+  // read as a whole by the positional readers below (review B5).
+  const knownConditions =
+    conditions === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+        );
   const resolved = await resolveTemplateOutputs(
     effectiveTemplate,
     resolveFn,
@@ -2152,15 +2170,12 @@ export async function computeStackDiff(
       // while the verdict reads only what this pass's bags recorded.
       resolveInto: (bag) => resolveRecordingInto(bag, diffSecrets),
       secrets: outputsPassSecrets,
-      // The deploy's seed (go-to-k/cdkd#4043, Phase B): every `NoEcho` value,
-      // and on a nested child each parent one a parameter carries. A whole
-      // `{{resolve:...}}` token is no plaintext, as for the print corpus.
-      noEchoParameterValues: noEchoParameterValueSeed(
-        effectiveTemplate.Parameters,
-        mergedParameters,
-        inheritedForResolver,
-        parameters
-      ),
+      noEchoParameterValues: noEchoSeed,
+      // The deploy's positional refusal (go-to-k/cdkd#4657).
+      noEchoNameSources: {
+        parameters: noEchoParametersOf(effectiveTemplate),
+        ...(knownConditions !== undefined && { conditions: knownConditions }),
+      },
     }
   );
   // The RAW template too whenever a parameter is unbound or a condition has no
@@ -2192,11 +2207,7 @@ export async function computeStackDiff(
       const names = record?.noEchoAttributeNames as unknown;
       return Array.isArray(names) && names.includes(attribute);
     },
-    ...(conditions !== undefined && {
-      conditions: Object.fromEntries(
-        Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
-      ),
-    }),
+    ...(knownConditions !== undefined && { conditions: knownConditions }),
   });
   const diffOutputsAgainst = (
     rawDesired: Record<string, unknown>,
@@ -2212,6 +2223,7 @@ export async function computeStackDiff(
       templateHasSecretReference,
       forceLegacyRecord,
       secretBearingExportNames: resolved.secretBearingExportNames,
+      refusedNoEchoExportNames: resolved.refusedNoEchoExportNames,
       // A malformed `exportNames` (not a list) reads as none recorded, so the
       // alias test falls back to the key's own shape -- the wider refusal.
       storedExportNames: Array.isArray(currentState.exportNames)
@@ -2293,6 +2305,12 @@ export async function computeStackDiff(
             declaredOutputs: effectiveTemplate.Outputs,
             previousExportNames: new Set(importableOutputKeys(currentState)),
             resolvedExportNames: [...resolved.exportNames],
+            // The deploy's carried-alias verdict (go-to-k/cdkd#4657), over this
+            // diff's outputs-pass corpora; the reason is the deploy's to print.
+            refusesCarriedAlias: (_outputKey, exportName) =>
+              carriedExportAliasExposure(exportName, outputsPassSecrets, noEchoSeed) === undefined
+                ? undefined
+                : 'refused',
           })
         : undefined;
     if (merge?.kind === 'merged') {

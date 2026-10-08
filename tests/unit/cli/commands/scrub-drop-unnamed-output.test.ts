@@ -234,6 +234,7 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
           declaredKeys: new Set(['Out', 'Sm']),
           templateHasSecretReference: true,
           secretBearingExportNames: [],
+          refusedNoEchoExportNames: [],
           storedExportNames: saved!.exportNames,
         }
       );
