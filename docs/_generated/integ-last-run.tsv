@@ -72,6 +72,7 @@ custom-resource-masked-service-token	2026-10-06T17:47:53Z	PASS	175	verify.sh	rc 
 custom-resource-noecho-nested	2026-10-08T11:22:30Z	PASS	1467	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
 custom-resource-provider	2026-10-08T17:12:09Z	PASS	662	verify.sh	rc ok, orph clean
 custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-service-token-change	2026-10-08T20:03:47Z	PASS	136	verify.sh	rc ok, orph clean (PR #4750 ServiceToken refusal, first run)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-10-03T05:56:47Z	PASS	80	verify.sh	rc ok, orph clean (#4497)
