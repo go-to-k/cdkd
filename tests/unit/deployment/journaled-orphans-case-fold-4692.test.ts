@@ -278,6 +278,13 @@ describe('classifyFailedOp and demoteSupersededOrphans under the type’s case r
     expect(classifyFailedOp(orphan(), { OrphanCluster: record('mycluster') })).toBe('skip-failed-noop');
   });
 
+  // The exact comparison stays type-blind, as before the fold was added.
+  it('still settles as a no-op beside a record of another type under its own logical id and exact id', () => {
+    expect(
+      classifyFailedOp(orphan(), { OrphanCluster: record('MyCluster', 'AWS::SQS::Queue') })
+    ).toBe('skip-failed-noop');
+  });
+
   it('deletes a case-sensitive orphan beside a record that differs in case only', () => {
     const op = orphan({ logicalId: 'T', resourceType: TABLE, physicalId: 'Orders' });
     expect(classifyFailedOp(op, { Adopted: record('orders', TABLE) })).toBe('delete-failed-create');

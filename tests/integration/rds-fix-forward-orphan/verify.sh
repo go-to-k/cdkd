@@ -33,9 +33,10 @@
 #      the template's literal master password is in the journal's history.
 #
 # Cost: one Aurora cluster with no instance and one db.t3.micro instance per
-# generation, plus the held Aurora cluster (no instance). A run takes roughly 40 minutes (two instance creates and two
-# deletes). On any failure, cleanup deletes all four by identifier, destroys
-# the stack and deletes the role.
+# generation, plus the held Aurora cluster (no instance). A run takes roughly
+# 45 minutes (two instance creates and two deletes dominate; the held cluster
+# adds one cluster create and delete). On any failure, cleanup deletes all five
+# by identifier, destroys the stack and deletes the role.
 set -euo pipefail
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
