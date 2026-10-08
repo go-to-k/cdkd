@@ -54,8 +54,8 @@ const baseState = (): StackState => ({
 /**
  * Resolves against the PERSISTED state, which is what the deploy's diff
  * context does: `Ref` -> physical id, `Fn::GetAtt` (both spellings, the string
- * one split on its FIRST dot like the real resolver) -> the recorded attribute.
- * An unresolvable reference throws, so the diff keeps the raw intrinsic.
+ * one split on its FIRST dot like the real resolver) -> the recorded attribute,
+ * `Fn::Join` -> its resolved parts joined. An unresolvable reference throws, so the diff keeps the raw intrinsic.
  */
 const makeResolver =
   (state: StackState) =>
@@ -82,6 +82,10 @@ const makeResolver =
         }
         const [id, attr] = ga as [string, string];
         return getAtt(id, attr);
+      }
+      if ('Fn::Join' in obj && Object.keys(obj).length === 1) {
+        const [separator, parts] = obj['Fn::Join'] as [string, unknown[]];
+        return (await Promise.all(parts.map((part) => resolve(part)))).join(separator);
       }
       if ('Fn::Sub' in obj && Object.keys(obj).length === 1) {
         const [body] = obj['Fn::Sub'] as [string, Record<string, unknown>];
@@ -447,6 +451,293 @@ describe('DiffCalculator - a promoted reader outside the replacement registry (g
       const pc = changeOf(changes, 'Rule', 'ListenerArn');
       expect(pc?.replacementPropagated).toBe(true);
       expect(pc?.requiresReplacement).toBe(true);
+    });
+  });
+
+  describe('a write-only create-only PLAIN REFERENCE to a replaced resource (go-to-k/cdkd#4701)', () => {
+    // Types the registry does not classify. The live schemas, trimmed to the
+    // top-level keys these cases read.
+    const SCALING_POLICY = 'AWS::ApplicationAutoScaling::ScalingPolicy';
+    const SCALABLE_TARGET = 'AWS::ApplicationAutoScaling::ScalableTarget';
+    const LOCATION_S3 = 'AWS::DataSync::LocationS3';
+    const SIMPLE_AD = 'AWS::DirectoryService::SimpleAD';
+    const LIVE: Readonly<Record<string, { createOnly: string[]; writeOnly: string[] }>> = {
+      [SCALING_POLICY]: {
+        createOnly: ['PolicyName', 'ScalingTargetId'],
+        writeOnly: ['ScalingTargetId'],
+      },
+      [SCALABLE_TARGET]: {
+        createOnly: ['ResourceId', 'ScalableDimension', 'ServiceNamespace'],
+        writeOnly: ['RoleARN'],
+      },
+      [LOCATION_S3]: { createOnly: ['S3BucketArn', 'Subdirectory'], writeOnly: ['S3BucketArn'] },
+      [SIMPLE_AD]: { createOnly: ['Password', 'Name'], writeOnly: ['Password'] },
+    };
+    const liveSchema = (command: { input?: { TypeName?: string } }): Promise<unknown> => {
+      const live = LIVE[command.input?.TypeName ?? ''];
+      return live === undefined
+        ? fromSnapshot(command)
+        : Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: live.createOnly.map((key) => `/properties/${key}`),
+              writeOnlyProperties: live.writeOnly.map((key) => `/properties/${key}`),
+            }),
+          });
+    };
+
+    async function diff(
+      state: StackState,
+      template: CloudFormationTemplate,
+      forced?: ReadonlySet<string>,
+      schema: (command: { input?: { TypeName?: string } }) => Promise<unknown> = liveSchema
+    ): Promise<Map<string, { changeType?: string; propertyChanges?: PropertyChange[] }>> {
+      clearCreateOnlyPropertiesCache();
+      clearWriteOnlyPropertiesCache();
+      mockCloudFormationSend.mockImplementation(schema);
+      try {
+        return await new DiffCalculator().calculateDiff(
+          state,
+          template,
+          makeResolver(state),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          forced
+        );
+      } finally {
+        mockCloudFormationSend.mockImplementation(fromSnapshot);
+        clearCreateOnlyPropertiesCache();
+        clearWriteOnlyPropertiesCache();
+      }
+    }
+
+    const TARGET_ID = 'table/t-a|dynamodb:table:ReadCapacityUnits|dynamodb';
+    function scalingState(): StackState {
+      const state = baseState();
+      state.resources['Target'] = {
+        physicalId: TARGET_ID,
+        resourceType: SCALABLE_TARGET,
+        properties: {
+          ResourceId: 'table/t-a',
+          ScalableDimension: 'dynamodb:table:ReadCapacityUnits',
+          ServiceNamespace: 'dynamodb',
+          MinCapacity: 5,
+          MaxCapacity: 10,
+        },
+        attributes: {},
+      };
+      state.resources['Policy'] = {
+        physicalId: 'arn:aws:autoscaling:us-east-1:123456789012:scalingPolicy:x',
+        resourceType: SCALING_POLICY,
+        properties: { PolicyName: 'p', PolicyType: 'TargetTrackingScaling', ScalingTargetId: TARGET_ID },
+        attributes: {},
+      };
+      return state;
+    }
+    function scalingTemplate(resourceId: string): CloudFormationTemplate {
+      return {
+        Resources: {
+          Target: {
+            Type: SCALABLE_TARGET,
+            Properties: {
+              ResourceId: resourceId,
+              ScalableDimension: 'dynamodb:table:ReadCapacityUnits',
+              ServiceNamespace: 'dynamodb',
+              MinCapacity: 5,
+              MaxCapacity: 10,
+            },
+          },
+          Policy: {
+            Type: SCALING_POLICY,
+            Properties: {
+              PolicyName: 'p',
+              PolicyType: 'TargetTrackingScaling',
+              ScalingTargetId: { Ref: 'Target' },
+            },
+          },
+        },
+      };
+    }
+
+    it('replaces a scaling policy whose target is replaced by a create-only change (Ref)', async () => {
+      const changes = await diff(scalingState(), scalingTemplate('table/t-b'));
+
+      expect(changeOf(changes, 'Target', 'ResourceId')?.requiresReplacement).toBe(true);
+      const pc = changeOf(changes, 'Policy', 'ScalingTargetId');
+      expect(pc?.replacementPropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(true);
+    });
+
+    it('replaces it for a --recreate-via-* target too', async () => {
+      const changes = await diff(scalingState(), scalingTemplate('table/t-a'), new Set(['Target']));
+
+      const pc = changeOf(changes, 'Policy', 'ScalingTargetId');
+      expect(pc?.replacementPropagated).toBe(true);
+      expect(pc?.requiresReplacement).toBe(true);
+    });
+
+    it('replaces it with the write-only list unknown: a plain Ref needs no write-only answer', async () => {
+      // DescribeType denied: the create-only paths come from the snapshot
+      // (ScalingPolicy is not in it, so an API Gateway reader stands in).
+      const state = baseState();
+      state.resources['Api'] = {
+        physicalId: 'api-1',
+        resourceType: 'AWS::ApiGateway::RestApi',
+        properties: { Name: 'api' },
+        attributes: {},
+      };
+      state.resources['Plain'] = {
+        physicalId: 'dep-1',
+        resourceType: 'AWS::ApiGateway::Deployment',
+        properties: { RestApiId: 'api-1' },
+        attributes: {},
+      };
+      state.resources['Built'] = {
+        physicalId: 'dep-2',
+        resourceType: 'AWS::ApiGateway::Deployment',
+        properties: { RestApiId: 'api-1' },
+        attributes: {},
+      };
+      const changes = await diff(
+        state,
+        {
+          Resources: {
+            Api: { Type: 'AWS::ApiGateway::RestApi', Properties: { Name: 'api' } },
+            Plain: { Type: 'AWS::ApiGateway::Deployment', Properties: { RestApiId: { Ref: 'Api' } } },
+            Built: {
+              Type: 'AWS::ApiGateway::Deployment',
+              Properties: { RestApiId: { 'Fn::Join': ['', [{ Ref: 'Api' }]] } },
+            },
+          },
+        },
+        new Set(['Api']),
+        () => denied()
+      );
+
+      expect(changeOf(changes, 'Plain', 'RestApiId')?.requiresReplacement).toBe(true);
+      // Built from the reference: unknown write-only keeps it in place (#3803).
+      const built = changeOf(changes, 'Built', 'RestApiId');
+      expect(built?.replacementPropagated).toBe(true);
+      expect(built?.requiresReplacement).toBe(false);
+    });
+
+    function bucketState(): StackState {
+      const state = baseState();
+      state.resources['Bucket'] = {
+        physicalId: 'bucket-a',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { BucketName: 'bucket-a' },
+        attributes: { Arn: 'arn:aws:s3:::bucket-a' },
+      };
+      state.resources['Location'] = {
+        physicalId: 'arn:aws:datasync:us-east-1:123456789012:location/loc-1',
+        resourceType: LOCATION_S3,
+        properties: {
+          S3BucketArn: 'arn:aws:s3:::bucket-a',
+          S3Config: { BucketAccessRoleArn: 'arn:role' },
+        },
+        attributes: {},
+      };
+      return state;
+    }
+
+    it('replaces a reader holding a Fn::GetAtt of the replaced resource, in either spelling', async () => {
+      for (const getAtt of [{ 'Fn::GetAtt': ['Bucket', 'Arn'] }, { 'Fn::GetAtt': 'Bucket.Arn' }]) {
+        const changes = await diff(bucketState(), {
+          Resources: {
+            Bucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-b' } },
+            Location: {
+              Type: LOCATION_S3,
+              Properties: { S3BucketArn: getAtt, S3Config: { BucketAccessRoleArn: 'arn:role' } },
+            },
+          },
+        });
+
+        expect(changeOf(changes, 'Bucket', 'BucketName')?.requiresReplacement).toBe(true);
+        const pc = changeOf(changes, 'Location', 'S3BucketArn');
+        expect(pc?.replacementPropagated).toBe(true);
+        expect(pc?.requiresReplacement).toBe(true);
+      }
+    });
+
+    const SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:s-1';
+    // `password` / `name`: what the case's template values resolve to here, so
+    // the diff compares them equal and each is in the plan only by promotion.
+    function adState(password: string, name: string): StackState {
+      const state = crState();
+      state.resources['Secret'] = {
+        physicalId: SECRET_ARN,
+        resourceType: 'AWS::SecretsManager::Secret',
+        properties: {},
+        attributes: {},
+      };
+      state.resources['Ad'] = {
+        physicalId: 'd-1',
+        resourceType: SIMPLE_AD,
+        properties: { Password: password, Name: name, Size: 'Small' },
+        attributes: {},
+      };
+      return state;
+    }
+
+    it('keeps a write-only value BUILT from the reference in place (go-to-k/cdkd#3803 kept)', async () => {
+      // A dynamic reference to a recreated secret resolves to a secret AWS
+      // never returns there; the readable Name built the same way is the control.
+      const built = (suffix: string): unknown => ({
+        'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'Secret' }, suffix]],
+      });
+      const changes = await diff(
+        adState(
+          `{{resolve:secretsmanager:${SECRET_ARN}:SecretString:pw}}`,
+          `{{resolve:secretsmanager:${SECRET_ARN}:SecretString:name}}`
+        ),
+        {
+          Resources: {
+            Cr: cr('a'),
+            Secret: { Type: 'AWS::SecretsManager::Secret', Properties: {} },
+            Ad: {
+              Type: SIMPLE_AD,
+              Properties: {
+                Password: built(':SecretString:pw}}'),
+                Name: built(':SecretString:name}}'),
+                Size: 'Small',
+              },
+            },
+          },
+        },
+        new Set(['Secret'])
+      );
+
+      const password = changeOf(changes, 'Ad', 'Password');
+      expect(password?.replacementPropagated).toBe(true);
+      expect(password?.requiresReplacement).toBe(false);
+      expect(changeOf(changes, 'Ad', 'Name')?.requiresReplacement).toBe(true);
+    });
+
+    it('keeps a Fn::GetAtt of a replaced CUSTOM RESOURCE in place: its Data may be NoEcho', async () => {
+      const changes = await diff(
+        adState('text-a', 'text-a'),
+        {
+          Resources: {
+            Cr: cr('a'),
+            Ad: {
+              Type: SIMPLE_AD,
+              Properties: {
+                Password: { 'Fn::GetAtt': ['Cr', 'Text'] },
+                Name: { 'Fn::GetAtt': ['Cr', 'Text'] },
+                Size: 'Small',
+              },
+            },
+          },
+        },
+        new Set(['Cr'])
+      );
+
+      const password = changeOf(changes, 'Ad', 'Password');
+      expect(password?.replacementPropagated).toBe(true);
+      expect(password?.requiresReplacement).toBe(false);
+      expect(changeOf(changes, 'Ad', 'Name')?.requiresReplacement).toBe(true);
     });
   });
 

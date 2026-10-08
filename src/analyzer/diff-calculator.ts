@@ -36,6 +36,18 @@ import { AWS_NO_VALUE } from '../deployment/intrinsic-function-resolver.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../utils/display-safe.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
+import { isPlainReferenceTo } from '../deployment/recreate-target-readers.js';
+
+/**
+ * A type's CFn-schema create-only keys as the promotion passes read them
+ * (go-to-k/cdkd#3803): every WHOLE-property key, and those that raise no
+ * ceiling from a value that may be a fresh `NoEcho` one — the write-only keys,
+ * or `'all'` when the write-only list is unknown.
+ */
+interface SyntheticCreateOnly {
+  readonly whole: ReadonlySet<string>;
+  readonly unconfirmable: ReadonlySet<string> | 'all';
+}
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -843,8 +855,8 @@ export class DiffCalculator {
     rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
     freshParameters: ReadonlySet<string> | undefined,
     forcedReplacements: ReadonlySet<string>
-  ): Promise<Map<string, ReadonlyArray<readonly string[]>>> {
-    const loaded = new Map<string, ReadonlyArray<readonly string[]>>();
+  ): Promise<Map<string, SyntheticCreateOnly>> {
+    const loaded = new Map<string, SyntheticCreateOnly>();
     const queue: string[] = [...(freshParameters ?? [])];
     for (const [logicalId, change] of changes) {
       if (change.changeType === 'UPDATE' || forcedReplacements.has(logicalId)) {
@@ -905,37 +917,41 @@ export class DiffCalculator {
     const types = candidateKeys.keys();
     await Promise.all(
       [...types].map(async (type) => {
-        const paths = await getCreateOnlyPropertyPaths(type);
+        const whole = new Set(
+          (await getCreateOnlyPropertyPaths(type))
+            .filter((path) => path.length === 1)
+            .map((path) => path[0]!)
+        );
         const keys = candidateKeys.get(type)!;
-        // A WRITE-ONLY create-only property raises no ceiling: AWS never
-        // returns it, so the engine could not confirm a fresh `NoEcho` value
-        // there and would replace a resource CloudFormation leaves alone
-        // (`AWS::DirectoryService::SimpleAD.Password`). Such a property stays
-        // an in-place update, as before. Asked only when a candidate property
-        // has a whole-property path, i.e. when a ceiling could be raised.
-        if (!paths.some((path) => path.length === 1 && keys.has(path[0]!))) {
-          loaded.set(type, paths);
+        // A WRITE-ONLY create-only property raises no ceiling from a value
+        // that may be a fresh `NoEcho` one: AWS never returns it, so the
+        // engine could not confirm such a value there and would replace a
+        // resource CloudFormation leaves alone
+        // (`AWS::DirectoryService::SimpleAD.Password`). It stays an in-place
+        // update, as before, unless it holds a plain reference to a replaced
+        // resource (go-to-k/cdkd#4701, `isPlainReferenceTo`). Asked only when a
+        // candidate property has a whole-property path, i.e. when a ceiling
+        // could be raised.
+        if (![...keys].some((key) => whole.has(key))) {
+          loaded.set(type, { whole, unconfirmable: new Set() });
           return;
         }
         const writeOnly = await tryGetTopLevelWriteOnlyProperties(type);
         if (writeOnly === undefined) {
           // Unknown (DescribeType failed; there is no write-only snapshot):
           // any whole-property path might be write-only, so none raises a
-          // ceiling for this type. That is `main`'s in-place behaviour, never
-          // a replacement nobody can confirm.
+          // ceiling for this type from such a value. That is `main`'s
+          // in-place behaviour, never a replacement nobody can confirm.
           this.logger.debug(
-            safeMsg`Write-only properties of ${type} unknown: no create-only replacement ceiling for its promoted readers`
+            safeMsg`Write-only properties of ${type} unknown: no create-only replacement ceiling for its promoted readers but a plain reference to a replaced resource`
           );
-          loaded.set(
-            type,
-            paths.filter((path) => path.length !== 1)
-          );
+          loaded.set(type, { whole, unconfirmable: 'all' });
           return;
         }
-        loaded.set(
-          type,
-          paths.filter((path) => !(path.length === 1 && writeOnly.has(path[0]!)))
-        );
+        loaded.set(type, {
+          whole,
+          unconfirmable: new Set([...whole].filter((key) => writeOnly.has(key))),
+        });
       })
     );
     return loaded;
@@ -955,20 +971,25 @@ export class DiffCalculator {
    * a nested ceiling would stand whenever a MUTABLE sibling moved and replace a
    * resource CloudFormation updates in place. A moved value under a nested
    * create-only path stays an in-place update, as before. So does a
-   * WRITE-ONLY create-only property, which the loader leaves out.
+   * WRITE-ONLY create-only property (or any, when the write-only list is
+   * unknown), unless `plainReference`: the property is exactly a `Ref` /
+   * `Fn::GetAtt` of the replaced resource it was promoted for
+   * (go-to-k/cdkd#4701, `isPlainReferenceTo`).
    */
   private syntheticRequiresReplacement(
     resourceType: string,
     propKey: string,
-    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>
+    syntheticCreateOnlyPaths: ReadonlyMap<string, SyntheticCreateOnly>,
+    plainReference: boolean
   ): boolean {
     if (this.replacementRules.requiresReplacement(resourceType, propKey, undefined, undefined)) {
       return true;
     }
     if (this.replacementRules.isClassified(resourceType, propKey)) return false;
-    return (syntheticCreateOnlyPaths.get(resourceType) ?? []).some(
-      (path) => path.length === 1 && path[0] === propKey
-    );
+    const createOnly = syntheticCreateOnlyPaths.get(resourceType);
+    if (createOnly === undefined || !createOnly.whole.has(propKey)) return false;
+    if (plainReference) return true;
+    return createOnly.unconfirmable !== 'all' && !createOnly.unconfirmable.has(propKey);
   }
 
   /**
@@ -1008,7 +1029,7 @@ export class DiffCalculator {
   private promoteReplacementDependents(
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
-    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, SyntheticCreateOnly>,
     forcedReplacements: ReadonlySet<string>
   ): void {
     // Seed queue: resources whose computed diff already requires replacement,
@@ -1097,7 +1118,9 @@ export class DiffCalculator {
             // immutable-property case this propagation cares about), while
             // conditional rules see no phantom delta and don't over-promote.
             // A type the registry does not classify falls back to the CFn
-            // schema's createOnly paths (go-to-k/cdkd#3803).
+            // schema's createOnly paths (go-to-k/cdkd#3803), write-only ones
+            // included when the property is a plain reference to the replaced
+            // resource (go-to-k/cdkd#4701).
             //
             // A resource AWS stores inside the replaced one (a permission on
             // a function, go-to-k/cdkd#4411) goes with it, so it is replaced
@@ -1107,7 +1130,12 @@ export class DiffCalculator {
               this.syntheticRequiresReplacement(
                 change.resourceType,
                 propKey,
-                syntheticCreateOnlyPaths
+                syntheticCreateOnlyPaths,
+                isPlainReferenceTo(
+                  desiredTemplate.Resources[dependentId]?.Properties?.[propKey],
+                  replacedId,
+                  desiredTemplate.Resources[replacedId]?.Type
+                )
               ) ||
               namesRecreatedParent(
                 change.resourceType,
@@ -1203,7 +1231,7 @@ export class DiffCalculator {
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
     rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
-    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>,
+    syntheticCreateOnlyPaths: ReadonlyMap<string, SyntheticCreateOnly>,
     freshParameters?: ReadonlySet<string>
   ): boolean {
     // Per upstream UPDATE: the set of top-level property names that changed.
@@ -1346,7 +1374,8 @@ export class DiffCalculator {
           requiresReplacement: this.syntheticRequiresReplacement(
             change.resourceType,
             propKey,
-            syntheticCreateOnlyPaths
+            syntheticCreateOnlyPaths,
+            false
           ),
           inPlacePropagated: true,
           // go-to-k/cdkd#4043: only a `NoEcho` parameter's value may have

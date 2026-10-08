@@ -21,7 +21,13 @@ regression guard for that path.
 2. **Phase 2 (UPDATE, `CDKD_TEST_UPDATE=true`)** — raising MaxCapacity 10 -> 20
    is an in-place Cloud Control patch on both dimensions; the table is **not**
    replaced (CreationDateTime unchanged).
-3. **Phase 3 (destroy)** — all ScalableTargets are deregistered and the cdkd
+3. **Phase 3 (rename, `CDKD_TEST_RENAME=true`, go-to-k/cdkd#4701)** — renaming
+   the table replaces it and both ScalableTargets under new ids. Each
+   ScalingPolicy holds its target in `ScalingTargetId`, which the schema lists
+   create-only AND write-only, so the deploy must log both policies as replaced
+   through `ScalingTargetId`, hit no `NotFound`, and leave two TargetTracking
+   policies on the new table (none on the old one), recorded under new ids.
+4. **Phase 4 (destroy)** — all ScalableTargets are deregistered and the cdkd
    state file is removed.
 
 ## Run
