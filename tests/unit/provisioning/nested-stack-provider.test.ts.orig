@@ -436,41 +436,6 @@ describe('NestedStackProvider', () => {
       expect(invalid.split(JSON.stringify(invalidPath)).join('')).not.toContain('Nothing wrong');
     });
 
-    // go-to-k/cdkd#4705: the destructive-plan check is the TOP-LEVEL
-    // engine's; a child engine never receives it. The cross-prefix holder IS
-    // handed down (review R6-2): the child's automatic rollback asks it by
-    // the child's own stack name.
-    it('never hands a child engine onDestructivePlan, and hands it the parent\'s crossPrefixHolder', async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-'));
-      const childTemplatePath = join(dir, 'child.nested.template.json');
-      writeFileSync(
-        childTemplatePath,
-        JSON.stringify({
-          AWSTemplateFormatVersion: '2010-09-09',
-          Resources: { Foo: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b1' } } },
-        })
-      );
-      const provider = new NestedStackProvider();
-      const crossPrefixHolder = vi.fn();
-      const ctx = makeContext({
-        nestedTemplates: { Child: childTemplatePath },
-        options: {
-          concurrency: 1,
-          onDestructivePlan: vi.fn(),
-          crossPrefixHolder,
-        } as never,
-      });
-      await withNestedStackContext(ctx, () =>
-        provider.create('Child', 'AWS::CloudFormation::Stack', {
-          TemplateURL: 'https://example.com/child.json',
-        })
-      );
-      const opts = deployCalls[0]!.ctor[5] as Record<string, unknown>;
-      expect(opts.onDestructivePlan).toBeUndefined();
-      expect(opts.crossPrefixHolder).toBe(crossPrefixHolder);
-      expect(opts.concurrency).toBe(1);
-    });
-
     it('reads child template, dispatches child DeployEngine, returns synthesized ARN + flat Outputs', async () => {
       // Write a minimal child template to disk so the provider reads it.
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-'));
@@ -894,26 +859,6 @@ describe('NestedStackProvider', () => {
         )
       );
       expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('noEchoReresolver');
-    });
-
-    // go-to-k/cdkd#4705: the cross-prefix check is the TOP-LEVEL destroy's; a
-    // child's runner never scans, whatever the delete context carries.
-    it.each([
-      ['a deploy-reached removal', {}],
-      ['a stack destroy', { stackDestroy: true }],
-    ])('%s: never hands the child runner a crossPrefixCheck', async (_what, deleteCtx) => {
-      const provider = new NestedStackProvider();
-      await withNestedStackContext(makeContext(), () =>
-        provider.delete(
-          'Child',
-          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
-          'AWS::CloudFormation::Stack',
-          undefined,
-          { expectedRegion: 'us-east-1', ...deleteCtx, crossPrefixCheck: { target: {} } } as never
-        )
-      );
-      expect(destroyCalls.length).toBe(1);
-      expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('crossPrefixCheck');
     });
 
     // Issue #1752: the child runner reports a resource it could not address as

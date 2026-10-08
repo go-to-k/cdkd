@@ -305,6 +305,8 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].stackDestroy).toBe(true);
     // go-to-k/cdkd#4705: a top-level state destroy checks the bucket's other state prefixes.
     expect(callArgs?.[2].crossPrefixCheck?.cache).toBeDefined();
+    // go-to-k/cdkd#4682: no template, so no NoEcho re-resolution source.
+    expect(callArgs?.[2]).not.toHaveProperty('noEchoReresolver');
   });
 
   /**
