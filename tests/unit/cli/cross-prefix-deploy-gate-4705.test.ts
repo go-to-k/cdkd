@@ -271,17 +271,19 @@ describe('the deploy wiring (lazy scans, go-to-k/cdkd#4705 review R4-1)', () => 
   // Review R7-6: the waiters are a heap on (rank, seq).
   function heldTarget() {
     const started: string[] = [];
+    const startedPrefixes: string[] = [];
     const releases: Array<() => void> = [];
     const target = withSharedListing({
       prefix: 'cdkd',
       ownRecordExists: vi.fn(),
       listTopLevelPrefixes: vi.fn(),
-      recordUnderPrefix: vi.fn((_p: string, stackName: string) => {
+      recordUnderPrefix: vi.fn((p: string, stackName: string) => {
         started.push(stackName);
+        startedPrefixes.push(p);
         return new Promise<'absent'>((r) => releases.push(() => r('absent')));
       }),
     });
-    return { target, started, releases };
+    return { target, started, startedPrefixes, releases };
   }
   const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -301,6 +303,21 @@ describe('the deploy wiring (lazy scans, go-to-k/cdkd#4705 review R4-1)', () => 
     releases[1]!();
     await tick();
     expect(started[PROBE_CONCURRENCY + 1]).toBe('A');
+  });
+
+  it('admits waiters of ONE rank in arrival order (review R8-2)', async () => {
+    const { target, startedPrefixes, releases } = heldTarget();
+    target.rank('A', 'r', 'prestart');
+    for (let i = 0; i < PROBE_CONCURRENCY; i++) void target.recordUnderPrefix(`f${i}`, 'Z', 'r');
+    await tick();
+    const arrivals = ['a0', 'a1', 'a2', 'a3', 'a4', 'a5'];
+    for (const p of arrivals) void target.recordUnderPrefix(p, 'A', 'r');
+    await tick();
+    for (let i = 0; i < arrivals.length; i++) {
+      releases[i]!();
+      await tick();
+    }
+    expect(startedPrefixes.slice(PROBE_CONCURRENCY)).toEqual(arrivals);
   });
 
   it('admits many waiters in (rank, arrival) order', async () => {
