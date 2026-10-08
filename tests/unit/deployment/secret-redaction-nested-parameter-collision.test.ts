@@ -238,7 +238,7 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
       { Parameters: { [PARAM_A]: SPELLING, [PARAM_B]: EXPR_B, [PARAM_C]: EXPR_A } }
     );
     const template = {
-      ...childTemplate({ Mixed: { A: SEL_A, C: { Ref: PARAM_C } } }),
+      ...childTemplate({ Mixed: { A: SEL_A, C: { 'Fn::Select': [0, [{ Ref: PARAM_C }]] } } }),
     } as CloudFormationTemplate;
     poisonRenderedSpellingsCollidingIn(template, { ...PARAMETERS, [PARAM_C]: SHARED }, parent);
     expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
