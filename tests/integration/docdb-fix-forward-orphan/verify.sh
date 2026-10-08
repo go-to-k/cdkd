@@ -27,8 +27,9 @@
 #      versions are swept: the template's literal master password is in the
 #      journal's history.
 #
-# Cost: one db.t3.medium instance per generation (DocDB has no smaller class)
-# and three clusters with no instance of their own. A run takes roughly 45
+# Cost: one db.t3.medium instance per generation (the smallest DocDB class),
+# two orphan clusters with no instance, and BaseCluster, which hosts both
+# instances. A run takes roughly 45
 # minutes (two instance creates and two deletes). On any failure, cleanup
 # deletes all five by identifier, destroys the stack and deletes the role.
 set -euo pipefail

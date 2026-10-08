@@ -79,8 +79,8 @@ export class DocdbFixForwardOrphanStack extends cdk.Stack {
     const instance = new docdb.CfnDBInstance(this, 'OrphanInstance', {
       dbInstanceIdentifier: `${prefix}-orphan-db${suffix}`,
       dbClusterIdentifier: baseCluster.ref,
-      // The smallest DocDB class: orderable in every us-east-1 AZ for every
-      // engine version (describe-orderable-db-instance-options).
+      // The smallest DocDB class: orderable in us-east-1a-d and 1f for every
+      // engine version (describe-orderable-db-instance-options), not in 1e.
       dbInstanceClass: 'db.t3.medium',
     });
     instance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
