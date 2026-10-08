@@ -784,6 +784,58 @@ describe('NestedStackProvider', () => {
       }
     });
 
+    // go-to-k/cdkd#4682: a `cdkd destroy` holding the parent's template hands
+    // the child runner the CHILD's re-resolution source, built from this row's
+    // properties and its re-resolved NoEcho values; a deploy's removal (no
+    // source on the delete context) hands none.
+    it('forwards the child NoEcho re-resolution source only when its own context carries one', async () => {
+      const childSource = { child: true };
+      const forNestedChild = vi.fn().mockResolvedValue(childSource);
+      const rowValues = { leaves: [], maskSecrets: (t: string) => t };
+      const rowProperties = { Parameters: { ChildSecret: '***', Plain: 'p' } };
+      const provider = new NestedStackProvider();
+      await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          rowProperties,
+          {
+            expectedRegion: 'us-east-1',
+            recordedNoEchoLeaves: [['Parameters', 'ChildSecret']],
+            noEchoDeleteValues: rowValues,
+            noEchoReresolver: { forNestedChild } as never,
+          }
+        )
+      );
+      expect(destroyCalls[0]!.destroyCtx['noEchoReresolver']).toBe(childSource);
+      const [logicalId, row, childStackName, , extract] = forNestedChild.mock.calls[0]!;
+      expect(logicalId).toBe('Child');
+      expect(row).toEqual({
+        properties: rowProperties,
+        noEchoLeaves: [['Parameters', 'ChildSecret']],
+        values: rowValues,
+      });
+      expect(childStackName).toBe('Parent~Child');
+      // The provider's own parameter extraction, as a deploy hands them.
+      expect((extract as (p: unknown) => unknown)(rowProperties)).toEqual({
+        ChildSecret: '***',
+        Plain: 'p',
+      });
+
+      destroyCalls.length = 0;
+      await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          rowProperties,
+          { expectedRegion: 'us-east-1' }
+        )
+      );
+      expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('noEchoReresolver');
+    });
+
     // Issue #1752: the child runner reports a resource it could not address as
     // `skippedCount`. Swallowing it here re-creates the mis-report one level
     // up — the PARENT would print `✓ Child (AWS::CloudFormation::Stack)

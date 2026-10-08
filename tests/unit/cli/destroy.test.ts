@@ -129,6 +129,7 @@ vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
 import { createDestroyCommand } from '../../../src/cli/commands/destroy.js';
 import { resolveApp } from '../../../src/cli/config-loader.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
+import { TemplateNoEchoReresolver } from '../../../src/deployment/noecho-delete-reresolution.js';
 
 function makeStackState(stackName: string, region = 'us-east-1'): StackState {
   return {
@@ -657,6 +658,31 @@ describe('cdkd destroy: terminationProtection guard', () => {
     const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
     expect(messages).toMatch(/Protected/);
     expect(messages).toMatch(/1 resource error/);
+  });
+
+  // go-to-k/cdkd#4682: the synthesized template reaches the runner as the
+  // NoEcho re-resolution source; a macro-carrying one does not (never expanded
+  // here), and `cdkd state destroy` holds none (pinned in state-destroy.test.ts).
+  it.each([
+    ['a plain template', {}, true],
+    ['a template a macro rewrites', { Transform: 'AWS::Serverless-2016-10-31' }, false],
+  ])('threads the NoEcho re-resolution source for %s', async (_what, extra, threaded) => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [{ ...makeStackInfo('Plain', 'us-east-1'), template: { Resources: {}, ...extra } }],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Plain', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Plain'), etag: '"x"' });
+
+    await runDestroy(['Plain', '--yes']);
+
+    const ctx = mockRunDestroyForStack.mock.calls[0]?.[2] as Record<string, unknown>;
+    if (threaded) {
+      expect(ctx['noEchoReresolver']).toBeInstanceOf(TemplateNoEchoReresolver);
+    } else {
+      expect(ctx).not.toHaveProperty('noEchoReresolver');
+    }
   });
 });
 
