@@ -472,6 +472,9 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
     const runIndeterminate = async (bucketName: string, maskSecrets?: MaskerFn): Promise<void> => {
       clientRegion.value = 'us-east-1';
       mockSend.mockRejectedValueOnce(accessDenied()); // GetBucketLocation pre-flight
+      // go-to-k/cdkd#4684: an explicit name then asks the bucket list, which
+      // does not hold it, so the create is sent.
+      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets
       mockSend.mockResolvedValueOnce({}); // CreateBucket
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
       await expect(

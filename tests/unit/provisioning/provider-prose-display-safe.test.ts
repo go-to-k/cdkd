@@ -278,6 +278,9 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
       const denied = new Error('Access Denied');
       Object.assign(denied, { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });
       mockSend.mockRejectedValueOnce(denied); // GetBucketLocation pre-flight
+      // go-to-k/cdkd#4684: an explicit name then asks the bucket list, which
+      // does not hold it, so the create is sent.
+      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets
       mockSend.mockResolvedValueOnce({}); // CreateBucket
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
       await expect(

@@ -747,13 +747,17 @@ both rather than stranding every update and destroy for a least-privilege role.
 Region is not the only question. A bucket under an EXPLICIT `BucketName` that
 this create did not make is refused even in the right region, on both the
 `BucketAlreadyOwnedByYou` arm and the `us-east-1` pre-flight (before the send,
-so the legacy 200 never resets its ACLs), as CloudFormation fails the same
+so the legacy 200 never resets its ACLs; when the location lookup cannot
+answer, the account's own bucket list decides, since the legacy 200 adopts
+only a bucket the caller owns), as CloudFormation fails the same
 create (issue [#4684](https://github.com/go-to-k/cdkd/issues/4684)): a name is
 not attribution. Only a generated name's holder is still adopted, presumed this
 stack's own ([#4345](https://github.com/go-to-k/cdkd/issues/4345)). The refusal
 is marked a name collision, so a create-first replacement and a rollback's
 reverse replacement take their record-proven collision paths rather than
-recording the bucket.
+recording the bucket. It is deliberately retryable by text ("already exists"):
+a delete-first re-create retries that text while its own deleted name is
+released, and no other caller's classifier retries a collision.
 
 Note what that last choice COSTS, because it is a new IAM dependency rather than
 a free win: the guard works only where the caller can call `GetBucketLocation`

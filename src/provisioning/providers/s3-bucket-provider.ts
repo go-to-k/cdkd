@@ -51,6 +51,7 @@ import {
   ListBucketIntelligentTieringConfigurationsCommand,
   ListBucketInventoryConfigurationsCommand,
   NoSuchBucket,
+  ListBucketsCommand,
   ListObjectVersionsCommand,
   DeleteObjectsCommand,
   type BucketLocationConstraint,
@@ -2139,39 +2140,84 @@ export class S3BucketProvider implements ResourceProvider {
    * replacement and the rollback's reverse replacement read that verdict, and
    * each acts on it only once the state records prove which resource holds
    * the name (`replacementOldHoldsSentName`, `reverseReplacementNewHoldsName`).
-   * `markNonRetryable`: the next attempt meets the same bucket. Avoids the
-   * literal `does not exist`, which reads as transient.
+   * Deliberately NOT `markNonRetryable`, and worded "already exists": a
+   * delete-first re-create (`--replace`, `--recreate-via-*`, a rollback's
+   * delete-new-first) retries exactly that text to ride out a name released
+   * late after its own `DeleteBucket`, where a stale pre-flight can still see
+   * the bucket. Retrying a refusal adopts nothing; every other caller's
+   * default classifier never retries a collision. Avoids the literal
+   * `does not exist`, which reads as transient.
    */
   private refuseExplicitNameHeld(
     logicalId: string,
     resourceType: string,
     bucketName: string,
-    via: { cause: Error } | { preflightRegion: string }
+    via: { cause: Error } | { preflightRegion: string } | { listed: true }
   ): never {
     const evidence =
       'cause' in via
-        ? `S3 answered BucketAlreadyOwnedByYou: this account already owns a bucket of that name`
-        : `a bucket of that name is already in ${via.preflightRegion}, where CreateBucket ` +
-          `answers 200 OK over a bucket you own and resets its access control lists, so it ` +
-          `was not sent`;
-    throw markNonRetryable(
-      markNameCollision(
-        new ProvisioningError(
-          `Refusing to adopt S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} ` +
-            `(${resourceType}): its BucketName is set explicitly and ${evidence}. This create ` +
-            `did not make that bucket, so cdkd cannot tell it from one made outside this stack, ` +
-            `and CloudFormation fails the same create. Nothing was applied to it. Choose a ` +
-            `bucket name no other bucket holds. If the bucket is this stack's own (left by an ` +
-            `interrupted deploy, or kept by DeletionPolicy: Retain), delete it, or adopt it ` +
-            `with \`cdkd import\`, and re-run; confirm it is yours first, since adopting a ` +
-            `bucket hands it to this stack's \`cdkd destroy\`.`,
-          resourceType,
-          logicalId,
-          bucketName,
-          'cause' in via ? via.cause : undefined
-        )
+        ? `S3 answered BucketAlreadyOwnedByYou: a bucket of that name already exists, and ` +
+          `this account owns it`
+        : 'listed' in via
+          ? `a bucket of that name already exists in this account's bucket list, where ` +
+            `CreateBucket in us-east-1 answers 200 OK and resets its access control lists, so ` +
+            `it was not sent`
+          : `a bucket of that name already exists in ${via.preflightRegion}, where ` +
+            `CreateBucket answers 200 OK over a bucket you own and resets its access control ` +
+            `lists, so it was not sent`;
+    const refusal = markNameCollision(
+      new ProvisioningError(
+        `Refusing to adopt S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} ` +
+          `(${resourceType}): its BucketName is set explicitly and ${evidence}. S3 does not ` +
+          `say who made it, so cdkd cannot tell it from one made outside this stack, and ` +
+          `CloudFormation fails the same create. Nothing was applied to it. Choose a bucket ` +
+          `name no other bucket holds. If no record of this stack holds that bucket and it is ` +
+          `yours (left by an interrupted deploy, or kept by DeletionPolicy: Retain), delete ` +
+          `it, or adopt it with \`cdkd import\`, and re-run; confirm it is yours first, since ` +
+          `adopting a bucket hands it to this stack's \`cdkd destroy\`.`,
+        resourceType,
+        logicalId,
+        bucketName,
+        'cause' in via ? via.cause : undefined
       )
     );
+    throw refusal;
+  }
+
+  /**
+   * Does THIS account own a bucket named `bucketName`? The us-east-1
+   * pre-flight's fallback when `GetBucketLocation` could not answer for an
+   * explicit name (go-to-k/cdkd#4684): the legacy 200 adopts only a bucket the
+   * caller owns, so the account's own bucket list is the oracle.
+   * `ListBuckets` filters by PREFIX, so the match is exact and every page is
+   * read. A failure is reported by error CLASS, AWS's text going to debug (it
+   * names the caller's account, role and session).
+   */
+  private async ownsBucketNamed(
+    bucketName: string
+  ): Promise<{ owned: boolean } | { unknown: string }> {
+    try {
+      let token: string | undefined;
+      for (let page = 0; page < 100; page++) {
+        const out = await this.s3Client.send(
+          new ListBucketsCommand({
+            Prefix: bucketName,
+            MaxBuckets: 1000,
+            ...(token !== undefined ? { ContinuationToken: token } : {}),
+          })
+        );
+        if ((out.Buckets ?? []).some((b) => b.Name === bucketName)) return { owned: true };
+        token = out.ContinuationToken || undefined;
+        if (token === undefined) return { owned: false };
+      }
+      return { unknown: 'PaginationLimit' };
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`ListBuckets failed while checking S3 bucket ${this.shown(bucketName)}: ` +
+          safeMsg`${describeAwsFailure(error).detail}`
+      );
+      return { unknown: error instanceof Error ? error.name : typeof error };
+    }
   }
 
   /**
@@ -6907,6 +6953,19 @@ export class S3BucketProvider implements ResourceProvider {
           preflightRegion: preflight.region,
         });
       }
+      // go-to-k/cdkd#4684: a pre-flight that could not answer cannot rule the
+      // explicit name free, and a legacy 200 would adopt a bucket this account
+      // owns silently. Ask the account's own bucket list instead; only when
+      // that cannot answer either is the create sent, and the warning below
+      // says what that may have done.
+      let ownershipUnknown: string | undefined;
+      if (explicitBucketName && preflight.kind === 'indeterminate') {
+        const owned = await this.ownsBucketNamed(bucketName);
+        if ('owned' in owned && owned.owned) {
+          this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, { listed: true });
+        }
+        if ('unknown' in owned) ownershipUnknown = owned.unknown;
+      }
       try {
         const attemptStartMs = Date.now();
         try {
@@ -6957,6 +7016,16 @@ export class S3BucketProvider implements ResourceProvider {
               `re-create of a bucket you already own with 200 OK and RESETS that bucket's ` +
               `access control lists, so any ACL previously set on ${this.shown(bucketName)} is now the ` +
               `default. cdkd will not delete this bucket if the rest of this create fails.`
+          );
+        }
+        if (ownershipUnknown !== undefined && preflight.kind === 'indeterminate') {
+          this.logger.warn(
+            safeMsg`S3 bucket ${this.shown(bucketName)} for ${displaySafe(logicalId)} (${resourceType}) was ` +
+              `sent to CreateBucket without knowing whether a bucket of that explicit name ` +
+              safeMsg`already existed: the region probe (${preflight.errorName}) and the bucket ` +
+              safeMsg`listing (${ownershipUnknown}) both failed. In us-east-1 CreateBucket answers 200 ` +
+              `OK over a bucket you own, so if one existed it has now been configured and ` +
+              `recorded as this stack's. Re-run with --verbose for AWS's own message.`
           );
         }
         this.logger.debug(`Created S3 bucket: ${this.shown(bucketName)}`);

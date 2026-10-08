@@ -44,8 +44,10 @@ import { S3BucketProvider } from '../../../../src/provisioning/providers/s3-buck
 import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
+  isRecreateRetryableError,
   isRetryableTransientError,
 } from '../../../../src/deployment/retryable-errors.js';
+import { withRetry } from '../../../../src/deployment/retry.js';
 import { hasCreatedBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
 
 const TYPE = 'AWS::S3::Bucket';
@@ -100,9 +102,11 @@ function expectExplicitRefusal(error: Error): void {
   // this verdict; it is anchored to THIS logical id.
   expect(isNameCollisionErrorFrom(error, 'MyBucket')).toBe(true);
   expect(isNameCollisionErrorFrom(error, 'OtherBucket')).toBe(false);
-  // Deterministic: the next attempt meets the same bucket.
-  expect(isMarkedNonRetryable(error)).toBe(true);
+  // An ordinary retry never re-runs it; only a delete-first re-create's
+  // classifier, which rides out a name released late, reads "already exists".
+  expect(isMarkedNonRetryable(error)).toBe(false);
   expect(isRetryableTransientError(error, error.message)).toBe(false);
+  expect(isRecreateRetryableError(error.message)).toBe(true);
   expect(error.message).not.toContain('does not exist');
   // Not this create's bucket: nothing names it for a rollback to delete.
   expect(hasCreatedBeforeFailure(error)).toBe(false);
@@ -180,7 +184,7 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
       const error = await refusal(provider.create('MyBucket', TYPE, EXPLICIT));
 
       expectExplicitRefusal(error);
-      expect(error.message).toContain('already in us-east-1');
+      expect(error.message).toContain('already exists in us-east-1');
       // No legacy 200, so the bucket's ACLs are not reset; no adopt warning.
       expect(sent()).toEqual(['GetBucketLocationCommand']);
       expect(warn).not.toHaveBeenCalled();
@@ -222,5 +226,152 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
         'PutBucketVersioningCommand',
       ]);
     });
+  });
+
+  describe('retries: only a delete-first re-create rides out a stale answer', () => {
+    beforeEach(() => {
+      clientRegion.value = 'us-east-1';
+    });
+
+    /** The pre-flight still sees the bucket once (a delete not yet visible), then not. */
+    function staleThenGone(): void {
+      let probes = 0;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name !== 'GetBucketLocationCommand') return Promise.resolve({});
+        probes++;
+        return probes === 1
+          ? Promise.resolve({ LocationConstraint: null })
+          : Promise.reject(noSuchBucket());
+      });
+    }
+
+    it('a delete-first re-create loop retries past it and creates the bucket once', async () => {
+      staleThenGone();
+
+      const result = await withRetry(() => provider.create('MyBucket', TYPE, EXPLICIT), 'MyBucket', {
+        maxRetries: 3,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        sleep: async () => {},
+        isRetryable: (text) => isRecreateRetryableError(text),
+      });
+
+      expect(result.physicalId).toBe(BUCKET);
+      expect(sent().filter((n) => n === 'CreateBucketCommand')).toHaveLength(1);
+    });
+
+    it('an ordinary retry does not: the first refusal is final', async () => {
+      staleThenGone();
+
+      await refusal(
+        withRetry(() => provider.create('MyBucket', TYPE, EXPLICIT), 'MyBucket', {
+          sleep: async () => {},
+        })
+      );
+
+      expect(sent()).toEqual(['GetBucketLocationCommand']);
+    });
+  });
+
+  describe('us-east-1 pre-flight that cannot answer: the bucket list decides', () => {
+    beforeEach(() => {
+      clientRegion.value = 'us-east-1';
+    });
+
+    const denied = (): Error =>
+      Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized'), {
+        name: 'AccessDenied',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      });
+
+    it('refuses an explicit name this account lists, before CreateBucket', async () => {
+      answer({
+        GetBucketLocationCommand: denied(),
+        // A prefix match alone is not the bucket: only the exact name counts.
+        ListBucketsCommand: { Buckets: [{ Name: `${BUCKET}-other` }, { Name: BUCKET }] },
+      });
+
+      const error = await refusal(provider.create('MyBucket', TYPE, EXPLICIT));
+
+      expectExplicitRefusal(error);
+      expect(error.message).toContain("already exists in this account's bucket list");
+      expect(sent()).toEqual(['GetBucketLocationCommand', 'ListBucketsCommand']);
+      const list = mockSend.mock.calls[1]![0] as { input: Record<string, unknown> };
+      expect(list.input['Prefix']).toBe(BUCKET);
+    });
+
+    it('reads every page before calling the name free', async () => {
+      let pages = 0;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        const name = cmd.constructor.name;
+        if (name === 'GetBucketLocationCommand') return Promise.reject(denied());
+        if (name === 'ListBucketsCommand') {
+          pages++;
+          return Promise.resolve(
+            pages === 1
+              ? { Buckets: [{ Name: `${BUCKET}-a` }], ContinuationToken: 't1' }
+              : { Buckets: [{ Name: BUCKET }] }
+          );
+        }
+        return Promise.resolve({});
+      });
+
+      await refusal(provider.create('MyBucket', TYPE, EXPLICIT));
+
+      expect(pages).toBe(2);
+      expect(sent()).not.toContain('CreateBucketCommand');
+    });
+
+    it('creates when the list holds only other names, with no warning', async () => {
+      answer({
+        GetBucketLocationCommand: denied(),
+        ListBucketsCommand: { Buckets: [{ Name: `${BUCKET}-other` }] },
+      });
+
+      const result = await provider.create('MyBucket', TYPE, EXPLICIT);
+
+      expect(result.physicalId).toBe(BUCKET);
+      expect(sent().slice(0, 3)).toEqual([
+        'GetBucketLocationCommand',
+        'ListBucketsCommand',
+        'CreateBucketCommand',
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('sends when the list cannot answer either, then warns by error class, masked', async () => {
+      answer({ GetBucketLocationCommand: denied(), ListBucketsCommand: denied() });
+
+      const result = await provider.create('MyBucket', TYPE, EXPLICIT, {
+        maskSecrets: (t) => t.split(BUCKET).join('***'),
+      });
+
+      expect(result.physicalId).toBe(BUCKET);
+      const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(text).toContain('without knowing whether a bucket of that explicit name');
+      expect(text).toContain('AccessDenied');
+      expect(text).toContain('***');
+      expect(text).not.toContain(BUCKET);
+      expect(text).not.toContain('assumed-role');
+      expect(text).not.toContain('123456789012');
+    });
+
+    it('asks no list for a GENERATED name', async () => {
+      answer({ GetBucketLocationCommand: denied() });
+
+      await provider.create('MyBucket', TYPE, GENERATED);
+
+      expect(sent()).not.toContain('ListBucketsCommand');
+    });
+  });
+
+  it('reads an EMPTY BucketName as no name: generated, so still adopted', async () => {
+    answer({ CreateBucketCommand: ownedHere('eu-west-1') });
+
+    const result = await provider.create('MyBucket', TYPE, { ...EXPLICIT, BucketName: '' });
+
+    expect(result.physicalId).not.toBe('');
+    expect(sent()).toEqual(['CreateBucketCommand', 'PutBucketVersioningCommand']);
   });
 });

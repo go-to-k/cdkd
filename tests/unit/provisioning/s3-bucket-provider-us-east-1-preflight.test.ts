@@ -230,7 +230,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
         );
 
         expect(error.message).toContain(`Refusing to adopt S3 bucket ${BUCKET}`);
-        expect(error.message).toContain('already in us-east-1');
+        expect(error.message).toContain('already exists in us-east-1');
         expect(sentCommands()).toEqual(['GetBucketLocationCommand']);
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -338,6 +338,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       // exactly the delete this issue is about, so the probe's two failure
       // shapes are kept distinct.
       mockSend.mockRejectedValueOnce(accessDenied());
+      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -350,6 +351,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
     it('names the manual cleanup, so the orphan it declines to delete is recoverable', async () => {
       mockSend.mockRejectedValueOnce(accessDenied());
+      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -491,6 +493,9 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
     // verbosity to the terminal and to CI logs.
     it('does NOT print the caller identity when it declines to clean up', async () => {
       mockSend.mockRejectedValueOnce(accessDeniedNamingTheCaller()); // pre-flight
+      // The bucket listing cannot answer either (go-to-k/cdkd#4684), so its
+      // own warning is held to the same rule.
+      mockSend.mockRejectedValueOnce(accessDeniedNamingTheCaller()); // ListBuckets
       mockSend.mockResolvedValueOnce({}); // CreateBucket
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -512,6 +517,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       // another: it is what tells the operator whether the probe was denied by
       // IAM or by a bucket policy.
       mockSend.mockRejectedValueOnce(accessDeniedNamingTheCaller());
+      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -670,6 +676,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
     it('does not mark when the probe could not answer (cleanup withheld)', async () => {
       mockSend.mockRejectedValueOnce(accessDenied());
+      mockSend.mockResolvedValueOnce({ Buckets: [] }); // ListBuckets: not ours (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
@@ -677,6 +684,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
       expect(sentCommands()).toEqual([
         'GetBucketLocationCommand',
+        'ListBucketsCommand',
         'CreateBucketCommand',
         'PutBucketVersioningCommand',
       ]);

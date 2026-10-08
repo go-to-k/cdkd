@@ -46,7 +46,10 @@ import {
   resetS3BucketCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { withRetry } from '../../../src/deployment/retry.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  isMarkedNonRetryable,
+  isRecreateRetryableError,
+} from '../../../src/deployment/retryable-errors.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { generateResourceName } from '../../../src/provisioning/resource-name.js';
 import {
@@ -150,6 +153,15 @@ class FakeS3 {
       }
       return { LocationConstraint: where === 'us-east-1' ? undefined : where };
     }
+    if (name === 'ListBucketsCommand') {
+      // This account's buckets only, filtered by prefix, one page.
+      const prefix = (command.input['Prefix'] as string | undefined) ?? '';
+      return {
+        Buckets: [...this.buckets.keys()]
+          .filter((n) => n.startsWith(prefix))
+          .map((Name) => ({ Name })),
+      };
+    }
     if (name === 'DeleteBucketCommand') {
       const failure = this.failing[name];
       if (failure) throw failure;
@@ -163,7 +175,10 @@ class FakeS3 {
 
   configurationCalls(): string[] {
     return this.calls.filter(
-      (c) => c !== 'CreateBucketCommand' && c !== 'GetBucketLocationCommand'
+      (c) =>
+        c !== 'CreateBucketCommand' &&
+        c !== 'GetBucketLocationCommand' &&
+        c !== 'ListBucketsCommand'
     );
   }
 }
@@ -193,7 +208,10 @@ function expectColdExplicitRefusal(error: unknown, aws: FakeS3): void {
   expect(message).toContain(`Refusing to adopt S3 bucket ${BUCKET}`);
   expect(message).toContain('its BucketName is set explicitly');
   expect(message).not.toContain('ended without a definite answer');
-  expect(isMarkedNonRetryable(error)).toBe(true);
+  // Not marked: only a delete-first re-create retries it (its classifier
+  // reads "already exists"); the ordinary retry never does.
+  expect(isMarkedNonRetryable(error)).toBe(false);
+  expect(isRecreateRetryableError(message)).toBe(true);
   expect(aws.calls).not.toContain('PutBucketVersioningCommand');
 }
 
@@ -630,6 +648,18 @@ describe('S3 bucket CreateBucket in us-east-1 after an ambiguous attempt (issue 
     expect(aws.configurationCalls()).toEqual([]);
     expect((error as Error).message).toContain('its BucketName is set explicitly');
     expect((error as Error).message).not.toContain('ended without a definite answer');
+  });
+
+  it('a cold create of an explicit name the pre-flight cannot read is refused by the bucket list (go-to-k/cdkd#4684)', async () => {
+    aws.buckets.set(BUCKET, 'us-east-1');
+    aws.denyLocation = true;
+
+    const error = await createWithRetry(new S3BucketProvider()).catch((e: unknown) => e);
+
+    expect(aws.calls).toContain('ListBucketsCommand');
+    expect(aws.calls.filter((c) => c === 'CreateBucketCommand')).toHaveLength(0);
+    expect(aws.configurationCalls()).toEqual([]);
+    expect((error as Error).message).toContain("already exists in this account's bucket list");
   });
 
   it('a cold create of a generated name over a bucket already there is still the legacy-200 adoption', async () => {
