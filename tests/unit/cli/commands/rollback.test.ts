@@ -18,11 +18,22 @@ const replayProvider = {
   delete: vi.fn().mockResolvedValue(undefined),
   update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
   // go-to-k/cdkd#4658: a journaled orphan's live identity matches its token.
+  // Offered only for the types whose real provider implements it (below).
   resourceIdentity: vi.fn(async (): Promise<unknown> => 'created-token'),
 };
 vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
-    getProviderFor: () => ({ provider: replayProvider }),
+    getProviderFor: ({ resourceType }: { resourceType: string }) => ({
+      provider: [
+        'AWS::Kinesis::Stream',
+        'AWS::RDS::DBCluster',
+        'AWS::RDS::DBInstance',
+        'AWS::DocDB::DBCluster',
+        'AWS::DocDB::DBInstance',
+      ].includes(resourceType)
+        ? replayProvider
+        : { delete: replayProvider.delete, update: replayProvider.update },
+    }),
     setCustomResourceResponseBucket: vi.fn(),
   })),
 }));
@@ -1124,7 +1135,6 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
               provisionedBy: 'sdk',
               physicalId: 'phys-orphan',
               physicalIdRecoveredFromError: true,
-              createdResourceIdentity: 'created-token',
               replacedPhysicalId: 'phys-new',
               replacedResourceType: 'AWS::SQS::Queue',
             },
@@ -1132,7 +1142,10 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         });
         await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
         expect(replayProvider.update).not.toHaveBeenCalled();
-        expect(replayProvider.delete.mock.calls.map((c: unknown[]) => c[1])).toContain('phys-orphan');
+        // go-to-k/cdkd#4658: an SQS queue journals no creation identity, so
+        // the orphan is kept (a warned skip) rather than deleted; it is still
+        // settled, and its UPDATE goes with it.
+        expect(replayProvider.delete.mock.calls.map((c: unknown[]) => c[1])).not.toContain('phys-orphan');
         const backend = (await setupMock.mock.results.at(-1)!.value).stateBackend as {
           setRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
         };
@@ -1165,7 +1178,6 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
               provisionedBy: 'sdk',
               physicalId: 'phys-orphan',
               physicalIdRecoveredFromError: true,
-              createdResourceIdentity: 'created-token',
               replacedPhysicalId: 'phys-new',
               replacedResourceType: 'AWS::SQS::Queue',
             },
@@ -1198,7 +1210,6 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
                 provisionedBy: 'sdk',
                 physicalId: 'phys-orphan',
                 physicalIdRecoveredFromError: true,
-                createdResourceIdentity: 'created-token',
                 replacedPhysicalId: 'phys-new',
                 replacedResourceType: 'AWS::SQS::Queue',
                 ...(deletionPolicy && { deletionPolicy }),
@@ -4416,11 +4427,53 @@ describe('cdkd rollback (no --revert-failed): a proven failed-CREATE orphan (go-
   });
 
   // No verdict: the entry stays in the journal, as a failed delete's does.
-  it('keeps the segment when the holder scan cannot read a record: exit 2, journal preserved', async () => {
+  it('keeps the segment when another stack\'s record cannot be read: exit 2, journal preserved', async () => {
+    const stateOf = (stackName: string) => ({
+      state: { version: 8, stackName, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+      etag: 'e0',
+    });
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([
+        { stackName: 'S', region: 'us-east-1' },
+        { stackName: 'B', region: 'us-east-1' },
+      ]),
+      getState: vi.fn(async (name: string) => {
+        if (name === 'B') throw new Error('AccessDenied');
+        return stateOf(name);
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [structuredClone(orphanOp)],
+          },
+        ],
+      }),
+    });
+    const err = await rollbackCommand('S', baseOpts).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(replayProvider.resourceIdentity).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(String((err as Error).message)).toContain('1 failed operation(s). Journal preserved');
+    expect(String((err as Error).message)).toContain('--drop-failed');
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
+  // A token was journaled, but the live read gave no answer: retried, never settled.
+  it('keeps the segment when the live identity read gives no answer: exit 2, journal preserved', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
     const backend = install([structuredClone(orphanOp)]);
-    backend.listStacks
-      .mockResolvedValueOnce([{ stackName: 'S', region: 'us-east-1' }])
-      .mockRejectedValueOnce(new Error('AccessDenied'));
+    replayProvider.resourceIdentity.mockResolvedValueOnce(undefined);
     const err = await rollbackCommand('S', baseOpts).then(
       () => undefined,
       (e: unknown) => e
@@ -4428,7 +4481,40 @@ describe('cdkd rollback (no --revert-failed): a proven failed-CREATE orphan (go-
     expect(replayProvider.delete).not.toHaveBeenCalled();
     expect(err).toBeInstanceOf(PartialFailureError);
     expect(String((err as Error).message)).toContain('1 failed operation(s). Journal preserved');
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'removes only that record and leaves the resource in AWS'
+    );
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#4658: an SQS queue's provider records no creation identity,
+  // so nothing proves the queue under the name is the one the deploy made.
+  it('keeps a name-keyed orphan whose type records no identity: a warned skip, exit 2', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const queueOrphan = {
+      logicalId: 'Q',
+      changeType: 'CREATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/orders',
+      provisionedBy: 'sdk',
+      physicalIdRecoveredFromError: true,
+      attemptedProperties: { QueueName: 'orders' },
+    };
+    const backend = install([queueOrphan]);
+    const err = await rollbackCommand('S', baseOpts).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(String((err as Error).message)).toContain('1 skipped/unrecoverable operation(s)');
+    const lines = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(lines).toContain('Skipping failed CREATE of Q');
+    expect(lines).toContain('https://sqs.us-east-1.amazonaws.com/123456789012/orders');
+    expect(lines).toContain('the journal recorded no identity for it');
+    expect(lines).toContain('if it is not in use, delete it by hand');
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalledOnce();
   });
 
   it('leaves the other failed ops as-is, and keeps them when the orphan delete fails', async () => {

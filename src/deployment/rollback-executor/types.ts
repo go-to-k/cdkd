@@ -240,10 +240,11 @@ export interface RollbackExecutorContext {
    * rollback`, the `cdkd destroy` journal sweep and the success settle; the
    * nested child replay sets it only under `cdkd rollback --remove-protection`
    * (go-to-k/cdkd#4703) and replays completed ops alone. A deploy's automatic
-   * rollback supplies none: it runs seconds after the failure, before a name
-   * can be freed and reused or another stack can import the resource, and its
-   * in-process identity is best-effort (absent for a provider without
-   * `resourceIdentity`). `--remove-protection` strips protection only from an
+   * rollback supplies none: it runs inside the failed deploy, over that
+   * attempt's own operations only, while the deploy still holds the stack's
+   * lock, so no later cdkd command (an import into another stack) can come
+   * between the create and its delete; and its in-process identity is
+   * best-effort (absent for a provider without `resourceIdentity`). `--remove-protection` strips protection only from an
    * orphan these checks cleared (go-to-k/cdkd#4678).
    */
   foreignHolder?:
@@ -433,6 +434,12 @@ export interface FailedOpReplayResult extends RollbackReplayResult {
    * Handled, not pending: a re-run would find the same part and leave it.
    */
   leftInPlace: number;
+  /**
+   * The ops counted in {@link skipped}: left as the failed deploy left them,
+   * handled (out of the journal). `cdkd destroy` counts its journaled
+   * orphans among them as unaddressed (go-to-k/cdkd#4658).
+   */
+  skippedOps?: FailedOperation[];
 }
 
 /** Outcome of replaying a list of ops (one journal segment). */

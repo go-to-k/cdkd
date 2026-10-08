@@ -72,6 +72,10 @@
 #         (ADOPT_ORPHAN_STREAM=true), then a PLAIN `cdkd rollback --force`
 #         (go-to-k/cdkd#4696): exit 2, the holder warned, the stream kept
 #         ACTIVE, journal gone; destroying the second stack removes it.
+#     O12. --no-rollback, then the stream's journaled identity stripped (the
+#         shape every name-keyed type without one journals), then a PLAIN
+#         `cdkd rollback --force` (go-to-k/cdkd#4658): exit 2, the "no
+#         identity" warning, the stream kept ACTIVE, journal gone.
 #   PHASE P (a replacement whose NEW resource was created, then failed,
 #   go-to-k/cdkd#4604):
 #     P0. Deploy with WITH_REPLACE_STREAM=true: ReplaceStream `-replace-stream-a`.
@@ -1336,6 +1340,70 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${INIT_S
   exit 1
 fi
 echo "[verify] step O11 ok: the plain rollback kept the stream ${INIT_STACK} holds and warned (exit 2), journal gone"
+
+# go-to-k/cdkd#4658: a journaled orphan with NO creation identity -- what every
+# name-keyed type whose provider reads none journals (an SQS queue, an S3
+# bucket, an IAM role, ...), and what a journal an older cdkd wrote holds. This
+# fixture's only orphan-producing resource is the Kinesis stream, whose
+# provider does journal one, so the step strips it from the journal to stand
+# for that class. The plain rollback must keep the stream (nothing proves it is
+# the one the failed CREATE made), warn naming it, and exit 2. Before #4658 it
+# deleted it by its physical id.
+echo "[verify] step O12: --no-rollback, strip the journaled identity, then a PLAIN cdkd rollback (the stream KEPT)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-notoken.log 2>&1
+O12_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-notoken.log || true
+if [ "${O12_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O12"
+O12_JOURNAL="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - \
+  | jq '(.segments[].failedOperations[]? | select(.logicalId == "OrphanStream")) |= del(.createdResourceIdentity)' \
+  > "${O12_JOURNAL}"
+if [ "$(jq '[.segments[].failedOperations[]? | select(.logicalId == "OrphanStream" and has("createdResourceIdentity"))] | length' "${O12_JOURNAL}")" != "0" ]; then
+  echo "[verify] FAIL: could not strip OrphanStream's createdResourceIdentity from the journal"
+  rm -f "${O12_JOURNAL}"
+  exit 1
+fi
+aws s3 cp "${O12_JOURNAL}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" --content-type application/json >/dev/null
+rm -f "${O12_JOURNAL}"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-notoken-rb.log 2>&1
+O12_RB_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-notoken-rb.log || true
+if [ "${O12_RB_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the plain rollback of an orphan with no journaled identity exited ${O12_RB_RC} (expected 2 -- output above)"
+  exit 1
+fi
+if ! grep -q 'Skipping failed CREATE of OrphanStream.*the journal recorded no identity for it' \
+  /tmp/rollback-cmd-orphan-notoken-rb.log; then
+  echo "[verify] FAIL: the rollback did not report that nothing proves the stream is the one the failed CREATE made (output above)"
+  exit 1
+fi
+if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-notoken-rb.log; then
+  echo "[verify] FAIL: the rollback deleted a stream it had no identity for (output above)"
+  exit 1
+fi
+if ! O12_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)" || [ "${O12_STATUS}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is not ACTIVE after the rollback (${O12_STATUS:-gone}) -- it was deleted with no identity"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the rollback warned about the unproven stream"
+  exit 1
+fi
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} could not be removed after step O12"
+  exit 1
+fi
+echo "[verify] step O12 ok: the plain rollback kept a stream with no journaled identity and warned (exit 2), journal gone"
 
 # ---------------------------------------------------------------------------
 # PHASE P: a replacement whose NEW resource was created, then failed

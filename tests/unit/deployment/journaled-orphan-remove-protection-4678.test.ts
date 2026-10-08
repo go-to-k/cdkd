@@ -147,44 +147,17 @@ describe('failed-CREATE orphan delete under --remove-protection (go-to-k/cdkd#46
 describe('an orphan the delete checks never ran on keeps its protection (go-to-k/cdkd#4678)', () => {
   // No production caller sets `removeProtection` without the scan; the flag
   // still fails closed if one does.
-  it('withholds the flag, and warns, without a foreignHolder', async () => {
+  it('withholds the flag without a foreignHolder', async () => {
     const { del, seen } = recordingDelete();
-    const warn = vi.fn();
     await replayFailedOperations(
       [orphan()],
       {},
       'Stack',
-      ctxWith(del, {
-        removeProtection: true,
-        foreignHolder: undefined,
-        logger: { ...logger, warn } as unknown as RollbackExecutorContext['logger'],
-      }),
+      ctxWith(del, { removeProtection: true, foreignHolder: undefined }),
       {}
     );
     expect(del).toHaveBeenCalledOnce();
     expect(seen[0]!.context).not.toHaveProperty('removeProtection');
-    expect(String(warn.mock.calls.map((c) => c[0]))).toContain(
-      'leaving deletion protection on partially-created OrphanLb'
-    );
-  });
-  // Nothing to keep on: withheld silently.
-  it('withholds it without a warning when the attempt turned no protection on', async () => {
-    const { del, seen } = recordingDelete();
-    const warn = vi.fn();
-    await replayFailedOperations(
-      [{ ...orphan(), attemptedProperties: {} }],
-      {},
-      'Stack',
-      ctxWith(del, {
-        removeProtection: true,
-        foreignHolder: undefined,
-        logger: { ...logger, warn } as unknown as RollbackExecutorContext['logger'],
-      }),
-      {}
-    );
-    expect(del).toHaveBeenCalledOnce();
-    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
-    expect(String(warn.mock.calls.map((c) => c[0]))).not.toContain('leaving deletion protection');
   });
 });
 
@@ -253,16 +226,16 @@ describe('an orphan another stack holds is kept, protection and all (go-to-k/cdk
 });
 
 describe('a name-keyed orphan is deleted, and gets the flag, only when its identity is proven (go-to-k/cdkd#4678, #4658)', () => {
-  // A table's physical id is the name the user chose: after a hand delete,
-  // another table can take it.
+  // An instance's physical id is the identifier the user chose: after a hand
+  // delete, another instance can take it. RDS's provider reads the identity.
   const tableOrphan = (over: Partial<FailedOperation> = {}): FailedOperation => ({
     logicalId: 'Table',
     changeType: 'CREATE',
-    resourceType: 'AWS::DynamoDB::Table',
+    resourceType: 'AWS::RDS::DBInstance',
     physicalId: 'orders',
     provisionedBy: 'sdk',
     physicalIdRecoveredFromError: true,
-    attemptedProperties: { TableName: 'orders', DeletionProtectionEnabled: true },
+    attemptedProperties: { DBInstanceIdentifier: 'orders', DeletionProtection: true },
     ...over,
   });
 
@@ -330,7 +303,7 @@ describe('a name-keyed orphan is deleted, and gets the flag, only when its ident
       {
         Table: {
           physicalId: 'orders',
-          resourceType: 'AWS::DynamoDB::Table',
+          resourceType: 'AWS::RDS::DBInstance',
           properties: {},
           attributes: {},
           dependencies: [],
@@ -356,7 +329,7 @@ describe('a name-keyed orphan is deleted, and gets the flag, only when its ident
       {
         Table: {
           physicalId: 'orders',
-          resourceType: 'AWS::DynamoDB::Table',
+          resourceType: 'AWS::RDS::DBInstance',
           properties: {},
           attributes: {},
           dependencies: [],

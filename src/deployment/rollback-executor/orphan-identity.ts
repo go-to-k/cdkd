@@ -16,7 +16,10 @@
  * journaled orphan (go-to-k/cdkd#4658, #4696), ask the same two questions
  * here: {@link askForeignHolder}, then {@link createdResourceStillThere}.
  *
- * Leaf module: imports types and the sentinel only.
+ * A leaf at runtime: its one value import is the `RESOURCE_NOT_FOUND`
+ * sentinel; `journaled-orphans.ts` and `types.ts` are imported for types
+ * only, so `journaled-orphans.ts`, which imports this module at runtime,
+ * forms no runtime cycle with it.
  */
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';

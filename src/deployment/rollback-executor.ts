@@ -338,12 +338,6 @@ import {
   orphanDeleteNeedsIdentity,
 } from './rollback-executor/orphan-identity.js';
 import { removeProtectionTypes } from '../provisioning/remove-protection-types.js';
-import {
-  PROTECTION_PROPERTY_BY_TYPE,
-  isProtectionValueActive,
-  perType,
-  readProtection,
-} from '../provisioning/protection-flags.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
 /**
@@ -353,34 +347,16 @@ import { replayStackRecordsView, withStackRecords } from './stack-records-scope.
  * stack's record holds it, and it is the resource its CREATE made,
  * go-to-k/cdkd#4696 / #4658), and only on a type the flag strips something
  * from (an exempt type, or one in `removeProtectionTypes`). An orphan the
- * checks never ran on (no `foreignHolder`) keeps its protection, warned when
- * its attempted properties turned it on: AWS's refusal stays the guard.
+ * checks never ran on keeps its protection, so AWS's refusal stays the guard;
+ * every caller that sets the flag also supplies the checks' `foreignHolder`.
  */
-function protectionRemovalProven(
-  op: FailedOperation,
-  ctx: RollbackExecutorContext,
-  deleteProven: boolean
-): boolean {
+function protectionRemovalProven(op: FailedOperation, deleteProven: boolean): boolean {
   if (op.physicalIdRecoveredFromError !== true) return true;
-  if (deleteProven) {
-    return (
-      !orphanDeleteNeedsIdentity(op.resourceType) ||
-      removeProtectionTypes().includes(op.resourceType)
-    );
-  }
-  const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
-  if (
-    locator &&
-    isProtectionValueActive(
-      op.resourceType,
-      readProtection(op.attemptedProperties, locator, ctx.region)
-    )
-  ) {
-    ctx.logger.warn(
-      safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection does not apply: nothing proved it is the one the failed deploy created and that no other stack holds it. Its delete is refused while it is protected, and the journal keeps it`
-    );
-  }
-  return false;
+  return (
+    deleteProven &&
+    (!orphanDeleteNeedsIdentity(op.resourceType) ||
+      removeProtectionTypes().includes(op.resourceType))
+  );
 }
 
 /**
@@ -406,7 +382,9 @@ async function journaledOrphanKeepReason(
     return { keep: `${holding.by} holds a resource of that type under the same physical id now` };
   }
   if (holding?.kind === 'unreadable') {
-    return { retry: `${holding.what} leaves open whether another stack holds it now` };
+    return {
+      retry: `${holding.what} leaves open whether another stack holds it now; re-deploy that stack, or inspect its record with \`cdkd state show\`, then re-run`,
+    };
   }
   // The identity is READ here and the delete runs after it, unconditioned on
   // it: a name freed and reused between the two is not caught (the success
@@ -691,6 +669,7 @@ async function replayFailedOperationsUnbound(
     skipped: 0,
     interrupted: false,
     remainingFailedOps: [],
+    skippedOps: [],
     orphaned: [],
     leftInPlace: 0,
   };
@@ -737,6 +716,7 @@ async function replayFailedOperationsUnbound(
     // record, or found nothing applied (`skip-failed-noop`), or left a record
     // that is not its own (`skip-failed-mismatch`).
     const recordBefore = ownRecord(stateResources, op.logicalId);
+    const skippedBefore = result.skipped;
     try {
       addRecordNames(opMasker, op, stateResources[op.logicalId]);
       switch (action) {
@@ -973,7 +953,9 @@ async function replayFailedOperationsUnbound(
               // counts it a failure and keeps the op for a re-run
               // (`--drop-failed` drops one that can never be read).
               throw new Error(
-                `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for a re-run`
+                `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for ` +
+                  `a re-run; \`cdkd rollback --drop-failed\` removes only that record and leaves the ` +
+                  `resource in AWS`
               );
             }
             if (verdict !== undefined) {
@@ -981,12 +963,12 @@ async function replayFailedOperationsUnbound(
               // As `skip-failed-superseded`: nothing is deleted, the recorded
               // id is named, masked, and the skip counts as unaddressed.
               logger.warn(
-                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, but ${keep}; it is left as it is, and manual attention may be required`
+                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, but ${keep}. It is left in AWS: if it is not in use, delete it by hand`
               );
               recordRollbackSkip(
                 skipScope,
                 op,
-                `The failed CREATE created its resource before failing, but ${keep}, so the rollback left it as it is; manual attention may be required.`
+                `The failed CREATE created its resource before failing, but ${keep}, so it is left in AWS; if it is not in use, delete it by hand.`
               );
               break;
             }
@@ -1060,7 +1042,6 @@ async function replayFailedOperationsUnbound(
             ctx.removeProtection === true &&
             protectionRemovalProven(
               op,
-              ctx,
               orphanDeleteChecked || ctx.orphanDeleteProven?.has(op) === true
             );
           const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
@@ -1398,6 +1379,7 @@ async function replayFailedOperationsUnbound(
         error: maskedRollbackEventError(revertError, mask),
       });
     }
+    if (result.skipped > skippedBefore) result.skippedOps!.push(op);
     inlinePolicyWriters.noteOutcome(
       op,
       // `skip-failed-mismatch` (go-to-k/cdkd#4552) settles like the no-op it

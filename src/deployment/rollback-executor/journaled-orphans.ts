@@ -273,6 +273,11 @@ export async function deleteJournaledOrphans(
   /** The ops this run settled (deleted, kept, or skipped with a warning). */
   handled: Array<{ segment: RollbackJournalSegment; op: FailedOperation }>;
   /**
+   * go-to-k/cdkd#4658: the orphans (not their companions) skipped with a
+   * warning, left in AWS: `cdkd destroy` counts them as unaddressed.
+   */
+  skipped: number;
+  /**
    * Handled ops whose delete left part of what they wrote, warned
    * (go-to-k/cdkd#4612). Counted in `warnings` too.
    */
@@ -288,6 +293,7 @@ export async function deleteJournaledOrphans(
     warnings: 0,
     interrupted: false,
     handled: [] as Array<{ segment: RollbackJournalSegment; op: FailedOperation }>,
+    skipped: 0,
     leftInPlace: 0,
     failedLogicalIds: [] as string[],
   };
@@ -338,6 +344,7 @@ export async function deleteJournaledOrphans(
     total.failures += result.failures;
     total.warnings += result.warnings;
     total.leftInPlace += result.leftInPlace;
+    total.skipped += (result.skippedOps ?? []).filter((op) => orphanOps.includes(op)).length;
     const pending = new Set(result.remainingFailedOps);
     for (const op of ops) if (!pending.has(op)) total.handled.push({ segment, op });
     if (result.interrupted) {
@@ -372,9 +379,10 @@ export interface SuccessSettleOutcome {
   /**
    * Strip the entries this settle cleared (deleted, or demoted and warned
    * about) from the journal, for a caller whose journal delete FAILED: a
-   * surviving entry would still read as proven, and a plain `cdkd rollback`
-   * or `cdkd destroy` has no foreign-holder scan. Best-effort, never throws;
-   * absent when nothing was cleared.
+   * surviving entry would still read as proven, and a later `cdkd rollback`
+   * or `cdkd destroy` would act on it again (its own scan and identity read
+   * would decide afresh, on evidence this deploy no longer carries).
+   * Best-effort, never throws; absent when nothing was cleared.
    */
   stripCleared?: () => Promise<void>;
 }

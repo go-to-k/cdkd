@@ -58,7 +58,13 @@ const replayProvider = {
 };
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
-    getProviderFor: () => ({ provider: replayProvider, provisionedBy: 'sdk' }),
+    getProviderFor: ({ resourceType }: { resourceType: string }) => ({
+      // Real-shaped: only these types' providers read a creation identity.
+      provider: ['AWS::Kinesis::Stream','AWS::RDS::DBCluster','AWS::RDS::DBInstance','AWS::DocDB::DBCluster','AWS::DocDB::DBInstance'].includes(resourceType)
+        ? replayProvider
+        : { ...(replayProvider), resourceIdentity: undefined },
+      provisionedBy: 'sdk',
+    }),
     setCustomResourceResponseBucket: vi.fn(),
   })),
 }));
@@ -202,7 +208,9 @@ const ARMS: Arm[] = [
         {
           logicalId: 'A',
           changeType: 'CREATE',
-          resourceType: TYPE,
+          // A type whose provider journals a creation identity
+          // (go-to-k/cdkd#4658), so the control reaches the delete.
+          resourceType: 'AWS::Kinesis::Stream',
           physicalId: 'p',
           physicalIdRecoveredFromError: true,
           createdResourceIdentity: 'created-token',

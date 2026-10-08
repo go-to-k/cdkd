@@ -57,6 +57,13 @@ vi.mock('node:readline/promises', () => ({
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 
 const REGION = 'us-east-1';
+const IDENTITY_TYPES = new Set([
+  'AWS::Kinesis::Stream',
+  'AWS::RDS::DBCluster',
+  'AWS::RDS::DBInstance',
+  'AWS::DocDB::DBCluster',
+  'AWS::DocDB::DBInstance',
+]);
 
 const orphanOp = {
   logicalId: 'O',
@@ -140,8 +147,12 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {
-        getProviderFor: () => ({
-          provider: { delete: mockProviderDelete, resourceIdentity: mockResourceIdentity },
+        // Real-shaped: only the types whose provider implements it read a
+        // creation identity (go-to-k/cdkd#4658).
+        getProviderFor: ({ resourceType }: { resourceType: string }) => ({
+          provider: IDENTITY_TYPES.has(resourceType)
+            ? { delete: mockProviderDelete, resourceIdentity: mockResourceIdentity }
+            : { delete: mockProviderDelete },
           provisionedBy: 'sdk',
         }),
       } as unknown as ProviderRegistry,
@@ -251,12 +262,14 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     );
     expect(deleted()).toEqual(['phys-r']);
     expect(result.errorCount).toBe(0);
+    // Left in AWS unaddressed: counted, so the destroy exits 2 (go-to-k/cdkd#4658).
+    expect(result.skippedCount).toBe(1);
     expect(warn()).toContain('a later deploy or rollback may own a resource under that id now');
   });
 
   // go-to-k/cdkd#4658: the user deleted the orphan by hand and recreated a
   // stream under its name; the destroy keeps it, as a warned skip.
-  it('keeps one whose live identity is not the journaled one, and still destroys the stack', async () => {
+  it('keeps one whose live identity is not the journaled one, and counts it as a skip (exit 2)', async () => {
     mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
     mockResourceIdentity.mockResolvedValue('recreated-token');
     const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
@@ -265,14 +278,55 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     });
     expect(deleted()).toEqual(['phys-r']);
     expect(result.errorCount).toBe(0);
-    expect(mockDeleteState).toHaveBeenCalledOnce();
+    // Unaddressed: the destroy must not report success over it.
+    expect(result.skippedCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
     expect(warn()).toContain('Skipping failed CREATE of O');
     expect(warn()).toContain('orphan-stream');
     expect(warn()).toContain('its name was reused');
   });
 
+  // go-to-k/cdkd#4658: an SQS queue's provider records no creation identity,
+  // so nothing proves the queue under the name is the one the deploy made.
+  it('keeps a name-keyed orphan whose type records no identity, and counts it as a skip', async () => {
+    mockLoadJournal.mockResolvedValue(
+      journalOf([
+        {
+          logicalId: 'Q',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/orders',
+          provisionedBy: 'sdk',
+          physicalIdRecoveredFromError: true,
+          attemptedProperties: { QueueName: 'orders' },
+        },
+      ])
+    );
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(deleted()).toEqual(['phys-r']);
+    expect(mockResourceIdentity).not.toHaveBeenCalled();
+    expect(result.errorCount).toBe(0);
+    expect(result.skippedCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(warn()).toContain('Skipping failed CREATE of Q');
+    expect(warn()).toContain('https://sqs.us-east-1.amazonaws.com/123456789012/orders');
+    expect(warn()).toContain('if it is not in use, delete it by hand');
+  });
+
+  // Token journaled, live read unanswered: kept in the journal for a re-run.
+  it('keeps the state and the journal when the live identity read gives no answer', async () => {
+    mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
+    mockResourceIdentity.mockResolvedValue(undefined);
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(deleted()).not.toContain('orphan-stream');
+    expect(result.errorCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(warn()).toContain('removes only that record and leaves the resource in AWS');
+    expect(warn()).toContain('--drop-failed O');
+  });
+
   // go-to-k/cdkd#4696: a later `cdkd import` adopted it into stack B.
-  it("keeps one another stack's record holds, and still destroys the stack", async () => {
+  it("keeps one another stack's record holds, and counts it as a skip", async () => {
     mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
     mockListStacks.mockResolvedValue([
       { stackName: 'TestStack', region: REGION },
@@ -294,6 +348,7 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(deleted()).toEqual(['phys-r']);
     expect(mockResourceIdentity).not.toHaveBeenCalled();
     expect(result.errorCount).toBe(0);
+    expect(result.skippedCount).toBe(1);
     expect(warn()).toContain('the state record of stack B (us-east-1) holds a resource');
     expect(warn()).toContain('orphan-stream');
   });
@@ -302,7 +357,14 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
   // the state and its journal, are kept for a re-run.
   it('keeps the state and the journal when the holder scan cannot read a record', async () => {
     mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
-    mockListStacks.mockRejectedValue(new Error('AccessDenied'));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'TestStack', region: REGION },
+      { stackName: 'B', region: REGION },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name === 'B') throw new Error('AccessDenied');
+      return null;
+    });
     const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
     expect(deleted()).not.toContain('orphan-stream');
     expect(mockResourceIdentity).not.toHaveBeenCalled();
@@ -484,8 +546,17 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
         },
       ])
     );
+    // A synthetic proven orphan: EC2's provider journals none today, so the
+    // fixture gives it an identity to reach the snapshot arm past the
+    // go-to-k/cdkd#4658 check.
     const result = await runDestroyForStack('TestStack', makeState({}), {
       ...makeCtx(),
+      providerRegistry: {
+        getProviderFor: () => ({
+          provider: { delete: mockProviderDelete, resourceIdentity: mockResourceIdentity },
+          provisionedBy: 'sdk',
+        }),
+      } as unknown as ProviderRegistry,
       baseAwsClients: { ec2: { send: ec2Send } } as unknown as AwsClients,
     });
     expect(ec2Send).toHaveBeenCalled();
@@ -527,8 +598,11 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
       previousState: res(),
       attemptedProperties: { Name: 'new' },
     };
+    // An SSM parameter journals no creation identity (go-to-k/cdkd#4658):
+    // the orphan is kept, a warned skip, and still settled with its UPDATE.
+    const { createdResourceIdentity: _noToken, ...noToken } = structuredClone(orphanOp);
     const orphan = {
-      ...structuredClone(orphanOp),
+      ...noToken,
       logicalId: 'R',
       resourceType: 'AWS::SSM::Parameter',
       physicalId: 'phys-new',
@@ -542,7 +616,7 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
       physicalId === 'phys-r' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
     );
     await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
-    expect(deleted()).toEqual(['phys-new', 'phys-r']);
+    expect(deleted()).toEqual(['phys-r']);
     expect(mockDropFailed).toHaveBeenCalledOnce();
     const drop = mockDropFailed.mock.calls[0]![2] as (op: unknown, seg: unknown) => boolean;
     const fresh = structuredClone(journal.segments[0]!);
@@ -561,8 +635,10 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
       previousState: res(),
       replacementOrphaned: 'delete-first',
     };
+    // An SSM parameter journals no identity: the orphan is kept (go-to-k/cdkd#4658).
+    const { createdResourceIdentity: _noToken, ...noToken } = structuredClone(orphanOp);
     const orphan = {
-      ...structuredClone(orphanOp),
+      ...noToken,
       logicalId: 'R',
       resourceType: 'AWS::SSM::Parameter',
       physicalId: 'phys-new',
@@ -571,7 +647,10 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
       replacedResourceDeleted: true,
     };
     mockLoadJournal.mockResolvedValue(journalOf([update, orphan]));
-    await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    // The kept orphan counts; its companion UPDATE's skip (nothing to revert)
+    // is not one more resource left in AWS.
+    expect(result.skippedCount).toBe(1);
     expect(warn()).toContain('the destroy drops its record');
     expect(warn()).not.toContain('a deploy whose template still replaces it');
   });

@@ -1512,6 +1512,10 @@ export async function runDestroyForStack(
       );
       result.errorCount += orphanOutcome.failures;
       journaledOrphanFailures = orphanOutcome.failures;
+      // go-to-k/cdkd#4658: one left in AWS with a warning (another stack holds
+      // it, or nothing proves it is the one the failed deploy made) is not
+      // cleaned up: the destroy must not report success over it (exit 2).
+      result.skippedCount += orphanOutcome.skipped;
       // Mirror `cdkd rollback`'s per-op strip: a later failure keeps the
       // journal for a re-run, which must not re-send a settled delete.
       // Best-effort: a failed strip only makes that re-run repeat it, which

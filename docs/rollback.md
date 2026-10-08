@@ -82,12 +82,20 @@ successful deploy before they drop the journal (see [Failed CREATEs that made th
 other stack's state record holds it (a later `cdkd import` into another stack,
 say) and, for a resource whose physical id is a name, AWS still reports the
 identity the failed CREATE recorded (it may have been deleted and its name
-reused); otherwise it is warned about, its physical id named, and left in AWS
-(`cdkd rollback` exits `2`; `cdkd destroy` goes on to destroy the stack). When
+reused). Only a Kinesis stream and an RDS or DocumentDB cluster or instance
+record that identity today; a type whose physical id AWS generates and never
+reuses (a VPC, a security group, a load balancer, a KMS key, ...) needs none.
+**Every other name-keyed type (an S3 bucket, a Lambda function, an IAM role, a
+DynamoDB table, an SQS queue, ...) records none, so `cdkd rollback` and `cdkd
+destroy` keep its journaled orphan instead of deleting it.** A kept one is
+warned about, its physical id named, and left in AWS for you to delete by hand
+if it is not in use; `cdkd rollback` and `cdkd destroy` both exit `2`. When
 another stack's record or the live identity cannot be read, nothing is decided:
-the entry stays in the journal as a failed operation, for a re-run (or
-`cdkd rollback --drop-failed`). One AWS reports gone is settled with no delete. The automatic rollback, which runs
-seconds after the failure, deletes it without either check.
+the entry stays in the journal as a failed operation, for a re-run once the
+record or the resource can be read (`cdkd rollback --drop-failed` removes only
+the entry and leaves the resource in AWS). One AWS reports gone is settled with
+no delete. The automatic rollback, which runs inside the failed deploy over that
+attempt's own operations, deletes it without either check.
 A successful deploy that cannot act on one keeps the journal (reduced to that
 entry where it can), and one a state record may own, or that the checks above
 keep, is warned about and left in AWS; either way it exits `2`. An automatic rollback that skipped an operation
