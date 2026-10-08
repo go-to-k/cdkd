@@ -229,14 +229,16 @@ function carriedExpressionFor(
  * carry read the one table -- so the answer is decided by the template and
  * the parent bag, never by resolution order.
  *
- * The reads are found STATICALLY: a `{Ref: <Param>}` inside an intrinsic, and
- * a `${Param}` in an `Fn::Sub` string, the two ways a template reads a
- * parameter. A `{Ref}` reached through plain objects and arrays only is NOT
- * counted: the persist walk answers that leaf per parameter from the parent
- * bag (`positionByInheritedParameter`), never from the slot -- which is the
- * issue's own shape, two bare `{Ref}`s in one resource. An untaken `Fn::If`
- * branch counts; over-reading only withdraws more, which is the pre-#4644
- * answer. `Outputs` count as one resource, bare `{Ref}`s included.
+ * The reads are found STATICALLY: every `{Ref: <Param>}` and every `${Param}`
+ * in an `Fn::Sub` string. A collision counts only where one of its parameters
+ * is read through the SLOT -- under an intrinsic the persist walk does not
+ * position ({@link POSITIONED_INTRINSICS}). A bare `{Ref}`, or one an
+ * `Fn::Join` / `Fn::Sub` positions, is answered per parameter
+ * (`positionByInheritedParameter`, the placeholder arms), so two such reads --
+ * the issue's own shape -- never collide; but such a read still WRITES the
+ * slot, so it collides with a slot read of the other parameter. An untaken
+ * `Fn::If` branch counts; over-reading only withdraws more, which is the
+ * pre-#4644 answer. `Outputs` count as one resource, every read a slot read.
  */
 export function poisonRenderedSpellingsCollidingIn(
   template: { Resources?: unknown; Outputs?: unknown } | undefined,
@@ -261,7 +263,9 @@ export function poisonRenderedSpellingsCollidingIn(
     if (reads.size < 2) continue;
     // plaintext -> expression -> the reading parameters that would carry it.
     const byPlaintext = new Map<string, Map<string, { names: string[]; rendered: string[] }>>();
-    for (const name of reads) {
+    // plaintext -> whether any parameter carrying it is read through the slot.
+    const slotReadPlaintexts = new Set<string>();
+    for (const [name, slotRead] of reads) {
       // `reads` holds own keys only (`names` is `Object.keys`); stated for the
       // template-keyed bag check, a parameter name being template text.
       if (!Object.hasOwn(parameterValues, name)) continue;
@@ -283,10 +287,11 @@ export function poisonRenderedSpellingsCollidingIn(
         }
         entry.names.push(name);
         if (rendered) entry.rendered.push(name);
+        if (slotRead) slotReadPlaintexts.add(plaintext);
       }
     }
-    for (const byExpression of byPlaintext.values()) {
-      if (byExpression.size < 2) continue;
+    for (const [plaintext, byExpression] of byPlaintext) {
+      if (byExpression.size < 2 || !slotReadPlaintexts.has(plaintext)) continue;
       for (const entry of byExpression.values()) {
         for (const name of entry.rendered) withdraw.add(name);
       }
@@ -296,35 +301,49 @@ export function poisonRenderedSpellingsCollidingIn(
 }
 
 /**
- * The parameter names `node` reads through the carry's slot: a `{Ref: <name>}`
- * inside an intrinsic (`Fn::*`) and `Fn::Sub`'s `${name}`; a bare `{Ref}`
- * reached through plain objects and arrays is positioned per parameter.
+ * Intrinsics the persist walk positions per parameter: a `{Ref}` span of an
+ * `Fn::Join` or `Fn::Sub` (the placeholder arms). Any other `Fn::*` --
+ * `Fn::Select`, `Fn::Split`, and `Fn::If`, whose branch may be an array the
+ * walk does not position -- leaves its result to the value scan, which reads
+ * the slot.
+ */
+const POSITIONED_INTRINSICS: ReadonlySet<string> = new Set(['Fn::Join', 'Fn::Sub']);
+
+/**
+ * The parameter names `node` reads, each mapped to whether any of its reads
+ * sits under an intrinsic the persist walk does NOT position (so the value
+ * scan answers it from the carry's slot), rather than only on a path of plain
+ * objects, arrays and {@link POSITIONED_INTRINSICS}.
  */
 function parameterReadsOf(
   node: unknown,
   names: ReadonlySet<string>,
   countBareRefs: boolean
-): Set<string> {
-  const reads = new Set<string>();
-  const visit = (value: unknown, insideIntrinsic: boolean): void => {
+): Map<string, boolean> {
+  const reads = new Map<string, boolean>();
+  const add = (name: string, slotRead: boolean): void => {
+    reads.set(name, slotRead || reads.get(name) === true);
+  };
+  const visit = (value: unknown, slotRead: boolean): void => {
     if (Array.isArray(value)) {
-      for (const element of value) visit(element, insideIntrinsic);
+      for (const element of value) visit(element, slotRead);
       return;
     }
     if (value === null || typeof value !== 'object') return;
     const record = value as Record<string, unknown>;
     const ref = record['Ref'];
-    if (insideIntrinsic && typeof ref === 'string' && names.has(ref)) reads.add(ref);
+    if (typeof ref === 'string' && names.has(ref)) add(ref, slotRead);
     const sub = record['Fn::Sub'];
     const text = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
     if (typeof text === 'string') {
       for (const match of text.matchAll(/\$\{([^}!][^}]*)\}/g)) {
         const name = match[1]!.trim();
-        if (names.has(name)) reads.add(name);
+        if (names.has(name)) add(name, slotRead);
       }
     }
-    const intrinsic = insideIntrinsic || Object.keys(record).some((key) => key.startsWith('Fn::'));
-    for (const child of Object.values(record)) visit(child, intrinsic);
+    for (const [key, child] of Object.entries(record)) {
+      visit(child, slotRead || (key.startsWith('Fn::') && !POSITIONED_INTRINSICS.has(key)));
+    }
   };
   visit(node, countBareRefs);
   return reads;

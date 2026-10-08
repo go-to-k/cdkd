@@ -26,6 +26,7 @@ import {
   recordResolvedPair,
   redactInheritedParameterValue,
   redactSecretsForState,
+  withdrawRenderedParameterSpelling,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { poisonRenderedSpellingsCollidingIn } from '../../../src/deployment/intrinsic-resolver/parameter-secrets.js';
@@ -59,6 +60,8 @@ const PARAMETERS = { [PARAM_A]: CONN, [PARAM_B]: SHARED };
 const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
 const SEL_A = { 'Fn::Select': [0, [{ Ref: PARAM_A }]] };
 const SEL_B = { 'Fn::Select': [0, [{ Ref: PARAM_B }]] };
+/** The evaluated `Conditions` both sides resolve `Fn::If` with. */
+const CONDITIONS = { On: true };
 
 function childTemplate(resources: Record<string, unknown>): CloudFormationTemplate {
   return {
@@ -107,6 +110,7 @@ async function persistAndDesired(
     parameters: PARAMETERS,
     recordedSecretValues,
     inheritedSecrets: parent,
+    conditions: CONDITIONS,
   } as unknown as ResolverContext;
   const resolved = await resolver.resolve(properties, ctx);
   const persisted = redactSecretsForState(resolved, recordedSecretValues, properties) as Record<
@@ -119,6 +123,7 @@ async function persistAndDesired(
     resources: {},
     parameters: redactParametersForDiff.call(engine, PARAMETERS),
     skipDynamicReferences: true,
+    conditions: CONDITIONS,
   } as unknown as ResolverContext)) as Record<string, unknown>;
   return { persisted, desired };
 }
@@ -215,6 +220,76 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     expect(persisted).toEqual(desired);
     expect(persisted['Description']).toBe(SPELLING);
   });
+
+  // A bare `{Ref}` is positioned per parameter but still WRITES the slot, so a
+  // slot read of the other parameter in the same resource collides with it.
+  const BARE_BESIDE_SLOT: Record<string, Record<string, unknown>> = {
+    'bare SecretB, then Select ConnA': { B: { Ref: PARAM_B }, A: SEL_A },
+    'Select ConnA, then bare SecretB': { A: SEL_A, B: { Ref: PARAM_B } },
+    'bare ConnA, then Select SecretB': { A: { Ref: PARAM_A }, B: SEL_B },
+    'Select SecretB, then bare ConnA': { B: SEL_B, A: { Ref: PARAM_A } },
+    'Select SecretB, then ConnA in a plain array': { B: SEL_B, A: [{ Ref: PARAM_A }] },
+    'Select SecretB, then ConnA in a plain object': { B: SEL_B, A: { K: { Ref: PARAM_A } } },
+    // An `Fn::If` branch holding an array is value-scanned, so `Fn::If` is a
+    // slot read; the other side of the collision is positioned.
+    'Fn::If array of SecretB, then bare ConnA': {
+      B: { 'Fn::If': ['On', [{ Ref: PARAM_B }], 'z'] },
+      A: { Ref: PARAM_A },
+    },
+    'Fn::Join of ConnA, then Fn::If array of SecretB': {
+      A: { 'Fn::Join': ['', ['x-', { Ref: PARAM_A }]] },
+      B: { 'Fn::If': ['On', [{ Ref: PARAM_B }], 'z'] },
+    },
+  };
+  for (const reversed of [true, false]) {
+    for (const [shape, properties] of Object.entries(BARE_BESIDE_SLOT)) {
+      it(`${reversed ? 'reversed' : 'forward'} parent order, ${shape}: persists what main persisted`, async () => {
+        const template = childTemplate({ Mixed: properties });
+        const parent = parentRow(reversed);
+        poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+        // Forward, the survivor IS the literal's own token: same answer.
+        expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+          `postgres://${USER_EXPR}:${reversed ? EXPR_B : EXPR_A}@host`
+        );
+        // `main`: no rendered spelling for either parameter.
+        const before = parentRow(reversed);
+        withdrawRenderedParameterSpelling(before, PARAM_A);
+        withdrawRenderedParameterSpelling(before, PARAM_B);
+        const ours = await persistAndDesired(parent, template, properties);
+        expect(ours).toEqual(await persistAndDesired(before, template, properties));
+        if (reversed) expect(ours.persisted).toEqual(ours.desired);
+        expect(JSON.stringify(ours.persisted)).not.toContain(SHARED);
+      });
+    }
+  }
+
+  // `Fn::Join` and `Fn::Sub` reads are positioned per parameter, as a bare
+  // `{Ref}` is: no slot read, no collision, the #4644 fix kept.
+  const POSITIONED: Record<string, (p: string) => unknown> = {
+    'Fn::Join': (p) => ({ 'Fn::Join': ['', ['x-', { Ref: p }]] }),
+    'Fn::Sub': (p) => ({ 'Fn::Sub': `x-\${${p}}` }),
+  };
+  for (const [readA, wrapA] of Object.entries(POSITIONED)) {
+    for (const [readB, wrapB] of Object.entries({ bare: (p: string) => ({ Ref: p }), ...POSITIONED })) {
+      it(`keeps the spelling where ConnA is read through ${readA} beside a ${readB} SecretB`, async () => {
+        for (const properties of [
+          { A: wrapA(PARAM_A), B: wrapB(PARAM_B) },
+          { B: wrapB(PARAM_B), A: wrapA(PARAM_A) },
+        ]) {
+          const parent = parentRow(true);
+          const template = {
+            ...childTemplate({ Mixed: properties }),
+            Conditions: { On: { 'Fn::Equals': ['a', 'a'] } },
+          } as CloudFormationTemplate;
+          poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+          expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+          const { persisted, desired } = await persistAndDesired(parent, template, properties);
+          expect(persisted).toEqual(desired);
+          expect(JSON.stringify(persisted)).toContain(EXPR_A);
+        }
+      });
+    }
+  }
 
   it('counts the Outputs as one reader, bare {Ref}s included', () => {
     const parent = parentRow(true);
