@@ -41,7 +41,9 @@ export interface RecreateTargetReplacedReader {
  * moves), and its own readers in turn. This walks the same edges and asks the
  * same question the diff's synthetic changes ask: the replacement registry
  * with no values, and, for a property the registry does not classify, a
- * whole-property create-only path of the CFn schema that is not write-only.
+ * whole-property create-only path of the CFn schema — write-only too only when
+ * the property is a plain reference to the replaced resource
+ * ({@link isPlainReferenceTo}).
  *
  * Whether the id actually moves is known for certain only once the target is
  * recreated. A target whose fixed, literal name IS its recorded physical id
@@ -147,29 +149,43 @@ export async function findReplacedReadersOfRecreateTargets(input: {
     }
   }
 
-  const schemaCreateOnly = new Map<string, Promise<ReadonlySet<string>>>();
-  const wholeCreateOnlyKeys = (type: string): Promise<ReadonlySet<string>> => {
+  // Per type: every whole-property create-only key, and those that raise a
+  // ceiling only through a plain reference ({@link isPlainReferenceTo}).
+  const schemaCreateOnly = new Map<
+    string,
+    Promise<{ whole: ReadonlySet<string>; confirmable: ReadonlySet<string> }>
+  >();
+  const wholeCreateOnlyKeys = (
+    type: string
+  ): Promise<{ whole: ReadonlySet<string>; confirmable: ReadonlySet<string> }> => {
     let pending = schemaCreateOnly.get(type);
     if (!pending) {
       pending = (async () => {
-        const whole = (await getCreateOnlyPropertyPaths(type))
-          .filter((path) => path.length === 1)
-          .map((path) => path[0]!);
-        if (whole.length === 0) return new Set<string>();
-        // As the diff's loader: an unknown write-only list raises no ceiling,
-        // and a write-only create-only property stays an in-place update.
+        const whole = new Set(
+          (await getCreateOnlyPropertyPaths(type))
+            .filter((path) => path.length === 1)
+            .map((path) => path[0]!)
+        );
+        if (whole.size === 0) return { whole, confirmable: whole };
+        // As the diff's loader: an unknown write-only list makes no key
+        // confirmable, and a write-only key is not.
         const writeOnly = await tryGetTopLevelWriteOnlyProperties(type);
-        if (writeOnly === undefined) return new Set<string>();
-        return new Set(whole.filter((key) => !writeOnly.has(key)));
+        if (writeOnly === undefined) return { whole, confirmable: new Set<string>() };
+        return { whole, confirmable: new Set([...whole].filter((key) => !writeOnly.has(key))) };
       })();
       schemaCreateOnly.set(type, pending);
     }
     return pending;
   };
-  const isCreateOnly = async (type: string, key: string): Promise<boolean> => {
+  const isCreateOnly = async (
+    type: string,
+    key: string,
+    plainReference: boolean
+  ): Promise<boolean> => {
     if (rules.requiresReplacement(type, key, undefined, undefined)) return true;
     if (rules.isClassified(type, key)) return false;
-    return (await wholeCreateOnlyKeys(type)).has(key);
+    const keys = await wholeCreateOnlyKeys(type);
+    return plainReference ? keys.whole.has(key) : keys.confirmable.has(key);
   };
 
   const found: RecreateTargetReplacedReader[] = [];
@@ -188,7 +204,12 @@ export async function findReplacedReadersOfRecreateTargets(input: {
         if (stableTargets.has(replacedId) && idOnly.get(replacedId)?.get(readerId)?.has(key)) {
           continue;
         }
-        if (await isCreateOnly(resource.Type, key)) properties.push(key);
+        const plain = isPlainReferenceTo(
+          resource.Properties?.[key],
+          replacedId,
+          resources[replacedId]?.Type
+        );
+        if (await isCreateOnly(resource.Type, key, plain)) properties.push(key);
       }
       if (properties.length === 0) continue;
       replaced.add(readerId);
@@ -327,6 +348,42 @@ function recreateKeepsPhysicalId(
   if (!Object.hasOwn(properties, property)) return false;
   const name = properties[property];
   return typeof name === 'string' && name !== '' && record.physicalId === name;
+}
+
+/**
+ * Is `value` exactly `{ Ref: id }`, or exactly a `Fn::GetAtt` of `id` (either
+ * spelling) whose producer `type` is neither a custom resource nor a nested
+ * stack? go-to-k/cdkd#4701: such a create-only property of a replaced
+ * resource's reader is a replacement ceiling even when the schema also lists it
+ * WRITE-ONLY (`AWS::ApplicationAutoScaling::ScalingPolicy.ScalingTargetId`).
+ * The write-only exclusion (go-to-k/cdkd#3803) is for a fresh `NoEcho` value,
+ * which the engine can confirm only by reading AWS, and AWS never returns a
+ * write-only property. A plain reference resolves to the replaced resource's
+ * id or attribute, which the engine compares with the record instead. A custom
+ * resource's `Data` or a nested stack's `Outputs` may be a `NoEcho` value, and
+ * any other shape (a `Fn::Join` building a `{{resolve:...}}` dynamic
+ * reference, an `Fn::If`) may embed a secret, so those keep the exclusion.
+ */
+export function isPlainReferenceTo(value: unknown, id: string, type: string | undefined): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  const obj = value as Record<string, unknown>;
+  if (keys[0] === 'Ref') return obj['Ref'] === id;
+  if (keys[0] !== 'Fn::GetAtt') return false;
+  if (
+    type === undefined ||
+    type === 'AWS::CloudFormation::CustomResource' ||
+    type === 'AWS::CloudFormation::Stack' ||
+    type.startsWith('Custom::')
+  ) {
+    return false;
+  }
+  const target = obj['Fn::GetAtt'];
+  if (Array.isArray(target)) {
+    return target.length === 2 && target[0] === id && typeof target[1] === 'string';
+  }
+  return typeof target === 'string' && target.startsWith(`${id}.`) && target.length > id.length + 1;
 }
 
 /**
