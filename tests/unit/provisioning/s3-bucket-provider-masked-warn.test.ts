@@ -62,12 +62,31 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NoSuchBucket } from '@aws-sdk/client-s3';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import {
   createSecretMasker,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+
+/**
+ * Every send answers `{}`, except the us-east-1 create pre-flight's
+ * `GetBucketLocation`, which finds no bucket: a bucket the pre-flight finds
+ * under an explicit `BucketName` is refused as already held
+ * (go-to-k/cdkd#4684).
+ */
+function sendAnsweringNoBucket(cmd: unknown): Promise<unknown> {
+  if ((cmd as { constructor: { name: string } }).constructor.name === 'GetBucketLocationCommand') {
+    return Promise.reject(
+      new NoSuchBucket({
+        message: 'The specified bucket does not exist',
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+  }
+  return Promise.resolve({});
+}
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'analytics-source-bucket';
@@ -143,7 +162,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   childLogger.child.mockReturnValue(childLogger);
   provider = new S3BucketProvider();
-  mockSend.mockResolvedValue({});
+  mockSend.mockImplementation(sendAnsweringNoBucket);
 });
 
 describe('create(): the destination refusal masks a resolved secret (issue #2178)', () => {

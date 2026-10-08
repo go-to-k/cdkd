@@ -156,6 +156,8 @@ interface Case {
   alsoAux?: Array<string | AuxArm>;
   /** Canned responses by command name. */
   responses?: Record<string, unknown>;
+  /** Commands that answer a not-found error (`name`, `message`) instead of a response. */
+  notFound?: Record<string, { name: string; message: string }>;
   /** The AWS error the AUXILIARY command raises, when a real spelling is known. */
   auxAwsError?: { name: string; message: string };
   /**
@@ -638,8 +640,16 @@ const CASES: Case[] = [
     main: 'CreateBucketCommand',
     aux: 'PutBucketVersioningCommand',
     responses: { GetCallerIdentityCommand: { Account: '123456789012' } },
+    // The us-east-1 create pre-flight must find no bucket: one it finds under
+    // this explicit BucketName is refused as already held (go-to-k/cdkd#4684).
+    notFound: {
+      GetBucketLocationCommand: { name: 'NoSuchBucket', message: 'The specified bucket does not exist' },
+    },
     mainCollisionNotRaised:
-      'CreateBucket BucketAlreadyOwnedByYou is ADOPTED; BucketAlreadyExists is deliberately unclassified (#3816)',
+      'CreateBucket BucketAlreadyOwnedByYou is ADOPTED for a generated name, and for an explicit one ' +
+      'refused with its own collision mark (go-to-k/cdkd#4684, pinned in ' +
+      'providers/s3-bucket-explicit-name-held-4684.test.ts); BucketAlreadyExists is deliberately ' +
+      'unclassified (#3816)',
   },
   {
     name: 'servicediscovery AWS::ServiceDiscovery::Service',
@@ -959,6 +969,8 @@ function stubClients(
           ? awsSdkError(real.message, real.name)
           : awsSdkError(`${COLLISION_TEXT}.`, 'AlreadyExistsException');
       }
+      const missing = c.notFound?.[name];
+      if (missing !== undefined) throw awsSdkError(missing.message, missing.name);
       const overridden = override?.(name, input);
       if (overridden !== undefined) return structuredClone(overridden);
       return structuredClone(c.responses?.[name] ?? {});

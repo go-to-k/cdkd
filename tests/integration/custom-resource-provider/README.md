@@ -134,9 +134,10 @@ an `INCONCLUSIVE` reading, not the verdict itself, since `CreateStateMachine`
 fires ~26 resources later and the window can close in between.
 
 The **bucket** wait stays. S3's `OperationAborted` is retryable on the ordinary
-create path, but `BucketAlreadyOwnedByYou` is short-circuited to idempotent
-success by the S3 provider, so a re-create landing on that spelling would adopt
-a bucket on its way out — a different defect, not this one.
+create path, but `BucketAlreadyOwnedByYou` is not: for this bucket's explicit
+name the S3 provider refuses it ([#4684](https://github.com/go-to-k/cdkd/issues/4684)),
+so a re-create landing on that spelling would fail the redeploy rather than
+retry — a different behavior, not the one this phase measures.
 
 ## Deploy / destroy by hand (arm A only)
 

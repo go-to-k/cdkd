@@ -53,6 +53,9 @@ import {
   witnessNormalize,
   withoutNoEchoParameterEntries,
   recordPassedNoEchoParameters,
+  recordLogOnlyValue,
+  maskSecretsInText,
+  type RecordedSecretValues,
 } from '../secret-redaction.js';
 import {
   classifyPassedParameters,
@@ -522,6 +525,29 @@ export async function provisionUpdate(
       : witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten);
   const currentPropsAsWritten =
     witness === undefined ? recordedAsWritten : (witness.current as Record<string, unknown>);
+  // go-to-k/cdkd#4741: a witness that DIFFERS keeps the record's stored
+  // plaintext, the PREVIOUS value of a `NoEcho` position, on the side handed
+  // to the provider as the previous properties (and to a replacement's
+  // delete), and no bag knew it. It goes into this resource's PRINT-ONLY bag,
+  // the derived-name registry `provisionResource` binds around the whole
+  // resource body: every log line there (a provider's own included), the
+  // resource's errors and its events mask it. Not into `updateSecrets`, which
+  // persisting and deciding readers walk (the fingerprint refusal, a nested
+  // child's inherited bag). A shape-moved coordinate names a whole list or
+  // object, so only its leaves the desired side does not hold are recorded.
+  // The log-only floor applies: a whole printed text equal to it is masked at
+  // any length, an embedded occurrence only from `MIN_NEEDLE_LENGTH`
+  // characters.
+  for (const coordinate of witness?.differing ?? []) {
+    const desiredAt = valueAtCoordinate(desiredForSkipCheckAsWritten, coordinate);
+    recordPreviousNoEchoLeaves(
+      this.secretNameBagFor(logicalId),
+      valueAtCoordinate(recordedAsWritten, coordinate),
+      scalarLeavesOf(desiredAt),
+      updateSecrets,
+      desiredAt !== SECRET_MASK
+    );
+  }
   // The fresh `NoEcho` leaves, by class. The custom-resource class (a
   // handler's `Data`, a recovered output) keeps the go-to-k/cdkd#3729 table;
   // the PARAMETER class is read back whatever the property's replacement
@@ -1513,4 +1539,51 @@ export function unwrittenCreateOnlyRefusal(input: {
       : '') +
     ` To keep dropping ${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
   );
+}
+
+/**
+ * The printed form of every string and number leaf of `value`, at any depth.
+ * A boolean is left out: `true` would mask every line saying it.
+ */
+function scalarLeavesOf(value: unknown, into: Set<string> = new Set()): Set<string> {
+  if (typeof value === 'string') into.add(value);
+  else if (typeof value === 'number') into.add(String(value));
+  else if (Array.isArray(value)) for (const item of value) scalarLeavesOf(item, into);
+  else if (value !== null && typeof value === 'object') {
+    for (const item of Object.values(value)) scalarLeavesOf(item, into);
+  }
+  return into;
+}
+
+/**
+ * Records each scalar leaf of `stored` (a pre-v11 record's stored plaintext at
+ * a `NoEcho` position its migration witness found different,
+ * go-to-k/cdkd#4741) as a LOG-ONLY needle of the print-only `registry`, except
+ * the mask itself and any leaf the desired side holds in the clear at the same
+ * coordinate: a shape-moved list or object is compared whole, and its other
+ * leaves (`EMAIL`, a threshold) are not the secret. There (`shapeMoved`) a
+ * `"true"` / `"false"` string is skipped too, like a boolean: a sibling flag
+ * would mask every line saying it. A whole-leaf position records it, being
+ * the value itself.
+ */
+function recordPreviousNoEchoLeaves(
+  registry: RecordedSecretValues,
+  stored: unknown,
+  desiredLeaves: ReadonlySet<string>,
+  resolution: RecordedSecretValues,
+  shapeMoved: boolean
+): void {
+  for (const leaf of scalarLeavesOf(stored)) {
+    if (leaf === SECRET_MASK || desiredLeaves.has(leaf)) continue;
+    if (shapeMoved && (leaf === 'true' || leaf === 'false')) continue;
+    recordLogOnlyValue(registry, leaf);
+    // A site masking with the resolution bag alone (a provider's capability,
+    // a delete error) runs first and can cut a secret embedded in the leaf,
+    // leaving a text the whole-leaf needle no longer matches: that spelling
+    // is recorded too.
+    const partlyMasked = maskSecretsInText(leaf, resolution);
+    if (partlyMasked !== leaf && partlyMasked !== SECRET_MASK) {
+      recordLogOnlyValue(registry, partlyMasked);
+    }
+  }
 }

@@ -539,9 +539,10 @@ echo "    OK: the managed parameter is gone"
 #
 # The BUCKET wait stays. S3's `OperationAborted` was already retryable on the
 # ordinary create path before #2116 (it is in the same cooldown list now), but
-# `BucketAlreadyOwnedByYou` is short-circuited to idempotent SUCCESS by the S3
-# provider, so a re-create that lands on that spelling would adopt a bucket
-# that is on its way out rather than retry — a different defect, not this one.
+# `BucketAlreadyOwnedByYou` is not: for this bucket's EXPLICIT name the S3
+# provider refuses it (go-to-k/cdkd#4684), so a re-create that lands on that
+# spelling would fail the redeploy rather than retry — a different behavior,
+# not the one this phase measures.
 # Budget: 40 x 5s = 200s. It costs nothing when the bucket is already gone (the
 # first probe returns immediately), which is what keeps the state-machine
 # window — measured at ~23s — still OPEN when the redeploy starts.

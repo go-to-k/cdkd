@@ -154,19 +154,34 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
     it('ADOPTS and configures when the error reports THIS region', async () => {
       // The negative control for the header path. Without it a guard that
       // refused every already-owned bucket would satisfy every case above.
+      // A GENERATED name: only its holder is still adopted -- an explicit
+      // `BucketName` is refused once the region matches (go-to-k/cdkd#4684,
+      // the case below).
       mockSend.mockRejectedValueOnce(ownedElsewhere('eu-west-1'));
       mockSend.mockResolvedValue({});
 
       const result = await provider.create('MyBucket', RESOURCE_TYPE, {
-        BucketName: BUCKET,
         VersioningConfiguration: { Status: 'Enabled' },
       });
 
-      expect(result.physicalId).toBe(BUCKET);
+      expect(result.physicalId).toBe(mockSend.mock.calls[0]![0].input.Bucket);
       const names = sentCommands();
       expect(names[0]).toBe('CreateBucketCommand');
       expect(names).not.toContain('GetBucketLocationCommand');
       expect(names).toContain('PutBucketVersioningCommand');
+    });
+
+    it('REFUSES an explicit BucketName even when the error reports THIS region (go-to-k/cdkd#4684)', async () => {
+      mockSend.mockRejectedValueOnce(ownedElsewhere('eu-west-1'));
+      mockSend.mockResolvedValue({});
+
+      await expect(
+        provider.create('MyBucket', RESOURCE_TYPE, {
+          BucketName: BUCKET,
+          VersioningConfiguration: { Status: 'Enabled' },
+        })
+      ).rejects.toThrow(/Refusing to adopt S3 bucket my-globally-unique-bucket/);
+      expect(sentCommands()).toEqual(['CreateBucketCommand']);
     });
 
     it('never DELETES the bucket it refused to adopt', async () => {
@@ -266,9 +281,11 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
       mockSend.mockResolvedValueOnce({ LocationConstraint: 'EU' });
       mockSend.mockResolvedValue({});
 
-      await expect(
-        provider.create('MyBucket', RESOURCE_TYPE, { BucketName: BUCKET })
-      ).resolves.toMatchObject({ physicalId: BUCKET });
+      // A generated name, which is still adopted (go-to-k/cdkd#4684).
+      await expect(provider.create('MyBucket', RESOURCE_TYPE, {})).resolves.toMatchObject({
+        physicalId: expect.any(String),
+      });
+      expect(sentCommands()).toContain('GetBucketLocationCommand');
     });
 
     it('does NOT adopt when the readback itself fails', async () => {
@@ -320,13 +337,15 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
       // us-east-1 bucket. The unfolded-spelling risk is identical in either
       // region, and the us-east-1 spelling now decides something ELSE as well
       // (whether the issue #2241 pre-flight runs), which is fenced separately.
+      // A generated name, which is still adopted (go-to-k/cdkd#4684).
       clientRegion.value = 'EU-WEST-1';
       mockSend.mockRejectedValueOnce(ownedElsewhere('eu-west-1'));
       mockSend.mockResolvedValue({});
 
-      await expect(
-        provider.create('MyBucket', RESOURCE_TYPE, { BucketName: BUCKET })
-      ).resolves.toMatchObject({ physicalId: BUCKET });
+      await expect(provider.create('MyBucket', RESOURCE_TYPE, {})).resolves.toMatchObject({
+        physicalId: expect.any(String),
+      });
+      expect(sentCommands()).toEqual(['CreateBucketCommand']);
     });
 
     it('adds NO readback call when CreateBucket simply succeeds', async () => {

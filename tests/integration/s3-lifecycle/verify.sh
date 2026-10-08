@@ -55,6 +55,12 @@
 #      bucket's EventBridgeEnabled becomes the MALFORMED string 'yes' here
 #      (issue #1759): cdkd must warn and SKIP, leaving delivery OFF, where the
 #      pre-fix gate turned it ON.
+#   2d. go-to-k/cdkd#4684: rename an explicitly named bucket, fail the deploy
+#      after the replacement (`--no-rollback`), plant a bucket under the OLD
+#      name, and `cdkd rollback`. The reverse replacement's re-create must
+#      REFUSE that bucket (it did not make it): the revert fails with nothing
+#      deleted, the planted bucket keeps its marker tag, and the record still
+#      names the new bucket. Pre-fix it was adopted, retagged and recorded.
 #   3. Destroy; assert every bucket is gone and the state file is removed.
 #
 # Required env vars:
@@ -272,6 +278,13 @@ cleanup() {
   fi
   if [ -n "${DEP_ARM_ID_WORKDIR:-}" ]; then
     rm -rf "${DEP_ARM_ID_WORKDIR}" >/dev/null 2>&1 || true
+  fi
+  # go-to-k/cdkd#4684 phase 2d: per-run names, so the fixed-name sweep cannot.
+  if [ -n "${RN_OLD_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${RN_NEW_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -1861,6 +1874,120 @@ case "${DEP_RB_REASON}" in
 esac
 rm -rf "${DEP_ARM_ID_WORKDIR}"
 echo "    [phase 2c] the rollback's delete of ${DEP_ARM_RB_BUCKET} persisted one RESOURCE_GUARD_INDETERMINATE (operation DELETE) in ${DEP_RB_JSONL_KEY}"
+
+# --- Phase 2d: a rollback's re-create must not adopt a bucket it did not make (go-to-k/cdkd#4684)
+# The deploy engine looks an explicit name up before a plain create and a
+# renamed replacement, but nothing looks before the rollback's REVERSE
+# replacement re-creates the old bucket. Rename `RenameArmBucket` (old -> new:
+# the new bucket is created, the old one deleted), fail the deploy on a queue
+# that depends on it (`--no-rollback`), plant a bucket under the OLD name with
+# a marker tag (one made outside the stack), and `cdkd rollback`. The re-create
+# must REFUSE that bucket (in us-east-1 before CreateBucket, whose legacy 200
+# would reset its ACLs), and the executor, whose records prove the live new
+# bucket does not hold the old name, must refuse the revert with nothing
+# deleted. Pre-fix the provider adopted it: overwrote its tags with the
+# template's, recorded it as the stack's, and deleted the new bucket.
+RN_OLD_BUCKET="cdkd-lifecycle-rnold-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+RN_NEW_BUCKET="cdkd-lifecycle-rnnew-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+echo "==> Phase 2d: a rollback re-creating a replaced bucket must REFUSE ${RN_OLD_BUCKET}, made outside the stack"
+CDKD_TEST_UPDATE=true CDKD_RENAME_ARM_BUCKET="${RN_OLD_BUCKET}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+set +e
+# `--force-stateful-recreation`: an S3 bucket replacement is refused without it.
+CDKD_TEST_UPDATE=true CDKD_RENAME_ARM_BUCKET="${RN_NEW_BUCKET}" CDKD_RENAME_ARM_FAIL=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback --force-stateful-recreation
+RN_FAIL_RC=$?
+set -e
+if [ "${RN_FAIL_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2d]: the inject-fail deploy SUCCEEDED, so there is no replacement to roll back" >&2
+  exit 1
+fi
+# Premise: the replacement ran to completion before the queue failed.
+assert_gone_eventually "[phase 2d] premise: the replacement did not delete ${RN_OLD_BUCKET}" \
+  aws s3api head-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
+aws s3api head-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}" >/dev/null || {
+  echo "FAIL [phase 2d] premise: the replacement did not create ${RN_NEW_BUCKET}" >&2
+  exit 1
+}
+RN_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.RenameArmBucket.physicalId // "MISSING"')"
+if [ "${RN_RECORD}" != "${RN_NEW_BUCKET}" ]; then
+  echo "FAIL [phase 2d] premise: state records RenameArmBucket as ${RN_RECORD}, expected ${RN_NEW_BUCKET}" >&2
+  exit 1
+fi
+RN_OPS="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq --arg b "${RN_NEW_BUCKET}" \
+  '[.segments[].operations[] | select(.logicalId == "RenameArmBucket" and .changeType == "UPDATE" and .physicalId == $b)] | length')"
+if [ "${RN_OPS}" != "1" ]; then
+  echo "FAIL [phase 2d] premise: expected exactly one journaled UPDATE of RenameArmBucket naming ${RN_NEW_BUCKET}, got ${RN_OPS}" >&2
+  exit 1
+fi
+
+# The bucket made outside the stack, under the name the revert will ask for.
+plant_bucket "${RN_OLD_BUCKET}" "${REGION}"
+RN_MARKER="phase2d-$(date -u +%s)"
+aws s3api put-bucket-tagging --bucket "${RN_OLD_BUCKET}" --region "${REGION}" \
+  --tagging "TagSet=[{Key=cdkd-integ-marker,Value=${RN_MARKER}}]" || {
+  echo "FAIL [phase 2d] premise: could not tag ${RN_OLD_BUCKET}" >&2
+  exit 1
+}
+
+set +e
+RN_OUT="$(node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+RN_RC=$?
+set -e
+printf '%s\n' "${RN_OUT}"
+RN_FLAT="$(printf '%s' "${RN_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
+# The pre-fix outcome first, so a regression names itself.
+if printf '%s' "${RN_FLAT}" | grep -qF -- 'was ADOPTED, not created'; then
+  echo "FAIL [phase 2d]: the re-create ADOPTED ${RN_OLD_BUCKET}, a bucket this stack never made" >&2
+  exit 1
+fi
+if [ "${RN_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2d]: cdkd rollback SUCCEEDED, so it reverted onto ${RN_OLD_BUCKET}, which it did not make" >&2
+  exit 1
+fi
+# Literals of the executor's refusal (rollback-executor/replay-reverse-replacement.ts)
+# and the provider's (S3BucketProvider.refuseExplicitNameHeld).
+for needle in 'Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket)' \
+  'Nothing was deleted.' "Refusing to adopt S3 bucket ${RN_OLD_BUCKET} for RenameArmBucket" \
+  'its BucketName is set explicitly'; do
+  if ! printf '%s' "${RN_FLAT}" | grep -qF -- "${needle}"; then
+    echo "FAIL [phase 2d]: rollback output lacks message fragment: ${needle}" >&2
+    exit 1
+  fi
+done
+# Untouched: still carrying the marker, never the template's tag.
+RN_TAG="$(aws s3api get-bucket-tagging --bucket "${RN_OLD_BUCKET}" --region "${REGION}" \
+  --query "TagSet[?Key=='cdkd-integ-marker'].Value | [0]" --output text 2>&1)" || RN_TAG="<get-bucket-tagging failed: ${RN_TAG}>"
+if [ "${RN_TAG}" != "${RN_MARKER}" ]; then
+  echo "FAIL [phase 2d]: ${RN_OLD_BUCKET} was reconfigured by the refused revert (marker tag '${RN_TAG}', expected '${RN_MARKER}')" >&2
+  exit 1
+fi
+# Nothing deleted, and the record still names the live new bucket.
+aws s3api head-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}" >/dev/null || {
+  echo "FAIL [phase 2d]: the refused revert deleted ${RN_NEW_BUCKET}" >&2
+  exit 1
+}
+RN_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.RenameArmBucket.physicalId // "MISSING"')"
+if [ "${RN_RECORD}" != "${RN_NEW_BUCKET}" ]; then
+  echo "FAIL [phase 2d]: state records RenameArmBucket as ${RN_RECORD} after the refused revert, expected ${RN_NEW_BUCKET}" >&2
+  exit 1
+fi
+echo "    [phase 2d] refused (rc=${RN_RC}): ${RN_OLD_BUCKET} untouched, ${RN_NEW_BUCKET} kept and still recorded"
+
+echo "==> Phase 2d teardown"
+# The refused revert keeps the journal for a re-run; this run abandons it.
+aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+aws s3api delete-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
+# Back to the phase-2 template: removes RenameArmBucket (the new bucket).
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone_eventually "[phase 2d] ${RN_NEW_BUCKET} survived the deploy that removed it" \
+  aws s3api head-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}"
+assert_gone_eventually "[phase 2d] ${RN_OLD_BUCKET} survived its teardown" \
+  aws s3api head-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

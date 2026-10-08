@@ -111,13 +111,16 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     // assertion passes because `applyConfiguration` was never reached at all —
     // a vacuous pass. The `PutBucketVersioningCommand` assertion at the end is
     // what makes that regression fail loudly instead of going quiet again.
+    //
+    // A GENERATED name: an explicit `BucketName` is refused rather than adopted
+    // here (go-to-k/cdkd#4684), so only a generated name's holder reaches the
+    // configuration this gate guards.
     mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
     mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' }); // GetBucketLocation readback
     mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
     await expect(
       provider.create('MyBucket', RESOURCE_TYPE, {
-        BucketName: 'my-test-bucket-xxx',
         VersioningConfiguration: { Status: 'Enabled' },
       })
     ).rejects.toThrow('Failed to create S3 bucket');
@@ -190,10 +193,16 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     });
 
     it('does not mark an adopted pre-existing bucket (cleanup skipped)', async () => {
+      // A generated name, the only one still adopted (go-to-k/cdkd#4684).
       mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
       mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' });
       mockSend.mockRejectedValueOnce(new Error('wiring boom'));
-      const error = await failure();
+      const error = await provider
+        .create('MyBucket', RESOURCE_TYPE, { VersioningConfiguration: { Status: 'Enabled' } })
+        .then(
+          () => expect.fail('create resolved'),
+          (e: unknown) => e
+        );
       expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain(
         'PutBucketVersioningCommand'
       );
