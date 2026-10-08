@@ -258,7 +258,9 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
   // record, and the one a state-recorded failed CREATE gets under
   // `--revert-failed` (so no live identity read and no foreign-holder scan,
   // which guard a journaled orphan no record holds). A deploy's automatic
-  // rollback and a nested child's in-process revert never set the flag. ONE
+  // rollback never sets the flag: a nested child's revert under it never sets
+  // it; under `cdkd rollback --remove-protection` the child replay does
+  // (go-to-k/cdkd#4703). ONE
   // attempt, no outer re-entry: the scope tells a protection flip's
   // compensation that any failure is the last, so the guard is put back.
   const removeProtection = ctx.removeProtection === true;
