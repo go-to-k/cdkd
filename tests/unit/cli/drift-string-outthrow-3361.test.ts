@@ -134,8 +134,12 @@ function throwingWhenLocked<T>(value: T): PropertyDescriptor {
 const TYPE = 'AWS::SQS::Queue';
 const SECRET_EXPR = '{{resolve:secretsmanager:cdkd-3361-secret:SecretString:password::}}';
 
-function resource(properties: Record<string, unknown>, physicalId = 'q'): ResourceState {
-  return { physicalId, resourceType: TYPE, properties };
+function resource(
+  properties: Record<string, unknown>,
+  physicalId = 'q',
+  resourceType = TYPE
+): ResourceState {
+  return { physicalId, resourceType, properties };
 }
 
 function stackState(resources: Record<string, ResourceState>): { state: StackState; etag: string } {
@@ -183,15 +187,24 @@ async function run(extra: string[]): Promise<{ stdout: string; error: unknown }>
 
 async function detect(): Promise<{ report: DriftJson; error: unknown }> {
   const { stdout, error } = await run(['--json']);
-  const [report] = JSON.parse(stdout) as DriftJson[];
-  return { report: report!, error };
+  // An out-throw prints no payload; `notOutThrown` then names why, rather
+  // than `JSON.parse('')` failing first.
+  const [report] = (stdout === '' ? [] : JSON.parse(stdout)) as DriftJson[];
+  return { report: report ?? { drifted: [], clean: [], notSupported: [] }, error };
 }
 
 const ids = (rows: Array<{ logicalId: string }> | undefined): string[] =>
   (rows ?? []).map((r) => r.logicalId);
 
-const notTypeError = (error: unknown): void => {
+/**
+ * The out-throw never reached the command's error handler. `withErrorHandling`
+ * logs what it catches through `formatError` and exits (mocked to throw
+ * `__exit__`), so the rejection itself is never a `TypeError` here: the
+ * converter's message on the error channel is what an escape leaves behind.
+ */
+const notOutThrown = (error: unknown): void => {
   expect(error).not.toBeInstanceOf(TypeError);
+  expect(logs.error.join('\n')).not.toContain('Cannot convert object to primitive value');
 };
 
 const linesWith = (lines: string[], needle: string): string[] =>
@@ -235,7 +248,7 @@ describe('cdkd drift detection (#3361)', () => {
 
     const { report, error } = await detect();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(ids(report.notCompared)).toEqual(['Bad']);
     expect(ids(report.clean)).toEqual(['Good']);
     const warn = linesWith(logs.warn, 'could not be compared');
@@ -255,7 +268,7 @@ describe('cdkd drift detection (#3361)', () => {
 
     const { report, error } = await detect();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(ids(report.notSupported)).toEqual(['Bad']);
     expect(ids(report.clean)).toEqual(['Good']);
     const debug = linesWith(logs.debug, 'no-READ-handler signature');
@@ -270,7 +283,7 @@ describe('cdkd drift detection (#3361)', () => {
 
     const { report, error } = await detect();
 
-    notTypeError(error);
+    notOutThrown(error);
     // The secret leaf is not compared; the plain one still is, so `A` drifts.
     expect(ids(report.drifted)).toEqual(['R']);
     const warn = linesWith(logs.warn, 'secret-bearing properties are NOT compared');
@@ -285,13 +298,15 @@ describe('cdkd drift detection (#3361)', () => {
         Statement: [{ Effect: 'Allow', Principal: { AWS: principal }, Action: 'sqs:*' }],
       },
     });
-    mockGetState.mockResolvedValue(stackState({ P: resource(policy(arn)) }));
+    mockGetState.mockResolvedValue(
+      stackState({ P: resource(policy(arn), 'qp', 'AWS::SQS::QueuePolicy') })
+    );
     mockReadCurrentState.mockResolvedValue(policy('AROAABCDEFGHIJKLMNOP'));
     mockIamSend.mockImplementation(() => Promise.reject(unconvertible()));
 
     const { report, error } = await detect();
 
-    notTypeError(error);
+    notOutThrown(error);
     // Unresolved principal = the spelling difference stays reported as drift,
     // rather than the comparison failing as a whole.
     expect(ids(report.drifted)).toEqual(['P']);
@@ -330,7 +345,7 @@ describe('cdkd drift --accept (#3361)', () => {
 
     const { error } = await run(['--accept', '--yes']);
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     const warn = linesWith(logs.warn, 'Failed to release lock');
     expect(warn).toHaveLength(1);
@@ -351,7 +366,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(revertSummary()).toEqual(['\nRevert summary: 0 reverted, 1 failed.']);
     const line = linesWith(logs.error, 'AWS update failed');
     expect(line).toHaveLength(1);
@@ -368,7 +383,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(revertSummary()).toEqual(['\nRevert summary: 0 reverted, 1 reference-unresolvable.']);
     const line = linesWith(logs.error, 'could not re-resolve the dynamic reference');
@@ -386,7 +401,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(revertSummary()).toEqual(['\nRevert summary: 0 reverted, 1 failed.']);
     const line = linesWith(logs.error, 'could not build the revert payload');
@@ -402,7 +417,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     // The update LANDED: before the fix the capture's own catch threw, and the
     // outer one re-reported the resource as `AWS update failed`.
     expect(revertSummary()).toEqual(['\nRevert summary: 1 reverted.']);
@@ -420,7 +435,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(revertSummary()).toEqual(['\nRevert summary: 1 reverted.']);
     expect(linesWith(logs.error, 'AWS update failed')).toEqual([]);
     const warn = linesWith(logs.warn, 'the attributes the provider returned could not be recorded');
@@ -436,7 +451,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     expect(revertSummary()).toEqual(['\nRevert summary: 1 reverted.']);
     const warn = linesWith(logs.warn, 'Reverted TestStack (us-east-1), but could not record');
@@ -450,7 +465,7 @@ describe('cdkd drift --revert (#3361)', () => {
 
     const { error } = await revert();
 
-    notTypeError(error);
+    notOutThrown(error);
     expect(revertSummary()).toEqual(['\nRevert summary: 1 reverted.']);
     const warn = linesWith(logs.warn, 'Failed to release lock');
     expect(warn).toHaveLength(1);
