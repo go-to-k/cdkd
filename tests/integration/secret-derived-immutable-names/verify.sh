@@ -60,7 +60,7 @@
 #      then rejects its lifecycle policy, so the journal records it), then
 #      destroy that stack: it keeps the repository (no creation identity,
 #      go-to-k/cdkd#4658) and exits 2, and its --verbose log does not name it;
-#      the fixture deletes it and re-runs the destroy.
+#      the fixture deletes it by hand.
 #   6c. The same failed deploy again, then a plain `cdkd rollback`: it keeps
 #      the repository too (exit 2, go-to-k/cdkd#4658), and its log does not
 #      name it either (its failed-op replay, go-to-k/cdkd#3869),
@@ -919,7 +919,8 @@ echo "==> Step 6b: a failed-CREATE orphan named from the secret, kept by a destr
 # go-to-k/cdkd#4658: an ECR repository's provider journals no creation
 # identity, so nothing proves the repository under the name is the one the
 # failed CREATE made: the destroy KEEPS it, warns naming it (masked), and
-# exits 2. The fixture deletes it by hand and re-runs the destroy.
+# exits 2; the stack's state and journal still go (no state row held the
+# repository). The fixture deletes the repository by hand.
 orphan_deploy_failing
 set +e
 node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
@@ -946,19 +947,16 @@ if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${RE
   echo "FAIL: orphan repository ${REPO_NAME} is gone after the destroy that warned it was kept" >&2
   exit 1
 fi
+for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
+  assert_gone "${key} still exists after the orphan stack's destroy" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
+done
 aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null
 assert_gone "orphan repository ${REPO_NAME} still exists after the fixture deleted it" \
   aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
-# The kept entry left the journal; the re-run finds nothing left and removes the state.
-node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --force > "${ORPHAN_LOG}.rerun" 2>&1
-for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
-  assert_gone "${key} still exists after the orphan stack's destroy re-run" \
-    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
-done
 # The destroy deleted SecretRollbackQueue as a state resource.
 QUEUE_DELETED_AT="$(date +%s)"
-echo "    OK: the journaled orphan was deleted, and the destroy log withholds its name"
+echo "    OK: the destroy kept the unproven orphan (exit 2), and its log withholds its name"
 
 echo "==> Step 6c: the same orphan, kept by a plain cdkd rollback from the journal"
 # go-to-k/cdkd#3869: a plain rollback replays the journal's proven orphans

@@ -1173,6 +1173,8 @@ export async function runDestroyForStack(
   // go-to-k/cdkd#4584: the share of `errorCount` that is journaled orphans,
   // whose remedy differs (the summary never offers `cdkd state orphan`).
   let journaledOrphanFailures = 0;
+  // go-to-k/cdkd#4658: the journaled orphans left in AWS with a warning.
+  let journaledOrphanSkips = 0;
   const lock = await acquireStackLock({
     ...stackLockBase,
     // Route the notice through the live renderer so it doesn't collide with
@@ -1514,8 +1516,10 @@ export async function runDestroyForStack(
       journaledOrphanFailures = orphanOutcome.failures;
       // go-to-k/cdkd#4658: one left in AWS with a warning (another stack holds
       // it, or nothing proves it is the one the failed deploy made) is not
-      // cleaned up: the destroy must not report success over it (exit 2).
+      // cleaned up: the destroy must not report success over it (exit 2). It
+      // holds no state record, so it does not keep the state (see below).
       result.skippedCount += orphanOutcome.skipped;
+      journaledOrphanSkips = orphanOutcome.skipped;
       // Mirror `cdkd rollback`'s per-op strip: a later failure keeps the
       // journal for a re-run, which must not re-send a settled delete.
       // Best-effort: a failed strip only makes that re-run repeat it, which
@@ -2206,7 +2210,10 @@ export async function runDestroyForStack(
     // deleting the state file would orphan them; a skip leaves a resource cdkd
     // could not even address, so dropping its record orphans it permanently
     // and with no id to go on.
-    const preserveState = result.errorCount > 0 || result.interrupted || result.skippedCount > 0;
+    // A journaled orphan's skip keeps nothing: no state row held it, and its
+    // journal entry was settled above, so the state would be kept empty.
+    const preserveState =
+      result.errorCount > 0 || result.interrupted || result.skippedCount > journaledOrphanSkips;
     // Publish the per-stack "is there work left in this stack" answer to the
     // outer `finally` BEFORE the branch below acts on it, so the re-sync there
     // can never contradict a `deleteState` that has already happened.
@@ -2309,6 +2316,12 @@ export async function runDestroyForStack(
           `${[...guardIndeterminateTargets].map((t) => plainOrDescribed(t, 'logical id')).join(', ')}. ` +
           `A check can be suppressed by DENYING the permission it needs, so treat this as ` +
           `unconfirmed rather than benign. ${durablePointer}`
+      );
+    }
+    if (journaledOrphanSkips > 0) {
+      logger.warn(
+        safeMsg`${journaledOrphanSkips} resource(s) a failed deploy created were left in AWS (each named in a ` +
+          'warning above, which says what to do with it). This stack no longer records them.'
       );
     }
     if (!preserveState) {

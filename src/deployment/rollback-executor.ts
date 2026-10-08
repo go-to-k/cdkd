@@ -376,14 +376,17 @@ async function journaledOrphanKeepReason(
   op: FailedOperation & { physicalId: string },
   foreignHolder: NonNullable<RollbackExecutorContext['foreignHolder']>,
   ctx: RollbackExecutorContext
-): Promise<{ keep: string } | { retry: string } | 'gone' | undefined> {
+): Promise<{ keep: string; finish?: string } | { retry: string } | 'gone' | undefined> {
   const holding = await askForeignHolder(foreignHolder, op);
   if (holding?.kind === 'held') {
-    return { keep: `${holding.by} holds a resource of that type under the same physical id now` };
+    return {
+      keep: `${holding.by} holds a resource of that type under the same physical id now`,
+      finish: 'it now belongs to that stack: leave it to that stack',
+    };
   }
   if (holding?.kind === 'unreadable') {
     return {
-      retry: `${holding.what} leaves open whether another stack holds it now; re-deploy that stack, or inspect its record with \`cdkd state show\`, then re-run`,
+      retry: `${holding.what} leaves open whether another stack holds it now; once that record can be read (re-deploy or inspect it with \`cdkd state show\`, or retry when the bucket is reachable), re-run`,
     };
   }
   // The identity is READ here and the delete runs after it, unconditioned on
@@ -960,15 +963,16 @@ async function replayFailedOperationsUnbound(
             }
             if (verdict !== undefined) {
               const keep = verdict.keep;
+              const finish = verdict.finish ?? 'if it is not in use, delete it by hand';
               // As `skip-failed-superseded`: nothing is deleted, the recorded
               // id is named, masked, and the skip counts as unaddressed.
               logger.warn(
-                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, but ${keep}. It is left in AWS: if it is not in use, delete it by hand`
+                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, but ${keep}. It is left in AWS: ${finish}`
               );
               recordRollbackSkip(
                 skipScope,
                 op,
-                `The failed CREATE created its resource before failing, but ${keep}, so it is left in AWS; if it is not in use, delete it by hand.`
+                `The failed CREATE created its resource before failing, but ${keep}, so it is left in AWS; ${finish}.`
               );
               break;
             }

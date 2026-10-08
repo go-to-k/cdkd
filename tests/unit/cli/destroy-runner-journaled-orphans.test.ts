@@ -278,9 +278,11 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     });
     expect(deleted()).toEqual(['phys-r']);
     expect(result.errorCount).toBe(0);
-    // Unaddressed: the destroy must not report success over it.
+    // Unaddressed: the destroy must not report success over it (exit 2), but
+    // no state row held it, so the state goes.
     expect(result.skippedCount).toBe(1);
-    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(mockDeleteState).toHaveBeenCalledOnce();
+    expect(warn()).toContain('1 resource(s) a failed deploy created were left in AWS');
     expect(warn()).toContain('Skipping failed CREATE of O');
     expect(warn()).toContain('orphan-stream');
     expect(warn()).toContain('its name was reused');
@@ -307,7 +309,7 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(mockResourceIdentity).not.toHaveBeenCalled();
     expect(result.errorCount).toBe(0);
     expect(result.skippedCount).toBe(1);
-    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(mockDeleteState).toHaveBeenCalledOnce();
     expect(warn()).toContain('Skipping failed CREATE of Q');
     expect(warn()).toContain('https://sqs.us-east-1.amazonaws.com/123456789012/orders');
     expect(warn()).toContain('if it is not in use, delete it by hand');
@@ -351,6 +353,10 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(result.skippedCount).toBe(1);
     expect(warn()).toContain('the state record of stack B (us-east-1) holds a resource');
     expect(warn()).toContain('orphan-stream');
+    // Another stack owns it now: never "delete it by hand".
+    expect(warn()).toContain('it now belongs to that stack');
+    expect(warn()).not.toContain('delete it by hand');
+    expect(mockDeleteState).toHaveBeenCalledOnce();
   });
 
   // A record the scan cannot read is no verdict: the orphan's entry, and so
