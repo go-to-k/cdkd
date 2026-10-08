@@ -19,19 +19,25 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
  * goes through `sameRegion` (`src/utils/aws-partition.ts`), which folds both.
  *
  * A comparison is refused when one operand is REGION-VALUED and the other is
- * region-valued or a non-empty string literal. Region-valued means: a name
- * ending in `region` (any case) — an identifier, a property, or a
- * string-literal key — or a `canonicalizeRegion(...)` call, seen through
- * parentheses, TS assertions and the branches of `??` / `||` / `?:`. A name
- * that merely CONTAINS it (`producerRegions`, `explicitRegionLogText`) is not
- * a region and is not matched. A `canonicalizeRegion(...)` operand makes the
- * comparison a region equality whatever the other side is named, unless that
- * side is `undefined` / `null` / `''`. Two plain names that do not end in
- * `region` (`target === other`) are out of reach — a lint by NAME cannot see
- * what a variable holds.
+ * anything but `undefined` / `null` / `''` (a presence test). Region-valued
+ * means: a name ending in `region` (any case) — an identifier, a property, or
+ * a string-literal key — a `canonicalizeRegion(...)` call, or a
+ * `.toLowerCase()` / `.toLocaleLowerCase()` of a region-valued operand (#1882's
+ * one-sided fold by another spelling), seen through parentheses, TS assertions
+ * and the branches of `??` / `||` / `?:`. A name that merely CONTAINS it
+ * (`producerRegions`, `explicitRegionLogText`) is not a region. So
+ * `target === this.resolverRegion` is refused whatever `target` holds, while
+ * two plain names neither ending in `region` (`target === other`) are out of
+ * reach — a lint by NAME cannot see what a variable holds.
+ *
+ * Out of reach by design: a region used as a Map or cache KEY, which is not an
+ * equality at all. `cfn-fallback.ts`'s two memo keys are that class, and their
+ * own behaviour tests are what guard them.
  *
  * A comparison that genuinely means "this exact string" carries
  * `// allow-raw-region-compare: <reason>` on the line above or the same line.
+ * The marker exempts LINES, not one comparison: every comparison starting on
+ * the marker's last line or the line after it.
  */
 
 const MARKER = 'allow-raw-region-compare:';
@@ -72,7 +78,14 @@ function nameOf(node: Node): string | undefined {
 function isRegionValued(raw: Node): boolean {
   const node = unwrap(raw);
   if (node.type === 'CallExpression') {
-    return nameOf(unwrap(node['callee'] as Node)) === 'canonicalizeRegion';
+    const callee = unwrap(node['callee'] as Node);
+    const name = nameOf(callee);
+    if (name === 'canonicalizeRegion') return true;
+    return (
+      (name === 'toLowerCase' || name === 'toLocaleLowerCase') &&
+      callee.type === 'MemberExpression' &&
+      isRegionValued(callee['object'] as Node)
+    );
   }
   if (node.type === 'LogicalExpression' && node['operator'] !== '&&') {
     return isRegionValued(node['left'] as Node) || isRegionValued(node['right'] as Node);
@@ -82,24 +95,6 @@ function isRegionValued(raw: Node): boolean {
   }
   const name = nameOf(node);
   return name !== undefined && /region$/i.test(name);
-}
-
-function isNonEmptyStringLiteral(raw: Node): boolean {
-  const node = unwrap(raw);
-  return (
-    (node.type === 'Literal' && typeof node['value'] === 'string' && node['value'] !== '') ||
-    (node.type === 'TemplateLiteral' &&
-      ((node['quasis'] as Node[]).length > 1 ||
-        ((node['quasis'] as Node[])[0]?.['value'] as { cooked?: string })?.cooked !== ''))
-  );
-}
-
-function isCanonicalizeCall(raw: Node): boolean {
-  const node = unwrap(raw);
-  return (
-    node.type === 'CallExpression' &&
-    nameOf(unwrap(node['callee'] as Node)) === 'canonicalizeRegion'
-  );
 }
 
 /** `undefined`, `null` or `''`: a presence test, not a region equality. */
@@ -115,13 +110,11 @@ function isBareRegionComparison(node: Node): boolean {
   if (node.type !== 'BinaryExpression' || !EQUALITY.has(node['operator'] as string)) return false;
   const left = node['left'] as Node;
   const right = node['right'] as Node;
-  // A folded operand marks the other side as a region whatever it is named:
+  // One region operand marks the other side as a region whatever it is named:
   // the pre-fix tree held `target === canonicalizeRegion(this.explicitRegion)`.
-  if (isCanonicalizeCall(left)) return !isAbsenceLiteral(right);
-  if (isCanonicalizeCall(right)) return !isAbsenceLiteral(left);
   return (
-    (isRegionValued(left) && (isRegionValued(right) || isNonEmptyStringLiteral(right))) ||
-    (isRegionValued(right) && isNonEmptyStringLiteral(left))
+    (isRegionValued(left) && !isAbsenceLiteral(right)) ||
+    (isRegionValued(right) && !isAbsenceLiteral(left))
   );
 }
 
@@ -136,7 +129,13 @@ function bareRegionComparisons(text: string, file = 'input.ts'): string[] {
   for (const c of parsed.comments) {
     const body = text.slice(c.start, c.end);
     const at = body.indexOf(MARKER);
-    if (at >= 0 && body.slice(at + MARKER.length).trim() !== '') {
+    // A block comment's own `*/`, and a JSDoc line's leading `*`, are not a reason.
+    const reason = body
+      .slice(at + MARKER.length)
+      .replace(/\*\/$/, '')
+      .replace(/^\s*\*+/gm, '')
+      .trim();
+    if (at >= 0 && reason !== '') {
       const last = lineAt(c.end);
       allowedLines.add(last);
       allowedLines.add(last + 1);
@@ -194,6 +193,14 @@ describe('the bare-region-comparison scanner (issue #2209)', () => {
     'this?.resolverRegion === region',
     'target === canonicalizeRegion(this.explicitRegion)',
     'canonicalizeRegion(ambient.configuredRegion) !== target',
+    // One region-named side: `target` is folded, `resolverRegion` raw.
+    'target === this.resolverRegion',
+    'this.resolverRegion === target',
+    // #1882's one-sided fold, spelled by hand.
+    'region.toLowerCase() === target',
+    'target !== this.resolverRegion.toLocaleLowerCase()',
+    // A mask test, not a region equality: the real site carries the marker.
+    'this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion',
   ])('flags %s', (expr) => {
     expect(flagged(expr)).toBe(true);
   });
@@ -207,7 +214,7 @@ describe('the bare-region-comparison scanner (issue #2209)', () => {
     "regionVerdict.kind === 'ambiguous'",
     'cached.explicitRegionLogText !== guestRegionText',
     'context?.producerRegions === undefined',
-    'this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion',
+    'name.toLowerCase() === other',
     'region.length === 0',
     'canonicalizeRegion(region) === undefined',
     "canonicalizeRegion(region) !== ''",
@@ -225,8 +232,17 @@ describe('the bare-region-comparison scanner (issue #2209)', () => {
   it('does not honour a marker two lines above, or one without a reason', () => {
     const far = `// ${MARKER} exact twin\n\nconst a = region === this.resolverRegion;`;
     const bare = `// ${MARKER}\nconst a = region === this.resolverRegion;`;
+    const bareBlock = `/* ${MARKER} */\nconst a = region === this.resolverRegion;`;
+    const bareJsDoc = `/**\n * ${MARKER}\n *\n */\nconst a = region === this.resolverRegion;`;
     expect(bareRegionComparisons(far)).toHaveLength(1);
     expect(bareRegionComparisons(bare)).toHaveLength(1);
+    expect(bareRegionComparisons(bareBlock)).toHaveLength(1);
+    expect(bareRegionComparisons(bareJsDoc)).toHaveLength(1);
+  });
+
+  it('honours a block-comment marker that carries a reason', () => {
+    const block = `/* ${MARKER} exact twin */\nconst a = region === this.resolverRegion;`;
+    expect(bareRegionComparisons(block)).toEqual([]);
   });
 
   it('refuses a file it cannot parse rather than skipping it', () => {
@@ -246,14 +262,14 @@ describe('the intrinsic resolver compares regions only through sameRegion (issue
 
   it('scans the family it claims to police (floor)', () => {
     // Literals the fence does not read: the family had 26 files, five
-    // `sameRegion` calls and one marker when #2209 landed.
+    // `sameRegion` calls and two markers when #2209 landed.
     expect(family.length).toBeGreaterThanOrEqual(26);
     const calls = family.flatMap(({ rel, text }) =>
       codeLines(text, rel).filter((l) => /\bsameRegion\(/.test(l.text))
     );
     expect(calls.length).toBeGreaterThanOrEqual(5);
-    const markers = family.filter(({ text }) => text.includes(MARKER));
-    expect(markers.length).toBeGreaterThanOrEqual(1);
+    const markers = family.flatMap(({ text }) => text.split(MARKER).slice(1));
+    expect(markers.length).toBeGreaterThanOrEqual(2);
   });
 
   it('has no bare region comparison', () => {

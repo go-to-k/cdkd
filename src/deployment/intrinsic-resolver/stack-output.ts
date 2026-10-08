@@ -165,6 +165,7 @@ export async function resolveGetStackOutput(
       // (issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
       throw markNonRetryable(
         new Error(
+          // allow-raw-region-compare: a mask test (did the log text alter this value?), not a region equality.
           `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
