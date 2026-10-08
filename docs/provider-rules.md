@@ -1264,21 +1264,22 @@ shared report is `orphan-report.ts`):
   inside one `send` is a duplicate nothing can see. The engine's retry covers
   5xx and throttles; the SDK keeps its retry of throttles, connection
   failures, clock skew and socket resets, which the engine does not retry.
-  A create whose replay COLLIDES instead of duplicating (CodeCommit's
-  `CreateRepository`, by name, and its seed `CreateCommit`, refused once the
-  branch exists; EC2's `CreateSecurityGroup`, by group name in the VPC; IAM's
-  `CreateRole`, `CreateUser`, `CreateGroup`, `CreateInstanceProfile` and
-  `CreatePolicy`, by entity name, through `iam-create-client.ts`; Lambda's
-  `CreateFunction`, `CreateFunctionUrlConfig` and `AddPermission`, through
-  `lambda-create-client.ts`; EventBridge's `CreateEventBus` and ECR's
-  `CreateRepository`, by name)
-  needs this client and no lookup: the surfaced 5xx lets
+  Every token-less create whose replay COLLIDES instead of duplicating (a
+  name-unique create: a stream, repository, role, function, table, cluster,
+  directory or table bucket and the like — the providers that send one
+  through this client and arm no latch, plus EC2's `CreateSecurityGroup`,
+  which collides on its group name in the VPC, and CodeCommit's seed
+  `CreateCommit`, which collides once the branch exists) needs this client
+  and no lookup: the surfaced 5xx lets
   `withRetry` mark the collision as possibly this create's own
   ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never
   credited to another holder. The exception is a collision whose error does
   not name the holder: EC2's `CreateSubnet` collides on its CIDR, but
   `InvalidSubnet.Conflict` names no subnet id, so it keeps the lookup to
-  tell the user which subnet to inspect.
+  tell the user which subnet to inspect. S3's `CreateBucket` is not one of
+  these either: it keeps its latch and refuses a bucket that exists after its
+  own server error rather than adopting it
+  ([#4686](https://github.com/go-to-k/cdkd/issues/4686)).
 - **Look only after an AMBIGUOUS failure.** `AmbiguousCreateLatch.noteFailure`
   arms on `isAmbiguousOutcomeError` thrown by the create call itself, and the
   next attempt `take`s it before creating again. A definite refusal (a 4xx, a
