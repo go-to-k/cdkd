@@ -973,9 +973,13 @@
     {
       "resourceType": "AWS::DocDB::DBCluster",
       "integs": [
+        "docdb-fix-forward-orphan",
         "docdb-neptune"
       ],
       "signals": {
+        "docdb-fix-forward-orphan": [
+          "l1"
+        ],
         "docdb-neptune": [
           "l1"
         ]
@@ -984,9 +988,13 @@
     {
       "resourceType": "AWS::DocDB::DBInstance",
       "integs": [
+        "docdb-fix-forward-orphan",
         "docdb-neptune"
       ],
       "signals": {
+        "docdb-fix-forward-orphan": [
+          "l1"
+        ],
         "docdb-neptune": [
           "l1"
         ]
@@ -995,9 +1003,13 @@
     {
       "resourceType": "AWS::DocDB::DBSubnetGroup",
       "integs": [
+        "docdb-fix-forward-orphan",
         "docdb-neptune"
       ],
       "signals": {
+        "docdb-fix-forward-orphan": [
+          "l1"
+        ],
         "docdb-neptune": [
           "l1"
         ]
@@ -1231,6 +1243,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -1302,6 +1315,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -1451,6 +1467,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -1519,6 +1536,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -1686,6 +1706,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -1757,6 +1778,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -1908,6 +1932,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -1979,6 +2004,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -2334,6 +2362,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -2410,6 +2439,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -2590,6 +2622,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -2658,6 +2691,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -2798,6 +2834,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -2877,6 +2914,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [
@@ -3065,6 +3105,7 @@
         "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
@@ -3136,6 +3177,9 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2"
+        ],
+        "docdb-fix-forward-orphan": [
           "l2"
         ],
         "docdb-neptune": [

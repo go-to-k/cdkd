@@ -170,6 +170,7 @@
         "diff-fail-on-destructive",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "drift-revert",
         "drift-revert-arrays",
@@ -433,6 +434,7 @@
         "alb",
         "appsync",
         "created-before-failure-revert",
+        "docdb-fix-forward-orphan",
         "dynamodb-globaltable",
         "emr-cluster",
         "fsx-lustre",
@@ -534,6 +536,7 @@
         "diff-fail-on-destructive",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "docker-image-asset",
         "drift-revert",
@@ -881,6 +884,7 @@
         "diff-fail-on-destructive",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "docker-image-asset",
         "drift-revert",
@@ -1138,6 +1142,7 @@
     {
       "flag": "--resource-timeout",
       "integs": [
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "rds-fix-forward-orphan",
         "remove-protection"
@@ -1146,6 +1151,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "docdb-fix-forward-orphan",
         "emr-cluster",
         "fsx-lustre",
         "local-invoke-from-cfn-stack",
@@ -1168,6 +1174,7 @@
         "cc-final-snapshot-handlers",
         "deletion-policy-snapshot",
         "deletion-policy-snapshot-heavy",
+        "docdb-fix-forward-orphan",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-fix-forward-orphan",
@@ -1258,6 +1265,7 @@
         "diff-fail-on-destructive",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
+        "docdb-fix-forward-orphan",
         "docdb-neptune",
         "docker-image-asset",
         "drift-revert",

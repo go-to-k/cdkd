@@ -161,6 +161,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`cross-region-concurrent-stacks`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-region-concurrent-stacks/)
 - [`custom-resource-noecho-nested`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/custom-resource-noecho-nested/)
 - [`diff-fail-on-destructive`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/diff-fail-on-destructive/)
+- [`docdb-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docdb-fix-forward-orphan/)
 - [`dynamodb-autoscaling`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-autoscaling/)
 - [`dynamodb-globaltable-implied-stream`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-globaltable-implied-stream/)
 - [`dynamodb-gsi-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-gsi-update/)
