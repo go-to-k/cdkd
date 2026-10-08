@@ -287,7 +287,17 @@ if [ -n "${NEW_REF:-}" ]; then
   NEW_DESC="git ${NEW_SHA}"
 else
   NEW_BIN="${REPO_ROOT}/dist/cli.js"
-  NEW_DESC="this tree's dist (HEAD $(git -C "${REPO_ROOT}" rev-parse HEAD)$(git -C "${REPO_ROOT}" diff --quiet HEAD -- src || echo ', src modified'))"
+  # This tree's dist must BE HEAD: no uncommitted src, and no src file newer
+  # than the build.
+  if [ -n "$(git -C "${REPO_ROOT}" status --porcelain -- src)" ]; then
+    echo "FAIL: src has uncommitted changes; commit them or pass NEW_REF" >&2
+    exit 1
+  fi
+  if [ ! -f "${NEW_BIN}" ] || [ -n "$(find "${REPO_ROOT}/src" -type f -newer "${NEW_BIN}" | head -1)" ]; then
+    echo "FAIL: ${NEW_BIN} is missing or older than src -- run 'vp run build' (or pass NEW_REF)" >&2
+    exit 1
+  fi
+  NEW_DESC="this tree's dist (HEAD $(git -C "${REPO_ROOT}" rev-parse HEAD))"
 fi
 # The NEW build also tears down what a failed run left (the cleanup trap).
 LOCAL_DIST="${NEW_BIN}"
@@ -375,6 +385,19 @@ prefix_run() { # usage: prefix_run <with|without> <run#>
     --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --force
 }
 
+# Every per-run prefix exists from the start (one placeholder object each), so
+# every timed first deploy, OLD or NEW, early or late, sees the same number of
+# top-level prefixes in the bucket.
+echo ""
+echo "==> Pre-creating every per-run prefix"
+PLACEHOLDER_DIR="${SCRATCH}/placeholders"
+mkdir -p "${PLACEHOLDER_DIR}"
+for n in $(seq 1 "${RUNS}"); do for w in OLD NEW; do mkdir -p "${PLACEHOLDER_DIR}/${RUN_PREFIX_BASE}-single-${w}${n}"; done; done
+for n in $(seq 1 "${SCALE_RUNS}"); do for w in OLD NEW; do mkdir -p "${PLACEHOLDER_DIR}/${RUN_PREFIX_BASE}-scale-${w}${n}"; done; done
+for n in $(seq 1 "${PREFIX_RUNS}"); do for m in with without; do mkdir -p "${PLACEHOLDER_DIR}/${RUN_PREFIX_BASE}-prefix-${m}${n}"; done; done
+for d in "${PLACEHOLDER_DIR}"/*; do printf 'x' >"${d}/.perf-placeholder"; done
+aws s3 cp "${PLACEHOLDER_DIR}" "s3://${STATE_BUCKET}/" --recursive --only-show-errors
+
 echo ""
 echo "==> Arm 1: single stack, ${RUNS} runs per build (OLD/NEW alternating)"
 for n in $(seq 1 "${RUNS}"); do
@@ -418,8 +441,8 @@ for (arm, phase), (a, b) in pairs.items():
     ma, mb = statistics.median(va), statistics.median(vb)
     overlap = min(va) <= max(vb) and min(vb) <= max(va)
     delta = mb - ma
-    verdict = 'no difference' if overlap or abs(delta) < 0.3 else f'{b} - {a} = {delta:+.2f}s (median)'
-    print(f"VERDICT {arm} {phase}: {verdict} ({a} {ma:.2f}s, {b} {mb:.2f}s)")
+    verdict = 'no difference' if overlap or abs(delta) < 0.3 else 'DIFFERENT'
+    print(f"VERDICT {arm} {phase}: {verdict} (median {b} - {a} = {delta:+.2f}s; {a} {ma:.2f}s, {b} {mb:.2f}s)")
 PY
 
 rm -f "${RUN_LOG}"

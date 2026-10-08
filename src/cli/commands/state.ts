@@ -4,6 +4,7 @@ import {
   plainOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
+import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -2974,6 +2975,8 @@ async function stateDestroyCommand(
         if (!options.stackRegion) return laterRefs.length > 0;
         return laterRefs.some((r) => r.region === options.stackRegion || !r.region);
       });
+    // go-to-k/cdkd#4705: one bucket listing for every stack this run destroys.
+    const crossPrefixCheck = { target: withSharedListing(setup.stateBackend) };
     for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):
@@ -3124,7 +3127,7 @@ async function stateDestroyCommand(
                   // go-to-k/cdkd#2115: a whole-stack teardown (see destroy.ts).
                   stackDestroy: true,
                   // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
-                  crossPrefixCheck: true,
+                  crossPrefixCheck,
                   exportIndexStore: setup.exportIndexStore,
                   ...(options.allowUnsupportedTypes?.length && {
                     allowUnsupportedTypes: options.allowUnsupportedTypes,

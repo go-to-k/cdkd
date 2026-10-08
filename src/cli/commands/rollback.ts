@@ -875,7 +875,12 @@ export async function rollbackCommand(
       }
       applyCrossPrefixScan(
         await crossPrefixScan,
-        { stackName, region, bucket: setup.bucket },
+        {
+          stackName,
+          region,
+          bucket: setup.bucket,
+          recovery: { profile: options.profile, stateBucket: setup.bucket },
+        },
         'rollback',
         (message) => logger.warn(message),
         (message) => logger.info(message)

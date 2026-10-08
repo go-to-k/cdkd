@@ -12,7 +12,14 @@ vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
   return { ...actual, getLogger: () => quiet };
 });
 
-import { createCrossPrefixDeployGate } from '../../../src/cli/commands/cross-prefix-gate.js';
+import {
+  composeStateLoadedGates,
+  createCrossPrefixDeployGate,
+  createCrossPrefixDestructiveGate,
+  crossPrefixScanKey,
+  startCrossPrefixScans,
+} from '../../../src/cli/commands/cross-prefix-gate.js';
+import type { CrossPrefixScanTarget } from '../../../src/state/cross-prefix-stack-scan.js';
 import type { CrossPrefixScanResult } from '../../../src/state/cross-prefix-stack-scan.js';
 import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
 
@@ -57,12 +64,92 @@ describe('createCrossPrefixDeployGate', () => {
     await expect(gate(undefined)('App', undefined)).resolves.toBeUndefined();
   });
 
-  it('warns and proceeds when S3 denied the scan', async () => {
+  it('warns and proceeds when S3 denied a read', async () => {
     warn.mockClear();
     await expect(
-      gate(Promise.resolve({ kind: 'denied', error: { name: 'AccessDenied' } }))('App', undefined)
+      gate(Promise.resolve({ kind: 'denied', error: { name: 'AccessDenied' }, stage: 'probe' }))(
+        'App',
+        undefined
+      )
     ).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).toContain('Could not check whether stack App');
+  });
+});
+
+function fakeTarget(holders: Record<string, boolean> = {}, own = false) {
+  return {
+    prefix: 'cdkd',
+    ownRecordExists: vi.fn(async () => own),
+    listTopLevelPrefixes: vi.fn(async () => ['cdkd', 'team-b']),
+    recordUnderPrefix: vi.fn(async (p: string, stackName: string) =>
+      holders[`${p}|${stackName}`] ? ('holder' as const) : ('absent' as const)
+    ),
+  } satisfies CrossPrefixScanTarget;
+}
+
+describe('the deploy wiring (deploy.ts)', () => {
+  it('scans every stack of the set through ONE listing, keyed by stack AND region, in the region given', async () => {
+    const t = fakeTarget({ 'team-b|A': true });
+    const regionOf = vi.fn((s: { region?: string | undefined }) => s.region || 'eu-west-1');
+    const scans = startCrossPrefixScans(
+      [{ stackName: 'A' }, { stackName: 'B', region: 'us-west-2' }],
+      t,
+      regionOf
+    );
+    expect([...scans.keys()]).toEqual([
+      crossPrefixScanKey('A', 'eu-west-1'),
+      crossPrefixScanKey('B', 'us-west-2'),
+    ]);
+    await expect(scans.get(crossPrefixScanKey('A', 'eu-west-1'))).resolves.toMatchObject({
+      kind: 'found',
+    });
+    await expect(scans.get(crossPrefixScanKey('B', 'us-west-2'))).resolves.toEqual({ kind: 'clear' });
+    expect(t.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
+    expect(t.ownRecordExists).toHaveBeenCalledWith('A', 'eu-west-1');
+    expect(t.ownRecordExists).toHaveBeenCalledWith('B', 'us-west-2');
+  });
+
+  it('keys one stack name in two regions apart', () => {
+    expect(crossPrefixScanKey('A', 'us-east-1')).not.toBe(crossPrefixScanKey('A', 'us-west-2'));
+  });
+
+  it('calls the cross-prefix gate first, then the prefix-migration gate', async () => {
+    const order: string[] = [];
+    const composed = composeStateLoadedGates(
+      async () => {
+        order.push('cross-prefix');
+      },
+      async () => {
+        order.push('migration');
+      }
+    );
+    await composed('App', undefined);
+    expect(order).toEqual(['cross-prefix', 'migration']);
+    const refusing = composeStateLoadedGates(async () => {
+      throw new Error('refused');
+    }, vi.fn());
+    await expect(refusing('App', undefined)).rejects.toThrow('refused');
+  });
+});
+
+describe('createCrossPrefixDestructiveGate', () => {
+  it('refuses a destructive plan of a stack another prefix holds, naming it', async () => {
+    const gate = createCrossPrefixDestructiveGate({
+      region: 'us-east-1',
+      bucket: 'b',
+      target: fakeTarget({ 'team-b|App': true }, true),
+    });
+    await expect(gate('App', [])).rejects.toThrow(
+      /Refusing to deploy stack App \(us-east-1\): this deploy deletes or replaces resources.*\(team-b\)/s
+    );
+  });
+
+  it('scans for the name the engine passes (a nested child) and ignores its own record', async () => {
+    const t = fakeTarget({}, true);
+    const gate = createCrossPrefixDestructiveGate({ region: 'us-east-1', bucket: 'b', target: t });
+    await expect(gate('App~Child', [])).resolves.toBeUndefined();
+    expect(t.ownRecordExists).not.toHaveBeenCalled();
+    expect(t.recordUnderPrefix).toHaveBeenCalledWith('team-b', 'App~Child', 'us-east-1');
   });
 });

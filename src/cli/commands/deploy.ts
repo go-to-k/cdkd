@@ -110,11 +110,14 @@ import {
   renderNoStackMatch,
 } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
-import { createCrossPrefixDeployGate } from './cross-prefix-gate.js';
 import {
-  scanOtherPrefixesForStack,
-  withSharedListing,
-} from '../../state/cross-prefix-stack-scan.js';
+  composeStateLoadedGates,
+  createCrossPrefixDeployGate,
+  createCrossPrefixDestructiveGate,
+  crossPrefixScanKey,
+  startCrossPrefixScans,
+} from './cross-prefix-gate.js';
+import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
@@ -601,18 +604,17 @@ async function deployCommand(
     // handling and the lock, not synth; a short run of the scan can outlast
     // them. A stack this prefix already records stops after one parallel round
     // of HEADs on its own keys and lists nothing.
-    const crossPrefixTarget = withSharedListing(preflightStateBackend);
-    const crossPrefixScans = new Map(
-      targetStacks.map((s) => [
-        s.stackName,
-        scanOtherPrefixesForStack(
-          crossPrefixTarget,
-          s.stackName,
-          s.region || (namedCliRegion(options.region) ?? 'us-east-1'),
-          { checkOwnRecord: true }
-        ),
-      ])
+    // The same expression `runStackInner` gives the engine (`stackInfo.region
+    // || baseRegion`), so the scan reads the key the engine's state load reads.
+    const crossPrefixRegionOf = (s: { region?: string | undefined }): string =>
+      s.region || (namedCliRegion(options.region) ?? 'us-east-1');
+    const crossPrefixScans = startCrossPrefixScans(
+      targetStacks,
+      preflightStateBackend,
+      crossPrefixRegionOf
     );
+    // One listing shared by every destructive-plan check of this run.
+    const crossPrefixDestructiveTarget = withSharedListing(preflightStateBackend);
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
@@ -935,7 +937,8 @@ async function deployCommand(
           stackName: stackInfo.stackName,
           region: stackRegion,
           bucket: stateBucket,
-          scan: crossPrefixScans.get(stackInfo.stackName),
+          recovery: refusalRecovery,
+          scan: crossPrefixScans.get(crossPrefixScanKey(stackInfo.stackName, stackRegion)),
         });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
@@ -1125,10 +1128,13 @@ async function deployCommand(
           refusalRecovery,
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
-          onCurrentStateLoaded: async (gateStackName, loadedState) => {
-            await crossPrefixGate(gateStackName, loadedState);
-            if (migrationGate) await migrationGate(gateStackName, loadedState);
-          },
+          onCurrentStateLoaded: composeStateLoadedGates(crossPrefixGate, migrationGate),
+          onDestructivePlan: createCrossPrefixDestructiveGate({
+            region: stackRegion,
+            bucket: stateBucket,
+            recovery: refusalRecovery,
+            target: crossPrefixDestructiveTarget,
+          }),
           // Issue #2719. Unconditional, unlike `recreateTargets` above: an
           // empty Set is the same as absent to every reader, and gating on
           // size only matters where the value's PRESENCE changes behaviour.

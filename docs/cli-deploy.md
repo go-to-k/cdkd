@@ -574,8 +574,10 @@ and refuses before any resource is touched if it does. A stack name is one
 deployment per account and region, as in CloudFormation — see
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
 for why, what the check cannot see, and the remedies the refusal prints. A
-stack the prefix already records skips the check. If S3 denies the listing,
-the deploy warns and continues.
+stack the prefix already records skips that check; it is checked again only
+when its plan deletes or replaces a resource, before anything is changed. If S3
+denies a read under another prefix, the deploy warns and continues; if it
+denies the listing itself, the check is skipped with a single note.
 
 ## Exit codes
 

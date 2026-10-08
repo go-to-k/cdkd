@@ -914,8 +914,8 @@ export class S3StateBackend {
   /**
    * The bucket's top-level key prefixes, decoded and without their trailing
    * `/` (`ListObjectsV2` with `Delimiter: '/'`, every page). An empty
-   * `--state-prefix` keys records under `/`, which lists here as `''`. Errors
-   * propagate (go-to-k/cdkd#4705).
+   * `--state-prefix` keys records under `/`, which lists here as `''`. One
+   * that will not decode is skipped. Errors propagate (go-to-k/cdkd#4705).
    */
   async listTopLevelPrefixes(): Promise<string[]> {
     await this.ensureClientForBucket();
@@ -932,7 +932,17 @@ export class S3StateBackend {
         })
       );
       for (const cp of response.CommonPrefixes ?? []) {
-        const decoded = decodeListingKey(cp.Prefix);
+        // A prefix S3 returned in a form that will not decode cannot be
+        // addressed, so it is skipped rather than failing the whole scan.
+        let decoded: string | undefined;
+        try {
+          decoded = decodeListingKey(cp.Prefix);
+        } catch {
+          this.logger.debug(
+            safeMsg`Skipping a top-level prefix of bucket ${this.config.bucket} that is not valid URL encoding: ${cp.Prefix ?? ''}`
+          );
+          continue;
+        }
         if (decoded === undefined || !decoded.endsWith('/')) continue;
         out.push(decoded.slice(0, -1));
       }
@@ -943,11 +953,14 @@ export class S3StateBackend {
 
   /**
    * What `prefix` (another prefix of this bucket) holds for the stack in
-   * `region` (go-to-k/cdkd#4705): `absent` when {@link stateExists} under that
-   * prefix says no (a HEAD, plus the legacy GET -- a miss costs nothing more),
-   * otherwise the record and its rollback journal are READ and classified by
+   * `region` (go-to-k/cdkd#4705). STRICT, unlike {@link stateExists}: the
+   * region-scoped record, the legacy region-less record and the rollback
+   * journal are read in parallel, a 404 is "not there", and every other answer
+   * (a 403, a 5xx, a body that will not parse) throws, so the scan can tell
+   * "nothing there" from "could not look" -- a swallowed failure here would let
+   * a pair through. A legacy record counts only for its own region, by the
+   * read gate `getState` applies. What was found is then classified by
    * `recordCanOwnResources`: a failed first deploy's leftover is `empty`.
-   * Through this backend's already-resolved client. Errors propagate.
    */
   async recordUnderPrefix(
     prefix: string,
@@ -957,17 +970,34 @@ export class S3StateBackend {
     await this.ensureClientForBucket();
     const sibling = new S3StateBackend(this.s3Client, { ...this.config, prefix }, this.clientOpts);
     sibling.clientResolved = true;
-    if (!(await sibling.stateExists(stackName, region))) return 'absent';
-    const [record, journal] = await Promise.all([
-      sibling.getState(stackName, region),
-      sibling.loadRollbackJournal(stackName, region),
+    const [scoped, legacy, journal] = await Promise.all([
+      sibling.getRawObject(sibling.getStateKey(stackName, region)),
+      sibling.getRawObject(sibling.getLegacyStateKey(stackName)),
+      sibling.getRawObject(sibling.getRollbackJournalKey(stackName, region)),
     ]);
-    // Deleted between the HEAD and the GET: nothing is left to hold anything.
-    if (record === null) {
-      if (journal === null) return 'absent';
-      return recordCanOwnResources({ resources: {} }, journal) ? 'holder' : 'empty';
+    const parse = (body: string): Record<string, unknown> => {
+      const value: unknown = JSON.parse(body);
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new StateError(
+          `A record under another state prefix (${displayIdent(prefix)}) for stack ` +
+            `${this.displayName(stackName)} is not a JSON object.`
+        );
+      }
+      return value as Record<string, unknown>;
+    };
+    let record: Record<string, unknown> | undefined;
+    if (scoped !== null) {
+      record = parse(scoped);
+    } else if (legacy !== null) {
+      const body = parse(legacy);
+      // `tryGetLegacy`'s gate: a falsy region is readable from any region, a
+      // string one only from its own.
+      const bodyRegion = body['region'];
+      if (!bodyRegion || bodyRegion === region) record = body;
     }
-    return recordCanOwnResources(record.state, journal) ? 'holder' : 'empty';
+    const journalBody = journal === null ? null : parse(journal);
+    if (record === undefined && journalBody === null) return 'absent';
+    return recordCanOwnResources(record ?? { resources: {} }, journalBody) ? 'holder' : 'empty';
   }
 
   /**

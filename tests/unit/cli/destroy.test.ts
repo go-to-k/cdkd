@@ -617,7 +617,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // go-to-k/cdkd#2115: a top-level destroy is a whole-stack teardown.
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].stackDestroy).toBe(true);
     // go-to-k/cdkd#4705: a top-level destroy checks the bucket's other state prefixes.
-    expect(mockRunDestroyForStack.mock.calls[0]?.[2].crossPrefixCheck).toBe(true);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2].crossPrefixCheck?.target).toBeDefined();
 
     // No exit-2 on the bypass path.
     expect(exitSpy).not.toHaveBeenCalled();

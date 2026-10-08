@@ -24,6 +24,9 @@ export interface MigrationStackProps extends cdk.StackProps {
  * `--no-rollback` deploy then fails with the Queue's CREATE journaled as
  * completed, the rollback journal the repro's damage path replays.
  *
+ * `CDKD_4705_DROP_LOGGROUP=1` removes the LogGroup, so a redeploy's plan
+ * DELETES it: the destructive-plan check's case.
+ *
  * covers: AWS::IAM::Role
  * covers: AWS::SQS::Queue
  * covers: AWS::Logs::LogGroup
@@ -43,10 +46,12 @@ export class MigrationStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    new logs.LogGroup(this, 'LogGroup', {
-      retention: logs.RetentionDays.ONE_WEEK,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
+    if (process.env.CDKD_4705_DROP_LOGGROUP !== '1') {
+      new logs.LogGroup(this, 'LogGroup', {
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+    }
 
     if (process.env.CDKD_4705_FAIL_LATER === '1') {
       const failLater = new ssm.CfnParameter(this, 'FailLater', {

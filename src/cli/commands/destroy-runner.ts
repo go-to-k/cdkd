@@ -34,6 +34,7 @@ import { acquireStackLock } from './stack-lock-guard.js';
 import {
   applyCrossPrefixScan,
   scanOtherPrefixesForStack,
+  type CrossPrefixScanTarget,
 } from '../../state/cross-prefix-stack-scan.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
@@ -213,9 +214,11 @@ export interface DestroyRunnerContext {
    * go-to-k/cdkd#4705: refuse when the bucket also records this stack and
    * region under ANOTHER state prefix. Set by `cdkd destroy` and
    * `cdkd state destroy` for a top-level stack; never for a nested child,
-   * whose parent was checked (`src/state/cross-prefix-stack-scan.ts`).
+   * whose parent was checked (`src/state/cross-prefix-stack-scan.ts`). The
+   * `target` is shared by every stack of one command run, so `--all` lists the
+   * bucket once (`withSharedListing`).
    */
-  crossPrefixCheck?: boolean;
+  crossPrefixCheck?: { target: CrossPrefixScanTarget };
 
   /**
    * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
@@ -570,7 +573,7 @@ export async function runDestroyForStack(
   // go-to-k/cdkd#4705: started now, awaited before anything is deleted or
   // prompted for. Never rejects.
   const crossPrefixScan = ctx.crossPrefixCheck
-    ? scanOtherPrefixesForStack(ctx.stateBackend, stackName, regionForState, {
+    ? scanOtherPrefixesForStack(ctx.crossPrefixCheck.target, stackName, regionForState, {
         checkOwnRecord: false,
       })
     : undefined;
@@ -718,7 +721,12 @@ export async function runDestroyForStack(
   if (crossPrefixScan) {
     applyCrossPrefixScan(
       await crossPrefixScan,
-      { stackName, region: regionForState, bucket: ctx.stateBucket },
+      {
+        stackName,
+        region: regionForState,
+        bucket: ctx.stateBucket,
+        recovery: { profile: ctx.profile, stateBucket: ctx.stateBucket },
+      },
       'destroy',
       (message) => logger.warn(message),
       (message) => logger.info(message)

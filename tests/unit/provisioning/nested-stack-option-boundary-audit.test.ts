@@ -75,6 +75,7 @@ const AUDITED_MEMBERS = [
   'finalSnapshotClients',
   'requireApproval', // a run-wide level naming no stack: a child asks for its own changes
   'approveDeployment', // the CLI's prompt; the request it receives names the child stack
+  'onDestructivePlan', // go-to-k/cdkd#4705: called with the CHILD's name, which it scans for
 ];
 
 /** The interface body, sliced once and shared by the parse and the fail-closed scan. */

@@ -461,6 +461,18 @@ export interface DeployEngineOptions {
    * and a non-interactive stdin.
    */
   approveDeployment?: (request: DeploymentApprovalRequest) => Promise<boolean>;
+
+  /**
+   * go-to-k/cdkd#4705: called before provisioning, after the diff and the
+   * `--dry-run` return, ONLY when the plan replaces, deletes or orphans a
+   * resource (`findDestructiveChanges`), so an everyday deploy pays nothing.
+   * Throwing aborts the stack before any provider call. Inherited by nested
+   * children, which call it with their own name and changes.
+   */
+  onDestructivePlan?: (
+    stackName: string,
+    destructive: readonly DestructiveChange[]
+  ) => Promise<void>;
 }
 
 /** The `--require-approval` levels cdkd implements (CDK's `broadening` needs a security diff cdkd has none of). */

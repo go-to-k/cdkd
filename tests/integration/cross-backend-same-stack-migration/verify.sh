@@ -21,6 +21,9 @@
 #          survives;
 #       8. this build's `rollback` under PREFIX_B -- must be refused, the queue
 #          and B's journal survive;
+#       8b. this build redeploys A WITHOUT the LogGroup (a plan that deletes)
+#          -- must be refused (the destructive-plan check), and the log group
+#          and the queue survive;
 #       9. `state orphan` of B, then a normal destroy of A.
 #
 # Run via: /run-integ cross-backend-same-stack-migration
@@ -80,9 +83,13 @@ STATE_KEY_B="${PREFIX_B}/${PAIR}/${REGION}/state.json"
 JOURNAL_KEY_B="${PREFIX_B}/${PAIR}/${REGION}/rollback-journal.json"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 # Copied from src/state/cross-prefix-stack-scan.ts.
-REFUSAL_NEEDLE="recorded under another state prefix of bucket"
+# Any cross-prefix refusal (used to assert there was NONE).
+REFUSAL_NEEDLE="Refusing to"
+# The FOUND messages only (the could-not-check refusal words it differently);
+# each check also asserts the other prefix the message names.
 DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
+DESTRUCTIVE_REFUSAL_NEEDLE="this deploy deletes or replaces resources, and the stack is also recorded under another state prefix of bucket"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -383,7 +390,7 @@ fi
 
 run_logged "(b)7 this build destroys ${PAIR} under ${PREFIX_B}" "${LOCAL_DIST}" destroy "${PAIR}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --force
-if [ "${CMD_RC}" -eq 0 ] || ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+if [ "${CMD_RC}" -eq 0 ] || ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
   echo "FAIL: this build's destroy under ${PREFIX_B} was not refused with the cross-prefix refusal (rc=${CMD_RC}; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
@@ -391,7 +398,8 @@ queue_exists "${QUEUE_URL_A}" || { echo "FAIL: A's queue is gone after a refused
 
 run_logged "(b)8 this build rolls back ${PAIR} under ${PREFIX_B}" "${LOCAL_DIST}" rollback "${PAIR}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --force
-if [ "${CMD_RC}" -eq 0 ] || ! grep -qF "${ROLLBACK_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+if [ "${CMD_RC}" -eq 0 ] || ! grep -qF "${ROLLBACK_REFUSAL_NEEDLE}" "${RUN_LOG}" ||
+  ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
   echo "FAIL: this build's rollback under ${PREFIX_B} was not refused with the cross-prefix refusal (rc=${CMD_RC}; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
@@ -401,6 +409,25 @@ if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_
   exit 1
 fi
 echo "    OK: (b) the pre-fix pair: A redeploys; B's destroy and rollback are refused; A's queue survives"
+
+# A redeploy of A whose plan DELETES a resource, with B's record present: the
+# destructive-plan check refuses it (the pair predates the first-deploy check).
+export CDKD_4705_DROP_LOGGROUP=1
+run_logged "(b)8b this build redeploys ${PAIR} under ${PREFIX_A} without the LogGroup" "${LOCAL_DIST}" deploy "${PAIR}" \
+  --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes
+unset CDKD_4705_DROP_LOGGROUP
+if [ "${CMD_RC}" -eq 0 ] || ! grep -qF "${DESTRUCTIVE_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_B})" "${RUN_LOG}"; then
+  echo "FAIL: a redeploy of A that deletes the LogGroup was not refused while ${PREFIX_B} records the stack (rc=${CMD_RC}; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+LG_STILL="$(aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP_A}" --region "${REGION}" \
+  --query "length(logGroups[?logGroupName=='${LOG_GROUP_A}'])" --output text)"
+if [ "${LG_STILL}" != "1" ]; then
+  echo "FAIL: the LogGroup ${LOG_GROUP_A} is gone after a refused destructive redeploy (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+queue_exists "${QUEUE_URL_A}" || { echo "FAIL: A's queue is gone after a refused destructive redeploy (go-to-k/cdkd#4705)" >&2; exit 1; }
+echo "    OK: (b)8b the destructive redeploy was refused; the LogGroup and the queue survive"
 
 run_logged "(b)9a this build orphans B's record" "${LOCAL_DIST}" state orphan "${PAIR}" --stack-region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --force

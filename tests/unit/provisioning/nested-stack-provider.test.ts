@@ -784,6 +784,26 @@ describe('NestedStackProvider', () => {
       }
     });
 
+    // go-to-k/cdkd#4705: the cross-prefix check is the TOP-LEVEL destroy's; a
+    // child's runner never scans, whatever the delete context carries.
+    it.each([
+      ['a deploy-reached removal', {}],
+      ['a stack destroy', { stackDestroy: true }],
+    ])('%s: never hands the child runner a crossPrefixCheck', async (_what, deleteCtx) => {
+      const provider = new NestedStackProvider();
+      await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          undefined,
+          { expectedRegion: 'us-east-1', ...deleteCtx, crossPrefixCheck: { target: {} } } as never
+        )
+      );
+      expect(destroyCalls.length).toBe(1);
+      expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('crossPrefixCheck');
+    });
+
     // Issue #1752: the child runner reports a resource it could not address as
     // `skippedCount`. Swallowing it here re-creates the mis-report one level
     // up — the PARENT would print `✓ Child (AWS::CloudFormation::Stack)

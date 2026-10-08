@@ -37,6 +37,7 @@ import {
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
 import {
+  checkDestructivePlan,
   isNoEchoPromotionOnly,
   requireDeploymentApproval,
   requireOutputsOnlyApproval,
@@ -1215,6 +1216,16 @@ export async function doDeployWithPrefetch(
     // `--require-approval`: asked on the diff this deploy executes, before any
     // provider call. The lock is released by the `finally`.
     await requireDeploymentApproval({
+      options: this.options,
+      stackName,
+      changes: changes.values(),
+      records: currentState.resources,
+      template: effectiveTemplate,
+      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+    });
+    // go-to-k/cdkd#4705: a plan that deletes or replaces is checked against the
+    // bucket's other state prefixes, before any provider call.
+    await checkDestructivePlan({
       options: this.options,
       stackName,
       changes: changes.values(),

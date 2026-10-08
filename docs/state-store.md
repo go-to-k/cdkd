@@ -70,30 +70,47 @@ prefixes.
 cdkd refuses the case it can see, before touching any resource:
 
 - `cdkd deploy` of a stack that has no record under this prefix yet checks the
-  bucket's other top-level prefixes, and refuses when one already records the
-  same stack name and region. Only that first deploy pays for the listing,
-  and it starts once synthesis has finished, overlapping the rest of the
-  deploy's preparation (asset publishing, the lock), so what it adds is at most
-  a fraction of a second. A stack this prefix already records issues one
-  parallel round of reads of its own record and lists nothing.
-- `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same
-  check and refuse, since the other record may name the same resources — a
-  rollback deletes what the failed deploy created, which for such a pair can
-  be the other deployment's resource. Once you know which
-  record you are keeping, drop the other with `cdkd state orphan <stack>
-  --stack-region <region> --state-prefix <prefix>`, which removes only the
-  record.
+  bucket's other prefixes, and refuses when one already records the same stack
+  name and region.
+- `cdkd deploy` of a stack this prefix already records checks the same, but
+  only when its plan deletes or replaces a resource: such a deploy would delete
+  what the other record also names. A plan that only creates or updates in
+  place is not checked.
+- `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same check
+  every time and refuse, since the other record may name the same resources —
+  a rollback deletes what the failed deploy created, which for such a pair can
+  be the other deployment's resource. Once you know which record you are
+  keeping, drop the other with `cdkd state orphan <stack> --stack-region
+  <region> --state-prefix <prefix>`, which removes only the record.
 
-A record under another prefix blocks only when it can own a resource: it
-lists resources or rollback-orphaned resources, or its rollback journal holds a
+A record under another prefix blocks only when it can own a resource: it lists
+resources or rollback-orphaned resources, or its rollback journal holds a
 completed operation. The empty record a failed first deploy leaves behind
-blocks nothing; the command prints a note naming its prefix and the
-`cdkd state orphan` command that removes it.
+blocks nothing; the command prints a note naming its prefix and the `cdkd state
+orphan` command that removes it.
 
-What the check cannot see is covered only by this contract: a record in a
-**different bucket**, and a prefix that itself contains `/` (only the
-bucket's top-level prefixes are listed). When S3 denies the listing or a read,
-the command warns and continues.
+**What the check costs.** One listing of the bucket's top-level prefixes, then
+a parallel read of the stack's record, legacy record and rollback journal under
+each of them: the work grows with the number of top-level prefixes in the
+bucket. A first deploy starts it once synthesis has finished, so it overlaps
+asset publishing and the lock; a stack this prefix already records reads only
+its own record and lists nothing. A destroy, a rollback, and a deploy whose plan
+deletes or replaces pay it each time.
+
+**What it sees, and what it does not.** It sees a record under any top-level
+prefix of the same bucket, including one written with a trailing slash
+(`--state-prefix team-a/`) and the empty prefix. It does not see:
+
+- a record in a **different bucket**;
+- a prefix with a `/` before its end (`team/a`): only the first segment of each
+  key is listed;
+- a second deployment whose first deploy runs at the same moment as this one's,
+  under another prefix: neither has a record yet when the other looks.
+
+When S3 refuses to LIST the bucket — an identity whose policy only covers its
+own prefix — the check cannot run, and cdkd says so once per command at the
+default log level and otherwise only with `--verbose`. When the bucket lists
+but a read under another prefix is refused, the command warns and continues.
 
 ## Records outlive the binary that wrote them
 

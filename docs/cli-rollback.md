@@ -283,7 +283,8 @@ and for such a pair a create can have been handed the other deployment's
 resource. Drop the record you are not keeping with the `cdkd state orphan ...
 --state-prefix <prefix>` command the refusal prints and re-run. See
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
-If S3 denies the listing, the rollback warns and continues.
+If S3 denies a read under another prefix, the rollback warns and continues; if
+it denies the listing itself, the check is skipped with a single note.
 
 ## Known limitations
 

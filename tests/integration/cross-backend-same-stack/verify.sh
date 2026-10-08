@@ -21,8 +21,9 @@
 #   4. Seed a pre-fix pair (A's state.json copied to B's key): `cdkd destroy`
 #      under PREFIX_A must be refused and leave A's queue, and `cdkd rollback`
 #      under PREFIX_A (over a seeded, empty journal) must be refused and keep
-#      the journal. Remove both seeds.
-#   5. Negative control: redeploy A under PREFIX_A; it must succeed.
+#      the journal. Remove the journal seed.
+#   5. Negative control: redeploy A under PREFIX_A while the seeded B record
+#      still exists; it must succeed. Then remove that seed.
 #   6. Destroy A, delete the retained log group.
 #   7. Seed an EMPTY record plus a failed first deploy's journal under PREFIX_B:
 #      a fresh deploy and a destroy under PREFIX_A must succeed, naming it.
@@ -81,6 +82,9 @@ JOURNAL_KEY_A="${PREFIX_A}/${STACK}/${REGION}/rollback-journal.json"
 JOURNAL_KEY_B="${PREFIX_B}/${STACK}/${REGION}/rollback-journal.json"
 EVENTS_PREFIX_B="${PREFIX_B}/${STACK}/${REGION}/deployments/"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Copied from src/state/cross-prefix-stack-scan.ts: each matches the FOUND
+# message only (the could-not-check refusal words it differently), and every
+# check below also asserts the other prefix the message names.
 DEPLOY_REFUSAL_NEEDLE="is already recorded under another state prefix of bucket"
 DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
@@ -372,8 +376,8 @@ if [ "${B_RC}" -eq 0 ]; then
   FAILED=1
 fi
 # Copied from `deployUnderOtherPrefixMessage` in src/state/cross-prefix-stack-scan.ts.
-if ! grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
-  echo "FAIL: deployment B did not fail with the cross-prefix refusal ('${DEPLOY_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+if ! grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
+  echo "FAIL: deployment B did not fail with the cross-prefix refusal naming ${PREFIX_A} ('${DEPLOY_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   FAILED=1
 fi
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"; then
@@ -418,8 +422,8 @@ if [ "${PAIR_RC}" -eq 0 ]; then
   exit 1
 fi
 # Copied from `destroyUnderOtherPrefixMessage` in src/state/cross-prefix-stack-scan.ts.
-if ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
-  echo "FAIL: cdkd destroy did not fail with the cross-prefix refusal ('${DESTROY_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+if ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_B})" "${RUN_LOG}"; then
+  echo "FAIL: cdkd destroy did not fail with the cross-prefix refusal naming ${PREFIX_B} ('${DESTROY_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
 if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
@@ -448,8 +452,9 @@ if [ "${PAIR_ROLLBACK_RC}" -eq 0 ]; then
   exit 1
 fi
 # Copied from `destroyUnderOtherPrefixMessage` (rollback arm) in src/state/cross-prefix-stack-scan.ts.
-if ! grep -qF "${ROLLBACK_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
-  echo "FAIL: cdkd rollback did not fail with the cross-prefix refusal ('${ROLLBACK_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+if ! grep -qF "${ROLLBACK_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}" ||
+  ! grep -qF "(${PREFIX_B})" "${RUN_LOG}"; then
+  echo "FAIL: cdkd rollback did not fail with the cross-prefix refusal naming ${PREFIX_B} ('${ROLLBACK_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
 if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_A}"; then
@@ -461,16 +466,20 @@ SEEDED_JOURNAL_A=""
 assert_gone "the seeded journal ${JOURNAL_KEY_A} still exists after its removal" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_A}"
 
+echo "    OK: the rollback was refused and kept its journal; the journal seed is removed"
+
+echo ""
+echo "==> Phase 5: negative control -- redeploy A under ${PREFIX_A} WHILE ${PREFIX_B}'s seeded record still exists"
+# A stack its own prefix records is not first-deploy checked, and a plan with
+# no deletion or replacement is not checked at all.
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes
+gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}" &&
+  { echo "FAIL: premise: ${STATE_KEY_B} was gone during the negative control" >&2; exit 1; }
 aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 assert_gone "the seeded ${STATE_KEY_B} still exists after its removal" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
-echo "    OK: the rollback was refused and kept its journal; both seeds are removed"
-
-echo ""
-echo "==> Phase 5: negative control -- redeploy A under ${PREFIX_A} (retention ${RETENTION_A})"
-CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
-  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes
-echo "    OK: a stack its own prefix records redeploys"
+echo "    OK: a stack its own prefix records redeploys beside another prefix's record; the seed is removed"
 
 echo ""
 echo "==> Phase 6: destroy A; delete the retained log group"

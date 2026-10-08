@@ -46,6 +46,7 @@ vi.mock('../../../src/cli/commands/state.js', async () => {
 });
 
 import { rollbackCommand } from '../../../src/cli/commands/rollback.js';
+import { resetCrossPrefixNoticesForTest } from '../../../src/state/cross-prefix-stack-scan.js';
 
 const REGION = 'us-east-1';
 const LB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -144,6 +145,7 @@ const BASE = { statePrefix: 'cdkd', verbose: false, force: true };
 
 describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   beforeEach(() => {
+    resetCrossPrefixNoticesForTest();
     warnSpy.mockReset();
     provider.delete.mockReset().mockResolvedValue(undefined);
   });
@@ -159,9 +161,9 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     expect(setup.stateBackend.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect(setup.lockManager.releaseLock).toHaveBeenCalledWith('S', REGION);
     // Its own prefix is never probed as "another".
-    expect(setup.stateBackend.recordUnderPrefix.mock.calls.map((c: unknown[]) => c[0])).toEqual([
-      'team-b',
-    ]);
+    const probed = setup.stateBackend.recordUnderPrefix.mock.calls.map((c: unknown[]) => c[0]);
+    expect(probed).toContain('team-b');
+    expect(probed).not.toContain('cdkd');
   });
 
   it('replays as before when no other prefix records the stack', async () => {
@@ -170,14 +172,47 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     expect(provider.delete).toHaveBeenCalledTimes(1);
   });
 
-  it('warns and replays when S3 denies the listing', async () => {
+  it('replays without a warning when S3 denies the LISTING (one info line per process)', async () => {
     install(structuredClone(queueOp), {}, {}, {
       listed: Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }),
+    });
+    await rollbackCommand('S', { ...BASE });
+    expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'Could not check whether stack S'
+    );
+  });
+
+  it('warns and replays when S3 denies a READ under a listed prefix', async () => {
+    install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'] });
+    const setup = (await setupMock())!;
+    setup.stateBackend.recordUnderPrefix.mockImplementation(async () => {
+      throw Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
     });
     await rollbackCommand('S', { ...BASE });
     expect(provider.delete).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
       'Could not check whether stack S'
     );
+  });
+
+  it('refuses before the confirmation prompt (no --force), under the lock, and releases it', async () => {
+    install(structuredClone(queueOp), {}, {}, { listed: ['cdkd', 'team-b'], holders: ['team-b'] });
+    const setup = (await setupMock())!;
+    question.mockReset().mockResolvedValue('y');
+    const original = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    try {
+      await expect(rollbackCommand('S', { ...BASE, force: false })).rejects.toThrow(
+        /Refusing to roll back stack S/
+      );
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+    }
+    expect(question).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+    const acquire = setup.lockManager.acquireLockWithRetry.mock.invocationCallOrder[0]!;
+    const release = setup.lockManager.releaseLock.mock.invocationCallOrder[0]!;
+    expect(acquire).toBeLessThan(release);
   });
 });

@@ -36,3 +36,17 @@ const c = new StackC(app, 'CdkdImportChainC', {
 // rather than silently resolving to a dangling token.
 b.addDependency(a);
 c.addDependency(b);
+
+// The error-path step deploys a SECOND consumer of `ChainDerivedValue`, under a
+// stack name no prefix records, on a fresh state prefix while the main chain
+// is live under `cdkd/`: the export exists under ANOTHER prefix and must not be
+// resolved from the fresh one. A distinct name, because a first deploy of
+// `CdkdImportChainC` itself under the fresh prefix is now refused while `cdkd/`
+// records it (go-to-k/cdkd#4705), before resolution is reached. Synthesized
+// only for that step, so `deploy --all` never deploys it.
+if (process.env.CDKD_IMPORTCHAIN_FRESH_CONSUMER === '1') {
+  new StackC(app, 'CdkdImportChainCFresh', {
+    description: 'Error-path consumer: imports ChainDerivedValue on a prefix with no producer.',
+    env: { region },
+  });
+}

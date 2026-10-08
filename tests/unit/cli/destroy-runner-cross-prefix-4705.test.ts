@@ -10,11 +10,16 @@ import type { LockManager } from '../../../src/state/lock-manager.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
-const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+const { warn, info, createInterface } = vi.hoisted(() => ({
+  warn: vi.fn(),
+  info: vi.fn(),
+  createInterface: vi.fn(() => ({ question: vi.fn(async () => 'y'), close: vi.fn() })),
+}));
+vi.mock('node:readline/promises', () => ({ createInterface }));
 vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/utils/logger.js')>();
   const quiet = {
-    info: vi.fn(),
+    info,
     warn,
     error: vi.fn(),
     debug: vi.fn(),
@@ -48,6 +53,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 });
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { resetCrossPrefixNoticesForTest } from '../../../src/state/cross-prefix-stack-scan.js';
 
 const REGION = 'us-east-1';
 
@@ -64,6 +70,7 @@ function emptyState(): StackState {
 
 function makeCtx(opts: {
   crossPrefixCheck?: boolean;
+  skipConfirmation?: boolean;
   prefixes?: string[] | Error;
   holders?: Record<string, boolean>;
 }) {
@@ -75,6 +82,17 @@ function makeCtx(opts: {
   });
   const recordUnderPrefix = vi.fn(async (p: string) => (opts.holders?.[p] ? 'holder' : 'absent'));
   const ownRecordExists = vi.fn(async () => true);
+  const stateBackend = {
+    prefix: 'cdkd',
+    getState: vi.fn().mockResolvedValue(null),
+    deleteState,
+    saveState: vi.fn(),
+    listStacks: vi.fn().mockResolvedValue([]),
+    loadRollbackJournal: vi.fn().mockResolvedValue(null),
+    listTopLevelPrefixes,
+    recordUnderPrefix,
+    ownRecordExists,
+  };
   return {
     acquireLock,
     deleteState,
@@ -82,17 +100,7 @@ function makeCtx(opts: {
     recordUnderPrefix,
     ownRecordExists,
     ctx: {
-      stateBackend: {
-        prefix: 'cdkd',
-        getState: vi.fn().mockResolvedValue(null),
-        deleteState,
-        saveState: vi.fn(),
-        listStacks: vi.fn().mockResolvedValue([]),
-        loadRollbackJournal: vi.fn().mockResolvedValue(null),
-        listTopLevelPrefixes,
-        recordUnderPrefix,
-        ownRecordExists,
-      } as unknown as S3StateBackend,
+      stateBackend: stateBackend as unknown as S3StateBackend,
       lockManager: {
         acquireLock,
         releaseLock: vi.fn().mockResolvedValue(undefined),
@@ -102,14 +110,17 @@ function makeCtx(opts: {
       baseAwsClients: {} as AwsClients,
       baseRegion: REGION,
       stateBucket: 'cdkd-state-123456789012',
-      skipConfirmation: true,
-      ...(opts.crossPrefixCheck !== undefined && { crossPrefixCheck: opts.crossPrefixCheck }),
+      skipConfirmation: opts.skipConfirmation ?? true,
+      ...(opts.crossPrefixCheck === true && { crossPrefixCheck: { target: stateBackend } }),
     } as unknown as Parameters<typeof runDestroyForStack>[2],
   };
 }
 
 describe('runDestroyForStack — another state prefix records the stack (go-to-k/cdkd#4705)', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCrossPrefixNoticesForTest();
+  });
 
   it('refuses before any lock or delete', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd', 'team-b'], holders: { 'team-b': true } });
@@ -119,7 +130,9 @@ describe('runDestroyForStack — another state prefix records the stack (go-to-k
     expect(h.acquireLock).not.toHaveBeenCalled();
     expect(h.deleteState).not.toHaveBeenCalled();
     // Its own prefix is never probed as "another".
-    expect(h.recordUnderPrefix.mock.calls.map((c) => c[0])).toEqual(['team-b']);
+    const probed = h.recordUnderPrefix.mock.calls.map((c) => c[0]);
+    expect(probed).toContain('team-b');
+    expect(probed).not.toContain('cdkd');
     // The record it destroys is not re-checked.
     expect(h.ownRecordExists).not.toHaveBeenCalled();
   });
@@ -131,15 +144,51 @@ describe('runDestroyForStack — another state prefix records the stack (go-to-k
     expect(h.deleteState).toHaveBeenCalledWith('App', REGION);
   });
 
-  it('warns and proceeds when S3 denies the listing', async () => {
+  it('refuses a NON-empty record before the prompt and the lock (no --yes)', async () => {
+    const h = makeCtx({
+      crossPrefixCheck: true,
+      skipConfirmation: false,
+      prefixes: ['cdkd', 'team-b'],
+      holders: { 'team-b': true },
+    });
+    const state = {
+      ...emptyState(),
+      resources: {
+        Q: {
+          physicalId: 'q',
+          resourceType: 'AWS::SQS::Queue',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    } as StackState;
+    const original = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    try {
+      await expect(runDestroyForStack('App', state, h.ctx)).rejects.toThrow(
+        /Refusing to destroy stack App \(us-east-1\)/
+      );
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+    }
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(h.acquireLock).not.toHaveBeenCalled();
+    expect(h.deleteState).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when S3 denies the LISTING: one info line, then proceeds', async () => {
     const h = makeCtx({
       crossPrefixCheck: true,
       prefixes: Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }),
     });
     const result = await runDestroyForStack('App', emptyState(), h.ctx);
     expect(result.skippedEmpty).toBe(true);
-    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
       'Could not check whether stack App'
+    );
+    expect(info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'This identity may not list bucket'
     );
   });
 

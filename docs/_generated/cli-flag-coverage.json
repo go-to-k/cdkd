@@ -2120,6 +2120,7 @@
     "--policy-id",
     "--policy-name",
     "--policy-store-id",
+    "--porcelain",
     "--port",
     "--prefer-offline",
     "--prefix",

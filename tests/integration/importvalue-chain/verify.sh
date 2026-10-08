@@ -84,6 +84,9 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STACK_A="CdkdImportChainA"
 STACK_B="CdkdImportChainB"
 STACK_C="CdkdImportChainC"
+# The error-path consumer (bin/app.ts, synthesized only under
+# CDKD_IMPORTCHAIN_FRESH_CONSUMER=1): a name no prefix records, see Step 2.
+STACK_C_FRESH="CdkdImportChainCFresh"
 
 # Main run uses the default `cdkd` prefix. The error-path step (Step 2) uses a
 # throwaway prefix so a missing-producer deploy can be attempted in isolation
@@ -109,7 +112,7 @@ cleanup() {
   ${CDKD} destroy ${STACK_B} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK_A} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   # Fresh prefix: tear down anything the error-path step left + drop the prefix.
-  ${CDKD} destroy ${STACK_C} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
+  CDKD_IMPORTCHAIN_FRESH_CONSUMER=1 ${CDKD} destroy ${STACK_C_FRESH} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK_B} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK_A} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${FRESH_PREFIX}/" --recursive >/dev/null 2>&1 || true
@@ -161,87 +164,6 @@ aws ssm delete-parameter --name "${C_PARAM_NAME}" --region "${AWS_REGION}" >/dev
 # Drop any stale fresh-prefix state from a crashed prior run before reusing the
 # error path (the prefix carries the PID, but a same-PID re-run can recur).
 aws s3 rm "s3://${STATE_BUCKET}/${FRESH_PREFIX}/" --recursive >/dev/null 2>&1 || true
-
-# ---------------------------------------------------------------------------
-# Runs BEFORE Step 1 (go-to-k/cdkd#4705): once the main chain records C under
-# the default prefix, a first deploy of C under another prefix of the bucket is
-# refused before any resolution, which would mask the missing-export path. The
-# fresh prefix is removed afterwards so it records nothing when Step 1 deploys C.
-echo ""
-echo "==> Step 2: ERROR PATH — deploy C EXCLUSIVELY on a fresh prefix (no producers)"
-# C imports ChainDerivedValue, which does not exist on the fresh prefix. cdkd
-# must surface a clear "export not found" error rather than silently producing
-# a dangling token / unresolved string.
-#
-# `-e` / `--exclusively` is LOAD-BEARING here: like `cdk deploy`, a bare
-# `cdkd deploy <stack>` also deploys the stack's DEPENDENCY CLOSURE, so without
-# `--exclusively` cdkd would deploy A -> B -> C on the fresh prefix (resolving
-# the import by producing it) and B's account-global SSM Parameter would then
-# collide with the main chain's still-live B parameter (`ImportedTopicArnParam
-# ... already exists`) — masking the missing-export path entirely. With
-# `--exclusively` only C is deployed, so its `Fn::ImportValue: ChainDerivedValue`
-# genuinely has no producer on the fresh prefix and fails at resolution BEFORE
-# any resource is created (no collision with the main chain's global names).
-set +e
-ERR_OUTPUT=$(${CDKD} deploy ${STACK_C} --exclusively --region "${AWS_REGION}" \
-  --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" 2>&1)
-ERR_RC=$?
-set -e
-if [[ "${ERR_RC}" -eq 0 ]]; then
-  echo "FAIL: deploying C with no upstream producer unexpectedly succeeded"
-  echo "${ERR_OUTPUT}"
-  exit 1
-fi
-# cdkd surfaces a missing Fn::ImportValue export as a ProvisioningError whose
-# CAUSE is the resolver's own message. The full output (logger.error line +
-# the handleError `Caused by:` line) reads, verbatim from
-# src/deployment/intrinsic-resolver/cross-stack.ts:
-#
-#   Fn::ImportValue: export 'ChainDerivedValue' not found in any stack.
-#   Searched N state record(s). Make sure the exporting stack has been
-#   deployed and the Output has an Export.Name property.
-#
-# Assert the resolver's distinctive "Fn::ImportValue:" phrase together with
-# the "not found" wording — this is cdkd's actual missing-export contract and
-# is not brittle on the surrounding ProvisioningError envelope. We do NOT also
-# require the literal export NAME: the resolver names it (and the assertion
-# below confirms it WHEN present), but the load-bearing proof of correct
-# behavior is that cdkd refused to silently resolve a dangling import.
-if ! echo "${ERR_OUTPUT}" | grep -Eq "Fn::ImportValue.*not found|not found in any stack"; then
-  echo "FAIL: error output does not report a missing Fn::ImportValue export"
-  echo "${ERR_OUTPUT}"
-  exit 1
-fi
-# Best-effort: when cdkd's message names the export (current behavior), make
-# sure it is the RIGHT one. Skipped automatically if a future cdkd reword
-# drops the name from the message.
-if echo "${ERR_OUTPUT}" | grep -q "ChainTopicArn" && ! echo "${ERR_OUTPUT}" | grep -q "ChainDerivedValue"; then
-  echo "FAIL: error names the wrong export (ChainTopicArn, not ChainDerivedValue)"
-  echo "${ERR_OUTPUT}"
-  exit 1
-fi
-echo "    C alone failed with a clear missing-export error (exit ${ERR_RC}) (✓)"
-
-# NOTE: we intentionally do NOT re-deploy the full A->B->C chain on the fresh
-# prefix here. Stack B's and Stack C's SSM Parameters carry EXPLICIT, account-
-# GLOBAL names (`/cdkd-integ/importvalue-chain/b-imported-topic-arn` /
-# `.../c-imported-derived`), so a second chain deployed under a different
-# state-prefix while the main chain (Step 1) is still live would collide with
-# `ParameterAlreadyExists` on B's create (the two deployments share one
-# synthesized cdk.out, hence the same global names). The same shared-name
-# overlap would also let the fresh-prefix teardown delete the main chain's
-# auto-named SNS topic out from under it. The error-path assertion above
-# (deploy C alone -> missing export) does NOT create any resource — the import
-# fails during intrinsic resolution before any create — so it is collision-
-# free. The "deploy --all orders A->B->C" coverage is already provided more
-# strongly by Step 1 (which asserts the RESOLVED chain values, not just that
-# state was written), so re-deploying the whole chain on the fresh prefix added
-# no unique coverage while making the fixture flaky.
-
-# The import failed before any create; drop whatever the attempt wrote under
-# the fresh prefix (events, an empty record) so Step 1's first deploy of C
-# under the main prefix finds no other prefix recording it.
-aws s3 rm "s3://${STATE_BUCKET}/${FRESH_PREFIX}/" --recursive >/dev/null
 
 # ---------------------------------------------------------------------------
 echo ""
@@ -319,6 +241,82 @@ if [[ "${IDX_TOPIC}" != "${B_PARAM_VALUE}" ]]; then
   exit 1
 fi
 echo "    exports index has ChainTopicArn + ChainDerivedValue (✓)"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Step 2: ERROR PATH — deploy C EXCLUSIVELY on a fresh prefix (no producers)"
+# C imports ChainDerivedValue, which does not exist on the fresh prefix. cdkd
+# must surface a clear "export not found" error rather than silently producing
+# a dangling token / unresolved string. The export DOES exist under `cdkd/`
+# (Step 1), so this also proves it is not resolved across prefixes. The consumer
+# is `CdkdImportChainCFresh`, a second copy of C under a name no prefix records:
+# a first deploy of `CdkdImportChainC` itself here is refused before resolution
+# while `cdkd/` records it (go-to-k/cdkd#4705).
+#
+# `-e` / `--exclusively` is LOAD-BEARING here: like `cdk deploy`, a bare
+# `cdkd deploy <stack>` also deploys the stack's DEPENDENCY CLOSURE, so without
+# `--exclusively` cdkd would deploy A -> B -> C on the fresh prefix (resolving
+# the import by producing it) and B's account-global SSM Parameter would then
+# collide with the main chain's still-live B parameter (`ImportedTopicArnParam
+# ... already exists`) — masking the missing-export path entirely. With
+# `--exclusively` only C is deployed, so its `Fn::ImportValue: ChainDerivedValue`
+# genuinely has no producer on the fresh prefix and fails at resolution BEFORE
+# any resource is created (no collision with the main chain's global names).
+set +e
+ERR_OUTPUT=$(CDKD_IMPORTCHAIN_FRESH_CONSUMER=1 ${CDKD} deploy ${STACK_C_FRESH} --exclusively --region "${AWS_REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" 2>&1)
+ERR_RC=$?
+set -e
+if [[ "${ERR_RC}" -eq 0 ]]; then
+  echo "FAIL: deploying C with no upstream producer unexpectedly succeeded"
+  echo "${ERR_OUTPUT}"
+  exit 1
+fi
+# cdkd surfaces a missing Fn::ImportValue export as a ProvisioningError whose
+# CAUSE is the resolver's own message. The full output (logger.error line +
+# the handleError `Caused by:` line) reads, verbatim from
+# src/deployment/intrinsic-resolver/cross-stack.ts:
+#
+#   Fn::ImportValue: export 'ChainDerivedValue' not found in any stack.
+#   Searched N state record(s). Make sure the exporting stack has been
+#   deployed and the Output has an Export.Name property.
+#
+# Assert the resolver's distinctive "Fn::ImportValue:" phrase together with
+# the "not found" wording — this is cdkd's actual missing-export contract and
+# is not brittle on the surrounding ProvisioningError envelope. We do NOT also
+# require the literal export NAME: the resolver names it (and the assertion
+# below confirms it WHEN present), but the load-bearing proof of correct
+# behavior is that cdkd refused to silently resolve a dangling import.
+if ! echo "${ERR_OUTPUT}" | grep -Eq "Fn::ImportValue.*not found|not found in any stack"; then
+  echo "FAIL: error output does not report a missing Fn::ImportValue export"
+  echo "${ERR_OUTPUT}"
+  exit 1
+fi
+# Best-effort: when cdkd's message names the export (current behavior), make
+# sure it is the RIGHT one. Skipped automatically if a future cdkd reword
+# drops the name from the message.
+if echo "${ERR_OUTPUT}" | grep -q "ChainTopicArn" && ! echo "${ERR_OUTPUT}" | grep -q "ChainDerivedValue"; then
+  echo "FAIL: error names the wrong export (ChainTopicArn, not ChainDerivedValue)"
+  echo "${ERR_OUTPUT}"
+  exit 1
+fi
+echo "    C alone failed with a clear missing-export error (exit ${ERR_RC}) (✓)"
+
+# NOTE: we intentionally do NOT re-deploy the full A->B->C chain on the fresh
+# prefix here. Stack B's and Stack C's SSM Parameters carry EXPLICIT, account-
+# GLOBAL names (`/cdkd-integ/importvalue-chain/b-imported-topic-arn` /
+# `.../c-imported-derived`), so a second chain deployed under a different
+# state-prefix while the main chain (Step 1) is still live would collide with
+# `ParameterAlreadyExists` on B's create (the two deployments share one
+# synthesized cdk.out, hence the same global names). The same shared-name
+# overlap would also let the fresh-prefix teardown delete the main chain's
+# auto-named SNS topic out from under it. The error-path assertion above
+# (deploy C alone -> missing export) does NOT create any resource — the import
+# fails during intrinsic resolution before any create — so it is collision-
+# free. The "deploy --all orders A->B->C" coverage is already provided more
+# strongly by Step 1 (which asserts the RESOLVED chain values, not just that
+# state was written), so re-deploying the whole chain on the fresh prefix added
+# no unique coverage while making the fixture flaky.
 
 # ---------------------------------------------------------------------------
 echo ""

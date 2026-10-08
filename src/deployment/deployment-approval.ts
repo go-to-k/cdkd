@@ -95,6 +95,36 @@ export async function requireDeploymentApproval(args: {
   }
 }
 
+/**
+ * go-to-k/cdkd#4705: hand a plan that replaces, deletes or orphans a resource
+ * to `options.onDestructivePlan`, after the approval and before any provider
+ * call. The same change filter and classifier as {@link requireDeploymentApproval};
+ * nothing is computed when no hook is set.
+ */
+export async function checkDestructivePlan(args: {
+  options: Pick<DeployEngineOptions, 'onDestructivePlan'>;
+  stackName: string;
+  changes: Iterable<ResourceChange>;
+  records: Readonly<Record<string, ResourceState>>;
+  template: CloudFormationTemplate;
+  recreateTargetIds?: Iterable<string> | undefined;
+}): Promise<void> {
+  const hook = args.options.onDestructivePlan;
+  if (hook === undefined) return;
+  const changes = [...args.changes].filter(
+    (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
+  );
+  const destructive = findDestructiveChanges(
+    args.stackName,
+    changes,
+    args.records,
+    args.template,
+    new Set(args.recreateTargetIds ?? [])
+  );
+  if (destructive.length === 0) return;
+  await hook(args.stackName, destructive);
+}
+
 function approvalAfterTimeout(stackName: string): Error {
   return markNonRetryable(
     new CdkdError(

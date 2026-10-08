@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
 import {
   commandHole,
   pasteableCommand,
@@ -749,6 +750,8 @@ async function destroyCommand(
     // 3. Process each stack via the shared destroy runner. The cross-stack
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
+    // go-to-k/cdkd#4705: one bucket listing for every stack this run destroys.
+    const crossPrefixCheck = { target: withSharedListing(stateBackend) };
     for (const [stackIndex, stackName] of stackNames.entries()) {
       logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
 
@@ -972,7 +975,7 @@ async function destroyCommand(
                 // a deploy-engine delete never sets it.
                 stackDestroy: true,
                 // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
-                crossPrefixCheck: true,
+                crossPrefixCheck,
                 exportIndexStore,
                 ...(options.allowUnsupportedTypes?.length && {
                   allowUnsupportedTypes: options.allowUnsupportedTypes,

@@ -556,8 +556,9 @@ control the SDK's default region for provisioning.
 **Symptoms:** `cdkd deploy` (on a stack's first deploy under this prefix),
 `cdkd destroy`, `cdkd state destroy` or `cdkd rollback` stops with
 `Refusing to deploy stack` / `Refusing to destroy stack` / `Refusing to roll
-back stack ... recorded under another state prefix of bucket`, and nothing is
-created, reverted or deleted.
+back stack ... recorded under another state prefix of bucket`, and no resource
+of the stack is created, changed, reverted or deleted (assets may already have
+been published).
 
 **Cause:** the same stack name and region is recorded under another
 `--state-prefix` of the state bucket. A stack name is one deployment per
