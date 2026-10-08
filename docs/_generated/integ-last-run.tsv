@@ -300,7 +300,8 @@ s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 
 s3-cloudfront	2026-10-07T16:21:49Z	PASS	245	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
 s3-directory-bucket	2026-10-07T13:48:36Z	PASS	106	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 s3-event-notification	2026-10-03T04:26:03Z	PASS	87	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-lifecycle	2026-10-08T17:12:09Z	PASS	501	verify.sh	rc ok, orph clean; #4684 phase 2d refuses rollback re-create over a planted same-name bucket
+s3-fix-forward-orphan	2026-10-08T20:29:31Z	PASS	185	verify.sh	rc ok, orph clean; us-west-2; #4606 A deleted, re-created C kept, non-empty D kept then deleted once emptied
+s3-lifecycle	2026-10-08T20:29:31Z	PASS	496	verify.sh	rc ok, orph clean; overlapped a peer s3-lifecycle run (integ-4705-b) at start
 s3-object-lock	2026-10-07T22:40:53Z	PASS	75	verify.sh	PR #4686 on v11 (#4639 S3 CreateBucket replay refusal); rc 0, destroy clean, orph clean
 s3-replication-and-filter	2026-10-03T04:26:27Z	PASS	108	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-subconfig-removal	2026-10-07T22:40:53Z	PASS	95	verify.sh	PR #4686 on v11 (#4639 S3 CreateBucket replay refusal); rc 0, destroy clean, orph clean

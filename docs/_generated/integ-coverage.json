@@ -5944,6 +5944,7 @@
         "s3-analytics-inventory",
         "s3-cloudfront",
         "s3-event-notification",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
@@ -6100,6 +6101,9 @@
         ],
         "s3-event-notification": [
           "l2"
+        ],
+        "s3-fix-forward-orphan": [
+          "l1"
         ],
         "s3-lifecycle": [
           "l1",

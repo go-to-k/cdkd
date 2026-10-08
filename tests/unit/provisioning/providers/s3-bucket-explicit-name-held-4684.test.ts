@@ -343,19 +343,25 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it('a bucket the list proved free is this create\'s own: a wiring failure cleans it up', async () => {
+    it('a bucket the list does not hold is SENT but never claimed: no cleanup, no mark', async () => {
+      // #4684 review (P-m1): the list licenses the send, not ownership --
+      // ListBuckets can lag a concurrent same-account create of the name.
       answer({
         GetBucketLocationCommand: denied(),
         ListBucketsCommand: { Buckets: [] },
         PutBucketVersioningCommand: new Error('wiring boom'),
-        DeleteBucketCommand: new Error('cleanup boom'),
       });
 
       const error = await refusal(provider.create('MyBucket', TYPE, EXPLICIT));
 
-      // The cleanup ran (it failed, so the bucket is named for the journal).
-      expect(sent()).toContain('DeleteBucketCommand');
-      expect(createdBeforeFailure(error, 'MyBucket', TYPE)).toBe(BUCKET);
+      expect(sent()).toContain('CreateBucketCommand');
+      expect(sent()).not.toContain('DeleteBucketCommand');
+      expect(hasCreatedBeforeFailure(error)).toBe(false);
+      expect(createdBeforeFailure(error, 'MyBucket', TYPE)).toBeUndefined();
+      // The cleanup it withholds is named, so the possible orphan is recoverable.
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Not cleaning up S3 bucket'
+      );
     });
 
     it('a bucket of UNKNOWN ownership is not: the cleanup is withheld and nothing is marked', async () => {
