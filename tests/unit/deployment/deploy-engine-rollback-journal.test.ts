@@ -1015,25 +1015,23 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       provider.create.mockImplementation((logicalId: string) =>
         logicalId === 'A'
           ? Promise.reject(new Error('create failed: A'))
-          : new Promise((_resolve, reject) =>
-              setTimeout(
-                () =>
-                  reject(
-                    markCreatedBeforeFailure(
-                      new ProvisioningError(
-                        'User: arn:aws:sts::1:assumed-role/r/s is not authorized to perform: s3:PutBucketTagging',
-                        'AWS::S3::Bucket',
-                        'B',
-                        'b-1'
-                      ),
-                      'B',
-                      'AWS::S3::Bucket',
-                      'b-1'
-                    )
-                  ),
-                30
-              )
-            )
+          : (async () => {
+              // B fails only once A's failure has interrupted the engine, so
+              // its retry wait meets the interrupt whatever the scheduling.
+              const engineState = engine as unknown as { interrupted: boolean };
+              while (!engineState.interrupted) await new Promise((r) => setTimeout(r, 1));
+              throw markCreatedBeforeFailure(
+                new ProvisioningError(
+                  'User: arn:aws:sts::1:assumed-role/r/s is not authorized to perform: s3:PutBucketTagging',
+                  'AWS::S3::Bucket',
+                  'B',
+                  'b-1'
+                ),
+                'B',
+                'AWS::S3::Bucket',
+                'b-1'
+              );
+            })()
       );
 
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
