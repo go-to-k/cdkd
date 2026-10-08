@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # go-to-k/cdkd#4705: one stack name deployed under two state prefixes in the
-# same account and region. First a REPRODUCTION of what cdkd does today, then
-# (once the fix lands) its regression arm: the assertions below state the
-# DESIRED behaviour, so this run is expected to go RED until #4705 is fixed.
+# same account and region is unsupported (a stack name is unique per account
+# and region, as in CloudFormation), and cdkd refuses the pair it can see.
+# Before the fix, deployment B was handed A's queue and log group, rewrote the
+# log group's retention, and its rollback deleted A's queue.
 #
 #   1. Deploy deployment A of Cdkd4705Verify under PREFIX_A with the LogGroup's
 #      retention at 7 days. Capture A's queue URL, log group name and role name
@@ -14,9 +15,13 @@
 #   3. OBSERVE (unique `OBSERVE:` lines): B's exit code, which resources failed
 #      with which awsErrorCode and what B's rollback did (B's deployments/*.jsonl),
 #      whether A's queue still exists, the log group's retention, and what B's
-#      state and state.orphans hold. Then ASSERT the desired behaviour: B fails,
-#      A's queue still exists, and the log group keeps A's retention.
-#   4. Destroy B (state only) and A, delete the retained log group, and sweep.
+#      state and state.orphans hold. Then ASSERT: B is refused with the
+#      cross-prefix refusal before any create, A's queue still exists, the log
+#      group keeps A's retention, and B has no state record or journal.
+#   4. Seed a pre-fix pair (A's state.json copied to B's key): `cdkd destroy`
+#      under PREFIX_A must be refused and leave A's queue. Remove the seed.
+#   5. Negative control: redeploy A under PREFIX_A; it must succeed.
+#   6. Destroy A, delete the retained log group, and sweep.
 #
 # Each run uses its OWN two state prefixes (unique per run): nothing under
 # `cdkd/` is read or written, and the trap deletes only these two prefixes.
@@ -72,6 +77,8 @@ JOURNAL_KEY_A="${PREFIX_A}/${STACK}/${REGION}/rollback-journal.json"
 JOURNAL_KEY_B="${PREFIX_B}/${STACK}/${REGION}/rollback-journal.json"
 EVENTS_PREFIX_B="${PREFIX_B}/${STACK}/${REGION}/deployments/"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+DEPLOY_REFUSAL_NEEDLE="is already recorded under another state prefix of bucket"
+DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -210,11 +217,13 @@ cleanup() {
   echo ""
   echo "==> Cleanup (errors tolerated)"
   rm -f "${RUN_LOG:-}"
-  # B first: its record may name A's resources, which A's destroy then deletes.
+  # B first, and only its RECORD: whatever B's record (or Phase 4's seed) names
+  # is A's resources, which A's destroy and the name sweep below delete. A
+  # `state destroy` of B would also be refused while A's record exists.
   if [ "${DEPLOYED_B:-}" = "1" ] && { ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}" ) ||
     ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}" ); }; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${PREFIX_B}" --region "${REGION}" \
-      --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" --state-bucket "${STATE_BUCKET:-}" \
+      --state-prefix "${PREFIX_B}" --force >/dev/null 2>&1
   fi
   if [ "${DEPLOYED_A:-}" = "1" ] && { ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}" ) ||
     ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_A}" ); }; then
@@ -348,6 +357,19 @@ if [ "${B_RC}" -eq 0 ]; then
   echo "FAIL: deployment B of ${STACK} under a second state prefix SUCCEEDED; it must be refused (go-to-k/cdkd#4705)" >&2
   FAILED=1
 fi
+# Copied from `deployUnderOtherPrefixMessage` in src/state/cross-prefix-stack-scan.ts.
+if ! grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: deployment B did not fail with the cross-prefix refusal ('${DEPLOY_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  FAILED=1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"; then
+  echo "FAIL: deployment B left a state record ${STATE_KEY_B}; the refusal must come before any create (go-to-k/cdkd#4705)" >&2
+  FAILED=1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}"; then
+  echo "FAIL: deployment B left a rollback journal ${JOURNAL_KEY_B}; the refusal must come before any create (go-to-k/cdkd#4705)" >&2
+  FAILED=1
+fi
 if [ "${A_QUEUE}" != "exists" ]; then
   echo "FAIL: deployment A's queue ${QUEUE_URL_A} is gone after deployment B's deploy under another state prefix (go-to-k/cdkd#4705)" >&2
   FAILED=1
@@ -359,18 +381,53 @@ fi
 if [ -n "${FAILED}" ]; then
   exit 1
 fi
-echo "    OK: B was refused, A's queue exists and its log group keeps retention ${RETENTION_A}"
+echo "    OK: B was refused before any create; A's queue exists and its log group keeps retention ${RETENTION_A}"
 
 echo ""
-echo "==> Phase 4: destroy B (state only), then A; delete the retained log group"
-if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"; then
-  node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${PREFIX_B}" --region "${REGION}" --yes
+echo "==> Phase 4: a pre-fix pair (A's record copied to ${PREFIX_B}) makes cdkd destroy under ${PREFIX_A} refuse"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
+set +e
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force >"${RUN_LOG}" 2>&1
+PAIR_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+echo "OBSERVE: paired-destroy-rc=${PAIR_RC}"
+if [ "${PAIR_RC}" -eq 0 ]; then
+  echo "FAIL: cdkd destroy under ${PREFIX_A} exited 0 while ${PREFIX_B} records the same stack (go-to-k/cdkd#4705)" >&2
+  exit 1
 fi
+# Copied from `destroyUnderOtherPrefixMessage` in src/state/cross-prefix-stack-scan.ts.
+if ! grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: cdkd destroy did not fail with the cross-prefix refusal ('${DESTROY_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
+  echo "FAIL: deployment A's queue ${QUEUE_URL_A} is gone after a refused destroy (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"; then
+  echo "FAIL: A's state record is gone after a refused destroy (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
+assert_gone "the seeded ${STATE_KEY_B} still exists after its removal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
+echo "    OK: the destroy was refused; A's queue and record are intact; the seed is removed"
+
+echo ""
+echo "==> Phase 5: negative control -- redeploy A under ${PREFIX_A} (retention ${RETENTION_A})"
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes
+echo "    OK: a stack its own prefix records redeploys"
+
+echo ""
+echo "==> Phase 6: destroy A; delete the retained log group"
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
 assert_gone "state ${STATE_KEY_A} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
-assert_gone "state ${STATE_KEY_B} still exists after its record cleanup" \
+assert_gone "state ${STATE_KEY_B} exists at the end of the run" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
 assert_gone "role ${ROLE_NAME_A} still exists after the destroy" \
   aws iam get-role --role-name "${ROLE_NAME_A}"
@@ -382,4 +439,4 @@ trap - EXIT INT TERM
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 rescan
-echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused and left deployment A's queue and log group untouched (#4705)"
+echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy of a paired record was refused, and deployment A's queue and log group stayed untouched (#4705)"

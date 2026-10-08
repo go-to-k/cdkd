@@ -17,6 +17,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [State File is Corrupted](#state-file-is-corrupted)
   - [State and Resources Don't Match](#state-and-resources-don-t-match)
   - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
+  - ["Refusing to deploy stack X: it is already recorded under another state prefix"](#refusing-to-deploy-stack-x-it-is-already-recorded-under-another-state-prefix)
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
   - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
@@ -547,6 +548,31 @@ v0.12.0, `--region` is a first-class option only on
 other command it is deprecated (prefer `AWS_REGION` / your AWS profile)
 but still honored if passed. Use `AWS_REGION` or your AWS profile to
 control the SDK's default region for provisioning.
+
+---
+
+### "Refusing to deploy stack X: it is already recorded under another state prefix"
+
+**Symptoms:** `cdkd deploy` (on a stack's first deploy under this prefix),
+`cdkd destroy` or `cdkd state destroy` stops with `Refusing to deploy stack` /
+`Refusing to destroy stack ... recorded under another state prefix of bucket`,
+and nothing is created or deleted.
+
+**Cause:** the same stack name and region is recorded under another
+`--state-prefix` of the state bucket. A stack name is one deployment per
+account and region, as in CloudFormation, so two deployments of it share every
+cdkd-generated resource name and can delete each other's resources — see
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
+
+**Fix:** keep one deployment per stack name and region.
+
+- Deploying: use the prefix that already records the stack, give this stack
+  another name, or remove the other deployment first with the
+  `cdkd state destroy` (deletes its resources) or `cdkd state orphan` (drops
+  only its record) command the message prints.
+- Destroying: decide which record you are keeping, drop the other with the
+  `cdkd state orphan ... --state-prefix <prefix>` command the message prints
+  (it never deletes a resource), and re-run.
 
 ---
 

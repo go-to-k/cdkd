@@ -51,6 +51,40 @@ resources it leaves behind are no longer tracked by anything. See
 [Orphan vs Destroy](orphan-vs-destroy.md) for which of the four cleanup
 commands applies.
 
+## One stack name per account and region
+
+A stack name identifies one deployment per account and region, as it does in
+CloudFormation. The physical names cdkd generates for resources the template
+leaves unnamed derive from the stack name and logical id alone, so a second
+deployment of the same stack name in the same account and region asks AWS for
+the same names — and where a create hands back the existing resource (an SQS
+queue, a log group, a load balancer with identical settings) both records then
+claim it. A failed deploy's rollback, or a destroy, of either one deletes it.
+
+Deploying one stack name under two state backends — a different
+`--state-prefix`, or a different `--state-bucket` — in one account and region
+is therefore **unsupported**. To keep two copies of an app apart, give their
+stacks different names (a CDK `Stage`, or a name suffix), not different
+prefixes.
+
+cdkd refuses the case it can see, before touching any resource:
+
+- `cdkd deploy` of a stack that has no record under this prefix yet checks the
+  bucket's other top-level prefixes, and refuses when one already records the
+  same stack name and region. The check runs alongside the deploy's other
+  setup and only on that first deploy; a stack this prefix already records
+  pays nothing.
+- `cdkd destroy` and `cdkd state destroy` make the same check and refuse,
+  since the other record may name the same resources. Once you know which
+  record you are keeping, drop the other with `cdkd state orphan <stack>
+  --stack-region <region> --state-prefix <prefix>`, which removes only the
+  record.
+
+What the check cannot see is covered only by this contract: a record in a
+**different bucket**, and a prefix that itself contains `/` (only the
+bucket's top-level prefixes are listed). When S3 denies the listing or a read,
+the command warns and continues.
+
 ## Records outlive the binary that wrote them
 
 The record carries a schema version, and every older version is read and

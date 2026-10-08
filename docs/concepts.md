@@ -70,7 +70,12 @@ name to `cdkd bootstrap --state-bucket` so bootstrap creates it for you there to
 | Prefix | `--state-prefix` | - | - | `cdkd` |
 
 The state bucket is shared across all CDK apps in the same account by
-default. To isolate apps, pass different `--state-prefix` values.
+default; records are keyed by stack name, so apps with different stack names
+coexist in it without any setting. `--state-prefix` separates the records, not
+the deployed resources: **one stack name is one deployment per account and
+region**, as in CloudFormation, and deploying the same stack name under a
+second prefix (or a second bucket) is unsupported — see
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 `cdkd destroy --all` only targets stacks from the current CDK app
 (determined by synthesis), not all stacks in the bucket.
 
