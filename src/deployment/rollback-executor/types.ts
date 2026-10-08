@@ -231,16 +231,31 @@ export interface RollbackExecutorContext {
    */
   removeProtection?: boolean | undefined;
   /**
-   * go-to-k/cdkd#4678: who else holds a journaled orphan, asked before
-   * `removeProtection` strips one (`makeForeignHolderScan`, scoped to this
-   * stack). Supplied with `removeProtection` by its three setters only: the
-   * destroy journal sweep, `cdkd rollback`, and the nested child replay under
-   * `cdkd rollback --remove-protection` (go-to-k/cdkd#4703), scoped to the
-   * child; a `held` or `unreadable` answer keeps the protection on.
+   * Who else holds a journaled orphan (`makeForeignHolderScan`, scoped to this
+   * stack). Its presence marks a replay of a journal an EARLIER run wrote: the
+   * delete of a journaled proven orphan then first asks it, and the live
+   * identity (go-to-k/cdkd#4696, #4658). A `held` answer or a disproven
+   * identity is a warned skip; an `unreadable` answer or a failed identity
+   * read keeps the op in the journal for a re-run. Supplied by `cdkd
+   * rollback`, the `cdkd destroy` journal sweep and the success settle; the
+   * nested child replay sets it only under `cdkd rollback --remove-protection`
+   * (go-to-k/cdkd#4703) and replays completed ops alone. A deploy's automatic
+   * rollback supplies none: it runs inside the failed deploy, over that
+   * attempt's own operations only, while the deploy still holds the stack's
+   * lock, so no later cdkd command (an import into another stack) can come
+   * between the create and its delete; and its in-process identity is
+   * best-effort (absent for a provider without `resourceIdentity`). `--remove-protection` strips protection only from an
+   * orphan these checks cleared (go-to-k/cdkd#4678).
    */
   foreignHolder?:
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
     | undefined;
+  /**
+   * The journaled orphans the success settle already proved deletable (holder
+   * scan and identity, go-to-k/cdkd#4655): the replay's delete does not ask
+   * them again.
+   */
+  orphanDeleteProven?: ReadonlySet<FailedOperation> | undefined;
   /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,
@@ -419,6 +434,12 @@ export interface FailedOpReplayResult extends RollbackReplayResult {
    * Handled, not pending: a re-run would find the same part and leave it.
    */
   leftInPlace: number;
+  /**
+   * The ops counted in {@link skipped}: left as the failed deploy left them,
+   * handled (out of the journal). `cdkd destroy` counts its journaled
+   * orphans among them as unaddressed (go-to-k/cdkd#4658).
+   */
+  skippedOps?: FailedOperation[];
 }
 
 /** Outcome of replaying a list of ops (one journal segment). */

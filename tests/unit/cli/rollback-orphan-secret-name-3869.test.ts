@@ -17,10 +17,28 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
   loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
-const provider = vi.hoisted(() => ({ delete: vi.fn() }));
+// go-to-k/cdkd#4658: the live identity matches the journaled token.
+const provider = vi.hoisted(() => ({
+  delete: vi.fn(),
+  resourceIdentity: async () => 'created-token',
+}));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
-    getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+    getProviderFor: ({ resourceType }: { resourceType: string }) => ({
+      // Real-shaped: only these types' providers read a creation identity.
+      provider: [
+        'AWS::Kinesis::Stream',
+        'AWS::RDS::DBCluster',
+        'AWS::RDS::DBInstance',
+        'AWS::DocDB::DBCluster',
+        'AWS::DocDB::DBInstance',
+        'AWS::Neptune::DBCluster',
+        'AWS::Neptune::DBInstance',
+      ].includes(resourceType)
+        ? provider
+        : { ...(provider), resourceIdentity: undefined },
+      provisionedBy: 'sdk',
+    }),
     setCustomResourceResponseBucket: vi.fn(),
   })),
 }));
@@ -160,10 +178,15 @@ describe("cdkd rollback masks a journaled orphan's OWN secret-derived name (go-t
     });
   });
 
+  // go-to-k/cdkd#4658: an SQS queue journals no creation identity, so the
+  // orphan is kept, not deleted: the warning naming it masks it the same way.
   it.each([
     ['a name journaled as its reference', QUEUE_REF, false],
     ['negative control, a literal name', QUEUE, true],
-  ])("on its provider's delete line: %s", async (_l, queueName, shown) => {
+  ])('on the warning that keeps it: %s', async (_l, queueName, shown) => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
     install('plain-user-name', [
       {
         logicalId: 'Queue',
@@ -178,10 +201,11 @@ describe("cdkd rollback masks a journaled orphan's OWN secret-derived name (go-t
     await rollbackCommand('S', { statePrefix: 'cdkd', verbose: false, force: true }).catch(
       () => undefined
     );
-    // Premise: the plain rollback deleted the proven orphan and logged its line.
-    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
-    expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
-    expect(lines[0]!.includes(QUEUE)).toBe(shown);
+    // Premise: the plain rollback kept the orphan and warned about it.
+    expect(provider.delete).not.toHaveBeenCalled();
+    const kept = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('Skipping failed CREATE of Queue'));
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.includes(QUEUE)).toBe(shown);
   });
 });
 

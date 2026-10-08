@@ -74,6 +74,23 @@ function orphanOp(queueName: string) {
   };
 }
 
+const STREAM_REF = '{{resolve:secretsmanager:team:SecretString:stream::}}';
+const STREAM = 'team-secret-stream';
+
+/** A Kinesis stream orphan, which journals its creation identity. */
+function streamOp(streamName: string) {
+  return {
+    logicalId: 'Orphan',
+    changeType: 'CREATE',
+    resourceType: 'AWS::Kinesis::Stream',
+    physicalId: STREAM,
+    provisionedBy: 'sdk',
+    physicalIdRecoveredFromError: true,
+    createdResourceIdentity: 'created-token',
+    attemptedProperties: { Name: streamName },
+  };
+}
+
 function journalOf(failedOperations: unknown[]) {
   return {
     journalVersion: 1,
@@ -124,7 +141,22 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {
-        getProviderFor: () => ({ provider: { delete: providerDelete }, provisionedBy: 'sdk' }),
+        // go-to-k/cdkd#4658: the live identity matches the journaled token.
+        // Real-shaped: only these types' providers read a creation identity.
+        getProviderFor: ({ resourceType }: { resourceType: string }) => ({
+          provider: [
+            'AWS::Kinesis::Stream',
+            'AWS::RDS::DBCluster',
+            'AWS::RDS::DBInstance',
+            'AWS::DocDB::DBCluster',
+            'AWS::DocDB::DBInstance',
+            'AWS::Neptune::DBCluster',
+            'AWS::Neptune::DBInstance',
+          ].includes(resourceType)
+            ? { delete: providerDelete, resourceIdentity: async () => 'created-token' }
+            : { delete: providerDelete },
+          provisionedBy: 'sdk',
+        }),
       } as unknown as ProviderRegistry,
       baseAwsClients: {} as AwsClients,
       baseRegion: REGION,
@@ -153,33 +185,71 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     lines.length = 0;
   });
 
+  // go-to-k/cdkd#4658: an SQS queue journals no creation identity, so its
+  // orphan is kept, not deleted: the warning naming it masks it as well.
   it.each([
     ['a secret-named orphan', REF, false],
     ['negative control, an ordinary name', 'plain-queue-name', true],
-  ])("masks the orphan's provider delete line: %s", async (_l, queueName, shown) => {
+  ])('masks the warning that keeps an orphan of a type with no identity: %s', async (_l, queueName, shown) => {
     loadJournal.mockResolvedValue(journalOf([orphanOp(queueName)]));
+    const result = await runDestroyForStack('TestStack', stateOf({}), ctx());
+    expect(providerDelete).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const kept = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('Skipping failed CREATE of Orphan'));
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.includes(NAME)).toBe(shown);
+  });
+
+  // A stream journals its identity, so its orphan reaches the provider's
+  // delete: its line and a failed delete's event text are masked.
+  it.each([
+    ['a secret-named orphan', STREAM_REF, false],
+    ['negative control, an ordinary name', STREAM, true],
+  ])("masks the orphan's provider delete line: %s", async (_l, streamName, shown) => {
+    loadJournal.mockResolvedValue(journalOf([streamOp(streamName)]));
     providerDelete.mockImplementation(logging(false));
     const result = await runDestroyForStack('TestStack', stateOf({}), ctx());
     expect(result.errorCount).toBe(0);
     // Premise: the orphan's delete ran and logged its line.
     expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Orphan: ')]);
-    expect(lines[0]!.includes(NAME)).toBe(shown);
+    expect(lines[0]!.includes(STREAM)).toBe(shown);
   });
 
-  // Not new coverage: the replay's own op masker (#4037) already masks the
-  // orphan's OWN name here. Kept as a regression guard; the case below (a name
-  // the orphan READ) is the one this change pins.
   it.each([
-    ['a secret-named orphan', REF, false],
-    ['negative control, an ordinary name', 'plain-queue-name', true],
-  ])("masks a failed orphan delete's ROLLBACK_RESOURCE_FAILED error text: %s", async (_l, queueName, shown) => {
-    loadJournal.mockResolvedValue(journalOf([orphanOp(queueName)]));
+    ['a secret-named orphan', STREAM_REF, false],
+    ['negative control, an ordinary name', STREAM, true],
+  ])("masks a failed orphan delete's ROLLBACK_RESOURCE_FAILED error text: %s", async (_l, streamName, shown) => {
+    loadJournal.mockResolvedValue(journalOf([streamOp(streamName)]));
     providerDelete.mockImplementation(logging(true));
     const result = await runDestroyForStack('TestStack', stateOf({}), ctx());
     expect(result.errorCount).toBe(1);
     // Premise: the failure was recorded, quoting AWS's text.
     expect(failed()).toHaveLength(1);
     expect(failed()[0]!.error?.message).toContain('AccessDenied on ');
+    expect(failed()[0]!.error!.message!.includes(STREAM)).toBe(shown);
+  });
+
+  // go-to-k/cdkd#4696: a scan that cannot read a record keeps the orphan as
+  // a failure whose error text names its physical id, masked as the rest.
+  it.each([
+    ['a secret-named orphan', REF, false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])('masks the kept-for-a-re-run failure of an unreadable holder scan: %s', async (_l, queueName, shown) => {
+    loadJournal.mockResolvedValue(journalOf([orphanOp(queueName)]));
+    const c = ctx();
+    (c.stateBackend as unknown as { listStacks: ReturnType<typeof vi.fn> }).listStacks = vi
+      .fn()
+      .mockRejectedValue(new Error('AccessDenied'));
+    const result = await runDestroyForStack('TestStack', stateOf({}), c);
+    expect(providerDelete).not.toHaveBeenCalled();
+    expect(result.errorCount).toBe(1);
+    // Premise: the failure was recorded, naming the id it kept.
+    expect(failed()).toHaveLength(1);
+    expect(failed()[0]!.error?.message).toContain('is not deleted: the state bucket listing');
     expect(failed()[0]!.error!.message!.includes(NAME)).toBe(shown);
   });
 

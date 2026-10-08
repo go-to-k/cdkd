@@ -360,10 +360,12 @@ describe('--remove-protection over an orphan another stack holds in another case
     return { contexts, warned: warn.mock.calls.map((c) => String(c[0])).join('\n') };
   }
 
-  it('withholds the flag when another stack holds it in lower case', async () => {
+  // go-to-k/cdkd#4696: kept, delete and all, not only its protection.
+  it('sends no delete when another stack holds it in lower case', async () => {
     const r = await replay({ B: { Db: record('mydb', 'AWS::RDS::DBInstance') } }, instanceOrphan());
-    expect(r.contexts[0]).not.toHaveProperty('removeProtection');
-    expect(r.warned).toContain('holds it now');
+    expect(r.contexts).toEqual([]);
+    expect(r.warned).toContain('the state record of stack B');
+    expect(r.warned).toContain('holds a resource of that type under the same physical id now');
   });
 
   it('control: passes the flag when no other stack holds it', async () => {
