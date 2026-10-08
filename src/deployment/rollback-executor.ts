@@ -81,6 +81,7 @@ import {
   classifyFailedOp,
   failedOpOwnRecord,
   recordUnderIdIsNotOwn,
+  recheckMismatchedFailedCreate,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -157,6 +158,7 @@ export {
   markProvenDistinctFromRecord,
   replacementNeverSwapped,
   planFailedOps,
+  recheckFailedPlan,
   planRollback,
   sortRollbackCreates,
 } from './rollback-executor/plan.js';
@@ -696,7 +698,16 @@ async function replayFailedOperationsUnbound(
       break;
     }
     const op = failedOps[i]!;
-    const action = classifyFailedOp(op, stateResources, failedOps);
+    // go-to-k/cdkd#4754: a replay of an earlier run's journal (`foreignHolder`
+    // supplied: `cdkd rollback`, `cdkd destroy`) re-asks a kept fix-forward
+    // orphan the settle's question before skipping it unchecked; the delete
+    // arm then runs the holder and identity checks. No read for any other op,
+    // nor in the automatic rollback, which runs neither check.
+    const classified = classifyFailedOp(op, stateResources, failedOps);
+    const action =
+      ctx.foreignHolder === undefined
+        ? classified
+        : await recheckMismatchedFailedCreate(op, classified, stateResources, failedOps, ctx);
     /**
      * This op's re-resolved secret bag — the twin of `replaySingle`'s, and
      * hoisted above this iteration's `try` for the same reason (issues #2038 /

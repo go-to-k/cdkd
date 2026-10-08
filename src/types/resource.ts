@@ -1284,7 +1284,8 @@ export interface ResourceProvider {
    * — is the same live AWS resource as the one `record` holds under the same
    * logical id. A successful deploy deletes that journaled resource when, and
    * only when, this answers `'different'` (the fix-forward that created a new
-   * resource under the logical id).
+   * resource under the logical id), and so do `cdkd rollback` and `cdkd
+   * destroy` replaying an entry that deploy kept (go-to-k/cdkd#4754).
    *
    * A `'different'` must rest on AWS evidence, not on two id strings
    * differing: providers record ids in different forms and an idempotent

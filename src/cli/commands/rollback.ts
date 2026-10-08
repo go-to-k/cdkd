@@ -56,6 +56,7 @@ import {
   replayFailedOperations,
   planRollback,
   planFailedOps,
+  recheckFailedPlan,
   demoteSupersededOrphans,
   isJournaledOrphan,
   isReplacementOrphan,
@@ -1068,7 +1069,13 @@ export async function rollbackCommand(
         const failedToReplay = failedOpsToReplay(failedOps.replay, options.revertFailed === true);
         if (failedOps.replay.length > 0) {
           if (failedToReplay.length > 0) {
-            const failedPlan = planFailedOps(failedToReplay, planStateView);
+            // go-to-k/cdkd#4754: the replay re-checks a kept fix-forward
+            // orphan before skipping it, so the plan the user confirms does too.
+            const failedPlan = await recheckFailedPlan(
+              planFailedOps(failedToReplay, planStateView),
+              planStateView,
+              { providerRegistry, region }
+            );
             for (const item of failedPlan) {
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
               // A failed nested row's revert replays its child's journal too.
