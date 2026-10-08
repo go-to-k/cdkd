@@ -1045,6 +1045,92 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(lines(logger.warn).some((l) => l.includes('changed since the last deploy'))).toBe(false);
     });
 
+    describe('names a replacement only where one happens (go-to-k/cdkd#4737)', () => {
+      // `NotificationsWithSubscribers` is create-only in the Budget schema,
+      // while the registry updates it in place (the provider reconciles it).
+      const notifications = (address: unknown): unknown[] => [
+        {
+          Notification: {
+            NotificationType: 'ACTUAL',
+            ComparisonOperator: 'GREATER_THAN',
+            Threshold: 80,
+          },
+          Subscribers: [{ SubscriptionType: 'EMAIL', Address: address }],
+        },
+      ];
+      const budgetState = (version: number): StackState => {
+        const state = version >= STATE_SCHEMA_VERSION_CURRENT ? v11State() : v10State();
+        state.version = version as never;
+        state.resources['Bud'] = {
+          physicalId: 'budget-phys',
+          resourceType: 'AWS::Budgets::Budget',
+          properties: {
+            Budget: { BudgetName: 'b' },
+            NotificationsWithSubscribers: notifications('old-addr@example.com'),
+          },
+          attributes: {},
+          dependencies: [],
+        };
+        return state;
+      };
+      const budgetTemplate = (): CloudFormationTemplate => {
+        const tpl = template(TOKEN, {
+          Bud: {
+            Type: 'AWS::Budgets::Budget',
+            Properties: {
+              Budget: { BudgetName: 'b' },
+              NotificationsWithSubscribers: notifications({ Ref: 'Mail' }),
+            },
+          },
+        });
+        tpl.Parameters!['Mail'] = { Type: 'String', NoEcho: true, Default: 'new-addr@example.com' };
+        return tpl;
+      };
+
+      it.each([
+        ['a record with no NoEcho leaf yet (schema v11)', STATE_SCHEMA_VERSION_CURRENT],
+        ['a record a pre-v11 binary wrote (the migration witness)', 10],
+      ])(
+        'updates a registry-updatable create-only path in place, with no "is replaced" line: %s',
+        async (_label, version) => {
+          stateBackend.getState.mockResolvedValue({ state: budgetState(version), etag: 'etag-old' });
+          await makeEngine().deploy(STACK, budgetTemplate());
+          const updates = callsFor(provider.update, 'Bud');
+          expect(updates).toHaveLength(1);
+          // The new value is sent.
+          expect(JSON.stringify(updates[0]![3])).toContain('new-addr@example.com');
+          expect(callsFor(provider.create, 'Bud')).toHaveLength(0);
+          expect(callsFor(provider.delete, 'Bud')).toHaveLength(0);
+          expect(lines(logger.warn).filter((l) => l.includes('Bud'))).toEqual([]);
+          expect(lastSaved().resources['Bud']!.noEchoLeaves).toEqual([
+            ['NotificationsWithSubscribers', 0, 'Subscribers', 0, 'Address'],
+          ]);
+        }
+      );
+
+      it('still names the cause when a create-only literal becomes a NoEcho Ref with another value and the resource IS replaced (schema v11)', async () => {
+        provider.create.mockImplementation((logicalId: string) =>
+          Promise.resolve({ physicalId: `${logicalId}-new-arn`, attributes: {} })
+        );
+        const state = v11State();
+        state.resources['Topic'] = {
+          ...state.resources['Topic']!,
+          properties: { TopicName: 'old-topic-name', DisplayName: 'd' },
+        };
+        delete state.resources['Topic']!.noEchoLeaves;
+        stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+        await makeEngine().deploy(STACK, template());
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+        expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
+        expect(provider.create.mock.invocationCallOrder[0]!).toBeLessThan(
+          provider.delete.mock.invocationCallOrder[0]!
+        );
+        expect(lines(logger.warn).filter((l) => l.includes('Topic.TopicName'))).toEqual([
+          "Topic.TopicName is a create-only property, and a NoEcho parameter's value changed since the last deploy: Topic is replaced.",
+        ]);
+      });
+    });
+
     it('counts a replacement whose old resource could not be deleted (delete address is ***) as a partial update (review MEDIUM-3)', async () => {
       stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN, 'old-topic-name'), etag: 'etag-old' });
       provider.create.mockImplementation((logicalId: string) =>
