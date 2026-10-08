@@ -38,6 +38,9 @@
 #   (3, also) `OrphanD`'s bucket is NOT emptied: it keeps the object, the
 #      deploy says cdkd never empties such a bucket, and the journal keeps that
 #      entry alone.
+#   3b. `OrphanD`'s bucket is emptied by hand (its CreationDate must not move),
+#      and a deploy of the same template exits 0: its settle deletes the
+#      bucket and drops the journal. The guard only defers the delete.
 #   4. Destroy, and every bucket and the state file are gone, and the state
 #      prefix's object versions are swept.
 #
@@ -576,17 +579,53 @@ if ! printf '%s' "${FF_FLAT}" | grep -qF 'is not deleted: the resource now under
 fi
 echo "[verify] step 3 ok: the fix-forward deleted ${BUCKET_A}, kept the re-created ${BUCKET_C} untouched and ${BUCKET_D} with its data, and the records hold the -b buckets (rc=${FF_RC})"
 
-echo "[verify] step 4: destroy"
-# The re-created name and OrphanD's kept bucket are no record's: this run
-# made them, so it removes them. The journal still names OrphanD's bucket;
-# the destroy then finds it gone and only drops the entry.
-aws s3api delete-bucket --bucket "${BUCKET_C}" --region "${REGION}"
+echo "[verify] step 3b: OrphanD emptied by hand; the next deploy's settle deletes it"
+# The guard only DEFERS: once nothing is in the bucket, the next successful
+# deploy proves it the failed CREATE's bucket again and deletes it.
+D_CREATED_BEFORE_EMPTY="$(listed_creation_date "${BUCKET_D}")"
 empty_bucket_by_name "${BUCKET_D}"
-aws s3api delete-bucket --bucket "${BUCKET_D}" --region "${REGION}"
-# The destroy's journal replay asks GetBucketLocation first: wait until IT
-# reports the bucket gone, or a half-propagated delete reads as 'unproven'.
-assert_gone_eventually "step 4: ${BUCKET_D} still located after its delete" \
-  aws s3api get-bucket-location --bucket "${BUCKET_D}" --region "${REGION}"
+D_LEFT="$(aws s3api list-object-versions --bucket "${BUCKET_D}" --region "${REGION}" \
+  --query 'length([Versions || `[]`, DeleteMarkers || `[]`][])' --output text)"
+if [ "${D_LEFT}" != "0" ]; then
+  echo "[verify] FAIL: ${BUCKET_D} still holds ${D_LEFT} object version(s) after emptying it" >&2
+  exit 1
+fi
+# Premise, as in step 2c: emptying must not move the date, or the settle
+# below would read another bucket and keep it.
+D_CREATED_AFTER_EMPTY=""
+for _ in 1 2 3 4 5; do
+  D_CREATED_AFTER_EMPTY="$(listed_creation_date "${BUCKET_D}")"
+  [ "${D_CREATED_AFTER_EMPTY}" != "${D_CREATED_BEFORE_EMPTY}" ] && break
+  sleep 3
+done
+if [ -z "${D_CREATED_BEFORE_EMPTY}" ] || [ "${D_CREATED_AFTER_EMPTY}" != "${D_CREATED_BEFORE_EMPTY}" ]; then
+  echo "[verify] FAIL: premise -- ${BUCKET_D}'s CreationDate moved from '${D_CREATED_BEFORE_EMPTY}' to '${D_CREATED_AFTER_EMPTY}' when it was emptied, so the settle cannot prove it again" >&2
+  exit 1
+fi
+set +e
+env WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true ${CLI} deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/settle-d.log" 2>&1
+SD_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/settle-d.log" || true
+if [ "${SD_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: the deploy after emptying ${BUCKET_D} exited ${SD_RC} (expected 0: its settle deletes the now-empty orphan -- output above)" >&2
+  exit 1
+fi
+SD_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/settle-d.log" | tr '\n' ' ' | tr -s ' ')"
+if ! printf '%s' "${SD_FLAT}" | grep -qF 'deleting partially-created OrphanD'; then
+  echo "[verify] FAIL: the deploy after emptying ${BUCKET_D} did not delete it (output above)" >&2
+  exit 1
+fi
+assert_gone_eventually "step 3b: ${BUCKET_D} still exists after the settle that deleted it" \
+  aws s3api head-bucket --bucket "${BUCKET_D}" --region "${REGION}"
+assert_gone "step 3b: the rollback journal is still present after the settle deleted its last entry" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+echo "[verify] step 3b ok: the settle deleted the emptied ${BUCKET_D} and dropped the journal"
+
+echo "[verify] step 4: destroy"
+# The re-created name is no record's: this run made it, so it removes it.
+aws s3api delete-bucket --bucket "${BUCKET_C}" --region "${REGION}"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 for b in "${ALL_BUCKETS[@]}"; do
   assert_gone_eventually "bucket ${b} still exists after destroy" \
