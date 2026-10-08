@@ -150,8 +150,8 @@ export const CR_MASKED_PROPERTIES_SKIP_REASON =
 const NOECHO_RERESOLUTION_BOUND =
   `cdkd re-resolves such a coordinate only where it holds the template — 'cdkd destroy' ` +
   `with the app, or a 'cdkd deploy' replacing a resource still in its template — and only ` +
-  `while today's template reads a NoEcho parameter there; an attribute a producer declared ` +
-  `NoEcho has no template value and is never re-resolved.`;
+  `while today's template reads a NoEcho parameter there with the property's text unchanged; ` +
+  `an attribute a producer declared NoEcho has no template value to re-resolve.`;
 
 /** The NoEcho-mask skip's remedy for this delete's phase. */
 function noEchoPropertiesRemedy(context: DeleteContext | undefined, logicalId: string): string {

@@ -1845,11 +1845,6 @@ export async function runDestroyForStack(
                   }
                 : undefined;
 
-            // go-to-k/cdkd#4682: today's values at the record's masked NoEcho
-            // coordinates, re-resolved from the template this destroy holds.
-            // Never persisted or logged; `undefined` keeps the provider's skip.
-            const noEchoDeleteValues = await ctx.noEchoReresolver?.valuesFor(logicalId, resource);
-
             // Wrap the entire retry loop in the per-resource deadline so a
             // genuinely-stuck delete (e.g. a hung Custom Resource handler or
             // a Cloud-Control polling loop that never terminates) aborts
@@ -1861,6 +1856,14 @@ export async function runDestroyForStack(
                 // whose delete generates a fresh pre-signed S3 URL each call)
                 // run exactly once.
                 const maxAttempts = provider.disableOuterRetry ? 0 : 3;
+                // go-to-k/cdkd#4682: today's values at the record's masked
+                // NoEcho coordinates, re-resolved from the template this destroy
+                // holds, for the two types that read them, inside the deadline
+                // (it can reach SSM / STS). Never persisted or logged;
+                // `undefined` keeps the provider's skip.
+                const noEchoDeleteValues = readsNoEchoDeleteValues(resource.resourceType)
+                  ? await ctx.noEchoReresolver?.valuesFor(logicalId, resource)
+                  : undefined;
                 let lastDeleteError: unknown;
                 for (let attempt = 0; attempt <= maxAttempts; attempt++) {
                   try {
@@ -2629,4 +2632,13 @@ export async function scanActiveConsumers(
     })
   );
   return results.filter((r) => r !== null).flat();
+}
+
+/** The delete providers that read `DeleteContext.noEchoDeleteValues` (go-to-k/cdkd#4682). */
+function readsNoEchoDeleteValues(resourceType: string): boolean {
+  return (
+    resourceType === 'AWS::CloudFormation::CustomResource' ||
+    resourceType.startsWith('Custom::') ||
+    resourceType === 'AWS::CloudFormation::Stack'
+  );
 }

@@ -984,17 +984,20 @@ async function destroyCommand(
                 exportIndexStore,
                 // go-to-k/cdkd#4682: the synthesized template, so a custom
                 // resource reading a NoEcho parameter gets its value back on
-                // delete. A macro-carrying template was never expanded here.
-                ...(TemplateNoEchoReresolver.usable(synthStack?.template) && {
-                  noEchoReresolver: new TemplateNoEchoReresolver({
-                    template: synthStack.template,
-                    stackName,
-                    region: stackTargetRegion,
-                    ...(synthStack.nestedTemplates !== undefined && {
-                      nestedTemplates: synthStack.nestedTemplates,
+                // delete. A macro-carrying template was never expanded here,
+                // and one synthesized for another region is not what this
+                // record deployed.
+                ...(TemplateNoEchoReresolver.usable(synthStack?.template) &&
+                  (synthStack.region === undefined || synthStack.region === stackTargetRegion) && {
+                    noEchoReresolver: new TemplateNoEchoReresolver({
+                      template: synthStack.template,
+                      stackName,
+                      region: stackTargetRegion,
+                      ...(synthStack.nestedTemplates !== undefined && {
+                        nestedTemplates: synthStack.nestedTemplates,
+                      }),
                     }),
                   }),
-                }),
                 ...(options.allowUnsupportedTypes?.length && {
                   allowUnsupportedTypes: options.allowUnsupportedTypes,
                 }),

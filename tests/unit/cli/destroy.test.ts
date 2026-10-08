@@ -666,11 +666,18 @@ describe('cdkd destroy: terminationProtection guard', () => {
   it.each([
     ['a plain template', {}, true],
     ['a template a macro rewrites', { Transform: 'AWS::Serverless-2016-10-31' }, false],
+    ['a template synthesized for another region', { region: 'eu-west-1' }, false],
   ])('threads the NoEcho re-resolution source for %s', async (_what, extra, threaded) => {
+    const { region: synthRegion, ...templateExtra } = extra as Record<string, unknown>;
     mockSynthesize.mockResolvedValue({
       manifest: {},
       assemblyDir: '/tmp/cdk.out',
-      stacks: [{ ...makeStackInfo('Plain', 'us-east-1'), template: { Resources: {}, ...extra } }],
+      stacks: [
+        {
+          ...makeStackInfo('Plain', (synthRegion as string | undefined) ?? 'us-east-1'),
+          template: { Resources: {}, ...templateExtra },
+        },
+      ],
     });
     mockListStacks.mockResolvedValue([{ stackName: 'Plain', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Plain'), etag: '"x"' });

@@ -1085,8 +1085,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 153 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 153 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 154 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 154 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

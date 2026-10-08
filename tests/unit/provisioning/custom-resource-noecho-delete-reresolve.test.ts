@@ -222,4 +222,38 @@ describe('CustomResourceProvider.delete: re-resolved NoEcho coordinates (go-to-k
     expect(text).toContain('bad token');
     expect(text).not.toContain(VALUE);
   });
+
+  it("masks a FAILED reply's unclassified log tail and a transient-authz retry's reason", async () => {
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '1';
+    const tail = Buffer.from(`START\nhandler saw token ${VALUE}\nEND`).toString('base64');
+    let invokes = 0;
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name !== 'InvokeCommand') {
+        return Promise.resolve({ Configuration: { State: 'Active', LastUpdateStatus: 'Successful' } });
+      }
+      invokes += 1;
+      const reply =
+        invokes === 1
+          ? { Status: 'FAILED', Reason: `role is not authorized to perform ssm:Get for ${VALUE}` }
+          : { Status: 'FAILED', Reason: 'teardown refused' };
+      return Promise.resolve({ Payload: Buffer.from(JSON.stringify(reply)), LogResult: tail });
+    });
+    await provider().delete(
+      'SeedCr',
+      'phys-1',
+      'Custom::Seed',
+      { ServiceToken: SERVICE_TOKEN, A: SECRET_MASK },
+      {
+        recordedNoEchoLeaves: [['A']],
+        noEchoDeleteValues: values([{ coordinate: ['A'], value: VALUE }]),
+        stackDestroy: true,
+      }
+    );
+    const text = logged.join('\n');
+    expect(invokes).toBe(2);
+    expect(text).toContain('transient IAM-authorization FAILED');
+    expect(text).toContain('handler saw token');
+    expect(text).not.toContain(VALUE);
+  });
 });

@@ -23,6 +23,8 @@ import {
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
+import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 const VALUE = 'parent-noecho-default-4682';
 const TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:h';
@@ -293,5 +295,222 @@ describe('noEchoDeleteValuesFromResolved (a deploy replacing a resource still in
         record: record({ Token: SECRET_MASK }, [['Token']]),
       } as never)
     ).toBeUndefined();
+  });
+});
+
+describe('review round 1 (PR #4742)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdkd-4682-r1-'));
+    logged.length = 0;
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const crRecord = (token: unknown = SECRET_MASK): ResourceState => ({
+    physicalId: 'p',
+    resourceType: 'Custom::Seed',
+    properties: { ServiceToken: TOKEN, Token: token },
+    attributes: {},
+    dependencies: [],
+    noEchoLeaves: [['Token']],
+  });
+  const load = (p: string) => ({
+    template: JSON.parse(fs.readFileSync(p, 'utf-8')) as CloudFormationTemplate,
+    nestedTemplates: {},
+  });
+  // What `NestedStackProvider.extractParameters` does to a list: joins it.
+  const extract = (props: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries((props['Parameters'] ?? {}) as Record<string, unknown>).map(([k, v]) => [
+        k,
+        Array.isArray(v) ? v.join(',') : String(v),
+      ])
+    );
+  function child(
+    childTemplate: Record<string, unknown>,
+    parentTemplate: CloudFormationTemplate
+  ): TemplateNoEchoReresolver {
+    const childPath = path.join(dir, 'child.json');
+    fs.writeFileSync(childPath, JSON.stringify(childTemplate));
+    return new TemplateNoEchoReresolver({
+      template: parentTemplate,
+      stackName: 'Parent',
+      region: 'us-east-1',
+      nestedTemplates: { Child: childPath },
+    });
+  }
+
+  it('C1: a row list parameter the parent could not re-resolve is refused, never sent as "***,***"', async () => {
+    const parent = child(
+      {
+        Parameters: { ChildList: { Type: 'String' } },
+        Resources: {
+          ChildCr: {
+            Type: 'Custom::Seed',
+            Properties: { ServiceToken: TOKEN, Token: { Ref: 'ChildList' } },
+          },
+        },
+      },
+      template({})
+    );
+    const nested = await parent.forNestedChild(
+      'Child',
+      {
+        properties: { Parameters: { ChildList: [SECRET_MASK, SECRET_MASK] } },
+        noEchoLeaves: [['Parameters', 'ChildList']],
+        values: undefined,
+      },
+      'Parent-Child',
+      load,
+      extract
+    );
+    expect(await nested!.valuesFor('ChildCr', crRecord())).toBeUndefined();
+  });
+
+  it("M1: the child's masker covers a parent NoEcho value the row EMBEDS", async () => {
+    const parentTemplate = {
+      Parameters: { Secret: { Type: 'String', NoEcho: true, Default: VALUE } },
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            Parameters: { Conn: { 'Fn::Join': ['', ['user:', { Ref: 'Secret' }, '@host']] } },
+          },
+        },
+      },
+    } as CloudFormationTemplate;
+    const parent = child(
+      {
+        Parameters: { Conn: { Type: 'String' } },
+        Resources: {
+          ChildCr: {
+            Type: 'Custom::Seed',
+            Properties: { ServiceToken: TOKEN, Token: { Ref: 'Conn' } },
+          },
+        },
+      },
+      parentTemplate
+    );
+    const row: ResourceState = {
+      physicalId: 'arn:child',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: { Conn: SECRET_MASK } },
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: [['Parameters', 'Conn']],
+    };
+    const rowValues = await parent.valuesFor('Child', row);
+    const nested = await parent.forNestedChild(
+      'Child',
+      { properties: row.properties, noEchoLeaves: row.noEchoLeaves, values: rowValues },
+      'Parent-Child',
+      load,
+      extract
+    );
+    const values = await nested!.valuesFor('ChildCr', crRecord());
+    expect(values?.leaves[0]?.value).toBe(`user:${VALUE}@host`);
+    expect(values!.maskSecrets(`auth failed for ${VALUE}`)).not.toContain(VALUE);
+  });
+
+  it("C5: a masked row parameter with a Default does not fail its siblings' re-resolution", async () => {
+    const parent = child(
+      {
+        Parameters: {
+          Count: { Type: 'Number', Default: '3' },
+          Plain: { Type: 'String' },
+        },
+        Resources: {
+          ChildCr: {
+            Type: 'Custom::Seed',
+            Properties: { ServiceToken: TOKEN, Token: { Ref: 'Plain' } },
+          },
+        },
+      },
+      template({})
+    );
+    const nested = await parent.forNestedChild(
+      'Child',
+      {
+        properties: { Parameters: { Count: SECRET_MASK, Plain: 'from-parent' } },
+        noEchoLeaves: [['Parameters', 'Count'], ['Parameters', 'Plain']],
+        values: undefined,
+      },
+      'Parent-Child',
+      load,
+      extract
+    );
+    const values = await nested!.valuesFor('ChildCr', crRecord());
+    expect(values?.leaves).toEqual([{ coordinate: ['Token'], value: 'from-parent' }]);
+  });
+
+  it("M2: a property whose template text changed since the deploy is refused; the same text is accepted", async () => {
+    const deployed = { Ref: 'Secret' };
+    const today = template({ Token: { Ref: 'Secret' } });
+    const recordWith = (fp: string): ResourceState => ({
+      ...record({ Token: SECRET_MASK }, [['Token']]),
+      maskedPropertyFingerprints: { Token: fp },
+    });
+    const same = await reresolver(today).valuesFor('Cr', recordWith(maskedPropertyFingerprint(deployed)));
+    expect(same?.leaves).toEqual([{ coordinate: ['Token'], value: VALUE }]);
+    const moved = await reresolver(today).valuesFor(
+      'Cr',
+      recordWith(maskedPropertyFingerprint({ Ref: 'OtherSecret' }))
+    );
+    expect(moved).toBeUndefined();
+    expect(
+      noEchoDeleteValuesFromResolved({
+        record: recordWith(maskedPropertyFingerprint({ Ref: 'OtherSecret' })),
+        templateResource: today.Resources['Cr'] as never,
+        resolvedProperties: { ServiceToken: TOKEN, Token: VALUE },
+        noEchoParameters: new Set(['Secret']),
+        secrets: new Map(),
+      })
+    ).toBeUndefined();
+  });
+
+  it('N1: a deploy whose resource bag holds a resolved secret hands the delete nothing', () => {
+    expect(
+      noEchoDeleteValuesFromResolved({
+        record: record({ Token: SECRET_MASK }, [['Token']]),
+        templateResource: { Type: 'Custom::Seed', Properties: { Token: { Ref: 'Secret' } } },
+        resolvedProperties: { Token: VALUE },
+        noEchoParameters: new Set(['Secret']),
+        secrets: new Map([['secure-plaintext', '{{resolve:ssm:/p}}']]),
+      })
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['Fn::Select', { 'Fn::Select': [1, ['a', { Ref: 'Secret' }]] }, VALUE],
+    ['Fn::Split', { 'Fn::Select': [0, { 'Fn::Split': ['-', { Ref: 'Secret' }] }] }, VALUE.split('-')[0]],
+    ['Fn::Base64', { 'Fn::Base64': { Ref: 'Secret' } }, Buffer.from(VALUE).toString('base64')],
+    ['Ref AWS::Partition', { 'Fn::Join': [':', [{ Ref: 'AWS::Partition' }, { Ref: 'Secret' }]] }, `aws:${VALUE}`],
+  ])('re-resolves an allowed expression: %s', async (_label, node, expected) => {
+    const values = await reresolver(template({ Token: node })).valuesFor(
+      'Cr',
+      record({ Token: SECRET_MASK }, [['Token']])
+    );
+    expect(values?.leaves).toEqual([{ coordinate: ['Token'], value: expected }]);
+  });
+
+  it.each([
+    ['a resource reference beside the parameter', { 'Fn::Join': ['', [{ Ref: 'Secret' }, { Ref: 'Producer' }]] }],
+    ['a GetAtt-style Sub variable', { 'Fn::Sub': '${Secret}-${Producer.Arn}' }],
+    ['AWS::StackId', { 'Fn::Join': ['', [{ Ref: 'Secret' }, { Ref: 'AWS::StackId' }]] }],
+    ['AWS::NoValue', { 'Fn::Join': ['', [{ Ref: 'Secret' }, { Ref: 'AWS::NoValue' }]] }],
+    ['a Condition key', { 'Fn::Join': ['', [{ Ref: 'Secret' }]], Condition: 'C' }],
+    ['a dynamic reference in Sub text', { 'Fn::Sub': '${Secret}{{resolve:ssm:/p}}' }],
+    ['a Sub whose variable map is not an object', { 'Fn::Sub': ['${Secret}', 'x'] }],
+  ])('refuses %s BEFORE resolving anything', async (_label, node) => {
+    const resolve = vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolve');
+    const values = await reresolver(template({ Token: node })).valuesFor(
+      'Cr',
+      record({ Token: SECRET_MASK }, [['Token']])
+    );
+    expect(values).toBeUndefined();
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

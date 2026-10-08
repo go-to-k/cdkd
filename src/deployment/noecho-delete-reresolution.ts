@@ -7,6 +7,7 @@ import {
   type RecordedSecretValues,
   carriesSecretMask,
   carryLogOnlyValues,
+  carryLogOnlyValuesCarriedBy,
   createSecretMasker,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
@@ -15,6 +16,11 @@ import {
   valueAtCoordinate,
 } from './secret-redaction.js';
 import { canonicalJson } from './secret-redaction/noecho-leaves.js';
+import {
+  maskedPropertyFingerprint,
+  maskedPropertyFingerprintsOf,
+} from './masked-property-fingerprints.js';
+import { carriesResolvedSecret } from '../provisioning/custom-resource-secure-references.js';
 import { getLogger } from '../utils/logger.js';
 import { safeMsg } from '../utils/display-safe.js';
 
@@ -33,10 +39,10 @@ import { safeMsg } from '../utils/display-safe.js';
  * with {@link NoEchoDeleteValues.maskSecrets}.
  *
  * Fail-closed: a coordinate is re-resolved only when today's template still
- * reads a `NoEcho` PARAMETER at it, for a resource of the same type. A
- * coordinate an attribute fills (a producer that DECLARED it `NoEcho`) has no
- * template value and is never re-resolved; the provider keeps the skip for
- * any coordinate left without a value.
+ * reads a `NoEcho` PARAMETER at it, for a resource of the same type, with the
+ * property's template text unchanged where the record hashed it. A coordinate
+ * an attribute fills (a producer that DECLARED it `NoEcho`) has no template
+ * value; the provider keeps the skip for any coordinate left without one.
  */
 export interface NoEchoDeleteValues {
   /** Today's value per re-resolved coordinate. In memory only. */
@@ -109,6 +115,32 @@ function templateNodesAt(
 }
 
 /**
+ * Whether today's template spells the top-level property holding
+ * `coordinate` as the deploy that wrote the record did: the record's
+ * `maskedPropertyFingerprints` (go-to-k/cdkd#4451) hash that template TEXT. A
+ * coordinate whose property text moved may read ANOTHER source today (a
+ * different `NoEcho` parameter, an attribute then, a parameter now), so it is
+ * refused. A record with no usable fingerprint for the property (an older
+ * cdkd, a refused hash) has nothing to compare and is accepted.
+ */
+function templateTextUnchanged(
+  record: ResourceState,
+  templateProperties: unknown,
+  coordinate: NoEchoCoordinate
+): boolean {
+  const key = coordinate[0];
+  if (typeof key !== 'string') return false;
+  const recorded = maskedPropertyFingerprintsOf(record).get(key);
+  if (recorded === undefined) return true;
+  const props =
+    templateProperties !== null && typeof templateProperties === 'object'
+      ? (templateProperties as Record<string, unknown>)
+      : {};
+  if (!Object.hasOwn(props, key)) return false;
+  return recorded === maskedPropertyFingerprint(props[key]);
+}
+
+/**
  * The deploy's twin (a replacement deleting the resource it replaced): the
  * resource is still in the template, so the values are today's RESOLVED bag
  * at each coordinate the template still serves from a `NoEcho` parameter.
@@ -128,6 +160,9 @@ export function noEchoDeleteValuesFromResolved(options: {
     return undefined;
   }
   if (templateResource.Type !== record.resourceType) return undefined;
+  // A resolved SECRET in this resource's bag: a custom resource's create and
+  // update refuse to send one (#4009), so its delete sends none either.
+  if (carriesResolvedSecret(options.secrets)) return undefined;
   const nodes = templateNodesAt(
     templateResource.Properties,
     resolvedProperties,
@@ -139,6 +174,7 @@ export function noEchoDeleteValuesFromResolved(options: {
   const leaves: { coordinate: NoEchoCoordinate; value: unknown }[] = [];
   for (const coordinate of masked) {
     if (!nodes.has(canonicalJson(coordinate))) continue;
+    if (!templateTextUnchanged(record, templateResource.Properties, coordinate)) continue;
     const value = valueAtCoordinate(resolvedProperties, coordinate);
     if (value === undefined || carriesSecretMask(value)) continue;
     recordLeaves(bag, value);
@@ -204,6 +240,8 @@ function readsParametersOnly(
           : undefined;
       if (Array.isArray(argument) && argument.length === 2 && local === undefined) return false;
       for (const match of text.matchAll(SUB_VARIABLE)) {
+        // Untrimmed, unlike `subStringReadsNoEcho`: a padded `${ P }` is
+        // refused here rather than read as `P` (fail closed).
         const name = match[1]!;
         if (local !== undefined && Object.hasOwn(local, name)) continue;
         if (!isParameter(name)) return false;
@@ -294,6 +332,18 @@ export class TemplateNoEchoReresolver {
     return this.parametersPromise;
   }
 
+  /** This stack's `NoEcho` values (and what it inherited) as log-only needles of a fresh bag. */
+  private async noEchoNeedles(): Promise<RecordedSecretValues> {
+    const bag = this.newBag();
+    const parameters = await this.boundParameters();
+    for (const name of this.noEchoParameters) {
+      if (parameters !== undefined && Object.hasOwn(parameters, name)) {
+        recordLogOnlyParameterValue(bag, parameters[name]);
+      }
+    }
+    return bag;
+  }
+
   /**
    * Today's values at `record`'s masked `noEchoLeaves` coordinates, or
    * `undefined` when none could be re-resolved. A partial answer is returned
@@ -322,16 +372,14 @@ export class TemplateNoEchoReresolver {
     );
     const declared = new Set(Object.keys(this.options.template.Parameters ?? {}));
     const refused = this.options.maskedParameters ?? new Set<string>();
-    const bag = this.newBag();
-    for (const name of this.noEchoParameters) {
-      if (Object.hasOwn(parameters, name)) recordLogOnlyParameterValue(bag, parameters[name]);
-    }
+    const bag = await this.noEchoNeedles();
     const leaves: { coordinate: NoEchoCoordinate; value: unknown }[] = [];
     for (const coordinate of masked) {
       const key = canonicalJson(coordinate);
       if (!nodes.has(key)) continue;
       const node = nodes.get(key);
       if (!readsParametersOnly(node, declared, refused)) continue;
+      if (!templateTextUnchanged(record, templateResource.Properties, coordinate)) continue;
       let value: unknown;
       try {
         value = await this.resolver.resolve(structuredClone(node), {
@@ -386,23 +434,45 @@ export class TemplateNoEchoReresolver {
       const leaves = row.noEchoLeaves ?? [];
       // A partial answer is used as such: the re-resolved coordinates go in,
       // the rest stay the mask and are refused to every child read below.
-      const parameters = extractParameters(
-        replaceAtCoordinates(row.properties ?? {}, row.values?.leaves ?? [])
-      );
+      const replaced = replaceAtCoordinates(row.properties ?? {}, row.values?.leaves ?? []);
+      const parameters = extractParameters(replaced);
       const inherited = new Set<string>();
-      const masked = new Set<string>();
       for (const coordinate of leaves) {
         if (coordinate.length >= 2 && coordinate[0] === 'Parameters') {
           inherited.add(String(coordinate[1]));
         }
       }
+      // Judged on the UN-joined row value: `extractParameters` joins a list,
+      // and `***,***` is no whole-leaf mask `carriesSecretMask` would see.
+      const rowParameters = (replaced as { Parameters?: unknown }).Parameters;
+      const masked = new Set<string>();
       for (const [name, value] of Object.entries(parameters)) {
-        if (carriesSecretMask(value)) masked.add(name);
+        const raw =
+          rowParameters !== null &&
+          typeof rowParameters === 'object' &&
+          Object.hasOwn(rowParameters, name)
+            ? (rowParameters as Record<string, unknown>)[name]
+            : value;
+        if (carriesSecretMask(raw) || carriesSecretMask(value)) masked.add(name);
       }
+      // A masked parameter with a `Default` binds that instead of the mask, so
+      // its type checks cannot fail the whole child; it is refused either way.
+      const childParameters = (child.template.Parameters ?? {}) as Record<string, unknown>;
+      for (const name of masked) {
+        const definition = Object.hasOwn(childParameters, name)
+          ? (childParameters[name] as { Default?: unknown } | undefined)
+          : undefined;
+        if (definition?.Default !== undefined) delete parameters[name];
+      }
+      // The child masks what it was handed, and every parent NoEcho value it
+      // carries (one a row EMBEDS, e.g. `user:${Password}@host`), as a deploy
+      // does through `carryLogOnlyValuesCarriedBy`.
+      const parentNeedles = await this.noEchoNeedles();
       const inheritedSecrets = this.newBag();
       for (const name of inherited) {
         if (!masked.has(name) && Object.hasOwn(parameters, name)) {
           recordLogOnlyParameterValue(inheritedSecrets, parameters[name]);
+          carryLogOnlyValuesCarriedBy(parentNeedles, inheritedSecrets, parameters[name]);
         }
       }
       return new TemplateNoEchoReresolver({

@@ -1,3 +1,6 @@
+import * as path from 'node:path';
+import * as os from 'node:os';
+import * as fs from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -809,7 +812,7 @@ describe('NestedStackProvider', () => {
         )
       );
       expect(destroyCalls[0]!.destroyCtx['noEchoReresolver']).toBe(childSource);
-      const [logicalId, row, childStackName, , extract] = forNestedChild.mock.calls[0]!;
+      const [logicalId, row, childStackName, load, extract] = forNestedChild.mock.calls[0]!;
       expect(logicalId).toBe('Child');
       expect(row).toEqual({
         properties: rowProperties,
@@ -822,6 +825,28 @@ describe('NestedStackProvider', () => {
         ChildSecret: '***',
         Plain: 'p',
       });
+      // The provider's own template read, grandchildren indexed for the next level.
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cdkd-4682-nested-'));
+      try {
+        fs.writeFileSync(path.join(tmp, 'grandchild.json'), JSON.stringify({ Resources: {} }));
+        fs.writeFileSync(
+          path.join(tmp, 'child.json'),
+          JSON.stringify({
+            Resources: {
+              Grand: {
+                Type: 'AWS::CloudFormation::Stack',
+                Metadata: { 'aws:asset:path': 'grandchild.json' },
+              },
+            },
+          })
+        );
+        const loaded = (load as (p: string) => { nestedTemplates: Record<string, string> })(
+          path.join(tmp, 'child.json')
+        );
+        expect(loaded.nestedTemplates['Grand']).toBe(path.join(tmp, 'grandchild.json'));
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
 
       destroyCalls.length = 0;
       await withNestedStackContext(makeContext(), () =>

@@ -202,6 +202,44 @@ describe('runDestroyForStack: a custom resource reading a NoEcho parameter (go-t
     nothingCarriesTheValue();
   });
 
+  it('asks the source only for the types that read the values, and hands a nested-stack row the source', async () => {
+    const valuesFor = vi.fn().mockResolvedValue(undefined);
+    const source = { valuesFor } as unknown as TemplateNoEchoReresolver;
+    const seen: Record<string, Record<string, unknown>> = {};
+    const recording = {
+      delete: vi.fn(async (id: string, _p: string, _t: string, _props: unknown, c: unknown) => {
+        seen[id] = c as Record<string, unknown>;
+      }),
+    };
+    const state = makeState();
+    state.resources['Db'] = {
+      physicalId: 'db',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { MasterUserPassword: SECRET_MASK },
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: [['MasterUserPassword']],
+    };
+    state.resources['Child'] = {
+      physicalId: 'arn:child',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: { P: SECRET_MASK } },
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: [['Parameters', 'P']],
+    };
+    await runDestroyForStack(
+      'NoEchoStack',
+      state,
+      ctx({
+        noEchoReresolver: source,
+        providerRegistry: { getProviderFor: () => ({ provider: recording }) },
+      })
+    );
+    expect(valuesFor.mock.calls.map((c) => c[0]).sort()).toEqual(['Child', 'ParamCr']);
+    expect(seen['Child']?.['noEchoReresolver']).toBe(source);
+  });
+
   it('cdkd destroy whose template no longer reads the parameter there keeps the skip', async () => {
     const template = structuredClone(TEMPLATE);
     (template.Resources['ParamCr']!.Properties as Record<string, unknown>)['Token'] = 'literal';

@@ -119,6 +119,7 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
         getRegisteredTypes: vi.fn().mockReturnValue([]),
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
       } as never,
       { dryRun: false, captureObservedState: false, ...options } as never,
       REGION,
@@ -232,6 +233,34 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
       parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: REGION },
     }).deploy(STACK, template);
 
+    const values = topicDeleteContext()['noEchoDeleteValues'] as NoEchoDeleteValues;
+    expect(values.leaves).toEqual([{ coordinate: ['DisplayName'], value: VALUE }]);
+    nothingPersistedOrLoggedCarries(VALUE);
+  });
+
+  it.each([
+    ['--recreate-via-sdk-provider (create first under a fresh name)', 'sdk'],
+    ['--recreate-via-cc-api', 'cc'],
+  ])('re-resolves on the %s replacement too', async (_label, via) => {
+    const recorded = state();
+    recorded.resources['Topic']!.provisionedBy = via === 'sdk' ? 'cc-api' : 'sdk';
+    stateBackend.getState!.mockResolvedValue({ state: recorded, etag: 'etag-old' });
+    const template = {
+      Parameters: { Secret: { Type: 'String', NoEcho: true, Default: VALUE } },
+      Resources: {
+        Topic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: 'old-name', DisplayName: { Ref: 'Secret' } },
+        },
+      },
+    } as CloudFormationTemplate;
+    await makeEngine({
+      recreateTargets: {
+        stackName: STACK,
+        viaCcApi: via === 'cc' ? new Set(['Topic']) : new Set<string>(),
+        viaSdkProvider: via === 'sdk' ? new Set(['Topic']) : new Set<string>(),
+      },
+    }).deploy(STACK, template);
     const values = topicDeleteContext()['noEchoDeleteValues'] as NoEchoDeleteValues;
     expect(values.leaves).toEqual([{ coordinate: ['DisplayName'], value: VALUE }]);
     nothingPersistedOrLoggedCarries(VALUE);
