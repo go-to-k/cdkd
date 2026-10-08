@@ -1,7 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { hasReadableOutputs } from '../../state/malformed-resources-bag.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
 import {
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
@@ -165,6 +165,7 @@ export async function resolveGetStackOutput(
       // (issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
       throw markNonRetryable(
         new Error(
+          // allow-raw-region-compare: a mask test (did the log text alter this value?), not a region equality.
           `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
@@ -231,8 +232,9 @@ export async function resolveGetStackOutput(
     // `getSameAccountStackState` / `getCrossAccountStackState` /
     // `lookupCfnStackOutputs`, where it is a state-key segment, and
     // `this.resolverRegion` keys this stack's own `getState` / `saveState`.
-    // Normalizing only for the duration of the comparison leaves both.
-    canonicalizeRegion(region) === canonicalizeRegion(this.resolverRegion)
+    // Normalizing only for the duration of the comparison leaves both, which
+    // is what `sameRegion` does (issue #2209).
+    sameRegion(region, this.resolverRegion)
   ) {
     // MASKED at the throw (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827)). This refusal
@@ -613,7 +615,9 @@ export async function resolveGetStackOutput(
  * recorded-output-reads bag (schema v8+, issue #668). Skips
  * duplicates within the SAME bag — multiple references to the
  * same `(sourceStack, sourceRegion, outputName)` triple emit one
- * entry. Same dedup discipline as `recordImport`.
+ * entry. Same dedup discipline as `recordImport`, region spelling included:
+ * `producerRegion` is folded when the template named a `Region` and RAW
+ * when it fell back to `resolverRegion` (issue #2209).
  */
 export function recordOutputRead(
   this: IntrinsicFunctionResolver,
@@ -626,7 +630,7 @@ export function recordOutputRead(
   const dup = context.recordedOutputReads.some(
     (e) =>
       e.sourceStack === producerStack &&
-      e.sourceRegion === producerRegion &&
+      sameRegion(e.sourceRegion, producerRegion) &&
       e.outputName === outputName
   );
   if (dup) return;

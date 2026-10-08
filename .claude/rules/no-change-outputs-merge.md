@@ -9,9 +9,9 @@ paths:
 Issue [#2771](https://github.com/go-to-k/cdkd/issues/2771).
 `mergeNoChangeOutputs` has three rules: a key that RESOLVED writes its value; a
 key that FAILED keeps its stored value (plus its literal export alias, only if
-the previous record published it) or stays absent; a key this pass did not
-produce is REMOVED. Do not collapse this to an all-or-nothing keep: it blocks
-every resolvable sibling of a failing output.
+the previous record published it AND `refusesCarriedAlias`, the alias pass's
+verdict, passes it, #4657) or stays absent; a key this pass did not produce is
+REMOVED. Not all-or-nothing: that blocks every resolvable sibling.
 
 Two shapes still keep the whole previous bag (`kind: 'kept'`): a failed output
 WITH a stored value whose `Export.Name` is INTRINSIC, since its alias key cannot
@@ -32,5 +32,4 @@ record (#4101), so the diff reads its own whole-token / literal-shape rule,
 limited to a plain `ssm` token (#4108). `bagHoldsSecretExpression` itself counts
 a plain `ssm` token too (#4108), so the merge refuses to write a SecureString's
 first token beside a carried pre-#1901 plaintext.
-That exoneration is still BAG-level on purpose: every non-deploy state
-rewrite drops `skippedOutputs` while keeping the bag.
+The exoneration stays BAG-level: non-deploy rewrites drop `skippedOutputs`.

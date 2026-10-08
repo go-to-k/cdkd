@@ -1325,7 +1325,7 @@ export class AssetModeResolver {
       // Never hard-fail the deploy over a denied/failed storage creation —
       // legacy mode is exactly the pre-#1007 behavior and still works
       // wherever it worked before.
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeAwsFailure(error).detail;
       this.logger.warn(
         `Failed to auto-create cdkd asset storage for region ${quotedIfPlain(region, 'that is not a plain identifier')}: ${message} ` +
           `Falling back to the CDK bootstrap destinations for this run — opt the region ` +

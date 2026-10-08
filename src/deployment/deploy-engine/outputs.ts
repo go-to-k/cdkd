@@ -3,12 +3,15 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
 import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
 import {
+  carriedExportAliasExposure,
   collectPublishedOutputNames,
   exportAliasCollisionWarning,
+  exportNameNoEchoParameters,
   exportNameSecretExposure,
   isExportAliasCollision,
   isNoEchoOnlyExposure,
   isOutputSuppressedByCondition,
+  noEchoParameterExportNameWarning,
   noEchoParameterValueSeed,
   secretBearingExportNameWarning,
 } from '../outputs-export-alias.js';
@@ -236,6 +239,7 @@ export async function resolveOutputs(
   // reaches this method. A second reset here would MASK that one — either
   // could then be deleted with no test going red — so there is exactly one.
   this.resolvedExportNames = [];
+  this.carriedExportAliasRefusal = undefined;
   if (!template.Outputs) {
     return {};
   }
@@ -466,6 +470,25 @@ export async function resolveOutputs(
       context.inheritedSecrets,
       this.options.parameters
     );
+    // The `NoEcho` parameters an intrinsic name may read (go-to-k/cdkd#4657):
+    // this template's, and on a nested child those its parent's row fills
+    // from a `NoEcho` source, under this deploy's condition verdicts.
+    const noEchoSources = this.noEchoPositionSources(resources, template, conditions);
+    // The no-change merge's verdict over an alias it would CARRY rather than
+    // resolve (go-to-k/cdkd#4657): a literal name, so nothing is substituted
+    // into it, decided by the pass-3 containment arms against this pass's
+    // map, its shared log-only set and the seed, read when the merge runs.
+    this.carriedExportAliasRefusal = (outputKey, exportName) => {
+      const verdict = carriedExportAliasExposure(exportName, outputsPassSecrets, noEchoSeed);
+      if (verdict === undefined) return undefined;
+      return secretBearingExportNameWarning(
+        outputKey,
+        exportName,
+        verdict.exposure,
+        context.recordedSecretValues,
+        verdict.noEchoOnly
+      );
+    };
 
     // PASS 2 — every export NAME, resolved before any alias is decided
     // (go-to-k/cdkd#4043, Phase B), for the reason values precede names: a
@@ -479,6 +502,7 @@ export async function resolveOutputs(
       exportName: string;
       value: unknown;
       outputValue: unknown;
+      nameSource: unknown;
       nameSecrets: RecordedSecretValues;
     }> = [];
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
@@ -569,12 +593,26 @@ export async function resolveOutputs(
         continue;
       }
       if (typeof exportName !== 'string') continue;
-      resolvedNames.push({ outputKey, exportName, value, outputValue: output.Value, nameSecrets });
+      resolvedNames.push({
+        outputKey,
+        exportName,
+        value,
+        outputValue: output.Value,
+        nameSource: output.Export.Name,
+        nameSecrets,
+      });
     }
 
     // PASS 3 — every alias, in declaration order, decided against the
     // COMPLETE pass: every value's and every name's needles.
-    for (const { outputKey, exportName, value, outputValue, nameSecrets } of resolvedNames) {
+    for (const {
+      outputKey,
+      exportName,
+      value,
+      outputValue,
+      nameSource,
+      nameSecrets,
+    } of resolvedNames) {
       // TWO refusals guard this alias, and both are about the same thing:
       // this bag's KEYS (issue #1919).
       //
@@ -633,13 +671,25 @@ export async function resolveOutputs(
       // A condition-suppressed output writes neither a value nor a source
       // (see the post-loop pass), so its name is free — reserving it would
       // drop a working export because an unrelated condition went false.
-      const exposure = exportNameSecretExposure(
-        exportName,
-        nameSecrets,
-        context.recordedSecretValues,
-        noEchoSeed
-      );
-      if (exposure) {
+      //
+      // A name whose INTRINSIC reads a `NoEcho` parameter is refused first,
+      // from the template (go-to-k/cdkd#4657): the containment arms below
+      // need a value of MIN_SECRET_NEEDLE characters to see one embedded.
+      const noEchoParameters = exportNameNoEchoParameters(nameSource, noEchoSources);
+      const exposure =
+        noEchoParameters.length > 0
+          ? undefined
+          : exportNameSecretExposure(
+              exportName,
+              nameSecrets,
+              context.recordedSecretValues,
+              noEchoSeed
+            );
+      if (noEchoParameters.length > 0) {
+        this.logger.warn(
+          noEchoParameterExportNameWarning(outputKey, noEchoParameters, outputsPassSecrets)
+        );
+      } else if (exposure) {
         // `exposure` stays the authoritative force-mask set; the recorded
         // map is the containment corpus the printed text is tested against
         // (issue #2874) — the warning used to decide from `exportName` and

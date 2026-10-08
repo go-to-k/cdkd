@@ -317,7 +317,11 @@ back as expected:
   ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
 - An Output the resolver cannot resolve on the no-change deploy keeps its
   previously persisted value while every sibling that did resolve is
-  persisted; cdkd warns naming the Output. Two shapes keep the whole previous
+  persisted; cdkd warns naming the Output. Its literal export alias is kept
+  only if the previous deploy published it and the export-name check still
+  passes it: one equal to a `NoEcho` parameter's value, or containing one of 4
+  or more characters, is dropped with the same
+  warning a deploy gives. Two shapes keep the whole previous
   bag instead: a failed Output whose `Export.Name` is itself an intrinsic, and
   a merge that would put a secret expression beside a carried plain value.
 

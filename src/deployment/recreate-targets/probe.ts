@@ -12,6 +12,7 @@ import {
 import { type StatefulReason } from '../../provisioning/stateful-types.js';
 import { assertRegionMatch } from '../../provisioning/region-check.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { Logger } from '../../types/config.js';
 import { withRetry } from '../retry.js';
 import { isThrottlingError } from '../retryable-errors.js';
@@ -307,7 +308,7 @@ export async function probeStatefulRecreateTargetsAsync(
             `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +
             `result. If the bucket might be non-empty, re-run with ` +
             `--force-stateful-recreation. Underlying error: ` +
-            `${e instanceof Error ? e.message : String(e)}`
+            `${describeAwsFailure(e).detail}`
         );
         // The verdict stays `null` — the fail-OPEN posture is unchanged — but
         // the target now CARRIES the fact that nothing was established, so
@@ -505,7 +506,7 @@ export async function probeStatefulRecreateTargetsAsync(
             `transient (CloudWatch Logs throttles this API aggressively). Only if the log group ` +
             `really is disposable, re-run with --force-stateful-recreation — that flag has NO ` +
             `per-resource granularity and clears the guard for every target in the run. ` +
-            `Underlying error: ${e instanceof Error ? e.message : String(e)}`
+            `Underlying error: ${describeAwsFailure(e).detail}`
         );
         promoted.push({ ...target, statefulReason: 'has-log-events' });
       }

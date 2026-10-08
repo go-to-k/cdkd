@@ -874,6 +874,13 @@ export async function doDeployWithPrefetch(
               declaredOutputs: effectiveTemplate.Outputs,
               previousExportNames: currentEffectiveExports,
               resolvedExportNames: this.resolvedExportNames,
+              // go-to-k/cdkd#4657: the outputs pass's own verdict. Always set by
+              // a pass with `Outputs`, which is what a failed key needs; absent,
+              // carry nothing.
+              refusesCarriedAlias: (outputKey, exportName) =>
+                this.carriedExportAliasRefusal === undefined
+                  ? 'An export alias was not carried: no export-name verdict is available.'
+                  : this.carriedExportAliasRefusal(outputKey, exportName),
             })
           : undefined;
         // Today's template may position only the keys THIS pass wrote. The save
@@ -900,6 +907,12 @@ export async function doDeployWithPrefetch(
           }
         }
         if (merge?.kind === 'kept') this.outputsSourceUsable = false;
+        // A carried alias the export-name verdict refused (go-to-k/cdkd#4657),
+        // reported as the alias pass reports its own refusals. Only for a bag
+        // that is written: a kept one holds the previous aliases whole.
+        if (merge?.kind === 'merged') {
+          for (const { reason } of merge.refusedAliases) this.logger.warn(reason);
+        }
         // The bag and export set this save describes: this pass's when every
         // output resolved, the merge's when one did not, and the previous
         // bag itself when the merge keeps it whole — `undefined` for the set

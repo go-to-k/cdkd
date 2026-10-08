@@ -45,6 +45,13 @@
  * | LITERAL, contains a recorded plaintext         | refuse            | decide from STATE |
  * | collides with a published output name          | refuse            | refuse            |
  * | holds a `NoEcho` parameter value               | refuse            | refuse            |
+ * | intrinsic, READS a `NoEcho` parameter          | refuse (template) | refuse (template) |
+ *
+ * The READS row (go-to-k/cdkd#4657) is decided from the template at any value
+ * length, ahead of the containment arms, under the condition verdicts each
+ * side knows (the diff reads an `Fn::If` on an unknown one whole). Pinned by
+ * `export-name-noecho-refusal-4043.test.ts` and
+ * `cli/diff-export-name-noecho-positional-4657.test.ts`.
  *
  * The `NoEcho` row (issue [#4043](https://github.com/go-to-k/cdkd/issues/4043))
  * reads two corpora on both sides: the `noEchoParameterValueSeed` (`secret-scan.ts`) of
@@ -139,12 +146,15 @@
  *   parameter without a `Ref` (an echoed `Fn::GetAtt`), which the deploy's
  *   inherited bag never records while `cdkd diff`'s corpus holds every parent
  *   value up front, so the preview refuses that alias (fail-closed) and the
- *   deploy publishes it; by containment alone, a 1-3 character
- *   value, or a 1-3 character `Fn::Split` piece of a value
- *   (go-to-k/cdkd#4049), embedded in a longer name, even one the resolver
- *   substituted into THIS name. A 4+ character piece is refused like the
- *   value. A failed output's alias the no-change merge carries forward is not
- *   re-decided either. `cdkd diff` previews exactly this verdict. Which phase
+ *   deploy publishes it; a 1-3 character value, or a 1-3 character
+ *   `Fn::Split` piece of a value (go-to-k/cdkd#4049), embedded in a longer
+ *   name that does not READ the parameter (a literal, an echoed attribute),
+ *   which containment cannot see under its floor. A name whose intrinsic
+ *   reads a `NoEcho` parameter is refused from the template at any length
+ *   (`exportNameNoEchoParameters`, go-to-k/cdkd#4657), and an alias the
+ *   no-change merge carries forward is re-decided by this verdict
+ *   (`carriedExportAliasExposure`). A 4+ character piece is refused like the
+ *   value. `cdkd diff` previews exactly this verdict. Which phase
  *   closes each of these, or why one stays, is listed in section 5 of
  *   `docs/design/4043-noecho-persistence-redaction.md`.
  * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
@@ -186,12 +196,15 @@ export {
 } from './outputs-export-alias/names.js';
 export {
   exportNameSecretExposure,
+  exportNameNoEchoParameters,
+  carriedExportAliasExposure,
   isNoEchoOnlyExposure,
   noEchoParameterValueSeed,
   isWholeDynamicReferenceValue,
 } from './outputs-export-alias/secret-scan.js';
 export {
   secretBearingExportNameWarning,
+  noEchoParameterExportNameWarning,
   type SecretSafeKeyDisplay,
   secretSafeKeyDisplay,
   secretBearing,

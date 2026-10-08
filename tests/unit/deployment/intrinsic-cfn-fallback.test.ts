@@ -530,6 +530,72 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
     expect(cfnMockSend).toHaveBeenCalledTimes(2);
     expect(cfnClientConfigs).toEqual([{ region: 'us-east-1' }]);
   });
+
+  // Issue #2209: a `Region`-less read passes the RAW resolver region, a named
+  // `Region` the folded template value. One region, one client, built with the
+  // canonical spelling the SDK's endpoint resolution needs.
+  it('one region in two spellings shares one canonical client (#2209)', async () => {
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    primeCfn({
+      describeStacks: async () => ({
+        Stacks: [{ Outputs: [{ OutputKey: 'ApiUrl', OutputValue: 'v' }] }],
+      }),
+    });
+    const context = buildContext({ stateBackend: makeBackend([]) });
+
+    await resolver.resolve(
+      { 'Fn::GetStackOutput': { StackName: 'CfnProducerA', OutputName: 'ApiUrl' } },
+      context
+    );
+    await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'CfnProducerB',
+          OutputName: 'ApiUrl',
+          Region: 'us-east-1',
+        },
+      },
+      context
+    );
+
+    expect(cfnMockSend).toHaveBeenCalledTimes(2);
+    expect(cfnClientConfigs).toEqual([{ region: 'us-east-1' }]);
+  });
+
+  it('one stack read in two region spellings is asked once (#2209)', async () => {
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    primeCfn({
+      describeStacks: async () => ({
+        Stacks: [{ Outputs: [{ OutputKey: 'ApiUrl', OutputValue: 'v' }] }],
+      }),
+    });
+    const context = buildContext({ stateBackend: makeBackend([]) });
+
+    await resolver.resolve(
+      { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'ApiUrl' } },
+      context
+    );
+    await resolver.resolve(
+      {
+        'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'ApiUrl', Region: 'us-east-1' },
+      },
+      context
+    );
+
+    expect(cfnMockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('Fn::ImportValue: the ListExports client takes the canonical resolver region (#2209)', async () => {
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    primeCfn({ listExports: async () => ({ Exports: [{ Name: 'X', Value: 'v' }] }) });
+
+    await resolver.resolve(
+      { 'Fn::ImportValue': 'X' },
+      buildContext({ stateBackend: makeBackend([]) })
+    );
+
+    expect(cfnClientConfigs).toEqual([{ region: 'us-east-1' }]);
+  });
 });
 
 describe('CloudFormation fallback client - explicit credentials (#1983)', () => {

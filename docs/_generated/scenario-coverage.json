@@ -852,6 +852,11 @@
       "scenarios": []
     },
     {
+      "name": "docdb-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "docdb-neptune",
       "annotated": true,
       "scenarios": []
@@ -3229,6 +3234,7 @@
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "diff-fail-on-destructive",
+    "docdb-fix-forward-orphan",
     "dynamodb-autoscaling",
     "dynamodb-globaltable-implied-stream",
     "dynamodb-gsi-update",

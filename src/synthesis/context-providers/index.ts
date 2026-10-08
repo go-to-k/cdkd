@@ -1,5 +1,6 @@
 import type { MissingContext } from '../../types/assembly.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { AZContextProvider } from './az-provider.js';
@@ -128,7 +129,7 @@ export class ContextProviderRegistry {
         // `missing[].props` values echoed back into the text, so the message is
         // as long as whoever wrote the assembly made it. The cap MARKS its cut,
         // so a bounded diagnostic cannot read as a complete one.
-        const message = displayAwsMessage(error instanceof Error ? error.message : String(error));
+        const message = displayAwsMessage(describeAwsFailure(error).detail);
         this.logger.error(`Context provider '${shownProvider}' failed: ${message}`);
         results[entry.key] = {
           [PROVIDER_ERROR_KEY]: message,

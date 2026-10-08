@@ -107,6 +107,27 @@ export function canonicalizeRegion<T extends string | undefined>(region: T): T {
 }
 
 /**
+ * Do two region spellings name the same AWS region?
+ *
+ * The ONE spelling of a region equality inside the intrinsic resolver (issue
+ * [#2209](https://github.com/go-to-k/cdkd/issues/2209)).
+ * `IntrinsicFunctionResolver.resolverRegion` is RAW by design — it keys
+ * `getState` / `saveState`, so folding it would move the state key — while
+ * every value DERIVED from it is folded. A bare `===` between the two is
+ * therefore wrong whenever the operands arrive by different paths, and the
+ * operand that is raw on one path is folded on another. Issue #1882 hit it
+ * twice in a row, the second time by folding only ONE operand.
+ *
+ * Both operands are folded here, at the comparison, so neither value moves at
+ * its definition. `undefined` equals only `undefined`.
+ * `tests/unit/deployment/resolver-region-compare-fence.test.ts` refuses a bare
+ * region comparison in the resolver family.
+ */
+export function sameRegion(a: string | undefined, b: string | undefined): boolean {
+  return canonicalizeRegion(a) === canonicalizeRegion(b);
+}
+
+/**
  * Derive the AWS partition / URL suffix for an AWS region. Same mapping
  * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
  *

@@ -9,6 +9,7 @@ import {
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { isPasteableIdent } from '../../utils/display-safe.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
@@ -187,7 +188,7 @@ async function drainTemplateUploads(
     try {
       await cleanup();
     } catch (cleanupErr) {
-      const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      const msg = describeAwsFailure(cleanupErr).detail;
       logger.warn(
         `Failed to delete ${labels.what} from '${stateBucket}'${labels.when ? ` ${labels.when}` : ''}. ` +
           `Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. Cause: ${msg}`
@@ -443,7 +444,7 @@ export async function retireCloudFormationStack(
         // the diff is empty. That can happen if cdkd's whitespace-canonicalized
         // re-serialization matches the in-CFn stored template byte-for-byte
         // even though we believed we modified it.
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = describeAwsFailure(err).detail;
         if (/No updates are to be performed/i.test(msg)) {
           logger.info(`  CloudFormation reports no updates needed — proceeding to delete.`);
         } else {
@@ -722,7 +723,7 @@ export async function injectRetainPoliciesRecursive(
     return { ...result, cleanups };
   } catch (err) {
     throw new RecursiveRetainInjectionError(
-      err instanceof Error ? err.message : String(err),
+      describeAwsFailure(err).detail,
       cleanups,
       err instanceof Error ? err : undefined
     );
@@ -1017,7 +1018,7 @@ export async function tryGetCloudFormationResourceMap(
       logger.debug(`No CloudFormation stack named '${stackName}'.`);
       return null;
     }
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = describeAwsFailure(err).detail;
     // The stack name is shown only when plain and described otherwise, and
     // AWS's message (which can echo it) ends its own line, so the `--resource`
     // remedy starts the next one, with its holes quoted (go-to-k/cdkd#4226):

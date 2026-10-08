@@ -19,6 +19,7 @@ import {
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import {
   appOptions,
   commonOptions,
@@ -278,7 +279,10 @@ export interface ScrubOptions {
  * still carries its original, unmasked message.
  */
 function describeFailure(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
+  // `safeStringify`, not `String`: every caller is a per-stack failure
+  // boundary that logs and moves on to the next stack, so a value `String`
+  // cannot convert would abort the whole `--all` run from inside it (#3361).
+  if (!(err instanceof Error)) return safeStringify(err);
   return errorCauseChain(err)
     .map((link, i) => (i === 0 ? link.message : `\n    Caused by: ${link.message}`))
     .join('');
@@ -654,7 +658,7 @@ async function saveScrubbedState(
         throw new ScrubRefusalError(
           safeMsg`${displayStackName(stackName)} was rewritten to the region-scoped state key, ` +
             safeMsg`but whether its legacy key ${legacyKey} still holds the pre-scrub record ` +
-            safeMsg`could not be verified (${err instanceof Error ? err.message : String(err)}). ` +
+            safeMsg`could not be verified (${describeAwsFailure(err).detail}). ` +
             `Check that key yourself and, if it exists, delete it (aws s3api delete-object ` +
             `--bucket <state-bucket> --key <that key>), then purge its earlier versions as ` +
             `docs/cli-scrub.md describes. A re-run will not check it again.`,
@@ -988,7 +992,7 @@ async function repairParentOutputAttributes(
       // Warned like `scrubStack`'s own release: a lock left behind blocks the
       // next deploy of the parent, and a silent one gives no hint why.
       logger.warn(
-        safeMsg`Failed to release lock for ${displayStackName(parentRow.stackName)}: ${err instanceof Error ? err.message : String(err)}`
+        safeMsg`Failed to release lock for ${displayStackName(parentRow.stackName)}: ${describeAwsFailure(err).detail}`
       );
     });
   }
@@ -1762,7 +1766,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // `5 region(s) ... (us-east-1: X; us-east-1: X; ...)`, which misstates
       // how many regions are affected.
       if (!indexUnreadable.some((u) => u.region === stackRegion)) {
-        const reason = displaySafe(err instanceof Error ? err.message : String(err));
+        const reason = displaySafe(describeAwsFailure(err).detail);
         indexUnreadable.push({ region: stackRegion, reason });
         logger.error(
           `Exports index for ${displayIdent(stackRegion)} could not be read (first seen while scrubbing ${shownStack}): ${reason}`
@@ -2004,7 +2008,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     try {
       entries = await store.readPersistedEntries();
     } catch (err) {
-      const reason = displaySafe(err instanceof Error ? err.message : String(err));
+      const reason = displaySafe(describeAwsFailure(err).detail);
       indexUnreadable.push({ region: indexRegion, reason });
       logger.error(
         `Exports index for ${displayIdent(indexRegion)} could not be read for the coverage report: ${reason}`
@@ -3016,7 +3020,7 @@ function unresolvableForeignScrubSecretError(
   return new ScrubRefusalError(
     `Scrub of ${displayStackName(stackName)} could not resolve the secret reference ${maskedIdent(secretName, secrets)} in ${origin} ` +
       `in the region its ARN names (${displayIdent(region)}): ` +
-      `${maskSecretsInText(cause instanceof Error ? cause.message : String(cause), secrets)}. ` +
+      `${maskSecretsInText(describeAwsFailure(cause).detail, secrets)}. ` +
       `Refusing rather than resolving ` +
       `it in the stack's own region, which would look for a different secret's value and report ` +
       `the stack clean over state that still holds the plaintext.`,
@@ -3852,7 +3856,7 @@ function unresolvableCrossStackReadError(
   return new ScrubRefusalError(
     `Scrub of ${displayStackName(stackName)} could not resolve the ${intrinsic} in ${origin}` +
       `${path ? ` at ${maskedIdent(path, secrets)}` : ''}: ` +
-      `${maskSecretsInText(cause instanceof Error ? cause.message : String(cause), secrets)}. ` +
+      `${maskSecretsInText(describeAwsFailure(cause).detail, secrets)}. ` +
       `Refusing rather than continuing: the value that reference carries may be a secret, and ` +
       `scrub would then have no plaintext to look for — reporting the stack clean over state ` +
       `that still holds it. Deploy the producer stack (or correct the reference) and re-run ` +
@@ -5781,7 +5785,7 @@ function makeCrossStackPrePass(deps: {
           `Scrub of ${shownStackName}: could not re-read producer ` +
             `${shownProducer} ` +
             `(${displayIdent(producer.region)}) to classify its stored value: ` +
-            `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+            `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
         );
         return undefined;
       }
@@ -5934,18 +5938,12 @@ function makeCrossStackPrePass(deps: {
         if (!nodeCanRefuse) {
           logger.debug(
             `Scrub of ${shownStackName}: ${where} could not be resolved, and this position ` +
-              `cannot refuse: ${maskSecretsInText(
-                err instanceof Error ? err.message : String(err),
-                secrets
-              )}`
+              `cannot refuse: ${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
           );
           return;
         }
         if (isByDesignRefusal(err)) {
-          const detail = `${where}: ${maskSecretsInText(
-            err instanceof Error ? err.message : String(err),
-            secrets
-          )}`;
+          const detail = `${where}: ${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`;
           findings.unverifiable.push(detail);
           logger.warn(
             `Scrub of ${shownStackName} cannot verify ${detail} — cdkd declines this read by design, ` +
@@ -5960,10 +5958,7 @@ function makeCrossStackPrePass(deps: {
         // them is stable, while falling through to the refusal is what
         // go-to-k/cdkd#3207 must not do. See {@link isMalformedProducerRefusal}.
         if (isMalformedProducerRefusal(err)) {
-          const detail = `${where}: ${maskSecretsInText(
-            err instanceof Error ? err.message : String(err),
-            secrets
-          )}`;
+          const detail = `${where}: ${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`;
           findings.unverifiable.push(detail);
           // Both lists, for the reason the classifier's arm states: the first
           // gates the clean verdict and `--fail`, the second restores the
@@ -6263,7 +6258,7 @@ async function bindDefaultedParametersOneByOne(
       // No context and no bag here, so nothing to mask beyond the stack name
       // the caller already rendered; the parameter stays unbound.
       logger.debug(
-        safeMsg`Parameter ${name} of ${shownStack} left unbound: ${err instanceof Error ? err.message : String(err)}`
+        safeMsg`Parameter ${name} of ${shownStack} left unbound: ${describeAwsFailure(err).detail}`
       );
     }
   }
@@ -6951,7 +6946,7 @@ export async function scrubStack(
       // bag, the only one that can hold a plaintext at this point.
       if (opts.nestedChild) {
         const reason = maskSecretsInText(
-          err instanceof Error ? err.message : String(err),
+          describeAwsFailure(err).detail,
           inheritedSecrets ?? outputSecrets
         );
         throw new ScrubRefusalError(
@@ -6969,7 +6964,7 @@ export async function scrubStack(
       // unchanged on an empty map. Kept so that adding a context argument later
       // does not also require remembering this line.
       logger.debug(
-        `Parameter resolution skipped for ${shownStack}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
+        `Parameter resolution skipped for ${shownStack}: ${maskSecretsInText(describeAwsFailure(err).detail, outputSecrets)}`
       );
       // Issue #2166: the whole-bag call fails on the FIRST `Default`-less
       // parameter, which left every DEFAULTED sibling unbound too, so a
@@ -7158,7 +7153,7 @@ export async function scrubStack(
       // The four sibling catches in this function mask for a reachable reason;
       // this one is uniformity.
       logger.debug(
-        `Condition evaluation skipped for ${shownStack}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
+        `Condition evaluation skipped for ${shownStack}: ${maskSecretsInText(describeAwsFailure(err).detail, outputSecrets)}`
       );
     }
 
@@ -7456,7 +7451,7 @@ export async function scrubStack(
               maskSecretsInText(
                 `Resolution of ${maskedIdent(logicalId, recordedSecretValues)}` +
                   `${propertyName ? `.${maskedIdent(propertyName, recordedSecretValues)}` : ''} during scrub was ` +
-                  `partial: ${err instanceof Error ? err.message : String(err)}`,
+                  `partial: ${describeAwsFailure(err).detail}`,
                 recordedSecretValues
               )
             );
@@ -7584,7 +7579,7 @@ export async function scrubStack(
             logger.debug(
               maskSecretsInText(
                 `Resolution of orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName} during ` +
-                  `scrub was partial: ${err instanceof Error ? err.message : String(err)}`,
+                  `scrub was partial: ${describeAwsFailure(err).detail}`,
                 recordedSecretValues
               )
             );
@@ -7757,7 +7752,7 @@ export async function scrubStack(
             // through), so it is the right needle set.
             logger.warn(
               `Export.Name of output ${maskedIdent(name, outputSecrets)} could not be resolved during scrub ` +
-                `(${maskSecretsInText(nameError instanceof Error ? nameError.message : String(nameError), outputSecrets)}) — ` +
+                `(${maskSecretsInText(describeAwsFailure(nameError).detail, outputSecrets)}) — ` +
                 `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
             );
           }
@@ -7944,7 +7939,7 @@ export async function scrubStack(
           // post-pin bag. Verbose-only.
           logger.debug(
             `Resolution of output ${maskedIdent(name, outputSecrets)} during scrub was partial: ` +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
+              `${maskSecretsInText(describeAwsFailure(err).detail, outputSecrets)}`
           );
         }
       }
@@ -8534,7 +8529,7 @@ export async function scrubStack(
             logger.warn(
               safeMsg`${shownStack}'s template no longer declares output key(s) ${shownKeys(dropping)}, ` +
                 `but the other stacks' state could not be read to confirm none of them still ` +
-                safeMsg`reads one (${maskSecretsInText(err instanceof Error ? err.message : String(err), corpus)}), ` +
+                safeMsg`reads one (${maskSecretsInText(describeAwsFailure(err).detail, corpus)}), ` +
                 `so NONE was dropped and this stack is not reported clean. Fix the read and ` +
                 `re-run cdkd scrub.`
             );
@@ -8736,9 +8731,7 @@ export async function scrubStack(
   } finally {
     if (acquired) {
       await lockManager.releaseLock(stack.stackName, region).catch((err) => {
-        logger.warn(
-          `Failed to release lock for ${shownStack}: ${err instanceof Error ? err.message : String(err)}`
-        );
+        logger.warn(`Failed to release lock for ${shownStack}: ${describeAwsFailure(err).detail}`);
       });
     }
   }

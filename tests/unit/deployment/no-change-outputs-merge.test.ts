@@ -25,6 +25,7 @@ function input(overrides: Partial<NoChangeOutputsMergeInput>): NoChangeOutputsMe
     declaredOutputs: {},
     previousExportNames: new Set(),
     resolvedExportNames: [],
+    refusesCarriedAlias: () => undefined,
     ...overrides,
   };
 }
@@ -416,5 +417,84 @@ describe('the shared secret-expression predicate', () => {
   it('names a reason for each refusal', () => {
     expect(keptWholeReasonText('intrinsic-export-name')).toMatch(/intrinsic Export\.Name/);
     expect(keptWholeReasonText('mixed-generation')).toMatch(/redacted secret reference/);
+  });
+});
+
+// go-to-k/cdkd#4657: a carried alias goes through the alias pass's verdict.
+describe('mergeNoChangeOutputs - the carried-alias verdict (go-to-k/cdkd#4657)', () => {
+  const declaredOutputs: Record<string, TemplateOutput> = {
+    Leaky: { Value: 1, Export: { Name: 'ex:leaky' } },
+    Plain: { Value: 2, Export: { Name: 'ex:plain' } },
+    Self: { Value: 3, Export: { Name: 'Self' } },
+  };
+  const persisted = { Leaky: 'l', 'ex:leaky': 'l', Plain: 'p', 'ex:plain': 'p', Self: 's' };
+  const previousExportNames = new Set(['ex:leaky', 'ex:plain', 'Self']);
+  const resolved = { Leaky: undefined, Plain: undefined, Self: undefined };
+
+  it('drops and reports an alias the verdict refuses, carrying every other one', () => {
+    const asked: Array<[string, string]> = [];
+    const r = merged(
+      mergeNoChangeOutputs(
+        input({
+          persisted,
+          resolved,
+          declaredOutputs,
+          previousExportNames,
+          refusesCarriedAlias: (outputKey, exportName) => {
+            asked.push([outputKey, exportName]);
+            return exportName === 'ex:leaky' ? 'refused: leaky' : undefined;
+          },
+        })
+      )
+    );
+    expect(r.outputs).toEqual({ Leaky: 'l', Plain: 'p', 'ex:plain': 'p', Self: 's' });
+    expect(r.exportNames).toEqual(['ex:plain', 'Self']);
+    expect(r.carriedKeys).toEqual(['Leaky', 'Plain', 'ex:plain', 'Self']);
+    expect(r.refusedAliases).toEqual([
+      { outputKey: 'Leaky', exportName: 'ex:leaky', reason: 'refused: leaky' },
+    ]);
+    // Every carried name was asked, the self-named one included.
+    expect(asked).toEqual([
+      ['Leaky', 'ex:leaky'],
+      ['Plain', 'ex:plain'],
+      ['Self', 'Self'],
+    ]);
+  });
+
+  it('keeps a refused SELF-NAMED output as an output but not as an export', () => {
+    const r = merged(
+      mergeNoChangeOutputs(
+        input({
+          persisted,
+          resolved,
+          declaredOutputs,
+          previousExportNames,
+          refusesCarriedAlias: (_k, exportName) => (exportName === 'Self' ? 'no' : undefined),
+        })
+      )
+    );
+    expect(r.outputs['Self']).toBe('s');
+    expect(r.exportNames).toEqual(['ex:leaky', 'ex:plain']);
+    expect(r.refusedAliases.map((a) => a.exportName)).toEqual(['Self']);
+  });
+
+  it('asks nothing for an alias it would not carry anyway', () => {
+    const asked: string[] = [];
+    merged(
+      mergeNoChangeOutputs(
+        input({
+          persisted: { Leaky: 'l', 'ex:leaky': 'l' },
+          resolved: { Leaky: undefined },
+          declaredOutputs,
+          // Never published: not carried, so no verdict is needed.
+          previousExportNames: new Set(),
+          refusesCarriedAlias: (_k, exportName) => {
+            asked.push(exportName);
+            return undefined;
+          },
+        })
+      )
+    );
+    expect(asked).toEqual([]);
   });
 });

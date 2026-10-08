@@ -41,6 +41,7 @@ import {
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { updatePartialMessage, updatePartialReason } from '../../deployment/update-outcome.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -1788,7 +1789,10 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
           );
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        // `.detail`, not the bare ternary: a rejection `String()` cannot
+        // convert threw from here, so the resolver rejected instead of leaving
+        // the principal comparison untouched (#3361).
+        const message = describeAwsFailure(error).detail;
         // Classified on the ERROR NAME, never on the message: IAM's
         // `NoSuchEntity` text embeds the ROLE NAME ("The role with name
         // AccessDeniedHandlerRole cannot be found"), so a message match turns
@@ -2438,7 +2442,7 @@ export async function driftProducerRegionEvidence(
     noteUnreadableAncestor(
       parentName,
       parentRegion,
-      `it could not be read (${error instanceof Error ? error.message : String(error)})`
+      `it could not be read (${describeAwsFailure(error).detail})`
     );
     return inheritProducerRegions(own, undefined);
   }
@@ -3892,7 +3896,7 @@ async function runDriftForStack(
               // reason the clear is below rather than above. The message comes
               // from an external system whose wording cdkd does not control, and
               // a partially completed pass can already hold a plaintext.
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+              `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
           );
           // Every needle the clear discards stays a LOG-ONLY one of this bag
           // (issue #2102): the side set is keyed by the map INSTANCE, so it
@@ -4143,7 +4147,7 @@ async function runDriftForStack(
           logger.debug(
             `${logicalId} (${resource.resourceType}): read threw with a no-READ-handler ` +
               `signature, reported as drift unknown — ` +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+              `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
           );
           // go-to-k/cdkd#2207: a throw about the TYPE, not the account.
           noteReadReturned();
@@ -4215,7 +4219,7 @@ async function runDriftForStack(
             // Said only while NO path has tripped: after one has, part of the
             // rest of the stack is not read, whichever path this failure took.
             (trippedReadPaths.size > 0 ? '' : `cdkd goes on with the rest of this stack. `) +
-            `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+            `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
         );
         if (breakerTripped) {
           logger.warn(
@@ -4905,7 +4909,7 @@ async function runAccept(
       await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
         logger.warn(
           `Failed to release lock for ${report.stackName} (${report.region}): ` +
-            (err instanceof Error ? err.message : String(err))
+            describeAwsFailure(err).detail
         );
       });
     }
@@ -6860,7 +6864,7 @@ async function runRevert(
                       (isDriftSecretRefusal(err)
                         ? `refused to re-resolve a dynamic reference this resource's state records — `
                         : `could not re-resolve the dynamic reference(s) this resource's state records — `) +
-                      `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+                      `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
                   );
                   return;
                 }
@@ -7175,7 +7179,7 @@ async function runRevert(
                   logger.error(
                     `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                       `could not build the revert payload — ` +
-                      `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+                      `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
                   );
                   return;
                 }
@@ -7449,7 +7453,7 @@ async function runRevert(
                     logger.warn(
                       `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
                         `the provider's reported effective properties could not be read — ` +
-                        `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
+                        `${maskSecretsInText(describeAwsFailure(captureErr).detail, secrets)}`
                     );
                   }
                   // go-to-k/cdkd#4476: the record takes the identity `update()`
@@ -7517,7 +7521,7 @@ async function runRevert(
                     }
                   } catch (recordErr) {
                     logger.warn(
-                      safeMsg`  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but the attributes the provider returned could not be recorded — ${maskSecretsInText(recordErr instanceof Error ? recordErr.message : String(recordErr), secrets)}`
+                      safeMsg`  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but the attributes the provider returned could not be recorded — ${maskSecretsInText(describeAwsFailure(recordErr).detail, secrets)}`
                     );
                   }
                 } catch (err) {
@@ -7534,10 +7538,7 @@ async function runRevert(
                   totalFailed++;
                   // Masked (issue #1914): this is the error from a call whose payload
                   // carried resolved secrets, and AWS quotes the offending value.
-                  const msg = maskSecretsInText(
-                    err instanceof Error ? err.message : String(err),
-                    secrets
-                  );
+                  const msg = maskSecretsInText(describeAwsFailure(err).detail, secrets);
                   logger.error(
                     `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
                   );
@@ -7686,7 +7687,7 @@ async function runRevert(
             ].join(' and ');
             logger.warn(
               `Reverted ${report.stackName} (${report.region}), but could not record ${unrecorded}: ` +
-                `${err instanceof Error ? err.message : String(err)}.` +
+                `${describeAwsFailure(err).detail}.` +
                 // Before the narrowing's tail, whose `Revert with:` line must
                 // print last. No re-run helps here: the revert landed, so the
                 // next drift reports no difference to revert.
@@ -7710,7 +7711,7 @@ async function runRevert(
         await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
           logger.warn(
             `Failed to release lock for ${report.stackName} (${report.region}): ` +
-              (err instanceof Error ? err.message : String(err))
+              describeAwsFailure(err).detail
           );
         });
       }

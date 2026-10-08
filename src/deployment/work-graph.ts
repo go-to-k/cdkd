@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 /**
  * Node types in the work graph
@@ -108,9 +109,10 @@ export class WorkGraph {
             .catch((error) => {
               node.state = 'failed';
               errors.push({ nodeId: node.id, error });
-              this.logger.error(
-                `Failed: ${node.id}: ${error instanceof Error ? error.message : String(error)}`
-              );
+              // `.detail`, not `String(error)`: this chain is never awaited, so a
+              // value whose stringification throws, here or in the summary below,
+              // became an unhandled rejection that exits the process (#3361).
+              this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
             })
             .finally(() => {
               active[node.type]--;
@@ -139,10 +141,7 @@ export class WorkGraph {
               (n) => n.state === 'skipped'
             ).length;
             const msg = errors
-              .map(
-                (e) =>
-                  `  - ${e.nodeId}: ${e.error instanceof Error ? e.error.message : String(e.error)}`
-              )
+              .map((e) => `  - ${e.nodeId}: ${describeAwsFailure(e.error).detail}`)
               .join('\n');
             reject(
               new Error(

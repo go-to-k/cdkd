@@ -12,6 +12,7 @@ import {
 } from '../options.js';
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
@@ -1145,7 +1146,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       }
     } finally {
       await lockManager.releaseLock(stackInfo.stackName, targetRegion).catch((err) => {
-        logger.warn(`Failed to release lock: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(`Failed to release lock: ${describeAwsFailure(err).detail}`);
       });
     }
   } finally {
@@ -1235,7 +1236,7 @@ async function recordImportOnRollbackJournal(
     throw new Error(
       `Could not record this import on the rollback journal of ${stackShown(stackName)}, so ` +
         `state was NOT written: a later cdkd rollback could otherwise delete what was imported. ` +
-        `Cause: ${displaySafe(error instanceof Error ? error.message : String(error))}`
+        `Cause: ${displaySafe(describeAwsFailure(error).detail)}`
     );
   }
   if (marked.length > 0) {
@@ -1679,7 +1680,7 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
       provisionedBy: route.provisionedBy,
     };
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    const msg = describeAwsFailure(error).detail;
     // The provider refusals end in a `--resource` remedy, so this line names
     // the logical id and type only when plain and describes them otherwise
     // (go-to-k/cdkd#3950's S1 rule, judged per line): printed raw, they put back
@@ -2470,7 +2471,7 @@ export async function resolveImportedProperties(
     // `${VpcId}` is still refused and still named by `unboundParameterNames`
     // below; a `${Stage}` now resolves to its declared default.
     logger.debug(
-      `Template parameter resolution failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — retrying with the template's 'Default'-carrying parameters only; resources referencing an unbindable parameter will still be skipped per-resource.`
+      `Template parameter resolution failed during import-time property resolution: ${describeAwsFailure(err).detail} — retrying with the template's 'Default'-carrying parameters only; resources referencing an unbindable parameter will still be skipped per-resource.`
     );
     try {
       parameters = await resolver.resolveParameters(defaultOnlyParameterTemplate(template));
@@ -2496,7 +2497,7 @@ export async function resolveImportedProperties(
       // resolver's claim about this arm cannot go stale unnoticed.
       parameters = {};
       logger.debug(
-        `'Default'-only template parameter resolution also failed during import-time property resolution: ${defaultsErr instanceof Error ? defaultsErr.message : String(defaultsErr)} — continuing without parameters; resources referencing them will be skipped per-resource.`
+        `'Default'-only template parameter resolution also failed during import-time property resolution: ${describeAwsFailure(defaultsErr).detail} — continuing without parameters; resources referencing them will be skipped per-resource.`
       );
     }
   }
@@ -2518,7 +2519,7 @@ export async function resolveImportedProperties(
     });
   } catch (err) {
     logger.debug(
-      `Template condition evaluation failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — continuing without conditions.`
+      `Template condition evaluation failed during import-time property resolution: ${describeAwsFailure(err).detail} — continuing without conditions.`
     );
   }
 
@@ -2695,7 +2696,7 @@ export async function resolveImportedProperties(
       // `cdkd destroy` / `cdkd orphan` / `cdkd import` start the next one. The
       // parameter names on that line are shown only when plain too.
       logger.warn(
-        `Failed to resolve intrinsics in Properties for imported resource ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}.\n` +
+        `Failed to resolve intrinsics in Properties for imported resource ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.resourceType)}): ${maskSecretsInText(describeAwsFailure(err).detail, recordedSecretValues)}.\n` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource from state with 'cdkd orphan <StackPath>/<Path/To/Resource>'.` +
           (unboundParameterNames.length > 0
             ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.map((name) => plainOrDescribed(name, 'parameter name')).join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
@@ -4126,7 +4127,7 @@ async function importNestedStackChildrenRecursive(args: {
       await lockManager.releaseLock(childStackName, childRegion).catch((err) => {
         logger.warn(
           `Failed to release lock for nested stack '${childStackName}' (${childRegion}): ` +
-            `${err instanceof Error ? err.message : String(err)}`
+            `${describeAwsFailure(err).detail}`
         );
       });
     }

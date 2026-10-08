@@ -150,6 +150,7 @@ export {
   type NoEchoCoordinate,
   type NoEchoPositionSources,
   readsNoEchoSource,
+  noEchoParametersReadBy,
   noEchoCoordinatesOf,
   maskWholeValue,
   valueAtCoordinate,

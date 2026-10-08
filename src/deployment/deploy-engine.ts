@@ -658,6 +658,17 @@ export class DeployEngine {
   /** @internal */
   resolvedExportNames: string[] = [];
   /**
+   * The last `resolveOutputs` pass's verdict over an export alias the
+   * no-change merge would CARRY from state rather than resolve
+   * (go-to-k/cdkd#4657): the refusal warning, or `undefined` to carry it.
+   * Same lifetime rule as `resolvedExportNames`; `undefined` until a pass
+   * with `Outputs` has run.
+   */
+  /** @internal */
+  carriedExportAliasRefusal:
+    | ((outputKey: string, exportName: string) => string | undefined)
+    | undefined;
+  /**
    * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
    * (the resolver threw under the default arm of
    * `handleOutputResolutionFailure`, or returned `undefined` outright without
