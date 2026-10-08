@@ -1264,15 +1264,12 @@ shared report is `orphan-report.ts`):
   inside one `send` is a duplicate nothing can see. The engine's retry covers
   5xx and throttles; the SDK keeps its retry of throttles, connection
   failures, clock skew and socket resets, which the engine does not retry.
-  A create whose replay COLLIDES instead of duplicating (CodeCommit's
-  `CreateRepository`, by name, and its seed `CreateCommit`, refused once the
-  branch exists; EC2's `CreateSecurityGroup`, by group name in the VPC; IAM's
-  `CreateRole`, `CreateUser`, `CreateGroup`, `CreateInstanceProfile` and
-  `CreatePolicy`, by entity name, through `iam-create-client.ts`; Lambda's
-  `CreateFunction`, `CreateFunctionUrlConfig` and `AddPermission`, through
-  `lambda-create-client.ts`; EventBridge's `CreateEventBus` and ECR's
-  `CreateRepository`, by name)
-  needs this client and no lookup: the surfaced 5xx lets
+  Every token-less create whose replay COLLIDES instead of duplicating (a
+  name-unique create: a stream, repository, role, function, table, cluster,
+  bucket and the like — `grep -rln withoutServerErrorRetries
+  src/provisioning/providers` lists them; CodeCommit's seed `CreateCommit`
+  collides once the branch exists, EC2's `CreateSecurityGroup` on its group
+  name in the VPC) needs this client and no lookup: the surfaced 5xx lets
   `withRetry` mark the collision as possibly this create's own
   ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never
   credited to another holder. The exception is a collision whose error does
