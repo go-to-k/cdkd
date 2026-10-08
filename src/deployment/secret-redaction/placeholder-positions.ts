@@ -4,6 +4,7 @@ import { crossStackSourceKey, crossStackAssociations } from './cross-stack.js';
 import { redactSecretsForState } from './redact-state.js';
 import { UNKNOWN_PART, joinPartLiteralText } from './positions.js';
 import { certifiedExpressionForLeaf } from './certified-positions.js';
+import { inheritedRenderedSpan } from './nested-stack.js';
 
 /**
  * A part of a {@link parameterPlaceholderParts} source: literal text, a
@@ -236,9 +237,13 @@ function parameterPlaceholderParts(
  * value scan would rewrite it at all. Two or more unknown parts could split
  * the remainder more than one way, and refuse.
  *
- * Refuses (falls to the next arm, then the value scan) when the bag holds no
- * association at all — a pass that read no secret across a stack boundary —
- * when no placeholder is certified, and when the persisted string would still hold a needle the
+ * A `{Ref: <Param>}` placeholder no association certifies takes the parent's
+ * rendered spelling of that parameter where one stands
+ * (`inheritedRenderedSpan`, issue #4644): the diff side renders the leaf from
+ * that same binding.
+ *
+ * Refuses (falls to the next arm, then the value scan) when no placeholder is
+ * certified, and when the persisted string would still hold a needle the
  * value scan rewrites (a recorded plaintext in the template's own literal text
  * or in the unknown span, a containment needle), or when a recorded needle
  * crosses a certified span's edge on the resolved leaf, so this arm never
@@ -249,8 +254,10 @@ export function positionByParameterPlaceholders(
   source: Record<string, unknown>,
   secrets: RecordedSecretValues
 ): string | undefined {
+  // No association at all still reaches the parse: a parameter the parent
+  // spelled as an embedding literal has none, only its rendered spelling
+  // ({@link inheritedRenderedSpan}, issue #4644).
   const associations = crossStackAssociations.get(secrets);
-  if (associations === undefined) return undefined;
   // The RESOLVER's own spans first (issue #4446): they need no alignment, so
   // they answer the shapes the template parse below refuses. On any refusal
   // the parse still gets its turn, under its own guards.
@@ -277,10 +284,17 @@ export function positionByParameterPlaceholders(
       let expression: string | undefined;
       let plaintext = '';
       if (part !== UNKNOWN_PART) {
-        const association = associations.get(part.key);
+        const association = associations?.get(part.key);
         if (association !== undefined && typeof association !== 'symbol') {
           plaintext = association.plaintext;
           expression = certifiedExpressionForLeaf(secrets, association, plaintext);
+        }
+        if (expression === undefined) {
+          const inherited = inheritedRenderedSpan(secrets, part.key);
+          if (inherited !== undefined) {
+            plaintext = inherited.value;
+            expression = inherited.spelling;
+          }
         }
       }
       if (expression === undefined) {
@@ -380,8 +394,9 @@ function acceptedPlaceholderRendering(
  *   text would be ({@link certifiedExpressionForLeaf} over the association
  *   recorded under the span's key: a `{Ref: <Param>}`, an `Fn::ImportValue` /
  *   `Fn::GetStackOutput` / `Fn::GetAtt`), which is what
- *   `redactParametersForDiff` and `positionByCrossStackSource` render. A span
- *   that is not certified stays as text.
+ *   `redactParametersForDiff` and `positionByCrossStackSource` render, or for
+ *   a parameter with no association by its rendered spelling. A span that is
+ *   not certified stays as text.
  * - Every other stretch of `bag` (a GAP: literal text, a pseudo parameter, an
  *   attribute, an uncertified parameter) is kept VERBATIM and must be one the
  *   value scan leaves alone ON ITS OWN, for the reason the template arm keeps
@@ -395,7 +410,7 @@ function positionByRecordedParameterSpans(
   bag: string,
   source: Record<string, unknown>,
   secrets: RecordedSecretValues,
-  associations: NonNullable<ReturnType<typeof crossStackAssociations.get>>
+  associations: ReturnType<typeof crossStackAssociations.get>
 ): string | undefined {
   const resolution = intrinsicLeafResolutionOf(secrets, source);
   if (resolution === undefined || resolution.output !== bag) return undefined;
@@ -415,9 +430,11 @@ function positionByRecordedParameterSpans(
     if (!(start >= previousEnd && length > 0 && start + length <= bag.length)) return undefined;
     previousEnd = start + length;
     const text = bag.slice(start, start + length);
-    const association = associations.get(key);
-    if (association === undefined || typeof association === 'symbol') continue;
-    const expression = certifiedExpressionForLeaf(secrets, association, text);
+    const association = associations?.get(key);
+    const expression =
+      (association !== undefined && typeof association !== 'symbol'
+        ? certifiedExpressionForLeaf(secrets, association, text)
+        : undefined) ?? inheritedRenderedSpan(secrets, key, text)?.spelling;
     if (expression === undefined) continue;
     const gap = bag.slice(cursor, start);
     gaps.push(gap);

@@ -673,10 +673,19 @@ export function rendersLiteralTo(
   secrets: RecordedSecretValues,
   value: string
 ): boolean {
+  return renderedLiteralSpans(spelling, secrets, value) !== undefined;
+}
+
+/** {@link rendersLiteralTo}'s test, returning the paired spans it passed on. */
+function renderedLiteralSpans(
+  spelling: string,
+  secrets: RecordedSecretValues,
+  value: string
+): Array<{ start: number; end: number; plaintext: string }> | undefined {
   const spans = pairedSpans(spelling, secrets);
-  if (spans === undefined) return false;
-  if (renderSpans(spelling, spans, (i) => spans[i]!.plaintext) !== value) return false;
-  return redactSecretsForState(spelling, secrets) === spelling;
+  if (spans === undefined) return undefined;
+  if (renderSpans(spelling, spans, (i) => spans[i]!.plaintext) !== value) return undefined;
+  return redactSecretsForState(spelling, secrets) === spelling ? spans : undefined;
 }
 
 /**
@@ -715,8 +724,8 @@ export function certifiesRenderedLiteral(
   secrets: RecordedSecretValues,
   bagIsSameGeneration: boolean
 ): boolean {
-  if (!rendersLiteralTo(source, secrets, bag)) return false;
-  const spans = pairedSpans(source, secrets)!;
+  const spans = renderedLiteralSpans(source, secrets, bag);
+  if (spans === undefined) return false;
   const survivors: string[] = [];
   for (const span of spans) {
     const survivor = secrets.get(span.plaintext);

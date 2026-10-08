@@ -101,6 +101,10 @@ import { Construct } from 'constructs';
  *    parent's own row, the child's `{Ref}` leaf and the deploy's diff side
  *    all took that survivor while `cdkd diff --recursive` rendered the
  *    literal: a change on every run. Its own JSON keys (`fall2`, `fall2user`).
+ *  - `FallthroughEmbedReversed` (child) — the #4644 arm's EMBEDDING twin: a
+ *    `Description` of `x-${FallConnA2}` (an `Fn::Join` around the `Ref`). The
+ *    diff side renders it from the parameter's own spelling, so its persisted
+ *    span must take that spelling too, not the child bag's survivor.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -177,6 +181,7 @@ class SecretBearingChild extends cdk.NestedStack {
       handoffSpansIfParamName: string;
       fallthroughParamName: string;
       fallthroughReversedParamName: string;
+      fallthroughEmbedReversedParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -462,6 +467,15 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     ((fallthroughPairReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
       'FallthroughPairReversed'
+    );
+    // The #4644 EMBEDDING twin: the same parameter inside an `Fn::Join`.
+    const fallthroughEmbedReversed = new ssm.StringParameter(this, 'FallthroughEmbedReversed', {
+      parameterName: names.fallthroughEmbedReversedParamName,
+      stringValue: fallSecret2.valueAsString,
+      description: `x-${fallConn2.valueAsString}`,
+    });
+    ((fallthroughEmbedReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
+      'FallthroughEmbedReversed'
     );
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
@@ -869,6 +883,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         handoffSpansIfParamName: `cdkd-nested-child-handoffspansif-${account}`,
         fallthroughParamName: `cdkd-nested-child-fallthrough-${account}`,
         fallthroughReversedParamName: `cdkd-nested-child-fallthroughrev-${account}`,
+        fallthroughEmbedReversedParamName: `cdkd-nested-child-fallthroughembedrev-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,

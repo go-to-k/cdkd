@@ -194,6 +194,7 @@ CHILD_HANDOFF_SUB_PARAM="cdkd-nested-child-handoffsub-${ACCOUNT_ID}"
 CHILD_HANDOFF_MIXED_PARAM="cdkd-nested-child-handoffmixed-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_PARAM="cdkd-nested-child-fallthrough-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_REV_PARAM="cdkd-nested-child-fallthroughrev-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_EMBED_REV_PARAM="cdkd-nested-child-fallthroughembedrev-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -638,7 +639,7 @@ cleanup() {
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
              "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
-             "${CHILD_FALLTHROUGH_REV_PARAM}" \
+             "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -1443,6 +1444,19 @@ assert_eq "FallthroughPairReversed.Description persists the parameter's literal 
   "${FALL2_DESC_STATE}" "${FALL2_SPELLING}"
 assert_eq "FallthroughPairReversed.Value persists FallSecretB2's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPairReversed.properties.Value')" "${FALL2_EXPR_B}"
+# The EMBEDDING twin: `x-${FallConnA2}`. The diff side renders it from the
+# parameter's own spelling, so the persisted span must hold that spelling --
+# before the fix's placeholder arm it held the child bag's survivor.
+assert_eq "premise: FallthroughEmbedReversed's synthesized Description embeds a Ref to FallConnA2" \
+  "$(jq -c '.Resources.FallthroughEmbedReversed.Properties.Description' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '{"Fn::Join":["",["x-",{"Ref":"FallConnA2"}]]}'
+FALL2_EMBED_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughEmbedReversed.properties.Description')"
+if [ "${FALL2_EMBED_STATE}" = "x-${FALL2_SURVIVOR_SPELLING}" ]; then
+  echo "FAIL: the EMBEDDING FallthroughEmbedReversed.Description persisted the survivor's spelling (issue #4644)" >&2
+  exit 1
+fi
+assert_eq "FallthroughEmbedReversed.Description persists the parameter's literal spelling inside its own text" \
+  "${FALL2_EMBED_STATE}" "x-${FALL2_SPELLING}"
 
 # --- #4446: embedding leaves the #2320 template parse refuses ----------------
 # `HandoffSpans` holds `Description: Fn::Join` with TWO parts whose text the
@@ -1782,18 +1796,19 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # the #4446 arm's `HandoffSpans` / `HandoffSpansIf`; fifteen since the #2298
 # arm's `EmbedSecretPair`; sixteen since the #4527 arm's
 # `MultiUnknownSecretPair`; seventeen since the #2349 arm's `FallthroughPair`;
-# eighteen since the #4644 arm's `FallthroughPairReversed`.
+# nineteen since the #4644 arm's `FallthroughPairReversed` and
+# `FallthroughEmbedReversed`.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
          "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
          "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
-             "${CHILD_FALLTHROUGH_REV_PARAM}" \
+         "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do
   assert_gone "SSM parameter '${p}' still exists after destroy" \
     aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
-echo "    OK: all seventeen stack-owned SSM parameters are gone"
+echo "    OK: every stack-owned SSM parameter is gone"
 
 # The #2327 arm's rule is the one non-SSM resource this stack owns, so its
 # destroy is asserted on its own terms rather than inferred from the loop above.

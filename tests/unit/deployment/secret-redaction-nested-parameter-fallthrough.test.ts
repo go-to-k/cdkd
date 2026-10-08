@@ -482,6 +482,102 @@ describe('a two-token literal parameter persists its own spelling in either pare
     });
   }
 
+  // A child leaf EMBEDDING the parameter (what CDK makes of
+  // `` `x-${param.valueAsString}` ``) is substituted from the SAME diff-side
+  // binding, so its persisted spelling must be the template's literals around
+  // that binding -- not the child bag's survivor for the plaintext.
+  for (const shape of ['two-token', 'one-span'] as const) {
+    it(`an EMBEDDING child leaf (Fn::Join and Fn::Sub) persists the diff side's binding, ${shape} literal`, async () => {
+      const ONE_SPAN = `postgres://plainuser:${EXPR_A}@host`;
+      const ONE_SPAN_CONN = `postgres://plainuser:${SHARED}@host`;
+      const spelling = shape === 'two-token' ? SPELLING : ONE_SPAN;
+      const conn = shape === 'two-token' ? CONN : ONE_SPAN_CONN;
+      const parent: RecordedSecretValues = new Map();
+      for (const [expression, plaintext] of [
+        [USER_EXPR, USER],
+        [EXPR_A, SHARED],
+        [EXPR_B, SHARED],
+      ] as const) {
+        parent.set(plaintext, expression);
+        recordResolvedPair(parent, expression, plaintext);
+      }
+      recordNestedStackParameterExpressions(
+        parent,
+        'AWS::CloudFormation::Stack',
+        { Parameters: { [PARAM_A]: conn, [PARAM_B]: SHARED } },
+        { Parameters: { [PARAM_A]: spelling, [PARAM_B]: EXPR_B } }
+      );
+      const ctx = makeContext(parent);
+      ctx.parameters = { [PARAM_A]: conn, [PARAM_B]: SHARED };
+      const source = {
+        Env: { 'Fn::Join': ['', ['x-', { Ref: PARAM_A }]] },
+        Sub: { 'Fn::Sub': `y-\${${PARAM_A}}` },
+        Value: { Ref: PARAM_B },
+      };
+      const resolved = await resolver.resolve(source, ctx);
+      const persisted = redactSecretsForState(resolved, ctx.recordedSecretValues, source) as Record<
+        string,
+        unknown
+      >;
+      const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+      const desired = redactParametersForDiff.call(engine, ctx.parameters);
+
+      expect(desired[PARAM_A]).toBe(spelling);
+      expect(persisted['Env']).toBe(`x-${spelling}`);
+      expect(persisted['Sub']).toBe(`y-${spelling}`);
+      expect(persisted['Value']).toBe(EXPR_B);
+      expect(JSON.stringify(persisted)).not.toContain(SHARED);
+      // A structurally equal COPY of the source has no recorded spans (they
+      // are keyed by the source object), so the TEMPLATE-parse arm answers.
+      expect(
+        redactSecretsForState(resolved, ctx.recordedSecretValues, structuredClone(source))
+      ).toEqual(persisted);
+    });
+  }
+
+  it('an EMBEDDING child leaf of a parameter this resource never READ keeps the scan (the #2087 scope)', () => {
+    const parent = reversedParent();
+    const child: RecordedSecretValues = new Map([
+      [USER, USER_EXPR],
+      [SHARED, EXPR_B],
+    ]);
+    const source = { Env: { 'Fn::Join': ['', ['x-', { Ref: PARAM_A }]] } };
+    const persisted = redactSecretsForState({ Env: `x-${CONN}` }, child, source) as Record<
+      string,
+      unknown
+    >;
+    expect(persisted['Env']).toBe(`x-postgres://${USER_EXPR}:${EXPR_B}@host`);
+    // Positive control: the same bag after the read is recorded.
+    recordInheritedParameterRead(child, parent, PARAM_A);
+    expect(
+      (redactSecretsForState({ Env: `x-${CONN}` }, child, source) as Record<string, unknown>)['Env']
+    ).toBe(`x-${SPELLING}`);
+  });
+
+  it('a name recorded twice against DIFFERENT spellings is poisoned: the reader keeps the scan', () => {
+    const parent = reversedParent();
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+    const other = `postgres://${USER_EXPR}:${EXPR_B}@host`;
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      RESOLVED_ROW,
+      { Parameters: { [PARAM_A]: other, [PARAM_B]: EXPR_B } }
+    );
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+      redactSecretsForState(CONN, parent)
+    );
+  });
+
+  it('REFUSES a value that is itself a recorded plaintext: that value belongs to the association table', () => {
+    const parent = reversedParent();
+    // Another token resolved to the WHOLE connection string.
+    const WHOLE_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:whole::}}';
+    parent.set(CONN, WHOLE_EXPR);
+    recordResolvedPair(parent, WHOLE_EXPR, CONN);
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(WHOLE_EXPR);
+  });
+
   function diffBinding4644(parent: RecordedSecretValues): Record<string, unknown> {
     const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
     return redactParametersForDiff.call(engine, { [PARAM_A]: CONN, [PARAM_B]: SHARED });

@@ -165,7 +165,8 @@ export function redactByPath(
       return source;
     }
     // A literal leaf EMBEDDING one token, positioned by the span its source
-    // states — exact where the value scan is ambiguous (issue #2485). On every
+    // states — exact where the value scan is ambiguous (issue #2485) — or
+    // several, kept verbatim where the source renders to it (#4644). On every
     // refusal (a public reference, an embedded token this pass cannot vouch
     // for) the arm returns the value scan of the leaf itself — computed for
     // its own `(bag, secrets)`, at its early returns or inside the shared
