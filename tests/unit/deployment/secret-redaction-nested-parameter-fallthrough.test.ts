@@ -538,6 +538,9 @@ describe('a two-token literal parameter persists its own spelling in either pare
   }
 
   it('an EMBEDDING leaf with TWO unknown parts takes the resolver-recorded spans arm (the template parse refuses it)', async () => {
+    // The resource also reads `SecretB` LAST, so the carry's one slot for the
+    // shared plaintext holds `EXPR_B` and the value scan cannot answer the
+    // `ConnA` span: only the spans arm can.
     const parent = reversedParent();
     const ctx = childContext(parent);
     const source = {
@@ -547,6 +550,7 @@ describe('a two-token literal parameter persists its own spelling in either pare
           [{ Ref: 'AWS::Region' }, { Ref: PARAM_A }, { Ref: 'AWS::Partition' }],
         ],
       },
+      Value: { Ref: PARAM_B },
     };
     const resolved = await resolver.resolve(source, ctx);
     expect((resolved as Record<string, unknown>)['Multi']).toBe(`us-east-1:${CONN}:aws`);
@@ -554,7 +558,9 @@ describe('a two-token literal parameter persists its own spelling in either pare
       string,
       unknown
     >;
+    expect(ctx.recordedSecretValues.get(SHARED)).toBe(EXPR_B);
     expect(persisted['Multi']).toBe(`us-east-1:${SPELLING}:aws`);
+    expect(persisted['Value']).toBe(EXPR_B);
   });
 
   it('an EMBEDDING child leaf of a parameter this resource never READ keeps the scan (the #2087 scope)', () => {
