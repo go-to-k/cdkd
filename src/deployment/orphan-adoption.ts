@@ -43,6 +43,7 @@ import {
   displaySafe,
   safeMsg,
 } from '../utils/display-safe.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { carriesSecretMask } from './secret-redaction.js';
 
 /**
@@ -267,7 +268,7 @@ export async function planOrphanAdoption(params: {
       outcome.notices.push(
         `${shownId} (${shownType}) is still in AWS as ${shownPhysicalId} from an ` +
           `earlier rollback, but this build cannot route that type ` +
-          `(${displayAwsMessage(error instanceof Error ? error.message : String(error))}) — cdkd ` +
+          `(${displayAwsMessage(describeAwsFailure(error).detail)}) — cdkd ` +
           `is not adopting it.`
       );
       continue;
@@ -310,7 +311,7 @@ export async function planOrphanAdoption(params: {
       outcome.notices.push(
         `${shownId} (${shownType}) is recorded as left in AWS as ${shownPhysicalId}, ` +
           `but cdkd could not confirm it exists ` +
-          `(${displayAwsMessage(error instanceof Error ? error.message : String(error))}) — ` +
+          `(${displayAwsMessage(describeAwsFailure(error).detail)}) — ` +
           `keeping the record and not adopting it this run.`
       );
       outcome.remaining.push(record);
@@ -540,7 +541,7 @@ export function makeSiblingClaimReader(params: {
     } catch (error) {
       logger.debug(
         `orphan adoption: could not list sibling stacks — ` +
-          `${displayAwsMessage(error instanceof Error ? error.message : String(error))}`
+          `${displayAwsMessage(describeAwsFailure(error).detail)}`
       );
       return claimed;
     }
@@ -638,7 +639,7 @@ export function makeSiblingClaimReader(params: {
       } catch (error) {
         logger.debug(
           `orphan adoption: skipping unreadable state for ${displayStackName(ref.stackName)} — ` +
-            `${displayAwsMessage(error instanceof Error ? error.message : String(error))}`
+            `${displayAwsMessage(describeAwsFailure(error).detail)}`
         );
       }
     }

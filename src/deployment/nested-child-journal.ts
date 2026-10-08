@@ -87,6 +87,7 @@ import {
   withStackName,
 } from '../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   ledgerForStack,
   withCreateTokenLedger,
@@ -293,7 +294,7 @@ export function getNestedRevertRun(): NestedRevertRun | undefined {
 }
 
 function errorText(error: unknown): string {
-  return displaySafe(error instanceof Error ? error.message : String(error));
+  return displaySafe(describeAwsFailure(error).detail);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
