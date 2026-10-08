@@ -817,7 +817,10 @@ export function maskForResource(this: DeployEngine, logicalId: string, text: str
 /**
  * The derived-name REGISTRY bag of `logicalId` (go-to-k/cdkd#3869): an EMPTY
  * map whose LOG-ONLY needles are the physical-id needles of every record of it
- * this deploy judged named from a secret. Created on first ask, so a binder
+ * this deploy judged named from a secret, and, for a nested-stack row, the
+ * needles its reads of a secret-named resource record, with their `Fn::Base64`
+ * / `Fn::Split` derivatives (`printNestedStackReadsOnly` makes it the row's
+ * print-only bag). Created on first ask, so a binder
  * can hold it by reference before anything is registered: `provisionResource`
  * binds it as a PRINTING bag around the resource's whole body, so every line
  * logged there masks a needle registered mid-body too.

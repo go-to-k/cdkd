@@ -20,7 +20,10 @@
 # Steps (each echoed as `Step N`):
 #   1. Seed the secret naming the stage, the service, the policy's path and
 #      description, the GraphQL API, the data source and the queue.
-#   2. Deploy. Cloud Control's create line withholds SecretFilter's id
+#   2. Deploy. The nested QueueReaderChild receives SecretQueue's ARN as its
+#      QueueArn parameter: its `Resolved Ref to parameter: QueueArn` line is in
+#      the log, the queue name is not, and the child's SSM parameter holds the
+#      ARN (go-to-k/cdkd#3869). Cloud Control's create line withholds SecretFilter's id
 #      (go-to-k/cdkd#3869), and the log names neither the queue name nor the
 #      policy path that SecretQueueReaderPolicy and PlainScheduleRole read by
 #      Ref / Fn::GetAtt (go-to-k/cdkd#3869: a value read from a resource named
@@ -45,6 +48,8 @@
 #      which passes with or without the fix and shows the update path is sound.
 #   5b. `cdkd diff --verbose` of the updated stack: its log names neither the
 #      queue name nor the policy path its readers resolve (go-to-k/cdkd#3869).
+#      The nested QueueReaderChild's parameter lines are reported as a NOTE
+#      there: `cdkd diff`'s child walk is a separate #3869 residual.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -110,6 +115,11 @@
 # src/cli/commands/destroy-runner.ts ALONE and step 6 fails naming
 # ${QUEUE_NAME} on the 'Deleting SQS queue SecretQueue' line (neither yet
 # measured on real AWS).
+# Revert the `rowPrintingRegistry` argument of printNestedStackReadsOnly in
+# src/deployment/deploy-engine/resolver-context.ts (pass a fresh Map) ALONE
+# (go-to-k/cdkd#3869) and step 2 fails naming ${QUEUE_NAME} on the nested
+# child's `Resolved Ref to parameter: QueueArn` line, and step 4 the same on
+# the update (not yet measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
@@ -169,6 +179,11 @@ ORPHAN_STACK="CdkdSecretDerivedOrphan"
 ORPHAN_STATE_KEY="cdkd/${ORPHAN_STACK}/${REGION}/state.json"
 ORPHAN_JOURNAL_KEY="cdkd/${ORPHAN_STACK}/${REGION}/rollback-journal.json"
 ORPHAN_PREFIX="$(s3_stack_prefix "${ORPHAN_STACK}" "${REGION}")"
+# The nested QueueReaderChild (go-to-k/cdkd#3869): its own state key is a
+# SIBLING prefix of the parent's, swept by its own prefix.
+CHILD_STACK="${STACK}~QueueReaderChild"
+CHILD_STATE_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
+CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 DEPLOY_LOG="$(mktemp -t secret-derived-immutable-names.XXXXXX)"
 ORPHAN_LOG="$(mktemp -t secret-derived-immutable-names-orphan.XXXXXX)"
 API_NAME="CdkdSecretDerivedImmutableNamesApi"
@@ -196,6 +211,11 @@ GROUP_NAME="sdin-grp-${SUFFIX}"
 SCHEDULE_NAME="CdkdSdinSchedule"
 PLAIN_SCHEDULE_NAME="CdkdSdinSchedulePlainTarget"
 export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
+# The nested QueueReaderChild's SSM parameter, NAMED per run (go-to-k/cdkd#3869)
+# so cleanup can delete it on every path, a child create that wrote no state
+# included.
+export SDIN_CHILD_PARAM_NAME="/cdkd-integ/sdin-${SUFFIX}/child-queue-arn"
+CHILD_PARAM_NAME="${SDIN_CHILD_PARAM_NAME}"
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
 # the pre-flight must not destroy (or sweep the state history of) a stack an
@@ -251,6 +271,13 @@ cleanup() {
     if [ -n "${LEFT_QUEUE_URL}" ] && [ "${LEFT_QUEUE_URL}" != "None" ]; then
       aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_QUEUE_URL}" >/dev/null 2>&1
     fi
+    # The nested child's SSM parameter, by its per-run name (known before
+    # any deploy, so a child create that wrote no state is covered), and the
+    # child's state (its resources are gone by now, or deleted just here).
+    aws ssm delete-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET:-}/${CHILD_STATE_KEY}" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET:-}/cdkd/${CHILD_STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${CHILD_PREFIX}" noncurrent || true
   fi
   if [ "${ORPHAN_DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --region "${REGION}" \
@@ -401,6 +428,18 @@ expect_read_lines() {
   done
 }
 
+# The nested QueueReaderChild's read of its parent-passed QueueArn
+# (go-to-k/cdkd#3869). A sentinel: a zero match would otherwise read as "the
+# child printed nothing to mask".
+expect_child_read_line() {
+  local log="$1" which="$2"
+  if ! grep -qF -- "Resolved Ref to parameter: QueueArn resolved to " "${log}"; then
+    echo "FAIL: premise: the ${which} log has no 'Resolved Ref to parameter: QueueArn resolved to ' line (the nested child was not deployed, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+}
+
 echo "==> Step 2: deploy"
 DEPLOYED=1
 set +e
@@ -434,6 +473,14 @@ PLAIN_TARGET_QUEUE_URL="$(state_physical_id PlainTargetQueue)"
 for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID SCHEDULE_ROLE PLAIN_SCHEDULE_ROLE PLAIN_TARGET_QUEUE_URL; do
   if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
 done
+# The nested child's SSM parameter (an SSM parameter's physical id is its
+# name): the child's state must record the per-run name cleanup deletes.
+CHILD_PARAM_RECORDED="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
+  | jq -r '.resources.ChildQueueArn.physicalId // empty')"
+if [ "${CHILD_PARAM_RECORDED}" != "${CHILD_PARAM_NAME}" ]; then
+  echo "FAIL: ${CHILD_STATE_KEY} records ChildQueueArn as '${CHILD_PARAM_RECORDED}', not ${CHILD_PARAM_NAME}" >&2
+  exit 1
+fi
 
 # go-to-k/cdkd#3869: Cloud Control's create line names the identifier it
 # returned, `<LogGroupName>|<FilterName>`; the desired FilterName is the
@@ -460,6 +507,16 @@ echo "    OK: the deploy log withholds SecretFilter's physical id"
 # recorded secret. PREMISE: each read's --verbose line is in the log, so the
 # absence below is about a printed value, not a missing line.
 expect_read_lines "${DEPLOY_LOG}" "deploy"
+# go-to-k/cdkd#3869: the nested QueueReaderChild reads the parent-passed ARN.
+# PREMISE: the child resolved it (its --verbose line is in the log), and AWS
+# holds the real ARN, so the queue-name absence below covers that line.
+expect_child_read_line "${DEPLOY_LOG}" "deploy"
+CHILD_PARAM_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" \
+  --query Parameter.Value --output text)"
+if [ "${CHILD_PARAM_VALUE##*:}" != "${QUEUE_NAME}" ]; then
+  echo "FAIL: premise: QueueReaderChild's SSM parameter does not hold SecretQueue's ARN (the parameter did not reach the child)" >&2
+  exit 1
+fi
 for needle_var in QUEUE_NAME POLICY_PATH; do
   if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
     HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
@@ -615,6 +672,7 @@ fi
 # 'Ref to resource: SecretPolicy' line comes from the DIFF pass alone, and the
 # QueuePolicy's from both passes (its Sid changes).
 expect_read_lines "${DEPLOY_LOG}" "update"
+expect_child_read_line "${DEPLOY_LOG}" "update"
 for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}"; then
@@ -687,9 +745,19 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 expect_read_lines "${DEPLOY_LOG}" "diff"
+# `cdkd diff`'s walk into QueueReaderChild binds and prints the child's QueueArn
+# parameter with no needle of the parent's read: a separate #3869 residual
+# (diff-recursive.ts), reported here and kept out of the FAIL below. Every
+# other line still FAILs.
+CHILD_LINE_PATTERNS=(-e "Resolved Ref to parameter: QueueArn" -e "Parameter QueueArn: ")
+CHILD_DIFF_HITS="$(grep -F "${CHILD_LINE_PATTERNS[@]}" "${DEPLOY_LOG}" | grep -cF -- "${QUEUE_NAME}" || true)"
+if [ "${CHILD_DIFF_HITS}" != "0" ]; then
+  echo "    NOTE: cdkd diff prints QueueReaderChild's parent-passed QueueArn with the queue name on ${CHILD_DIFF_HITS} line(s) (go-to-k/cdkd#3869, the diff child walk)"
+fi
+DIFF_LOG_REST="$(grep -vF "${CHILD_LINE_PATTERNS[@]}" "${DEPLOY_LOG}" || true)"
 for needle_var in QUEUE_NAME POLICY_PATH; do
-  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
-    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  if grep -qF -- "${!needle_var}" <<< "${DIFF_LOG_REST}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | grep -vF "${CHILD_LINE_PATTERNS[@]}" | cut -d: -f1 | paste -sd ' ' -)"
     echo "FAIL: the cdkd diff log names a value read from a secret-named resource in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
     exit 1
   fi
@@ -955,6 +1023,10 @@ SEEDED_SECRET=0
 
 assert_gone "state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+assert_gone "QueueReaderChild's state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
+assert_gone "QueueReaderChild's SSM parameter ${CHILD_PARAM_NAME} still exists after destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}"
 assert_gone "API ${API_ID} still exists after destroy" \
   aws apigatewayv2 get-api --region "${REGION}" --api-id "${API_ID}"
 assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \
@@ -1024,12 +1096,14 @@ echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and t
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" 2>/dev/null || true
 
-echo "==> Step 8: sweep every object version under both stacks' state prefixes"
+echo "==> Step 8: sweep every object version under both stacks' and the nested child's state prefixes"
 # On the SUCCESS path, after the disarm: a sweep living only in `cleanup` never
 # runs here, and `noncurrent` would leave the delete marker behind.
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${ORPHAN_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${ORPHAN_PREFIX}" "orphan stack state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "QueueReaderChild state teardown"
 echo ""
 echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API, a data source, a Cloud Control-routed metric filter and a schedule whose immutable values come from a secret succeeded, in place, and destroy was clean"
