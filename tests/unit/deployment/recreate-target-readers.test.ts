@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 import {
   findReplacedReadersOfRecreateTargets,
+  isPlainReferenceTo,
   refuseStatefulReplacedReaders,
 } from '../../../src/deployment/recreate-target-readers.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -422,6 +423,33 @@ describe('a write-only create-only property holding a plain reference (go-to-k/c
       clearCreateOnlyPropertiesCache();
       clearWriteOnlyPropertiesCache();
     }
+  });
+});
+
+describe('isPlainReferenceTo (go-to-k/cdkd#4701)', () => {
+  const BUCKET = 'AWS::S3::Bucket';
+  it.each<[string, unknown, string | undefined, boolean]>([
+    ['Ref of the id', { Ref: 'T' }, BUCKET, true],
+    ['Ref of the id, producer a custom resource (its physical id is no NoEcho value)', { Ref: 'T' }, 'Custom::X', true],
+    ['Ref of another id', { Ref: 'T2' }, BUCKET, false],
+    ['GetAtt array', { 'Fn::GetAtt': ['T', 'Arn'] }, BUCKET, true],
+    ['GetAtt string', { 'Fn::GetAtt': 'T.Arn' }, BUCKET, true],
+    ['GetAtt string of a longer id', { 'Fn::GetAtt': 'T2.Arn' }, BUCKET, false],
+    ['GetAtt string with no attribute', { 'Fn::GetAtt': 'T.' }, BUCKET, false],
+    ['GetAtt array of another id', { 'Fn::GetAtt': ['T2', 'Arn'] }, BUCKET, false],
+    ['GetAtt array with a computed attribute', { 'Fn::GetAtt': ['T', { Ref: 'A' }] }, BUCKET, false],
+    ['GetAtt array of three', { 'Fn::GetAtt': ['T', 'Arn', 'x'] }, BUCKET, false],
+    ['GetAtt with an unknown producer type', { 'Fn::GetAtt': ['T', 'Arn'] }, undefined, false],
+    ['GetAtt of a custom resource', { 'Fn::GetAtt': ['T', 'Arn'] }, 'Custom::X', false],
+    ['GetAtt of a nested stack', { 'Fn::GetAtt': ['T', 'Outputs.X'] }, 'AWS::CloudFormation::Stack', false],
+    ['a two-key object', { Ref: 'T', Other: 1 }, BUCKET, false],
+    ['Fn::Join around the Ref', { 'Fn::Join': ['', [{ Ref: 'T' }]] }, BUCKET, false],
+    ['Fn::Sub of the id', { 'Fn::Sub': '${T}' }, BUCKET, false],
+    ['an array holding the Ref', [{ Ref: 'T' }], BUCKET, false],
+    ['a literal', 'T', BUCKET, false],
+    ['null', null, BUCKET, false],
+  ])('%s', (_name, value, type, expected) => {
+    expect(isPlainReferenceTo(value, 'T', type)).toBe(expected);
   });
 });
 
