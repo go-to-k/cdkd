@@ -242,6 +242,7 @@ multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asse
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
 multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
+neptune-fix-forward-orphan	2026-10-08T12:02:04Z	PASS	2380	verify.sh	PR #4693 (#4606 Neptune fix-forward); rc 0, destroy clean, orph clean, dedicated state bucket; probes red: src reverted at step 2, isSameResource off at step 3 (exit 2)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
 nested-stack	2026-10-07T12:02:58Z	PASS	90	verify.sh	rc ok, orph clean (#4648)
 nested-stack-3level	2026-10-06T09:20:08Z	PASS	516	verify.sh	rc ok, orph clean (#4602 PR #4620)
