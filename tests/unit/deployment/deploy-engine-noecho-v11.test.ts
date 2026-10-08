@@ -1088,7 +1088,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       };
 
       // A bare `Ref` names the parameter as the cause, an `Fn::Sub` around it
-      // the position (review round 9 m4); neither is printed for an update.
+      // the position; neither is printed for an update.
       it.each([
         ['a bare Ref, schema v11', { Ref: 'Mail' }, STATE_SCHEMA_VERSION_CURRENT],
         ['a bare Ref, pre-v11 (the migration witness)', { Ref: 'Mail' }, 10],
@@ -1113,7 +1113,8 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
           // The value reaches neither state nor any log line.
           expect(allSaved()).not.toContain('new-addr@example.com');
           for (const fn of [logger.debug, logger.info, logger.warn, logger.error]) {
-            expect(lines(fn!).some((l) => l.includes('new-addr@example.com'))).toBe(false);
+            // Every argument, not only the message.
+            expect(JSON.stringify(fn!.mock.calls)).not.toContain('new-addr@example.com');
           }
         }
       );
