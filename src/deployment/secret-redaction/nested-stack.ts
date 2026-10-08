@@ -1131,6 +1131,24 @@ export function inheritedRenderedToken(
 }
 
 /**
+ * Withdraw `parameterName`'s rendered spelling from the pass owning
+ * `parentSecrets`, as a conflicting re-record does: every reader then answers
+ * as before issue [#4644](https://github.com/go-to-k/cdkd/issues/4644) -- the
+ * diff side, the `{Ref}` arm, {@link inheritedRenderedSpan} and the carry
+ * alike. Called by `poisonRenderedSpellingsCollidingIn` for a parameter one
+ * child resource reads beside a sibling the carry would record differently
+ * for the same plaintext (issue
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731)).
+ */
+export function withdrawRenderedParameterSpelling(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string
+): void {
+  const rendered = renderedParameterSpellings.get(parentSecrets);
+  if (rendered?.has(parameterName)) rendered.set(parameterName, null);
+}
+
+/**
  * The parent's rendered spelling for a `{Ref: <Param>}` span of a child leaf
  * that EMBEDS the parameter -- `Fn::Join ['x-', {Ref: Conn}]` -- keyed by the
  * span's {@link crossStackSourceKey}, or `undefined` (issue

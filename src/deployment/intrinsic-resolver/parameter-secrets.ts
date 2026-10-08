@@ -6,6 +6,7 @@ import {
   carryLogOnlyValuesCarriedBy,
   inheritedParameterExpression,
   inheritedRenderedToken,
+  withdrawRenderedParameterSpelling,
   carryFreshNoEchoMark,
   recordInheritedParameterRead,
   recordNoEchoParameterFreshValue,
@@ -174,17 +175,10 @@ export function recordInheritedParameterSecrets(
     // answers with an ARRAY for a list-typed parameter's whole value, and
     // this bag holds strings. Nothing here asks for that shape, but the guard
     // is what says so rather than leaving it to the argument passed above.
-    const own = inheritedParameterExpression(inherited, parameterName, plaintext);
-    // Issue #4644: a parameter the parent spelled as a LITERAL embedding its
-    // tokens has no per-plaintext association, so it used to take the
-    // survivor here while the diff side binds that literal at every read
-    // site. The token the literal itself spells at this plaintext, where the
-    // spelling certifies one; the survivor otherwise.
-    const spelled =
-      typeof own === 'string'
-        ? own
-        : inheritedRenderedToken(inherited, parameterName, value, plaintext);
-    recorded.set(plaintext, spelled ?? expression);
+    recorded.set(
+      plaintext,
+      carriedExpressionFor(inherited, parameterName, value, plaintext, expression)
+    );
     // Issue #2349: the persist walk answers a `{Ref: <Param>}` leaf of THIS
     // resource from the parent bag, as the diff side does, and only for a
     // parameter recorded here -- the #2087 scope this loop already applies.
@@ -194,6 +188,143 @@ export function recordInheritedParameterSecrets(
     // the new value's `***` as equal to the recorded `***`.
     carryFreshNoEchoMark(inherited, recorded, plaintext);
   }
+}
+
+/**
+ * The expression the carry records for `plaintext` when `parameterName`
+ * (resolved to `value`) carries it: the parameter's own association, else --
+ * for a parameter the parent spelled as a LITERAL embedding its tokens (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)), which the diff side
+ * binds at every read site -- the token that literal spells at this
+ * plaintext, else the parent map's `survivor`. Shared with
+ * {@link poisonRenderedSpellingsCollidingIn}, so the collision it predicts is
+ * the one the carry would write.
+ */
+function carriedExpressionFor(
+  inherited: RecordedSecretValues,
+  parameterName: string,
+  value: unknown,
+  plaintext: string,
+  survivor: string
+): string {
+  const own = inheritedParameterExpression(inherited, parameterName, plaintext);
+  if (typeof own === 'string') return own;
+  return inheritedRenderedToken(inherited, parameterName, value, plaintext) ?? survivor;
+}
+
+/**
+ * Withdraw the rendered spelling (issue #4644) of every parameter a child
+ * resource reads beside another parameter the carry would record DIFFERENTLY
+ * for a plaintext both carry (issue
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731)), BEFORE the child's
+ * diff binding or any of its resources resolve.
+ *
+ * The carry holds ONE expression per plaintext per resource, so in such a
+ * resource whichever parameter resolved last decides every value-scanned leaf
+ * (`Fn::Select`, `Fn::Split`, an array): the other parameter's leaf persists
+ * a token its diff side does not render, a change on every deploy. Before
+ * #4644 the literal parameter carried the survivor, which the diff side bound
+ * too. Withdrawing its spelling restores exactly that for the parameter
+ * everywhere in this child -- diff side, `{Ref}` arm, placeholder arms and
+ * carry read the one table -- so the answer is decided by the template and
+ * the parent bag, never by resolution order.
+ *
+ * The reads are found STATICALLY: a `{Ref: <Param>}` inside an intrinsic, and
+ * a `${Param}` in an `Fn::Sub` string, the two ways a template reads a
+ * parameter. A `{Ref}` reached through plain objects and arrays only is NOT
+ * counted: the persist walk answers that leaf per parameter from the parent
+ * bag (`positionByInheritedParameter`), never from the slot -- which is the
+ * issue's own shape, two bare `{Ref}`s in one resource. An untaken `Fn::If`
+ * branch counts; over-reading only withdraws more, which is the pre-#4644
+ * answer. `Outputs` count as one resource, bare `{Ref}`s included.
+ */
+export function poisonRenderedSpellingsCollidingIn(
+  template: { Resources?: unknown; Outputs?: unknown } | undefined,
+  parameterValues: Record<string, unknown>,
+  inherited: RecordedSecretValues | undefined
+): void {
+  if (!inherited || inherited.size === 0 || template === undefined) return;
+  const names = new Set(Object.keys(parameterValues));
+  if (names.size < 2) return;
+  // `[node, countBareRefs]`: an output's bare `{Ref}` is counted too, since
+  // nothing positions an output leaf per parameter.
+  const groups: Array<[unknown, boolean]> = [];
+  if (template.Resources !== null && typeof template.Resources === 'object') {
+    for (const resource of Object.values(template.Resources as Record<string, unknown>)) {
+      groups.push([resource, false]);
+    }
+  }
+  if (template.Outputs !== undefined) groups.push([template.Outputs, true]);
+  const withdraw = new Set<string>();
+  for (const [group, countBareRefs] of groups) {
+    const reads = parameterReadsOf(group, names, countBareRefs);
+    if (reads.size < 2) continue;
+    // plaintext -> expression -> the reading parameters that would carry it.
+    const byPlaintext = new Map<string, Map<string, { names: string[]; rendered: string[] }>>();
+    for (const name of reads) {
+      const value = parameterValues[name];
+      for (const [plaintext, survivor] of inheritedSecretsCarriedBy(value, inherited)) {
+        const expression = carriedExpressionFor(inherited, name, value, plaintext, survivor);
+        const rendered =
+          typeof inheritedParameterExpression(inherited, name, plaintext) !== 'string' &&
+          inheritedRenderedToken(inherited, name, value, plaintext) !== undefined;
+        let byExpression = byPlaintext.get(plaintext);
+        if (byExpression === undefined) {
+          byExpression = new Map();
+          byPlaintext.set(plaintext, byExpression);
+        }
+        let entry = byExpression.get(expression);
+        if (entry === undefined) {
+          entry = { names: [], rendered: [] };
+          byExpression.set(expression, entry);
+        }
+        entry.names.push(name);
+        if (rendered) entry.rendered.push(name);
+      }
+    }
+    for (const byExpression of byPlaintext.values()) {
+      if (byExpression.size < 2) continue;
+      for (const entry of byExpression.values()) {
+        for (const name of entry.rendered) withdraw.add(name);
+      }
+    }
+  }
+  for (const name of withdraw) withdrawRenderedParameterSpelling(inherited, name);
+}
+
+/**
+ * The parameter names `node` reads through the carry's slot: a `{Ref: <name>}`
+ * inside an intrinsic (`Fn::*`) and `Fn::Sub`'s `${name}`; a bare `{Ref}`
+ * reached through plain objects and arrays is positioned per parameter.
+ */
+function parameterReadsOf(
+  node: unknown,
+  names: ReadonlySet<string>,
+  countBareRefs: boolean
+): Set<string> {
+  const reads = new Set<string>();
+  const visit = (value: unknown, insideIntrinsic: boolean): void => {
+    if (Array.isArray(value)) {
+      for (const element of value) visit(element, insideIntrinsic);
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    const ref = record['Ref'];
+    if (insideIntrinsic && typeof ref === 'string' && names.has(ref)) reads.add(ref);
+    const sub = record['Fn::Sub'];
+    const text = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
+    if (typeof text === 'string') {
+      for (const match of text.matchAll(/\$\{([^}!][^}]*)\}/g)) {
+        const name = match[1]!.trim();
+        if (names.has(name)) reads.add(name);
+      }
+    }
+    const intrinsic = insideIntrinsic || Object.keys(record).some((key) => key.startsWith('Fn::'));
+    for (const child of Object.values(record)) visit(child, intrinsic);
+  };
+  visit(node, countBareRefs);
+  return reads;
 }
 
 /**

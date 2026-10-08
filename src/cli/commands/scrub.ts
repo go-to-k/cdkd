@@ -150,6 +150,7 @@ import {
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
 import { stateSecretNameNeedles } from '../../deployment/secret-name-needles.js';
+import { poisonRenderedSpellingsCollidingIn } from '../../deployment/intrinsic-resolver/parameter-secrets.js';
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
@@ -6935,6 +6936,10 @@ export async function scrubStack(
         nestedInput?.parameters,
         inheritedSecrets && { inheritedSecrets }
       );
+      // Issue #4731: the deploy's own withdrawal (`deploy-flow.ts`), before any
+      // resource resolves, or scrub writes spellings the next deploy diffs
+      // against.
+      poisonRenderedSpellingsCollidingIn(stack.template, parameters, inheritedSecrets);
     } catch (err) {
       // A NESTED CHILD refuses instead (go-to-k/cdkd#2252). A top-level stack
       // takes no `--parameters` here, so a `Default`-less parameter failing is
