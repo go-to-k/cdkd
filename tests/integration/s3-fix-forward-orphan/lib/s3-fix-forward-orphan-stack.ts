@@ -11,7 +11,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   enabled and the stack's tag. verify.sh deploys that template as a role
  *   that may create a bucket and enable its versioning but may neither tag
  *   nor delete it, so each CREATE makes the bucket, writes its versioning,
- *   fails on the tagging call, and cannot clean up: the journal records both
+ *   fails on the tagging call, and cannot clean up: the journal records each
  *   as proven orphans, with the bucket's identity (name, region and this
  *   account's `ListBuckets` `CreationDate`, which outside us-east-1 the
  *   versioning write has already moved).
@@ -19,7 +19,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   opt-in; verify.sh writes an object into it before the fix-forward, which
  *   must keep it rather than empty it.
  * - `ORPHAN_FIX_FORWARD=true` keeps every orphan logical id under other names
- *   (`-b`), so the fix-forward deploy creates two new buckets. Before it,
+ *   (`-b`), so the fix-forward deploy creates three new buckets. Before it,
  *   verify.sh deletes `OrphanC`'s bucket and re-creates the name itself (one
  *   made outside the stack): the fix-forward must delete `OrphanA`'s bucket
  *   and keep that one.

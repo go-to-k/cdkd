@@ -13,25 +13,25 @@
 #   2. The failed CREATE. A role is created that may create a bucket and
 #      enable its versioning (and list and locate buckets) but may neither tag
 #      nor delete it. A `--no-rollback` deploy run as that role with
-#      WITH_ORPHANS=true creates `OrphanA`'s and `OrphanC`'s buckets, enables
+#      WITH_ORPHANS=true creates `OrphanA`'s, `OrphanC`'s and `OrphanD`'s buckets, enables
 #      their versioning, fails on the tagging call that follows, and the
 #      provider's own cleanup cannot delete them. (The AccessDenied is retried
 #      as IAM propagation; the retry meets the bucket and refuses it as an
 #      explicit name already held, so the deploy's last line for each is that
 #      refusal, while the first attempt's created-bucket mark is carried to
 #      the journal.) Asserted: the
-#      deploy failed, both buckets exist, no state record holds them, and the
+#      deploy failed, every orphan bucket exists, no state record holds them, and the
 #      rollback journal carries each as a proven orphan with its identity
 #      `<name>|<region>|<CreationDate>`, equal to what ListBuckets reports.
 #   2b. The re-used name: `OrphanC`'s bucket is deleted and its name created
 #      again outside the stack, with a marker tag. Asserted: ListBuckets now
 #      reports another CreationDate for it (the premise the identity rests on).
-#   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps both
-#      logical ids under other names (`-b`). Asserted: `OrphanA`'s earlier
+#   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps all
+#      three orphan logical ids under other names (`-b`). Asserted: `OrphanA`'s earlier
 #      bucket is deleted (`deleting partially-created OrphanA`), the re-created
 #      `OrphanC` name is kept with its marker and warned about as another
-#      bucket (exit 2, the warning's code), the journal is dropped, and the
-#      state records hold the new buckets. Before #4606 the deploy kept
+#      bucket (exit 2, the warning's code), and the state records hold the new
+#      buckets. Before #4606 the deploy kept
 #      `OrphanA`'s bucket too.
 #   2c. An object is written into `OrphanD`'s bucket (a third orphan, whose
 #      template declares CDK's autoDeleteObjects opt-in).
@@ -363,7 +363,7 @@ if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
   exit 1
 fi
 
-echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: both CREATEs fail after S3 made and versioned the bucket"
+echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: every orphan CREATE fails after S3 made and versioned the bucket"
 set +e
 as_deny_role env -u ORPHAN_FIX_FORWARD WITH_ORPHANS=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/inject.log" 2>&1
@@ -550,8 +550,16 @@ if ! printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanA'; t
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF 'Skipping failed CREATE of OrphanA'; then
+# The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
+# with the logical id and type: none may name OrphanA.
+if printf '%s' "${FF_FLAT}" | grep -qF 'OrphanA (AWS::S3::Bucket), which a failed deploy'; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2
+  exit 1
+fi
+# Sentinel for the wording above: OrphanC's keep warning uses the same head,
+# so a reword that would blind the OrphanA check fails here first.
+if ! printf '%s' "${FF_FLAT}" | grep -qF 'OrphanC (AWS::S3::Bucket), which a failed deploy'; then
+  echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::S3::Bucket), which a failed deploy' in the output): update the OrphanA check above" >&2
   exit 1
 fi
 if printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanC'; then
