@@ -69,7 +69,7 @@ function orphanOp(queueName: string) {
     resourceType: 'AWS::SQS::Queue',
     physicalId: URL,
     provisionedBy: 'sdk',
-    physicalIdRecoveredFromError: true,
+    physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
     attemptedProperties: { QueueName: queueName },
   };
 }
@@ -124,7 +124,11 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {
-        getProviderFor: () => ({ provider: { delete: providerDelete }, provisionedBy: 'sdk' }),
+        // go-to-k/cdkd#4658: the live identity matches the journaled token.
+        getProviderFor: () => ({
+          provider: { delete: providerDelete, resourceIdentity: async () => 'created-token' },
+          provisionedBy: 'sdk',
+        }),
       } as unknown as ProviderRegistry,
       baseAwsClients: {} as AwsClients,
       baseRegion: REGION,
@@ -223,7 +227,7 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
           resourceType: 'AWS::IAM::AccessKey',
           physicalId: 'AKIAEXAMPLEKEY',
           provisionedBy: 'sdk',
-          physicalIdRecoveredFromError: true,
+          physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
           attemptedProperties: { UserName: USER },
         },
       ])
@@ -332,7 +336,7 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
       skipPrefix: false,
       operations: [],
       failedOperations: [
-        { changeType: 'CREATE', provisionedBy: 'sdk', physicalIdRecoveredFromError: true, ...op },
+        { changeType: 'CREATE', provisionedBy: 'sdk', physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token', ...op },
       ],
     });
     loadJournal.mockResolvedValue({

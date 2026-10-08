@@ -17,7 +17,11 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
   loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
-const provider = vi.hoisted(() => ({ delete: vi.fn() }));
+// go-to-k/cdkd#4658: the live identity matches the journaled token.
+const provider = vi.hoisted(() => ({
+  delete: vi.fn(),
+  resourceIdentity: async () => 'created-token',
+}));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
@@ -87,7 +91,7 @@ function install(userName: string, failedOperations?: unknown[], segments?: unkn
                 resourceType: 'AWS::IAM::AccessKey',
                 provisionedBy: 'sdk',
                 physicalId: 'AKIAEXAMPLEKEY',
-                physicalIdRecoveredFromError: true,
+                physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
                 attemptedProperties: { UserName: USER },
               },
             ],
@@ -171,7 +175,7 @@ describe("cdkd rollback masks a journaled orphan's OWN secret-derived name (go-t
         resourceType: 'AWS::SQS::Queue',
         provisionedBy: 'sdk',
         physicalId: URL,
-        physicalIdRecoveredFromError: true,
+        physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
         attemptedProperties: { QueueName: queueName },
       },
     ]);
@@ -212,7 +216,7 @@ describe('cdkd rollback masks a name an orphan read from an orphan in ANOTHER se
       initialDeploy: false,
       operations: [],
       failedOperations: [
-        { changeType: 'CREATE', provisionedBy: 'sdk', physicalIdRecoveredFromError: true, ...op },
+        { changeType: 'CREATE', provisionedBy: 'sdk', physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token', ...op },
       ],
     });
     install('unused-state-user', undefined, [

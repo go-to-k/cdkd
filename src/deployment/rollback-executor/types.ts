@@ -231,16 +231,28 @@ export interface RollbackExecutorContext {
    */
   removeProtection?: boolean | undefined;
   /**
-   * go-to-k/cdkd#4678: who else holds a journaled orphan, asked before
-   * `removeProtection` strips one (`makeForeignHolderScan`, scoped to this
-   * stack). Supplied with `removeProtection` by its three setters only: the
-   * destroy journal sweep, `cdkd rollback`, and the nested child replay under
-   * `cdkd rollback --remove-protection` (go-to-k/cdkd#4703), scoped to the
-   * child; a `held` or `unreadable` answer keeps the protection on.
+   * Who else holds a journaled orphan (`makeForeignHolderScan`, scoped to this
+   * stack). Its presence marks a replay of a journal an EARLIER run wrote: the
+   * delete of a journaled proven orphan then first asks it, and the live
+   * identity (go-to-k/cdkd#4696, #4658), and keeps the orphan, warned, on a
+   * `held` or `unreadable` answer or an unproven identity. Supplied by `cdkd
+   * rollback`, the `cdkd destroy` journal sweep and the success settle; the
+   * nested child replay sets it only under `cdkd rollback --remove-protection`
+   * (go-to-k/cdkd#4703) and replays completed ops alone. A deploy's automatic
+   * rollback supplies none: it runs seconds after the failure, before a name
+   * can be freed and reused or another stack can import the resource, and its
+   * in-process identity is best-effort (absent for a provider without
+   * `resourceIdentity`). `--remove-protection` asks it too (go-to-k/cdkd#4678).
    */
   foreignHolder?:
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
     | undefined;
+  /**
+   * The journaled orphans the success settle already proved deletable (holder
+   * scan and identity, go-to-k/cdkd#4655): the replay's delete does not ask
+   * them again.
+   */
+  orphanDeleteProven?: ReadonlySet<FailedOperation> | undefined;
   /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,

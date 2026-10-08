@@ -77,12 +77,18 @@ in the default deploy flow. A resource a failed CREATE made before it
 failed (or the new resource a failed replacement made), which only the
 journal records, is deleted per its `DeletionPolicy`
 by the automatic rollback, any `cdkd rollback`, `cdkd destroy` and a later
-successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource));
-a successful deploy that cannot act on one keeps the journal (reduced to that
-entry where it can), and one a state record may own, or whose identity it cannot
-prove (a name-keyed resource that may have been deleted and its name reused),
-is warned about and left
-in AWS; either way it exits `2`. An automatic rollback that skipped an operation
+successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)).
+`cdkd rollback`, `cdkd destroy` and a successful deploy delete it only when no
+other stack's state record holds it (a later `cdkd import` into another stack,
+say) and, for a resource whose physical id is a name, AWS still reports the
+identity the failed CREATE recorded (it may have been deleted and its name
+reused); otherwise it is warned about, its physical id named, and left in AWS
+(`cdkd rollback` exits `2`; `cdkd destroy` goes on to destroy the stack). One
+AWS reports gone is settled with no delete. The automatic rollback, which runs
+seconds after the failure, deletes it without either check.
+A successful deploy that cannot act on one keeps the journal (reduced to that
+entry where it can), and one a state record may own, or that the checks above
+keep, is warned about and left in AWS; either way it exits `2`. An automatic rollback that skipped an operation
 it could not revert keeps the whole journal. A nested stack's journal is the exception:
 its successful deploy keeps a record until the top-level stack's deploy
 succeeds, which deletes the journals of every nested stack under it.

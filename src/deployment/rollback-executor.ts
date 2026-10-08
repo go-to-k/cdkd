@@ -333,10 +333,10 @@ import { withProducerRegions } from './producer-regions-scope.js';
 import { noteRetainedResource } from '../provisioning/providers/create-token-ledger.js';
 import { runDeleteAttempt } from '../provisioning/providers/deletion-protection-compensation.js';
 import {
+  askForeignHolder,
+  createdResourceStillThere,
   orphanDeleteNeedsIdentity,
-  readResourceIdentity,
 } from './rollback-executor/orphan-identity.js';
-import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 import { removeProtectionTypes } from '../provisioning/remove-protection-types.js';
 import {
   PROTECTION_PROPERTY_BY_TYPE,
@@ -344,64 +344,30 @@ import {
   perType,
   readProtection,
 } from '../provisioning/protection-flags.js';
-import type { ForeignHolding } from './rollback-executor/journaled-orphans.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
 /**
  * go-to-k/cdkd#4678: whether `--remove-protection` may strip a failed
- * CREATE's resource. A state-recorded op is the record's own; a journaled
- * orphan must be the resource its CREATE made — a type whose id is never
- * reused, or a live `resourceIdentity` equal to the journaled one (#4655) —
- * and no other stack's record may hold it now (a later `cdkd import`, say).
- * Otherwise `false`, warned when its attempted properties turned protection
- * on: the delete runs without the flag, so AWS's refusal stays the guard.
+ * CREATE's resource. A state-recorded op is the record's own. A journaled
+ * orphan only when the delete's checks cleared it (`deleteProven`: no other
+ * stack's record holds it, and it is the resource its CREATE made,
+ * go-to-k/cdkd#4696 / #4658), and only on a type the flag strips something
+ * from (an exempt type, or one in `removeProtectionTypes`). An orphan the
+ * checks never ran on (no `foreignHolder`) keeps its protection, warned when
+ * its attempted properties turned it on: AWS's refusal stays the guard.
  */
-async function protectionRemovalProven(
+function protectionRemovalProven(
   op: FailedOperation,
-  ctx: RollbackExecutorContext
-): Promise<boolean> {
+  ctx: RollbackExecutorContext,
+  deleteProven: boolean
+): boolean {
   if (op.physicalIdRecoveredFromError !== true) return true;
-  let refusal: string | undefined;
-  if (orphanDeleteNeedsIdentity(op.resourceType)) {
-    // The flag strips nothing on a type with no protection: nothing to warn about.
-    if (!removeProtectionTypes().includes(op.resourceType)) return false;
-    const journaled = op.createdResourceIdentity;
-    let live: Awaited<ReturnType<typeof readResourceIdentity>>;
-    if (typeof journaled === 'string' && journaled !== '' && op.physicalId) {
-      // The identity is READ here and the delete runs after it, unconditioned
-      // on it: a name freed and reused between the two is not caught. A
-      // protection type that gains `resourceIdentity` must accept or close
-      // that window (the success settle makes the same trade, #4655).
-      live = await readResourceIdentity(
-        ctx.providerRegistry,
-        {
-          resourceType: op.resourceType,
-          physicalId: op.physicalId,
-          provisionedBy: op.provisionedBy,
-        },
-        ctx.region
-      );
-      // Gone: the delete reads not-found as done, with nothing to strip.
-      if (live === RESOURCE_NOT_FOUND) return false;
-    }
-    if (live === undefined || live !== journaled) {
-      refusal =
-        'it is not proven to be the one the failed deploy created, and its name could now belong to another resource';
-    }
+  if (deleteProven) {
+    return (
+      !orphanDeleteNeedsIdentity(op.resourceType) ||
+      removeProtectionTypes().includes(op.resourceType)
+    );
   }
-  if (refusal === undefined && ctx.foreignHolder !== undefined && op.physicalId) {
-    let holding: ForeignHolding;
-    try {
-      holding = await ctx.foreignHolder(op.resourceType, op.physicalId);
-    } catch {
-      holding = { kind: 'unreadable', what: "the other stacks' state records (the scan failed)" };
-    }
-    if (holding?.kind === 'held') refusal = `${holding.by} holds it now`;
-    else if (holding?.kind === 'unreadable') {
-      refusal = `${holding.what} leaves open whether another stack holds it now`;
-    }
-  }
-  if (refusal === undefined) return true;
   const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
   if (
     locator &&
@@ -411,10 +377,49 @@ async function protectionRemovalProven(
     )
   ) {
     ctx.logger.warn(
-      safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection does not apply: ${refusal}. Its delete is refused while it is protected, and the journal keeps it`
+      safeMsg`  Rollback: leaving deletion protection on partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — --remove-protection does not apply: nothing proved it is the one the failed deploy created and that no other stack holds it. Its delete is refused while it is protected, and the journal keeps it`
     );
   }
   return false;
+}
+
+/**
+ * go-to-k/cdkd#4696 / #4658: before a replay of an earlier run's journal
+ * (`cdkd rollback`, `cdkd destroy`) deletes the proven orphan `op`, the two
+ * checks the success settle runs, in its order: another stack's state record
+ * must not hold it (nor be unreadable), and a name-keyed type's live identity
+ * must equal the journaled one. `'gone'` when AWS reports the id gone (settled
+ * without a delete); the reason to keep it, warned, otherwise; `undefined` when
+ * the delete may run.
+ */
+async function journaledOrphanKeepReason(
+  op: FailedOperation & { physicalId: string },
+  foreignHolder: NonNullable<RollbackExecutorContext['foreignHolder']>,
+  ctx: RollbackExecutorContext
+): Promise<{ keep: string } | 'gone' | undefined> {
+  const holding = await askForeignHolder(foreignHolder, op);
+  if (holding?.kind === 'held') {
+    return { keep: `${holding.by} holds a resource of that type under the same physical id now` };
+  }
+  if (holding?.kind === 'unreadable') {
+    return { keep: `${holding.what} leaves open whether another stack holds it now` };
+  }
+  // The identity is READ here and the delete runs after it, unconditioned on
+  // it: a name freed and reused between the two is not caught (the success
+  // settle makes the same trade, go-to-k/cdkd#4655).
+  const created = await createdResourceStillThere(op, ctx);
+  if (created === 'gone') return 'gone';
+  if (created === 'mismatch') {
+    return {
+      keep: 'the resource now under that id is another one (its identity differs from the one the failed deploy recorded, so its name was reused)',
+    };
+  }
+  if (created === 'unproven') {
+    return {
+      keep: 'nothing proves the resource now under that id is the one it created (it may have been deleted and its name reused)',
+    };
+  }
+  return undefined;
 }
 
 async function replaySingle(
@@ -920,6 +925,54 @@ async function replayFailedOperationsUnbound(
             );
             break;
           }
+          // go-to-k/cdkd#4696 / #4658: a replay of an earlier run's journal
+          // (a `foreignHolder` is supplied) deletes a journaled orphan only
+          // as the success settle would. Above the final-snapshot preparation
+          // and the `deleting` line: a kept resource is neither snapshotted
+          // nor announced. An orphan the settle already proved is not asked
+          // again. The automatic rollback supplies no `foreignHolder` (see
+          // `RollbackExecutorContext.foreignHolder`).
+          const orphanDeleteChecked =
+            op.physicalIdRecoveredFromError === true &&
+            ctx.foreignHolder !== undefined &&
+            ctx.orphanDeleteProven?.has(op) !== true;
+          if (orphanDeleteChecked) {
+            const verdict = await journaledOrphanKeepReason(
+              { ...op, physicalId: op.physicalId! },
+              ctx.foreignHolder!,
+              ctx
+            );
+            if (verdict === 'gone') {
+              logger.info(
+                safeMsg`  Rollback: partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) is already gone — nothing to delete`
+              );
+              if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+              await options.afterOp?.(op.logicalId);
+              ctx.recordEvent?.({
+                eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+                stackName,
+                operation: 'CREATE',
+                logicalId: op.logicalId,
+                resourceType: op.resourceType,
+                ...(deleteProvisionedBy && { provisionedBy: deleteProvisionedBy }),
+              });
+              break;
+            }
+            if (verdict !== undefined) {
+              const keep = verdict.keep;
+              // As `skip-failed-superseded`: nothing is deleted, the recorded
+              // id is named, masked, and the skip counts as unaddressed.
+              logger.warn(
+                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, but ${keep}; it is left as it is, and manual attention may be required`
+              );
+              recordRollbackSkip(
+                skipScope,
+                op,
+                `The failed CREATE created its resource before failing, but ${keep}, so the rollback left it as it is; manual attention may be required.`
+              );
+              break;
+            }
+          }
           createRollbackRoute = deleteProvisionedBy;
           // `DeletionPolicy: Snapshot` (issue #1362): snapshot BEFORE the
           // delete, through the same mechanism matrix as the completed-CREATE
@@ -986,7 +1039,12 @@ async function replayFailedOperationsUnbound(
           // no outer re-entry: the scope tells a protection flip's
           // compensation that any failure is the last, so the guard is put back.
           const removeProtection =
-            ctx.removeProtection === true && (await protectionRemovalProven(op, ctx));
+            ctx.removeProtection === true &&
+            protectionRemovalProven(
+              op,
+              ctx,
+              orphanDeleteChecked || ctx.orphanDeleteProven?.has(op) === true
+            );
           const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
             provider.delete(op.logicalId, op.physicalId!, op.resourceType, op.attemptedProperties, {
               expectedRegion: ctx.region,

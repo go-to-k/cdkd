@@ -167,16 +167,16 @@ describe('cdkd rollback --remove-protection (go-to-k/cdkd#4678)', () => {
     expect(seen[0]!.final).toBe(true);
   });
 
-  it('strips nothing without the flag, and scans no other stack', async () => {
+  it('strips nothing without the flag, and still scans the other stacks', async () => {
     install(structuredClone(orphanOp), { R: record('r-1', 'AWS::SSM::Parameter') });
     const backend = (await setupMock())!.stateBackend as { listStacks: ReturnType<typeof vi.fn> };
     await rollbackCommand('S', { ...BASE });
     expect(seen.map((s) => s.logicalId)).toEqual(['OrphanLb']);
     expect(seen[0]!.context).not.toHaveProperty('removeProtection');
     expect(seen[0]!.final).toBe(false);
-    // Only the stack selection reads the listing (the flagged run reads it
-    // twice, the scan's being the second); without the flag the scan never runs.
-    expect(backend.listStacks).toHaveBeenCalledOnce();
+    // The stack selection reads the listing, then the scan an orphan's delete
+    // asks with or without the flag (go-to-k/cdkd#4696).
+    expect(backend.listStacks).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -199,17 +199,17 @@ describe('cdkd rollback --remove-protection (go-to-k/cdkd#4678)', () => {
   });
 
   // E.g. a later `cdkd import` adopted the load balancer into stack B.
-  it("keeps the protection of an orphan another stack's record holds", async () => {
+  // go-to-k/cdkd#4696: kept, delete and all, not only its protection.
+  it("sends no delete to an orphan another stack's record holds", async () => {
     install(
       structuredClone(orphanOp),
       { R: record('r-1', 'AWS::SSM::Parameter') },
       { B: { Adopted: record(LB_ARN, LB_TYPE) } }
     );
     await rollbackCommand('S', { ...BASE, removeProtection: true }).catch(() => undefined);
-    expect(seen.map((s) => s.logicalId)).toEqual(['OrphanLb']);
-    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(seen).toEqual([]);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'stack B (us-east-1) holds it now'
+      'the state record of stack B (us-east-1) holds a resource of that type'
     );
   });
 

@@ -65,6 +65,9 @@ const orphanOp = {
   physicalId: 'orphan-stream',
   provisionedBy: 'sdk',
   physicalIdRecoveredFromError: true,
+  // go-to-k/cdkd#4658: the token its CREATE journaled, which the live read
+  // below matches, so the destroy may delete it.
+  createdResourceIdentity: 'created-token',
   attemptedProperties: {},
 };
 
@@ -118,23 +121,29 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
   const mockProviderDelete = vi.fn();
   const mockLoadJournal = vi.fn();
   const mockDropFailed = vi.fn();
+  const mockResourceIdentity = vi.fn();
+  const mockListStacks = vi.fn();
+  const mockGetState = vi.fn();
 
   function makeCtx() {
     return {
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
-        getState: vi.fn().mockResolvedValue(null),
+        getState: mockGetState,
         loadRollbackJournal: mockLoadJournal,
         dropRollbackJournalFailedOperations: mockDropFailed,
-        listStacks: vi.fn().mockResolvedValue([]),
+        listStacks: mockListStacks,
       } as unknown as S3StateBackend,
       lockManager: {
         acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {
-        getProviderFor: () => ({ provider: { delete: mockProviderDelete }, provisionedBy: 'sdk' }),
+        getProviderFor: () => ({
+          provider: { delete: mockProviderDelete, resourceIdentity: mockResourceIdentity },
+          provisionedBy: 'sdk',
+        }),
       } as unknown as ProviderRegistry,
       baseAwsClients: {} as AwsClients,
       baseRegion: REGION,
@@ -153,6 +162,9 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     mockProviderDelete.mockReset().mockResolvedValue(undefined);
     mockLoadJournal.mockReset().mockResolvedValue(null);
     mockDropFailed.mockReset().mockResolvedValue(0);
+    mockResourceIdentity.mockReset().mockResolvedValue('created-token');
+    mockListStacks.mockReset().mockResolvedValue([]);
+    mockGetState.mockReset().mockResolvedValue(null);
     infoSpy.mockReset();
     warnSpy.mockReset();
   });
@@ -240,6 +252,50 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(deleted()).toEqual(['phys-r']);
     expect(result.errorCount).toBe(0);
     expect(warn()).toContain('a later deploy or rollback may own a resource under that id now');
+  });
+
+  // go-to-k/cdkd#4658: the user deleted the orphan by hand and recreated a
+  // stream under its name; the destroy keeps it, as a warned skip.
+  it('keeps one whose live identity is not the journaled one, and still destroys the stack', async () => {
+    mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
+    mockResourceIdentity.mockResolvedValue('recreated-token');
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(mockResourceIdentity).toHaveBeenCalledWith('orphan-stream', 'AWS::Kinesis::Stream', {
+      expectedRegion: REGION,
+    });
+    expect(deleted()).toEqual(['phys-r']);
+    expect(result.errorCount).toBe(0);
+    expect(mockDeleteState).toHaveBeenCalledOnce();
+    expect(warn()).toContain('Skipping failed CREATE of O');
+    expect(warn()).toContain('orphan-stream');
+    expect(warn()).toContain('its name was reused');
+  });
+
+  // go-to-k/cdkd#4696: a later `cdkd import` adopted it into stack B.
+  it("keeps one another stack's record holds, and still destroys the stack", async () => {
+    mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'TestStack', region: REGION },
+      { stackName: 'B', region: REGION },
+    ]);
+    mockGetState.mockImplementation(async (name: string) =>
+      name === 'B'
+        ? {
+            state: {
+              ...makeState({
+                Imported: res({ physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream' }),
+              }),
+              stackName: 'B',
+            },
+          }
+        : null
+    );
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(deleted()).toEqual(['phys-r']);
+    expect(mockResourceIdentity).not.toHaveBeenCalled();
+    expect(result.errorCount).toBe(0);
+    expect(warn()).toContain('the state record of stack B (us-east-1) holds a resource');
+    expect(warn()).toContain('orphan-stream');
   });
 
   // State tracks that very resource under its logical id: the destroy's own

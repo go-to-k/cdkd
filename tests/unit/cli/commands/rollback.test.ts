@@ -17,6 +17,8 @@ vi.mock('../../../../src/provisioning/register-providers.js', () => ({
 const replayProvider = {
   delete: vi.fn().mockResolvedValue(undefined),
   update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
+  // go-to-k/cdkd#4658: a journaled orphan's live identity matches its token.
+  resourceIdentity: vi.fn(async (): Promise<unknown> => 'created-token'),
 };
 vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
@@ -1122,6 +1124,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
               provisionedBy: 'sdk',
               physicalId: 'phys-orphan',
               physicalIdRecoveredFromError: true,
+              createdResourceIdentity: 'created-token',
               replacedPhysicalId: 'phys-new',
               replacedResourceType: 'AWS::SQS::Queue',
             },
@@ -1162,6 +1165,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
               provisionedBy: 'sdk',
               physicalId: 'phys-orphan',
               physicalIdRecoveredFromError: true,
+              createdResourceIdentity: 'created-token',
               replacedPhysicalId: 'phys-new',
               replacedResourceType: 'AWS::SQS::Queue',
             },
@@ -1194,6 +1198,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
                 provisionedBy: 'sdk',
                 physicalId: 'phys-orphan',
                 physicalIdRecoveredFromError: true,
+                createdResourceIdentity: 'created-token',
                 replacedPhysicalId: 'phys-new',
                 replacedResourceType: 'AWS::SQS::Queue',
                 ...(deletionPolicy && { deletionPolicy }),
@@ -4125,6 +4130,7 @@ describe('cdkd rollback --revert-failed: a proven failed-CREATE orphan (go-to-k/
     physicalId: 'orphan-stream',
     provisionedBy: 'sdk',
     physicalIdRecoveredFromError: true,
+    createdResourceIdentity: 'created-token',
     attemptedProperties: {},
   };
 
@@ -4283,6 +4289,7 @@ describe('cdkd rollback (no --revert-failed): a proven failed-CREATE orphan (go-
     physicalId: 'orphan-stream',
     provisionedBy: 'sdk',
     physicalIdRecoveredFromError: true,
+    createdResourceIdentity: 'created-token',
     attemptedProperties: {},
   };
   // An ordinary failed UPDATE: still opt-in.
@@ -4339,6 +4346,73 @@ describe('cdkd rollback (no --revert-failed): a proven failed-CREATE orphan (go-
         .some((l) => /leaving partially-created O \(AWS::Kinesis::Stream\) in AWS \(DeletionPolicy: Retain\)/.test(l))
     ).toBe(true);
     expect(backend.popRollbackJournalSegment).toHaveBeenCalledOnce();
+  });
+
+  // go-to-k/cdkd#4658: deleted by hand and recreated under its name.
+  it('keeps one whose live identity is another: a warned skip, exit 2, the segment popped', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const backend = install([structuredClone(orphanOp)]);
+    replayProvider.resourceIdentity.mockResolvedValueOnce('recreated-token');
+    const err = await rollbackCommand('S', baseOpts).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(String((err as Error).message)).toContain('1 skipped/unrecoverable operation(s)');
+    const lines = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(lines).toContain('Skipping failed CREATE of O');
+    expect(lines).toContain('orphan-stream');
+    expect(lines).toContain('its name was reused');
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalledOnce();
+  });
+
+  // go-to-k/cdkd#4696: a later `cdkd import` adopted it into stack B.
+  it("keeps one another stack's record holds: a warned skip, exit 2", async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const stateOf = (stackName: string, resources: Record<string, unknown>) => ({
+      state: { version: 8, stackName, region: 'us-east-1', resources, outputs: {}, lastModified: 1 },
+      etag: 'e0',
+    });
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([
+        { stackName: 'S', region: 'us-east-1' },
+        { stackName: 'B', region: 'us-east-1' },
+      ]),
+      getState: vi.fn(async (name: string) =>
+        name === 'B'
+          ? stateOf('B', {
+              Imported: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream', properties: {} },
+            })
+          : stateOf('S', {})
+      ),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [structuredClone(orphanOp)],
+          },
+        ],
+      }),
+    });
+    const err = await rollbackCommand('S', baseOpts).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(replayProvider.resourceIdentity).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'the state record of stack B (us-east-1) holds a resource'
+    );
   });
 
   it('leaves the other failed ops as-is, and keeps them when the orphan delete fails', async () => {

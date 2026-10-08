@@ -16,7 +16,12 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
   loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
-const provider = vi.hoisted(() => ({ delete: vi.fn(), update: vi.fn() }));
+// go-to-k/cdkd#4658: the live identity matches the journaled token.
+const provider = vi.hoisted(() => ({
+  delete: vi.fn(),
+  update: vi.fn(),
+  resourceIdentity: async () => 'created-token',
+}));
 const registryCtor = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: registryCtor.mockImplementation(() => ({
@@ -43,7 +48,7 @@ const orphan = (logicalId: string) => ({
   resourceType: 'AWS::Kinesis::Stream',
   provisionedBy: 'sdk',
   physicalId: `${logicalId.toLowerCase()}-stream`,
-  physicalIdRecoveredFromError: true,
+  physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
   attemptedProperties: {},
 });
 

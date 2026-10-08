@@ -1774,6 +1774,7 @@
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
+        "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-explicit-name-rewrite",

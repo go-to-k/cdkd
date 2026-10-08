@@ -53,6 +53,8 @@ const replayProvider = {
   delete: vi.fn().mockResolvedValue(undefined),
   update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
   create: vi.fn().mockResolvedValue({ physicalId: 'old' }),
+  // go-to-k/cdkd#4658: the live identity matches the journaled token.
+  resourceIdentity: async () => 'created-token',
 };
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
@@ -202,7 +204,7 @@ const ARMS: Arm[] = [
           changeType: 'CREATE',
           resourceType: TYPE,
           physicalId: 'p',
-          physicalIdRecoveredFromError: true,
+          physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
         },
       ],
     },
