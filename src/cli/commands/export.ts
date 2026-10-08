@@ -37,6 +37,8 @@ import {
   displayLogicalId,
   JSON_LISTING_HOLE_VALUE,
   SHORT_NAME_MAX_CODE_POINTS,
+  accountArgs,
+  withheldAccountClause,
 } from '../../state/malformed-resources-bag.js';
 import {
   CreateChangeSetCommand,
@@ -3008,7 +3010,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           resolvedStackName,
           targetRegion,
           stateBackend,
-          state
+          state,
+          lockRecovery
         );
 
         // Run the same drift-baseline / cross-stack pre-flight the flat
@@ -3389,7 +3392,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             logger.info(`  ${preDeletedLine(entry.physicalId)}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            const orphan = orphanCommandFor(resolvedStackName, targetRegion);
+            const orphan = orphanCommandFor(resolvedStackName, targetRegion, lockRecovery);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${plainOrNotShown(entry.logicalId)} ` +
                 `(${plainOrNotShown(entry.resourceType)}, physicalId: ${recordValueOrNotShown(entry.physicalId)}) failed: ` +
@@ -3457,7 +3460,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `phase 2 (Stage etc.). They are gone in AWS but absent from the CFn stack. ` +
                 `Running phase 2 UPDATE manually will CFn-CREATE them fresh.\n`
               : '';
-          const orphan = orphanCommandFor(resolvedStackName, targetRegion);
+          const orphan = orphanCommandFor(resolvedStackName, targetRegion, lockRecovery);
           throw new Error(
             `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${displayAwsMessage(msg)}\n\n` +
               `The CloudFormation stack ${quotedOrNotShown(cfnStackName)} now contains the imported ` +
@@ -4398,20 +4401,41 @@ export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[
  * record`) flips the shell quote so a pasted `'x; touch OWNED; #'` runs
  * (go-to-k/cdkd#3436's shape C, measured by this change's paste case).
  */
-function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
+function orphanCommandFor(
+  stackName: unknown,
+  region: unknown,
+  /**
+   * The run's account flags (go-to-k/cdkd#4648): `--profile`, the resolved
+   * bucket, the prefix. They ride on the command, named or template, so a
+   * pasted drop removes the record in the bucket this run read; a refused
+   * one is a hole the note explains. The IDENTITY verdict below ignores them.
+   */
+  recovery?: LockRecoveryContext
+): OrphanCommand {
+  const account = accountArgs(recovery);
+  const accountNote = spacedAccountClause(recovery, "the next line's command prints");
   // `unknown`, and handed to the gate UNCONVERTED (go-to-k/cdkd#3369): a
   // non-string is withheld as `altered`, since `displaySafe` renders it as a
   // different value. Never `String(x)` — that would make `123` exact and name
   // it.
-  const built = pasteableCommand('cdkd state orphan', [
+  // ONE identity list (go-to-k/cdkd#4648 review): the verdict is taken from
+  // it alone, and the printed command is it plus the account, so the two
+  // cannot drift apart.
+  const identity: CommandArg[] = [
     // `plainIdent` (go-to-k/cdkd#3997): the command sits on a labelled line
     // or in a list, the shape go-to-k/cdkd#3328 / #3696 gate that way, since
     // a name that renders exactly can still spell a second line when a
     // terminal wraps its padding.
     { value: stackName as string, hole: 'stack', opts: { plainIdent: true } },
     { flag: '--stack-region', value: region as string, hole: 'region', opts: { plainIdent: true } },
-  ]);
-  if (built.exact) return { command: built.command, note: '' };
+  ];
+  const built = pasteableCommand('cdkd state orphan', identity);
+  if (built.exact) {
+    return {
+      command: pasteableCommand('cdkd state orphan', [...identity, ...account]).command,
+      note: accountNote,
+    };
+  }
   const reasons = [
     orphanWithheldPart('stack name', stackName, built, 'stack'),
     orphanWithheldPart('region', region, built, 'region'),
@@ -4429,19 +4453,28 @@ function orphanCommandFor(stackName: unknown, region: unknown): OrphanCommand {
   // the state-deletion warn's `catch`, where it would abort the cleanup loop.
   const dashName = typeof stackName === 'string' && stackName.startsWith('-');
   return {
-    command: `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`,
+    command: pasteableCommand('cdkd state orphan', [
+      { hole: 'stack' },
+      { flag: '--stack-region', hole: 'region' },
+      ...account,
+    ]).command,
     // Addressed to "the next line's command", not "this record": a caller
     // listing several records prints one note line above each command line.
     note:
       ` The next line's command names neither value, because its record's ` +
       `${reasons.join('; and its ')}. List the records with ` +
-      `'cdkd state list --json' and ` +
+      // The listing reads the run's bucket only with the same flags
+      // (go-to-k/cdkd#4648).
+      (account.length > 0
+        ? `'cdkd state list --json' run with the same account flags as the next line's command, and `
+        : `'cdkd state list --json' and `) +
       (dashName
         ? `repair or remove the one whose stackName and region match by hand — this stack ` +
           `name begins with a '-' and could parse as an option in that position, so do not ` +
           `fill a hole with it.`
         : `act on the one whose stackName and region match, replacing each quoted hole, ` +
-          `quotes included, with ${JSON_LISTING_HOLE_VALUE}.`),
+          `quotes included, with ${JSON_LISTING_HOLE_VALUE}.`) +
+      accountNote,
   };
 }
 
@@ -4544,7 +4577,12 @@ export async function buildCdkdStateStackTree(
   rootStackName: string,
   region: string,
   stateBackend: S3StateBackend,
-  prefetchedRootState?: StackState
+  prefetchedRootState?: StackState,
+  /**
+   * The run's account flags (go-to-k/cdkd#4648), carried on the drop command
+   * a missing-child refusal prints.
+   */
+  recovery?: LockRecoveryContext
 ): Promise<CdkdStateStackTree> {
   let rootState: StackState;
   if (prefetchedRootState !== undefined) {
@@ -4565,14 +4603,17 @@ export async function buildCdkdStateStackTree(
     }
     rootState = rootResult.state;
   }
-  return walkCdkdStateStackTree(rootStackName, region, rootState, stateBackend);
+  return walkCdkdStateStackTree(rootStackName, region, rootState, stateBackend, recovery);
 }
 
 async function walkCdkdStateStackTree(
   stackName: string,
   region: string,
   state: StackState,
-  stateBackend: S3StateBackend
+  stateBackend: S3StateBackend,
+  // The run's account flags for the missing-child refusal's drop command
+  // (go-to-k/cdkd#4648).
+  recovery: LockRecoveryContext | undefined
 ): Promise<CdkdStateStackTree> {
   const nestedChildren = new Map<string, CdkdStateStackTree>();
 
@@ -4629,7 +4670,7 @@ async function walkCdkdStateStackTree(
     const childStackName = `${stackName}~${logicalId}`;
     const childResult = await stateBackend.getState(childStackName, region);
     if (!childResult) {
-      const orphan = orphanCommandFor(stackName, region);
+      const orphan = orphanCommandFor(stackName, region, recovery);
       throw new Error(
         `cdkd state is missing nested-child ${quotedOrNotShown(childStackName)} (${quotedRegion(region)}). ` +
           `Parent stack ${quotedOrNotShown(stackName)} lists ${quotedOrNotShown(logicalId)} as an ` +
@@ -4676,7 +4717,13 @@ async function walkCdkdStateStackTree(
     }
     nestedChildren.set(
       logicalId,
-      await walkCdkdStateStackTree(childStackName, region, childResult.state, stateBackend)
+      await walkCdkdStateStackTree(
+        childStackName,
+        region,
+        childResult.state,
+        stateBackend,
+        recovery
+      )
     );
   }
   return { stackName, region, state, nestedChildren };
@@ -4987,7 +5034,10 @@ export function buildPerStackImportNodes(
   rootTemplate: Record<string, unknown>,
   rootNestedTemplatePaths: Record<string, string>,
   rootTemplateFormat: TemplateFormat,
-  tree: CdkdStateStackTree
+  tree: CdkdStateStackTree,
+  // The run's account flags for the out-of-sync child's drop command
+  // (go-to-k/cdkd#4648).
+  recovery?: LockRecoveryContext
 ): Map<string, PerStackImportNode> {
   if (tree.stackName !== rootStackName) {
     throw new Error(
@@ -5019,7 +5069,7 @@ export function buildPerStackImportNodes(
     for (const [childLogicalId, childNode] of node.nestedChildren) {
       const childTemplatePath = nodeNestedTemplatePaths[childLogicalId];
       if (!childTemplatePath) {
-        const orphan = orphanCommandFor(childNode.stackName, childNode.region);
+        const orphan = orphanCommandFor(childNode.stackName, childNode.region, recovery);
         throw new Error(
           `cdkd export: nested-stack child ${quotedOrNotShown(childLogicalId)} under parent ` +
             `${quotedOrNotShown(node.stackName)} has cdkd state but no Metadata['aws:asset:path'] ` +
@@ -6885,10 +6935,10 @@ export function reportDriftBaselineGaps(
    */
   template?: Record<string, unknown>,
   /**
-   * The run's account flags (go-to-k/cdkd#4159), carried on the unreadable-bag
-   * warning's `cdkd state show` pointer. The baseline-gap commands below stay
-   * unqualified: they are this report's own remedies, not the malformed-record
-   * pointer, and the warning returns before any of them prints.
+   * The run's account flags, carried on every command this report prints: the
+   * unreadable-bag warning's `cdkd state show` pointer (go-to-k/cdkd#4159) and
+   * the baseline-gap `cdkd state show` / `cdkd state refresh-observed` commands
+   * (go-to-k/cdkd#4648) — the latter WRITES, so a paste must reach this bucket.
    */
   recovery?: LockRecoveryContext
 ): void {
@@ -6996,8 +7046,19 @@ export function reportDriftBaselineGaps(
   // A record with NO region is withheld too, for a different reason:
   // `cdkd state refresh-observed` refuses a legacy region-less record outright,
   // so a command for one could only fail. The advice says to migrate first.
+  // The IDENTITY verdict decides whether a command is offered; the run's
+  // account flags then ride on it (go-to-k/cdkd#4648), so the pasted WRITE
+  // reaches the bucket this export read. An account hole is explained by its
+  // own sentence, never by the identity one.
+  const account = accountArgs(recovery);
+  const accountNote = (where: string): string => withheldAccountClause(recovery, where);
   const refresh = pasteableCommand('cdkd state refresh-observed', refArgs);
-  const refreshCommand = region !== undefined && refresh.exact ? refresh.command : undefined;
+  const refreshCommand =
+    region !== undefined && refresh.exact
+      ? pasteableCommand('cdkd state refresh-observed', [...refArgs, ...account]).command
+      : undefined;
+  const refreshNote =
+    refreshCommand === undefined ? '' : accountNote('the command at the end of this line prints');
   const refreshWithheld =
     region === undefined
       ? `'cdkd state refresh-observed' for this stack once it is migrated: this record has ` +
@@ -7042,6 +7103,11 @@ export function reportDriftBaselineGaps(
   const unreadableCount = entries.length - readable.length;
   if (unreadableCount > 0) {
     const inspect = pasteableCommand('cdkd state show', refArgs);
+    const inspectCommand = pasteableCommand('cdkd state show', [
+      ...refArgs,
+      { literal: '--json' },
+      ...account,
+    ]).command;
     const unreadable = entries
       .filter(([, r]) => !isReadableResourceEntry(r))
       .map(([logicalId]) => logicalId);
@@ -7066,12 +7132,18 @@ export function reportDriftBaselineGaps(
               ? `print safely. This stack name begins with '-', which the CLI could read as an ` +
                 `option however it is quoted, so do not fill the stack hole with it: repair or ` +
                 `remove the record by hand. `
-              : `print safely; fill it from 'cdkd state list --json', replacing the hole, quotes ` +
-                `included, with ${JSON_LISTING_HOLE_VALUE}. `)) +
+              : `print safely; fill it from 'cdkd state list --json'` +
+                // The listing reads this run's bucket only with the same flags
+                // (go-to-k/cdkd#4648 review).
+                (account.length > 0
+                  ? ` run with the same account flags as the command after the list below`
+                  : '') +
+                `, replacing the hole, quotes included, with ${JSON_LISTING_HOLE_VALUE}. `)) +
         // Not "cannot be migrated": a TEMPLATED row that is an object with a
         // physical id but no resource type clears `buildImportPlan`'s
         // `!stateEntry.physicalId` block and is planned from the template's own
         // type, so that claim would contradict the plan printed beside it.
+        accountNote('the command after the list below prints') +
         `Inspect it with the command after the list below.`
     );
     for (const logicalId of unreadable.slice(0, NAMED_BASELINE_IDS)) {
@@ -7087,7 +7159,7 @@ export function reportDriftBaselineGaps(
     // the shape an apostrophe earlier on that line turns inside out. AFTER the
     // id rows, so they do not read as hanging off the command (m2 of the
     // go-to-k/cdkd#4011 review).
-    logger.warn(safeMsg`Inspect it with: ${inspect.command} --json`);
+    logger.warn(safeMsg`Inspect it with: ${inspectCommand}`);
   }
 
   const missing = readable.filter(([, r]) => r.observedProperties === undefined);
@@ -7106,7 +7178,7 @@ export function reportDriftBaselineGaps(
           ? `template. Repair the ${unreadableCount} unreadable record(s) named above first — ` +
             `'cdkd state refresh-observed' refuses a record that holds one — then capture an ` +
             `AWS-current baseline before export.`
-          : `template. Capture an AWS-current baseline before export — any redeploy does ` +
+          : `template. ${refreshNote}Capture an AWS-current baseline before export — any redeploy does ` +
             (refreshCommand !== undefined
               ? `it, or run: ${refreshCommand}`
               : `it, or run ${refreshWithheld}`))
@@ -7137,7 +7209,7 @@ export function reportDriftBaselineGaps(
             `'cdkd state refresh-observed' refuses a record that holds one. Then capture a ` +
             `baseline and run 'cdkd drift' to verify the stack matches AWS.`
           : refreshCommand !== undefined
-            ? `Capture a baseline before export, then run 'cdkd drift' to verify the stack ` +
+            ? `${refreshNote}Capture a baseline before export, then run 'cdkd drift' to verify the stack ` +
               `matches AWS, with: ${refreshCommand}`
             : `Capture a baseline before export with ${refreshWithheld} Then run ` +
               `'cdkd drift' to verify the stack matches AWS.`)
@@ -8466,7 +8538,8 @@ export async function runPerStackImportLoop(args: {
     rootTemplate,
     rootStackInfoNestedTemplates,
     rootTemplateFormat,
-    tree
+    tree,
+    args.lockRecovery
   );
   const leafFirst = flattenCdkdStateTreeLeafFirst(tree);
 
@@ -8809,7 +8882,7 @@ export async function runPerStackImportLoop(args: {
       const orphanLines = (plans: readonly PerStackPlan[]): string =>
         plans
           .map((p) => {
-            const orphan = orphanCommandFor(p.cdkdName, p.region);
+            const orphan = orphanCommandFor(p.cdkdName, p.region, args.lockRecovery);
             const target = isPasteableIdent(p.cfnName)
               ? `CloudFormation stack ${p.cfnName}`
               : 'a CloudFormation stack whose name is not a plain identifier';
@@ -9384,7 +9457,7 @@ export async function runPerStackImportLoop(args: {
             region: node.region,
             reason: err instanceof Error ? err.message : String(err),
           });
-          const orphan = orphanCommandFor(node.stackName, node.region);
+          const orphan = orphanCommandFor(node.stackName, node.region, args.lockRecovery);
           logger.warn(
             `Failed to delete cdkd state for ${quotedOrNotShown(node.stackName)} ` +
               `(${quotedRegion(node.region)}): ` +
@@ -9425,8 +9498,16 @@ export async function runPerStackImportLoop(args: {
             // that name in EVERY region, which is wider than this list
             // describes and is the widening `orphanCommandFor` refuses to emit.
             `Recover with the command below, once per record.` +
-            `\nRecover with: cdkd state orphan ${commandHole('stack')} ` +
-            `--stack-region ${commandHole('region')}`
+            // The run's account flags (go-to-k/cdkd#4648), so each pasted drop
+            // removes the record in the bucket this export read.
+            spacedAccountClause(args.lockRecovery, 'the command below prints') +
+            `\nRecover with: ${
+              pasteableCommand('cdkd state orphan', [
+                { hole: 'stack' },
+                { flag: '--stack-region', hole: 'region' },
+                ...accountArgs(args.lockRecovery),
+              ]).command
+            }`
         );
       }
 
@@ -9916,4 +9997,14 @@ function replaceAtCoordinate(
     return { ...record, [head]: replaceAtCoordinate(record[head], rest, replacement) };
   }
   return node;
+}
+
+/**
+ * {@link withheldAccountClause}'s sentence with one leading space, or `''`
+ * when no account value was withheld: the one spelling this file's messages
+ * join it into prose with (go-to-k/cdkd#4648).
+ */
+function spacedAccountClause(recovery: LockRecoveryContext | undefined, where: string): string {
+  const clause = withheldAccountClause(recovery, where).trimEnd();
+  return clause === '' ? '' : ` ${clause}`;
 }

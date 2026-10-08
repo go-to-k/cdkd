@@ -22,6 +22,7 @@ import { producerRecordKey } from '../../state/record-keys.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  accountArgs,
   isReadableResourceEntry,
   malformedDriftResourcePropertiesWarning,
   malformedResourceEntriesWarning,
@@ -33,6 +34,7 @@ import {
   repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
   UNREADABLE_RESOURCES_MAP_ROW,
+  withheldAccountClause,
 } from '../../state/malformed-resources-bag.js';
 import {
   buildLockContentionMessage,
@@ -6593,7 +6595,7 @@ async function runRevert(
     statePrefix: stateConfig.prefix,
   };
 
-  printRevertPlan(reports, out);
+  printRevertPlan(reports, out, lockRecovery);
 
   if (options.dryRun) {
     logger.info('--dry-run: AWS will NOT be modified. Re-run without --dry-run to apply.');
@@ -7981,7 +7983,17 @@ function revertCommandLine(stackName: string, region: string): string | undefine
  * go-to-k/cdkd#3949): a forged row here misstates what the operator confirms.
  * Exported for unit testing.
  */
-export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
+export function printRevertPlan(
+  reports: StackDriftReport[],
+  out: HumanTextSink,
+  /**
+   * The run's account flags (go-to-k/cdkd#4648), carried on the
+   * `cdkd state refresh-observed` command the plan offers: it WRITES, so a
+   * pasted one must reach the bucket this run read. A refused value is a hole
+   * the line above it explains.
+   */
+  recovery?: LockRecoveryContext
+): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
     // reason the accept plan asks it.
@@ -8137,8 +8149,13 @@ export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink)
             ? pasteableCommand('cdkd state refresh-observed', [
                 { value: report.stackName, hole: 'stack' },
                 { flag: '--stack-region', value: report.region, hole: 'region' },
+                ...accountArgs(recovery),
               ])
             : undefined;
+          const refreshAccountNote =
+            refresh === undefined
+              ? ''
+              : withheldAccountClause(recovery, 'the command below prints').trimEnd();
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
@@ -8146,7 +8163,7 @@ export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink)
                 ? `Re-deploy if you want them reverted too; this record's identity cannot be ` +
                   `named safely in a command, so none is offered.\n`
                 : `Populate observedProperties with the command below, or re-deploy, if you ` +
-                  `want them reverted too.\n`)
+                  `want them reverted too.${refreshAccountNote === '' ? '' : ` ${refreshAccountNote}`}\n`)
           );
           // go-to-k/cdkd#3307's `--stack-region` requirement for this site,
           // closed through go-to-k/cdkd#3436's fold-in. The issue's stated
@@ -8166,8 +8183,11 @@ export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink)
           // of it. Three sites deciding "may I name this target" by three
           // hand-built conditions is the defect go-to-k/cdkd#3499 closed one
           // module over; one predicate means one probe can red all three.
-          // `refresh !== undefined`, not `refresh.exact === true`: the second
-          // is SUBSUMED and no mutant can red it. `isPasteableIdent` requires
+          // `refresh !== undefined`, not `refresh.exact === true`: the IDENTITY
+          // half of `.exact` is subsumed by `mayNameTarget`, and its other half
+          // is the account holes (go-to-k/cdkd#4648), which must not suppress
+          // the command -- a refused `--profile` is a hole the note above
+          // explains, never a reason to drop the remedy. `isPasteableIdent` requires
           // `^[A-Za-z0-9][A-Za-z0-9~_.-]*$` plus `displayIdent(v) === v`, which
           // is strictly stronger than the command gate on every arm — it starts
           // at an alphanumeric (no option), admits no `*` or `/` (no pattern),

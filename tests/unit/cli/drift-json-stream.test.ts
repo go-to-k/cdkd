@@ -809,7 +809,7 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     // held in several regions is ambiguous. The command is now gated and on a
     // labelled line of its own, carrying BOTH.
     expect(stderr).toMatch(
-      /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+      /^ {6}Populate with: cdkd state refresh-observed TestStack --stack-region us-east-1 --state-bucket test-bucket$/m
     );
     // ...and the prose points at it rather than naming a command inline, so a
     // pasted sentence carries nothing runnable.

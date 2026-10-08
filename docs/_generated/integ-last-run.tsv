@@ -87,7 +87,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-07T22:40:53Z	PASS	336	verify.sh	PR #4686 on v11 (#4639 S3 CreateBucket replay refusal); rc 0, destroy clean, orph clean
+drift-revert	2026-10-08T05:48:01Z	PASS	351	verify.sh	rc ok, orph clean (#4648)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
 drift-revert-vpc	2026-10-07T18:43:38Z	PASS	371	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
@@ -129,7 +129,7 @@ eventbridge-pipes	2026-10-07T13:48:36Z	PASS	185	verify.sh	PR #4664 (#4639 data/s
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-07T18:47:31Z	PASS	230	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
+export	2026-10-08T05:48:01Z	PASS	235	verify.sh	rc ok, orph clean (#4648)
 export-nested-stack	2026-10-07T18:50:43Z	PASS	190	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
@@ -339,7 +339,7 @@ stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR
 stage-assets	2026-10-05T10:27:06Z	PASS	140	verify.sh	rc ok, orph clean (#2624 PR #4572)
 stale-attribute-heal	2026-10-03T05:56:27Z	PASS	85	verify.sh	rc ok, orph clean (#4497)
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
-state-info-command	2026-10-07T12:02:58Z	PASS	140	verify.sh	rc ok, orph clean (#4648)
+state-info-command	2026-10-08T05:48:01Z	PASS	155	verify.sh	rc ok, orph clean (#4648)
 stepfunctions	2026-10-03T04:29:12Z	PASS	92	verify.sh	rc ok, orph clean (#4283 PR #4449)
 stepfunctions-logging	2026-09-09T03:36:24Z	PASS	310	verify.sh	rc 0; 1a 6 log-dest retries, 4a 5 assume-role (+1 log-dest tail); 2 destroys 0 errors (#2801)
 stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean

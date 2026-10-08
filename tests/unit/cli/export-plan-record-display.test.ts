@@ -315,7 +315,10 @@ function infoLines(): string[] {
 const REGION_ALT_NOTE =
   "The next line's command names neither value, because its record's region does NOT " +
   'render exactly (another record may render identically). List the records with ' +
-  "'cdkd state list --json' and act on the one whose stackName and region match, replacing " +
+  // Every run carries a resolved bucket, so the listing pointer says to carry
+  // the same account flags (go-to-k/cdkd#4648).
+  "'cdkd state list --json' run with the same account flags as the next line's command, and " +
+  "act on the one whose stackName and region match, replacing " +
   'each quoted hole, quotes included, with the value decoded from its JSON string, then shell-quoted.';
 
 describe('cdkd export --dry-run renders recorded ids in the plan with their own boundary', () => {
@@ -452,7 +455,7 @@ describe('cdkd export renders the pre-deleted policy id with its own boundary on
     expect(
       message!.endsWith(
         "  4. Once phase 2 succeeds, clean up cdkd's stale state record.\n" +
-          `     Run: cdkd state orphan ${STACK} --stack-region ${REGION}`
+          `     Run: cdkd state orphan ${STACK} --stack-region ${REGION} --state-bucket test-bucket`
       )
     ).toBe(true);
   });
@@ -475,7 +478,7 @@ describe('cdkd export renders the pre-deleted policy id with its own boundary on
           `  ${step}. Once phase 2 succeeds, clean up cdkd's stale state record. ` +
             REGION_ALT_NOTE +
             '\n' +
-            "     Run: cdkd state orphan '<stack>' --stack-region '<region>'"
+            "     Run: cdkd state orphan '<stack>' --stack-region '<region>' --state-bucket test-bucket"
         )
       ).toBe(true);
     }
@@ -489,7 +492,7 @@ describe('cdkd export renders the pre-deleted policy id with its own boundary on
     expect(
       message!.endsWith(
         "  3. Once phase 2 succeeds, clean up cdkd's stale state record.\n" +
-          `     Run: cdkd state orphan ${STACK} --stack-region ${REGION}`
+          `     Run: cdkd state orphan ${STACK} --stack-region ${REGION} --state-bucket test-bucket`
       )
     ).toBe(true);
   });
