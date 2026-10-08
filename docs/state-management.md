@@ -1086,7 +1086,8 @@ reach is masked by the template's positions too, while the template still
 names it as the same logical id and type.
 
 A value that DID change since the last deploy is applied by that first deploy
-as before, a replacement included when it feeds a create-only property. The
+as before: a replacement where a change to the property replaces the resource,
+an in-place update where cdkd updates that property in place. A replacement's
 warning names the cause, never the value: "a NoEcho parameter's value changed
 since the last deploy" where the property is the parameter itself, otherwise
 "the value at its NoEcho position changed since the last deploy". The recorded
