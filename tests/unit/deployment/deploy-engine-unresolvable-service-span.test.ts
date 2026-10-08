@@ -95,7 +95,6 @@ describe('DeployEngine - a secret assembled into an unresolvable reference fails
     stateBackend = {
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
-      listStacks: vi.fn().mockResolvedValue([]),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),

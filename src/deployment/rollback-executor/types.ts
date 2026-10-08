@@ -245,10 +245,10 @@ export interface RollbackExecutorContext {
    * go-to-k/cdkd#4705: who else holds a resource the failed deploy created,
    * asked by a deploy's AUTOMATIC rollback (`performRollback`, its only
    * setter) before it deletes a completed CREATE or a proven failed-CREATE
-   * orphan. A create can adopt a resource that already existed under its
-   * name, so another stack's record (same prefix), or the same stack under
-   * another state prefix, may own it. `held` or `unreadable` keeps the
-   * resource: a skip, which keeps the journal and warns.
+   * orphan. A create can be handed a resource that already existed under its
+   * generated name, so the same stack under another state prefix may own it
+   * (`DeployEngineOptions.crossPrefixHolder` only). `held` or `unreadable`
+   * keeps the resource: a skip, which keeps the journal and warns.
    */
   createdResourceHolder?:
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)

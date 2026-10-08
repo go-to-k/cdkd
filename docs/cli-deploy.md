@@ -584,7 +584,7 @@ stack, before the `--require-approval` prompt and before anything is changed;
 an ordinary redeploy lists nothing. A replacement the deploy finds only on
 reading a resource back is checked then, and a refusal keeps that resource and
 exits `2`. A failed deploy's automatic rollback keeps, rather than deletes, a
-created resource another record may hold. If S3 denies the listing or a read,
+created resource when another prefix records the stack. If S3 denies the listing or a read,
 the deploy warns and continues. The check's cost grows with the bucket's top-level
 prefixes, so prefer a dedicated state bucket.
 

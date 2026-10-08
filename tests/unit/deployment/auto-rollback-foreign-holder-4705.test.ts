@@ -2,8 +2,9 @@
  * go-to-k/cdkd#4705 (review R5-1): a deploy's AUTOMATIC rollback asks who else
  * holds a resource the failed deploy created before deleting it. A create can
  * adopt a resource that already existed under its name (an SQS queue, an SNS
- * topic), so the same stack recorded under another state prefix, or another
- * stack of this prefix, may own it.
+ * topic), so the same stack recorded under another state prefix may own it.
+ * Only that question is asked (review R6-1): the same-prefix scan, which fails
+ * closed on any unreadable record, is the settle's alone.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
@@ -49,6 +50,7 @@ const QUEUE = 'AWS::SQS::Queue';
 describe('the automatic rollback asks who else holds a created resource (go-to-k/cdkd#4705)', () => {
   let deleteCalls: string[];
   let journalDeletes: number;
+  let lastBackend: { listStacks: ReturnType<typeof vi.fn> } | undefined;
 
   beforeEach(() => {
     warned.length = 0;
@@ -74,6 +76,8 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
   function buildEngine(opts: {
     crossPrefixHolder?: (stackName: string) => Promise<ForeignHolding>;
     otherStacks?: Record<string, Record<string, ResourceState>>;
+    /** A region-less legacy record under this prefix: the same-prefix scan's fail-closed case. */
+    legacyRef?: boolean;
   }): DeployEngine {
     const provider = {
       create: vi.fn(async (logicalId: string) => {
@@ -109,11 +113,13 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
       listStacks: vi.fn(async () => [
         { stackName: STACK, region: 'us-east-1' },
         ...Object.keys(others).map((stackName) => ({ stackName, region: 'us-east-1' })),
+        ...(opts.legacyRef === true ? [{ stackName: 'Legacy' }] : []),
       ]),
       deleteRollbackJournal: vi.fn(async () => {
         journalDeletes++;
       }),
     };
+    lastBackend = stateBackend;
     const deps: Record<string, string[]> = { Queue: [], FailLater: ['Queue'] };
     return new DeployEngine(
       stateBackend as never,
@@ -178,7 +184,11 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
     expect(journalDeletes).toBe(0);
   });
 
-  it('keeps one another stack of this prefix holds, before asking the other prefixes', async () => {
+  // Review R6-1: this case used to KEEP the queue (the same-prefix scan ran
+  // first). Another stack of this prefix has other generated names, so a
+  // create cannot have been handed its resource; only the other prefixes are
+  // asked, and on their clear answer the queue is deleted.
+  it('a same-prefix sibling recording the id does not stop the delete: only the other prefixes are asked', async () => {
     const crossPrefixHolder = vi.fn(async (): Promise<ForeignHolding> => undefined);
     await expect(
       buildEngine({
@@ -194,10 +204,32 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
         },
       }).deploy(STACK, template)
     ).rejects.toThrow(/FailLater/);
-    expect(deleteCalls).toEqual([]);
-    expect(keptLines()).toHaveLength(1);
-    expect(keptLines()[0]).toContain('Sibling');
-    expect(crossPrefixHolder).not.toHaveBeenCalled();
+    expect(deleteCalls).toEqual(['Queue']);
+    expect(keptLines()).toEqual([]);
+    expect(crossPrefixHolder).toHaveBeenCalledWith(STACK);
+  });
+
+  // The regression guard (review R6-1): a record the same-prefix scan cannot
+  // read (a region-less legacy key; a peer's newer-schema record) made that
+  // scan answer `unreadable` for every id, so every rollback in the prefix
+  // kept everything it created.
+  it('an unreadable record under the same prefix does not stop the delete, and the bucket is not listed', async () => {
+    const crossPrefixHolder = vi.fn(async (): Promise<ForeignHolding> => undefined);
+    await expect(
+      buildEngine({ crossPrefixHolder, legacyRef: true }).deploy(STACK, template)
+    ).rejects.toThrow(/FailLater/);
+    expect(deleteCalls).toEqual(['Queue']);
+    expect(keptLines()).toEqual([]);
+    expect(skipSummary()).toEqual([]);
+    expect(lastBackend!.listStacks).not.toHaveBeenCalled();
+  });
+
+  it('without a cross-prefix holder (a nested child, a library caller) it deletes, asking nothing', async () => {
+    await expect(buildEngine({ legacyRef: true }).deploy(STACK, template)).rejects.toThrow(
+      /FailLater/
+    );
+    expect(deleteCalls).toEqual(['Queue']);
+    expect(lastBackend!.listStacks).not.toHaveBeenCalled();
   });
 
   it('clear: deletes the created resource as before', async () => {

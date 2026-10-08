@@ -396,12 +396,21 @@ export async function performRollback(
     [{ operations: completedOperations, failedOperations: orphanOps }],
     priorOrphans
   );
+  // go-to-k/cdkd#4705: a create may have been handed a resource that existed
+  // under its generated name, which only the SAME stack name deployed under
+  // another state prefix shares. So each delete asks the cross-prefix holder
+  // alone (memoized, run only when something is to be deleted). Not the
+  // same-prefix scan the settle runs: another stack there has other generated
+  // names, and that scan fails closed on any unreadable record, which would
+  // turn every rollback in the prefix into keep-everything.
+  const crossPrefixHolder = this.options.crossPrefixHolder;
+  let crossPrefixAnswer: Promise<ForeignHolding> | undefined;
   const ctx = {
     ...this.rollbackExecutorContext(previousState, stackName),
-    // go-to-k/cdkd#4705: a create may have adopted a resource another record
-    // owns (its own stack under another state prefix included), so each
-    // delete asks first. The scans run only when something is to be deleted.
-    createdResourceHolder: foreignHolderResolver(this)({ stackName, region: this.stackRegion }),
+    createdResourceHolder:
+      crossPrefixHolder === undefined
+        ? undefined
+        : (): Promise<ForeignHolding> => (crossPrefixAnswer ??= crossPrefixHolder(stackName)),
   };
   // go-to-k/cdkd#4225: one record of completed writes across both replays.
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
@@ -469,8 +478,7 @@ export async function performRollback(
 }
 
 /**
- * Who else holds a resource, for the automatic rollback and the success
- * settle alike: one same-prefix scan of the bucket's other stacks
+ * Who else holds a resource, for the success settle: one same-prefix scan of the bucket's other stacks
  * (`makeForeignHolderScan`, made lazily on the first question), then, only
  * when it found no holder, the bucket's OTHER state prefixes
  * (`options.crossPrefixHolder`, go-to-k/cdkd#4705), asked once per stack.

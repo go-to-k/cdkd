@@ -95,11 +95,12 @@ cdkd refuses the case it can see, before touching any resource:
   question first. When another prefix records the stack, or the check fails,
   it keeps that resource, warns, and exits 2. When S3 refuses the check (403),
   it warns and deletes the resource as it did before the check existed.
-- A failed deploy's automatic rollback asks the same before deleting a
-  resource the deploy created, since a create can take over a resource that
-  already existed under its name: when another stack's record, or the stack
-  under another prefix, may hold it, the rollback keeps it, warns naming who,
-  and leaves it in the rollback journal. A 403 warns and deletes, as above.
+- A failed deploy's automatic rollback asks whether another prefix records
+  the stack before deleting a resource the deploy created, since a create can
+  take over a resource that already existed under its generated name. When
+  one does, or the check fails, the rollback keeps the resource, warns naming
+  the prefix, and leaves it in the rollback journal. A 403 warns and deletes,
+  as above.
 
 A record under another prefix blocks only when it can own a resource: it lists
 resources or rollback-orphaned resources, or its rollback journal holds a

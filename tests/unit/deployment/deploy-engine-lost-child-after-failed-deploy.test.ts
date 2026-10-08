@@ -141,11 +141,7 @@ function makeProvider(): Provider {
 describe('DeployEngine - a failed deploy forgets the children it never restored (go-to-k/cdkd#4443)', () => {
   let sdk: Provider;
   let cc: Provider;
-  let stateBackend: {
-    getState: ReturnType<typeof vi.fn>;
-    saveState: ReturnType<typeof vi.fn>;
-    listStacks: ReturnType<typeof vi.fn>;
-  };
+  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -154,7 +150,6 @@ describe('DeployEngine - a failed deploy forgets the children it never restored 
     stateBackend = {
       getState: vi.fn().mockResolvedValue({ state: priorState(), etag: 'etag-old' }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
-      listStacks: vi.fn().mockResolvedValue([]),
     };
   });
 
