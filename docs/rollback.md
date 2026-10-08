@@ -101,7 +101,9 @@ the entry stays in the journal as a failed operation, for a re-run once the
 record or the resource can be read (`cdkd rollback --drop-failed` removes only
 the entry and leaves the resource in AWS). One AWS reports gone is settled with
 no delete. The automatic rollback, which runs inside the failed deploy over that
-attempt's own operations, deletes it without either check.
+attempt's own operations, deletes it without either check — but it still runs
+the cross-prefix check above, and keeps the resource when another state prefix
+records the stack or that check fails.
 A successful deploy that cannot act on one keeps the journal (reduced to that
 entry where it can), and one a state record may own, or that the checks above
 keep, is warned about and left in AWS; either way it exits `2`. An automatic rollback that skipped an operation

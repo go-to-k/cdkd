@@ -302,6 +302,24 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
     );
   });
 
+  // Review R7-5: a nested child's retry names the ROOT stack, which replays
+  // every child's journal; a stack-less or child-named rollback would not.
+  it.each([
+    ['a child', 'App~Child', 'App'],
+    ['a grandchild', 'App~Child~Grand', 'App~Child'],
+  ])('%s\'s retry command names the root stack', async (_what, stackName, parentStack) => {
+    await expect(
+      buildEngine({
+        crossPrefixHolder: holderOver({ kind: 'failed', error: new Error('boom') }),
+        refusalRecovery: { profile: 'prod', stateBucket: 'my-bucket' },
+        parentStackInfo: { parentStack, parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+      }).deploy(stackName, template)
+    ).rejects.toThrow(/FailLater/);
+    expect(keptLines()).toHaveLength(1);
+    expect(keptLines()[0]).toMatch(/finish the rollback with: cdkd rollback App --profile/);
+    expect(keptLines()[0]).not.toContain('cdkd rollback App~');
+  });
+
   it('a found holder keeps the resource without that retry line (re-running cannot settle it)', async () => {
     await expect(
       buildEngine({

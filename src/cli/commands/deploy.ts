@@ -806,6 +806,8 @@ async function deployCommand(
     // descendant's own counts, so a resource left unaddressed at any depth
     // reaches this counter and the exit code.
     let totalUnaddressed = 0;
+    // go-to-k/cdkd#4705: the part of it the cross-prefix check kept.
+    let totalCrossPrefixKept = 0;
     // Stacks that never ran: the user declined the prefix-migration gate, or an
     // interrupt landed before the stack started. Both unwind through
     // `DeployCancelledError` with a bare `return`, so the work-graph node
@@ -1295,7 +1297,10 @@ async function deployCommand(
         // a future dry run that PREVIEWED "would be skipped" would otherwise
         // make `cdkd deploy --dry-run` exit 2 while printing "Dry run
         // completed" -- a run that changed nothing reporting a survivor.
-        if (!options.dryRun) totalUnaddressed += stackUnaddressed;
+        if (!options.dryRun) {
+          totalUnaddressed += stackUnaddressed;
+          totalCrossPrefixKept += crossPrefixKept;
+        }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
@@ -1514,13 +1519,18 @@ async function deployCommand(
     if (totalUnaddressed > 0 && !options.allowUnaddressed) {
       throw new PartialFailureError(
         `Deploy left ${totalUnaddressed} resource(s) unaddressed, so they may still exist in ` +
-          `AWS. The cases differ in what happens next: a DELETE the provider could not ` +
+          `AWS. The two cases differ in what happens next: a DELETE the provider could not ` +
           `issue KEEPS its state record, so the next 'cdkd deploy' re-attempts it, while a ` +
           `replacement's surviving predecessor is NOT tracked and will never be retried — ` +
-          `delete it by hand. A replacement kept because another state prefix records the ` +
-          `stack, or the check could not run, keeps its old resource and applies no new ` +
-          `value — resolve the pair, or let the check run, and re-deploy. The per-stack ` +
-          `summaries above give the breakdown, and each ` +
+          `delete it by hand. ` +
+          // go-to-k/cdkd#4705: only when such a replacement was kept, so an
+          // ordinary exit 2 reads as it always has.
+          (totalCrossPrefixKept > 0
+            ? `A replacement kept because another state prefix records the stack, or the ` +
+              `check could not run, keeps its old resource and applies no new value — ` +
+              `resolve the pair, or let the check run, and re-deploy. `
+            : '') +
+          `The per-stack summaries above give the breakdown, and each ` +
           `resource's own warning names its cause and remedy. ` +
           (cancelledStacks > 0
             ? `Note ${cancelledStacks} stack(s) were also cancelled and never deployed, so the ` +

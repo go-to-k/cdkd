@@ -107,8 +107,9 @@ export function createCrossPrefixDeployGate(opts: {
     if (state !== undefined) return;
     if (opts.scan === undefined) return;
     opts.promote?.();
+    const result = await opts.scan;
     applyCrossPrefixScan(
-      await opts.scan,
+      result,
       {
         stackName: opts.stackName,
         region: opts.region,
@@ -116,10 +117,28 @@ export function createCrossPrefixDeployGate(opts: {
         recovery: opts.recovery,
       },
       'deploy',
-      (message) => getLogger().warn(message),
-      (message) => getLogger().info(message)
+      ...reportOnce(result)
     );
   };
+}
+
+/**
+ * The warn and info sinks for one scan RESULT, live only the first time it is
+ * reported (go-to-k/cdkd#4705 review R7-3): a deploy's first-deploy gate, its
+ * destructive gate and its settle can each act on the same memoized result,
+ * and its 403 warning and stale-record note are printed once. A refusal still
+ * throws every time. Keyed by the result object, which a cache memoizes per
+ * stack and region for one run.
+ */
+const reported = new WeakSet<object>();
+function reportOnce(
+  result: CrossPrefixScanResult
+): [(message: string) => void, (message: string) => void] {
+  const first = !reported.has(result);
+  reported.add(result);
+  return first
+    ? [(message) => getLogger().warn(message), (message) => getLogger().info(message)]
+    : [() => undefined, () => undefined];
 }
 
 /**
@@ -137,12 +156,12 @@ export function createCrossPrefixDestructiveGate(opts: {
   stage?: 'late'
 ) => Promise<void> {
   return async (stackName, _destructive, stage) => {
+    const result = await opts.cache.full(stackName, opts.region);
     applyCrossPrefixScan(
-      await opts.cache.full(stackName, opts.region),
+      result,
       { stackName, region: opts.region, bucket: opts.bucket, recovery: opts.recovery },
       stage === 'late' ? 'deploy-late-replace' : 'deploy-destructive',
-      (message) => getLogger().warn(message),
-      (message) => getLogger().info(message)
+      ...reportOnce(result)
     );
   };
 }
@@ -181,7 +200,7 @@ export function createCrossPrefixHolder(opts: {
           retryable: true,
         };
       case 'denied':
-        getLogger().warn(
+        reportOnce(result)[0](
           crossPrefixDeniedWarning(
             { stackName, region: opts.region, bucket: opts.bucket },
             result.error,

@@ -309,6 +309,18 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     expect(message).toContain('1 resource(s) unaddressed');
   });
 
+  it('an ordinary exit 2 reads as before: no cross-prefix sentence (go-to-k/cdkd#4705 review R7-2)', async () => {
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 1 });
+    const code = await runDeploy(['--yes']);
+    expect(code).toBe(2);
+    const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(message).toContain('The two cases differ in what happens next');
+    expect(message).toContain(
+      'delete it by hand. The per-stack summaries above give the breakdown'
+    );
+    expect(message).not.toContain('another state prefix');
+  });
+
   it('exits 2 when a replacement left an orphaned predecessor', async () => {
     engineResults.set('StackA', { deleteSkipped: 0, updatePartial: 1 });
     const code = await runDeploy(['--yes']);

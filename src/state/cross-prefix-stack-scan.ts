@@ -289,31 +289,63 @@ export function withSharedListing(target: CrossPrefixScanTarget): SharedScanTarg
   const ranks = new Map<string, number>();
   const rankOf = (stackName: string, region: string): number =>
     ranks.get(keyOf(stackName, region)) ?? Number.MAX_SAFE_INTEGER;
-  const waiting: Array<{ key: string; seq: number; resolve: () => void }> = [];
-  const waiterRank = (w: { key: string }): number => ranks.get(w.key) ?? Number.MAX_SAFE_INTEGER;
+  // The waiting probes, a binary min-heap on (rank, seq): admitting the best
+  // one, and asking whether a better one waits, cost O(log n) and O(1).
+  type Waiter = { key: string; rank: number; seq: number; resolve: () => void };
+  const heap: Waiter[] = [];
+  const before = (a: Waiter, b: Waiter): boolean =>
+    a.rank < b.rank || (a.rank === b.rank && a.seq < b.seq);
+  const swap = (i: number, j: number): void => {
+    const t = heap[i]!;
+    heap[i] = heap[j]!;
+    heap[j] = t;
+  };
+  const siftUp = (i: number): void => {
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!before(heap[i]!, heap[parent]!)) return;
+      swap(i, parent);
+      i = parent;
+    }
+  };
+  const siftDown = (i: number): void => {
+    for (;;) {
+      const l = 2 * i + 1;
+      const r = l + 1;
+      let best = i;
+      if (l < heap.length && before(heap[l]!, heap[best]!)) best = l;
+      if (r < heap.length && before(heap[r]!, heap[best]!)) best = r;
+      if (best === i) return;
+      swap(i, best);
+      i = best;
+    }
+  };
+  const popBest = (): Waiter => {
+    const top = heap[0]!;
+    const last = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = last;
+      siftDown(0);
+    }
+    return top;
+  };
   const admitBest = (): void => {
-    while (inFlight < PROBE_CONCURRENCY && waiting.length > 0) {
-      let best = 0;
-      for (let i = 1; i < waiting.length; i++) {
-        const w = waiting[i]!;
-        const b = waiting[best]!;
-        if (waiterRank(w) < waiterRank(b) || (waiterRank(w) === waiterRank(b) && w.seq < b.seq)) {
-          best = i;
-        }
-      }
-      const [next] = waiting.splice(best, 1);
+    while (inFlight < PROBE_CONCURRENCY && heap.length > 0) {
       inFlight++;
-      next!.resolve();
+      popBest().resolve();
     }
   };
   const acquire = async (stackName: string, region: string): Promise<void> => {
     const rank = rankOf(stackName, region);
-    if (inFlight < PROBE_CONCURRENCY && !waiting.some((w) => waiterRank(w) < rank)) {
+    if (inFlight < PROBE_CONCURRENCY && (heap.length === 0 || heap[0]!.rank >= rank)) {
       inFlight++;
       return;
     }
     const key = keyOf(stackName, region);
-    await new Promise<void>((resolve) => waiting.push({ key, seq: seq++, resolve }));
+    await new Promise<void>((resolve) => {
+      heap.push({ key, rank, seq: seq++, resolve });
+      siftUp(heap.length - 1);
+    });
   };
   const release = (): void => {
     inFlight--;
@@ -323,8 +355,21 @@ export function withSharedListing(target: CrossPrefixScanTarget): SharedScanTarg
     prefix: target.prefix,
     rank: (stackName, region, when) => {
       const key = keyOf(stackName, region);
-      if (when === 'now') ranks.set(key, -1);
-      else if (!ranks.has(key)) ranks.set(key, prestarted++);
+      if (when === 'prestart') {
+        if (!ranks.has(key)) ranks.set(key, prestarted++);
+        return;
+      }
+      if (ranks.get(key) === -1) return;
+      ranks.set(key, -1);
+      // A promotion is rare: re-rank this scan's waiting probes and re-heapify.
+      let moved = false;
+      for (const w of heap) {
+        if (w.key === key) {
+          w.rank = -1;
+          moved = true;
+        }
+      }
+      if (moved) for (let i = (heap.length >> 1) - 1; i >= 0; i--) siftDown(i);
     },
     ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
     listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),

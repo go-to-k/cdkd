@@ -83,6 +83,47 @@ describe('createCrossPrefixDeployGate', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).toContain('Could not check the other state prefixes for stack App');
   });
+  it('reports one scan result once: the first-deploy gate and the destructive gate share its 403 warning (review R7-3)', async () => {
+    warn.mockClear();
+    const cache = new CrossPrefixScanCache(fakeTarget());
+    const denied = { kind: 'denied', error: { name: 'AccessDenied' }, stage: 'list' } as const;
+    vi.spyOn(cache, 'full').mockResolvedValue(denied);
+    const opts = crossPrefixEngineOptions({
+      stackName: 'App',
+      region: 'us-east-1',
+      bucket: 'b',
+      firstDeploy: cache.full('App', 'us-east-1', 'prestart'),
+      cache,
+    });
+    await opts.firstDeployGate('App', undefined);
+    await opts.onDestructivePlan('App', []);
+    await opts.crossPrefixHolder('App');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('the first-deploy gate promotes its pre-started scan once its engine waits on it, and only then (review R7-4)', async () => {
+    const cache = new CrossPrefixScanCache(fakeTarget());
+    const rank = vi.spyOn(cache.target, 'rank');
+    const opts = crossPrefixEngineOptions({
+      stackName: 'App',
+      region: 'us-east-1',
+      bucket: 'b',
+      firstDeploy: Promise.resolve({ kind: 'clear' }),
+      cache,
+    });
+    await opts.firstDeployGate('App', loaded);
+    expect(rank).not.toHaveBeenCalled();
+    await opts.firstDeployGate('App', undefined);
+    expect(rank).toHaveBeenCalledWith('App', 'us-east-1', 'now');
+  });
+
+  it('a DIFFERENT result (another run, another stack) is reported again', async () => {
+    warn.mockClear();
+    const g = (scan: CrossPrefixScanResult) => gate(Promise.resolve(scan))('App', undefined);
+    await g({ kind: 'denied', error: { name: 'AccessDenied' }, stage: 'probe' });
+    await g({ kind: 'denied', error: { name: 'AccessDenied' }, stage: 'probe' });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
 });
 
 function fakeTarget(holders: Record<string, boolean> = {}, own = false) {
@@ -225,6 +266,60 @@ describe('the deploy wiring (lazy scans, go-to-k/cdkd#4705 review R4-1)', () => 
     releases[1]!();
     await tick();
     expect(started[PROBE_CONCURRENCY + 1]).toBe('B');
+  });
+
+  // Review R7-6: the waiters are a heap on (rank, seq).
+  function heldTarget() {
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    const target = withSharedListing({
+      prefix: 'cdkd',
+      ownRecordExists: vi.fn(),
+      listTopLevelPrefixes: vi.fn(),
+      recordUnderPrefix: vi.fn((_p: string, stackName: string) => {
+        started.push(stackName);
+        return new Promise<'absent'>((r) => releases.push(() => r('absent')));
+      }),
+    });
+    return { target, started, releases };
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it('promoting a scan whose probes already wait moves them ahead', async () => {
+    const { target, started, releases } = heldTarget();
+    target.rank('A', 'r', 'prestart');
+    target.rank('B', 'r', 'prestart');
+    for (let i = 0; i < PROBE_CONCURRENCY; i++) void target.recordUnderPrefix(`f${i}`, 'Z', 'r');
+    await tick();
+    void target.recordUnderPrefix('p', 'A', 'r');
+    void target.recordUnderPrefix('p', 'B', 'r');
+    await tick();
+    target.rank('B', 'r', 'now');
+    releases[0]!();
+    await tick();
+    expect(started[PROBE_CONCURRENCY]).toBe('B');
+    releases[1]!();
+    await tick();
+    expect(started[PROBE_CONCURRENCY + 1]).toBe('A');
+  });
+
+  it('admits many waiters in (rank, arrival) order', async () => {
+    const { target, started, releases } = heldTarget();
+    const names = ['S0', 'S1', 'S2', 'S3', 'S4'];
+    for (const n of names) target.rank(n, 'r', 'prestart');
+    for (let i = 0; i < PROBE_CONCURRENCY; i++) void target.recordUnderPrefix(`f${i}`, 'Z', 'r');
+    await tick();
+    // Arrivals in a scrambled rank order, two per stack.
+    const arrivals = ['S3', 'S1', 'S4', 'S0', 'S2', 'S1', 'S3', 'S0', 'S4', 'S2'];
+    for (const n of arrivals) void target.recordUnderPrefix('p', n, 'r');
+    await tick();
+    for (let i = 0; i < arrivals.length; i++) {
+      releases[i]!();
+      await tick();
+    }
+    expect(started.slice(PROBE_CONCURRENCY)).toEqual([
+      'S0', 'S0', 'S1', 'S1', 'S2', 'S2', 'S3', 'S3', 'S4', 'S4',
+    ]);
   });
 
   it('a scan started on demand (a destructive plan) is not queued behind later stacks\' pre-started scans', async () => {

@@ -104,7 +104,8 @@ cdkd refuses the case it can see, before touching any resource:
   the check fails, the rollback keeps the resource, warns (naming the prefix
   when one was found, or the `cdkd rollback` that finishes the job once the
   check can run), and leaves it in the rollback journal. A 403 warns and
-  deletes, as above.
+  deletes, as above. A nested stack's failed deploy pays one scan for its
+  `Parent~Child` name.
 
 A record under another prefix blocks only when it can own a resource: it lists
 resources or rollback-orphaned resources, or its rollback journal holds a
