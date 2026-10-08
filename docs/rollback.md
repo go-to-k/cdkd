@@ -83,8 +83,10 @@ other stack's state record holds it (a later `cdkd import` into another stack,
 say) and, for a resource whose physical id is a name, AWS still reports the
 identity the failed CREATE recorded (it may have been deleted and its name
 reused); otherwise it is warned about, its physical id named, and left in AWS
-(`cdkd rollback` exits `2`; `cdkd destroy` goes on to destroy the stack). One
-AWS reports gone is settled with no delete. The automatic rollback, which runs
+(`cdkd rollback` exits `2`; `cdkd destroy` goes on to destroy the stack). When
+another stack's record or the live identity cannot be read, nothing is decided:
+the entry stays in the journal as a failed operation, for a re-run (or
+`cdkd rollback --drop-failed`). One AWS reports gone is settled with no delete. The automatic rollback, which runs
 seconds after the failure, deletes it without either check.
 A successful deploy that cannot act on one keeps the journal (reduced to that
 entry where it can), and one a state record may own, or that the checks above

@@ -69,7 +69,8 @@ function orphanOp(queueName: string) {
     resourceType: 'AWS::SQS::Queue',
     physicalId: URL,
     provisionedBy: 'sdk',
-    physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
+    physicalIdRecoveredFromError: true,
+    createdResourceIdentity: 'created-token',
     attemptedProperties: { QueueName: queueName },
   };
 }
@@ -227,7 +228,8 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
           resourceType: 'AWS::IAM::AccessKey',
           physicalId: 'AKIAEXAMPLEKEY',
           provisionedBy: 'sdk',
-          physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
+          physicalIdRecoveredFromError: true,
+          createdResourceIdentity: 'created-token',
           attemptedProperties: { UserName: USER },
         },
       ])

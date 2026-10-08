@@ -298,6 +298,20 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(warn()).toContain('orphan-stream');
   });
 
+  // A record the scan cannot read is no verdict: the orphan's entry, and so
+  // the state and its journal, are kept for a re-run.
+  it('keeps the state and the journal when the holder scan cannot read a record', async () => {
+    mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));
+    mockListStacks.mockRejectedValue(new Error('AccessDenied'));
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(deleted()).not.toContain('orphan-stream');
+    expect(mockResourceIdentity).not.toHaveBeenCalled();
+    expect(result.errorCount).toBeGreaterThan(0);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(warn()).toContain('leaves open whether another stack holds it');
+    expect(warn()).toContain('--drop-failed O');
+  });
+
   // State tracks that very resource under its logical id: the destroy's own
   // delete owns it, never a second one from the journal.
   it('leaves one state tracks to the delete loop', async () => {

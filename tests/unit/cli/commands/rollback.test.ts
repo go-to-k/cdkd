@@ -4415,6 +4415,22 @@ describe('cdkd rollback (no --revert-failed): a proven failed-CREATE orphan (go-
     );
   });
 
+  // No verdict: the entry stays in the journal, as a failed delete's does.
+  it('keeps the segment when the holder scan cannot read a record: exit 2, journal preserved', async () => {
+    const backend = install([structuredClone(orphanOp)]);
+    backend.listStacks
+      .mockResolvedValueOnce([{ stackName: 'S', region: 'us-east-1' }])
+      .mockRejectedValueOnce(new Error('AccessDenied'));
+    const err = await rollbackCommand('S', baseOpts).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(String((err as Error).message)).toContain('1 failed operation(s). Journal preserved');
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
   it('leaves the other failed ops as-is, and keeps them when the orphan delete fails', async () => {
     const { getLogger } = await import('../../../../src/utils/logger.js');
     const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;

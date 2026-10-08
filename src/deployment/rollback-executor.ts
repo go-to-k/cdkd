@@ -387,22 +387,25 @@ function protectionRemovalProven(
  * go-to-k/cdkd#4696 / #4658: before a replay of an earlier run's journal
  * (`cdkd rollback`, `cdkd destroy`) deletes the proven orphan `op`, the two
  * checks the success settle runs, in its order: another stack's state record
- * must not hold it (nor be unreadable), and a name-keyed type's live identity
- * must equal the journaled one. `'gone'` when AWS reports the id gone (settled
- * without a delete); the reason to keep it, warned, otherwise; `undefined` when
- * the delete may run.
+ * must not hold it, and a name-keyed type's live identity must equal the
+ * journaled one. `'gone'` when AWS reports the id gone (settled without a
+ * delete). `keep` for a verdict a re-run cannot change (another stack holds
+ * it, its identity differs, or the journal recorded none): a warned skip.
+ * `retry` when a read gave no answer (a record the scan cannot read, a failed
+ * identity read): the journal keeps it, as the settle keeps it. `undefined`
+ * when the delete may run.
  */
 async function journaledOrphanKeepReason(
   op: FailedOperation & { physicalId: string },
   foreignHolder: NonNullable<RollbackExecutorContext['foreignHolder']>,
   ctx: RollbackExecutorContext
-): Promise<{ keep: string } | 'gone' | undefined> {
+): Promise<{ keep: string } | { retry: string } | 'gone' | undefined> {
   const holding = await askForeignHolder(foreignHolder, op);
   if (holding?.kind === 'held') {
     return { keep: `${holding.by} holds a resource of that type under the same physical id now` };
   }
   if (holding?.kind === 'unreadable') {
-    return { keep: `${holding.what} leaves open whether another stack holds it now` };
+    return { retry: `${holding.what} leaves open whether another stack holds it now` };
   }
   // The identity is READ here and the delete runs after it, unconditioned on
   // it: a name freed and reused between the two is not caught (the success
@@ -415,9 +418,15 @@ async function journaledOrphanKeepReason(
     };
   }
   if (created === 'unproven') {
-    return {
-      keep: 'nothing proves the resource now under that id is the one it created (it may have been deleted and its name reused)',
-    };
+    const journaled = op.createdResourceIdentity;
+    return typeof journaled === 'string' && journaled !== ''
+      ? {
+          retry:
+            'its live identity could not be read, so nothing proves the resource now under that id is the one it created',
+        }
+      : {
+          keep: 'nothing proves the resource now under that id is the one it created (the journal recorded no identity for it; it may have been deleted and its name reused)',
+        };
   }
   return undefined;
 }
@@ -957,6 +966,15 @@ async function replayFailedOperationsUnbound(
                 ...(deleteProvisionedBy && { provisionedBy: deleteProvisionedBy }),
               });
               break;
+            }
+            if (verdict !== undefined && 'retry' in verdict) {
+              // A read that gave no answer is not a verdict: the shared catch
+              // counts it a failure and keeps the op for a re-run, as the
+              // success settle keeps it (`--drop-failed` drops one that can
+              // never be read).
+              throw new Error(
+                `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for a re-run`
+              );
             }
             if (verdict !== undefined) {
               const keep = verdict.keep;

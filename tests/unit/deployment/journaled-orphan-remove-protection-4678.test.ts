@@ -167,6 +167,25 @@ describe('an orphan the delete checks never ran on keeps its protection (go-to-k
       'leaving deletion protection on partially-created OrphanLb'
     );
   });
+  // Nothing to keep on: withheld silently.
+  it('withholds it without a warning when the attempt turned no protection on', async () => {
+    const { del, seen } = recordingDelete();
+    const warn = vi.fn();
+    await replayFailedOperations(
+      [{ ...orphan(), attemptedProperties: {} }],
+      {},
+      'Stack',
+      ctxWith(del, {
+        removeProtection: true,
+        foreignHolder: undefined,
+        logger: { ...logger, warn } as unknown as RollbackExecutorContext['logger'],
+      }),
+      {}
+    );
+    expect(del).toHaveBeenCalledOnce();
+    expect(seen[0]!.context).not.toHaveProperty('removeProtection');
+    expect(String(warn.mock.calls.map((c) => c[0]))).not.toContain('leaving deletion protection');
+  });
 });
 
 describe('an orphan another stack holds is kept, protection and all (go-to-k/cdkd#4678, #4696)', () => {
@@ -405,7 +424,6 @@ describe('a name-keyed orphan is deleted, and gets the flag, only when its ident
     expect(warned()).toBe('');
   });
 });
-
 
 describe("no context but an explicit --remove-protection's strips protection (go-to-k/cdkd#4678)", () => {
   // A deploy's automatic rollback and its success settle (its own and a nested

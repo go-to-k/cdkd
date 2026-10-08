@@ -48,7 +48,8 @@ const orphan = (logicalId: string) => ({
   resourceType: 'AWS::Kinesis::Stream',
   provisionedBy: 'sdk',
   physicalId: `${logicalId.toLowerCase()}-stream`,
-  physicalIdRecoveredFromError: true, createdResourceIdentity: 'created-token',
+  physicalIdRecoveredFromError: true,
+  createdResourceIdentity: 'created-token',
   attemptedProperties: {},
 });
 

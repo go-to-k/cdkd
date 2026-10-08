@@ -234,15 +234,17 @@ export interface RollbackExecutorContext {
    * Who else holds a journaled orphan (`makeForeignHolderScan`, scoped to this
    * stack). Its presence marks a replay of a journal an EARLIER run wrote: the
    * delete of a journaled proven orphan then first asks it, and the live
-   * identity (go-to-k/cdkd#4696, #4658), and keeps the orphan, warned, on a
-   * `held` or `unreadable` answer or an unproven identity. Supplied by `cdkd
+   * identity (go-to-k/cdkd#4696, #4658). A `held` answer or a disproven
+   * identity is a warned skip; an `unreadable` answer or a failed identity
+   * read keeps the op in the journal for a re-run. Supplied by `cdkd
    * rollback`, the `cdkd destroy` journal sweep and the success settle; the
    * nested child replay sets it only under `cdkd rollback --remove-protection`
    * (go-to-k/cdkd#4703) and replays completed ops alone. A deploy's automatic
    * rollback supplies none: it runs seconds after the failure, before a name
    * can be freed and reused or another stack can import the resource, and its
    * in-process identity is best-effort (absent for a provider without
-   * `resourceIdentity`). `--remove-protection` asks it too (go-to-k/cdkd#4678).
+   * `resourceIdentity`). `--remove-protection` strips protection only from an
+   * orphan these checks cleared (go-to-k/cdkd#4678).
    */
   foreignHolder?:
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
