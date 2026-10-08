@@ -3,6 +3,7 @@ import type { PreDeleteSnapshotClients } from '../../provisioning/final-snapshot
 import type { DeploymentEventRecorder } from '../../types/deployment-events.js';
 import type { StackState } from '../../types/state.js';
 import type { DestructiveChange } from '../../analyzer/destructive-changes.js';
+import type { ForeignHolding } from '../rollback-executor/journaled-orphans.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -463,16 +464,27 @@ export interface DeployEngineOptions {
   approveDeployment?: (request: DeploymentApprovalRequest) => Promise<boolean>;
 
   /**
-   * go-to-k/cdkd#4705: called before provisioning, after the diff and the
-   * `--dry-run` return, ONLY when the plan replaces, deletes or orphans a
-   * resource (`findDestructiveChanges`), so an everyday deploy pays nothing.
-   * Throwing aborts the stack before any provider call. Inherited by nested
-   * children, which call it with their own name and changes.
+   * go-to-k/cdkd#4705: called after the diff and the `--dry-run` return, BEFORE
+   * the approval prompt and any provider call, only when the plan destroys
+   * (`WILL_DESTROY` / `WILL_REPLACE`) or touches a nested-stack row
+   * (`checkDestructivePlan`), so an everyday deploy pays nothing. Throwing
+   * aborts the stack before anything changes. NOT inherited by nested children:
+   * the spread site sets it to `undefined`.
    */
-  onDestructivePlan?: (
-    stackName: string,
-    destructive: readonly DestructiveChange[]
-  ) => Promise<void>;
+  onDestructivePlan?:
+    | ((stackName: string, destructive: readonly DestructiveChange[]) => Promise<void>)
+    | undefined;
+
+  /**
+   * go-to-k/cdkd#4705: asked, after the same-prefix foreign-holder scan finds
+   * nothing, before a SUCCESSFUL deploy's settle deletes a proven journaled
+   * orphan of `stackName` (`settleJournalAfterSuccess`): whether the bucket
+   * records that stack under ANOTHER state prefix, whose record may hold the
+   * resource. A holding keeps the orphan, with the settle's existing warning.
+   * Absent: no cross-prefix check. Only the root engine settles; the spread
+   * site sets it to `undefined` for a child.
+   */
+  crossPrefixHolder?: ((stackName: string) => Promise<ForeignHolding>) | undefined;
 }
 
 /** The `--require-approval` levels cdkd implements (CDK's `broadening` needs a security diff cdkd has none of). */

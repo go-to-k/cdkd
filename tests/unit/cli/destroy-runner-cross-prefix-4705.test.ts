@@ -53,7 +53,6 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 });
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
-import { resetCrossPrefixNoticesForTest } from '../../../src/state/cross-prefix-stack-scan.js';
 
 const REGION = 'us-east-1';
 
@@ -119,7 +118,6 @@ function makeCtx(opts: {
 describe('runDestroyForStack — another state prefix records the stack (go-to-k/cdkd#4705)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetCrossPrefixNoticesForTest();
   });
 
   it('refuses before any lock or delete', async () => {
@@ -177,18 +175,15 @@ describe('runDestroyForStack — another state prefix records the stack (go-to-k
     expect(h.deleteState).not.toHaveBeenCalled();
   });
 
-  it('does not warn when S3 denies the LISTING: one info line, then proceeds', async () => {
+  it('warns and proceeds when S3 denies the LISTING', async () => {
     const h = makeCtx({
       crossPrefixCheck: true,
       prefixes: Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }),
     });
     const result = await runDestroyForStack('App', emptyState(), h.ctx);
     expect(result.skippedEmpty).toBe(true);
-    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
-      'Could not check whether stack App'
-    );
-    expect(info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'This identity may not list bucket'
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'S3 refused to list bucket'
     );
   });
 

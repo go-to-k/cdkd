@@ -566,9 +566,11 @@ account and region, as in CloudFormation, so two deployments of it share every
 cdkd-generated resource name and can delete each other's resources — see
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 
-Only a record that can own a resource counts. The empty record a failed first
-deploy leaves under a prefix is not refused; the command prints a note naming
-it instead.
+Only a record that can own a resource counts: one listing resources or
+rollback-orphaned resources, or whose rollback journal holds a completed
+operation or a failed one that recorded a physical id. The empty record a
+failed first deploy that created nothing leaves under a prefix is not refused;
+the command prints a note naming it instead.
 
 **Fix:** keep one deployment per stack name and region.
 

@@ -75,6 +75,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     currentEtag?: string;
     currentResources?: Record<string, ResourceState>;
     eventRecorder?: { record: (e: unknown) => void; runId?: string };
+    crossPrefixHolder?: (stackName: string) => Promise<unknown>;
   }) {
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) =>
@@ -152,6 +153,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         noRollback: opts.noRollback ?? false,
         roleArn: 'arn:aws:iam::1:role/r',
         ...(opts.eventRecorder && { eventRecorder: opts.eventRecorder as never }),
+        ...(opts.crossPrefixHolder && { crossPrefixHolder: opts.crossPrefixHolder as never }),
       },
       'us-east-1'
     );
@@ -2333,6 +2335,48 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
       expect(journal.reduceRollbackJournalToFailedOperations).not.toHaveBeenCalled();
       expect(result.deleteSkipped).toBe(0);
+    });
+
+    // go-to-k/cdkd#4705: a CREATE/UPDATE-only deploy still deletes journaled
+    // orphans in the settle, so the bucket's OTHER state prefixes are asked
+    // first: a record of the stack there may hold the resource.
+    it('keeps the orphan when another state prefix records the stack (go-to-k/cdkd#4705)', async () => {
+      const crossPrefixHolder = vi.fn(async () => ({
+        kind: 'unreadable',
+        what: 'bucket b also records this stack under another state prefix (team-b), whose record may hold it',
+      }));
+      const engine = buildEngine({
+        changes: new Map([['A', makeChange('A')]]),
+        deps: { A: [] },
+        currentEtag: 'e0',
+        crossPrefixHolder,
+      });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(crossPrefixHolder).toHaveBeenCalledWith(stackName);
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(result.deleteSkipped).toBe(1);
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.join('\n')).toContain('under another state prefix (team-b), whose record may hold it');
+    });
+
+    it('deletes the orphan when no other state prefix records the stack (go-to-k/cdkd#4705)', async () => {
+      const crossPrefixHolder = vi.fn(async () => undefined);
+      const engine = buildEngine({
+        changes: new Map([['A', makeChange('A')]]),
+        deps: { A: [] },
+        currentEtag: 'e0',
+        crossPrefixHolder,
+      });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      await engine.deploy(stackName, template);
+
+      expect(crossPrefixHolder).toHaveBeenCalledTimes(1);
+      expect(orphanDeletes(engine)).toHaveLength(1);
     });
 
     it('a deploy with changes deletes the orphan, then the journal', async () => {

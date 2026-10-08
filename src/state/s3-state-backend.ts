@@ -33,7 +33,11 @@ import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
-import { recordCanOwnResources, type RecordUnderPrefix } from './cross-prefix-stack-scan.js';
+import {
+  CrossPrefixReadError,
+  recordCanOwnResources,
+  type RecordUnderPrefix,
+} from './cross-prefix-stack-scan.js';
 import {
   displayIdent,
   displaySafe,
@@ -953,14 +957,16 @@ export class S3StateBackend {
 
   /**
    * What `prefix` (another prefix of this bucket) holds for the stack in
-   * `region` (go-to-k/cdkd#4705). STRICT, unlike {@link stateExists}: the
-   * region-scoped record, the legacy region-less record and the rollback
-   * journal are read in parallel, a 404 is "not there", and every other answer
-   * (a 403, a 5xx, a body that will not parse) throws, so the scan can tell
-   * "nothing there" from "could not look" -- a swallowed failure here would let
-   * a pair through. A legacy record counts only for its own region, by the
+   * `region` (go-to-k/cdkd#4705). First ONE listing of `<prefix>/<stack>/`
+   * (`MaxKeys: 1`): nothing there is `absent`, the common case, at one request.
+   * Otherwise the region-scoped record, the legacy region-less record and the
+   * rollback journal are read in parallel, STRICTLY, unlike {@link stateExists}:
+   * a 404 is "not there", and every other answer (a 403, a 5xx, a body that
+   * will not parse) throws a `CrossPrefixReadError` naming the key, so the scan
+   * can tell "nothing there" from "could not look". A zero-byte body is read as
+   * an empty record. A legacy record counts only for its own region, by the
    * read gate `getState` applies. What was found is then classified by
-   * `recordCanOwnResources`: a failed first deploy's leftover is `empty`.
+   * `recordCanOwnResources`.
    */
   async recordUnderPrefix(
     prefix: string,
@@ -970,34 +976,65 @@ export class S3StateBackend {
     await this.ensureClientForBucket();
     const sibling = new S3StateBackend(this.s3Client, { ...this.config, prefix }, this.clientOpts);
     sibling.clientResolved = true;
-    const [scoped, legacy, journal] = await Promise.all([
-      sibling.getRawObject(sibling.getStateKey(stackName, region)),
-      sibling.getRawObject(sibling.getLegacyStateKey(stackName)),
-      sibling.getRawObject(sibling.getRollbackJournalKey(stackName, region)),
-    ]);
-    const parse = (body: string): Record<string, unknown> => {
-      const value: unknown = JSON.parse(body);
+    const stackDir = `${prefix}/${stackName}/`;
+    let listed: { KeyCount?: number | undefined; Contents?: unknown[] | undefined };
+    try {
+      listed = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Prefix: stackDir,
+          MaxKeys: 1,
+          EncodingType: LISTING_ENCODING_TYPE,
+        })
+      );
+    } catch (error) {
+      throw new CrossPrefixReadError(stackDir, error);
+    }
+    if ((listed.KeyCount ?? listed.Contents?.length ?? 0) === 0) return 'absent';
+    const read = async (key: string): Promise<Record<string, unknown> | null> => {
+      let body: string | null;
+      try {
+        body = await sibling.getRawObject(key);
+      } catch (error) {
+        throw new CrossPrefixReadError(key, error);
+      }
+      if (body === null) return null;
+      if (body.trim() === '') return {};
+      let value: unknown;
+      try {
+        value = JSON.parse(body);
+      } catch (error) {
+        throw new CrossPrefixReadError(key, error);
+      }
       if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-        throw new StateError(
-          `A record under another state prefix (${displayIdent(prefix)}) for stack ` +
-            `${this.displayName(stackName)} is not a JSON object.`
-        );
+        throw new CrossPrefixReadError(key, new TypeError('not a JSON object'));
       }
       return value as Record<string, unknown>;
     };
+    const [scoped, legacy, journal] = await Promise.all([
+      read(sibling.getStateKey(stackName, region)),
+      read(sibling.getLegacyStateKey(stackName)),
+      read(sibling.getRollbackJournalKey(stackName, region)),
+    ]);
     let record: Record<string, unknown> | undefined;
     if (scoped !== null) {
-      record = parse(scoped);
+      record = scoped;
     } else if (legacy !== null) {
-      const body = parse(legacy);
       // `tryGetLegacy`'s gate: a falsy region is readable from any region, a
       // string one only from its own.
-      const bodyRegion = body['region'];
-      if (!bodyRegion || bodyRegion === region) record = body;
+      const bodyRegion = legacy['region'];
+      if (!bodyRegion || bodyRegion === region) record = legacy;
     }
-    const journalBody = journal === null ? null : parse(journal);
-    if (record === undefined && journalBody === null) return 'absent';
-    return recordCanOwnResources(record ?? { resources: {} }, journalBody) ? 'holder' : 'empty';
+    if (record === undefined && journal === null) return 'absent';
+    // A zero-byte record reads as `{}`, which names no resources.
+    const asRecord = record ?? { resources: {} };
+    return recordCanOwnResources(
+      { resources: asRecord['resources'] ?? {}, orphans: asRecord['orphans'] },
+      journal
+    )
+      ? 'holder'
+      : 'empty';
   }
 
   /**

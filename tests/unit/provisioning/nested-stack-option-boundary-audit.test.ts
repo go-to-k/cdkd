@@ -48,6 +48,8 @@ const AUDITED_MEMBERS = [
   'pinCcApi', // self-scoped: same shape and same reason as recreateTargets (#2719)
   'onCurrentStateLoaded', // self-scoped: the prefix gate returns early on a mismatch
   'parentStackInfo', // overwritten by the spread site, must describe THIS child
+  'onDestructivePlan', // overwritten to undefined by the spread site: the top-level check covers children (#4705)
+  'crossPrefixHolder', // overwritten to undefined by the spread site: only the root engine settles (#4705)
   'eventRecorder', // carries the top-level run's stack name, by design
   // --- names no resource ------------------------------------------------------
   'concurrency',
@@ -75,7 +77,6 @@ const AUDITED_MEMBERS = [
   'finalSnapshotClients',
   'requireApproval', // a run-wide level naming no stack: a child asks for its own changes
   'approveDeployment', // the CLI's prompt; the request it receives names the child stack
-  'onDestructivePlan', // go-to-k/cdkd#4705: called with the CHILD's name, which it scans for
 ];
 
 /** The interface body, sliced once and shared by the parse and the fail-closed scan. */

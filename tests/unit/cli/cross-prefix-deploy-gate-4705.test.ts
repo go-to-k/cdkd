@@ -16,7 +16,9 @@ import {
   composeStateLoadedGates,
   createCrossPrefixDeployGate,
   createCrossPrefixDestructiveGate,
+  createCrossPrefixHolder,
   crossPrefixScanKey,
+  deployStackRegion,
   startCrossPrefixScans,
 } from '../../../src/cli/commands/cross-prefix-gate.js';
 import type { CrossPrefixScanTarget } from '../../../src/state/cross-prefix-stack-scan.js';
@@ -73,7 +75,7 @@ describe('createCrossPrefixDeployGate', () => {
       )
     ).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]![0])).toContain('Could not check whether stack App');
+    expect(String(warn.mock.calls[0]![0])).toContain('Could not check the other state prefixes for stack App');
   });
 });
 
@@ -151,5 +153,52 @@ describe('createCrossPrefixDestructiveGate', () => {
     await expect(gate('App~Child', [])).resolves.toBeUndefined();
     expect(t.ownRecordExists).not.toHaveBeenCalled();
     expect(t.recordUnderPrefix).toHaveBeenCalledWith('team-b', 'App~Child', 'us-east-1');
+  });
+});
+
+describe('deployStackRegion (the ONE region expression the engine and the scans share)', () => {
+  it("uses the stack's own region when it differs from the base region", () => {
+    expect(deployStackRegion({ region: 'eu-west-1' }, 'us-east-1')).toBe('eu-west-1');
+  });
+  it('falls back to the base region', () => {
+    expect(deployStackRegion({}, 'us-east-1')).toBe('us-east-1');
+    expect(deployStackRegion({ region: '' }, 'us-east-1')).toBe('us-east-1');
+  });
+  it('the scans of a deploy set use it: a stack in another region is scanned in that region', async () => {
+    const t = fakeTarget();
+    startCrossPrefixScans(
+      [{ stackName: 'Here' }, { stackName: 'There', region: 'eu-west-1' }],
+      t,
+      (s) => deployStackRegion(s, 'us-east-1')
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.ownRecordExists).toHaveBeenCalledWith('Here', 'us-east-1');
+    expect(t.ownRecordExists).toHaveBeenCalledWith('There', 'eu-west-1');
+  });
+});
+
+describe('createCrossPrefixHolder (the settle of journaled orphans)', () => {
+  it('answers an unreadable holding naming the other prefix when one records the stack', async () => {
+    const holder = createCrossPrefixHolder({
+      region: 'us-east-1',
+      bucket: 'b',
+      target: fakeTarget({ 'team-b|App': true }),
+    });
+    await expect(holder('App')).resolves.toEqual({
+      kind: 'unreadable',
+      what: 'bucket b also records this stack under another state prefix (team-b), whose record may hold it',
+    });
+  });
+
+  it('answers nothing when no other prefix records it, so the settle may delete', async () => {
+    const holder = createCrossPrefixHolder({ region: 'us-east-1', bucket: 'b', target: fakeTarget() });
+    await expect(holder('App')).resolves.toBeUndefined();
+  });
+
+  it('keeps the orphan (unreadable) when the check cannot run', async () => {
+    const t = fakeTarget();
+    t.listTopLevelPrefixes.mockRejectedValue(Object.assign(new Error('x'), { name: 'SlowDown' }));
+    const holder = createCrossPrefixHolder({ region: 'us-east-1', bucket: 'b', target: t });
+    await expect(holder('App')).resolves.toMatchObject({ kind: 'unreadable' });
   });
 });

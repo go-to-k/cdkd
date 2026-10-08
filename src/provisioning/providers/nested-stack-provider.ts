@@ -885,6 +885,14 @@ export class NestedStackProvider implements ResourceProvider {
         // `properties.Parameters` on its `AWS::CloudFormation::Stack`
         // resource — that's the authoritative source.
         parameters: childParameters,
+        // go-to-k/cdkd#4705: the cross-prefix destructive-plan check is the
+        // TOP-LEVEL stack's, taken before the parent's first provider call
+        // (a nested-stack row in the parent's plan triggers it). A child
+        // running it mid-parent-deploy would refuse after the parent changed
+        // things.
+        onDestructivePlan: undefined,
+        // Only the root engine settles a journal (go-to-k/cdkd#4705).
+        crossPrefixHolder: undefined,
         // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding
         // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
         // child's lines and is carried into its consuming resources' bags.

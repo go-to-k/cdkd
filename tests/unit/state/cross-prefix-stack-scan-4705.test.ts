@@ -2,24 +2,17 @@
  * go-to-k/cdkd#4705: one stack name recorded under two state prefixes of one
  * bucket. The scan, its verdict rules, and what each result does.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-
-const { debug } = vi.hoisted(() => ({ debug: vi.fn() }));
-vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/utils/logger.js')>();
-  const quiet = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug, child: (): unknown => quiet };
-  return { ...actual, getLogger: () => quiet };
-});
+import { describe, it, expect, vi } from 'vite-plus/test';
 
 import {
   PROBE_CONCURRENCY,
   STACK_UNDER_OTHER_PREFIX,
   UNSUPPORTED_SENTENCE,
+  CrossPrefixReadError,
   applyCrossPrefixScan,
-  candidatePrefixes,
+  candidatePrefixPasses,
   isAccessDenied,
   recordCanOwnResources,
-  resetCrossPrefixNoticesForTest,
   scanOtherPrefixesForStack,
   withSharedListing,
   type CrossPrefixScanTarget,
@@ -83,25 +76,24 @@ const SUBJECT = { stackName: 'App', region: 'us-east-1', bucket: 'cdkd-state-123
 const scan = (t: CrossPrefixScanTarget, checkOwnRecord = true) =>
   scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord });
 
-beforeEach(() => {
-  debug.mockClear();
-  resetCrossPrefixNoticesForTest();
-});
-
-describe('candidatePrefixes', () => {
-  it('stands each listed segment for itself and its trailing-slash form, minus the own prefix', () => {
-    expect(candidatePrefixes(['cdkd', 'team-a'], 'cdkd')).toEqual(['cdkd/', 'team-a', 'team-a/']);
+describe('candidatePrefixPasses', () => {
+  it('first the listed segments, then their trailing-slash twins, minus the own prefix', () => {
+    expect(candidatePrefixPasses(['cdkd', 'team-a'], 'cdkd')).toEqual([
+      ['team-a'],
+      ['cdkd/', 'team-a/'],
+    ]);
   });
 
   it("covers the issue's `--state-prefix team-a/` (keys `team-a//App/...`) without a self-match", () => {
-    // Another deployment under `team-a/` is seen from the default prefix...
-    expect(candidatePrefixes(['team-a'], 'cdkd')).toContain('team-a/');
-    // ...and a deployment under `team-a/` never probes itself.
-    expect(candidatePrefixes(['team-a', 'cdkd'], 'team-a/')).toEqual(['team-a', 'cdkd', 'cdkd/']);
+    expect(candidatePrefixPasses(['team-a'], 'cdkd')[1]).toContain('team-a/');
+    expect(candidatePrefixPasses(['team-a', 'cdkd'], 'team-a/')).toEqual([
+      ['team-a', 'cdkd'],
+      ['cdkd/'],
+    ]);
   });
 
   it("covers the empty prefix (listed as '')", () => {
-    expect(candidatePrefixes([''], 'cdkd')).toEqual(['', '/']);
+    expect(candidatePrefixPasses([''], 'cdkd')).toEqual([[''], ['/']]);
   });
 });
 
@@ -197,6 +189,17 @@ describe('scanOtherPrefixesForStack', () => {
     expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
   });
 
+  it('probes the trailing-slash twins only after every segment missed', async () => {
+    const t = target({ prefixes: ['a', 'b'], holders: { a: true } });
+    await expect(scan(t)).resolves.toMatchObject({ kind: 'found', prefixes: ['a'] });
+    const probed = t.recordUnderPrefix.mock.calls.map((c) => c[0]);
+    expect(probed).not.toContain('a/');
+    expect(probed).not.toContain('b/');
+    const clear = target({ prefixes: ['a', 'b'] });
+    await scan(clear);
+    expect(clear.recordUnderPrefix.mock.calls.map((c) => c[0])).toEqual(['a', 'b', 'a/', 'b/']);
+  });
+
   it('stops starting new probes once a holder is found', async () => {
     const prefixes = Array.from({ length: 100 }, (_, i) => `p${i}`);
     const t = target({ prefixes, holders: { p0: true }, delayMs: 1 });
@@ -254,6 +257,21 @@ describe('recordCanOwnResources', () => {
     ['a resources bag that is not an object (proves nothing)', { resources: 'x' }, null, true],
     ['an orphans container that is not a list', { resources: {}, orphans: {} }, null, true],
     ['journal segments that are not a list', { resources: {} }, { segments: 'x' }, true],
+    [
+      'a failed operation carrying a physicalId (a proven failed-CREATE orphan)',
+      { resources: {} },
+      { segments: [{ operations: [], failedOperations: [{ logicalId: 'Q', physicalId: 'q' }] }] },
+      true,
+    ],
+    [
+      'a failed operation with no physicalId',
+      { resources: {} },
+      { segments: [{ operations: [], failedOperations: [{ logicalId: 'Q' }] }] },
+      false,
+    ],
+    ['a null segment', { resources: {} }, { segments: [null] }, true],
+    ['a segment whose operations is not a list', { resources: {} }, { segments: [{ operations: {} }] }, true],
+    ['failedOperations that is not a list', { resources: {} }, { segments: [{ failedOperations: 'x' }] }, true],
   ])('%s -> %s', (_what, state, journal, expected) => {
     expect(recordCanOwnResources(state, journal)).toBe(expected);
   });
@@ -326,7 +344,8 @@ describe('applyCrossPrefixScan', () => {
     const message = refusal(() =>
       applyCrossPrefixScan({ kind: 'found', prefixes: ['a', 'b'] }, SUBJECT, 'deploy', vi.fn())
     );
-    expect(message).toContain('release each of the 2 other records with `cdkd state orphan`');
+    expect(message).toContain('release each other record with `cdkd state orphan`');
+    expect(message).toContain('re-run it until none is named');
     expect(message).not.toContain('cdkd state destroy');
   });
 
@@ -398,33 +417,36 @@ describe('applyCrossPrefixScan', () => {
     expect(message).toContain("--state-prefix '<prefix>'");
   });
 
-  it('warns and proceeds on a 403 to a read', () => {
+  it.each(['probe', 'list'] as const)('warns and proceeds on a 403 (stage %s), every time', (stage) => {
     const warn = vi.fn();
-    applyCrossPrefixScan(
-      { kind: 'denied', error: denied(), stage: 'probe' },
-      SUBJECT,
-      'deploy',
-      warn
-    );
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]![0])).toContain('Continuing');
+    for (let i = 0; i < 3; i++) {
+      applyCrossPrefixScan({ kind: 'denied', error: denied(), stage }, SUBJECT, 'deploy', warn);
+    }
+    expect(warn).toHaveBeenCalledTimes(3);
+    const line = String(warn.mock.calls[0]![0]);
+    expect(line).toContain('Continuing');
+    expect(line).toContain(stage === 'list' ? 'S3 refused to list bucket' : 'S3 refused a read');
+    // No found needle, so a fixture grepping one cannot match this.
+    expect(line).not.toContain('is also recorded under another state prefix of bucket');
+    expect(line).not.toContain('is already recorded under another state prefix of bucket');
   });
 
-  it('does NOT warn on a 403 to the listing: debug, plus one info line per process', () => {
-    const warn = vi.fn();
-    const info = vi.fn();
-    for (let i = 0; i < 3; i++) {
-      applyCrossPrefixScan(
-        { kind: 'denied', error: denied(), stage: 'list' },
-        SUBJECT,
-        'deploy',
-        warn,
-        info
-      );
+  it('a could-not-check refusal names the object, carries no cause, and no found needle', () => {
+    const error = new CrossPrefixReadError(
+      'team-b/App/us-east-1/state.json',
+      new SyntaxError('Unexpected token s in JSON at position 3: {"secret":...')
+    );
+    let thrown: unknown;
+    try {
+      applyCrossPrefixScan({ kind: 'failed', error }, SUBJECT, 'destroy', vi.fn());
+    } catch (e) {
+      thrown = e;
     }
-    expect(warn).not.toHaveBeenCalled();
-    expect(info).toHaveBeenCalledTimes(1);
-    expect(debug).toHaveBeenCalledTimes(3);
+    const message = (thrown as Error).message;
+    expect(message).toContain('(SyntaxError reading s3 object team-b/App/us-east-1/state.json)');
+    expect(message).not.toContain('secret');
+    expect((thrown as Error).cause).toBeUndefined();
+    expect(message).not.toContain('is also recorded under another state prefix of bucket');
   });
 
   it('refuses on any other failure', () => {

@@ -62,6 +62,14 @@ function makeClient(): {
   config: unknown;
 } {
   const send = vi.fn(async (cmd: unknown) => {
+    if (cmd instanceof ListObjectsV2Command && cmd.input.Prefix !== undefined) {
+      // The per-candidate probe: `<prefix>/<stack>/`, MaxKeys 1.
+      const prefix = cmd.input.Prefix;
+      const error = errors.get(prefix);
+      if (error) throw error;
+      const keys = [...bodies.keys(), ...errors.keys()].filter((k) => k.startsWith(prefix));
+      return { KeyCount: Math.min(keys.length, 1), Contents: keys.slice(0, 1).map((Key) => ({ Key })) };
+    }
     if (cmd instanceof ListObjectsV2Command) {
       const token = cmd.input.ContinuationToken;
       const index = token === undefined ? 0 : Number(token);
@@ -180,11 +188,57 @@ describe('listTopLevelPrefixes', () => {
 });
 
 describe('recordUnderPrefix (strict)', () => {
-  it('is absent when nothing is there: the three reads go out together, owner-pinned', async () => {
+  it('is absent at ONE owner-pinned listing when nothing sits under `<prefix>/<stack>/`', async () => {
+    bodies.set('team-b/AppTwo/us-east-1/state.json', record({ resources: RESOURCE }));
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('absent');
+    const lists = commandsOf(ListObjectsV2Command);
+    expect(lists).toHaveLength(1);
+    expect(lists[0]!.input).toMatchObject({
+      Prefix: 'team-b/App/',
+      MaxKeys: 1,
+      ExpectedBucketOwner: '999999999999',
+    });
+    expect(commandsOf(GetObjectCommand)).toHaveLength(0);
+  });
+
+  it('on a hit, reads the three keys together, owner-pinned', async () => {
+    bodies.set('team-b/App/eu-west-1/state.json', record({ resources: RESOURCE }));
     await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('absent');
     const gets = commandsOf(GetObjectCommand);
     expect(gets.map((c) => c.input.Key).sort()).toEqual([LEGACY_B, JOURNAL_B, KEY_B].sort());
     for (const get of gets) expect(get.input.ExpectedBucketOwner).toBe('999999999999');
+  });
+
+  it('reads a zero-byte record as an empty one (not a failure)', async () => {
+    bodies.set(KEY_B, '');
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('empty');
+  });
+
+  it('names the object a failed read was reading', async () => {
+    bodies.set(KEY_B, '{not json');
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toMatchObject({
+      name: 'CrossPrefixReadError',
+      key: KEY_B,
+    });
+  });
+
+  it('is a holder for an empty record whose journal holds a proven failed-CREATE orphan', async () => {
+    bodies.set(KEY_B, record());
+    bodies.set(
+      JOURNAL_B,
+      JSON.stringify({
+        journalVersion: 1,
+        segments: [
+          {
+            operations: [],
+            failedOperations: [
+              { logicalId: 'X', physicalId: 'x', physicalIdRecoveredFromError: true },
+            ],
+          },
+        ],
+      })
+    );
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('holder');
   });
 
   it('is a holder when the record has resources, and absent for another region', async () => {
@@ -249,11 +303,17 @@ describe('recordUnderPrefix (strict)', () => {
     ['the record', KEY_B],
     ['the legacy record', LEGACY_B],
     ['the journal', JOURNAL_B],
-  ])('throws a 403 on %s, which the scan reads as denied', async (_what, key) => {
+  ])('throws a 403 on %s, naming it, which the scan reads as denied', async (_what, key) => {
     errors.set(key, accessDenied());
     await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toMatchObject({
-      name: 'AccessDenied',
+      name: 'CrossPrefixReadError',
+      key,
+      cause: { name: 'AccessDenied' },
     });
+    pages = [['cdkd/', 'team-b/']];
+    await expect(
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+    ).resolves.toMatchObject({ kind: 'denied', stage: 'probe' });
   });
 
   it('throws a 503 on the legacy read (never swallowed), which the scan reads as failed', async () => {
@@ -275,6 +335,14 @@ describe('recordUnderPrefix (strict)', () => {
   it('throws on a body that will not parse (failed, not absent)', async () => {
     bodies.set(KEY_B, '{not json');
     await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toThrow();
+  });
+
+  it('a 403 on the probe listing reads as denied', async () => {
+    errors.set('team-b/App/', accessDenied());
+    pages = [['cdkd/', 'team-b/']];
+    await expect(
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+    ).resolves.toMatchObject({ kind: 'denied', stage: 'probe' });
   });
 });
 
@@ -426,7 +494,7 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
   it('reports denied (stage list) when the listing is refused', async () => {
     const original = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
     client.send.mockImplementation(async (cmd: unknown) => {
-      if (cmd instanceof ListObjectsV2Command) throw accessDenied();
+      if (cmd instanceof ListObjectsV2Command && cmd.input.Prefix === undefined) throw accessDenied();
       return original(cmd);
     });
     await expect(

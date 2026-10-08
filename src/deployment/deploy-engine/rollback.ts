@@ -41,6 +41,7 @@ import {
   secretNamesReadBy,
 } from '../secret-name-needles.js';
 import {
+  type ForeignHolding,
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
@@ -502,7 +503,23 @@ export async function settleJournalAfterSuccess(
   }
   let nestedLeft = 0;
   // One bucket scan, made only when some journal holds an orphan to delete.
-  const foreignHolderFor = makeForeignHolderScan(this.stateBackend);
+  const sameBucketHolderFor = makeForeignHolderScan(this.stateBackend);
+  // go-to-k/cdkd#4705: then the bucket's OTHER state prefixes, once per stack,
+  // asked only when the same-prefix scan found no holder.
+  const crossPrefixHolder = this.options.crossPrefixHolder;
+  const crossPrefixAnswers = new Map<string, Promise<ForeignHolding>>();
+  const foreignHolderFor =
+    (self: { stackName: string; region: string }) =>
+    async (resourceType: string, physicalId: string): Promise<ForeignHolding> => {
+      const held = await sameBucketHolderFor(self)(resourceType, physicalId);
+      if (held !== undefined || crossPrefixHolder === undefined) return held;
+      let answer = crossPrefixAnswers.get(self.stackName);
+      if (answer === undefined) {
+        answer = crossPrefixHolder(self.stackName);
+        crossPrefixAnswers.set(self.stackName, answer);
+      }
+      return answer;
+    };
   const deployRunId = this.options.eventRecorder?.runId;
   const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([

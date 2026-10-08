@@ -15,9 +15,11 @@
  * What it reads: one `ListObjectsV2` with `Delimiter: '/'` for the bucket's
  * top-level prefixes. Each listed segment `p` stands for two prefixes cdkd can
  * have written under it, `p` and `p/` (a `--state-prefix team-a/` keys records
- * as `team-a//<stack>/...`). Under each candidate the region-scoped record, the
- * legacy region-less record and the rollback journal are read in parallel,
- * strictly (`S3StateBackend.recordUnderPrefix`), through a pool of
+ * as `team-a//<stack>/...`; the twins are probed in a second pass, only when no
+ * `p` held the stack). Each candidate costs one listing of `<p>/<stack>/`;
+ * only a hit reads the region-scoped record, the legacy region-less record and
+ * the rollback journal, in parallel and strictly
+ * (`S3StateBackend.recordUnderPrefix`), through a pool of
  * {@link PROBE_CONCURRENCY} workers that stops taking new candidates once one
  * holds the stack. A hit blocks only if it can own a resource
  * ({@link recordCanOwnResources}); the empty record a failed first deploy
@@ -30,10 +32,9 @@
  * it early and never awaits it leaves no unhandled rejection.
  */
 
-import { displayIdent, displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, displayStackName } from '../utils/display-safe.js';
 import { pasteableCommand } from '../utils/pasteable-command.js';
 import { CdkdError } from '../utils/error-handler.js';
-import { getLogger } from '../utils/logger.js';
 import { recoveryCommandFlags, type LockRecoveryContext } from './lock-contention-message.js';
 
 /** The calls the scan makes, so it can be tested without S3. */
@@ -56,12 +57,14 @@ export interface CrossPrefixScanTarget {
 export type RecordUnderPrefix = 'absent' | 'empty' | 'holder';
 
 /**
- * Can a record, with its rollback journal, own an AWS resource? A failed FIRST
- * deploy leaves a record with no `resources` and no `orphans` and, at most, a
- * journal whose segments hold no completed operation (only `failedOperations`):
- * nothing there can be destroyed or rolled back, so it must not block another
- * prefix. Anything else -- including a container that is not the shape cdkd
- * writes, which proves nothing -- counts as a holder.
+ * Can a record, with its rollback journal, own an AWS resource? It can when it
+ * lists `resources` or rollback-`orphans`, or when a journal segment holds a
+ * completed operation (`operations`, which a rollback reverts) or a failed one
+ * carrying a `physicalId` (a failed CREATE's proven orphan, which a destroy, a
+ * rollback, or the stack's next successful deploy deletes). A failed FIRST
+ * deploy that made nothing leaves none of these -- an empty record and, at
+ * most, failed operations with no physical id -- so it blocks nothing.
+ * Anything not shaped as cdkd writes it proves nothing and counts as a holder.
  */
 export function recordCanOwnResources(
   record: { resources?: unknown; orphans?: unknown },
@@ -78,9 +81,19 @@ export function recordCanOwnResources(
   if (journal === null) return false;
   const segments = journal.segments;
   if (!Array.isArray(segments)) return true;
-  return segments.some((seg) => {
-    const ops = (seg as { operations?: unknown } | null)?.operations;
-    return ops !== undefined && (!Array.isArray(ops) || ops.length > 0);
+  return segments.some((seg: unknown) => {
+    if (seg === null || typeof seg !== 'object' || Array.isArray(seg)) return true;
+    const ops = (seg as { operations?: unknown }).operations;
+    if (ops !== undefined && (!Array.isArray(ops) || ops.length > 0)) return true;
+    const failed = (seg as { failedOperations?: unknown }).failedOperations;
+    if (failed === undefined) return false;
+    if (!Array.isArray(failed)) return true;
+    return failed.some(
+      (op: unknown) =>
+        op === null ||
+        typeof op !== 'object' ||
+        (op as { physicalId?: unknown }).physicalId !== undefined
+    );
   });
 }
 
@@ -100,14 +113,32 @@ export type CrossPrefixScanResult =
    * policy scoped to one prefix), or to a read under a listed prefix.
    */
   | { kind: 'denied'; error: unknown; stage: 'list' | 'probe'; stale?: string[] }
-  /** Any other failure. */
+  /** Any other failure (a {@link CrossPrefixReadError} names the object). */
   | { kind: 'failed'; error: unknown; stale?: string[] };
 
 /**
- * How many candidate prefixes are probed at once. Each probe sends three reads
- * in parallel, so at most 30 are in flight: inside the 50-socket cap of the
- * shared HTTP agent (`src/utils/proxy-routing-agent.ts`), with headroom for the
- * deploy's own calls.
+ * A read under another prefix that failed, naming the object it was reading so
+ * a refusal can point at it. Its message carries the KEY and the error CLASS
+ * only: a parse error's own message quotes a fragment of the body, which is
+ * another prefix's record.
+ */
+export class CrossPrefixReadError extends Error {
+  readonly key: string;
+  override readonly cause: unknown;
+  constructor(key: string, cause: unknown) {
+    super(`reading ${key} failed (${errorName(cause, 'an unknown error')})`);
+    this.name = 'CrossPrefixReadError';
+    this.key = key;
+    this.cause = cause;
+  }
+}
+
+/**
+ * How many candidate prefixes are probed at once. A probe is one listing, plus
+ * three parallel reads only on a hit, so at most 30 requests are in flight:
+ * inside the 50-socket cap of the shared HTTP agent
+ * (`src/utils/proxy-routing-agent.ts`), with headroom for the deploy's own
+ * calls.
  */
 export const PROBE_CONCURRENCY = 10;
 
@@ -131,19 +162,27 @@ export function isAccessDenied(error: unknown): boolean {
 
 /**
  * The prefixes another deployment can have written under the listed segments,
- * minus this backend's own: each segment `p` stands for `p` and `p/`.
+ * minus this backend's own, in two passes: each segment `p` itself, then its
+ * trailing-slash twin `p/` (a `--state-prefix team-a/` keys records as
+ * `team-a//<stack>/...`). The twins are probed only when no `p` held the stack.
  */
-export function candidatePrefixes(segments: readonly string[], own: string): string[] {
-  const out: string[] = [];
+export function candidatePrefixPasses(
+  segments: readonly string[],
+  own: string
+): [string[], string[]] {
   const seen = new Set<string>([own]);
-  for (const segment of segments) {
-    for (const candidate of [segment, `${segment}/`]) {
-      if (seen.has(candidate)) continue;
-      seen.add(candidate);
-      out.push(candidate);
+  const pass = (names: readonly string[]): string[] => {
+    const out: string[] = [];
+    for (const name of names) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
     }
-  }
-  return out;
+    return out;
+  };
+  const first = pass(segments);
+  const second = pass(segments.map((p) => `${p}/`));
+  return [first, second];
 }
 
 /**
@@ -181,28 +220,32 @@ export async function scanOtherPrefixesForStack(
       ? { kind: 'denied', error, stage: 'list' }
       : { kind: 'failed', error };
   }
-  const candidates = candidatePrefixes(segments, target.prefix);
   const found: string[] = [];
   const stale: string[] = [];
   let denied: unknown;
   let failed: unknown;
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (found.length === 0 && next < candidates.length) {
-      const prefix = candidates[next++]!;
-      try {
-        const held = await target.recordUnderPrefix(prefix, stackName, region);
-        if (held === 'holder') found.push(prefix);
-        else if (held === 'empty') stale.push(prefix);
-      } catch (error) {
-        if (isAccessDenied(error)) denied ??= error;
-        else failed ??= error;
+  const probeAll = async (candidates: readonly string[]): Promise<void> => {
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (found.length === 0 && next < candidates.length) {
+        const prefix = candidates[next++]!;
+        try {
+          const held = await target.recordUnderPrefix(prefix, stackName, region);
+          if (held === 'holder') found.push(prefix);
+          else if (held === 'empty') stale.push(prefix);
+        } catch (error) {
+          if (isAccessDenied(error)) denied ??= error;
+          else failed ??= error;
+        }
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PROBE_CONCURRENCY, candidates.length) }, () => worker())
+    );
   };
-  await Promise.all(
-    Array.from({ length: Math.min(PROBE_CONCURRENCY, candidates.length) }, () => worker())
-  );
+  const [firstPass, twins] = candidatePrefixPasses(segments, target.prefix);
+  await probeAll(firstPass);
+  if (found.length === 0) await probeAll(twins);
   const extra = stale.length > 0 ? { stale } : {};
   if (found.length > 0) return { kind: 'found', prefixes: found, ...extra };
   if (failed !== undefined) return { kind: 'failed', error: failed, ...extra };
@@ -308,10 +351,10 @@ function releaseRemedy(
     );
   }
   return (
-    `release each of the ${prefixes.length} other records with \`cdkd state orphan\` (it ` +
-    `removes only the record, never a resource; a destroy under one of them is refused while ` +
-    `another still records the stack), e.g. \`${stateCommand('orphan', s, first)}\`, then the ` +
-    `same with each other prefix.`
+    `release each other record with \`cdkd state orphan\` (it removes only the record, never ` +
+    `a resource; a destroy under one of them is refused while another still records the ` +
+    `stack, and the check stops at the first ones it finds, so re-run it until none is ` +
+    `named), e.g. \`${stateCommand('orphan', s, first)}\`, then the same with each other prefix.`
   );
 }
 
@@ -392,30 +435,40 @@ export function staleRecordNotice(s: CrossPrefixSubject, prefixes: readonly stri
   );
 }
 
+/** The error's CLASS; for a {@link CrossPrefixReadError}, its cause's. */
 function errorName(error: unknown, fallback: string): string {
-  return error !== null &&
-    typeof error === 'object' &&
-    typeof (error as { name?: unknown }).name === 'string'
-    ? displaySafe((error as { name: string }).name, { asciiOnly: true })
+  const subject = error instanceof CrossPrefixReadError ? error.cause : error;
+  return subject !== null &&
+    typeof subject === 'object' &&
+    typeof (subject as { name?: unknown }).name === 'string'
+    ? displaySafe((subject as { name: string }).name, { asciiOnly: true })
     : fallback;
 }
 
-/** The warning for a read S3 refused with 403 under a prefix it let us list. */
-export function crossPrefixDeniedWarning(s: CrossPrefixSubject, error: unknown): string {
-  return (
-    `Could not check whether stack ${subjectText(s)} is also recorded under another state ` +
-    `prefix of bucket ${displayIdent(s.bucket)}: S3 refused a read (${errorName(error, 'AccessDenied')}). ` +
-    `Continuing. Deploying one stack name under two state prefixes in one account and region ` +
-    `is unsupported.`
-  );
+function failedKeyText(error: unknown): string {
+  return error instanceof CrossPrefixReadError
+    ? ` reading s3 object ${displayIdent(error.key, { maxCodePoints: 1024 })}`
+    : '';
 }
 
-/** The one line, per process, for a bucket listing S3 refused. */
-export function crossPrefixListDeniedNotice(s: CrossPrefixSubject): string {
+/**
+ * The warning for a check S3 refused with 403: on the bucket LISTING (an
+ * identity whose policy covers only its own prefix) or on a read under a listed
+ * prefix. Worded so no refusal's needle appears in it.
+ */
+export function crossPrefixDeniedWarning(
+  s: CrossPrefixSubject,
+  error: unknown,
+  stage: 'list' | 'probe' = 'probe'
+): string {
+  const what =
+    stage === 'list'
+      ? `S3 refused to list bucket ${displayIdent(s.bucket)}`
+      : `S3 refused a read under another state prefix of bucket ${displayIdent(s.bucket)}`;
   return (
-    `This identity may not list bucket ${displayIdent(s.bucket)}, so cdkd does not check whether ` +
-    `a stack is also recorded under another state prefix there. Deploying one stack name under ` +
-    `two state prefixes in one account and region is unsupported.`
+    `Could not check the other state prefixes for stack ${subjectText(s)}: ${what} ` +
+    `(${errorName(error, 'AccessDenied')}). Continuing. Deploying one stack name under two ` +
+    `state prefixes in one account and region is unsupported.`
   );
 }
 
@@ -428,21 +481,14 @@ export function crossPrefixFailedMessage(
   return (
     `Refusing to ${VERB[action]} stack ${subjectText(s)}: cdkd could not check whether the ` +
     `bucket ${displayIdent(s.bucket)} records it under another state prefix ` +
-    `(${errorName(error, 'an unknown error')}). ${UNSUPPORTED_SENTENCE} ${NOTHING[action]} ` +
-    `Re-run once the check can succeed.`
+    `(${errorName(error, 'an unknown error')}${failedKeyText(error)}). ${UNSUPPORTED_SENTENCE} ` +
+    `${NOTHING[action]} Re-run once the check can succeed.`
   );
 }
 
-let listDeniedNoticePrinted = false;
-
-/** For tests: forget that the list-denied notice was printed. */
-export function resetCrossPrefixNoticesForTest(): void {
-  listDeniedNoticePrinted = false;
-}
-
 /**
- * Act on a scan: refuse (`found`, `failed`), warn (a 403 on a read), note once
- * per process (a 403 on the listing), or do nothing. Stale records are named
+ * Act on a scan: refuse (`found`, `failed`), warn (a 403 on the listing or a
+ * read), or do nothing. Stale records are named
  * through `info`. Throws a {@link CdkdError} with {@link STACK_UNDER_OTHER_PREFIX}.
  */
 export function applyCrossPrefixScan(
@@ -460,19 +506,9 @@ export function applyCrossPrefixScan(
     case 'clear':
       return;
     case 'denied':
-      if (result.stage === 'list') {
-        // A policy scoped to one prefix denies the listing on EVERY run, so
-        // this is not a default-verbosity warning.
-        getLogger().debug(
-          safeMsg`Cross-prefix check skipped: listing bucket ${s.bucket} was denied (${errorName(result.error, 'AccessDenied')}).`
-        );
-        if (!listDeniedNoticePrinted) {
-          listDeniedNoticePrinted = true;
-          info?.(crossPrefixListDeniedNotice(s));
-        }
-        return;
-      }
-      warn(crossPrefixDeniedWarning(s, result.error));
+      // Every run, at the default level, whichever stage S3 refused (a
+      // maintainer decision on go-to-k/cdkd#4705).
+      warn(crossPrefixDeniedWarning(s, result.error, result.stage));
       return;
     case 'found': {
       const message =
@@ -484,10 +520,10 @@ export function applyCrossPrefixScan(
       throw new CdkdError(message, STACK_UNDER_OTHER_PREFIX);
     }
     case 'failed':
+      // No `cause`: a parse error's message quotes another prefix's record.
       throw new CdkdError(
         crossPrefixFailedMessage(s, action, result.error),
-        STACK_UNDER_OTHER_PREFIX,
-        result.error instanceof Error ? result.error : undefined
+        STACK_UNDER_OTHER_PREFIX
       );
   }
 }

@@ -46,7 +46,6 @@ vi.mock('../../../src/cli/commands/state.js', async () => {
 });
 
 import { rollbackCommand } from '../../../src/cli/commands/rollback.js';
-import { resetCrossPrefixNoticesForTest } from '../../../src/state/cross-prefix-stack-scan.js';
 
 const REGION = 'us-east-1';
 const LB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -145,7 +144,6 @@ const BASE = { statePrefix: 'cdkd', verbose: false, force: true };
 
 describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
   beforeEach(() => {
-    resetCrossPrefixNoticesForTest();
     warnSpy.mockReset();
     provider.delete.mockReset().mockResolvedValue(undefined);
   });
@@ -172,14 +170,14 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     expect(provider.delete).toHaveBeenCalledTimes(1);
   });
 
-  it('replays without a warning when S3 denies the LISTING (one info line per process)', async () => {
+  it('warns and replays when S3 denies the LISTING', async () => {
     install(structuredClone(queueOp), {}, {}, {
       listed: Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }),
     });
     await rollbackCommand('S', { ...BASE });
     expect(provider.delete).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
-      'Could not check whether stack S'
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'S3 refused to list bucket'
     );
   });
 
@@ -192,7 +190,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     await rollbackCommand('S', { ...BASE });
     expect(provider.delete).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'Could not check whether stack S'
+      'S3 refused a read under another state prefix'
     );
   });
 

@@ -204,6 +204,86 @@ describe('DeployEngine onDestructivePlan (go-to-k/cdkd#4705)', () => {
     expect(mockStateBackend.saveState).not.toHaveBeenCalled();
   });
 
+  it('is called for a REPLACEMENT (a create-only property changes)', async () => {
+    const replace: ResourceChange = {
+      ...inPlaceUpdate,
+      propertyChanges: [{ path: 'Marker', oldValue: 'old', newValue: 'new', requiresReplacement: true }],
+    };
+    const template = arrange(mocks(), { Kept: record() }, [replace]);
+    hook.mockRejectedValue(new Error('refused'));
+    await expect(makeEngine().deploy(STACK_NAME, template)).rejects.toThrow('refused');
+    expect(
+      (hook.mock.calls[0]![1] as Array<{ logicalId: string; impact: string }>).map((c) => c.impact)
+    ).toEqual(['WILL_REPLACE']);
+    expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('is called for a --recreate-via-* target (WILL_REPLACE)', async () => {
+    const template = arrange(mocks(), { Kept: record() }, [inPlaceUpdate]);
+    await makeEngine({
+      recreateTargets: { stackName: STACK_NAME, viaCcApi: new Set(['Kept']), viaSdkProvider: new Set() },
+    })
+      .deploy(STACK_NAME, template)
+      .catch(() => undefined);
+    expect(hook).toHaveBeenCalled();
+  });
+
+  it('is NOT called for a may-replace (an unresolved value) or a retained removal (orphan)', async () => {
+    const mayReplace: ResourceChange = {
+      ...inPlaceUpdate,
+      propertyChanges: [
+        {
+          path: 'Marker',
+          oldValue: 'old',
+          newValue: 'new',
+          requiresReplacement: true,
+          inPlacePropagated: true,
+        },
+      ],
+    };
+    const template = arrange(
+      mocks(),
+      { Kept: record(), Gone: record({ physicalId: 'gone', deletionPolicy: 'Retain' }) },
+      [mayReplace, deletion]
+    );
+    await makeEngine().deploy(STACK_NAME, template).catch(() => undefined);
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('is called for a nested-stack row UPDATE, whose child plan the parent cannot see yet', async () => {
+    const nestedUpdate: ResourceChange = {
+      logicalId: 'Child',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::CloudFormation::Stack',
+      currentProperties: {},
+      desiredProperties: {},
+      propertyChanges: [],
+    };
+    const template = arrange(mocks(), { Kept: record(), Child: record({ resourceType: 'AWS::CloudFormation::Stack' }) }, [
+      nestedUpdate,
+    ]);
+    hook.mockRejectedValue(new Error('refused by the cross-prefix check'));
+    await expect(makeEngine().deploy(STACK_NAME, template)).rejects.toThrow(
+      'refused by the cross-prefix check'
+    );
+    expect(provider.update).not.toHaveBeenCalled();
+  });
+
+  it('runs BEFORE the --require-approval prompt: a refused plan never asks', async () => {
+    const approve = vi.fn().mockResolvedValue(true);
+    hook.mockRejectedValue(new Error('refused by the cross-prefix check'));
+    const template = arrange(mocks(), { Kept: record(), Gone: record({ physicalId: 'gone' }) }, [
+      deletion,
+    ]);
+    await expect(
+      makeEngine({ requireApproval: 'destructive', approveDeployment: approve }).deploy(
+        STACK_NAME,
+        template
+      )
+    ).rejects.toThrow('refused by the cross-prefix check');
+    expect(approve).not.toHaveBeenCalled();
+  });
+
   it('is not called on a dry run', async () => {
     const template = arrange(mocks(), { Kept: record(), Gone: record({ physicalId: 'gone' }) }, [
       deletion,

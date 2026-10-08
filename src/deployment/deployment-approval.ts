@@ -96,10 +96,16 @@ export async function requireDeploymentApproval(args: {
 }
 
 /**
- * go-to-k/cdkd#4705: hand a plan that replaces, deletes or orphans a resource
- * to `options.onDestructivePlan`, after the approval and before any provider
- * call. The same change filter and classifier as {@link requireDeploymentApproval};
- * nothing is computed when no hook is set.
+ * go-to-k/cdkd#4705: hand a plan that DESTROYS something to
+ * `options.onDestructivePlan`, BEFORE the approval prompt (a user is never asked
+ * and then refused) and any provider call. Destroys means a change classified
+ * `WILL_DESTROY` or `WILL_REPLACE` by `findDestructiveChanges` (a
+ * `--recreate-via-*` target is `WILL_REPLACE`); `MAY_REPLACE` and a retained
+ * removal (`WILL_ORPHAN`) delete nothing, so they do not trigger it. A
+ * nested-stack row being updated, replaced or removed also triggers it, since
+ * the child's own plan is only known once its row runs, after the parent has
+ * started changing things (children never run the hook themselves). Nothing is
+ * computed when no hook is set.
  */
 export async function checkDestructivePlan(args: {
   options: Pick<DeployEngineOptions, 'onDestructivePlan'>;
@@ -114,15 +120,16 @@ export async function checkDestructivePlan(args: {
   const changes = [...args.changes].filter(
     (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
   );
-  const destructive = findDestructiveChanges(
+  const destroying = findDestructiveChanges(
     args.stackName,
     changes,
     args.records,
     args.template,
     new Set(args.recreateTargetIds ?? [])
-  );
-  if (destructive.length === 0) return;
-  await hook(args.stackName, destructive);
+  ).filter((c) => c.impact === 'WILL_DESTROY' || c.impact === 'WILL_REPLACE');
+  const nestedRowChanges = changes.some((c) => c.resourceType === NESTED_STACK_TYPE);
+  if (destroying.length === 0 && !nestedRowChanges) return;
+  await hook(args.stackName, destroying);
 }
 
 function approvalAfterTimeout(stackName: string): Error {

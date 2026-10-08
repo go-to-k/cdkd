@@ -433,6 +433,39 @@ describe('NestedStackProvider', () => {
       expect(invalid.split(JSON.stringify(invalidPath)).join('')).not.toContain('Nothing wrong');
     });
 
+    // go-to-k/cdkd#4705: the destructive-plan check and the settle's
+    // cross-prefix holder are the TOP-LEVEL engine's; a child engine never
+    // receives them, whatever the parent's options carry.
+    it('never hands a child engine onDestructivePlan or crossPrefixHolder', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: { Foo: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b1' } } },
+        })
+      );
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({
+        nestedTemplates: { Child: childTemplatePath },
+        options: {
+          concurrency: 1,
+          onDestructivePlan: vi.fn(),
+          crossPrefixHolder: vi.fn(),
+        } as never,
+      });
+      await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {
+          TemplateURL: 'https://example.com/child.json',
+        })
+      );
+      const opts = deployCalls[0]!.ctor[5] as Record<string, unknown>;
+      expect(opts.onDestructivePlan).toBeUndefined();
+      expect(opts.crossPrefixHolder).toBeUndefined();
+      expect(opts.concurrency).toBe(1);
+    });
+
     it('reads child template, dispatches child DeployEngine, returns synthesized ARN + flat Outputs', async () => {
       // Write a minimal child template to disk so the provider reads it.
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-'));

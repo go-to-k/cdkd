@@ -26,7 +26,8 @@
 #      still exists; it must succeed. Then remove that seed.
 #   6. Destroy A, delete the retained log group.
 #   7. Seed an EMPTY record plus a failed first deploy's journal under PREFIX_B:
-#      a fresh deploy and a destroy under PREFIX_A must succeed, naming it.
+#      a fresh deploy and a destroy under PREFIX_A must succeed, and each
+#      must print the note naming PREFIX_B.
 #
 # Each run uses its OWN two state prefixes (unique per run): nothing under
 # `cdkd/` is read or written, and the trap deletes only these two prefixes.
@@ -514,12 +515,24 @@ if [ "${STALE_RC}" -ne 0 ] || grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}"; 
   exit 1
 fi
 # Copied from `staleRecordNotice` in src/state/cross-prefix-stack-scan.ts.
-if ! grep -qF "${STALE_NOTICE_NEEDLE}" "${RUN_LOG}"; then
+if ! grep -qF "${STALE_NOTICE_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_B})" "${RUN_LOG}"; then
   echo "FAIL: the deploy did not name the empty leftover record under ${PREFIX_B} ('${STALE_NOTICE_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
+set +e
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
-  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force >"${RUN_LOG}" 2>&1
+STALE_DESTROY_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${STALE_DESTROY_RC}" -ne 0 ] || grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: the destroy under ${PREFIX_A} was refused or failed beside an EMPTY leftover record under ${PREFIX_B} (rc=${STALE_DESTROY_RC}; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if ! grep -qF "${STALE_NOTICE_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_B})" "${RUN_LOG}"; then
+  echo "FAIL: the destroy did not name the empty leftover record under ${PREFIX_B} ('${STALE_NOTICE_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
 assert_gone "state ${STATE_KEY_A} still exists after the Phase 7 destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
 aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"

@@ -1213,9 +1213,10 @@ export async function doDeployWithPrefetch(
       );
     }
 
-    // `--require-approval`: asked on the diff this deploy executes, before any
-    // provider call. The lock is released by the `finally`.
-    await requireDeploymentApproval({
+    // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
+    // is checked against the bucket's other state prefixes BEFORE the approval
+    // prompt and any provider call.
+    await checkDestructivePlan({
       options: this.options,
       stackName,
       changes: changes.values(),
@@ -1223,9 +1224,10 @@ export async function doDeployWithPrefetch(
       template: effectiveTemplate,
       recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
     });
-    // go-to-k/cdkd#4705: a plan that deletes or replaces is checked against the
-    // bucket's other state prefixes, before any provider call.
-    await checkDestructivePlan({
+
+    // `--require-approval`: asked on the diff this deploy executes, before any
+    // provider call. The lock is released by the `finally`.
+    await requireDeploymentApproval({
       options: this.options,
       stackName,
       changes: changes.values(),

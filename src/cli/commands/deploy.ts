@@ -114,7 +114,9 @@ import {
   composeStateLoadedGates,
   createCrossPrefixDeployGate,
   createCrossPrefixDestructiveGate,
+  createCrossPrefixHolder,
   crossPrefixScanKey,
+  deployStackRegion,
   startCrossPrefixScans,
 } from './cross-prefix-gate.js';
 import { withSharedListing } from '../../state/cross-prefix-stack-scan.js';
@@ -603,15 +605,11 @@ async function deployCommand(
     // when it finds no record, so it overlaps macro expansion, STS, asset
     // handling and the lock, not synth; a short run of the scan can outlast
     // them. A stack this prefix already records stops after one parallel round
-    // of HEADs on its own keys and lists nothing.
-    // The same expression `runStackInner` gives the engine (`stackInfo.region
-    // || baseRegion`), so the scan reads the key the engine's state load reads.
-    const crossPrefixRegionOf = (s: { region?: string | undefined }): string =>
-      s.region || (namedCliRegion(options.region) ?? 'us-east-1');
-    const crossPrefixScans = startCrossPrefixScans(
-      targetStacks,
-      preflightStateBackend,
-      crossPrefixRegionOf
+    // of reads of its own keys and lists nothing. `deployStackRegion` is the
+    // ONE function both this and `runStackInner` (the engine's region) use.
+    const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
+    const crossPrefixScans = startCrossPrefixScans(targetStacks, preflightStateBackend, (s) =>
+      deployStackRegion(s, baseRegion)
     );
     // One listing shared by every destructive-plan check of this run.
     const crossPrefixDestructiveTarget = withSharedListing(preflightStateBackend);
@@ -693,7 +691,6 @@ async function deployCommand(
       relaxCdkVpcDefensiveDeps: !!options.aggressiveVpcParallel,
     });
     const diffCalculator = new DiffCalculator();
-    const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
 
     // Build work graph
     const workGraph = new WorkGraph();
@@ -839,7 +836,7 @@ async function deployCommand(
           `Deploy interrupted before stack '${stackInfo.stackName}' started — not starting it.`
         );
       }
-      const stackRegion = stackInfo.region || baseRegion;
+      const stackRegion = deployStackRegion(stackInfo, baseRegion);
 
       logger.info(
         `\n${cyan('Deploying stack:')} ${bold(cyan(stackInfo.stackName))}${stackRegion !== baseRegion ? gray(` (region: ${stackRegion})`) : ''}`
@@ -1133,6 +1130,11 @@ async function deployCommand(
             region: stackRegion,
             bucket: stateBucket,
             recovery: refusalRecovery,
+            target: crossPrefixDestructiveTarget,
+          }),
+          crossPrefixHolder: createCrossPrefixHolder({
+            region: stackRegion,
+            bucket: stateBucket,
             target: crossPrefixDestructiveTarget,
           }),
           // Issue #2719. Unconditional, unlike `recreateTargets` above: an
