@@ -224,6 +224,8 @@ describe('cdkd diff withholds a stored alias spelling a ROTATED NoEcho value (go
     it('withholds the alias spelling the CURRENT value too', async () => {
       const result = await diffOf(stored(), ifTemplate({ value: 'ab' }));
       expect(rows(result.outputChanges)).toContain('REMOVE x-ab-y (withheld)');
+      const { human, json } = rendered(result.outputChanges);
+      for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
     });
 
     it('prints the alias when the parameter is not NoEcho (negative control)', async () => {

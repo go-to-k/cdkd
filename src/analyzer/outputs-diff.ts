@@ -806,6 +806,11 @@ export async function resolveTemplateOutputs(
   // the resolve loop below yet can still sit on the stored side and print as a
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
+  // The `NoEcho` sources minus today's condition verdicts, for the
+  // `exportNameReadsNoEcho` gate in the loop below.
+  const { conditions: _todaysVerdicts, ...everyBranch } = outputsPass?.noEchoNameSources ?? {
+    parameters: new Set<string>(),
+  };
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     // Every declared key, secret-bearing or not (issue #1948): a stored key
     // this set does NOT hold is one today's template cannot account for, which
@@ -819,9 +824,7 @@ export async function resolveTemplateOutputs(
     if (
       !exportNameReadsNoEcho &&
       outputsPass?.noEchoNameSources !== undefined &&
-      exportNameNoEchoParameters(output.Export?.Name, {
-        parameters: outputsPass.noEchoNameSources.parameters,
-      }).length > 0
+      exportNameNoEchoParameters(output.Export?.Name, everyBranch).length > 0
     ) {
       exportNameReadsNoEcho = true;
     }
