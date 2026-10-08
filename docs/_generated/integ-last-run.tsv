@@ -252,7 +252,7 @@ nested-stack-rollback	2026-10-07T12:02:58Z	PASS	105	verify.sh	rc ok, orph clean;
 nested-stack-secret	2026-10-08T10:57:57Z	PASS	245	verify.sh	PR #4715 (#4644 multi-token literal parameter spelling; new Reversed/Embed/Select arms; discrimination: FAIL on reverted src); rc 0, destroy clean, 0 surviving state versions
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-noecho-parameter-masking	2026-10-08T10:56:59Z	PASS	1332	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+noecho-parameter-masking	2026-10-08T12:06:34Z	PASS	1132	verify.sh	rc ok, orph clean (PR #4732 Phase 1c stale alias withheld)
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
 orphan-getatt-takeover	2026-10-06T05:40:05Z	PASS	50	verify.sh	rc ok, orph clean (#4602 PR #4609)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean

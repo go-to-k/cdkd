@@ -16,6 +16,7 @@ import {
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   hasMaskableValues,
   printingCorpusOf,
+  readsNoEchoSource,
   shareLogOnlyValues,
   type NoEchoPositionSources,
   type RecordedSecretValues,
@@ -233,6 +234,19 @@ export interface ResolvedTemplateOutputs {
    * stored alias row under it is shown withheld, never by name.
    */
   refusedNoEchoExportNames: string[];
+  /**
+   * True when ANY declared output, a condition-skipped one included, has an
+   * intrinsic `Export.Name` that can read a `NoEcho` parameter (in a nested
+   * child, one the parent fills from a `NoEcho` source) or a `NoEcho`
+   * attribute, under ANY `Fn::If` verdict (go-to-k/cdkd#4723). An older binary
+   * published that name
+   * with the value and the verdicts of THEN, so a stored alias may spell a
+   * value since rotated, or come from a branch today's verdict drops, which
+   * neither {@link refusedNoEchoExportNames} nor the printing corpus (today's
+   * value only) can match: {@link computeOutputsDiff} withholds the name of
+   * every stored alias today's template cannot account for.
+   */
+  exportNameReadsNoEcho: boolean;
 }
 
 /**
@@ -648,6 +662,19 @@ export async function resolveTemplateOutputs(
      * this diff KNOWS (go-to-k/cdkd#4657): the deploy's positional refusal.
      */
     noEchoNameSources?: NoEchoPositionSources;
+    /**
+     * A nested child's parameters the parent fills from a `NoEcho` source
+     * under ANY condition verdict (go-to-k/cdkd#4723): read only by the
+     * `exportNameReadsNoEcho` gate, whose stored alias was published under a
+     * past verdict. Pass 3 keeps `noEchoNameSources`, today's.
+     */
+    noEchoNameParametersAnyVerdict?: ReadonlySet<string>;
+    /**
+     * Whether `Fn::GetAtt` of `attribute` on `logicalId` serves a value its
+     * producer declared `NoEcho`, per the stored record. Read only by the
+     * `exportNameReadsNoEcho` gate (go-to-k/cdkd#4723), never by pass 3.
+     */
+    noEchoAttributeIsNoEcho?: (logicalId: string, attribute: string) => boolean;
   }
 ): Promise<ResolvedTemplateOutputs> {
   const resolveValue = outputsPass?.resolveInto(outputsPass.secrets) ?? resolveFn;
@@ -705,6 +732,7 @@ export async function resolveTemplateOutputs(
   const templateHasSecretReference = containsSecretDynamicReference(template);
   const secretBearingExportNames: string[] = [];
   const refusedNoEchoExportNames: string[] = [];
+  let exportNameReadsNoEcho = false;
   let resolutionFailed = false;
   // Does the deploy's outputs pass RECORD a secret at all (issue #4143)? A
   // spelled output value (`secretSourceKeys`) is one source; a resolved value
@@ -768,6 +796,7 @@ export async function resolveTemplateOutputs(
       resolutionFailed,
       secretBearingExportNames,
       refusedNoEchoExportNames,
+      exportNameReadsNoEcho,
     };
   }
 
@@ -793,12 +822,39 @@ export async function resolveTemplateOutputs(
   // the resolve loop below yet can still sit on the stored side and print as a
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
+  // The `NoEcho` sources for the `exportNameReadsNoEcho` gate in the loop
+  // below: no condition verdicts; in a nested child, each parameter the parent
+  // fills from a `NoEcho` source under ANY verdict; and a `NoEcho` attribute.
+  const everyBranch: NoEchoPositionSources = {
+    parameters: new Set([
+      ...(outputsPass?.noEchoNameSources?.parameters ?? []),
+      ...(outputsPass?.noEchoNameParametersAnyVerdict ?? []),
+    ]),
+    ...(outputsPass?.noEchoAttributeIsNoEcho !== undefined && {
+      attributeIsNoEcho: outputsPass.noEchoAttributeIsNoEcho,
+    }),
+  };
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     // Every declared key, secret-bearing or not (issue #1948): a stored key
     // this set does NOT hold is one today's template cannot account for, which
     // is the deleted-output signal `secretSourceKeys` structurally cannot give.
     declaredKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') declaredKeys.add(output.Export.Name);
+    // Every declared output, not only those pass 3 decides: a condition-false
+    // exporter's stored alias is a REMOVE row too. And NO condition verdicts,
+    // unlike pass 3's refusal of today's name: the stored alias was published
+    // under a past verdict, so an `Fn::If` branch today drops still counts.
+    // A LITERAL name reads nothing, as for pass 3.
+    const name: unknown = output.Export?.Name;
+    if (
+      !exportNameReadsNoEcho &&
+      outputsPass?.noEchoNameSources !== undefined &&
+      name !== null &&
+      typeof name === 'object' &&
+      readsNoEchoSource(name, everyBranch)
+    ) {
+      exportNameReadsNoEcho = true;
+    }
     if (!containsSecretDynamicReference(output.Value)) continue;
     secretSourceKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
@@ -1179,6 +1235,7 @@ export async function resolveTemplateOutputs(
     resolutionFailed,
     secretBearingExportNames,
     refusedNoEchoExportNames,
+    exportNameReadsNoEcho,
   };
 }
 
@@ -1308,6 +1365,8 @@ export function computeOutputsDiff(
     secretBearingExportNames?: readonly string[];
     /** {@link ResolvedTemplateOutputs.refusedNoEchoExportNames} (go-to-k/cdkd#4657). */
     refusedNoEchoExportNames?: readonly string[];
+    /** {@link ResolvedTemplateOutputs.exportNameReadsNoEcho} (go-to-k/cdkd#4723). */
+    exportNameReadsNoEcho?: boolean;
     /**
      * The record's `exportNames` (schema v9+), or `undefined` when it records
      * none: which stored keys are export ALIASES (issue #4015).
@@ -1498,8 +1557,9 @@ export function computeOutputsDiff(
   // a secret, and a key that can only be an export ALIAS: carrying a character
   // a CloudFormation Output logical id cannot (outside `[A-Za-z0-9]`), and,
   // when the record lists `exportNames` (v9+), listed there. A plain Output
-  // logical id is never withheld -- not even one listed in `exportNames`,
+  // logical id is never withheld HERE -- not even one listed in `exportNames`,
   // which a self-aliased output (`exportName` equal to its own id) puts there.
+  // `withholdsRotatedNoEchoAlias` below can withhold one (go-to-k/cdkd#4723).
   //
   // TWO BOUNDS remain, each printing unless the corpus or the span covers it:
   // - an alphanumeric-only alias key, which reads as an Output logical id;
@@ -1521,8 +1581,24 @@ export function computeOutputsDiff(
   // 1-3 character value's containment floor cannot mask (go-to-k/cdkd#4657):
   // the REMOVE row of an alias an older binary published under it is withheld.
   const refusedNoEchoNames = new Set(unaccountableScan.refusedNoEchoExportNames ?? []);
+  // That set holds TODAY's value only. An alias published while the value was
+  // another one spells the OLD value, which nothing here can match
+  // (go-to-k/cdkd#4723), so while any declared name reads a `NoEcho`
+  // parameter, every stored alias the template cannot account for is
+  // withheld. STACK-WIDE, not per owning output: state records no alias's
+  // owner, and a value match misses an owner since renamed or removed. No
+  // `[A-Za-z0-9]` exemption either: `x${Short}y` publishes `xaby`. Bound,
+  // stated: a template that no longer declares such a name withholds nothing.
+  const withholdsRotatedNoEchoAlias = (name: string): boolean =>
+    unaccountableScan.exportNameReadsNoEcho === true &&
+    !accountable(name) &&
+    (storedExportNames === undefined || storedExportNames.has(name));
   const nameDisplay = (name: string): { nameDisplay?: SecretSafeKeyDisplay } => {
-    if (withholdsAliasName(name) || refusedNoEchoNames.has(name)) {
+    if (
+      withholdsAliasName(name) ||
+      refusedNoEchoNames.has(name) ||
+      withholdsRotatedNoEchoAlias(name)
+    ) {
       return { nameDisplay: { kind: 'withheld' } };
     }
     let corpus = recordCorpus;

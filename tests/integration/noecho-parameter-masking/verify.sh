@@ -42,6 +42,11 @@
 #      holds, so neither SSM parameter is updated (LastModifiedDate unchanged);
 #      `cdkd diff --fail` exits 0; `cdkd drift --json` exits 0 and reports
 #      NoEchoConsumer under `noEchoParameter`, printing no value.
+#   1c. A planted legacy alias (go-to-k/cdkd#4723): state gets the alias an
+#      older cdkd published for NoEchoShortAliasProbe while NoEchoShortToken
+#      held another 3-character value. `cdkd diff` and `cdkd diff --json`
+#      still report its REMOVE row, but with the name withheld: the old value
+#      prints in neither. The original state is restored before Phase 2.
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
@@ -283,6 +288,10 @@ assert_no_split_piece() { # assert_no_split_piece <label> <text>
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # Phase 1c's planted alias must not reach state destroy's export cleanup.
+  if [ -n "${P1C_ORIGINAL:-}" ] && [ -s "${P1C_ORIGINAL}" ]; then
+    aws s3 cp "${P1C_ORIGINAL}" "s3://${STATE_BUCKET:-}/${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ "${#SCRATCH_FILES[@]}" -gt 0 ]; then
     rm -f "${SCRATCH_FILES[@]}" || true
   fi
@@ -791,6 +800,78 @@ if [ "${DIFF_RC_P1B}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --fail exits 0 on the unchanged stack"
+
+echo "==> Phase 1c: a planted legacy alias spelling a previous short NoEcho value (go-to-k/cdkd#4723)"
+# `z` is no hex digit, so this is never today's `q<2 hex>` value, and it sits
+# under the 4-character containment floor, as the rotated value would.
+OLD_SHORT="qzz"
+PLANTED_ALIAS="short-${OLD_SHORT}-probe"
+P1C_ORIGINAL=$(mktemp)
+P1C_PLANTED=$(mktemp)
+P1C_JSON=$(mktemp)
+P1C_JSON_ERR=$(mktemp)
+SCRATCH_FILES+=("${P1C_ORIGINAL}" "${P1C_PLANTED}" "${P1C_JSON}" "${P1C_JSON_ERR}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1C_ORIGINAL}" --region "${REGION}" --quiet
+# Through files, never a pipe into `aws s3 cp -`: a jq failure mid-pipe would
+# upload an EMPTY object over the state.
+jq --arg k "${PLANTED_ALIAS}" \
+  '.outputs[$k] = .outputs.NoEchoShortAliasProbe | .exportNames = ((.exportNames // []) + [$k])' \
+  "${P1C_ORIGINAL}" >"${P1C_PLANTED}"
+if [ "$(jq -r --arg k "${PLANTED_ALIAS}" '(.outputs[$k] == "short-alias-probe-value") and (.exportNames | index($k) != null)' "${P1C_PLANTED}" 2>/dev/null)" != "true" ]; then
+  echo "FAIL: premise: the planted state document does not hold the legacy alias in outputs and exportNames" >&2
+  exit 1
+fi
+aws s3 cp "${P1C_PLANTED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | jq -r --arg k "${PLANTED_ALIAS}" '.outputs | has($k)')" != "true" ]; then
+  echo "FAIL: premise: the planted legacy alias did not land in state.json" >&2
+  exit 1
+fi
+set +e
+DIFF_OUT_P1C=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>&1)
+DIFF_RC_P1C=$?
+env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --json >"${P1C_JSON}" 2>"${P1C_JSON_ERR}"
+DIFF_JSON_RC_P1C=$?
+set -e
+# Restore FIRST, so a failing assertion below leaves no planted alias behind
+# (the cleanup trap restores too).
+aws s3 cp "${P1C_ORIGINAL}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | jq -r --arg k "${PLANTED_ALIAS}" '.outputs | has($k)')" != "false" ]; then
+  echo "FAIL: the original state.json was not restored after Phase 1c" >&2
+  exit 1
+fi
+P1C_ORIGINAL=""
+if [ "${DIFF_RC_P1C}" -ne 0 ] || [ "${DIFF_JSON_RC_P1C}" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff' over the planted alias exited ${DIFF_RC_P1C} (human) / ${DIFF_JSON_RC_P1C} (--json)" >&2
+  diag_output "${DIFF_OUT_P1C}"
+  exit 1
+fi
+# The sentinel: the old value (and so the planted key) prints nowhere.
+if [[ "${DIFF_OUT_P1C}" == *"${OLD_SHORT}"* ]] || grep -qF -- "${OLD_SHORT}" "${P1C_JSON}" "${P1C_JSON_ERR}"; then
+  echo "FAIL: 'cdkd diff' prints the previous NoEcho value inside the planted alias's name (go-to-k/cdkd#4723)" >&2
+  exit 1
+fi
+if [[ "${DIFF_OUT_P1C}" == *"${TOKEN}"* ]] || grep -qF -- "${TOKEN}" "${P1C_JSON}" "${P1C_JSON_ERR}"; then
+  echo "FAIL: the Phase 1c 'cdkd diff' output carries the NoEcho value in plaintext" >&2
+  exit 1
+fi
+# The row is still REPORTED, withheld: exactly one REMOVE with a redacted name.
+P1C_ROWS=$(jq -c '[.. | objects | select(has("outputChanges")) | .outputChanges[] | select(.changeType == "REMOVE")]' "${P1C_JSON}" 2>/dev/null || echo "unparsable")
+if [ "$(jq -r 'length' <<< "${P1C_ROWS}" 2>/dev/null)" != "1" ] ||
+  [ "$(jq -r '.[0].nameRedacted == true and .[0].name == "<name withheld: contains a secret>"' <<< "${P1C_ROWS}" 2>/dev/null)" != "true" ]; then
+  echo "FAIL: 'cdkd diff --json' does not report exactly one REMOVE row for the planted alias with its name withheld (got ${P1C_ROWS}; go-to-k/cdkd#4723)" >&2
+  exit 1
+fi
+if [[ "${DIFF_OUT_P1C}" != *"<name withheld: contains a secret>"* ]]; then
+  echo "FAIL: the human 'cdkd diff' output shows no withheld Outputs row for the planted alias (go-to-k/cdkd#4723)" >&2
+  diag_output "${DIFF_OUT_P1C}"
+  exit 1
+fi
+echo "    OK: the planted legacy alias is reported as a REMOVE with its name withheld, human and --json; state restored"
 DRIFT_JSON_P1B=$(mktemp)
 DRIFT_ERR_P1B=$(mktemp)
 SCRATCH_FILES+=("${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}")
