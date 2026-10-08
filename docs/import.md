@@ -868,6 +868,18 @@ over Cloud Control API by default — that would issue an
 `aws-cloudcontrol:ListResources` call per type, which is too expensive for
 whole-stack adoption.
 
+**Recorded on Cloud Control.** Such a resource's state record says
+`provisionedBy: cc-api`, as a deploy records it, so later deploys, drift and
+destroy keep it on Cloud Control. An earlier cdkd version recorded every
+imported resource `sdk`, including each one it read through Cloud Control.
+Such a record still routes through Cloud Control, and `--recreate-via-cc-api`
+refuses a type with no SDK provider whatever its record says, so it needs no
+action. To correct one anyway, first check with `cdkd diff` that the resource
+has no pending change (the re-import records the CURRENT template's
+properties, so a pending one would read as already applied), then re-import it
+by its recorded physical id, quoted since a composite id contains `|`:
+`cdkd import <stack> --resource '<logicalId>=<physicalId>' --force`.
+
 **Composite identifiers.** When a type's schema `primaryIdentifier` has more
 than one field, Cloud Control identifies the resource by the field values joined
 with `|` (`AWS::EC2::VPCCidrBlock` is `<Id>|<VpcId>`), and cdkd records that

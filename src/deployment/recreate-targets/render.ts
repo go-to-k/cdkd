@@ -230,8 +230,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     if (lines.length > 0) lines.push('');
     lines.push(
       `--recreate-via-cc-api named ${validation.blockedAlreadyCcApi.length} ` +
-        `resource(s) that are ALREADY sticky on Cloud Control API (the ` +
-        `migration is a no-op):`
+        `resource(s) that are ALREADY sticky on Cloud Control API, or whose ` +
+        `type has no SDK provider (the migration is a no-op):`
     );
     for (const blocked of validation.blockedAlreadyCcApi) {
       lines.push(`  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)})`);

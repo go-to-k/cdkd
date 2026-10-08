@@ -242,9 +242,11 @@ export function orphanedNameCollisionAdvice(
   // where they started. Naming a remedy whose precondition the code never
   // checks is the defect class issue
   // [#2610](https://github.com/go-to-k/cdkd/issues/2610) swept, so the
-  // precondition is checked here. `getProvider` is the right call and
-  // `getProviderFor` would be wrong: `cdkd import` itself uses `getProvider`,
-  // so this predicts exactly what that command will do.
+  // precondition is checked here. `getProvider` is the right call, and a
+  // `getProviderFor` given properties or a recorded layer would be wrong:
+  // `cdkd import` routes on the type alone (`getProviderFor({ resourceType })`,
+  // which is what `getProvider` returns), so this predicts exactly what that
+  // command will do.
   //
   // The `catch` is unreachable for the type that got us here, and is kept
   // rather than removed: `provisionResource` already called `getProvider`

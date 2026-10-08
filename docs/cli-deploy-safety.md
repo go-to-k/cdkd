@@ -504,10 +504,13 @@ replacement is planned (and refused for a stateful type without
   the property.** Deploy first: the auto-route very likely applies it in place,
   and a recreate you did not need costs downtime. See the paragraph above.
 
-- **The resource is already `provisionedBy: 'cc-api'`.** The update path
-  already routes via Cloud Control, so the recreate is a no-op that would
-  produce identical end state at the cost of unnecessary downtime. cdkd refuses
-  at pre-flight; drop the flag for that resource.
+- **The resource is already `provisionedBy: 'cc-api'`, or its type has no SDK
+  provider** (whatever its record says: an earlier `cdkd import` recorded every
+  resource `sdk`). The update path already routes via Cloud Control, so the
+  recreate is a no-op that would produce identical end state at the cost of
+  unnecessary downtime, and of whatever AWS deletes with the resource (an
+  Application Auto Scaling target's scaling policies). cdkd refuses at
+  pre-flight; drop the flag for that resource.
 - **Fresh deploy** — the resource is not yet in cdkd state. The auto-route
   handles fresh silent-drop deploys with no flag.
 

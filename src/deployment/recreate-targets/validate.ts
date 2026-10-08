@@ -11,7 +11,7 @@ import {
   hasNoCloudControlHandlers,
   NO_CC_HANDLERS_REASON,
 } from '../../provisioning/unsupported-types.js';
-import { ccBrokenReason } from '../../provisioning/provider-registry.js';
+import { ccBrokenReason, isCustomResource } from '../../provisioning/provider-registry.js';
 
 /**
  * One validated recreate target. The `resourceType` + `physicalId` are
@@ -116,7 +116,8 @@ export interface RecreateTargetsValidation {
   blockedAlreadySdk: RecreateTarget[];
   /**
    * #665: `--recreate-via-cc-api <id>` named on a resource whose
-   * recorded `provisionedBy` is already `'cc-api'`. Forward migration
+   * recorded `provisionedBy` is already `'cc-api'`, or (go-to-k/cdkd#4706,
+   * given `hasSdkProvider`) whose type has no SDK provider. Forward migration
    * is a no-op for these; refuse with a clear message rather than
    * silently destroy + recreate. Mirror of {@link blockedAlreadySdk}
    * for the forward direction, addressing the pre-existing asymmetry
@@ -237,8 +238,9 @@ export function validateRecreateTargets(input: {
   /**
    * #651: callback to ask whether cdkd has an SDK provider registered
    * for a given resource type. Used to refuse `--recreate-via-sdk-provider`
-   * on Tier 2 CC-only types. Optional — when omitted (legacy callers),
-   * the SDK-provider check is skipped and the blockedNoSdkProvider list
+   * on Tier 2 CC-only types, and `--recreate-via-cc-api` on one whatever its
+   * record says (go-to-k/cdkd#4706). Optional — when omitted (legacy
+   * callers), both checks are skipped and the blockedNoSdkProvider list
    * stays empty.
    */
   hasSdkProvider?: (resourceType: string) => boolean;
@@ -426,8 +428,24 @@ export function validateRecreateTargets(input: {
       // A cc-broken type is not "already CC-managed" -- its next mutating
       // deploy returns it to its SDK provider -- and `blockedCcBroken` above
       // already refuses it with the true reason.
+      //
+      // go-to-k/cdkd#4706: so is one whose record says `sdk` but whose type
+      // has no SDK provider, in the record or the template: it is managed
+      // through Cloud Control whatever the record says (a record an earlier
+      // `cdkd import` wrote). Recreated, an Application Auto Scaling target
+      // lost its scaling policies for an identical end state. Not a type
+      // Cloud Control cannot create (refused above with that reason), nor a
+      // custom resource on either half.
+      const onCcAnyway =
+        input.hasSdkProvider !== undefined &&
+        !nestedStackRow &&
+        noCcRoute === undefined &&
+        !isCustomResource(resourceType) &&
+        !isCustomResource(templateResource.Type) &&
+        !input.hasSdkProvider(resourceType) &&
+        !input.hasSdkProvider(templateResource.Type);
       if (
-        recordedResource.provisionedBy === 'cc-api' &&
+        (recordedResource.provisionedBy === 'cc-api' || onCcAnyway) &&
         ccBrokenReason(templateResource.Type) === undefined
       ) {
         blockedAlreadyCcApi.push(target);

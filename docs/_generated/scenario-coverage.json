@@ -436,6 +436,11 @@
       "scenarios": []
     },
     {
+      "name": "app-autoscaling-recreate",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "appconfig",
       "annotated": false,
       "scenarios": []
@@ -3185,6 +3190,7 @@
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
+    "app-autoscaling-recreate",
     "appconfig",
     "aws-custom-resource",
     "backup",

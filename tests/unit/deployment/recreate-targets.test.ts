@@ -1182,6 +1182,101 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
     expect(renderRecreateTargetsErrors(v)).toBeNull();
   });
 
+  it('refuses --recreate-via-cc-api of a type with no SDK provider, whatever its record says (go-to-k/cdkd#4706)', () => {
+    // A scalable target has no SDK provider: `cdkd import` now records it
+    // `cc-api`, the layer `getProviderFor` chose, and a record an earlier
+    // import wrote says `sdk`. Either way it is managed through Cloud
+    // Control, so the recreate is the no-op this refusal names -- and it
+    // deregistered the target, deleting every scaling policy state kept.
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry, providerClasses);
+    const hasSdkProvider = (rt: string) => registry.getProviderType(rt) === 'sdk';
+    const target = 'AWS::ApplicationAutoScaling::ScalableTarget';
+    expect(registry.getProviderFor({ resourceType: target }).provisionedBy).toBe('cc-api');
+    const validate = (
+      type: string,
+      provisionedBy: 'sdk' | 'cc-api',
+      withRegistry = true
+    ): ReturnType<typeof validateRecreateTargets> =>
+      validateRecreateTargets({
+        template: { Resources: { R: { Type: type, Properties: {} } } },
+        state: st('S', { R: res(type, { provisionedBy }) }),
+        recreateViaCcApi: ['R'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+        ...(withRegistry && { hasSdkProvider }),
+      });
+    for (const provisionedBy of ['cc-api', 'sdk'] as const) {
+      const v = validate(target, provisionedBy);
+      expect(v.blockedAlreadyCcApi.map((t) => t.logicalId), provisionedBy).toEqual(['R']);
+      expect(renderRecreateTargetsErrors(v), provisionedBy).toContain(
+        'ALREADY sticky on Cloud Control API'
+      );
+    }
+    // An SDK-provider type recorded `sdk` is the legitimate forward migration.
+    const lambda = validate('AWS::Lambda::Function', 'sdk');
+    expect(lambda.blockedAlreadyCcApi).toEqual([]);
+    expect(renderRecreateTargetsErrors(lambda)).toBeNull();
+    // A caller passing no `hasSdkProvider` keeps the record-only check.
+    expect(validate(target, 'sdk', false).blockedAlreadyCcApi).toEqual([]);
+    // Exemptions: a custom resource (no SDK provider, but no Cloud Control
+    // either), and a nested-stack row (refused for its own reason).
+    expect(validate('Custom::Foo', 'sdk').blockedAlreadyCcApi).toEqual([]);
+    // An oracle answering "no SDK provider" for it too, so only the
+    // nested-stack exemption keeps it out.
+    const nested = validateRecreateTargets({
+      template: { Resources: { R: { Type: 'AWS::CloudFormation::Stack', Properties: {} } } },
+      state: st('S', { R: res('AWS::CloudFormation::Stack', { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => false,
+    });
+    expect(nested.blockedAlreadyCcApi).toEqual([]);
+    expect(nested.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['R']);
+    // Both halves count: a record of a Cloud Control-only type whose template
+    // now names an SDK-provider type is a real move, not refused as a no-op.
+    const typeChange = validateRecreateTargets({
+      template: { Resources: { R: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { R: res(target, { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider,
+    });
+    expect(typeChange.blockedAlreadyCcApi).toEqual([]);
+    // ...nor the reverse: an SDK-provider record whose template now names a
+    // Cloud Control-only type (deleted through the SDK, created through Cloud
+    // Control).
+    const reverse = validateRecreateTargets({
+      template: { Resources: { R: { Type: target, Properties: {} } } },
+      state: st('S', { R: res('AWS::Lambda::Function', { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider,
+    });
+    expect(reverse.blockedAlreadyCcApi).toEqual([]);
+    // A type Cloud Control cannot create either (an escape-hatch type with no
+    // SDK provider) is refused once, with that reason, not also as a no-op.
+    const noHandlers = 'AWS::AppMesh::Mesh';
+    expect(hasSdkProvider(noHandlers)).toBe(false);
+    const unroutable = validate(noHandlers, 'sdk');
+    expect(unroutable.blockedNoCcRoute.map((t) => t.logicalId)).toEqual(['R']);
+    expect(unroutable.blockedAlreadyCcApi).toEqual([]);
+    // A Cloud Control-only record whose template now names a custom resource
+    // is a type change, not a no-op.
+    const toCustom = validateRecreateTargets({
+      template: { Resources: { R: { Type: 'Custom::Foo', Properties: {} } } },
+      state: st('S', { R: res(target, { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider,
+    });
+    expect(toCustom.blockedAlreadyCcApi).toEqual([]);
+  });
+
   it('blockedAlreadyCcApi does NOT fire for the reverse direction (--recreate-via-sdk-provider on cc-api is the intended path)', () => {
     const template: CloudFormationTemplate = {
       Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },

@@ -197,9 +197,10 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 // Provider registry: hoisted spies so each test can configure has/get + provider.import.
 const mockHasProvider = vi.hoisted(() => vi.fn<(t: string) => boolean>());
 const mockGetProvider = vi.hoisted(() => vi.fn<(t: string) => unknown>());
-// #614: import.ts now consults `getProviderFor` for the observed-properties
-// capture path (legacy `getProvider` is still used for `provider.import()`).
-// Wrap the existing get-by-type mock so test fixtures stay declarative.
+// import.ts routes through `getProviderFor`, both for `provider.import()`
+// (whose `provisionedBy` it records, go-to-k/cdkd#4706) and for the
+// observed-properties capture (#614). The default implementation wraps the
+// get-by-type mock so test fixtures stay declarative.
 const mockGetProviderFor = vi.hoisted(() =>
   vi.fn<(input: { resourceType: string }) => unknown>()
 );
@@ -912,6 +913,130 @@ describe('cdkd import', () => {
     }
   });
 
+  it('records a nested-stack row sdk and a nested child read through Cloud Control cc-api (go-to-k/cdkd#4706)', async () => {
+    // The nested-stack row is adopted without a provider, so it takes the
+    // `sdk` fallback: `cc-api` would make the next deploy route the stack row
+    // to Cloud Control. The child walk imports through the same routing.
+    const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-layer-'));
+    try {
+      const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          Resources: {
+            Target: { Type: 'AWS::ApplicationAutoScaling::ScalableTarget', Properties: {} },
+            Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+          },
+        })
+      );
+      const tmpl = template({
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+      });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+      const providerFor = (t: string) => ({
+        import: vi.fn(async () => ({ physicalId: `${t}-id`, attributes: {} })),
+      });
+      const isCcOnly = (t: string) => t === 'AWS::ApplicationAutoScaling::ScalableTarget';
+      mockGetProvider.mockImplementation(providerFor);
+      mockGetProviderFor.mockImplementation(({ resourceType }: { resourceType: string }) => ({
+        provider: providerFor(resourceType),
+        provisionedBy: isCcOnly(resourceType) ? 'cc-api' : 'sdk',
+      }));
+      const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'P',
+        physicalId: 'P',
+        resources: new Map([['Child', childArn]]),
+        nested: new Map([
+          [
+            'Child',
+            {
+              stackName: childArn,
+              physicalId: childArn,
+              resources: new Map([
+                ['Target', 'table/t|dynamodb:table:ReadCapacityUnits|dynamodb'],
+                ['Bucket', 'b'],
+              ]),
+              nested: new Map(),
+            },
+          ],
+        ]),
+      });
+
+      await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      type Saved = [string, string, { resources: Record<string, { provisionedBy?: string }> }];
+      const saved = (name: string) =>
+        (mockSaveState.mock.calls as unknown as Saved[]).find((c) => c[0] === name)?.[2];
+      expect(saved('P')?.resources['Child']?.provisionedBy).toBe('sdk');
+      expect(saved('P~Child')?.resources['Target']?.provisionedBy).toBe('cc-api');
+      expect(saved('P~Child')?.resources['Bucket']?.provisionedBy).toBe('sdk');
+    } finally {
+      rmSync(tmpdirPath, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites a legacy sdk record to cc-api on a selective --force re-import by its recorded id (go-to-k/cdkd#4706)', async () => {
+    // The documented remedy for a record an earlier `cdkd import` wrote.
+    const targetId = 'table/t|dynamodb:table:ReadCapacityUnits|dynamodb';
+    const tmpl = template({
+      Target: {
+        Type: 'AWS::ApplicationAutoScaling::ScalableTarget',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/Target' },
+      },
+      MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockGetState.mockResolvedValueOnce({
+      state: {
+        version: 2,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          Target: {
+            physicalId: targetId,
+            resourceType: 'AWS::ApplicationAutoScaling::ScalableTarget',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+            provisionedBy: 'sdk',
+          },
+          MyBucket: {
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+            provisionedBy: 'sdk',
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"existing-etag"',
+    });
+    mockHasProvider.mockReturnValue(true);
+    const ccProvider = { import: vi.fn(async () => ({ physicalId: targetId, attributes: {} })) };
+    mockGetProvider.mockReturnValue(ccProvider);
+    mockGetProviderFor.mockImplementation(() => ({ provider: ccProvider, provisionedBy: 'cc-api' }));
+
+    await runImport(['import', '--app', 'x', '--resource', `Target=${targetId}`, '--force', '--yes']);
+
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { provisionedBy?: string; physicalId: string }> },
+    ];
+    expect(state.resources['Target']).toMatchObject({ physicalId: targetId, provisionedBy: 'cc-api' });
+    // An unlisted record is left as it was.
+    expect(state.resources['MyBucket']).toMatchObject({ physicalId: 'b', provisionedBy: 'sdk' });
+    expect(ccProvider.import).toHaveBeenCalledTimes(1);
+  });
+
   // Issue #2161: the NESTED-child acquire (import.ts:1936) has its own
   // `!acquired` check. Here the root acquire succeeds but the child's returns
   // false — import must refuse the child rather than write its state and
@@ -1117,6 +1242,52 @@ describe('cdkd import', () => {
     expect(String(summaryCall?.[0])).toMatch(/1 imported, 0 not found, .* 1 failed/);
     const failed = errorSpy.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Failed to import Tg'));
     expect(failed).toContain('not authorized');
+  });
+
+  it('records the layer that imported each resource: cc-api for a Cloud Control read, sdk otherwise (go-to-k/cdkd#4706)', async () => {
+    // A type with no SDK provider is read through Cloud Control. Recorded as
+    // `sdk`, the record let `--recreate-via-cc-api` through its
+    // already-on-Cloud-Control refusal, and the recreate lost the target's
+    // scaling policies.
+    const tmpl = template({
+      MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+      Target: {
+        Type: 'AWS::ApplicationAutoScaling::ScalableTarget',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/Target' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    const sdkProvider = { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+    const ccProvider = {
+      import: vi.fn(async () => ({
+        physicalId: 'table/t|dynamodb:table:ReadCapacityUnits|dynamodb',
+        attributes: {},
+      })),
+    };
+    const isCcOnly = (resourceType: string) =>
+      resourceType === 'AWS::ApplicationAutoScaling::ScalableTarget';
+    mockGetProvider.mockImplementation((resourceType: string) =>
+      isCcOnly(resourceType) ? ccProvider : sdkProvider
+    );
+    mockGetProviderFor.mockImplementation(({ resourceType }: { resourceType: string }) =>
+      isCcOnly(resourceType)
+        ? { provider: ccProvider, provisionedBy: 'cc-api' }
+        : { provider: sdkProvider, provisionedBy: 'sdk' }
+    );
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    expect(ccProvider.import).toHaveBeenCalledTimes(1);
+    expect(sdkProvider.import).toHaveBeenCalledTimes(1);
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { provisionedBy?: string }> },
+    ];
+    expect(state.resources['Target']?.provisionedBy).toBe('cc-api');
+    expect(state.resources['MyBucket']?.provisionedBy).toBe('sdk');
   });
 
   it('populates observedProperties for each imported resource by calling provider.readCurrentState', async () => {
