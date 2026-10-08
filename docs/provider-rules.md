@@ -1266,16 +1266,20 @@ shared report is `orphan-report.ts`):
   failures, clock skew and socket resets, which the engine does not retry.
   Every token-less create whose replay COLLIDES instead of duplicating (a
   name-unique create: a stream, repository, role, function, table, cluster,
-  bucket and the like — `grep -rln withoutServerErrorRetries
-  src/provisioning/providers` lists them; CodeCommit's seed `CreateCommit`
-  collides once the branch exists, EC2's `CreateSecurityGroup` on its group
-  name in the VPC) needs this client and no lookup: the surfaced 5xx lets
+  directory or table bucket and the like — the providers that send one
+  through this client and arm no latch, plus EC2's `CreateSecurityGroup`,
+  which collides on its group name in the VPC, and CodeCommit's seed
+  `CreateCommit`, which collides once the branch exists) needs this client
+  and no lookup: the surfaced 5xx lets
   `withRetry` mark the collision as possibly this create's own
   ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never
   credited to another holder. The exception is a collision whose error does
   not name the holder: EC2's `CreateSubnet` collides on its CIDR, but
   `InvalidSubnet.Conflict` names no subnet id, so it keeps the lookup to
-  tell the user which subnet to inspect.
+  tell the user which subnet to inspect. S3's `CreateBucket` is not one of
+  these either: it keeps its latch and refuses a bucket that exists after its
+  own server error rather than adopting it
+  ([#4686](https://github.com/go-to-k/cdkd/issues/4686)).
 - **Look only after an AMBIGUOUS failure.** `AmbiguousCreateLatch.noteFailure`
   arms on `isAmbiguousOutcomeError` thrown by the create call itself, and the
   next attempt `take`s it before creating again. A definite refusal (a 4xx, a
