@@ -48,6 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displayIdent, displayStackName } from '../utils/display-safe.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
@@ -641,7 +642,7 @@ export class ExportIndexStore {
           return { ref, state: got?.state };
         } catch (err) {
           this.logger.warn(
-            `Failed to read state for ${ref.stackName} (${ref.region ?? ''}) during index rebuild: ${err instanceof Error ? err.message : String(err)}`
+            `Failed to read state for ${ref.stackName} (${ref.region ?? ''}) during index rebuild: ${describeAwsFailure(err).detail}`
           );
           return { ref, state: null };
         }
@@ -882,13 +883,13 @@ export class ExportIndexStore {
         // as unwritten, since there the entry's value IS what it went to
         // change.
         this.logger.warn(
-          `Exports index ${label} failed (non-retryable): ${err instanceof Error ? err.message : String(err)}; continuing without index update`
+          `Exports index ${label} failed (non-retryable): ${describeAwsFailure(err).detail}; continuing without index update`
         );
         return false;
       }
     }
     this.logger.warn(
-      `Exports index ${label} exhausted ${this.opts.maxWriteRetries} retries due to concurrent writers; continuing without index update. Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+      `Exports index ${label} exhausted ${this.opts.maxWriteRetries} retries due to concurrent writers; continuing without index update. Last error: ${describeAwsFailure(lastErr).detail}`
     );
     return false;
   }
