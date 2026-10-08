@@ -98,6 +98,21 @@ export async function scanOtherPrefixesForStack(
   }
 }
 
+/**
+ * The same target with ONE bucket listing shared by every scan through it, for
+ * a deploy of several stacks. Started on the first scan that needs it.
+ */
+export function withSharedListing(target: CrossPrefixScanTarget): CrossPrefixScanTarget {
+  let listing: Promise<string[]> | undefined;
+  return {
+    prefix: target.prefix,
+    ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
+    listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),
+    recordExistsUnderPrefix: (prefix, stackName, region) =>
+      target.recordExistsUnderPrefix(prefix, stackName, region),
+  };
+}
+
 /** The refusal's error code. */
 export const STACK_UNDER_OTHER_PREFIX = 'STACK_UNDER_OTHER_STATE_PREFIX';
 
@@ -168,7 +183,9 @@ export function destroyUnderOtherPrefixMessage(
 /** The warning for a scan S3 refused with 403. */
 export function crossPrefixDeniedWarning(s: CrossPrefixSubject, error: unknown): string {
   const name =
-    error !== null && typeof error === 'object' && typeof (error as { name?: unknown }).name === 'string'
+    error !== null &&
+    typeof error === 'object' &&
+    typeof (error as { name?: unknown }).name === 'string'
       ? displaySafe((error as { name: string }).name, { asciiOnly: true })
       : 'AccessDenied';
   return (
@@ -186,7 +203,9 @@ export function crossPrefixFailedMessage(
   error: unknown
 ): string {
   const name =
-    error !== null && typeof error === 'object' && typeof (error as { name?: unknown }).name === 'string'
+    error !== null &&
+    typeof error === 'object' &&
+    typeof (error as { name?: unknown }).name === 'string'
       ? displaySafe((error as { name: string }).name, { asciiOnly: true })
       : 'an unknown error';
   return (

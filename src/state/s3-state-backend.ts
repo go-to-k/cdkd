@@ -932,13 +932,13 @@ export class S3StateBackend {
    * stack in `region`? Same answer as {@link stateExists} under that prefix,
    * through this backend's already-resolved client (go-to-k/cdkd#4705).
    */
-  async recordExistsUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean> {
+  async recordExistsUnderPrefix(
+    prefix: string,
+    stackName: string,
+    region: string
+  ): Promise<boolean> {
     await this.ensureClientForBucket();
-    const sibling = new S3StateBackend(
-      this.s3Client,
-      { ...this.config, prefix },
-      this.clientOpts
-    );
+    const sibling = new S3StateBackend(this.s3Client, { ...this.config, prefix }, this.clientOpts);
     sibling.clientResolved = true;
     return sibling.stateExists(stackName, region);
   }

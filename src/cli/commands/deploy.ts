@@ -111,7 +111,10 @@ import {
 } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { createCrossPrefixDeployGate } from './cross-prefix-gate.js';
-import { scanOtherPrefixesForStack } from '../../state/cross-prefix-stack-scan.js';
+import {
+  scanOtherPrefixesForStack,
+  withSharedListing,
+} from '../../state/cross-prefix-stack-scan.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
@@ -596,11 +599,12 @@ async function deployCommand(
     // awaited only by the engine's post-lock gate when it finds no record, so
     // it overlaps macro expansion, asset publishing and the lock; a stack this
     // prefix already holds stops at one HEAD and lists nothing.
+    const crossPrefixTarget = withSharedListing(preflightStateBackend);
     const crossPrefixScans = new Map(
       targetStacks.map((s) => [
         s.stackName,
         scanOtherPrefixesForStack(
-          preflightStateBackend,
+          crossPrefixTarget,
           s.stackName,
           s.region || (namedCliRegion(options.region) ?? 'us-east-1'),
           { checkOwnRecord: true }

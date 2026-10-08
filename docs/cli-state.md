@@ -689,7 +689,10 @@ cdkd state destroy MyStack --remove-protection --yes
 Deletes a stack's AWS resources and then its state record, reading the record
 instead of synthesizing — the CDK-app-free counterpart of `cdkd destroy`. Both
 run the identical per-stack pipeline, so the data guards, `DeletionPolicy`
-handling, strong-reference blocks, lock behavior, and exit codes are the same.
+handling, strong-reference blocks, lock behavior, and exit codes are the same —
+including the refusal when another `--state-prefix` of the bucket records the
+same stack and region
+([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)).
 
 | Flag | Default | Description |
 | --- | --- | --- |

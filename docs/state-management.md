@@ -43,6 +43,10 @@ State and lock keys are region-scoped (since schema `version: 2`).
 The same `stackName` deployed to two different regions has two independent
 state files; changing `env.region` no longer silently overwrites the prior
 region's record.
+The same `stackName` under two state prefixes (or two buckets) in one
+account and region is a different matter: it is unsupported, and refused where
+cdkd can see it — see
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 
 **The key is what decides a record's region, not the `region` field inside
 it.** cdkd writes the two to agree — every save stamps the key's region into

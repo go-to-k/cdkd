@@ -9,6 +9,7 @@ import {
   applyCrossPrefixScan,
   isAccessDenied,
   scanOtherPrefixesForStack,
+  withSharedListing,
   type CrossPrefixScanTarget,
 } from '../../../src/state/cross-prefix-stack-scan.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
@@ -117,6 +118,21 @@ describe('scanOtherPrefixesForStack', () => {
       checkOwnRecord: true,
     });
     expect(result.kind).toBe('failed');
+  });
+});
+
+describe('withSharedListing', () => {
+  it('lists the bucket once for every stack scanned through it', async () => {
+    const t = target({ prefixes: ['cdkd', 'team-b'], holders: { 'team-b': true } });
+    const shared = withSharedListing(t);
+    const results = await Promise.all(
+      ['A', 'B', 'C'].map((name) =>
+        scanOtherPrefixesForStack(shared, name, 'us-east-1', { checkOwnRecord: true })
+      )
+    );
+    expect(results.map((r) => r.kind)).toEqual(['found', 'found', 'found']);
+    expect(t.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
+    expect(t.ownRecordExists).toHaveBeenCalledTimes(3);
   });
 });
 

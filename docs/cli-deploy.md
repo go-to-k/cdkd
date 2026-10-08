@@ -566,6 +566,17 @@ the next deploy would send the handler a fresh Create. A delete reads the state
 record: restore the ARN in `state.json`, or, for a resource removed from the
 template, drop only its record with `--resource` as above.
 
+## The same stack name under another state prefix refuses the deploy
+
+A stack's first deploy under a `--state-prefix` checks whether the state bucket
+already records the same stack name and region under another top-level prefix,
+and refuses before any resource is touched if it does. A stack name is one
+deployment per account and region, as in CloudFormation — see
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
+for why, what the check cannot see, and the remedies the refusal prints. A
+stack the prefix already records skips the check. If S3 denies the listing,
+the deploy warns and continues.
+
 ## Exit codes
 
 | Code | Meaning |
