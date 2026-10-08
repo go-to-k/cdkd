@@ -669,19 +669,6 @@ export class DeployEngine {
     | ((outputKey: string, exportName: string) => string | undefined)
     | undefined;
   /**
-   * The last `resolveOutputs` pass's warning for a no-change merge that KEEPS
-   * the previous bag whole (go-to-k/cdkd#4657): the outputs whose earlier
-   * export alias today's verdict would refuse, or `undefined` when none.
-   * Same lifetime rule as {@link carriedExportAliasRefusal}.
-   */
-  /** @internal */
-  keptExportAliasWarning:
-    | ((
-        declaredOutputs: Record<string, import('../types/resource.js').TemplateOutput> | undefined,
-        previousExportNames: ReadonlySet<string>
-      ) => string | undefined)
-    | undefined;
-  /**
    * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
    * (the resolver threw under the default arm of
    * `handleOutputResolutionFailure`, or returned `undefined` outright without

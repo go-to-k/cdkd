@@ -11,7 +11,6 @@ import {
   isExportAliasCollision,
   isNoEchoOnlyExposure,
   isOutputSuppressedByCondition,
-  noEchoKeptAliasWarning,
   noEchoParameterExportNameWarning,
   noEchoParameterValueSeed,
   secretBearingExportNameWarning,
@@ -241,7 +240,6 @@ export async function resolveOutputs(
   // could then be deleted with no test going red — so there is exactly one.
   this.resolvedExportNames = [];
   this.carriedExportAliasRefusal = undefined;
-  this.keptExportAliasWarning = undefined;
   if (!template.Outputs) {
     return {};
   }
@@ -490,34 +488,6 @@ export async function resolveOutputs(
         context.recordedSecretValues,
         verdict.noEchoOnly
       );
-    };
-
-    // The KEPT-WHOLE twin (go-to-k/cdkd#4657): when the no-change merge keeps
-    // the previous bag, the outputs whose earlier alias today's verdict would
-    // refuse, named in ONE warning (never by the alias, which holds the
-    // value). A literal name counts when the previous record published it; an
-    // intrinsic one reading a `NoEcho` parameter when the record publishes an
-    // alias no declared literal name or output key accounts for, since its key
-    // cannot be named without resolving it.
-    this.keptExportAliasWarning = (declaredOutputs, previousExportNames) => {
-      const declared = Object.entries(declaredOutputs ?? {});
-      const accounted = new Set<string>(declared.map(([key]) => key));
-      for (const [, output] of declared) {
-        if (typeof output?.Export?.Name === 'string') accounted.add(output.Export.Name);
-      }
-      const unaccountedAlias = [...previousExportNames].some((name) => !accounted.has(name));
-      const owners: string[] = [];
-      for (const [outputKey, output] of declared) {
-        const name: unknown = output?.Export?.Name;
-        const refused =
-          typeof name === 'string'
-            ? previousExportNames.has(name) &&
-              carriedExportAliasExposure(name, outputsPassSecrets, noEchoSeed) !== undefined
-            : unaccountedAlias && exportNameNoEchoParameters(name, noEchoSources).length > 0;
-        if (refused) owners.push(outputKey);
-      }
-      if (owners.length === 0) return undefined;
-      return noEchoKeptAliasWarning(owners, outputsPassSecrets);
     };
 
     // PASS 2 — every export NAME, resolved before any alias is decided

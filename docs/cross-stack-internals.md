@@ -186,8 +186,7 @@ deliberate divergence, the same one the secret refusal takes.
     name that does not read the parameter: a literal name, or one reaching
     the value through an attribute or another stack;
   - on a deploy with no resource change that keeps the previous outputs whole
-    because an output failed to resolve, the aliases that bag already holds
-    (the deploy warns, naming the outputs whose alias would be refused today).
+    because an output failed to resolve, the aliases that bag already holds.
     When it instead carries a failed output's alias forward from the previous
     record, the alias is decided again and a refused one is dropped
     ([#4657](https://github.com/go-to-k/cdkd/issues/4657)).
