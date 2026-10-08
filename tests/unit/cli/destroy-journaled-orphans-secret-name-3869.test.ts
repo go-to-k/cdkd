@@ -188,6 +188,26 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     expect(failed()[0]!.error!.message!.includes(NAME)).toBe(shown);
   });
 
+  // go-to-k/cdkd#4696: a scan that cannot read a record keeps the orphan as
+  // a failure whose error text names its physical id, masked as the rest.
+  it.each([
+    ['a secret-named orphan', REF, false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])('masks the kept-for-a-re-run failure of an unreadable holder scan: %s', async (_l, queueName, shown) => {
+    loadJournal.mockResolvedValue(journalOf([orphanOp(queueName)]));
+    const c = ctx();
+    (c.stateBackend as unknown as { listStacks: ReturnType<typeof vi.fn> }).listStacks = vi
+      .fn()
+      .mockRejectedValue(new Error('AccessDenied'));
+    const result = await runDestroyForStack('TestStack', stateOf({}), c);
+    expect(providerDelete).not.toHaveBeenCalled();
+    expect(result.errorCount).toBe(1);
+    // Premise: the failure was recorded, naming the id it kept.
+    expect(failed()).toHaveLength(1);
+    expect(failed()[0]!.error?.message).toContain('is not deleted: the state bucket listing');
+    expect(failed()[0]!.error!.message!.includes(NAME)).toBe(shown);
+  });
+
   it.each([
     ['a secret-named resource', REF, false],
     ['negative control, an ordinary name', 'plain-queue-name', true],

@@ -391,9 +391,10 @@ function protectionRemovalProven(
  * journaled one. `'gone'` when AWS reports the id gone (settled without a
  * delete). `keep` for a verdict a re-run cannot change (another stack holds
  * it, its identity differs, or the journal recorded none): a warned skip.
- * `retry` when a read gave no answer (a record the scan cannot read, a failed
- * identity read): the journal keeps it, as the settle keeps it. `undefined`
- * when the delete may run.
+ * `retry` when a read gave no answer: a record the scan cannot read (the
+ * settle keeps that one too) or a failed identity read (which the settle
+ * demotes to a warned skip; the replay, which may be the entry's last chance,
+ * keeps it). `undefined` when the delete may run.
  */
 async function journaledOrphanKeepReason(
   op: FailedOperation & { physicalId: string },
@@ -969,9 +970,8 @@ async function replayFailedOperationsUnbound(
             }
             if (verdict !== undefined && 'retry' in verdict) {
               // A read that gave no answer is not a verdict: the shared catch
-              // counts it a failure and keeps the op for a re-run, as the
-              // success settle keeps it (`--drop-failed` drops one that can
-              // never be read).
+              // counts it a failure and keeps the op for a re-run
+              // (`--drop-failed` drops one that can never be read).
               throw new Error(
                 `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for a re-run`
               );
