@@ -63,6 +63,13 @@ import { takenFnIfArms } from './recreate-target-readers.js';
  *   inline policies, which `DeleteRole` / `DeleteUser` / `DeleteGroup`
  *   require removing first (IAM API reference), so cdkd's role, user and
  *   group providers delete them before the principal.
+ * - Application Auto Scaling `ScalingPolicy` through `ScalingTargetId`:
+ *   "Deregistering a scalable target deletes the scaling policies and the
+ *   scheduled actions that are associated with it" (Application Auto Scaling
+ *   API reference), and the target's id is its
+ *   `ResourceId|ScalableDimension|ServiceNamespace`, which a re-create keeps
+ *   (go-to-k/cdkd#4706). Its scheduled actions are inline properties of the
+ *   target, so they come back with it.
  *
  * `mode: 'reattach'` (go-to-k/cdkd#4461): the child SURVIVES its parent, and
  * only its attachment to the parent is lost, because IAM refuses to delete a
@@ -149,6 +156,10 @@ const CHILD_STORED_IN_PARENT: Readonly<Record<string, ChildEntry>> = {
   'AWS::IAM::RolePolicy': { properties: ['RoleName'], parentTypes: ['AWS::IAM::Role'] },
   'AWS::IAM::UserPolicy': { properties: ['UserName'], parentTypes: [IAM_USER] },
   'AWS::IAM::GroupPolicy': { properties: ['GroupName'], parentTypes: [IAM_GROUP] },
+  'AWS::ApplicationAutoScaling::ScalingPolicy': {
+    properties: ['ScalingTargetId'],
+    parentTypes: ['AWS::ApplicationAutoScaling::ScalableTarget'],
+  },
   'AWS::IAM::Policy': {
     properties: ['Roles', 'Users', 'Groups'],
     parentTypes: IAM_PRINCIPAL_TYPES,

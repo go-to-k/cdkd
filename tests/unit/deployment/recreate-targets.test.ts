@@ -1182,6 +1182,45 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
     expect(renderRecreateTargetsErrors(v)).toBeNull();
   });
 
+  it('refuses --recreate-via-cc-api of a type with no SDK provider, whatever its record says (go-to-k/cdkd#4706)', () => {
+    // A scalable target has no SDK provider: `cdkd import` now records it
+    // `cc-api`, the layer `getProviderFor` chose, and a record an earlier
+    // import wrote says `sdk`. Either way it is managed through Cloud
+    // Control, so the recreate is the no-op this refusal names -- and it
+    // deregistered the target, deleting every scaling policy state kept.
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry, providerClasses);
+    const hasSdkProvider = (rt: string) => registry.getProviderType(rt) === 'sdk';
+    const target = 'AWS::ApplicationAutoScaling::ScalableTarget';
+    expect(registry.getProviderFor({ resourceType: target }).provisionedBy).toBe('cc-api');
+    const validate = (
+      type: string,
+      provisionedBy: 'sdk' | 'cc-api',
+      withRegistry = true
+    ): ReturnType<typeof validateRecreateTargets> =>
+      validateRecreateTargets({
+        template: { Resources: { R: { Type: type, Properties: {} } } },
+        state: st('S', { R: res(type, { provisionedBy }) }),
+        recreateViaCcApi: ['R'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+        ...(withRegistry && { hasSdkProvider }),
+      });
+    for (const provisionedBy of ['cc-api', 'sdk'] as const) {
+      const v = validate(target, provisionedBy);
+      expect(v.blockedAlreadyCcApi.map((t) => t.logicalId), provisionedBy).toEqual(['R']);
+      expect(renderRecreateTargetsErrors(v), provisionedBy).toContain(
+        'ALREADY sticky on Cloud Control API'
+      );
+    }
+    // An SDK-provider type recorded `sdk` is the legitimate forward migration.
+    const lambda = validate('AWS::Lambda::Function', 'sdk');
+    expect(lambda.blockedAlreadyCcApi).toEqual([]);
+    expect(renderRecreateTargetsErrors(lambda)).toBeNull();
+    // A caller passing no `hasSdkProvider` keeps the record-only check.
+    expect(validate(target, 'sdk', false).blockedAlreadyCcApi).toEqual([]);
+  });
+
   it('blockedAlreadyCcApi does NOT fire for the reverse direction (--recreate-via-sdk-provider on cc-api is the intended path)', () => {
     const template: CloudFormationTemplate = {
       Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },

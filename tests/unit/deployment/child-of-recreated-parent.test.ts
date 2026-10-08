@@ -99,8 +99,34 @@ describe('childLostWithRecreatedParent', () => {
     expect(ask('constructor', { FunctionName: { Ref: 'Fn' } })).toBeUndefined();
   });
 
+  it('re-creates a scaling policy whose scalable target was re-created (go-to-k/cdkd#4706)', () => {
+    const recordedTypes: Record<string, string> = {
+      Target: 'AWS::ApplicationAutoScaling::ScalableTarget',
+      Table: 'AWS::DynamoDB::Table',
+    };
+    const lost = (properties: Record<string, unknown>, recreated: string[]) =>
+      childLostWithRecreatedParent({
+        resourceType: 'AWS::ApplicationAutoScaling::ScalingPolicy',
+        templateProperties: properties,
+        recreatedUnderSameId: new Set(recreated),
+        recordedTypeOf: (id) => (Object.hasOwn(recordedTypes, id) ? recordedTypes[id] : undefined),
+      });
+    expect(lost({ ScalingTargetId: { Ref: 'Target' } }, ['Target'])).toEqual({
+      parent: 'Target',
+      property: 'ScalingTargetId',
+      mode: 'recreate',
+    });
+    // The target not re-created, or a policy naming its target by
+    // `ResourceId` (the table, never the target's parent type).
+    expect(lost({ ScalingTargetId: { Ref: 'Target' } }, ['Table'])).toBeUndefined();
+    expect(
+      lost({ ResourceId: { 'Fn::Join': ['', ['table/', { Ref: 'Table' }]] } }, ['Table', 'Target'])
+    ).toBeUndefined();
+  });
+
   it('pins the child types', () => {
     expect(childStoredInParentTypes()).toEqual([
+      'AWS::ApplicationAutoScaling::ScalingPolicy',
       'AWS::IAM::GroupPolicy',
       'AWS::IAM::InstanceProfile',
       'AWS::IAM::ManagedPolicy',
@@ -171,6 +197,31 @@ describe('lostChildActions (go-to-k/cdkd#4443)', () => {
 
   it('forgets every unwritten child whose record names the recreated parent, by id or function ARN', () => {
     expect(forgotten(act(records, templateResources))).toEqual(['ByArn', 'ByName', 'Policy']);
+  });
+
+  it('forgets a scaling policy whose record names the re-created target by its compound id (go-to-k/cdkd#4706)', () => {
+    const targetId = 'table/t|dynamodb:table:ReadCapacityUnits|dynamodb';
+    const run = (recordedTargetId: string) =>
+      lostChildActions({
+        templateResources: {
+          Target: { Type: 'AWS::ApplicationAutoScaling::ScalableTarget' },
+          ScalePolicy: {
+            Type: 'AWS::ApplicationAutoScaling::ScalingPolicy',
+            Properties: { ScalingTargetId: { Ref: 'Target' } },
+          },
+        },
+        records: {
+          Target: rec('AWS::ApplicationAutoScaling::ScalableTarget', targetId),
+          ScalePolicy: rec('AWS::ApplicationAutoScaling::ScalingPolicy', 'arn:policy', {
+            ScalingTargetId: recordedTargetId,
+          }),
+        },
+        recreatedUnderSameId: new Set(['Target']),
+        written: new Set(),
+      });
+    expect(run(targetId)).toEqual([{ logicalId: 'ScalePolicy', parent: 'Target', action: 'forget' }]);
+    // One the deploy was moving onto the target from another keeps its record.
+    expect(run('table/other|dynamodb:table:ReadCapacityUnits|dynamodb')).toEqual([]);
   });
 
   it('keeps every child this deploy wrote (restored, created or moved), and never the parent', () => {

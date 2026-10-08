@@ -209,6 +209,14 @@ export interface ImportRow {
    * snapshot. Same staleness class as deploy, not a new one.
    */
   attributes?: Record<string, unknown>;
+  /**
+   * The layer whose provider read the resource (go-to-k/cdkd#4706): `cc-api`
+   * when Cloud Control imported it (a type with no SDK provider), `sdk`
+   * otherwise. Recorded as the state record's `provisionedBy`, so the record
+   * says what a fresh deploy of the type would. Absent on a row no provider
+   * imported (a nested stack), which records `sdk`.
+   */
+  provisionedBy?: 'sdk' | 'cc-api';
 }
 
 /**
@@ -1593,7 +1601,12 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
     };
   }
 
-  const provider = providerRegistry.getProvider(resource.Type);
+  // The routing decision carries the layer it chose, which the row records
+  // (go-to-k/cdkd#4706): a type with no SDK provider is read through Cloud
+  // Control, and a record saying `sdk` for it let `--recreate-via-cc-api`
+  // through its already-on-Cloud-Control refusal.
+  const route = providerRegistry.getProviderFor({ resourceType: resource.Type });
+  const provider = route.provider;
   if (!provider.import) {
     return {
       logicalId,
@@ -1663,6 +1676,7 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
       outcome: 'imported',
       physicalId: result.physicalId,
       ...(result.attributes !== undefined && { attributes: result.attributes }),
+      provisionedBy: route.provisionedBy,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -2124,11 +2138,10 @@ export function buildStackState(
       // As `DeployEngine` stamps it on every save, so an imported resource the
       // template later drops is still named by its construct path.
       ...constructPathField(constructPathOf(template, row.logicalId)),
-      // v7+ (#614): every imported resource is owned by its SDK Provider
-      // (the import() method lives on SDK Providers). Explicit so the
-      // post-import drift / destroy paths route through the SDK provider
-      // without falling back to the absent-field "sdk legacy default".
-      provisionedBy: 'sdk',
+      // v7+ (#614): the layer that imported it, explicit so no reader falls
+      // back to the absent-field "sdk legacy default". A type with no SDK
+      // provider is `cc-api`, as a deploy records it (go-to-k/cdkd#4706).
+      provisionedBy: row.provisionedBy ?? 'sdk',
       // Issue #3462: an unverifiable-parameter refusal is carried across the
       // rebuild, because THIS literal is otherwise the one place it is lost —
       // and the run that rebuilds may have no way to re-judge it. After a

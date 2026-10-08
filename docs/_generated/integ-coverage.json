@@ -1025,6 +1025,7 @@
     {
       "resourceType": "AWS::DynamoDB::Table",
       "integs": [
+        "app-autoscaling-recreate",
         "appsync",
         "bench-sdk",
         "composite-stack",
@@ -1055,6 +1056,10 @@
         "tags-propagation"
       ],
       "signals": {
+        "app-autoscaling-recreate": [
+          "l2",
+          "literal"
+        ],
         "appsync": [
           "l2"
         ],
