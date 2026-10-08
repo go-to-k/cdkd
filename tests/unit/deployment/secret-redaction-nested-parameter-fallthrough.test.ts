@@ -537,6 +537,26 @@ describe('a two-token literal parameter persists its own spelling in either pare
     });
   }
 
+  it('an EMBEDDING leaf with TWO unknown parts takes the resolver-recorded spans arm (the template parse refuses it)', async () => {
+    const parent = reversedParent();
+    const ctx = childContext(parent);
+    const source = {
+      Multi: {
+        'Fn::Join': [
+          ':',
+          [{ Ref: 'AWS::Region' }, { Ref: PARAM_A }, { Ref: 'AWS::Partition' }],
+        ],
+      },
+    };
+    const resolved = await resolver.resolve(source, ctx);
+    expect((resolved as Record<string, unknown>)['Multi']).toBe(`us-east-1:${CONN}:aws`);
+    const persisted = redactSecretsForState(resolved, ctx.recordedSecretValues, source) as Record<
+      string,
+      unknown
+    >;
+    expect(persisted['Multi']).toBe(`us-east-1:${SPELLING}:aws`);
+  });
+
   it('an EMBEDDING child leaf of a parameter this resource never READ keeps the scan (the #2087 scope)', () => {
     const parent = reversedParent();
     const child: RecordedSecretValues = new Map([
@@ -568,6 +588,7 @@ describe('a two-token literal parameter persists its own spelling in either pare
     expect(inheritedRenderedSpan(child, key)).toEqual({ value: CONN, spelling: SPELLING });
     expect(inheritedRenderedSpan(child, key, `${CONN}x`)).toBeUndefined();
     expect(inheritedRenderedSpan(child, crossStackSourceKey({ Ref: PARAM_B })!, SHARED)).toBeUndefined();
+    expect(inheritedRenderedSpan(child, crossStackSourceKey({ Ref: PARAM_B })!)).toBeUndefined();
     // A child-only plaintext INSIDE a token's plaintext: the spelling would
     // hide it, but the child scan cuts it apart, so the span keeps the scan.
     child.set(USER.slice(0, 8), '{{resolve:secretsmanager:child/only:SecretString:x::}}');
@@ -577,12 +598,18 @@ describe('a two-token literal parameter persists its own spelling in either pare
   it('a name recorded twice against DIFFERENT spellings is poisoned: the reader keeps the scan', () => {
     const parent = reversedParent();
     expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
-    const other = `postgres://${USER_EXPR}:${EXPR_B}@host`;
+    // A second row of the same bag naming `ConnA` with another spelling that
+    // renders too: overwriting would answer it, poisoning answers neither.
+    const otherConn = `postgres://${USER}:${SHARED}@other`;
+    const other = `postgres://${USER_EXPR}:${EXPR_A}@other`;
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
-      RESOLVED_ROW,
+      { Parameters: { [PARAM_A]: otherConn, [PARAM_B]: SHARED } },
       { Parameters: { [PARAM_A]: other, [PARAM_B]: EXPR_B } }
+    );
+    expect(redactInheritedParameterValue(parent, PARAM_A, otherConn)).toBe(
+      `postgres://${USER_EXPR}:${EXPR_B}@other`
     );
     expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
       redactSecretsForState(CONN, parent)
