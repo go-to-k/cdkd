@@ -62,11 +62,6 @@
 #      nothing beyond the marker it never wrote).
 #   7f re-add ParamCr (CDKD_V11_PARAM_CR stays 1 from here on, through the
 #      destroys), so phase 8 exercises both destroy arms.
-#   7g point ParamCr at a second handler (CDKD_V11_PARAM_CR_HANDLER2 stays 1
-#      from here on): ServiceToken is create-only, so the deploy REPLACES it
-#      and deletes the old copy through re-resolution (#4682): exit 0, no skip
-#      line, a new physical id, `***` at Token, the marker holding the real
-#      rotated token's digest.
 #   8  `cdkd destroy` with the app RE-RESOLVES ParamCr's Token (#4682): it
 #      exits 0, the handler's Delete wrote the marker holding a digest of the
 #      REAL rotated token (never the token itself, and not the mask's digest),
@@ -957,8 +952,7 @@ pass "no delete marker before the destroy"
 delete_marker_for() { # <token>
   printf 'delete-reached-handler:%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-16)"
 }
-# Every custom-resource handler and role, by TYPE (CDK hashes their ids; Phase
-# 7g adds a second handler).
+# Every custom-resource handler and role, by TYPE (CDK hashes their ids).
 record_handler_names() { # <label>
   CR_HANDLER_NAMES="$(state_field '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .physicalId] | join(" ")')"
   CR_ROLE_NAMES="$(state_field '[.resources[] | select(.resourceType == "AWS::IAM::Role") | .physicalId] | join(" ")')"
@@ -979,37 +973,6 @@ assert_handler_gone() { # <label>
   done
   pass "$1: every handler role is gone"
 }
-
-# ---------------------------------------------------------------------------
-echo "==> Phase 7g: a deploy REPLACING ParamCr delivers the old copy's Delete (#4682)"
-# ---------------------------------------------------------------------------
-# A second handler is a new ServiceToken, which is create-only: the deploy
-# creates the new ParamCr, then deletes the old one while it is still in the
-# template, through the re-resolution path. Kept set from here on.
-export CDKD_V11_PARAM_CR_HANDLER2="1"
-OLD_PARAM_CR_ID="$(state_field ".resources[\"${PARAM_CR_ID}\"].physicalId // \"<absent>\"")"
-run_cdkd ok "v11 deploy replacing ParamCr" "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_log_has_no_tokens "v11 deploy replacing ParamCr"
-if grep -qF -- "Custom resource ${PARAM_CR_ID} is recorded in state with" "${DEPLOY_LOG}"; then
-  redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
-  fail "v11 deploy replacing ParamCr: the old copy's delete was skipped (#4682 regressed)"
-fi
-pass "v11 deploy replacing ParamCr: no skip line"
-fetch_state "v11 deploy replacing ParamCr"
-assert_eq "v11 deploy replacing ParamCr: the new record still holds the mask at Token" \
-  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
-NEW_PARAM_CR_ID="$(state_field ".resources[\"${PARAM_CR_ID}\"].physicalId // \"<absent>\"")"
-if [ "${NEW_PARAM_CR_ID}" = "${OLD_PARAM_CR_ID}" ]; then
-  fail "v11 deploy replacing ParamCr: physical id ${NEW_PARAM_CR_ID} unchanged — it was not replaced"
-fi
-pass "v11 deploy replacing ParamCr: replaced (${OLD_PARAM_CR_ID} -> ${NEW_PARAM_CR_ID})"
-MARKER_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}" \
-  --query Parameter.Value --output text)" \
-  || fail "the replaced ParamCr's Delete wrote no marker ${MARKER_PARAM_NAME} (or the read failed)"
-assert_eq "the replaced ParamCr's Delete received the real rotated token (digest in ${MARKER_PARAM_NAME})" \
-  "${MARKER_VALUE}" "$(delete_marker_for "${TOKEN_ROTATED}")"
-aws ssm delete-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}" >/dev/null
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 8: cdkd destroy with the app delivers ParamCr's Delete (#4682)"
@@ -1131,8 +1094,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 161 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 161 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 155 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 155 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

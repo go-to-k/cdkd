@@ -132,7 +132,7 @@ describe('CustomResourceProvider.delete: re-resolved NoEcho coordinates (go-to-k
     const text = logged.join('\n');
     // Names only the coordinate left unresolved, and when cdkd re-resolves.
     expect(text).toContain('recorded in state with B holding');
-    expect(text).toContain("only where it holds the template — 'cdkd destroy'");
+    expect(text).toContain("only where it holds the template ('cdkd destroy'");
     expect(text).not.toContain(VALUE);
   });
 
