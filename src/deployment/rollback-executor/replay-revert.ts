@@ -445,7 +445,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     logicalId: op.logicalId,
     ctx,
     secrets,
-    routedVia: op.provisionedBy,
+    routedVia: [op.provisionedBy, revertVia],
   });
   const desiredProps = noEcho.desired;
   // Issue #2274: the DESIRED side only — that is the bag `update()`

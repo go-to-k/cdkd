@@ -280,8 +280,13 @@ export async function substituteMarkedNoEchoLeaves(input: {
   logicalId: string;
   ctx: RollbackExecutorContext;
   secrets: RecordedSecretValues;
-  /** The `provisionedBy` the arm's `update()` routes on (the op's, as a rule). */
-  routedVia: string | undefined;
+  /**
+   * The routing of the arm's `update()`: the hint it asked with and the route
+   * the registry RETURNED (a pre-v7 record has no hint, and a provider-less
+   * type routes to Cloud Control anyway). Either naming Cloud Control rules
+   * out the nested row's inert arm.
+   */
+  routedVia: readonly (string | undefined)[];
 }): Promise<NoEchoReplaySubstitution> {
   const { desired, baseline, live, logicalId, ctx, secrets, routedVia } = input;
   const identity: NoEchoReplaySubstitution = {
@@ -301,7 +306,7 @@ export async function substituteMarkedNoEchoLeaves(input: {
     live.resourceType === NESTED_STACK_TYPE &&
     baseline.resourceType === NESTED_STACK_TYPE &&
     live.provisionedBy !== 'cc-api' &&
-    routedVia !== 'cc-api'
+    !routedVia.includes('cc-api')
   ) {
     return { ...identity, inert: pending };
   }

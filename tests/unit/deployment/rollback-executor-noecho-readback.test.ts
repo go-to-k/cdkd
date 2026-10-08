@@ -695,6 +695,53 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       expect(result.failures).toBe(1);
     });
 
+    it.each([
+      ['revert, the registry routing a hint-less record to Cloud Control', false],
+      ['--revert-failed, the op routed to Cloud Control', true],
+    ])('a nested stack row is not inert on %s', async (_label, failedArm) => {
+      const update = vi.fn();
+      const NESTED = 'AWS::CloudFormation::Stack';
+      const row = res({
+        physicalId: 'child',
+        resourceType: NESTED,
+        properties: { Parameters: { Token: SECRET_MASK } },
+        noEchoLeaves: [['Parameters', 'Token']],
+      });
+      const state = { Child: { ...row, properties: { ...row.properties, Changed: 'x' } } };
+      const ctx = makeCtx({ update });
+      if (!failedArm) {
+        ctx.providerRegistry = {
+          getProviderFor: () => ({ provider: { update }, provisionedBy: 'cc-api' }),
+        } as unknown as RollbackExecutorContext['providerRegistry'];
+      }
+      const result = failedArm
+        ? await replayFailedOperations(
+            [
+              {
+                logicalId: 'Child',
+                changeType: 'UPDATE',
+                resourceType: NESTED,
+                physicalId: 'child',
+                provisionedBy: 'cc-api',
+                previousState: row,
+                attemptedProperties: state.Child.properties,
+              },
+            ],
+            state,
+            'S',
+            ctx,
+            {}
+          )
+        : await replayRollback(
+            [{ logicalId: 'Child', changeType: 'UPDATE', resourceType: NESTED, physicalId: 'child', previousState: row }],
+            state,
+            'S',
+            ctx
+          );
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
+    });
+
     it('a nested stack row whose bag ALSO holds an unmarked mask keeps the general refusal', async () => {
       const update = vi.fn();
       const NESTED = 'AWS::CloudFormation::Stack';
