@@ -222,8 +222,8 @@ describe('WorkGraph.execute (#3361)', () => {
   it('a node rejecting with an unconvertible value still settles execute with the failure summary', async () => {
     // The node chain is never awaited, so an out-throw in its `.catch` (or in
     // the summary built from the collected errors) became an unhandled
-    // rejection and `execute()` never settled -- the dependent's skip and the
-    // independent node's run were never reported.
+    // rejection -- under Node's default mode a process exit with the
+    // converter's TypeError -- and `execute()` never rejected with the summary.
     vi.mocked(getLogger().error).mockClear();
     const graph = new WorkGraph();
     graph.addNode(node('Broken'));

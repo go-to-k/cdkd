@@ -110,8 +110,8 @@ export class WorkGraph {
               node.state = 'failed';
               errors.push({ nodeId: node.id, error });
               // `.detail`, not `String(error)`: this chain is never awaited, so a
-              // value whose stringification throws became an unhandled rejection
-              // here and in the summary below, and `execute()` never settled (#3361).
+              // value whose stringification throws, here or in the summary below,
+              // became an unhandled rejection that exits the process (#3361).
               this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
             })
             .finally(() => {
