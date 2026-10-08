@@ -358,3 +358,7 @@ vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-prov
 vpc-nat-gateway	2026-10-07T14:26:55Z	PASS	761	verify.sh	PR #4660 (#4655) regression: NAT/EIP fix-forward through the unique-id set; rc 0, destroy clean, orph clean
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
+custom-resource-noecho-nested 2026-10-08T11:22:30Z 1467		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
+schema-v10-to-v11-migration 2026-10-08T11:05:13Z 430		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
+export 2026-10-08T11:09:09Z 235		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
+lambda 2026-10-08T11:11:04Z 115		PASS		verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
