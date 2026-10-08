@@ -38,7 +38,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../src/utils/error-handler.js';
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -436,8 +439,31 @@ describe('IAMRoleProvider', () => {
         );
 
         expect(await updateWith()).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect(sentOf(GetRoleCommand)).toHaveLength(1);
         expect(sentOf(CreateRoleCommand)).toHaveLength(0);
         expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+      });
+
+      it('still refuses when the live role reports no path', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: {} } : {})
+        );
+
+        expect(await updateWith()).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect(sentOf(UpdateRoleCommand)).toHaveLength(0);
+      });
+
+      it('fails as a provisioning error, sending nothing else, when the live path cannot be read', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          cmd instanceof GetRoleCommand
+            ? Promise.reject(new Error('AccessDenied: not authorized to perform iam:GetRole'))
+            : Promise.resolve({})
+        );
+
+        const error = await updateWith();
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect((error as Error).message).toMatch(/Failed to read the path of IAM role L: .*AccessDenied/);
+        expect(mockSend).toHaveBeenCalledTimes(1);
       });
     });
 
