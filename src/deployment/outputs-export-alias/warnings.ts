@@ -134,6 +134,28 @@ export function noEchoParameterExportNameWarning(
 }
 
 /**
+ * Warning for a no-change deploy that KEEPS the previous outputs whole while
+ * they still publish an export alias today's export-name verdict refuses
+ * (go-to-k/cdkd#4657). Names the OUTPUTS, masked against `secrets`, never the
+ * alias, which holds the value.
+ */
+export function noEchoKeptAliasWarning(
+  outputKeys: readonly string[],
+  secrets: RecordedSecretValues
+): string {
+  const corpus = printingCorpusOf(secrets);
+  const owners = outputKeys
+    .map((key) => displayTextOrWithheld(secretSafeKeyDisplay(key, corpus)))
+    .join(', ');
+  return (
+    `Keeping the previously persisted outputs whole, which still publish an export alias of ` +
+    `output(s) ${owners} that holds a NoEcho parameter's value: today's Export.Name check ` +
+    `refuses it, so the next deploy that resolves every output removes it from state.json ` +
+    `and the exports index. Until then it stays published.`
+  );
+}
+
+/**
  * How a state-bag KEY may be SHOWN, once it has been tested for secret content
  * (issue [#2667](https://github.com/go-to-k/cdkd/issues/2667)).
  *

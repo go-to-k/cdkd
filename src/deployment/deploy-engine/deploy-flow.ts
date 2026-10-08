@@ -912,6 +912,15 @@ export async function doDeployWithPrefetch(
         if (merge?.kind === 'merged') {
           for (const { reason } of merge.refusedAliases) this.logger.warn(reason);
         }
+        // A KEPT bag republishes the previous aliases unchecked; name the
+        // outputs whose alias today's verdict refuses (go-to-k/cdkd#4657).
+        if (merge?.kind === 'kept') {
+          const kept = this.keptExportAliasWarning?.(
+            effectiveTemplate.Outputs,
+            currentEffectiveExports
+          );
+          if (kept !== undefined) this.logger.warn(kept);
+        }
         // The bag and export set this save describes: this pass's when every
         // output resolved, the merge's when one did not, and the previous
         // bag itself when the merge keeps it whole — `undefined` for the set

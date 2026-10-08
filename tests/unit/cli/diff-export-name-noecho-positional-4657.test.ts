@@ -36,7 +36,7 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   };
 });
 
-import { computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
+import { computeStackDiff, renderOutputChangeLines } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
@@ -208,5 +208,29 @@ describe('cdkd diff previews the carried-alias verdict of the no-change merge (g
   it('carries both when the parameter is not NoEcho (negative control)', async () => {
     const template = templateOf(outputs, { value: NOECHO, noEcho: false });
     expect(await outputChangesOf(stored(), template)).toEqual([]);
+  });
+});
+
+describe('cdkd diff withholds a stored alias a NoEcho-refused name published (go-to-k/cdkd#4657 review)', () => {
+  // An older binary published `x-ab-y` from `Fn::Sub: x-${Short}-y`, `Short`
+  // a 2-character NoEcho value. Today the name is refused, so the stored key
+  // previews as a REMOVE; its name holds the value under the containment
+  // floor, so only the refused-name set can withhold it.
+  const stored = () => stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']);
+  const outputs = { Out: { Value: 'v', Export: { Name: { 'Fn::Sub': 'x-${Short}-y' } } } };
+
+  it('withholds the REMOVE row of the refused alias, and renders no copy of the value', async () => {
+    const result = await diffOf(stored(), templateOf(outputs));
+    expect(result.outputChanges.map((c) => `${c.changeType} ${c.name}`)).toEqual(['REMOVE x-ab-y']);
+    expect(result.outputChanges[0]!.nameDisplay).toEqual({ kind: 'withheld' });
+    const lines: string[] = [];
+    renderOutputChangeLines(result.outputChanges, (line) => lines.push(line));
+    expect(lines.join('\n')).toContain('-');
+    expect(lines.join('\n')).not.toContain('x-ab-y');
+  });
+
+  it('keeps the alias, with no row, when the parameter is not NoEcho (negative control)', async () => {
+    const result = await diffOf(stored(), templateOf(outputs, { noEcho: false }));
+    expect(result.outputChanges).toEqual([]);
   });
 });

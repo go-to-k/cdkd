@@ -2223,6 +2223,7 @@ export async function computeStackDiff(
       templateHasSecretReference,
       forceLegacyRecord,
       secretBearingExportNames: resolved.secretBearingExportNames,
+      refusedNoEchoExportNames: resolved.refusedNoEchoExportNames,
       // A malformed `exportNames` (not a list) reads as none recorded, so the
       // alias test falls back to the key's own shape -- the wider refusal.
       storedExportNames: Array.isArray(currentState.exportNames)

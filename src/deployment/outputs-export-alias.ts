@@ -205,6 +205,7 @@ export {
 export {
   secretBearingExportNameWarning,
   noEchoParameterExportNameWarning,
+  noEchoKeptAliasWarning,
   type SecretSafeKeyDisplay,
   secretSafeKeyDisplay,
   secretBearing,

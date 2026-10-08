@@ -226,6 +226,13 @@ export interface ResolvedTemplateOutputs {
    * alias key (issue #4015).
    */
   secretBearingExportNames: string[];
+  /**
+   * Each RESOLVED `Export.Name` this pass refused for a `NoEcho` reason (the
+   * positional twin or the `NoEcho` containment verdict, go-to-k/cdkd#4657).
+   * The name holds the value, possibly under the containment floor, so a
+   * stored alias row under it is shown withheld, never by name.
+   */
+  refusedNoEchoExportNames: string[];
 }
 
 /**
@@ -697,6 +704,7 @@ export async function resolveTemplateOutputs(
   // every case the gate exists to catch.
   const templateHasSecretReference = containsSecretDynamicReference(template);
   const secretBearingExportNames: string[] = [];
+  const refusedNoEchoExportNames: string[] = [];
   let resolutionFailed = false;
   // Does the deploy's outputs pass RECORD a secret at all (issue #4143)? A
   // spelled output value (`secretSourceKeys`) is one source; a resolved value
@@ -759,6 +767,7 @@ export async function resolveTemplateOutputs(
       templateHasSecretReference,
       resolutionFailed,
       secretBearingExportNames,
+      refusedNoEchoExportNames,
     };
   }
 
@@ -1029,10 +1038,12 @@ export async function resolveTemplateOutputs(
     if (exportNameNoEchoParameters(nameSource, outputsPass?.noEchoNameSources).length > 0) {
       // An intrinsic name reading a `NoEcho` parameter (go-to-k/cdkd#4657),
       // refused from the template at any value length, as the deploy does.
+      refusedNoEchoExportNames.push(exportName);
       logger.debug(
         safeMsg`Diff skipping export alias of ${ownerDisplay(outputKey)} — the name reads a NoEcho parameter`
       );
     } else if (refusesNoEchoName(exportName, nameBag)) {
+      refusedNoEchoExportNames.push(exportName);
       // A `NoEcho` value in the name (go-to-k/cdkd#4043), decided HERE, as
       // the deploy decides it: after every value and every name, against
       // all their needles and the stack's `NoEcho` seed.
@@ -1167,6 +1178,7 @@ export async function resolveTemplateOutputs(
     templateHasSecretReference,
     resolutionFailed,
     secretBearingExportNames,
+    refusedNoEchoExportNames,
   };
 }
 
@@ -1294,6 +1306,8 @@ export function computeOutputsDiff(
     forceLegacyRecord?: boolean;
     /** {@link ResolvedTemplateOutputs.secretBearingExportNames} (issue #4015). */
     secretBearingExportNames?: readonly string[];
+    /** {@link ResolvedTemplateOutputs.refusedNoEchoExportNames} (go-to-k/cdkd#4657). */
+    refusedNoEchoExportNames?: readonly string[];
     /**
      * The record's `exportNames` (schema v9+), or `undefined` when it records
      * none: which stored keys are export ALIASES (issue #4015).
@@ -1503,8 +1517,12 @@ export function computeOutputsDiff(
     /[^A-Za-z0-9]/.test(name) &&
     (storedExportNames === undefined || storedExportNames.has(name));
 
+  // A name this pass refused for a `NoEcho` reason holds the value, which a
+  // 1-3 character value's containment floor cannot mask (go-to-k/cdkd#4657):
+  // the REMOVE row of an alias an older binary published under it is withheld.
+  const refusedNoEchoNames = new Set(unaccountableScan.refusedNoEchoExportNames ?? []);
   const nameDisplay = (name: string): { nameDisplay?: SecretSafeKeyDisplay } => {
-    if (withholdsAliasName(name)) {
+    if (withholdsAliasName(name) || refusedNoEchoNames.has(name)) {
       return { nameDisplay: { kind: 'withheld' } };
     }
     let corpus = recordCorpus;

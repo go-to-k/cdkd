@@ -186,12 +186,14 @@ deliberate divergence, the same one the secret refusal takes.
     name that does not read the parameter: a literal name, or one reaching
     the value through an attribute or another stack;
   - on a deploy with no resource change that keeps the previous outputs whole
-    because an output failed to resolve, the aliases that bag already holds.
+    because an output failed to resolve, the aliases that bag already holds
+    (the deploy warns, naming the outputs whose alias would be refused today).
     When it instead carries a failed output's alias forward from the previous
     record, the alias is decided again and a refused one is dropped
     ([#4657](https://github.com/go-to-k/cdkd/issues/4657)).
 - **Preview.** `cdkd diff` previews the same verdict, so a refused alias is
-  not shown as an addition.
+  not shown as an addition. An alias an earlier deploy published under a name
+  now refused shows as a removal with its name withheld.
 - **The warning** says when the name was refused only because it contains a
   `NoEcho` value, since that can be a coincidence: an export named
   `prod-VpcId` is refused when some `NoEcho` parameter is `prod`. Rename the
