@@ -87,7 +87,9 @@ function install(
         if (prefixes.listed instanceof Error) throw prefixes.listed;
         return prefixes.listed ?? [];
       }),
-      recordExistsUnderPrefix: vi.fn(async (p: string) => (prefixes.holders ?? []).includes(p)),
+      recordUnderPrefix: vi.fn(async (p: string) =>
+        (prefixes.holders ?? []).includes(p) ? 'holder' : 'absent'
+      ),
       listStacks: vi
         .fn()
         .mockResolvedValue(Object.keys(states).map((stackName) => ({ stackName, region: REGION }))),
@@ -157,7 +159,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     expect(setup.stateBackend.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect(setup.lockManager.releaseLock).toHaveBeenCalledWith('S', REGION);
     // Its own prefix is never probed as "another".
-    expect(setup.stateBackend.recordExistsUnderPrefix.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+    expect(setup.stateBackend.recordUnderPrefix.mock.calls.map((c: unknown[]) => c[0])).toEqual([
       'team-b',
     ]);
   });

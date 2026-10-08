@@ -1,6 +1,6 @@
 /**
  * go-to-k/cdkd#4705: the S3 calls behind the cross-prefix scan —
- * `listTopLevelPrefixes`, `recordExistsUnderPrefix`, `ownRecordExists` — and
+ * `listTopLevelPrefixes`, `recordUnderPrefix`, `ownRecordExists` — and
  * the scan run against a real backend.
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
@@ -39,6 +39,9 @@ let objects: Set<string>;
 /** Top-level CommonPrefixes, per page. */
 let pages: string[][];
 let deniedKeys: Set<string>;
+/** GetObject bodies; a key here also exists for HEAD. */
+let bodies: Map<string, string>;
+let deniedGets: Set<string>;
 
 function notFound(): Error {
   return Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
@@ -64,11 +67,20 @@ function makeClient(): { send: ReturnType<typeof vi.fn>; destroy: ReturnType<typ
       if (deniedKeys.has(key)) {
         throw Object.assign(new Error('Forbidden'), { name: 'Forbidden', $metadata: { httpStatusCode: 403 } });
       }
-      if (objects.has(key)) return {};
+      if (objects.has(key) || bodies.has(key)) return {};
       throw notFound();
     }
     if (cmd instanceof GetObjectCommand) {
-      throw noSuchKey();
+      const key = cmd.input.Key!;
+      if (deniedGets.has(key)) {
+        throw Object.assign(new Error('Access Denied'), {
+          name: 'AccessDenied',
+          $metadata: { httpStatusCode: 403 },
+        });
+      }
+      const body = bodies.get(key);
+      if (body === undefined) throw noSuchKey();
+      return { Body: { transformToString: async () => body }, ETag: '"e"' };
     }
     throw new Error(`unexpected command ${String(cmd)}`);
   });
@@ -93,6 +105,8 @@ beforeEach(async () => {
   objects = new Set();
   pages = [[]];
   deniedKeys = new Set();
+  bodies = new Map();
+  deniedGets = new Set();
   client = makeClient();
   backend = new S3StateBackend(
     client as unknown as S3Client,
@@ -116,22 +130,98 @@ describe('listTopLevelPrefixes', () => {
   });
 });
 
-describe('recordExistsUnderPrefix', () => {
-  it("HEADs the other prefix's region-scoped key", async () => {
-    objects.add('team-b/App/us-east-1/state.json');
-    await expect(backend.recordExistsUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe(true);
-    await expect(backend.recordExistsUnderPrefix('team-b', 'App', 'eu-west-1')).resolves.toBe(false);
-    const keys = commandsOf(HeadObjectCommand).map((c) => c.input.Key);
-    expect(keys).toContain('team-b/App/us-east-1/state.json');
-    // The legacy region-less key is read too, as `stateExists` reads it.
-    expect(commandsOf(GetObjectCommand).map((c) => c.input.Key)).toContain('team-b/App/state.json');
+const KEY_B = 'team-b/App/us-east-1/state.json';
+const JOURNAL_B = 'team-b/App/us-east-1/rollback-journal.json';
+const record = (extra: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    version: 10,
+    stackName: 'App',
+    region: 'us-east-1',
+    resources: {},
+    outputs: {},
+    lastModified: 1,
+    ...extra,
+  });
+/** The shape a failed FIRST deploy leaves (cdkd 0.294.2, observed in an integ bucket). */
+const autoRollbackCleanJournal = (operations: unknown[] = []): string =>
+  JSON.stringify({
+    journalVersion: 1,
+    stackName: 'App',
+    region: 'us-east-1',
+    segments: [
+      {
+        timestamp: 1,
+        reason: 'auto-rollback-clean',
+        initialDeploy: true,
+        operations,
+        failedOperations: [
+          { logicalId: 'Fn', changeType: 'CREATE', resourceType: 'AWS::SSM::Parameter' },
+        ],
+      },
+    ],
+  });
+const RESOURCE = {
+  Q: { physicalId: 'q', resourceType: 'AWS::SQS::Queue', properties: {}, attributes: {}, dependencies: [] },
+};
+
+describe('recordUnderPrefix', () => {
+  it("is absent when the other prefix has no record (HEAD + the legacy key's GET only)", async () => {
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('absent');
+    expect(commandsOf(HeadObjectCommand).map((c) => c.input.Key)).toContain(KEY_B);
+    expect(commandsOf(GetObjectCommand).map((c) => c.input.Key)).toEqual(['team-b/App/state.json']);
+  });
+
+  it('is a holder when the record has resources', async () => {
+    bodies.set(KEY_B, record({ resources: RESOURCE }));
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('holder');
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'eu-west-1')).resolves.toBe('absent');
+  });
+
+  it('is a holder when the record has orphans only', async () => {
+    bodies.set(
+      KEY_B,
+      record({ orphans: [{ logicalId: 'Q', orphanedAt: 1, state: RESOURCE.Q }] })
+    );
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('holder');
+  });
+
+  it('is empty for an empty record with no journal', async () => {
+    bodies.set(KEY_B, record());
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('empty');
+  });
+
+  it("is empty for an empty record whose journal holds failedOperations only (a failed first deploy)", async () => {
+    bodies.set(KEY_B, record());
+    bodies.set(JOURNAL_B, autoRollbackCleanJournal());
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('empty');
+  });
+
+  it('is a holder for an empty record whose journal holds a completed operation', async () => {
+    bodies.set(KEY_B, record());
+    bodies.set(
+      JOURNAL_B,
+      autoRollbackCleanJournal([
+        { logicalId: 'Q', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue', physicalId: 'q' },
+      ])
+    );
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe('holder');
   });
 
   it('propagates a 403 on the HEAD', async () => {
-    deniedKeys.add('team-b/App/us-east-1/state.json');
-    await expect(backend.recordExistsUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toMatchObject({
+    deniedKeys.add(KEY_B);
+    await expect(backend.recordUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toMatchObject({
       name: 'Forbidden',
     });
+  });
+
+  it('a 403 on the GET of a hit still reads as access denied to the scan', async () => {
+    objects.add(KEY_B);
+    deniedGets.add(KEY_B);
+    pages = [['cdkd/', 'team-b/']];
+    const result = await scanOtherPrefixesForStack(backend, 'App', 'us-east-1', {
+      checkOwnRecord: false,
+    });
+    expect(result.kind).toBe('denied');
   });
 });
 
@@ -191,9 +281,18 @@ describe('ownRecordExists', () => {
 });
 
 describe('scanOtherPrefixesForStack against S3StateBackend', () => {
+  it("a failed first deploy's leftover under another prefix does not block, and is named", async () => {
+    bodies.set(KEY_B, record());
+    bodies.set(JOURNAL_B, autoRollbackCleanJournal());
+    pages = [['cdkd/', 'team-b/']];
+    await expect(
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
+    ).resolves.toEqual({ kind: 'clear', stale: ['team-b'] });
+  });
+
   it('a stack this prefix already records never lists the bucket', async () => {
     objects.add('cdkd/App/us-east-1/state.json');
-    objects.add('team-b/App/us-east-1/state.json');
+    bodies.set(KEY_B, record({ resources: RESOURCE }));
     pages = [['cdkd/', 'team-b/']];
     await expect(
       scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
@@ -207,7 +306,7 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
   });
 
   it('a first deploy finds the record under another prefix', async () => {
-    objects.add('team-b/App/us-east-1/state.json');
+    bodies.set(KEY_B, record({ resources: RESOURCE }));
     pages = [['cdkd/', 'team-b/', 'other/']];
     await expect(
       scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
@@ -218,7 +317,7 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
   });
 
   it('does not see a prefix nested under a top-level segment (documented limit)', async () => {
-    objects.add('team/b/App/us-east-1/state.json');
+    bodies.set('team/b/App/us-east-1/state.json', record({ resources: RESOURCE }));
     pages = [['cdkd/', 'team/']];
     await expect(
       scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })

@@ -8,6 +8,7 @@ import {
   UNSUPPORTED_SENTENCE,
   applyCrossPrefixScan,
   isAccessDenied,
+  recordCanOwnResources,
   scanOtherPrefixesForStack,
   withSharedListing,
   type CrossPrefixScanTarget,
@@ -18,11 +19,11 @@ function target(opts: {
   prefix?: string;
   own?: boolean | Error;
   prefixes?: string[] | Error;
-  holders?: Record<string, boolean | Error>;
+  holders?: Record<string, boolean | 'empty' | Error>;
 }): CrossPrefixScanTarget & {
   ownRecordExists: ReturnType<typeof vi.fn>;
   listTopLevelPrefixes: ReturnType<typeof vi.fn>;
-  recordExistsUnderPrefix: ReturnType<typeof vi.fn>;
+  recordUnderPrefix: ReturnType<typeof vi.fn>;
 } {
   return {
     prefix: opts.prefix ?? 'cdkd',
@@ -34,10 +35,10 @@ function target(opts: {
       if (opts.prefixes instanceof Error) throw opts.prefixes;
       return opts.prefixes ?? [];
     }),
-    recordExistsUnderPrefix: vi.fn(async (p: string) => {
+    recordUnderPrefix: vi.fn(async (p: string) => {
       const v = opts.holders?.[p];
       if (v instanceof Error) throw v;
-      return v ?? false;
+      return v === 'empty' ? 'empty' : v ? 'holder' : 'absent';
     }),
   };
 }
@@ -53,7 +54,7 @@ describe('scanOtherPrefixesForStack', () => {
       scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord: true })
     ).resolves.toEqual({ kind: 'own-record' });
     expect(t.listTopLevelPrefixes).not.toHaveBeenCalled();
-    expect(t.recordExistsUnderPrefix).not.toHaveBeenCalled();
+    expect(t.recordUnderPrefix).not.toHaveBeenCalled();
   });
 
   it('finds the stack under another prefix, and never probes its own prefix', async () => {
@@ -65,9 +66,9 @@ describe('scanOtherPrefixesForStack', () => {
     await expect(
       scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord: true })
     ).resolves.toEqual({ kind: 'found', prefixes: ['team-b'] });
-    const probed = t.recordExistsUnderPrefix.mock.calls.map((c) => c[0]);
+    const probed = t.recordUnderPrefix.mock.calls.map((c) => c[0]);
     expect(probed).toEqual(['team-b', 'custom-resource-responses']);
-    expect(t.recordExistsUnderPrefix).toHaveBeenCalledWith('team-b', 'App', 'us-east-1');
+    expect(t.recordUnderPrefix).toHaveBeenCalledWith('team-b', 'App', 'us-east-1');
   });
 
   it('is clear when no other prefix holds the stack', async () => {
@@ -98,7 +99,7 @@ describe('scanOtherPrefixesForStack', () => {
     await expect(
       scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord: false })
     ).resolves.toEqual({ kind: 'found', prefixes: ['p0', 'p39'] });
-    expect(t.recordExistsUnderPrefix).toHaveBeenCalledTimes(40);
+    expect(t.recordUnderPrefix).toHaveBeenCalledTimes(40);
   });
 
   it.each([
@@ -118,6 +119,62 @@ describe('scanOtherPrefixesForStack', () => {
       checkOwnRecord: true,
     });
     expect(result.kind).toBe('failed');
+  });
+});
+
+describe('an empty leftover record under another prefix', () => {
+  it('does not block: the scan is clear and names it as stale', async () => {
+    const t = target({ prefixes: ['cdkd', 'old', 'team-b'], holders: { old: 'empty' } });
+    await expect(
+      scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord: true })
+    ).resolves.toEqual({ kind: 'clear', stale: ['old'] });
+  });
+
+  it('still refuses for a holder beside it, and names both', async () => {
+    const t = target({ prefixes: ['old', 'team-b'], holders: { old: 'empty', 'team-b': true } });
+    await expect(
+      scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord: true })
+    ).resolves.toEqual({ kind: 'found', prefixes: ['team-b'], stale: ['old'] });
+  });
+
+  it('prints one info line naming the stale prefix and its cleanup, and never refuses', () => {
+    const warn = vi.fn();
+    const info = vi.fn();
+    expect(() =>
+      applyCrossPrefixScan({ kind: 'clear', stale: ['old'] }, SUBJECT, 'deploy', warn, info)
+    ).not.toThrow();
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    const line = String(info.mock.calls[0]![0]);
+    expect(line).toContain('owns no resource');
+    expect(line).toContain('cdkd state orphan App --stack-region us-east-1 --state-prefix old');
+  });
+});
+
+describe('recordCanOwnResources', () => {
+  const ops = [{ logicalId: 'Q', changeType: 'CREATE' }];
+  it.each([
+    ['an empty record, no journal', { resources: {} }, null, false],
+    [
+      'an empty record, a journal with failedOperations only',
+      { resources: {} },
+      { segments: [{ operations: [], failedOperations: ops }] },
+      false,
+    ],
+    [
+      'an empty record, a journal with a completed operation',
+      { resources: {} },
+      { segments: [{ operations: [], failedOperations: ops }, { operations: ops }] },
+      true,
+    ],
+    ['a record with resources', { resources: { Q: {} } }, null, true],
+    ['a record with orphans only', { resources: {}, orphans: [{ logicalId: 'Q' }] }, null, true],
+    ['an empty orphans list', { resources: {}, orphans: [] }, null, false],
+    ['a resources bag that is not an object (proves nothing)', { resources: 'x' }, null, true],
+    ['an orphans container that is not a list', { resources: {}, orphans: {} }, null, true],
+    ['journal segments that are not a list', { resources: {} }, { segments: 'x' }, true],
+  ])('%s -> %s', (_what, state, journal, expected) => {
+    expect(recordCanOwnResources(state, journal)).toBe(expected);
   });
 });
 
@@ -143,6 +200,7 @@ describe('isAccessDenied', () => {
     [{ name: 'Unknown', $metadata: { httpStatusCode: 403 } }, true],
     [{ name: 'NotFound', $metadata: { httpStatusCode: 404 } }, false],
     [{ name: 'SlowDown', $metadata: { httpStatusCode: 503 } }, false],
+    [{ name: 'StateError', cause: { name: 'AccessDenied' } }, true],
     [null, false],
   ])('%j -> %s', (error, expected) => {
     expect(isAccessDenied(error)).toBe(expected);

@@ -73,13 +73,13 @@ function makeCtx(opts: {
     if (opts.prefixes instanceof Error) throw opts.prefixes;
     return opts.prefixes ?? [];
   });
-  const recordExistsUnderPrefix = vi.fn(async (p: string) => opts.holders?.[p] ?? false);
+  const recordUnderPrefix = vi.fn(async (p: string) => (opts.holders?.[p] ? 'holder' : 'absent'));
   const ownRecordExists = vi.fn(async () => true);
   return {
     acquireLock,
     deleteState,
     listTopLevelPrefixes,
-    recordExistsUnderPrefix,
+    recordUnderPrefix,
     ownRecordExists,
     ctx: {
       stateBackend: {
@@ -90,7 +90,7 @@ function makeCtx(opts: {
         listStacks: vi.fn().mockResolvedValue([]),
         loadRollbackJournal: vi.fn().mockResolvedValue(null),
         listTopLevelPrefixes,
-        recordExistsUnderPrefix,
+        recordUnderPrefix,
         ownRecordExists,
       } as unknown as S3StateBackend,
       lockManager: {
@@ -119,7 +119,7 @@ describe('runDestroyForStack — another state prefix records the stack (go-to-k
     expect(h.acquireLock).not.toHaveBeenCalled();
     expect(h.deleteState).not.toHaveBeenCalled();
     // Its own prefix is never probed as "another".
-    expect(h.recordExistsUnderPrefix.mock.calls.map((c) => c[0])).toEqual(['team-b']);
+    expect(h.recordUnderPrefix.mock.calls.map((c) => c[0])).toEqual(['team-b']);
     // The record it destroys is not re-checked.
     expect(h.ownRecordExists).not.toHaveBeenCalled();
   });

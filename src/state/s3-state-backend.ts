@@ -33,6 +33,7 @@ import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
+import { recordCanOwnResources, type RecordUnderPrefix } from './cross-prefix-stack-scan.js';
 import {
   displayIdent,
   displaySafe,
@@ -941,19 +942,32 @@ export class S3StateBackend {
   }
 
   /**
-   * Does `prefix` (another prefix of this bucket) hold a state record for the
-   * stack in `region`? Same answer as {@link stateExists} under that prefix,
-   * through this backend's already-resolved client (go-to-k/cdkd#4705).
+   * What `prefix` (another prefix of this bucket) holds for the stack in
+   * `region` (go-to-k/cdkd#4705): `absent` when {@link stateExists} under that
+   * prefix says no (a HEAD, plus the legacy GET -- a miss costs nothing more),
+   * otherwise the record and its rollback journal are READ and classified by
+   * `recordCanOwnResources`: a failed first deploy's leftover is `empty`.
+   * Through this backend's already-resolved client. Errors propagate.
    */
-  async recordExistsUnderPrefix(
+  async recordUnderPrefix(
     prefix: string,
     stackName: string,
     region: string
-  ): Promise<boolean> {
+  ): Promise<RecordUnderPrefix> {
     await this.ensureClientForBucket();
     const sibling = new S3StateBackend(this.s3Client, { ...this.config, prefix }, this.clientOpts);
     sibling.clientResolved = true;
-    return sibling.stateExists(stackName, region);
+    if (!(await sibling.stateExists(stackName, region))) return 'absent';
+    const [record, journal] = await Promise.all([
+      sibling.getState(stackName, region),
+      sibling.loadRollbackJournal(stackName, region),
+    ]);
+    // Deleted between the HEAD and the GET: nothing is left to hold anything.
+    if (record === null) {
+      if (journal === null) return 'absent';
+      return recordCanOwnResources({ resources: {} }, journal) ? 'holder' : 'empty';
+    }
+    return recordCanOwnResources(record.state, journal) ? 'holder' : 'empty';
   }
 
   /**

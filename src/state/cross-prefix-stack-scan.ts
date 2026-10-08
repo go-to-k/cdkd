@@ -16,7 +16,9 @@
  * What it reads: one `ListObjectsV2` with `Delimiter: '/'` for the bucket's
  * top-level prefixes, then the stack's `state.json` (region-scoped key, plus
  * the legacy region-less key `stateExists` still honours) under each, in
- * parallel. What it cannot see, and the docs say so: another BUCKET, and a
+ * parallel. Only a HIT is read further -- the record and its rollback journal --
+ * and blocks only if it can own a resource (`recordCanOwnResources`): the empty
+ * record a failed first deploy leaves is named in a note, never refused. What it cannot see, and the docs say so: another BUCKET, and a
  * prefix that itself contains `/` (only a single top-level segment is
  * listed).
  *
@@ -36,18 +38,57 @@ export interface CrossPrefixScanTarget {
   ownRecordExists(stackName: string, region: string): Promise<boolean>;
   /** The bucket's top-level key prefixes, without their trailing `/`. */
   listTopLevelPrefixes(): Promise<string[]>;
-  /** Does `prefix` hold a state record for the stack in `region`? */
-  recordExistsUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean>;
+  /**
+   * What `prefix` holds for the stack in `region`: `absent` (no record),
+   * `empty` (a record that can own no AWS resource -- see
+   * {@link recordCanOwnResources}), or `holder`.
+   */
+  recordUnderPrefix(prefix: string, stackName: string, region: string): Promise<RecordUnderPrefix>;
+}
+
+/** What another prefix holds for the stack: see {@link CrossPrefixScanTarget.recordUnderPrefix}. */
+export type RecordUnderPrefix = 'absent' | 'empty' | 'holder';
+
+/**
+ * Can a record, with its rollback journal, own an AWS resource? A failed FIRST
+ * deploy leaves a record with no `resources` and no `orphans` and, at most, a
+ * journal whose segments hold no completed operation (only `failedOperations`):
+ * nothing there can be destroyed or rolled back, so it must not block another
+ * prefix. Anything else -- including a container that is not the shape cdkd
+ * writes, which proves nothing -- counts as a holder.
+ */
+export function recordCanOwnResources(
+  record: { resources?: unknown; orphans?: unknown },
+  journal: { segments?: unknown } | null
+): boolean {
+  const resources = record.resources;
+  if (resources === null || typeof resources !== 'object' || Array.isArray(resources)) return true;
+  if (Object.keys(resources).length > 0) return true;
+  // Read unvalidated, and every unreadable shape answers `holder` (the
+  // malformed-container guards of `malformed-resources-bag.ts` are for records
+  // a command goes on to act on; this one is only classified).
+  const orphans = record.orphans;
+  if (orphans !== undefined && (!Array.isArray(orphans) || orphans.length > 0)) return true;
+  if (journal === null) return false;
+  const segments = journal.segments;
+  if (!Array.isArray(segments)) return true;
+  return segments.some((seg) => {
+    const ops = (seg as { operations?: unknown } | null)?.operations;
+    return ops !== undefined && (!Array.isArray(ops) || ops.length > 0);
+  });
 }
 
 /** What the scan found. */
 export type CrossPrefixScanResult =
   /** This prefix already holds the stack: not a first deploy, nothing scanned. */
   | { kind: 'own-record' }
-  /** No other top-level prefix holds the stack in this region. */
-  | { kind: 'clear' }
+  /**
+   * No other top-level prefix holds the stack in this region. `stale` names
+   * prefixes whose record for it can own no resource (a failed first deploy).
+   */
+  | { kind: 'clear'; stale?: string[] }
   /** These other prefixes hold the stack in this region. */
-  | { kind: 'found'; prefixes: string[] }
+  | { kind: 'found'; prefixes: string[]; stale?: string[] }
   /** S3 refused a List or a Head with 403. */
   | { kind: 'denied'; error: unknown }
   /** Any other failure. */
@@ -56,13 +97,22 @@ export type CrossPrefixScanResult =
 /** How many HEAD probes run at once. */
 const PROBE_CONCURRENCY = 16;
 
-/** A 403 from S3: AccessDenied on a List, a bare 403 on a Head. */
+/**
+ * A 403 from S3: AccessDenied on a List or a Get, a bare 403 on a Head --
+ * also when a state read wrapped it (a bounded walk of `cause`).
+ */
 export function isAccessDenied(error: unknown): boolean {
-  if (error === null || typeof error !== 'object') return false;
-  const name = (error as { name?: unknown }).name;
-  if (name === 'AccessDenied' || name === 'Forbidden' || name === 'AllAccessDisabled') return true;
-  const status = (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode;
-  return status === 403;
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth++) {
+    const name = (current as { name?: unknown }).name;
+    if (name === 'AccessDenied' || name === 'Forbidden' || name === 'AllAccessDisabled')
+      return true;
+    const status = (current as { $metadata?: { httpStatusCode?: unknown } }).$metadata
+      ?.httpStatusCode;
+    if (status === 403) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
@@ -84,16 +134,21 @@ export async function scanOtherPrefixesForStack(
     }
     const others = (await target.listTopLevelPrefixes()).filter((p) => p !== target.prefix);
     const found: string[] = [];
+    const stale: string[] = [];
     for (let i = 0; i < others.length; i += PROBE_CONCURRENCY) {
       const batch = others.slice(i, i + PROBE_CONCURRENCY);
       const hits = await Promise.all(
-        batch.map((p) => target.recordExistsUnderPrefix(p, stackName, region))
+        batch.map((p) => target.recordUnderPrefix(p, stackName, region))
       );
       batch.forEach((p, j) => {
-        if (hits[j]) found.push(p);
+        if (hits[j] === 'holder') found.push(p);
+        else if (hits[j] === 'empty') stale.push(p);
       });
     }
-    return found.length > 0 ? { kind: 'found', prefixes: found } : { kind: 'clear' };
+    const extra = stale.length > 0 ? { stale } : {};
+    return found.length > 0
+      ? { kind: 'found', prefixes: found, ...extra }
+      : { kind: 'clear', ...extra };
   } catch (error) {
     return isAccessDenied(error) ? { kind: 'denied', error } : { kind: 'failed', error };
   }
@@ -109,8 +164,8 @@ export function withSharedListing(target: CrossPrefixScanTarget): CrossPrefixSca
     prefix: target.prefix,
     ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
     listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),
-    recordExistsUnderPrefix: (prefix, stackName, region) =>
-      target.recordExistsUnderPrefix(prefix, stackName, region),
+    recordUnderPrefix: (prefix, stackName, region) =>
+      target.recordUnderPrefix(prefix, stackName, region),
   };
 }
 
@@ -198,6 +253,16 @@ export function destroyUnderOtherPrefixMessage(
   );
 }
 
+/** The line for records that block nothing (a failed first deploy's leftover). */
+export function staleRecordNotice(s: CrossPrefixSubject, prefixes: readonly string[]): string {
+  return (
+    `Note: bucket ${displayIdent(s.bucket)} also holds a record of stack ${subjectText(s)} ` +
+    `under another state prefix (${prefixesText(prefixes)}) that owns no resource -- the ` +
+    `leftover of a failed first deploy. It does not block this command; remove it with ` +
+    `\`${stateCommand('orphan', s, prefixes[0]!)}\`.`
+  );
+}
+
 /** The warning for a scan S3 refused with 403. */
 export function crossPrefixDeniedWarning(s: CrossPrefixSubject, error: unknown): string {
   const name =
@@ -242,16 +307,24 @@ export function applyCrossPrefixScan(
   result: CrossPrefixScanResult,
   s: CrossPrefixSubject,
   action: CrossPrefixAction,
-  warn: (message: string) => void
+  warn: (message: string) => void,
+  info?: (message: string) => void
 ): void {
   switch (result.kind) {
     case 'own-record':
+      return;
     case 'clear':
+      if (result.stale !== undefined && result.stale.length > 0) {
+        info?.(staleRecordNotice(s, result.stale));
+      }
       return;
     case 'denied':
       warn(crossPrefixDeniedWarning(s, result.error));
       return;
     case 'found':
+      if (result.stale !== undefined && result.stale.length > 0) {
+        info?.(staleRecordNotice(s, result.stale));
+      }
       throw new CdkdError(
         action === 'deploy'
           ? deployUnderOtherPrefixMessage(s, result.prefixes)

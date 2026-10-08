@@ -36,7 +36,8 @@ export function createCrossPrefixDeployGate(opts: {
       await opts.scan,
       { stackName: opts.stackName, region: opts.region, bucket: opts.bucket },
       'deploy',
-      (message) => getLogger().warn(message)
+      (message) => getLogger().warn(message),
+      (message) => getLogger().info(message)
     );
   };
 }

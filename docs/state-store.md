@@ -84,6 +84,12 @@ cdkd refuses the case it can see, before touching any resource:
   --stack-region <region> --state-prefix <prefix>`, which removes only the
   record.
 
+A record under another prefix blocks only when it can own a resource: it
+lists resources or rollback-orphaned resources, or its rollback journal holds a
+completed operation. The empty record a failed first deploy leaves behind
+blocks nothing; the command prints a note naming its prefix and the
+`cdkd state orphan` command that removes it.
+
 What the check cannot see is covered only by this contract: a record in a
 **different bucket**, and a prefix that itself contains `/` (only the
 bucket's top-level prefixes are listed). When S3 denies the listing or a read,

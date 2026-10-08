@@ -23,7 +23,9 @@
 #      under PREFIX_A (over a seeded, empty journal) must be refused and keep
 #      the journal. Remove both seeds.
 #   5. Negative control: redeploy A under PREFIX_A; it must succeed.
-#   6. Destroy A, delete the retained log group, and sweep.
+#   6. Destroy A, delete the retained log group.
+#   7. Seed an EMPTY record plus a failed first deploy's journal under PREFIX_B:
+#      a fresh deploy and a destroy under PREFIX_A must succeed, naming it.
 #
 # Each run uses its OWN two state prefixes (unique per run): nothing under
 # `cdkd/` is read or written, and the trap deletes only these two prefixes.
@@ -82,6 +84,7 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 DEPLOY_REFUSAL_NEEDLE="is already recorded under another state prefix of bucket"
 DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
+STALE_NOTICE_NEEDLE="that owns no resource"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -101,6 +104,8 @@ RUN_LOG=""
 # or a leftover holding these names) must leave those resources alone.
 DEPLOYED_A=""
 DEPLOYED_B=""
+# Phase 4 builds it from A's record; Phase 7 seeds it.
+EMPTY_RECORD=""
 # Set while Phase 4's seeded journal under PREFIX_A exists.
 SEEDED_JOURNAL_A=""
 
@@ -394,6 +399,12 @@ echo "    OK: B was refused before any create; A's queue exists and its log grou
 
 echo ""
 echo "==> Phase 4: a pre-fix pair (A's record copied to ${PREFIX_B}) makes cdkd destroy under ${PREFIX_A} refuse"
+# Phase 7's empty record: A's record with nothing left in it.
+EMPTY_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" - | jq -c '.resources = {} | .outputs = {} | del(.orphans)')"
+case "${EMPTY_RECORD}" in
+  '{'*'"resources":{}'*) ;;
+  *) echo "FAIL: could not build an empty record from A's (got '${EMPTY_RECORD}')" >&2; exit 1 ;;
+esac
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 set +e
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
@@ -474,9 +485,46 @@ assert_gone "role ${ROLE_NAME_A} still exists after the destroy" \
 aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"
 echo "    OK: both records are gone and the retained log group is deleted"
 
+echo ""
+echo "==> Phase 7: an EMPTY leftover record under ${PREFIX_B} (a failed first deploy's) does not block ${PREFIX_A}"
+# The shape a failed FIRST deploy leaves: no resources, and a journal whose only
+# segment is an auto-rollback-clean initial deploy with no completed operation
+# (observed in an integ bucket, written by cdkd 0.294.2).
+printf '%s' "${EMPTY_RECORD}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
+printf '%s' "{\"journalVersion\":1,\"stackName\":\"${STACK}\",\"region\":\"${REGION}\",\"segments\":[{\"timestamp\":1,\"reason\":\"auto-rollback-clean\",\"initialDeploy\":true,\"operations\":[],\"failedOperations\":[{\"logicalId\":\"Role\",\"changeType\":\"CREATE\",\"resourceType\":\"AWS::IAM::Role\"}]}]}" |
+  aws s3 cp - "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" >/dev/null
+set +e
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes >"${RUN_LOG}" 2>&1
+STALE_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+echo "OBSERVE: stale-leftover-deploy-rc=${STALE_RC}"
+if [ "${STALE_RC}" -ne 0 ] || grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: a fresh deploy under ${PREFIX_A} was refused or failed beside an EMPTY leftover record under ${PREFIX_B} (rc=${STALE_RC}; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+# Copied from `staleRecordNotice` in src/state/cross-prefix-stack-scan.ts.
+if ! grep -qF "${STALE_NOTICE_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: the deploy did not name the empty leftover record under ${PREFIX_B} ('${STALE_NOTICE_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
+assert_gone "state ${STATE_KEY_A} still exists after the Phase 7 destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
+aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"
+aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
+aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" >/dev/null
+assert_gone "the seeded empty record ${STATE_KEY_B} still exists after its removal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
+assert_gone "the seeded journal ${JOURNAL_KEY_B} still exists after its removal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}"
+echo "    OK: the empty leftover blocked nothing and was named; deploy and destroy under ${PREFIX_A} succeeded"
+
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 rescan
-echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy and a rollback of a paired record were refused, and deployment A's queue and log group stayed untouched (#4705)"
+echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy and a rollback of a paired record were refused, an empty leftover record blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"

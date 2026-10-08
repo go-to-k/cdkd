@@ -720,7 +720,8 @@ export async function runDestroyForStack(
       await crossPrefixScan,
       { stackName, region: regionForState, bucket: ctx.stateBucket },
       'destroy',
-      (message) => logger.warn(message)
+      (message) => logger.warn(message),
+      (message) => logger.info(message)
     );
   }
   if (resourceCount === 0 && orphanCount === 0 && journaledOrphans.count === 0) {
