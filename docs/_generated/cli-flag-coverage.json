@@ -1146,6 +1146,7 @@
         "fallback-recreate-children",
         "glue-securityconfig-replace",
         "glue-update-hardening",
+        "iam-role-prefixed-name-update",
         "lambda-durable-replacement",
         "lambda-layer-version-update",
         "loggroup-class-guard",

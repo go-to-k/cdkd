@@ -152,7 +152,7 @@ iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final 
 iam-propagation-stress	2026-10-07T06:43:47Z	PASS	106	verify.sh	rc ok, orph clean (#4639)
 iam-recreate-reattach	2026-10-07T06:43:47Z	PASS	211	verify.sh	rc ok, orph clean (#4639)
 iam-role-policies-drift-clean	2026-10-06T07:02:26Z	PASS	170	verify.sh	rc ok, orph clean (#2207 PR #4613)
-iam-role-prefixed-name-update	2026-10-03T04:27:32Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
+iam-role-prefixed-name-update	2026-10-08T17:02:47Z	PASS	131	verify.sh	rc ok, orph clean (PR #4745 IAM role Path replace, fix round)
 iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
 import-attribute-readback-final	2026-10-07T16:21:49Z	PASS	286	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean

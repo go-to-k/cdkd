@@ -26,7 +26,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -34,6 +34,8 @@ import { withRemovalDefaults } from '../update-removal.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
+  isSecretDerivedValue,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
   type MaskerFn,
@@ -428,7 +430,66 @@ export class IAMRoleProvider implements ResourceProvider {
     // RoleName and Path are immutable - cannot be changed after creation
     const newPath = (properties['Path'] as string | undefined) || '/';
     const oldPath = (previousProperties['Path'] as string | undefined) || '/';
-    const needsReplacement = newRoleName !== physicalId || newPath !== oldPath;
+    // A secret-derived Path is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved (go-to-k/cdkd#4275). The template did not change it:
+    // a changed reference is a replacement the engine plans before any update.
+    // So it is never a Path change here — refusing it would let `--replace`'s
+    // fallback delete and re-create the role on an unrelated update. A secret
+    // ROTATED under the reference is not applied, as CloudFormation keeps a
+    // create-only value its template did not change; the live path is read to
+    // say so. A rename needs no Path evidence, so it reads nothing.
+    const pathBehindSecret =
+      newRoleName === physicalId &&
+      newPath !== oldPath &&
+      isSecretDerivedValue(previousProperties['Path'], maskerOrIdentity(undefined));
+    let livePath: string | undefined;
+    if (pathBehindSecret) {
+      try {
+        livePath = (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role
+          ?.Path;
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapMaskedError(
+          log.mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to read the path of IAM role ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+      }
+    }
+    if (pathBehindSecret) {
+      // No live path means the role cannot be shown to be the recorded one:
+      // fail closed, and NOT as update-not-supported, which `--replace` would
+      // turn into a delete.
+      if (livePath === undefined || livePath === '') {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `IAM role ${logicalId}: its Path comes from a secret reference, and IAM returned no ` +
+              `path for ${v(physicalId)} to confirm it against. Nothing was changed.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      if (livePath !== newPath) {
+        // Neither path is printed: both are secret values.
+        log.warn(
+          `IAM role ${logicalId}: the secret its Path comes from now resolves to a different ` +
+            `path than the role ${v(physicalId)} has. A role cannot move in place, so it keeps ` +
+            `its path; the new value takes effect when the template changes the reference, ` +
+            `which replaces the role.`
+        );
+      }
+    }
+    const pathChanged = newPath !== oldPath && !pathBehindSecret;
+    const needsReplacement = newRoleName !== physicalId || pathChanged;
 
     // Issue #4023: the replacement arm re-derives the name inside `create()`,
     // so on a revert it would still create under the derived name and delete
@@ -447,10 +508,29 @@ export class IAMRoleProvider implements ResourceProvider {
       );
     }
 
+    // Issue #4739: the re-create below asks for `newRoleName`, which a Path-only
+    // change leaves equal to the live role's name, and IAM role names are unique
+    // whatever the path, so CreateRole could only fail `EntityAlreadyExists`.
+    // The registry classifies a Path change as a replacement, so a deploy never
+    // routes one here; a caller that still does gets the update-not-supported
+    // refusal, which the engine's fallback turns into a delete-first replacement
+    // under `--replace`, before any call.
+    if (needsReplacement && newRoleName === physicalId) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        log.mask(
+          `Path changed from ${v(oldPath)} to ${v(newPath)}, and an IAM role cannot move to ` +
+            `another path; a replacement under the same name ${v(physicalId)} must delete the ` +
+            `role first — re-deploy with --replace, or give the role a new name`
+        )
+      );
+    }
+
     if (needsReplacement) {
-      const reason = newRoleName !== physicalId ? 'RoleName' : 'Path';
+      // Only a rename reaches here: a Path-only change was refused above.
       log.debug(
-        `${reason} changed, replacing role: ${v(physicalId)} (${reason}: ${reason === 'RoleName' ? `from ${v(physicalId)} to ${v(newRoleName)}` : `from ${v(oldPath)} to ${v(newPath)}`})`
+        `RoleName changed, replacing role: ${v(physicalId)} (RoleName: from ${v(physicalId)} to ${v(newRoleName)})`
       );
 
       // Create new role. The masker is forwarded (issue #2177) and NOTHING

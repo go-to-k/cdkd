@@ -290,8 +290,8 @@ describe('a pasted provider ` -> ` line redirects nothing (#4239)', () => {
 });
 
 describe('the other provider arms (#4252 review)', () => {
-  it('iam-role: the Path replacement arm', async () => {
-    await settle(
+  it('iam-role: the Path-only refusal (#4739)', async () => {
+    const error = await settle(
       new IAMRoleProvider().update(
         'Role',
         'role',
@@ -300,12 +300,12 @@ describe('the other provider arms (#4252 review)', () => {
         { RoleName: 'role', Path: '/name/', AssumeRolePolicyDocument: {} }
       )
     );
-    const line = lineStarting('Path changed, replacing role: ');
+    // The paths are now named in the thrown refusal, not a replacement line.
     // An IAM Path starts and ends with `/`, so the pre-fix redirect target
     // was a directory: defence in depth, as the RoleName arm is not.
-    expectInert(line);
-    expectInert(pairInParens(line));
-    expect(line).toContain('(Path: from /name/ to /id/)');
+    const text = (error as Error).message;
+    expectInert(text);
+    expect(text).toContain('Path changed from /name/ to /id/');
   }, 60_000);
 
   it('codecommit-repository: the rename a previous attempt already applied', async () => {

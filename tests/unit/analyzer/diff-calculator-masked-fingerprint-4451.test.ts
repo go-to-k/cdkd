@@ -16,6 +16,9 @@ const CREATE_ONLY: Record<string, string[]> = {
   // A registry type the schema (here) calls create-only for the property: the
   // registry's own classification must win.
   'AWS::CodeCommit::Repository': ['/properties/RepositoryDescription'],
+  // Registry types with a CONDITIONAL rule for the property (go-to-k/cdkd#4739).
+  'AWS::IAM::Role': ['/properties/Path'],
+  'AWS::Glue::Table': ['/properties/Name'],
 };
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -109,6 +112,30 @@ describe('DiffCalculator - a masked property whose template expression moved (go
 
   it('does not guess a replacement from a create-only path NESTED under it', async () => {
     const change = (await diffOf('AWS::Test::NestedCreateOnly', EDITED, true)).get('R')!;
+    expect(change.changeType).toBe('UPDATE');
+    expect(change.propertyChanges?.[0]?.requiresReplacement).toBe(false);
+  });
+
+  // go-to-k/cdkd#4739: a conditional rule's predicate sees two masks and
+  // cannot judge them; the schema decides as for an unclassified key.
+  it('replaces a whole-key create-only property whose registry rule is conditional (IAM role Path)', async () => {
+    const change = (await diffOf('AWS::IAM::Role', EDITED, true, 'Path')).get('R')!;
+    expect(change.changeType).toBe('UPDATE');
+    expect(change.propertyChanges?.[0]).toMatchObject({
+      path: 'Path',
+      requiresReplacement: true,
+      maskedExpressionChanged: true,
+    });
+  });
+
+  it('reports NO_CHANGE for that property when its fingerprint did not move', async () => {
+    expect((await diffOf('AWS::IAM::Role', SCRIPT, true, 'Path')).get('R')!.changeType).toBe(
+      'NO_CHANGE'
+    );
+  });
+
+  it('keeps a conditional rule in place where the schema does not make the whole key create-only', async () => {
+    const change = (await diffOf('AWS::Glue::Table', EDITED, true, 'TableInput')).get('R')!;
     expect(change.changeType).toBe('UPDATE');
     expect(change.propertyChanges?.[0]?.requiresReplacement).toBe(false);
   });

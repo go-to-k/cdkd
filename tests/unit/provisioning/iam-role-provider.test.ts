@@ -37,6 +37,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { withStackName } from '../../../src/provisioning/resource-name.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../src/utils/error-handler.js';
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -369,6 +374,135 @@ describe('IAMRoleProvider', () => {
   });
 
   describe('update', () => {
+    // Issue #4739: a Path-only change keeps the role's name, which IAM holds
+    // whatever the path, so a re-create could only collide. It is refused as
+    // not updatable in place -- the engine's fallback replaces it under
+    // `--replace` -- before any call.
+    it('refuses a Path-only change as not updatable in place, sending nothing', async () => {
+      const doc = { Version: '2012-10-17', Statement: [] };
+      // In a stack scope the derived name IS the recorded one: only the Path moves.
+      const error = await withStackName('MyStack', () =>
+        provider.update(
+          'L',
+          'MyStack-L',
+          'AWS::IAM::Role',
+          { AssumeRolePolicyDocument: doc, Path: '/b/' },
+          { AssumeRolePolicyDocument: doc, Path: '/a/' }
+        )
+      ).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toMatch(/Path changed from \/a\/ to \/b\/.*--replace/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // A secret-derived Path is recorded as its reference and handed here
+    // resolved (go-to-k/cdkd#4275). The template did not change it, so it is
+    // never a Path change: refusing it as update-not-supported would let
+    // `--replace` delete and re-create the role on an unrelated update.
+    describe('a secret-derived Path (recorded as its reference)', () => {
+      const doc = { Version: '2012-10-17', Statement: [] };
+      const REF = '{{resolve:secretsmanager:role-path}}';
+      const updateWith = (desired: Record<string, unknown> = {}): Promise<unknown> =>
+        withStackName('MyStack', () =>
+          provider.update(
+            'L',
+            'MyStack-L',
+            'AWS::IAM::Role',
+            { AssumeRolePolicyDocument: doc, Path: '/svc/', Description: 'v2', ...desired },
+            { AssumeRolePolicyDocument: doc, Path: REF, Description: 'v1' }
+          )
+        ).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      const sentOf = (klass: { new (...args: never[]): unknown }): unknown[] =>
+        mockSend.mock.calls.filter((c) => c[0] instanceof klass);
+      const warned = (): string[] =>
+        vi.mocked(getLogger().child('IAMRoleProvider').warn).mock.calls.map((c) => String(c[0]));
+
+      it('updates in place, silently, when the live role is on the resolved path', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/svc/' } } : {})
+        );
+
+        expect(await updateWith()).toBeUndefined();
+        expect(sentOf(UpdateRoleCommand)).toHaveLength(1);
+        expect(sentOf(CreateRoleCommand)).toHaveLength(0);
+        expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+        expect(warned()).toEqual([]);
+      });
+
+      // A secret ROTATED under the unchanged reference: CloudFormation keeps
+      // the live create-only value, and so does cdkd -- with one warning that
+      // names neither path (both are secret values).
+      it('keeps the role in place with one warning when the secret rotated', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/old/' } } : {})
+        );
+
+        expect(await updateWith()).toBeUndefined();
+        // The live-path read comes first (the in-place arm reads the role again at its end).
+        expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetRoleCommand);
+        expect(sentOf(UpdateRoleCommand)).toHaveLength(1);
+        expect(sentOf(CreateRoleCommand)).toHaveLength(0);
+        expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+        const lines = warned().filter((l) => l.includes('secret its Path comes from'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).not.toContain('/svc/');
+        expect(lines[0]).not.toContain('/old/');
+      });
+
+      it('fails closed, and not as update-not-supported, when the live role reports no path', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: {} } : {})
+        );
+
+        const error = await updateWith();
+        expect(error).toBeInstanceOf(ProvisioningError);
+        // `--replace` turns update-not-supported into a delete-first replacement.
+        expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect((error as Error).message).toMatch(/returned no path .*Nothing was changed/);
+        expect(sentOf(UpdateRoleCommand)).toHaveLength(0);
+      });
+
+      it('fails as a provisioning error, sending nothing else, when the live path cannot be read', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          cmd instanceof GetRoleCommand
+            ? Promise.reject(new Error('AccessDenied: not authorized to perform iam:GetRole'))
+            : Promise.resolve({})
+        );
+
+        const error = await updateWith();
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect((error as Error).message).toMatch(/Failed to read the path of IAM role L: .*AccessDenied/);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      // A rename replaces the role whatever its path: no live-path read, so a
+      // GetRole failure cannot fail it.
+      it('reads no live path for a rename', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          cmd instanceof GetRoleCommand
+            ? Promise.reject(new Error('AccessDenied: not authorized to perform iam:GetRole'))
+            : Promise.resolve(
+                cmd instanceof CreateRoleCommand
+                  ? { Role: { Arn: 'arn:aws:iam::0:role/svc/MyStack-new', RoleId: 'r2' } }
+                  : {}
+              )
+        );
+
+        await updateWith({ RoleName: 'new' });
+        const first = mockSend.mock.calls[0]?.[0] as { input: { RoleName?: string } };
+        expect(first).toBeInstanceOf(CreateRoleCommand);
+        expect(first.input.RoleName).toBe('MyStack-new');
+      });
+    });
+
     // Issue #1819: a RoleName change is immutable, so the provider replaces --
     // create the new role, then delete the old. When that delete fails the old
     // role survives untracked, and before the outcome channel that was a bare
