@@ -4233,6 +4233,7 @@
         "ci-cd",
         "cloudtrail-trail",
         "composite-stack",
+        "cross-backend-same-stack",
         "deep-getatt-chains",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
@@ -4344,6 +4345,10 @@
           "l2"
         ],
         "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack": [
           "l2",
           "literal"
         ],
@@ -5490,6 +5495,7 @@
         "cloudtrail-trail",
         "cloudwatch",
         "composite-stack",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "drift-revert",
         "ec2-vpc",
@@ -5532,6 +5538,10 @@
           "l2"
         ],
         "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack": [
           "l2",
           "literal"
         ],
@@ -6426,6 +6436,7 @@
         "cloudwatch-anomaly-detector",
         "composite-stack",
         "conditions-update-2",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "data-pipeline",
         "drift-revert-arrays",
@@ -6507,6 +6518,10 @@
         ],
         "conditions-update-2": [
           "l1"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
+          "literal"
         ],
         "cross-region-concurrent-stacks": [
           "l2",

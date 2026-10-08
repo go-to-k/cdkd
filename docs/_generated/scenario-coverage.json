@@ -691,6 +691,11 @@
       "scenarios": []
     },
     {
+      "name": "cross-backend-same-stack",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-region-concurrent-stacks",
       "annotated": false,
       "scenarios": []
@@ -3209,6 +3214,7 @@
     "cognito-lambda-triggers",
     "cognito-userpool-user-ref",
     "created-before-failure-revert",
+    "cross-backend-same-stack",
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "diff-fail-on-destructive",

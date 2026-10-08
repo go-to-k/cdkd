@@ -149,6 +149,7 @@
         "cognito-userpool-user-ref",
         "conditions",
         "created-before-failure-revert",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
@@ -514,6 +515,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "created-before-failure-revert",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
@@ -860,6 +862,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "created-before-failure-revert",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
@@ -1237,6 +1240,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "created-before-failure-revert",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
@@ -1482,6 +1486,7 @@
     {
       "flag": "--state-prefix",
       "integs": [
+        "cross-backend-same-stack",
         "destroy-interrupt",
         "importvalue-chain",
         "remove-protection-journaled-orphan"
@@ -1609,6 +1614,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "created-before-failure-revert",
+        "cross-backend-same-stack",
         "cross-region-concurrent-stacks",
         "cross-stack-cfn-fallback",
         "cross-stack-secret-import",
