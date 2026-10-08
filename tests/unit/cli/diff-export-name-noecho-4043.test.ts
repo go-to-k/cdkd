@@ -377,7 +377,10 @@ describe("an Export.Name's own bag feeds the printing masker (go-to-k/cdkd#4043)
     // Premise: the refused alias's stored key is previewed as removed.
     expect(result.outputChanges.map((c) => c.changeType)).toEqual(['REMOVE']);
     // `name` stays the stored key; what the renderers print is `nameDisplay`.
-    expect(result.outputChanges[0]!.nameDisplay).toEqual({ kind: 'masked', text: '***' });
+    // The name is one this pass refused for a NoEcho reason, so it is withheld
+    // outright (go-to-k/cdkd#4657), not masked.
+    expect(result.outputChanges[0]!.nameDisplay).toEqual({ kind: 'withheld' });
+    expect(JSON.stringify(result.outputChanges[0]!.nameDisplay)).not.toContain(encoded);
   });
 });
 
