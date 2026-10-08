@@ -180,7 +180,8 @@ interface RollbackOptions {
   /**
    * go-to-k/cdkd#4678: turn protection off before this stack's rollback
    * deletes a resource the failed deploy left (a completed CREATE's, or a
-   * failed CREATE's once proven), as `cdkd destroy --remove-protection` does.
+   * failed CREATE's once proven), as `cdkd destroy --remove-protection` does;
+   * a nested stack's revert carries it into that child (go-to-k/cdkd#4703).
    */
   removeProtection?: boolean;
   stackRegion?: string;
@@ -1124,7 +1125,7 @@ export async function rollbackCommand(
         const ok = await confirm(
           `Roll back ${stackRegionShown(stackName, region)}` +
             (options.removeProtection === true
-              ? ', TURNING DELETION PROTECTION OFF on the resources it deletes from this stack?'
+              ? ', TURNING DELETION PROTECTION OFF on the resources it deletes from this stack and the nested stacks it reverts?'
               : '?')
         );
         if (!ok) {
@@ -1329,6 +1330,10 @@ export async function rollbackCommand(
                 // A nested child's revert (issue #3754) replays its own
                 // journal through this context, so the opt-out must reach it.
                 ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                // go-to-k/cdkd#4703: and `--remove-protection`, only when
+                // passed; the child replay pairs it with a child-scoped
+                // foreign-holder scan.
+                ...(options.removeProtection === true && { removeProtection: true }),
               },
             },
             // Issue #3754: a nested-stack row in this segment is reverted by
@@ -1898,8 +1903,8 @@ export function createRollbackCommand(): Command {
           'failed deploy left: one its state records from a completed CREATE, or one a failed ' +
           'CREATE left behind (a journaled orphan, or under --revert-failed the failed CREATE ' +
           'itself) when cdkd can prove it is that resource and no other stack holds it. A nested ' +
-          "stack it deletes cascades the flag to that child's resources; a resource reverted " +
-          'inside an existing nested stack keeps its protection. Covers ' +
+          "stack it deletes cascades the flag to that child's resources, and a nested stack it " +
+          "reverts carries it into that child's revert. Covers " +
           `${removeProtectionTypeList()}.`
       ).default(false)
     )

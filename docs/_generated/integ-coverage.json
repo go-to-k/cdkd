@@ -664,6 +664,7 @@
         "nested-stack-secret",
         "noecho-parameter-masking",
         "recreate-nested-logical-id-collision",
+        "remove-protection-journaled-orphan",
         "rollback-nested-cross-region-secret",
         "scrub-nested-child"
       ],
@@ -705,6 +706,9 @@
           "literal"
         ],
         "recreate-nested-logical-id-collision": [
+          "literal"
+        ],
+        "remove-protection-journaled-orphan": [
           "literal"
         ],
         "rollback-nested-cross-region-secret": [

@@ -26,13 +26,24 @@
 #      state record and the journal are gone. Before the completed-CREATE half
 #      of #4678 the rollback's delete of a completed CREATE dropped the flag and
 #      this step failed exactly like step 9.
-#  11. Destroy the network stack.
+#  11. Deploy the nested parent: its existing `Child` nested stack holds only
+#      ChildAnchor.
+#  12. `--no-rollback` deploy with NESTED_LB=1: the child's update creates
+#      NestedLb with deletion protection on and completes, then the parent's
+#      FailLater fails, so the parent's journal holds the Child row's completed
+#      UPDATE and the child's journal NestedLb's completed CREATE.
+#  13. `cdkd rollback <parent>` WITHOUT the flag: non-zero, the load balancer,
+#      its protection, the child's record of it and both journals are kept.
+#  14. `cdkd rollback <parent> --remove-protection`: exits 0, the load balancer,
+#      the child's record of it and both journals are gone. Before #4703 the
+#      child's revert dropped the flag and this step failed exactly like 13.
+#  15. Destroy the nested parent (and its child), then the network stack.
 #
 # The run lives under its OWN state prefix (STATE_PREFIX, unique per run): the
 # foreign-holder scan `--remove-protection` asks before stripping reads every
 # record under the prefix, and an unreadable one (a peer's newer state schema,
-# a legacy key) keeps the protection on. Here it sees only this run's two
-# stacks. The trap deletes this prefix's objects, never anything under `cdkd/`.
+# a legacy key) keeps the protection on. Here it sees only this run's stacks.
+# The trap deletes this prefix's objects, never anything under `cdkd/`.
 #
 # Run via: /run-integ remove-protection-journaled-orphan
 #         or: bash tests/integration/remove-protection-journaled-orphan/verify.sh
@@ -82,6 +93,13 @@ STATE_PREFIX="${STATE_PREFIX:-cdkd-rpjo-$(date +%s)-$$}"
 STATE_KEY="${STATE_PREFIX}/${STACK}/${REGION}/state.json"
 JOURNAL_KEY="${STATE_PREFIX}/${STACK}/${REGION}/rollback-journal.json"
 NET_STATE_KEY="${STATE_PREFIX}/${NET_STACK}/${REGION}/state.json"
+NESTED_STACK="CdkdRpJournaledOrphanNested"
+NESTED_CHILD="${NESTED_STACK}~Child"
+NESTED_LB_NAME="cdkd-4703-nested"
+NESTED_STATE_KEY="${STATE_PREFIX}/${NESTED_STACK}/${REGION}/state.json"
+NESTED_JOURNAL_KEY="${STATE_PREFIX}/${NESTED_STACK}/${REGION}/rollback-journal.json"
+NESTED_CHILD_STATE_KEY="${STATE_PREFIX}/${NESTED_CHILD}/${REGION}/state.json"
+NESTED_CHILD_JOURNAL_KEY="${STATE_PREFIX}/${NESTED_CHILD}/${REGION}/rollback-journal.json"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
@@ -97,6 +115,8 @@ fi
 ORPHAN_LB_ARN=""
 # CompletedLb's ARN as this run's state recorded it (step 8).
 COMPLETED_LB_ARN=""
+# NestedLb's ARN as this run's child state or child journal recorded it (step 12).
+NESTED_LB_ARN=""
 # What the journal records for OrphanLb: the trap deletes it too, so cleanup
 # does not hang on the warning cdkd printed (the code under test) alone.
 JOURNALED_ARN=""
@@ -107,6 +127,7 @@ RUN_LOG=""
 # peer's run holding these keys) must leave the peer's stacks alone.
 DEPLOYED_NET=""
 DEPLOYED_ORPHAN=""
+DEPLOYED_NESTED=""
 
 lb_protection() { # usage: lb_protection <arn>
   aws elbv2 describe-load-balancer-attributes --load-balancer-arn "$1" --region "${REGION}" \
@@ -115,10 +136,10 @@ lb_protection() { # usage: lb_protection <arn>
 
 # A failed --remove-protection run whose foreign-holder scan met an unreadable
 # record is environmental, not a regression: say so beside the FAIL. Under this
-# run's own prefix the scan should see only its two stacks.
+# run's own prefix the scan should see only its own stacks.
 explain_unreadable_scan() {
   if grep -q "leaves open whether another stack holds it" "${RUN_LOG}"; then
-    echo "      environmental: an unreadable record under s3://${STATE_BUCKET}/${STATE_PREFIX}/ kept the protection on (see the 'leaves open whether another stack holds it' warning above); this run's prefix should hold only its own two stacks, so check what else wrote there" >&2
+    echo "      environmental: an unreadable record under s3://${STATE_BUCKET}/${STATE_PREFIX}/ kept the protection on (see the 'leaves open whether another stack holds it' warning above); this run's prefix should hold only its own stacks, so check what else wrote there" >&2
   fi
 }
 
@@ -143,7 +164,11 @@ sweep_run_prefix() {
     cdkd-rpjo-[0-9]*-[0-9]*)
       if ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ) &&
         ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}" ) &&
-        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" ); then
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" ) &&
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_STATE_KEY}" ) &&
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_JOURNAL_KEY}" ) &&
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_CHILD_STATE_KEY}" ) &&
+        ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_CHILD_JOURNAL_KEY}" ); then
         aws s3 rm "s3://${STATE_BUCKET}/${STATE_PREFIX}/" --recursive >/dev/null 2>&1
       else
         echo "WARN: teardown incomplete; records kept under s3://${STATE_BUCKET:-}/${STATE_PREFIX}/ (pass --state-prefix ${STATE_PREFIX} to cdkd state destroy)" >&2
@@ -164,7 +189,7 @@ cleanup() {
   # Only the ARNs THIS run captured, never one found by name: clear the
   # protection and delete each BEFORE the network stack, whose subnets and
   # security group it holds.
-  for arn in "${ORPHAN_LB_ARN:-}" "${JOURNALED_ARN:-}" "${COMPLETED_LB_ARN:-}"; do
+  for arn in "${ORPHAN_LB_ARN:-}" "${JOURNALED_ARN:-}" "${COMPLETED_LB_ARN:-}" "${NESTED_LB_ARN:-}"; do
     case "${arn}" in
       arn:*:loadbalancer/app/*)
         aws elbv2 modify-load-balancer-attributes --load-balancer-arn "${arn}" \
@@ -180,6 +205,19 @@ cleanup() {
     ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" ); }; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" \
       --remove-protection --yes >/dev/null 2>&1
+  fi
+  # The nested parent's destroy cascades into its child; a journal either left
+  # still needs the destroy's journal sweep.
+  if [ "${DEPLOYED_NESTED:-}" = "1" ]; then
+    for key in "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${NESTED_CHILD_STATE_KEY}" "${NESTED_CHILD_JOURNAL_KEY}"; do
+      if ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" ); then
+        node "${LOCAL_DIST}" state destroy "${NESTED_STACK}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" \
+          --remove-protection --yes >/dev/null 2>&1
+        node "${LOCAL_DIST}" state destroy "${NESTED_CHILD}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${STATE_PREFIX}" --region "${REGION}" \
+          --remove-protection --yes >/dev/null 2>&1
+        break
+      fi
+    done
   fi
   # A deleted load balancer's ENIs can outlive it for a few minutes.
   if [ "${DEPLOYED_NET:-}" = "1" ] && ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}" ); then
@@ -200,7 +238,8 @@ echo "==> Installing fixture deps"
 [ -d node_modules ] || vp install --prefer-offline
 
 echo "==> Pre-flight"
-for key in "${STATE_KEY}" "${JOURNAL_KEY}" "${NET_STATE_KEY}"; do
+for key in "${STATE_KEY}" "${JOURNAL_KEY}" "${NET_STATE_KEY}" "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" \
+  "${NESTED_CHILD_STATE_KEY}" "${NESTED_CHILD_JOURNAL_KEY}"; do
   if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"; then
     echo "FAIL: s3://${STATE_BUCKET}/${key} already exists -- clean up a previous run first" >&2
     exit 1
@@ -209,7 +248,7 @@ done
 # A load balancer of this name from an earlier run would be handed back by
 # CreateLoadBalancer (same name and settings) or collide with it. Never
 # deleted by name here: it is not this run's.
-for name in "${LB_NAME}" "${COMPLETED_LB_NAME}"; do
+for name in "${LB_NAME}" "${COMPLETED_LB_NAME}" "${NESTED_LB_NAME}"; do
   if ! gone_probe aws elbv2 describe-load-balancers --names "${name}" --region "${REGION}"; then
     echo "FAIL: a load balancer named ${name} already exists -- delete it by hand first" >&2
     exit 1
@@ -513,8 +552,141 @@ assert_gone "state ${STATE_KEY} still exists after the rollback and its record c
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: the completed load balancer, its state record and the journal are gone"
 
+# NestedLb's record in the child's state, or "" when there is none.
+nested_lb_recorded() {
+  (aws s3 cp "s3://${STATE_BUCKET}/${NESTED_CHILD_STATE_KEY}" - 2>/dev/null || true) |
+    jq -r '.resources.NestedLb.physicalId // ""' 2>/dev/null || true
+}
+
 echo ""
-echo "==> Step 11: destroy ${NET_STACK}"
+echo "==> Step 11: deploy ${NESTED_STACK} (an existing nested stack, ChildAnchor only)"
+DEPLOYED_NESTED=1
+node "${LOCAL_DIST}" deploy "${NESTED_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --yes
+if [ "$( (aws s3 cp "s3://${STATE_BUCKET}/${NESTED_CHILD_STATE_KEY}" - || true) | jq -r '.resources.ChildAnchor.physicalId // ""' 2>/dev/null || true)" = "" ]; then
+  echo "FAIL: ${NESTED_CHILD}'s state does not record ChildAnchor after the first deploy" >&2
+  exit 1
+fi
+echo "    OK: ${NESTED_CHILD} exists"
+
+echo ""
+echo "==> Step 12: --no-rollback deploy of ${NESTED_STACK} with NESTED_LB=1 (NestedLb completes in the child, FailLater fails)"
+set +e
+NESTED_LB=1 node "${LOCAL_DIST}" deploy "${NESTED_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" \
+  --yes --no-rollback >"${RUN_LOG}" 2>&1
+DEPLOY_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+# Captured BEFORE any FAIL below, so the trap can clear the protection on and
+# delete the load balancer no later check reached.
+NESTED_LB_ARN="$(nested_lb_recorded)"
+if [ -z "${NESTED_LB_ARN}" ]; then
+  NESTED_LB_ARN="$( (aws s3 cp "s3://${STATE_BUCKET}/${NESTED_CHILD_JOURNAL_KEY}" - || true) | jq -r '[.segments[]?.operations[]? | select(.logicalId == "NestedLb")] | last | .physicalId // ""' 2>/dev/null || true)"
+fi
+if [ "${DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the NESTED_LB deploy unexpectedly SUCCEEDED (SSM should refuse FailLater's value against its AllowedPattern)" >&2
+  exit 1
+fi
+case "${NESTED_LB_ARN}" in
+  arn:*:loadbalancer/app/${NESTED_LB_NAME}/*) ;;
+  *)
+    echo "FAIL: ${NESTED_CHILD}'s state does not record NestedLb as a completed CREATE of ${NESTED_LB_NAME} (got '${NESTED_LB_ARN}'; output above)" >&2
+    exit 1
+    ;;
+esac
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${NESTED_STATE_KEY}" - | jq -r '.resources.FailLater.physicalId // "<absent>"')" != "<absent>" ] ||
+  [ "$(aws s3 cp "s3://${STATE_BUCKET}/${NESTED_JOURNAL_KEY}" - | jq -r \
+    '[.segments[]?.failedOperations[]? | select(.logicalId == "FailLater" and .changeType == "CREATE")] | length')" = "0" ]; then
+  echo "FAIL: the deploy failed, but not at FailLater's CREATE (output above)" >&2
+  exit 1
+fi
+# The premise of the fix: the parent reverts the Child row (a completed
+# UPDATE) by replaying the child's journal, which holds NestedLb's CREATE.
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${NESTED_JOURNAL_KEY}" - | jq -r \
+  '[.segments[]?.operations[]? | select(.logicalId == "Child" and .changeType == "UPDATE")] | length')" = "0" ]; then
+  echo "FAIL: the parent's journal holds no completed UPDATE of the Child row (the nested stack was not an existing one updated by this deploy)" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${NESTED_CHILD_JOURNAL_KEY}" - | jq -r \
+  '[.segments[]?.operations[]? | select(.logicalId == "NestedLb" and .changeType == "CREATE")] | last | .physicalId // ""')" != "${NESTED_LB_ARN}" ]; then
+  echo "FAIL: ${NESTED_CHILD}'s journal does not hold NestedLb's completed CREATE of ${NESTED_LB_ARN}" >&2
+  exit 1
+fi
+if [ "$(lb_protection "${NESTED_LB_ARN}")" != "true" ]; then
+  echo "FAIL: NestedLb ${NESTED_LB_ARN} is not deletion-protected (the injection did not fire as designed)" >&2
+  exit 1
+fi
+echo "    OK: NestedLb ${NESTED_LB_ARN} is a completed, deletion-protected CREATE in ${NESTED_CHILD}'s state and journal"
+
+echo ""
+echo "==> Step 13: cdkd rollback ${NESTED_STACK} WITHOUT --remove-protection keeps the nested protected load balancer"
+set +e
+node "${LOCAL_DIST}" rollback "${NESTED_STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force >"${RUN_LOG}" 2>&1
+PLAIN_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${PLAIN_RC}" -eq 0 ]; then
+  echo "FAIL: the rollback without --remove-protection exited 0 with a deletion-protected completed CREATE to revert in ${NESTED_CHILD}" >&2
+  exit 1
+fi
+if ! grep -q "Deleting created resource NestedLb" "${RUN_LOG}"; then
+  echo "FAIL: the rollback did not attempt NestedLb's delete through ${NESTED_CHILD}'s revert (output above)" >&2
+  exit 1
+fi
+if gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${NESTED_LB_ARN}" --region "${REGION}"; then
+  echo "FAIL: ${NESTED_LB_ARN} is gone after a rollback without --remove-protection (it must not strip protection)" >&2
+  exit 1
+fi
+if [ "$(lb_protection "${NESTED_LB_ARN}")" != "true" ]; then
+  echo "FAIL: the rollback without --remove-protection turned off deletion protection on ${NESTED_LB_ARN}" >&2
+  exit 1
+fi
+if [ "$(nested_lb_recorded)" != "${NESTED_LB_ARN}" ]; then
+  echo "FAIL: ${NESTED_CHILD}'s state no longer records NestedLb ${NESTED_LB_ARN} after a rollback whose delete was refused" >&2
+  exit 1
+fi
+for key in "${NESTED_JOURNAL_KEY}" "${NESTED_CHILD_JOURNAL_KEY}"; do
+  if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"; then
+    echo "FAIL: ${key} is gone after a rollback whose delete was refused" >&2
+    exit 1
+  fi
+done
+echo "    OK: exit ${PLAIN_RC}; the load balancer, its protection, the child's record of it and both journals are kept"
+
+echo ""
+echo "==> Step 14: cdkd rollback ${NESTED_STACK} --remove-protection deletes the nested protected load balancer (go-to-k/cdkd#4703)"
+set +e
+node "${LOCAL_DIST}" rollback "${NESTED_STACK}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force --remove-protection >"${RUN_LOG}" 2>&1
+RP_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+if [ "${RP_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd rollback --remove-protection exited ${RP_RC} (expected 0: the flag reaches the delete inside ${NESTED_CHILD}'s revert -- output above)" >&2
+  echo "      (before go-to-k/cdkd#4703 the child's revert dropped the flag and AWS refused the delete)" >&2
+  exit 1
+fi
+for _ in $(seq 1 24); do
+  gone_probe aws elbv2 describe-load-balancers --load-balancer-arns "${NESTED_LB_ARN}" --region "${REGION}" && break
+  sleep 5
+done
+assert_gone "${NESTED_LB_ARN} still exists after cdkd rollback --remove-protection (go-to-k/cdkd#4703)" \
+  aws elbv2 describe-load-balancers --load-balancer-arns "${NESTED_LB_ARN}" --region "${REGION}"
+if [ "$(nested_lb_recorded)" != "" ]; then
+  echo "FAIL: ${NESTED_CHILD}'s state still records NestedLb after cdkd rollback --remove-protection deleted it" >&2
+  exit 1
+fi
+assert_gone "rollback journal ${NESTED_JOURNAL_KEY} still exists after the rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_JOURNAL_KEY}"
+assert_gone "rollback journal ${NESTED_CHILD_JOURNAL_KEY} still exists after the rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_CHILD_JOURNAL_KEY}"
+echo "    OK: the nested load balancer, the child's record of it and both journals are gone"
+
+echo ""
+echo "==> Step 15: destroy ${NESTED_STACK} (and ${NESTED_CHILD}), then ${NET_STACK}"
+node "${LOCAL_DIST}" destroy "${NESTED_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force
+assert_gone "state ${NESTED_STATE_KEY} still exists after the destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_STATE_KEY}"
+assert_gone "state ${NESTED_CHILD_STATE_KEY} still exists after the destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_CHILD_STATE_KEY}"
 node "${LOCAL_DIST}" destroy "${NET_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${STATE_PREFIX}" --force
 assert_gone "state ${NET_STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NET_STATE_KEY}"
@@ -524,4 +696,4 @@ assert_gone "security group ${ORPHAN_SECURITY_GROUP} still exists after the dest
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
 sweep_run_prefix
-echo "[verify] PASS — cdkd destroy / rollback --remove-protection cleared the protected journaled orphan, and cdkd rollback --remove-protection the protected completed CREATE (#4678)"
+echo "[verify] PASS — cdkd destroy / rollback --remove-protection cleared the protected journaled orphan, and cdkd rollback --remove-protection the protected completed CREATE (#4678), also inside an existing nested stack (#4703)"

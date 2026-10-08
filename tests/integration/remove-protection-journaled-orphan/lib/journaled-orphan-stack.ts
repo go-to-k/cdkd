@@ -107,3 +107,61 @@ export class JournaledOrphanStack extends cdk.Stack {
     orphanLb.node.addDependency(anchor);
   }
 }
+
+/**
+ * The nested child of {@link JournaledOrphanNestedStack}. Always `ChildAnchor`;
+ * with `NESTED_LB=1` (and `ORPHAN_SUBNETS`) also `NestedLb`, a
+ * deletion-protected load balancer whose CREATE completes in the child.
+ */
+class ProtectedLbChild extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
+    super(scope, id, props);
+    // Pin the row's logical id so the child state key is `<Parent>~Child`.
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+
+    const anchor = new ssm.CfnParameter(this, 'ChildAnchor', {
+      type: 'String',
+      value: 'cdkd-4703',
+    });
+    const subnets = (process.env.ORPHAN_SUBNETS ?? '').split(',').filter((s) => s !== '');
+    if (process.env.NESTED_LB !== '1' || subnets.length === 0) return;
+    const nestedLb = new elbv2.CfnLoadBalancer(this, 'NestedLb', {
+      name: 'cdkd-4703-nested',
+      type: 'application',
+      scheme: 'internal',
+      subnets,
+      securityGroups: [process.env.ORPHAN_SECURITY_GROUP ?? ''],
+      loadBalancerAttributes: [{ key: 'deletion_protection.enabled', value: 'true' }],
+    });
+    nestedLb.node.addDependency(anchor);
+  }
+}
+
+/**
+ * go-to-k/cdkd#4703: a deletion-protected load balancer the failed deploy
+ * created inside an EXISTING nested stack, which `cdkd rollback
+ * --remove-protection` must delete when it reverts that child.
+ *
+ * Deployed first without `NESTED_LB`, so `Child` exists. With `NESTED_LB=1`
+ * the child's update creates `NestedLb` and completes, then `FailLater`, which
+ * waits on the `Child` row, is refused by SSM (its value does not match its
+ * own `AllowedPattern`). The `--no-rollback` deploy leaves the parent's journal
+ * holding the row's completed UPDATE and the child's journal holding
+ * `NestedLb`'s completed CREATE, which the rollback reverts.
+ *
+ * covers: AWS::CloudFormation::Stack
+ */
+export class JournaledOrphanNestedStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const child = new ProtectedLbChild(this, 'Child');
+    if (process.env.NESTED_LB !== '1') return;
+    const failLater = new ssm.CfnParameter(this, 'FailLater', {
+      type: 'String',
+      value: 'not-a-number',
+      allowedPattern: '^[0-9]+$',
+    });
+    failLater.node.addDependency(child.nestedStackResource!);
+  }
+}

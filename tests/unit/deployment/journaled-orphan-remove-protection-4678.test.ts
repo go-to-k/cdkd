@@ -424,11 +424,12 @@ describe("no context but an explicit --remove-protection's strips protection (go
     expect(ctx).not.toHaveProperty('removeProtection');
   });
 
-  // A nested child's journal revert (`nested-child-journal.ts`) builds its
-  // own literal and may not name the field at all. `cdkd rollback` sets it
-  // only under its explicit flag (`tests/unit/cli/rollback-remove-protection-4678.test.ts`).
+  // `cdkd rollback` sets it only under its explicit flag
+  // (`tests/unit/cli/rollback-remove-protection-4678.test.ts`). A nested
+  // child's journal revert (`nested-child-journal.ts`) reads it only from the
+  // `destroyOptions` that flag sets, never from a deploy's context
+  // (`tests/unit/deployment/nested-child-remove-protection-4703.test.ts`).
   it.each([
-    'src/deployment/nested-child-journal.ts',
     'src/deployment/deploy-engine/rollback.ts',
   ])('%s builds a RollbackExecutorContext with no removeProtection', (file) => {
     const text = readFileSync(join(REPO_ROOT, file), 'utf8');
