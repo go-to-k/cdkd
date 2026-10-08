@@ -7009,9 +7009,9 @@ export class S3BucketProvider implements ResourceProvider {
       }
       // go-to-k/cdkd#4684: a pre-flight that could not answer cannot rule the
       // explicit name free, and a legacy 200 would adopt a bucket this account
-      // owns silently. Ask the account's own bucket list instead; only when
-      // that cannot answer either is the create sent, and the warning below
-      // says what that may have done.
+      // owns silently. Ask the account's own bucket list instead: the create
+      // is sent unless the list holds the name, and when the list cannot
+      // answer either, the warning below says what that may have done.
       let ownershipUnknown: string | undefined;
       // The list not holding the name licenses SENDING the create, never
       // claiming the bucket it answers 200 for: `ListBuckets` can lag a
