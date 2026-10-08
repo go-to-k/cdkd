@@ -257,10 +257,37 @@ export function poisonRenderedSpellingsCollidingIn(
     }
   }
   if (template.Outputs !== undefined) groups.push([template.Outputs, true]);
+  const readsByGroup = groups
+    .map(([group, countBareRefs]) => parameterReadsOf(group, names, countBareRefs))
+    .filter((reads) => reads.size >= 2);
+  // To a FIXED POINT: a withdrawal moves a parameter's carry to the survivor,
+  // which can open a collision in another resource with a parameter still
+  // carrying its own token. Each round withdraws at least one rendered name,
+  // so this ends, at worst with `main`'s answer for every parameter read.
+  const withdrawn = new Set<string>();
+  for (;;) {
+    const fresh = [...collidingRenderedNames(readsByGroup, parameterValues, inherited)].filter(
+      (name) => !withdrawn.has(name)
+    );
+    if (fresh.length === 0) return;
+    for (const name of fresh) {
+      withdrawn.add(name);
+      withdrawRenderedParameterSpelling(inherited, name);
+    }
+  }
+}
+
+/**
+ * One round of {@link poisonRenderedSpellingsCollidingIn}: the rendered
+ * parameters that collide, under the table as it stands, in any group.
+ */
+function collidingRenderedNames(
+  readsByGroup: ReadonlyArray<Map<string, boolean>>,
+  parameterValues: Record<string, unknown>,
+  inherited: RecordedSecretValues
+): Set<string> {
   const withdraw = new Set<string>();
-  for (const [group, countBareRefs] of groups) {
-    const reads = parameterReadsOf(group, names, countBareRefs);
-    if (reads.size < 2) continue;
+  for (const reads of readsByGroup) {
     // plaintext -> expression -> the RENDERED reading parameters carrying it.
     const byPlaintext = new Map<string, Map<string, string[]>>();
     // The plaintexts some parameter carrying them is read through the slot.
@@ -296,7 +323,7 @@ export function poisonRenderedSpellingsCollidingIn(
       }
     }
   }
-  for (const name of withdraw) withdrawRenderedParameterSpelling(inherited, name);
+  return withdraw;
 }
 
 /**

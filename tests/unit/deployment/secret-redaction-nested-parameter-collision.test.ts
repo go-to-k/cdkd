@@ -291,6 +291,52 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     }
   }
 
+  // A withdrawal moves ConnA's carry to the survivor, which opens a collision
+  // in ANOTHER resource with a second literal still carrying its own token:
+  // the walk runs to a fixed point.
+  for (const dFirst of [false, true]) {
+    it(`withdraws to a fixed point: a cascade into a second literal (${dFirst ? 'ConnD' : 'ConnA'} read first)`, async () => {
+      const PARAM_D = 'ConnD';
+      const SPELLING_D = `mysql://${USER_EXPR}:${EXPR_A}@other`;
+      const CONN_D = `mysql://${USER}:${SHARED}@other`;
+      const params = { ...PARAMETERS, [PARAM_D]: CONN_D };
+      const parent = parentRow(true);
+      recordNestedStackParameterExpressions(
+        parent,
+        'AWS::CloudFormation::Stack',
+        { Parameters: params },
+        { Parameters: { [PARAM_A]: SPELLING, [PARAM_B]: EXPR_B, [PARAM_D]: SPELLING_D } }
+      );
+      expect(redactInheritedParameterValue(parent, PARAM_D, CONN_D)).toBe(SPELLING_D);
+      const selD = { 'Fn::Select': [0, [{ Ref: PARAM_D }]] };
+      const other = dFirst ? { D: selD, A: SEL_A } : { A: SEL_A, D: selD };
+      const template = childTemplate({ Mixed: { A: SEL_A, B: SEL_B }, Other: other });
+      poisonRenderedSpellingsCollidingIn(template, params, parent);
+      expect(redactInheritedParameterValue(parent, PARAM_D, CONN_D)).not.toBe(SPELLING_D);
+      const recordedSecretValues = new Map<string, string>();
+      inheritNestedStackParameterAssociations(recordedSecretValues, parent);
+      const resolved = await resolver.resolve(other, {
+        template,
+        resources: {},
+        parameters: params,
+        recordedSecretValues,
+        inheritedSecrets: parent,
+        conditions: CONDITIONS,
+      } as unknown as ResolverContext);
+      const persisted = redactSecretsForState(resolved, recordedSecretValues, other);
+      const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+      const desired = await resolver.resolve(other, {
+        template,
+        resources: {},
+        parameters: redactParametersForDiff.call(engine, params),
+        skipDynamicReferences: true,
+        conditions: CONDITIONS,
+      } as unknown as ResolverContext);
+      expect(persisted).toEqual(desired);
+      expect(JSON.stringify(persisted)).not.toContain(SHARED);
+    });
+  }
+
   it('counts the Outputs as one reader, every read a slot read', () => {
     for (const outputs of [
       { OA: { Value: SEL_A }, OB: { Value: { Ref: PARAM_B } } },
