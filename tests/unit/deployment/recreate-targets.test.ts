@@ -1219,6 +1219,32 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
     expect(renderRecreateTargetsErrors(lambda)).toBeNull();
     // A caller passing no `hasSdkProvider` keeps the record-only check.
     expect(validate(target, 'sdk', false).blockedAlreadyCcApi).toEqual([]);
+    // Exemptions: a custom resource (no SDK provider, but no Cloud Control
+    // either), and a nested-stack row (refused for its own reason).
+    expect(validate('Custom::Foo', 'sdk').blockedAlreadyCcApi).toEqual([]);
+    // An oracle answering "no SDK provider" for it too, so only the
+    // nested-stack exemption keeps it out.
+    const nested = validateRecreateTargets({
+      template: { Resources: { R: { Type: 'AWS::CloudFormation::Stack', Properties: {} } } },
+      state: st('S', { R: res('AWS::CloudFormation::Stack', { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => false,
+    });
+    expect(nested.blockedAlreadyCcApi).toEqual([]);
+    expect(nested.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['R']);
+    // Both halves count: a record of a Cloud Control-only type whose template
+    // now names an SDK-provider type is a real move, not refused as a no-op.
+    const typeChange = validateRecreateTargets({
+      template: { Resources: { R: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { R: res(target, { provisionedBy: 'sdk' }) }),
+      recreateViaCcApi: ['R'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider,
+    });
+    expect(typeChange.blockedAlreadyCcApi).toEqual([]);
   });
 
   it('blockedAlreadyCcApi does NOT fire for the reverse direction (--recreate-via-sdk-provider on cc-api is the intended path)', () => {
