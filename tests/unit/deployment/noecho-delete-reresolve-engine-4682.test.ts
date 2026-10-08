@@ -239,9 +239,10 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
   });
 
   it.each([
-    ['--recreate-via-sdk-provider (create first under a fresh name)', 'sdk'],
-    ['--recreate-via-cc-api', 'cc'],
-  ])('re-resolves on the %s replacement too', async (_label, via) => {
+    ['--recreate-via-sdk-provider (delete first)', 'sdk', 'old-name'],
+    ['--recreate-via-cc-api (delete first)', 'cc', 'old-name'],
+    ['--recreate-via-cc-api under a new name (create first)', 'cc', 'new-name'],
+  ])('re-resolves on the %s replacement too', async (_label, via, topicName) => {
     const recorded = state();
     recorded.resources['Topic']!.provisionedBy = via === 'sdk' ? 'cc-api' : 'sdk';
     stateBackend.getState!.mockResolvedValue({ state: recorded, etag: 'etag-old' });
@@ -250,7 +251,7 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
       Resources: {
         Topic: {
           Type: 'AWS::SNS::Topic',
-          Properties: { TopicName: 'old-name', DisplayName: { Ref: 'Secret' } },
+          Properties: { TopicName: topicName, DisplayName: { Ref: 'Secret' } },
         },
       },
     } as CloudFormationTemplate;
