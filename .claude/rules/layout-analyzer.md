@@ -104,17 +104,17 @@ declared key's template value may have turned public, leaving pass 1 no
 desired-side signal, and a `cdkd scrub` residual can exonerate the record.
 
 Outputs ROW names print only `secretSafeKeyDisplay`'s verdict (#4015): an
-older binary could store an `Export.Name` holding a secret. The diff fetches
+older binary may store an `Export.Name` holding a secret. The diff fetches
 none. Its corpus: the proving keys' values (the whole bag when the merge
-FORCES the verdict), plus, for an unaccountable name only, unaccountable values
+FORCES the verdict), plus for an unaccountable name, unaccountable values
 and `secretSpanInStoredKey`. A removed non-alphanumeric ALIAS (listed in
-`exportNames` when recorded) is withheld in a secret-referencing stack; other
-names (debug lines, warnings) are control-stripped.
+`exportNames` when recorded) is withheld in a secret-referencing stack, and any
+unaccounted one while an `Export.Name` reads a `NoEcho` parameter (#4723);
+other names are control-stripped.
 
 **A deliberate SECOND implementation, not shared code**: extracting the
 deploy-side block would edit `src/deployment/deploy-engine/` and pull a
 diff-only fix into the `integ-destroy` gate scope.
-`tests/unit/analyzer/outputs-diff.test.ts` pays for that with an anti-drift
-fence that READS the engine and watches the DEFINITION of deploy's
-failure signal rather than the line consuming it.
+`tests/unit/analyzer/outputs-diff.test.ts` pays with an anti-drift fence
+reading the DEFINITION of deploy's failure signal, not its consumer.
 - **parameter-dependence.ts** - which resources of a RAW template depend on which template parameters ([#2854](https://github.com/go-to-k/cdkd/issues/2854)). Two consumers must agree: `cdkd import`'s ARM 4 and `cdkd deploy`'s fail-closed reading of a reason-less `observedBaselineRefused` marker (`resourcesNamingDeclaredParameter`, [#3468](https://github.com/go-to-k/cdkd/issues/3468)). An `Fn::` key outside `KNOWN_INTRINSICS` is UNCLASSIFIABLE and refuses; a new resolver intrinsic must be added there.

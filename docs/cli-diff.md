@@ -519,7 +519,9 @@ Limits:
   longer carries the current one: a property or output
   REMOVED in the same deploy that rotated the value, or a property that
   switched away from a `NoEcho` parameter in that deploy. The stored previous
-  plaintext prints as its `old:` side. Likewise a stored `Fn::Split` piece of
+  plaintext prints as its `old:` side. An export alias published under a
+  previous value is the exception: its REMOVE row's name is withheld while a
+  declared `Export.Name` still reads the parameter. Likewise a stored `Fn::Split` piece of
   the current value prints once no `Fn::Split` over the value by that delimiter
   is left in the template.
 - A `NoEcho` parameter fed a plain `{{resolve:ssm:...}}` reference to a

@@ -1,0 +1,196 @@
+/**
+ * go-to-k/cdkd#4723: an older binary published `Export.Name:
+ * {Fn::Sub: 'x-${Short}-y'}` while the `NoEcho` parameter `Short` held `ab`, so
+ * state holds the alias `x-ab-y`. The value then ROTATES to `cd`: today's
+ * refused name is `x-cd-y`, which the stored key does not equal, and the
+ * printing corpus holds only today's value (and only at 4+ characters), so the
+ * REMOVE row printed the OLD value by name. While any declared intrinsic
+ * `Export.Name` reads a `NoEcho` parameter, every stored alias the template
+ * cannot account for is withheld, in the human rows and in `--json`.
+ */
+
+import { describe, expect, it, vi } from 'vite-plus/test';
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({
+      send: async () => {
+        throw Object.assign(new Error('not in this test'), { name: 'TypeNotFoundException' });
+      },
+    })),
+  };
+});
+
+import {
+  computeStackDiff,
+  diffTreeToJson,
+  renderOutputChangeLines,
+  type DiffTreeNode,
+} from '../../../src/cli/commands/diff-recursive.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
+import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+
+function stateWith(outputs: Record<string, unknown>, exportNames?: string[]): StackState {
+  return {
+    stackName: 'S',
+    region: 'us-east-1',
+    resources: {
+      A: {
+        physicalId: 'pid',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: 'x' },
+        attributes: {},
+        dependencies: [],
+      },
+    },
+    outputs,
+    ...(exportNames !== undefined && { exportNames }),
+    version: STATE_SCHEMA_VERSION_CURRENT,
+    lastModified: 0,
+  };
+}
+
+function templateOf(
+  outputs: Record<string, unknown>,
+  options: { noEcho?: boolean; conditions?: Record<string, unknown> } = {}
+): CloudFormationTemplate {
+  return {
+    // Rotated: the stored aliases below were published while it held `ab`.
+    Parameters: { Short: { Type: 'String', NoEcho: options.noEcho ?? true, Default: 'cd' } },
+    ...(options.conditions !== undefined && { Conditions: options.conditions }),
+    Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+    Outputs: outputs,
+  } as unknown as CloudFormationTemplate;
+}
+
+async function diffOf(
+  state: StackState,
+  template: CloudFormationTemplate,
+  options: Record<string, unknown> = {}
+) {
+  const backend = { getState: async () => null } as unknown as S3StateBackend;
+  return computeStackDiff(state, template, 'us-east-1', 'S', backend, new DiffCalculator(), options);
+}
+
+/** Every rendered surface of the rows: the human lines and the `--json` payload. */
+function rendered(outputChanges: DiffTreeNode['outputChanges']): { human: string; json: string } {
+  const lines: string[] = [];
+  renderOutputChangeLines(outputChanges, (line) => lines.push(line));
+  const node: DiffTreeNode = {
+    stackName: 'S',
+    displayName: 'S',
+    region: 'us-east-1',
+    changes: new Map(),
+    ccApiRoutes: new Map(),
+    outputChanges,
+    adoptedOrphans: [],
+    blocking: [],
+    unreadable: [],
+    unreadableContainers: [],
+    unreadableOrphans: [],
+    destructiveChanges: [],
+    children: [],
+  };
+  return { human: lines.join('\n'), json: JSON.stringify(diffTreeToJson(node)) };
+}
+
+const rows = (changes: DiffTreeNode['outputChanges']): string[] =>
+  changes.map((c) => `${c.changeType} ${c.name}${c.nameDisplay?.kind === 'withheld' ? ' (withheld)' : ''}`);
+
+const SUB_NAME = { 'Fn::Sub': 'x-${Short}-y' };
+const EXPORTER = { Out: { Value: 'v', Export: { Name: SUB_NAME } } };
+
+describe('cdkd diff withholds a stored alias spelling a ROTATED NoEcho value (go-to-k/cdkd#4723)', () => {
+  it('withholds the REMOVE row of the alias published under the old value, in human and --json output', async () => {
+    const result = await diffOf(stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']), templateOf(EXPORTER));
+    expect(rows(result.outputChanges)).toEqual(['REMOVE x-ab-y (withheld)']);
+    const { human, json } = rendered(result.outputChanges);
+    expect(human).toContain('-');
+    expect(json).toContain('"changeType":"REMOVE"');
+    expect(json).toContain('"nameRedacted":true');
+    for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
+  });
+
+  it('prints the alias by name when the parameter is not NoEcho (negative control)', async () => {
+    const result = await diffOf(
+      stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']),
+      templateOf(EXPORTER, { noEcho: false })
+    );
+    expect(rows(result.outputChanges).sort()).toEqual(['ADD x-cd-y', 'REMOVE x-ab-y'].sort());
+    expect(rendered(result.outputChanges).json).toContain('"name":"x-ab-y"');
+  });
+
+  it('withholds an unrelated stale alias too while a name reads NoEcho (stack-wide: state names no owner)', async () => {
+    const stored = () =>
+      stateWith({ Out: 'v', 'x-ab-y': 'v', 'legacy-export': 'w' }, ['x-ab-y', 'legacy-export']);
+    const withNoEcho = await diffOf(stored(), templateOf(EXPORTER));
+    expect(rows(withNoEcho.outputChanges).sort()).toEqual(
+      ['REMOVE legacy-export (withheld)', 'REMOVE x-ab-y (withheld)'].sort()
+    );
+    // The same stale alias prints when no declared name reads a NoEcho value.
+    const without = await diffOf(stored(), templateOf(EXPORTER, { noEcho: false }));
+    expect(rows(without.outputChanges)).toContain('REMOVE legacy-export');
+  });
+
+  it('withholds an alphanumeric-only alias (`x${Short}y` published `xaby`)', async () => {
+    const result = await diffOf(
+      stateWith({ Out: 'v', xaby: 'v' }, ['xaby']),
+      templateOf({ Out: { Value: 'v', Export: { Name: { 'Fn::Sub': 'x${Short}y' } } } })
+    );
+    expect(rows(result.outputChanges)).toEqual(['REMOVE xaby (withheld)']);
+  });
+
+  it('withholds every unaccounted key of a record that lists no exportNames (pre-v9)', async () => {
+    const result = await diffOf(stateWith({ Out: 'v', 'x-ab-y': 'v' }), templateOf(EXPORTER));
+    expect(rows(result.outputChanges)).toEqual(['REMOVE x-ab-y (withheld)']);
+  });
+
+  it("prints a deleted output's logical id the record does not list as an alias", async () => {
+    const result = await diffOf(
+      stateWith({ Out: 'v', 'x-ab-y': 'v', Gone: 'g' }, ['x-ab-y']),
+      templateOf(EXPORTER)
+    );
+    expect(rows(result.outputChanges).sort()).toEqual(
+      ['REMOVE Gone', 'REMOVE x-ab-y (withheld)'].sort()
+    );
+  });
+
+  it('withholds the stored alias of a condition-FALSE exporter whose name reads NoEcho', async () => {
+    // Today's own value: the exporter is skipped before the refusal pass, so
+    // its name is in no refused set, and `cd` is under the containment floor.
+    const result = await diffOf(
+      stateWith({ Out: 'v', 'x-cd-y': 'v' }, ['x-cd-y']),
+      templateOf(
+        { Out: { Condition: 'Off', Value: 'v', Export: { Name: SUB_NAME } } },
+        { conditions: { Off: { 'Fn::Equals': ['a', 'b'] } } }
+      )
+    );
+    expect(rows(result.outputChanges).sort()).toEqual(
+      ['REMOVE Out', 'REMOVE x-cd-y (withheld)'].sort()
+    );
+  });
+
+  it("withholds in a nested child whose parameter the parent fills from a NoEcho source", async () => {
+    const result = await diffOf(
+      stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']),
+      templateOf(EXPORTER, { noEcho: false }),
+      { inheritedNoEchoParameters: new Set(['Short']) }
+    );
+    expect(rows(result.outputChanges)).toEqual(['REMOVE x-ab-y (withheld)']);
+  });
+});
