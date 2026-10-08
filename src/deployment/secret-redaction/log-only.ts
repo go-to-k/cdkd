@@ -14,7 +14,10 @@ import { type SecretMasker } from './mask-errors.js';
  * piece's share of one ({@link recordLogOnlySplitFragments}). So do a nested
  * child's carry ({@link carryLogOnlyValuesCarriedBy}) and the up-front callers
  * of {@link recordLogOnlyParameterValue} (the diff log masker, the export-name
- * seed).
+ * seed). The deploy's UPDATE arm records a pre-v11 record's stored plaintext at
+ * a `NoEcho` position its migration witness found different, which reaches the
+ * provider as a previous value, into the resource's PRINT-ONLY derived-name
+ * registry, never its resolution bag (go-to-k/cdkd#4741).
  *
  * WHY A SIDE SET AND NOT THE MAP. The map's VALUE is what a plaintext is
  * rewritten to on the way into state: an expression, or {@link SECRET_MASK}
