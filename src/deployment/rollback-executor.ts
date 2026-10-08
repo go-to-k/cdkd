@@ -159,6 +159,7 @@ export {
   replacementNeverSwapped,
   planFailedOps,
   recheckFailedPlan,
+  recordUnderIdIsNotOwn,
   planRollback,
   sortRollbackCreates,
 } from './rollback-executor/plan.js';
@@ -698,11 +699,13 @@ async function replayFailedOperationsUnbound(
       break;
     }
     const op = failedOps[i]!;
-    // go-to-k/cdkd#4754: a replay of an earlier run's journal (`foreignHolder`
-    // supplied: `cdkd rollback`, `cdkd destroy`) re-asks a kept fix-forward
-    // orphan the settle's question before skipping it unchecked; the delete
-    // arm then runs the holder and identity checks. No read for any other op,
-    // nor in the automatic rollback, which runs neither check.
+    // go-to-k/cdkd#4754: a replay with the holder scan (`foreignHolder`:
+    // `cdkd rollback`, `cdkd destroy`, and a successful deploy's settle,
+    // whose ops are already proven or demoted and so never reach this skip)
+    // re-asks a kept fix-forward orphan the settle's question before skipping
+    // it unchecked; the delete arm then runs the holder and identity checks.
+    // No read for any other op, nor in the automatic rollback, which runs
+    // neither check.
     const classified = classifyFailedOp(op, stateResources, failedOps);
     const action =
       ctx.foreignHolder === undefined

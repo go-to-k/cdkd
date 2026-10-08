@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import {
   planFailedOps,
   recheckFailedPlan,
@@ -160,6 +160,12 @@ describe('replay of a kept fix-forward orphan (go-to-k/cdkd#4754)', () => {
     expect(p.resourceIdentity).not.toHaveBeenCalled();
     expect(result.skipped).toBe(1);
     expect(warned(ctx)).toContain(MANUAL);
+    // A throw is named by its class only, never its text.
+    const debug = (ctx.logger['debug'] as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('Re-check of the kept orphan Orphan failed'));
+    expect(debug).toEqual(verdict instanceof Error ? [expect.stringContaining('(Error)')] : []);
+    expect(debug.join('')).not.toContain('Throttling');
   });
 
   it('asks nothing in the automatic rollback (no holder scan, so no identity check either)', async () => {
@@ -253,5 +259,106 @@ describe('the `cdkd rollback` preview agrees with the replay (go-to-k/cdkd#4754)
       expect(p.delete.mock.calls.length > 0).toBe(want === 'delete-failed-create');
       expect(result.skipped).toBe(want === 'delete-failed-create' ? 0 : 1);
     }
+  });
+});
+
+describe('a re-check that proves the orphan re-classifies it on its own policy (go-to-k/cdkd#4754)', () => {
+  it('Retain: left in AWS, the record untouched, nothing orphaned from state', async () => {
+    const p = provider();
+    const held = fixForwardRecord();
+    const state: Record<string, ResourceState> = { Orphan: held };
+
+    const result = await replayFailedOperations(
+      [orphan({ deletionPolicy: 'Retain' })],
+      state,
+      'S',
+      ctxFor(p),
+      {}
+    );
+
+    expect(p.isSameResource).toHaveBeenCalledOnce();
+    expect(p.delete).not.toHaveBeenCalled();
+    expect(state['Orphan']).toBe(held);
+    expect(result.orphaned).toEqual([]);
+    expect(result.skipped).toBe(0);
+  });
+
+  it('Snapshot on a snapshot-capable type: the final-snapshot delete', async () => {
+    const TYPE_RDS = 'AWS::RDS::DBCluster';
+    const state: Record<string, ResourceState> = {
+      Orphan: { ...fixForwardRecord(), resourceType: TYPE_RDS },
+    };
+    const plan = await recheckFailedPlan(
+      planFailedOps([orphan({ resourceType: TYPE_RDS, deletionPolicy: 'Snapshot' })], state),
+      state,
+      ctxFor(provider())
+    );
+    expect(plan[0]!.action).toBe('delete-failed-create-with-final-snapshot');
+  });
+
+  it("routes the re-classified item on the op's own route, not the record's", async () => {
+    const state: Record<string, ResourceState> = {
+      Orphan: { ...fixForwardRecord(), provisionedBy: 'cc-api' },
+    };
+    const plan = await recheckFailedPlan(planFailedOps([orphan()], state), state, ctxFor(provider()));
+    expect(plan[0]!.action).toBe('delete-failed-create');
+    expect(plan[0]!.effectiveProvisionedBy).toBe('sdk');
+  });
+});
+
+describe('the re-check leaves no timer behind (go-to-k/cdkd#4754)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each(['different', 'unknown'] as const)('after a %s answer', async (verdict) => {
+    vi.useFakeTimers();
+    await recheckMismatchedFailedCreate(
+      orphan(),
+      'skip-failed-mismatch',
+      { Orphan: fixForwardRecord() },
+      [],
+      ctxFor(provider({ verdict }))
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('the replay never deletes what the preview showed as a skip (go-to-k/cdkd#4754)', () => {
+  it('keeps an op the preview could not prove, even when the replay would', async () => {
+    const op = orphan();
+    const state: Record<string, ResourceState> = { Orphan: fixForwardRecord() };
+    const atPreview = provider({ verdict: new Error('Throttling') });
+    const preview = await recheckFailedPlan(planFailedOps([op], state), state, ctxFor(atPreview));
+    expect(preview[0]!.action).toBe('skip-failed-mismatch');
+
+    const p = provider({ verdict: 'different' });
+    const result = await replayFailedOperations([op], state, 'S', ctxFor(p), {});
+
+    expect(p.isSameResource).not.toHaveBeenCalled();
+    expect(p.delete).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+  });
+
+  it('carries a proof the preview reached to the replay of the same op, asking once', async () => {
+    const op = orphan();
+    const state: Record<string, ResourceState> = { Orphan: fixForwardRecord() };
+    const p = provider();
+    await recheckFailedPlan(planFailedOps([op], state), state, ctxFor(p));
+    const result = await replayFailedOperations([op], state, 'S', ctxFor(p), {});
+
+    expect(p.isSameResource).toHaveBeenCalledOnce();
+    expect(p.delete).toHaveBeenCalledOnce();
+    expect(result.skipped).toBe(0);
+  });
+
+  it('a replay with no preview still asks', async () => {
+    const op = orphan();
+    const state: Record<string, ResourceState> = { Orphan: fixForwardRecord() };
+    await recheckMismatchedFailedCreate(op, 'skip-failed-mismatch', state, [], ctxFor(provider({ verdict: 'unknown' })));
+    const p = provider();
+    await replayFailedOperations([op], state, 'S', ctxFor(p), {});
+    expect(p.isSameResource).toHaveBeenCalledOnce();
+    expect(p.delete).toHaveBeenCalledOnce();
   });
 });

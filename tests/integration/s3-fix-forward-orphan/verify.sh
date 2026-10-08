@@ -674,6 +674,12 @@ if [ -z "${E_CREATED_BEFORE_EMPTY}" ] || [ "${E_CREATED_AFTER_EMPTY}" != "${E_CR
   exit 1
 fi
 empty_bucket_by_name "${BUCKET_F}"
+F_LEFT="$(aws s3api list-object-versions --bucket "${BUCKET_F}" --region "${REGION}" \
+  --query 'length([Versions || `[]`, DeleteMarkers || `[]`][])' --output text)"
+if [ "${F_LEFT}" != "0" ]; then
+  echo "[verify] FAIL: ${BUCKET_F} still holds ${F_LEFT} object version(s) after emptying it" >&2
+  exit 1
+fi
 aws s3api delete-bucket --bucket "${BUCKET_F}" --region "${REGION}"
 # The replay's identity read asks GetBucketLocation first: wait until IT
 # reports the bucket gone.

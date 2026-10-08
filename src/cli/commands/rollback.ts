@@ -57,6 +57,7 @@ import {
   planRollback,
   planFailedOps,
   recheckFailedPlan,
+  recordUnderIdIsNotOwn,
   demoteSupersededOrphans,
   isJournaledOrphan,
   isReplacementOrphan,
@@ -1070,11 +1071,15 @@ export async function rollbackCommand(
         if (failedOps.replay.length > 0) {
           if (failedToReplay.length > 0) {
             // go-to-k/cdkd#4754: the replay re-checks a kept fix-forward
-            // orphan before skipping it, so the plan the user confirms does too.
-            const failedPlan = await recheckFailedPlan(
-              planFailedOps(failedToReplay, planStateView),
-              planStateView,
-              { providerRegistry, region }
+            // orphan before skipping it, so the plan the user confirms does
+            // too, in the scope its replay runs in; the replay then keeps
+            // whatever this preview could not prove.
+            const failedPlan = await inSegmentScope(segment, () =>
+              recheckFailedPlan(planFailedOps(failedToReplay, planStateView), planStateView, {
+                providerRegistry,
+                region,
+                logger,
+              })
             );
             for (const item of failedPlan) {
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
@@ -1854,14 +1859,15 @@ function applyFailedPlanToPreview(
         ) {
           break;
         }
-        if (!isReplacementOrphan(op)) delete previewState[op.logicalId];
+        // go-to-k/cdkd#4754: nor one proven another resource than the op's.
+        if (!recordUnderIdIsNotOwn(op, previewState)) delete previewState[op.logicalId];
         break;
       case 'delete-failed-create':
       // Retain-orphan drops the record too (issue #1362) — the resource
       // stops being cdkd-managed either way. Not a replacement orphan's
       // (go-to-k/cdkd#4604): the record under its id is the replaced resource.
       case 'orphan-failed-create-retain':
-        if (!isReplacementOrphan(op)) delete previewState[op.logicalId];
+        if (!recordUnderIdIsNotOwn(op, previewState)) delete previewState[op.logicalId];
         break;
       case 'revert-failed-update':
         if (op.previousState) previewState[op.logicalId] = op.previousState;

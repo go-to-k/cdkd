@@ -24,9 +24,11 @@ import {
   effectiveProvisionedBy,
   rollbackRetainsNewResource,
   rollbackCannotAddress,
+  shownLogicalId,
 } from './messages.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { RESOURCE_IDENTITY_TIMEOUT_MS } from './orphan-identity.js';
 import type { ResourceIdentityVerdict } from '../../types/resource.js';
 
@@ -748,6 +750,12 @@ export function planFailedOps(
 }
 
 /**
+ * Ops whose {@link recheckMismatchedFailedCreate} at the `cdkd rollback`
+ * preview did not prove them distinct. Never journaled, like the proof.
+ */
+const undecidedAtPreview = new WeakSet<FailedOperation>();
+
+/**
  * go-to-k/cdkd#4754: re-check a `skip-failed-mismatch` verdict on a journaled
  * failed-CREATE orphan, the way a successful deploy's settle does. That settle
  * proves a fix-forward's orphan distinct from the record now under its logical
@@ -765,14 +773,21 @@ export function planFailedOps(
  * a provider without the method, a throw and a read that has not answered
  * within {@link RESOURCE_IDENTITY_TIMEOUT_MS} keep `action`. Any other
  * action, op or record shape is returned as is, with no read.
+ *
+ * `preview` is the `cdkd rollback` plan the user confirms: an op it could not
+ * prove is remembered, and the replay of that same op keeps the skip without
+ * asking again, so a skip the user confirmed is never turned into a delete.
+ * A proof the preview reached carries to the replay the same way.
  */
 export async function recheckMismatchedFailedCreate(
   op: FailedOperation,
   action: FailedOpActionKind,
   stateResources: Record<string, ResourceState>,
   siblings: readonly FailedOperation[],
-  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>,
-  timeoutMs: number = RESOURCE_IDENTITY_TIMEOUT_MS
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'> &
+    Partial<Pick<RollbackExecutorContext, 'logger'>>,
+  timeoutMs: number = RESOURCE_IDENTITY_TIMEOUT_MS,
+  preview = false
 ): Promise<FailedOpActionKind> {
   if (
     action !== 'skip-failed-mismatch' ||
@@ -794,6 +809,7 @@ export async function recheckMismatchedFailedCreate(
   ) {
     return action;
   }
+  if (undecidedAtPreview.has(op)) return action;
   const journaledId = op.physicalId;
   const ask = async (): Promise<ResourceIdentityVerdict> => {
     try {
@@ -811,7 +827,10 @@ export async function recheckMismatchedFailedCreate(
         op.resourceType,
         { expectedRegion: ctx.region }
       );
-    } catch {
+    } catch (error) {
+      ctx.logger?.debug(
+        safeMsg`Re-check of the kept orphan ${shownLogicalId(op.logicalId)} failed (${error instanceof Error ? error.name : typeof error}); keeping the skip`
+      );
       return 'unknown';
     }
   };
@@ -825,16 +844,24 @@ export async function recheckMismatchedFailedCreate(
   } finally {
     clearTimeout(timer);
   }
-  if (verdict !== 'different') return action;
+  if (verdict !== 'different') {
+    if (preview) undecidedAtPreview.add(op);
+    return action;
+  }
   markProvenDistinctFromRecord(op, record);
   return classifyFailedOp(op, stateResources, siblings);
 }
 
-/** {@link planFailedOps}, with {@link recheckMismatchedFailedCreate} applied to each item. */
+/**
+ * {@link planFailedOps}, with {@link recheckMismatchedFailedCreate} applied to
+ * each item as the `cdkd rollback` preview.
+ */
 export async function recheckFailedPlan(
   plan: FailedOpPlanItem[],
   stateResources: Record<string, ResourceState>,
-  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'> &
+    Partial<Pick<RollbackExecutorContext, 'logger'>>,
+  timeoutMs: number = RESOURCE_IDENTITY_TIMEOUT_MS
 ): Promise<FailedOpPlanItem[]> {
   const failedOps = plan.map((item) => item.op);
   const out: FailedOpPlanItem[] = [];
@@ -844,7 +871,9 @@ export async function recheckFailedPlan(
       item.action,
       stateResources,
       failedOps,
-      ctx
+      ctx,
+      timeoutMs,
+      true
     );
     out.push(
       action === item.action
