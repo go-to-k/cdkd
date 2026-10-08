@@ -660,6 +660,12 @@ describe('the success settle with NeptuneProvider (go-to-k/cdkd#4606)', () => {
   it('keeps `MyDb` when `mydb` is now another engine\'s resource, even under the journaled id', async () => {
     const r = await settle({ engine: 'postgres', resourceId: 'db-ORPHAN' }, true);
     expect(r.del).not.toHaveBeenCalled();
+    // The record-side read refuses the other engine, so isSameResource answers
+    // 'unknown' and the settle keeps it on the generic skip line, before any
+    // identity comparison.
+    expect(r.warned).toContain('Skipping failed CREATE of Orphan (AWS::Neptune::DBInstance)');
+    expect(r.warned).not.toContain('nothing proves');
+    expect(r.warned).not.toContain('is another one');
     expect(r.out.unaddressed).toBe(1);
   });
 

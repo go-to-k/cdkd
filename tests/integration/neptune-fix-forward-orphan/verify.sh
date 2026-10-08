@@ -193,12 +193,14 @@ cleanup() {
     delete_instance_by_id "${DB_B}"
     delete_cluster_by_id "${CLUSTER_A}"
     delete_cluster_by_id "${CLUSTER_B}"
+    # Before the destroy, including a base cluster no state record holds yet:
+    # a subnet group a cluster still uses refuses the destroy's delete. When
+    # the cluster is recorded, the destroy then finds it already gone.
+    delete_cluster_by_id "${BASE_CLUSTER}"
     # From the fixture directory: a failure before the script's own `cd`
     # would otherwise synthesize whatever app the caller's cwd holds. The
-    # destroy deletes the base cluster, the subnet group and the VPC.
+    # destroy deletes the subnet group and the VPC.
     (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force "${TIMEOUT_OVERRIDES[@]}")
-    # A base cluster the destroy could not reach (no state record yet).
-    delete_cluster_by_id "${BASE_CLUSTER}"
   elif [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) before the preconditions passed -- nothing of this run to clean up"
   fi
