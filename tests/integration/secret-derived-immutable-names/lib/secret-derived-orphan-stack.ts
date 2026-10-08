@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
@@ -19,7 +20,17 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * CREATE, which a rollback reverts by deleting it. That delete's lines must
  * not name the queue either.
  *
+ * With `SDIN_ORPHAN_STREAM=true` the orphan is a Kinesis stream instead
+ * (`SecretOrphanStream`, its `Name` from the secret's `stream` field):
+ * `CreateStream` succeeds and the 9000-hour retention follow-up is rejected.
+ * Its provider journals the stream's creation identity, so `cdkd destroy`
+ * proves it is the one the failed deploy made and deletes it; an ECR
+ * repository journals none, so it is kept (go-to-k/cdkd#4658). The fixture
+ * uses the stream for the delete path's masked lines and the repository for
+ * the keep path's.
+ *
  * covers: AWS::ECR::Repository
+ * covers: AWS::Kinesis::Stream
  * covers: AWS::SQS::Queue
  */
 export class SecretDerivedOrphanStack extends cdk.Stack {
@@ -32,6 +43,16 @@ export class SecretDerivedOrphanStack extends cdk.Stack {
       }).unsafeUnwrap(),
     });
     queue.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    if (process.env.SDIN_ORPHAN_STREAM === 'true') {
+      const stream = new kinesis.CfnStream(this, 'SecretOrphanStream', {
+        name: cdk.SecretValue.secretsManager(secretName, { jsonField: 'stream' }).unsafeUnwrap(),
+        shardCount: 1,
+        retentionPeriodHours: 9000,
+      });
+      stream.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+      stream.addDependency(queue);
+      return;
+    }
     const repo = new ecr.CfnRepository(this, 'SecretOrphanRepo', {
       repositoryName: cdk.SecretValue.secretsManager(secretName, {
         jsonField: 'repo',

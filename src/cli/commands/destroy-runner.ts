@@ -2325,8 +2325,12 @@ export async function runDestroyForStack(
       );
     }
     if (!preserveState) {
+      // go-to-k/cdkd#4658: with resources the failed deploy created left in
+      // AWS the state is gone but the run exits 2, so not the green line:
+      // the warning glyph, a heading that says so, and the skip count.
+      const leftInAws = journaledOrphanSkips > 0;
       logger.info(
-        `\n${green('✓')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${guardSuffix}, ${result.errorCount} errors)`
+        `\n${leftInAws ? yellow('⚠') : green('✓')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} ${leftInAws ? 'destroyed, with resources left in AWS' : 'destroyed'}`)} (${green(result.deletedCount)} deleted${retainedSuffix}${leftInAws ? skippedSuffix : ''}${guardSuffix}, ${result.errorCount} errors)`
       );
     } else if (result.interrupted && result.errorCount === 0) {
       logger.warn(

@@ -4824,6 +4824,7 @@
         "replacement-immutable-name",
         "rollback-command",
         "sdk-ccapi-crossref",
+        "secret-derived-immutable-names",
         "stream-delete-redeploy"
       ],
       "signals": {
@@ -4853,6 +4854,10 @@
           "l1"
         ],
         "sdk-ccapi-crossref": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
           "literal"
         ],
         "stream-delete-redeploy": [

@@ -186,6 +186,10 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(deleted()).toEqual(['orphan-stream', 'phys-r']);
     expect(result.errorCount).toBe(0);
     expect(mockDeleteState).toHaveBeenCalledOnce();
+    // Control: nothing left in AWS, so the ✓ line, with no skip.
+    // eslint-disable-next-line no-control-regex
+    expect(info()).toMatch(/Stack TestStack destroyed(\x1b\[[0-9;]*m)? \(/);
+    expect(info()).not.toContain('resources left in AWS');
     expect(info()).toContain('recorded only in the rollback journal');
     expect(info()).toMatch(/- O \(AWS::Kinesis::Stream\) {2}orphan-stream/);
   });
@@ -310,6 +314,10 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(result.errorCount).toBe(0);
     expect(result.skippedCount).toBe(1);
     expect(mockDeleteState).toHaveBeenCalledOnce();
+    // The run exits 2: its summary is the ⚠ line with the skip, never ✓.
+    expect(info()).toMatch(/⚠.*Stack TestStack destroyed, with resources left in AWS.*skipped/);
+    // eslint-disable-next-line no-control-regex
+    expect(info()).not.toMatch(/Stack TestStack destroyed(\x1b\[[0-9;]*m)? \(/);
     expect(warn()).toContain('Skipping failed CREATE of Q');
     expect(warn()).toContain('https://sqs.us-east-1.amazonaws.com/123456789012/orders');
     expect(warn()).toContain('if it is not in use, delete it by hand');
