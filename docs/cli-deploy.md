@@ -319,7 +319,8 @@ back as expected:
   previously persisted value while every sibling that did resolve is
   persisted; cdkd warns naming the Output. Its literal export alias is kept
   only if the previous deploy published it and the export-name check still
-  passes it: one holding a `NoEcho` parameter's value is dropped with the same
+  passes it: one equal to a `NoEcho` parameter's value, or containing one of 4
+  or more characters, is dropped with the same
   warning a deploy gives. Two shapes keep the whole previous
   bag instead: a failed Output whose `Export.Name` is itself an intrinsic, and
   a merge that would put a secret expression beside a carried plain value.

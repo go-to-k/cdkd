@@ -19,7 +19,7 @@
 #      `***` at the leaf, named in `noEchoLeaves` (schema v11, #4043), with no
 #      copy of the value anywhere in the blob.
 #      NoEchoAliasProbe's Export.Name IS a second NoEcho value: the alias is
-#      refused with a masked warning, and neither state.json, its exportNames
+#      refused with a warning naming that parameter (#4657), and neither state.json, its exportNames
 #      nor the exports index holds it (#4043). So are a literal name spelling
 #      NoEchoToken's value, which only a resource reads, and an earlier literal
 #      name spelling the Fn::Base64 encoding a LATER name records (#4043,
@@ -520,7 +520,7 @@ if ! gone_probe aws s3api get-object --bucket "${STATE_BUCKET}" --key "${INDEX_K
     exit 1
   fi
 fi
-echo "    OK: the NoEcho export alias is refused, masked in its warning, and in neither state nor the exports index"
+echo "    OK: the NoEcho export alias is refused, its warning naming the parameter, and in neither state nor the exports index"
 
 # PHASE B ALIASES (#4043): the SEED and the resolve-then-decide ORDER. PREMISE:
 # NoEchoLiteralAliasProbe's literal name spells NoEchoToken's value, which only
@@ -614,8 +614,9 @@ if [ -z "${SHORT_LINE}" ]; then
   diag_output "$(grep -F 'NoEchoShortAliasProbe' <<< "${DEPLOY_OUT_P1}" || true)"
   exit 1
 fi
-if [[ "${SHORT_LINE}" == *"short-${SHORT_TOKEN}-probe"* ]]; then
-  echo "FAIL: the positional refusal prints the resolved name, which holds the value (go-to-k/cdkd#4657)" >&2
+# The value itself, not only the resolved name: the fixed wording holds no `q`.
+if [[ "${SHORT_LINE}" == *"${SHORT_TOKEN}"* ]]; then
+  echo "FAIL: the positional refusal prints the NoEcho value or the resolved name holding it (go-to-k/cdkd#4657)" >&2
   exit 1
 fi
 SHORT_KEYS=$(jq -r '[(.outputs // {} | to_entries[] | select(.value == "short-alias-probe-value") | .key)] | join(",")' "${P1_STATE}")
