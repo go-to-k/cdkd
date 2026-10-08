@@ -400,19 +400,19 @@ describe('IAMRoleProvider', () => {
     });
 
     // A secret-derived Path is recorded as its reference and handed here
-    // resolved (go-to-k/cdkd#4275): that is no change when the live role is on
-    // the resolved path, so an unrelated update stays in place. Refusing it
-    // would let `--replace` delete and re-create the role.
+    // resolved (go-to-k/cdkd#4275). The template did not change it, so it is
+    // never a Path change: refusing it as update-not-supported would let
+    // `--replace` delete and re-create the role on an unrelated update.
     describe('a secret-derived Path (recorded as its reference)', () => {
       const doc = { Version: '2012-10-17', Statement: [] };
       const REF = '{{resolve:secretsmanager:role-path}}';
-      const updateWith = (): Promise<unknown> =>
+      const updateWith = (desired: Record<string, unknown> = {}): Promise<unknown> =>
         withStackName('MyStack', () =>
           provider.update(
             'L',
             'MyStack-L',
             'AWS::IAM::Role',
-            { AssumeRolePolicyDocument: doc, Path: '/svc/', Description: 'v2' },
+            { AssumeRolePolicyDocument: doc, Path: '/svc/', Description: 'v2', ...desired },
             { AssumeRolePolicyDocument: doc, Path: REF, Description: 'v1' }
           )
         ).then(
@@ -421,8 +421,10 @@ describe('IAMRoleProvider', () => {
         );
       const sentOf = (klass: { new (...args: never[]): unknown }): unknown[] =>
         mockSend.mock.calls.filter((c) => c[0] instanceof klass);
+      const warned = (): string[] =>
+        vi.mocked(getLogger().child('IAMRoleProvider').warn).mock.calls.map((c) => String(c[0]));
 
-      it('updates in place when the live role is on the resolved path', async () => {
+      it('updates in place, silently, when the live role is on the resolved path', async () => {
         mockSend.mockImplementation((cmd: unknown) =>
           Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/svc/' } } : {})
         );
@@ -431,25 +433,39 @@ describe('IAMRoleProvider', () => {
         expect(sentOf(UpdateRoleCommand)).toHaveLength(1);
         expect(sentOf(CreateRoleCommand)).toHaveLength(0);
         expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+        expect(warned()).toEqual([]);
       });
 
-      it('still refuses when the live role is on another path', async () => {
+      // A secret ROTATED under the unchanged reference: CloudFormation keeps
+      // the live create-only value, and so does cdkd -- with one warning that
+      // names neither path (both are secret values).
+      it('keeps the role in place with one warning when the secret rotated', async () => {
         mockSend.mockImplementation((cmd: unknown) =>
-          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/' } } : {})
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/old/' } } : {})
         );
 
-        expect(await updateWith()).toBeInstanceOf(ResourceUpdateNotSupportedError);
-        expect(sentOf(GetRoleCommand)).toHaveLength(1);
+        expect(await updateWith()).toBeUndefined();
+        // The live-path read comes first (the in-place arm reads the role again at its end).
+        expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetRoleCommand);
+        expect(sentOf(UpdateRoleCommand)).toHaveLength(1);
         expect(sentOf(CreateRoleCommand)).toHaveLength(0);
         expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+        const lines = warned().filter((l) => l.includes('secret its Path comes from'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).not.toContain('/svc/');
+        expect(lines[0]).not.toContain('/old/');
       });
 
-      it('still refuses when the live role reports no path', async () => {
+      it('fails closed, and not as update-not-supported, when the live role reports no path', async () => {
         mockSend.mockImplementation((cmd: unknown) =>
           Promise.resolve(cmd instanceof GetRoleCommand ? { Role: {} } : {})
         );
 
-        expect(await updateWith()).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        const error = await updateWith();
+        expect(error).toBeInstanceOf(ProvisioningError);
+        // `--replace` turns update-not-supported into a delete-first replacement.
+        expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect((error as Error).message).toMatch(/returned no path .*Nothing was changed/);
         expect(sentOf(UpdateRoleCommand)).toHaveLength(0);
       });
 
@@ -462,8 +478,28 @@ describe('IAMRoleProvider', () => {
 
         const error = await updateWith();
         expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
         expect((error as Error).message).toMatch(/Failed to read the path of IAM role L: .*AccessDenied/);
         expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      // A rename replaces the role whatever its path: no live-path read, so a
+      // GetRole failure cannot fail it.
+      it('reads no live path for a rename', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          cmd instanceof GetRoleCommand
+            ? Promise.reject(new Error('AccessDenied: not authorized to perform iam:GetRole'))
+            : Promise.resolve(
+                cmd instanceof CreateRoleCommand
+                  ? { Role: { Arn: 'arn:aws:iam::0:role/svc/MyStack-new', RoleId: 'r2' } }
+                  : {}
+              )
+        );
+
+        await updateWith({ RoleName: 'new' });
+        const first = mockSend.mock.calls[0]?.[0] as { input: { RoleName?: string } };
+        expect(first).toBeInstanceOf(CreateRoleCommand);
+        expect(first.input.RoleName).toBe('MyStack-new');
       });
     });
 

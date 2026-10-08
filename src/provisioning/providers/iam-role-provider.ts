@@ -40,7 +40,6 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -432,12 +431,15 @@ export class IAMRoleProvider implements ResourceProvider {
     const newPath = (properties['Path'] as string | undefined) || '/';
     const oldPath = (previousProperties['Path'] as string | undefined) || '/';
     // A secret-derived Path is recorded as its `{{resolve:...}}` reference and
-    // handed here resolved, which is no change (go-to-k/cdkd#4275, the managed
-    // policy's sibling guard): the role's live path is the evidence. Read only
-    // for such a record, so an ordinary update pays no extra call. Without it,
-    // an unrelated update of such a role would be refused below, and under
-    // `--replace` the engine's fallback would delete and re-create it.
+    // handed here resolved (go-to-k/cdkd#4275). The template did not change it:
+    // a changed reference is a replacement the engine plans before any update.
+    // So it is never a Path change here — refusing it would let `--replace`'s
+    // fallback delete and re-create the role on an unrelated update. A secret
+    // ROTATED under the reference is not applied, as CloudFormation keeps a
+    // create-only value its template did not change; the live path is read to
+    // say so. A rename needs no Path evidence, so it reads nothing.
     const pathBehindSecret =
+      newRoleName === physicalId &&
       newPath !== oldPath &&
       isSecretDerivedValue(previousProperties['Path'], maskerOrIdentity(undefined));
     let livePath: string | undefined;
@@ -461,18 +463,32 @@ export class IAMRoleProvider implements ResourceProvider {
         );
       }
     }
-    const pathChanged =
-      newPath !== oldPath &&
-      !(
-        pathBehindSecret &&
-        (await unchangedBehindSecretReference({
-          resourceType,
-          key: 'Path',
-          desired: newPath,
-          previous: previousProperties['Path'],
-          physicalName: livePath,
-        }))
-      );
+    if (pathBehindSecret) {
+      // No live path means the role cannot be shown to be the recorded one:
+      // fail closed, and NOT as update-not-supported, which `--replace` would
+      // turn into a delete.
+      if (livePath === undefined || livePath === '') {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `IAM role ${logicalId}: its Path comes from a secret reference, and IAM returned no ` +
+              `path for ${v(physicalId)} to confirm it against. Nothing was changed.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      if (livePath !== newPath) {
+        // Neither path is printed: both are secret values.
+        log.warn(
+          `IAM role ${logicalId}: the secret its Path comes from now resolves to a different ` +
+            `path than the role ${v(physicalId)} has. A role cannot move in place, so it keeps ` +
+            `its path; the new value takes effect when the template changes the reference, ` +
+            `which replaces the role.`
+        );
+      }
+    }
+    const pathChanged = newPath !== oldPath && !pathBehindSecret;
     const needsReplacement = newRoleName !== physicalId || pathChanged;
 
     // Issue #4023: the replacement arm re-derives the name inside `create()`,

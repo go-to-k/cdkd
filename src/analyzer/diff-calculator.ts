@@ -1677,6 +1677,12 @@ export class DiffCalculator {
    * `***` values cannot say which part of the property moved, and a
    * replacement guessed from that would destroy a resource an in-place update
    * serves.
+   *
+   * A CONDITIONAL registry rule cannot judge two masks either (go-to-k/cdkd#4739):
+   * it answers for the values it sees, and both are `***`. There the schema
+   * decides as for an unclassified key — a whole-key create-only property (an
+   * IAM role's `Path`) is replaced, through the engine's create-first guard,
+   * and any other keeps its in-place update.
    */
   private async maskedEditRequiresReplacement(
     resourceType: string,
@@ -1687,7 +1693,13 @@ export class DiffCalculator {
     if (this.replacementRules.requiresReplacement(resourceType, key, oldValue, newValue)) {
       return true;
     }
-    if (this.replacementRules.isClassified(resourceType, key)) return false;
+    if (
+      this.replacementRules.isClassified(resourceType, key) &&
+      this.replacementRules.conditionalReplacementVerdict(resourceType, key, oldValue, newValue) ===
+        undefined
+    ) {
+      return false;
+    }
     const createOnlyPaths = await getCreateOnlyPropertyPaths(resourceType);
     return createOnlyPaths.some((path) => path.length === 1 && path[0] === key);
   }

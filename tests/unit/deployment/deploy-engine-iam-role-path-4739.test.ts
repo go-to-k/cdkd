@@ -303,6 +303,82 @@ describe('DeployEngine - an IAM role Path change replaces the role (go-to-k/cdkd
     });
   });
 
+  // The delete-first `--replace` detaches what is attached to the role by name
+  // (IAM refuses to delete a role that still has a managed policy or an
+  // instance profile, and the delete removes its inline policies); the
+  // re-created role keeps the name, so each attaching resource is updated with
+  // the role dropped from its recorded side and attaches it again
+  // (go-to-k/cdkd#4461 / #4444).
+  it('re-attaches the inline policy, managed policy and instance profile after the --replace delete-first', async () => {
+    held.add(GENERATED);
+    const oldArn = arnOf('/', GENERATED);
+    const DOC = { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: 's3:ListBucket', Resource: '*' }] };
+    const children: Record<string, { type: string; id: string; props: Record<string, unknown> }> = {
+      Inline: { type: 'AWS::IAM::Policy', id: 'inline-pol', props: { PolicyName: 'inline-pol', PolicyDocument: DOC } },
+      Managed: {
+        type: 'AWS::IAM::ManagedPolicy',
+        id: `arn:aws:iam::${ACCOUNT}:policy/managed`,
+        props: { ManagedPolicyName: 'managed', PolicyDocument: DOC },
+      },
+      Profile: { type: 'AWS::IAM::InstanceProfile', id: 'profile', props: { InstanceProfileName: 'profile' } },
+    };
+    const resources: Record<string, ResourceState> = {
+      Role: {
+        physicalId: GENERATED,
+        resourceType: ROLE,
+        properties: { AssumeRolePolicyDocument: TRUST },
+        observedProperties: { AssumeRolePolicyDocument: TRUST },
+        attributes: { Arn: oldArn, RoleId: 'AROAOLD' },
+        dependencies: [],
+        provisionedBy: 'sdk',
+      } as ResourceState,
+    };
+    const templateResources: CloudFormationTemplate['Resources'] = {
+      Role: { Type: ROLE, Properties: { AssumeRolePolicyDocument: TRUST, Path: '/service/' } },
+    };
+    for (const [id, c] of Object.entries(children)) {
+      const recorded = { ...c.props, Roles: [GENERATED] };
+      resources[id] = {
+        physicalId: c.id,
+        resourceType: c.type,
+        properties: recorded,
+        observedProperties: recorded,
+        attributes: {},
+        dependencies: ['Role'],
+        provisionedBy: 'sdk',
+      } as ResourceState;
+      templateResources[id] = { Type: c.type, Properties: { ...c.props, Roles: [{ Ref: 'Role' }] } };
+    }
+    stateBackend.getState.mockResolvedValue({
+      state: {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: REGION,
+        stackName: STACK,
+        resources,
+        outputs: {},
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-old',
+    });
+
+    await makeEngine({ replace: true }).deploy(STACK, { Resources: templateResources });
+
+    expect(calls.filter((c) => c.endsWith(' Role'))).toEqual(['create Role', 'delete Role', 'create Role']);
+    for (const id of Object.keys(children)) {
+      const updates = callsFor(sdk.update, id);
+      expect(updates, id).toHaveLength(1);
+      expect((updates[0]![3] as Record<string, unknown>)['Roles'], id).toEqual([GENERATED]);
+      // An attachment drops the role from the recorded side, so the provider
+      // attaches it again; the inline policy is re-PUT, its update writing to
+      // every role it names, so its recorded side is handed over as is.
+      expect((updates[0]![4] as Record<string, unknown>)['Roles'], id).toEqual(
+        id === 'Inline' ? [GENERATED] : []
+      );
+      expect(calls.indexOf(`update ${id}`), id).toBeGreaterThan(calls.lastIndexOf('create Role'));
+      expect(callsFor(sdk.delete, id), id).toHaveLength(0);
+    }
+  });
+
   describe('what stays in place', () => {
     it('an unchanged non-default Path beside another change is an in-place update', async () => {
       const err = await deploy(

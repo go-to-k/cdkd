@@ -28,7 +28,8 @@
 #      REFUSED with the replacement-collision guidance (pre-fix: an in-place
 #      update whose re-create failed `EntityAlreadyExists`), leaving AWS as it was.
 #   5. The same deploy with --replace: the role is deleted and re-created under
-#      the same name on the new path, and the function runs as the new ARN.
+#      the same name on the new path, the function runs as the new ARN, and
+#      the DefaultPolicy and managed policy attached by name are back on it.
 #   6. Destroy + assert the roles, the function and cdkd state are gone.
 #
 # Required env vars:
@@ -188,7 +189,21 @@ if [ "${PATH_P1}" != "/" ] || [ "${PATH_ROLE_ARN_P1}" != "${FN_ROLE_P1}" ]; then
   echo "FAIL: expected ${PATH_ROLE_NAME} on path / with the function's ARN, got '${PATH_P1}' / '${PATH_ROLE_ARN_P1}' (function: ${FN_ROLE_P1})" >&2
   exit 1
 fi
-echo "    ${FN_NAME} runs as ${PATH_ROLE_NAME} on path /"
+# What is attached to the role by name, which Phase 5's delete-first detaches:
+# the DefaultPolicy (a separate AWS::IAM::Policy) and an AWS managed policy.
+assert_path_role_attachments() { # usage: assert_path_role_attachments <phase>
+  local inline managed
+  inline="$(aws iam list-role-policies --role-name "${PATH_ROLE_NAME}" \
+    --query "PolicyNames[?starts_with(@, 'PathRoleDefaultPolicy')] | length(@)" --output text)" || return 1
+  managed="$(aws iam list-attached-role-policies --role-name "${PATH_ROLE_NAME}" \
+    --query "AttachedPolicies[?PolicyName=='AWSLambdaBasicExecutionRole'] | length(@)" --output text)" || return 1
+  if [ "${inline}" != "1" ] || [ "${managed}" != "1" ]; then
+    echo "FAIL ($1): ${PATH_ROLE_NAME} has ${inline} PathRoleDefaultPolicy* inline / ${managed} AWSLambdaBasicExecutionRole attached, expected 1 / 1" >&2
+    exit 1
+  fi
+}
+assert_path_role_attachments "Phase 1"
+echo "    ${FN_NAME} runs as ${PATH_ROLE_NAME} on path /, with its DefaultPolicy and managed policy"
 
 # --- Phase 2: in-place UPDATE (NO -y — regression guard) --------------
 echo "==> Phase 2: re-deploy adding an inline-policy statement (in-place, NO -y)"
@@ -291,6 +306,7 @@ if [ "${FN_ROLE_P5}" != "${PATH_ROLE_ARN_P5}" ]; then
   echo "FAIL: ${FN_NAME} runs as '${FN_ROLE_P5}', expected the re-created role '${PATH_ROLE_ARN_P5}'" >&2
   exit 1
 fi
+assert_path_role_attachments "Phase 5"
 echo "    ${PATH_ROLE_NAME} re-created on /cdkd-4739/ (RoleId ${PATH_ROLE_ID_P1} -> ${PATH_ROLE_ID_P5}); ${FN_NAME} runs as the new ARN"
 
 # --- Phase 6: destroy --------------------------------------------------

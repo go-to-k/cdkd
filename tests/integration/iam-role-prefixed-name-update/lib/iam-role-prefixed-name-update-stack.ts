@@ -80,7 +80,16 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
     const pathRole = new iam.Role(this, 'PathRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       ...(rolePath ? { path: '/cdkd-4739/' } : {}),
+      // Attached BY NAME, so the --replace delete-first detaches them and the
+      // re-created role must get them back: an AWS managed policy, and the
+      // separate AWS::IAM::Policy (DefaultPolicy) addToPolicy creates.
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
     });
+    pathRole.addToPolicy(
+      new iam.PolicyStatement({ actions: ['logs:CreateLogGroup'], resources: ['*'] })
+    );
     new lambda.Function(this, 'PathFn', {
       functionName: `${cdk.Stack.of(this).stackName}-path-fn`,
       runtime: lambda.Runtime.NODEJS_22_X,

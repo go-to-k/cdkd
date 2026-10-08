@@ -4264,6 +4264,7 @@
         "iam-propagation-stress",
         "iam-recreate-reattach",
         "iam-role-policies-drift-clean",
+        "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
         "migrate-from-cfn"
       ],
@@ -4284,6 +4285,9 @@
         ],
         "iam-role-policies-drift-clean": [
           "l1",
+          "literal"
+        ],
+        "iam-role-prefixed-name-update": [
           "literal"
         ],
         "iam-secret-derived-principals": [
