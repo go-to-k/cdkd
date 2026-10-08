@@ -415,37 +415,6 @@ describe('review round 1 (PR #4742)', () => {
     expect(values!.maskSecrets(`auth failed for ${VALUE}`)).not.toContain(VALUE);
   });
 
-  it("C5: a masked row parameter with a Default does not fail its siblings' re-resolution", async () => {
-    const parent = child(
-      {
-        Parameters: {
-          Count: { Type: 'Number', Default: '3' },
-          Plain: { Type: 'String' },
-        },
-        Resources: {
-          ChildCr: {
-            Type: 'Custom::Seed',
-            Properties: { ServiceToken: TOKEN, Token: { Ref: 'Plain' } },
-          },
-        },
-      },
-      template({})
-    );
-    const nested = await parent.forNestedChild(
-      'Child',
-      {
-        properties: { Parameters: { Count: SECRET_MASK, Plain: 'from-parent' } },
-        noEchoLeaves: [['Parameters', 'Count'], ['Parameters', 'Plain']],
-        values: undefined,
-      },
-      'Parent-Child',
-      load,
-      extract
-    );
-    const values = await nested!.valuesFor('ChildCr', crRecord());
-    expect(values?.leaves).toEqual([{ coordinate: ['Token'], value: 'from-parent' }]);
-  });
-
   it("M2: a property whose template text changed since the deploy is refused; the same text is accepted", async () => {
     const deployed = { Ref: 'Secret' };
     const today = template({ Token: { Ref: 'Secret' } });

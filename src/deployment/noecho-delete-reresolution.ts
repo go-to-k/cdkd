@@ -455,15 +455,6 @@ export class TemplateNoEchoReresolver {
             : value;
         if (carriesSecretMask(raw) || carriesSecretMask(value)) masked.add(name);
       }
-      // A masked parameter with a `Default` binds that instead of the mask, so
-      // its type checks cannot fail the whole child; it is refused either way.
-      const childParameters = (child.template.Parameters ?? {}) as Record<string, unknown>;
-      for (const name of masked) {
-        const definition = Object.hasOwn(childParameters, name)
-          ? (childParameters[name] as { Default?: unknown } | undefined)
-          : undefined;
-        if (definition?.Default !== undefined) delete parameters[name];
-      }
       // The child masks what it was handed, and every parent NoEcho value it
       // carries (one a row EMBEDS, e.g. `user:${Password}@host`), as a deploy
       // does through `carryLogOnlyValuesCarriedBy`.
