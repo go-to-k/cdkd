@@ -826,6 +826,163 @@ describe('a two-token literal parameter persists its own spelling in either pare
 });
 
 /**
+ * EVERY child read shape of a literal-spelled parameter agrees with the diff
+ * side, in BOTH parent orders (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644), review round 2). The
+ * diff side binds the parameter to the parent's literal at every read site; the
+ * persist side positions only a bare `{Ref}` and the placeholder arms, and
+ * every other shape (`Fn::Select`, `Fn::Split`, an array, an `Fn::If`) falls
+ * to the child bag's value scan -- so the CARRY must record the literal's own
+ * token there, not the parent survivor.
+ *
+ * `desired` is the child source resolved with the parameters bound to
+ * `redactParametersForDiff`'s answer, which is also what `cdkd diff
+ * --recursive` renders (it binds the parameter to the parent's literal, with
+ * dynamic references left unresolved): the test asserts that answer IS the
+ * literal.
+ */
+describe('every child read shape of a literal-spelled parameter persists what the diff side renders (#4644)', () => {
+  const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+  const USER = 'us3r-sh4pes-4644';
+  const USER_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:shapesuser::}}';
+  const shapeTemplate: CloudFormationTemplate = {
+    ...template,
+    Conditions: { IsOn: { 'Fn::Equals': ['a', 'a'] } },
+  };
+  const LITERALS = {
+    'two-token': {
+      spelling: `postgres://${USER_EXPR}:${EXPR_A}@host`,
+      value: `postgres://${USER}:${SHARED}@host`,
+    },
+    'one-token': {
+      spelling: `postgres://plainuser:${EXPR_A}@host`,
+      value: `postgres://plainuser:${SHARED}@host`,
+    },
+  } as const;
+  const SHAPES: Record<string, unknown> = {
+    'bare Ref': { Ref: PARAM_A },
+    'Fn::Select over a list': { 'Fn::Select': [0, [{ Ref: PARAM_A }, 'b']] },
+    'Fn::Select over Fn::Split': { 'Fn::Select': [0, { 'Fn::Split': ['@', { Ref: PARAM_A }] }] },
+    'Fn::Join over Fn::Split': { 'Fn::Join': ['@', { 'Fn::Split': ['@', { Ref: PARAM_A }] }] },
+    'Fn::Join around Fn::Select': {
+      'Fn::Join': ['', ['x-', { 'Fn::Select': [0, [{ Ref: PARAM_A }]] }]],
+    },
+    'Fn::If selecting a Ref': { 'Fn::If': ['IsOn', { Ref: PARAM_A }, 'off'] },
+    'an array': [{ Ref: PARAM_A }, 'z'],
+    'Fn::Sub with a variable map': { 'Fn::Sub': ['v-${X}', { X: { Ref: PARAM_A } }] },
+    'Fn::If selecting a Fn::Join': {
+      'Fn::If': ['IsOn', { 'Fn::Join': ['', ['j-', { Ref: PARAM_A }]] }, 'off'],
+    },
+    'Fn::Join': { 'Fn::Join': ['', ['x-', { Ref: PARAM_A }]] },
+  };
+
+  /** The parent pass; `reversed` resolves `ConnA` first, so `EXPR_B` survives. */
+  function parentFor(literal: keyof typeof LITERALS, reversed: boolean): RecordedSecretValues {
+    const { spelling, value } = LITERALS[literal];
+    const conn: Array<readonly [string, string]> =
+      literal === 'two-token'
+        ? [
+            [USER_EXPR, USER],
+            [EXPR_A, SHARED],
+          ]
+        : [[EXPR_A, SHARED]];
+    const order = reversed ? [...conn, [EXPR_B, SHARED] as const] : [[EXPR_B, SHARED] as const, ...conn];
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of order) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { [PARAM_A]: value, [PARAM_B]: SHARED } },
+      { Parameters: { [PARAM_A]: spelling, [PARAM_B]: EXPR_B } }
+    );
+    return parent;
+  }
+
+  for (const literal of ['two-token', 'one-token'] as const) {
+    for (const reversed of [true, false]) {
+      for (const [shape, leaf] of Object.entries(SHAPES)) {
+        it(`${shape}, ${literal} literal, ${reversed ? 'reversed' : 'forward'} parent order`, async () => {
+          const parent = parentFor(literal, reversed);
+          expect(parent.get(SHARED)).toBe(reversed ? EXPR_B : EXPR_A);
+          const { spelling, value } = LITERALS[literal];
+          // One resource, one bag (the #2087 per-resource scope).
+          const ctx = makeContext(parent);
+          ctx.template = shapeTemplate;
+          ctx.parameters = { [PARAM_A]: value, [PARAM_B]: SHARED };
+          const source = { Leaf: leaf };
+          const resolved = await resolver.resolve(source, ctx);
+          const persisted = redactSecretsForState(resolved, ctx.recordedSecretValues, source);
+
+          const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+          const bindings = redactParametersForDiff.call(engine, ctx.parameters);
+          expect(bindings[PARAM_A]).toBe(spelling);
+          const desired = await resolver.resolve(source, {
+            template: shapeTemplate,
+            resources: {},
+            parameters: bindings,
+            // As `cdkd diff --recursive` and the deploy's diff resolve it.
+            skipDynamicReferences: true,
+          } as unknown as ResolverContext);
+
+          expect(persisted).toEqual(desired);
+          expect(JSON.stringify(persisted)).not.toContain(SHARED);
+        });
+      }
+    }
+  }
+
+  it('the carry keeps the SURVIVOR for a parameter with no certified spelling (Fn::Sub-spelled in the parent)', async () => {
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [EXPR_A, SHARED],
+      [EXPR_B, SHARED],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { [PARAM_A]: EMBEDDED, [PARAM_B]: SHARED } },
+      { Parameters: { [PARAM_A]: { 'Fn::Sub': `postgres://u:${EXPR_A}@host` }, [PARAM_B]: EXPR_B } }
+    );
+    const ctx = makeContext(parent);
+    ctx.parameters = { [PARAM_A]: EMBEDDED, [PARAM_B]: SHARED };
+    await resolver.resolve({ Leaf: { 'Fn::Select': [0, [{ Ref: PARAM_A }]] } }, ctx);
+    expect(ctx.recordedSecretValues.get(SHARED)).toBe(EXPR_B);
+  });
+
+  it('the carry keeps the SURVIVOR where the literal spells the plaintext with two DIFFERENT tokens', async () => {
+    const spelling = `${EXPR_A}/${EXPR_B}`;
+    const value = `${SHARED}/${SHARED}`;
+    const parent: RecordedSecretValues = new Map();
+    for (const [expression, plaintext] of [
+      [EXPR_A, SHARED],
+      [EXPR_B, SHARED],
+    ] as const) {
+      parent.set(plaintext, expression);
+      recordResolvedPair(parent, expression, plaintext);
+    }
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { [PARAM_A]: value } },
+      { Parameters: { [PARAM_A]: spelling } }
+    );
+    // The literal itself certifies (it renders exactly), so only the
+    // one-token-per-plaintext refusal keeps the survivor.
+    expect(redactInheritedParameterValue(parent, PARAM_A, value)).toBe(spelling);
+    const ctx = makeContext(parent);
+    ctx.parameters = { [PARAM_A]: value, [PARAM_B]: SHARED };
+    await resolver.resolve({ Leaf: { 'Fn::Select': [0, [{ Ref: PARAM_A }]] } }, ctx);
+    expect(ctx.recordedSecretValues.get(SHARED)).toBe(EXPR_B);
+  });
+});
+
+/**
  * THE FAIL-CLOSED FAMILY, exhaustively (issue #2349, review rounds 1-3). Each
  * round found one more combination where the PARENT-bag answer cut a plaintext
  * the CHILD-bag scan took whole, so this walks every combination instead:

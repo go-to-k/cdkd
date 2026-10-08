@@ -119,6 +119,7 @@ export {
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
+  inheritedRenderedToken,
   recordInheritedParameterRead,
   redactInheritedParameterValue,
 } from './secret-redaction/nested-stack.js';

@@ -634,6 +634,29 @@ function pairedSpans(
   return out;
 }
 
+/**
+ * The ONE token a LITERAL `spelling` spells at every span this pass resolved
+ * to `plaintext` (issue [#4644](https://github.com/go-to-k/cdkd/issues/4644)),
+ * or `undefined` when no span did, two spans name different tokens for it, or
+ * any span is unpaired ({@link pairedSpans}). The nested-stack carry records a
+ * certified parameter's plaintexts with it, so the child's value scan writes
+ * the spelling's own token rather than the parent map's survivor.
+ */
+export function renderedTokenOf(
+  spelling: string,
+  secrets: RecordedSecretValues,
+  plaintext: string
+): string | undefined {
+  const spans = pairedSpans(spelling, secrets);
+  if (spans === undefined) return undefined;
+  const tokens = new Set(
+    spans
+      .filter((span) => span.plaintext === plaintext)
+      .map((span) => spelling.slice(span.start, span.end))
+  );
+  return tokens.size === 1 ? [...tokens][0] : undefined;
+}
+
 /** `source` with span `i` replaced by `textOf(i)`, its literal text kept. */
 function renderSpans(
   source: string,

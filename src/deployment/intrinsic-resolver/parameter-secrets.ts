@@ -5,6 +5,7 @@ import {
   recordLogOnlyParameterValue,
   carryLogOnlyValuesCarriedBy,
   inheritedParameterExpression,
+  inheritedRenderedToken,
   carryFreshNoEchoMark,
   recordInheritedParameterRead,
   recordNoEchoParameterFreshValue,
@@ -169,7 +170,16 @@ export function recordInheritedParameterSecrets(
     // this bag holds strings. Nothing here asks for that shape, but the guard
     // is what says so rather than leaving it to the argument passed above.
     const own = inheritedParameterExpression(inherited, parameterName, plaintext);
-    recorded.set(plaintext, typeof own === 'string' ? own : expression);
+    // Issue #4644: a parameter the parent spelled as a LITERAL embedding its
+    // tokens has no per-plaintext association, so it used to take the
+    // survivor here while the diff side binds that literal at every read
+    // site. The token the literal itself spells at this plaintext, where the
+    // spelling certifies one; the survivor otherwise.
+    const spelled =
+      typeof own === 'string'
+        ? own
+        : inheritedRenderedToken(inherited, parameterName, value, plaintext);
+    recorded.set(plaintext, spelled ?? expression);
     // Issue #2349: the persist walk answers a `{Ref: <Param>}` leaf of THIS
     // resource from the parent bag, as the diff side does, and only for a
     // parameter recorded here -- the #2087 scope this loop already applies.

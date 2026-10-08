@@ -29,6 +29,7 @@ import {
   UNKNOWN_PART_PLACEHOLDER,
   singleSpanFrame,
   rendersLiteralTo,
+  renderedTokenOf,
 } from './positions.js';
 import { dynamicReferenceSpans, deepEqualJsonValue } from './redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './anchors.js';
@@ -1103,6 +1104,33 @@ function renderedParameterSpelling(
 }
 
 /**
+ * The token `parameterName`'s rendered spelling (the answer
+ * {@link inheritedParameterExpression} gives for its whole `value`) spells at
+ * `plaintext`, for the nested-stack carry (issue
+ * [#4644](https://github.com/go-to-k/cdkd/issues/4644)); `undefined` when the
+ * parameter has no rendered spelling or it names no single token there.
+ *
+ * WHY THE CARRY. The diff side binds the parameter to that spelling at EVERY
+ * child read site -- `Fn::Select`, `Fn::Split`, an array, an `Fn::If` -- while
+ * the persist side positions only a bare `{Ref}` and the placeholder arms;
+ * every other shape falls to the child bag's value scan, which reads the
+ * carry's entry. Recording the spelling's own token there makes the scan
+ * agree with the diff side for any shape. Which plaintexts are carried (the
+ * #2087 scope) is untouched; only the expression attached changes, and only
+ * where this certifies one.
+ */
+export function inheritedRenderedToken(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  value: unknown,
+  plaintext: string
+): string | undefined {
+  const spelling = inheritedParameterExpression(parentSecrets, parameterName, value);
+  if (typeof spelling !== 'string' || isSingleDynamicReferenceToken(spelling)) return undefined;
+  return renderedTokenOf(spelling, parentSecrets, plaintext);
+}
+
+/**
  * The parent's rendered spelling for a `{Ref: <Param>}` span of a child leaf
  * that EMBEDS the parameter -- `Fn::Join ['x-', {Ref: Conn}]` -- keyed by the
  * span's {@link crossStackSourceKey}, or `undefined` (issue
@@ -1136,8 +1164,10 @@ export function inheritedRenderedSpan(
     const value = renderedParameterSpellings.get(reads.parent)?.get(name)?.value;
     if (value === undefined || (text !== undefined && text !== value)) return undefined;
     if (carriesChildOnlyPlaintext(value, childSecrets, reads.parent)) return undefined;
-    const spelling = renderedParameterSpelling(reads.parent, name, value);
-    if (spelling === undefined) return undefined;
+    // THE function the diff side binds, so a parameter the parent's
+    // association table answers (or poisons) is answered here the same way.
+    const spelling = inheritedParameterExpression(reads.parent, name, value);
+    if (typeof spelling !== 'string') return undefined;
     if (redactSecretsForState(spelling, childSecrets) !== spelling) return undefined;
     return { value, spelling };
   }
