@@ -364,7 +364,7 @@ export function skipUnaddressableReplay(
  */
 export async function keptForAnotherHolder(
   scope: Parameters<typeof recordRollbackSkip>[0] & {
-    ctx: Pick<RollbackExecutorContext, 'createdResourceHolder'>;
+    ctx: Pick<RollbackExecutorContext, 'createdResourceHolder' | 'createdResourceRetryCommand'>;
   },
   logger: Pick<RollbackExecutorContext['logger'], 'warn'>,
   op: Parameters<typeof recordRollbackSkip>[1],
@@ -383,9 +383,14 @@ export async function keptForAnotherHolder(
     holding.kind === 'held'
       ? `${holding.by} holds it`
       : `${holding.what}, so it is not known whether another deployment owns it`;
+  const retry =
+    holding.kind === 'unreadable' && holding.retryable === true
+      ? scope.ctx.createdResourceRetryCommand
+      : undefined;
   logger.warn(
     safeMsg`  Rollback: Keeping created resource ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) ` +
-      safeMsg`\u2014 ${why}. The failed deploy may have adopted a resource that existed under its name, so the rollback does not delete it; the rollback journal keeps it.`
+      safeMsg`\u2014 ${why}. The failed deploy may have adopted a resource that existed under its name, so the rollback does not delete it; the rollback journal keeps it.` +
+      (retry === undefined ? '' : safeMsg` Once S3 can be read, finish the rollback with: ${retry}`)
   );
   recordRollbackSkip(
     scope,

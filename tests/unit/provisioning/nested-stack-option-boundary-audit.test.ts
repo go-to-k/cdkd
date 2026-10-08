@@ -49,7 +49,7 @@ const AUDITED_MEMBERS = [
   'onCurrentStateLoaded', // self-scoped: the prefix gate returns early on a mismatch
   'parentStackInfo', // overwritten by the spread site, must describe THIS child
   'onDestructivePlan', // overwritten to undefined by the spread site: the top-level check covers children (#4705)
-  'crossPrefixHolder', // overwritten to undefined by the spread site: only the root engine settles (#4705)
+  'crossPrefixHolder', // inherited: called with the CHILD's own stack name by its automatic rollback; a child never settles (#4705 R6-2)
   'eventRecorder', // carries the top-level run's stack name, by design
   // --- names no resource ------------------------------------------------------
   'concurrency',

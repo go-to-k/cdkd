@@ -254,6 +254,12 @@ export interface RollbackExecutorContext {
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
     | undefined;
   /**
+   * The pasteable `cdkd rollback` (with the run's account flags) that finishes
+   * a rollback {@link createdResourceHolder} kept a resource from because its
+   * check failed (a `retryable` answer). Set with it, by `performRollback`.
+   */
+  createdResourceRetryCommand?: string | undefined;
+  /**
    * The PRODUCER regions this stack's persisted cross-stack reads name --
    * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,
    * as produced by {@link producerRegionsFromState} (issue

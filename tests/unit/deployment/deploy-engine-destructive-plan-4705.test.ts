@@ -259,16 +259,30 @@ describe('DeployEngine onDestructivePlan (go-to-k/cdkd#4705)', () => {
     expect(hook).not.toHaveBeenCalled();
   });
 
-  it('is NOT called for a nested-stack row CREATE (a new child has nothing to destroy)', async () => {
-    const nestedCreate: ResourceChange = {
-      logicalId: 'NewChild',
-      changeType: 'CREATE',
-      resourceType: 'AWS::CloudFormation::Stack',
-      desiredProperties: {},
-    };
+  // Review R6-2: a created child's creates can be handed resources the
+  // stack's twin under another prefix records, and the child's automatic
+  // rollback would delete them, so adding a nested stack is checked.
+  const nestedCreate: ResourceChange = {
+    logicalId: 'NewChild',
+    changeType: 'CREATE',
+    resourceType: 'AWS::CloudFormation::Stack',
+    desiredProperties: {},
+  };
+
+  it('is called for a nested-stack row CREATE, before any provider call', async () => {
+    hook.mockRejectedValue(new Error('refused'));
+    const template = arrange(mocks(), { Kept: record() }, [nestedCreate]);
+    await expect(makeEngine().deploy(STACK_NAME, template)).rejects.toThrow(/refused/);
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(hook.mock.calls[0]![0]).toBe(STACK_NAME);
+    expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('a nested-stack row CREATE with a clear check proceeds to the create', async () => {
     const template = arrange(mocks(), { Kept: record() }, [nestedCreate]);
     await makeEngine().deploy(STACK_NAME, template).catch(() => undefined);
-    expect(hook).not.toHaveBeenCalled();
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(provider.create.mock.calls.map((c) => c[0])).toContain('NewChild');
   });
 
   it('is NOT called for a RETAINED nested-stack row DELETE: the child and its resources stay', async () => {

@@ -466,7 +466,7 @@ export interface DeployEngineOptions {
   /**
    * go-to-k/cdkd#4705: called after the diff and the `--dry-run` return, BEFORE
    * the approval prompt and any provider call, only when the plan may destroy
-   * (`WILL_DESTROY` / `WILL_REPLACE` / `MAY_REPLACE`) or updates a
+   * (`WILL_DESTROY` / `WILL_REPLACE` / `MAY_REPLACE`) or adds or updates a
    * nested-stack row (`checkDestructivePlan`). Throwing
    * aborts the stack before anything changes. Called again with `stage`
    * `'late'` for a replacement the deploy decides only on reading a resource
@@ -488,8 +488,10 @@ export interface DeployEngineOptions {
    * orphan of `stackName` (`settleJournalAfterSuccess`): whether the bucket
    * records that stack under ANOTHER state prefix, whose record may hold the
    * resource. A holding keeps the orphan, with the settle's existing warning.
-   * Absent: no cross-prefix check. Only the root engine settles; the spread
-   * site sets it to `undefined` for a child.
+   * Also asked, alone, by a failed deploy's AUTOMATIC rollback before it
+   * deletes a resource the deploy created (`performRollback`). Absent: no
+   * cross-prefix check. A nested child inherits it and asks by its own stack
+   * name (`Parent~Child`); only the root engine settles.
    */
   crossPrefixHolder?: ((stackName: string) => Promise<ForeignHolding>) | undefined;
 }
@@ -568,6 +570,13 @@ export interface DeployResult {
    * no-change returns) and in older test doubles: read as 0.
    */
   nestedUpdatePartial?: number;
+  /**
+   * go-to-k/cdkd#4705: late replacements the cross-prefix check refused, each
+   * keeping its old resource (`ProvisionCounts.crossPrefixKept`). Unaddressed:
+   * `deploy.ts` adds it to the exit-2 total. Only a top-level engine runs that
+   * check. Absent means 0.
+   */
+  crossPrefixKept?: number;
   /** Number of resources unchanged */
   unchanged: number;
   /** Total deployment time in milliseconds */

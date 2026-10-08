@@ -775,8 +775,9 @@ async function destroyCommand(
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
     // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
-    // sequential loop (one listing, one run-wide probe cap); each stack's
-    // destroy then awaits its own memoized result.
+    // sequential loop (one listing, one run-wide probe cap), prioritized in
+    // the loop's order; each stack's destroy then awaits its own memoized
+    // result, which promotes it ahead of the rest.
     // Only in the region the loop will destroy, and not for a stack its
     // termination protection skips.
     const crossPrefixCheck = { cache: new CrossPrefixScanCache(stateBackend) };
@@ -784,7 +785,7 @@ async function destroyCommand(
       const synth = appStacks.find((s) => s.stackName === name);
       if (synth?.terminationProtection === true && !options.removeProtection) continue;
       const planned = plannedDestroyRegion(stateRefsByName.get(name) ?? [], synth?.region, region);
-      if (planned !== undefined) void crossPrefixCheck.cache.full(name, planned);
+      if (planned !== undefined) void crossPrefixCheck.cache.full(name, planned, 'prestart');
     }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);

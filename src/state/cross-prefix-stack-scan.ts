@@ -255,17 +255,16 @@ export async function scanOtherPrefixesForStack(
   return { kind: 'clear', ...extra };
 }
 
-/** {@link withSharedListing}'s target, which also orders the scans through it. */
+/** {@link withSharedListing}'s target, which also prioritizes the scans through it. */
 export interface SharedScanTarget extends CrossPrefixScanTarget {
   /**
-   * Queue the scan of `stackName` in `region` behind every scan queued before
-   * it, until {@link done}: none of its probes takes a slot while an earlier
-   * one is unfinished. The first scan asked for is the one its command needs
-   * first (`destroy --all` walks its stacks in that order).
+   * Set the priority of the scan of `stackName` in `region`. `'prestart'`
+   * gives a scan that has none the next place in pre-start order (`destroy
+   * --all` pre-starts its stacks in the order it destroys them); `'now'` puts
+   * it ahead of every pre-started scan, for a caller that is waiting on it
+   * this moment (and promotes a pre-started one).
    */
-  rank(stackName: string, region: string): void;
-  /** The scan {@link rank} queued has finished: the next one may probe. */
-  done(stackName: string, region: string): void;
+  rank(stackName: string, region: string, when: 'prestart' | 'now'): void;
 }
 
 /**
@@ -274,63 +273,63 @@ export interface SharedScanTarget extends CrossPrefixScanTarget {
  * them, for a command that scans several stacks at once (`deploy --all`,
  * `destroy --all`). The listing starts on the first scan that needs it.
  *
- * The cap serves the ranked scans in order: a probe takes a slot only when
- * every scan ranked before its own has finished, so the first stack's scan
- * never waits behind a later one's. The total work is the same. A probe of a
- * scan nobody ranked waits for none.
+ * The rank is a PRIORITY, not a barrier: a freed slot goes to the
+ * best-ranked WAITING probe (first come among equals), and a probe takes a
+ * free slot unless a better-ranked one waits. A scan whose request never
+ * settles holds only its own slots; every other scan keeps going.
  */
 export function withSharedListing(target: CrossPrefixScanTarget): SharedScanTarget {
   let listing: Promise<string[]> | undefined;
   let inFlight = 0;
+  let seq = 0;
+  let prestarted = 0;
   const keyOf = (stackName: string, region: string): string => JSON.stringify([stackName, region]);
+  // Lower is sooner: -1 for a scan a caller waits on now, then pre-start
+  // order. A scan nobody ranked goes last.
   const ranks = new Map<string, number>();
-  const unfinished = new Set<number>();
-  const eligible = (rank: number | undefined): boolean => {
-    if (rank === undefined) return true;
-    for (const r of unfinished) if (r < rank) return false;
-    return true;
-  };
-  const waiting: Array<{ rank: number | undefined; resolve: () => void }> = [];
-  const admit = (): void => {
-    for (let i = 0; i < waiting.length && inFlight < PROBE_CONCURRENCY;) {
-      const w = waiting[i]!;
-      if (!eligible(w.rank)) {
-        i++;
-        continue;
+  const rankOf = (stackName: string, region: string): number =>
+    ranks.get(keyOf(stackName, region)) ?? Number.MAX_SAFE_INTEGER;
+  const waiting: Array<{ key: string; seq: number; resolve: () => void }> = [];
+  const waiterRank = (w: { key: string }): number => ranks.get(w.key) ?? Number.MAX_SAFE_INTEGER;
+  const admitBest = (): void => {
+    while (inFlight < PROBE_CONCURRENCY && waiting.length > 0) {
+      let best = 0;
+      for (let i = 1; i < waiting.length; i++) {
+        const w = waiting[i]!;
+        const b = waiting[best]!;
+        if (waiterRank(w) < waiterRank(b) || (waiterRank(w) === waiterRank(b) && w.seq < b.seq)) {
+          best = i;
+        }
       }
-      waiting.splice(i, 1);
+      const [next] = waiting.splice(best, 1);
       inFlight++;
-      w.resolve();
+      next!.resolve();
     }
   };
-  const acquire = async (rank: number | undefined): Promise<void> => {
-    if (inFlight < PROBE_CONCURRENCY && eligible(rank)) {
+  const acquire = async (stackName: string, region: string): Promise<void> => {
+    const rank = rankOf(stackName, region);
+    if (inFlight < PROBE_CONCURRENCY && !waiting.some((w) => waiterRank(w) < rank)) {
       inFlight++;
       return;
     }
-    await new Promise<void>((resolve) => waiting.push({ rank, resolve }));
+    const key = keyOf(stackName, region);
+    await new Promise<void>((resolve) => waiting.push({ key, seq: seq++, resolve }));
   };
   const release = (): void => {
     inFlight--;
-    admit();
+    admitBest();
   };
   return {
     prefix: target.prefix,
-    rank: (stackName, region) => {
+    rank: (stackName, region, when) => {
       const key = keyOf(stackName, region);
-      if (ranks.has(key)) return;
-      ranks.set(key, ranks.size);
-      unfinished.add(ranks.size - 1);
-    },
-    done: (stackName, region) => {
-      const rank = ranks.get(keyOf(stackName, region));
-      if (rank === undefined || !unfinished.delete(rank)) return;
-      admit();
+      if (when === 'now') ranks.set(key, -1);
+      else if (!ranks.has(key)) ranks.set(key, prestarted++);
     },
     ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
     listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),
     recordUnderPrefix: async (prefix, stackName, region) => {
-      await acquire(ranks.get(keyOf(stackName, region)));
+      await acquire(stackName, region);
       try {
         return await target.recordUnderPrefix(prefix, stackName, region);
       } finally {
@@ -344,9 +343,11 @@ export function withSharedListing(target: CrossPrefixScanTarget): SharedScanTarg
  * One command run's cross-prefix scans, memoized per stack AND region, through
  * one shared listing and one run-wide probe cap ({@link withSharedListing}).
  * A scan starts the first time {@link full} is asked for it -- lazily, so a
- * deploy that never needs one issues no listing and no probe -- or when a
- * caller pre-starts it with the same call, which also ranks it
- * ({@link SharedScanTarget.rank}). It never rejects.
+ * deploy that never needs one issues no listing and no probe. A caller that
+ * starts scans ahead of need passes `'prestart'`, which queues them in call
+ * order behind any scan a caller is waiting on (`'now'`, the default, which
+ * also promotes a pre-started scan once someone waits on it). It never
+ * rejects.
  */
 export class CrossPrefixScanCache {
   readonly target: SharedScanTarget;
@@ -357,14 +358,16 @@ export class CrossPrefixScanCache {
   }
 
   /** The scan of every other prefix for `stackName` in `region` (`checkOwnRecord: false`). */
-  full(stackName: string, region: string): Promise<CrossPrefixScanResult> {
+  full(
+    stackName: string,
+    region: string,
+    when: 'prestart' | 'now' = 'now'
+  ): Promise<CrossPrefixScanResult> {
+    this.target.rank(stackName, region, when);
     const key = JSON.stringify([stackName, region]);
     let scan = this.scans.get(key);
     if (scan === undefined) {
-      this.target.rank(stackName, region);
-      scan = scanOtherPrefixesForStack(this.target, stackName, region, {
-        checkOwnRecord: false,
-      }).finally(() => this.target.done(stackName, region));
+      scan = scanOtherPrefixesForStack(this.target, stackName, region, { checkOwnRecord: false });
       this.scans.set(key, scan);
     }
     return scan;

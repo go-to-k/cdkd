@@ -159,6 +159,14 @@ export interface ProvisionCounts {
    * tell this stack's own partial rows from a child's.
    */
   nestedUpdatePartial: number;
+  /**
+   * go-to-k/cdkd#4705 (review R6-5): replacements decided late, on a readback,
+   * that the cross-prefix check refused (another state prefix records the
+   * stack, or the check could not run): the old resource is kept and the new
+   * value not applied. Unaddressed, like `deleteSkipped`, but not a delete.
+   * Optional so the many count literals need not carry it: read as 0.
+   */
+  crossPrefixKept?: number;
 }
 
 /**

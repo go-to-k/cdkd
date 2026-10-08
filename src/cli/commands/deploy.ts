@@ -1247,6 +1247,13 @@ async function deployCommand(
         if (deployResult.deleteSkipped > 0) {
           logger.info(`  Skipped (not deleted): ${yellow(deployResult.deleteSkipped)}`);
         }
+        // go-to-k/cdkd#4705: same only-when-non-zero rule.
+        const crossPrefixKept = deployResult.crossPrefixKept ?? 0;
+        if (crossPrefixKept > 0) {
+          logger.info(
+            `  Kept (replacement refused: another state prefix records the stack, or the check could not run): ${yellow(crossPrefixKept)}`
+          );
+        }
         // Issue #1819: same only-when-non-zero rule and the same reason. Worded
         // as what SURVIVED rather than as "partial", because the row the user
         // is looking at was updated fine — the number counts resources the
@@ -1281,7 +1288,8 @@ async function deployCommand(
         // `cdkd deploy` re-attempts it — that one self-heals. A partial
         // UPDATE's survivor is untracked, because the record now points at
         // the replacement, so nothing will ever retry it.
-        const stackUnaddressed = deployResult.deleteSkipped + deployResult.updatePartial;
+        const stackUnaddressed =
+          deployResult.deleteSkipped + deployResult.updatePartial + crossPrefixKept;
         // Guarded on dryRun even though the engine hard-codes both counters to
         // 0 on its two dry-run returns: that invariant lives in the engine, and
         // a future dry run that PREVIEWED "would be skipped" would otherwise
@@ -1376,9 +1384,7 @@ async function deployCommand(
             // responsible for". Splitting them at the run level would need a
             // schema field for a number the per-resource events already carry
             // — each survivor has its own RESOURCE_SKIPPED with the reason.
-            ...(deployResult.deleteSkipped + deployResult.updatePartial > 0 && {
-              skipped: deployResult.deleteSkipped + deployResult.updatePartial,
-            }),
+            ...(stackUnaddressed > 0 && { skipped: stackUnaddressed }),
           },
           deployResult.durationMs
         );
@@ -1508,10 +1514,13 @@ async function deployCommand(
     if (totalUnaddressed > 0 && !options.allowUnaddressed) {
       throw new PartialFailureError(
         `Deploy left ${totalUnaddressed} resource(s) unaddressed, so they may still exist in ` +
-          `AWS. The two cases differ in what happens next: a DELETE the provider could not ` +
+          `AWS. The cases differ in what happens next: a DELETE the provider could not ` +
           `issue KEEPS its state record, so the next 'cdkd deploy' re-attempts it, while a ` +
           `replacement's surviving predecessor is NOT tracked and will never be retried — ` +
-          `delete it by hand. The per-stack summaries above give the breakdown, and each ` +
+          `delete it by hand. A replacement kept because another state prefix records the ` +
+          `stack, or the check could not run, keeps its old resource and applies no new ` +
+          `value — resolve the pair, or let the check run, and re-deploy. The per-stack ` +
+          `summaries above give the breakdown, and each ` +
           `resource's own warning names its cause and remedy. ` +
           (cancelledStacks > 0
             ? `Note ${cancelledStacks} stack(s) were also cancelled and never deployed, so the ` +

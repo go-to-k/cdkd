@@ -25,6 +25,7 @@ import {
 import {
   CrossPrefixScanCache,
   PROBE_CONCURRENCY,
+  withSharedListing,
   type CrossPrefixScanTarget,
 } from '../../../src/state/cross-prefix-stack-scan.js';
 import type { CrossPrefixScanResult } from '../../../src/state/cross-prefix-stack-scan.js';
@@ -180,23 +181,71 @@ describe('the deploy wiring (lazy scans, go-to-k/cdkd#4705 review R4-1)', () => 
     expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
   });
 
-  it('serves the cap by rank: every probe of the first-asked stack starts before any later stack takes a slot (review R5-4)', async () => {
+  // Review R6-3: the rank is a priority, not a barrier.
+  it('a probe that never settles holds only its own slot: a later-ranked scan still completes (hang isolation)', async () => {
     const t = fakeTarget();
     t.listTopLevelPrefixes.mockResolvedValue(Array.from({ length: 15 }, (_, i) => `p${i}`));
+    t.recordUnderPrefix.mockImplementation(async (p: string, stackName: string) => {
+      if (stackName === 'A' && p === 'p0') return new Promise<never>(() => {});
+      await new Promise((r) => setTimeout(r, 1));
+      return 'absent';
+    });
     const cache = new CrossPrefixScanCache(t);
-    // Pre-started in loop order, as `destroy --all` does.
-    const names = ['A', 'B', 'C'];
-    const scans = names.map((name) => cache.full(name, 'us-east-1'));
-    await Promise.all(scans);
-    const order = t.recordUnderPrefix.mock.calls.map((c) => c[1]);
-    expect(order).toHaveLength(3 * 30);
-    // Each stack's probes form one contiguous run, in rank order.
-    expect(order).toEqual([
-      ...Array(30).fill('A'),
-      ...Array(30).fill('B'),
-      ...Array(30).fill('C'),
-    ]);
-    expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
+    void cache.full('A', 'us-east-1', 'prestart');
+    await expect(cache.full('B', 'us-east-1', 'prestart')).resolves.toEqual({ kind: 'clear' });
+  });
+
+  it('when probes of two ranks both wait, the better rank is admitted first', async () => {
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    const target = withSharedListing({
+      prefix: 'cdkd',
+      ownRecordExists: vi.fn(),
+      listTopLevelPrefixes: vi.fn(),
+      recordUnderPrefix: vi.fn((_p: string, stackName: string) => {
+        started.push(stackName);
+        return new Promise<'absent'>((r) => releases.push(() => r('absent')));
+      }),
+    });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    target.rank('A', 'r', 'prestart');
+    target.rank('B', 'r', 'prestart');
+    // An unranked scan fills every slot.
+    for (let i = 0; i < PROBE_CONCURRENCY; i++) void target.recordUnderPrefix(`f${i}`, 'Z', 'r');
+    await tick();
+    expect(started).toHaveLength(PROBE_CONCURRENCY);
+    // B queues first, then A.
+    void target.recordUnderPrefix('p', 'B', 'r');
+    void target.recordUnderPrefix('p', 'A', 'r');
+    await tick();
+    expect(started).toHaveLength(PROBE_CONCURRENCY);
+    releases[0]!();
+    await tick();
+    expect(started[PROBE_CONCURRENCY]).toBe('A');
+    releases[1]!();
+    await tick();
+    expect(started[PROBE_CONCURRENCY + 1]).toBe('B');
+  });
+
+  it('a scan started on demand (a destructive plan) is not queued behind later stacks\' pre-started scans', async () => {
+    const t = fakeTarget();
+    t.listTopLevelPrefixes.mockResolvedValue(Array.from({ length: 30 }, (_, i) => `p${i}`));
+    const cache = new CrossPrefixScanCache(t);
+    const done: string[] = [];
+    const prestarted = startCrossPrefixScans(
+      [{ stackName: 'S1' }, { stackName: 'S2' }, { stackName: 'S3' }],
+      cache,
+      () => 'us-east-1'
+    );
+    for (const [key, scan] of prestarted) void scan.then(() => done.push(key));
+    // Let the pre-started scans take every slot first.
+    await new Promise((r) => setTimeout(r, 5));
+    await createCrossPrefixDestructiveGate({ region: 'us-east-1', bucket: 'b', cache })('X', []);
+    done.push('X');
+    await Promise.all(prestarted.values());
+    // X finished ahead of the later pre-started stacks it would otherwise trail.
+    expect(done.indexOf('X')).toBeLessThan(done.indexOf(crossPrefixScanKey('S3', 'us-east-1')));
+    expect(done.indexOf('X')).toBeLessThan(done.indexOf(crossPrefixScanKey('S2', 'us-east-1')));
   });
 
   it('keys one stack name in two regions apart', () => {

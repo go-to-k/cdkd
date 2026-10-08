@@ -433,10 +433,11 @@ describe('NestedStackProvider', () => {
       expect(invalid.split(JSON.stringify(invalidPath)).join('')).not.toContain('Nothing wrong');
     });
 
-    // go-to-k/cdkd#4705: the destructive-plan check and the settle's
-    // cross-prefix holder are the TOP-LEVEL engine's; a child engine never
-    // receives them, whatever the parent's options carry.
-    it('never hands a child engine onDestructivePlan or crossPrefixHolder', async () => {
+    // go-to-k/cdkd#4705: the destructive-plan check is the TOP-LEVEL
+    // engine's; a child engine never receives it. The cross-prefix holder IS
+    // handed down (review R6-2): the child's automatic rollback asks it by
+    // the child's own stack name.
+    it('never hands a child engine onDestructivePlan, and hands it the parent\'s crossPrefixHolder', async () => {
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-'));
       const childTemplatePath = join(dir, 'child.nested.template.json');
       writeFileSync(
@@ -447,12 +448,13 @@ describe('NestedStackProvider', () => {
         })
       );
       const provider = new NestedStackProvider();
+      const crossPrefixHolder = vi.fn();
       const ctx = makeContext({
         nestedTemplates: { Child: childTemplatePath },
         options: {
           concurrency: 1,
           onDestructivePlan: vi.fn(),
-          crossPrefixHolder: vi.fn(),
+          crossPrefixHolder,
         } as never,
       });
       await withNestedStackContext(ctx, () =>
@@ -462,7 +464,7 @@ describe('NestedStackProvider', () => {
       );
       const opts = deployCalls[0]!.ctor[5] as Record<string, unknown>;
       expect(opts.onDestructivePlan).toBeUndefined();
-      expect(opts.crossPrefixHolder).toBeUndefined();
+      expect(opts.crossPrefixHolder).toBe(crossPrefixHolder);
       expect(opts.concurrency).toBe(1);
     });
 

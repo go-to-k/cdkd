@@ -75,14 +75,16 @@ cdkd refuses the case it can see, before touching any resource:
 - `cdkd deploy` of a stack this prefix already records checks the same, but
   only when its plan may destroy something: a resource deleted, a resource
   replaced, a resource that MAY be replaced (the deploy only learns once a
-  value resolves), or a nested stack updated (whose own plan is only known once
-  it runs; a nested stack deleted is a resource deleted). The check runs before
-  the `--require-approval` prompt, so a refused deploy never asks first. A plan
-  that only creates, updates in place, creates a nested stack, or removes a
+  value resolves), or a nested stack added or updated (whose own plan is only
+  known once it runs, and whose creates can take over the other deployment's
+  resources; a nested stack deleted is a resource deleted). The check runs
+  before the `--require-approval` prompt, so a refused deploy never asks
+  first. A plan that only creates resources, updates in place, or removes a
   retained resource is not checked, and lists nothing. A replacement the deploy
   decides only on reading a resource back (a create-only value fed by a `NoEcho`
-  parameter) is checked then: a refusal keeps that resource, warns, lets the
-  rest of the deploy go on, and counts as unaddressed (exit 2 unless
+  parameter) is checked then: a refusal (another prefix records the stack, or
+  the check could not run) keeps that resource, warns, lets the rest of the
+  deploy go on, and counts as unaddressed (exit 2 unless
   `--allow-unaddressed`).
 - `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same check
   every time and refuse, since the other record may name the same resources —
@@ -95,12 +97,14 @@ cdkd refuses the case it can see, before touching any resource:
   question first. When another prefix records the stack, or the check fails,
   it keeps that resource, warns, and exits 2. When S3 refuses the check (403),
   it warns and deletes the resource as it did before the check existed.
-- A failed deploy's automatic rollback asks whether another prefix records
-  the stack before deleting a resource the deploy created, since a create can
-  take over a resource that already existed under its generated name. When
-  one does, or the check fails, the rollback keeps the resource, warns naming
-  the prefix, and leaves it in the rollback journal. A 403 warns and deletes,
-  as above.
+- A failed deploy's automatic rollback, a nested stack's included (asking by
+  its own `Parent~Child` name), asks whether another prefix records the stack
+  before deleting a resource the deploy created, since a create can take over
+  a resource that already existed under its generated name. When one does, or
+  the check fails, the rollback keeps the resource, warns (naming the prefix
+  when one was found, or the `cdkd rollback` that finishes the job once the
+  check can run), and leaves it in the rollback journal. A 403 warns and
+  deletes, as above.
 
 A record under another prefix blocks only when it can own a resource: it lists
 resources or rollback-orphaned resources, or its rollback journal holds a

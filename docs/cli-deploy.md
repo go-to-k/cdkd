@@ -579,12 +579,13 @@ deployment per account and region, as in CloudFormation — see
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
 for why, what the check cannot see, and the remedies the refusal prints. A
 stack the prefix already records skips that check; it is checked again only
-when its plan deletes, replaces or may replace a resource, or updates a nested
-stack, before the `--require-approval` prompt and before anything is changed;
+when its plan deletes, replaces or may replace a resource, or adds or updates a
+nested stack, before the `--require-approval` prompt and before anything is changed;
 an ordinary redeploy lists nothing. A replacement the deploy finds only on
 reading a resource back is checked then, and a refusal keeps that resource and
-exits `2`. A failed deploy's automatic rollback keeps, rather than deletes, a
-created resource when another prefix records the stack. If S3 denies the listing or a read,
+exits `2`. A failed deploy's automatic rollback, a nested stack's included,
+keeps, rather than deletes, a created resource when another prefix records the
+stack or the check fails. If S3 denies the listing or a read,
 the deploy warns and continues. The check's cost grows with the bucket's top-level
 prefixes, so prefer a dedicated state bucket.
 
@@ -594,7 +595,7 @@ prefixes, so prefer a dedicated state bucket.
 | --- | --- |
 | `0` | Every resource was deployed. |
 | `1` | Hard error — bad arguments (including `--no-wait` together with `--full-wait`), auth failure, a synth crash, or a resource failure that the automatic rollback then handled. |
-| `2` | Resources were left unaddressed: a skipped DELETE, a replacement whose predecessor survives, or a replacement refused because another state prefix records the stack. State is preserved; re-running usually clears it. `--allow-unaddressed` restores `0`. |
+| `2` | Resources were left unaddressed: a skipped DELETE, a replacement whose predecessor survives, or a replacement refused because another state prefix records the stack or the check could not run. State is preserved; re-running usually clears it. `--allow-unaddressed` restores `0`. |
 
 An ECS service that never stabilizes under `--full-wait` fails the deploy, so it
 exits non-zero rather than `2`. A CloudFront wait that runs out does not fail

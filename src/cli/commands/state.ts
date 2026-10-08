@@ -2997,14 +2997,15 @@ async function stateDestroyCommand(
         return laterRefs.some((r) => r.region === options.stackRegion || !r.region);
       });
     // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
-    // sequential loop (one listing, one run-wide probe cap); each stack's
-    // destroy then awaits its own memoized result.
+    // sequential loop (one listing, one run-wide probe cap), prioritized in
+    // the loop's order; each stack's destroy then awaits its own memoized
+    // result, which promotes it ahead of the rest.
     // Only for the records the loop below destroys (`stateDestroyTargets`).
     const crossPrefixCheck = { cache: new CrossPrefixScanCache(setup.stateBackend) };
     for (const name of stackNames) {
       const refs = stateRefs.filter((r) => r.stackName === name);
       for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
-        void crossPrefixCheck.cache.full(name, ref.region ?? setup.region);
+        void crossPrefixCheck.cache.full(name, ref.region ?? setup.region, 'prestart');
       }
     }
     for (const [stackIndex, stackName] of stackNames.entries()) {

@@ -739,8 +739,9 @@ export async function provisionUpdate(
   // go-to-k/cdkd#4705: the plan-time cross-prefix check never saw this
   // replacement either, so it is asked first (`stage` 'late'). Its refusal
   // (another prefix records the stack, or the check failed) is warned in full
-  // and keeps the resource, as a "no" does, but counts as unaddressed: the
-  // deploy exits 2 unless --allow-unaddressed. A 403 warns and proceeds.
+  // and keeps the resource, as a "no" does, but counts as unaddressed
+  // (`crossPrefixKept`): the deploy exits 2 unless --allow-unaddressed. A 403
+  // warns and proceeds.
   let replacedAnyway = false;
   let lateApproval: Promise<boolean> | undefined;
   let lateCrossPrefixRefused = false;
@@ -764,7 +765,7 @@ export async function provisionUpdate(
         } catch (error) {
           if (!(error instanceof CdkdError) || error.code !== STACK_UNDER_OTHER_PREFIX) throw error;
           lateCrossPrefixRefused = true;
-          if (counts) counts.deleteSkipped++;
+          if (counts) counts.crossPrefixKept = (counts.crossPrefixKept ?? 0) + 1;
           this.logger.warn(error.message);
           return false;
         }

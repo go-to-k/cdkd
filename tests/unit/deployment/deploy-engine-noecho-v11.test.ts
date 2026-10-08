@@ -1653,8 +1653,10 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
           expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
           // Refused before the late approval prompt.
           expect(approveDeployment).not.toHaveBeenCalled();
-          // The CLI exits 2 on a non-zero deleteSkipped (unless --allow-unaddressed).
-          expect(result.deleteSkipped).toBe(1);
+          // Its own counter (review R6-5): the CLI exits 2 on it (unless
+          // --allow-unaddressed), and it is not a skipped DELETE.
+          expect(result.crossPrefixKept).toBe(1);
+          expect(result.deleteSkipped).toBe(0);
           const warned = lines(logger.warn);
           expect(
             warned.filter((l) => l.startsWith('Refusing to replace a resource of stack'))
@@ -1676,7 +1678,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
           onDestructivePlan: gateOver({ kind: 'denied', error: denied, stage: 'list' }),
         }).deploy(STACK, rotatedTemplate());
         expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
-        expect(result.deleteSkipped).toBe(0);
+        expect(result.crossPrefixKept).toBeUndefined();
       });
 
       it('an unrelated CdkdError from the hook fails the deploy (review R5-3)', async () => {

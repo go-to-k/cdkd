@@ -587,18 +587,33 @@ if [ "${AUTO_RC}" -eq 0 ]; then
   echo "FAIL: the deploy under ${PREFIX_B} with a failing FailLater exited 0 (output above)" >&2
   exit 1
 fi
-# The premise: B's create was handed A's queue (otherwise nothing is tested).
+# The PREMISE, from evidence the rollback does not write: B's create was
+# handed A's queue. B's events record the Queue's RESOURCE_SUCCEEDED with A's
+# URL, or B's journal its completed CREATE. Without it nothing below is tested.
+PREMISE_EVENT="$( (events_b || true) | jq -r --arg q "${QUEUE_URL_A}" \
+  'select(.eventType == "RESOURCE_SUCCEEDED" and .logicalId == "Queue4A7E3555" and .physicalId == $q) | .physicalId' 2>/dev/null || true)"
+PREMISE_JOURNAL="$( (aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" - || true) | jq -r --arg q "${QUEUE_URL_A}" \
+  '[(.segments // [])[] | (.operations // [])[] | select(.logicalId == "Queue4A7E3555" and .physicalId == $q)] | length' 2>/dev/null || true)"
+echo "OBSERVE: premise-event=${PREMISE_EVENT:-<none>} premise-journal-ops=${PREMISE_JOURNAL:-<none>}"
+if [ -z "${PREMISE_EVENT}" ] && { [ -z "${PREMISE_JOURNAL}" ] || [ "${PREMISE_JOURNAL}" = "0" ]; }; then
+  echo "FAIL: premise not met: neither B's events nor B's journal show its Queue CREATE handed A's queue ${QUEUE_URL_A}, so the automatic rollback's keep is untested (output above)" >&2
+  exit 1
+fi
+# The KEEP. An SQS read can still answer for up to 60s after DeleteQueue, so
+# the queue's survival is not judged by that probe alone: the rollback's own
+# keep line naming ${PREFIX_A}, and B's record still naming the queue (a
+# deleted CREATE drops it), must agree with it.
+if ! grep -qF "${AUTO_ROLLBACK_KEEP_NEEDLE}" "${RUN_LOG}" || ! grep -qF "${SETTLE_KEEP_NEEDLE}" "${RUN_LOG}" ||
+  ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
+  echo "FAIL: the automatic rollback did not say it kept the queue for ${PREFIX_A}'s record ('${AUTO_ROLLBACK_KEEP_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
 if [ "${B_QUEUE}" != "${QUEUE_URL_A}" ]; then
-  echo "FAIL: premise: B's record names queue '${B_QUEUE}', not A's ${QUEUE_URL_A} (output above)" >&2
+  echo "FAIL: B's record names queue '${B_QUEUE}' after the rollback, not the kept ${QUEUE_URL_A} (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
 if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
   echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's automatic rollback (go-to-k/cdkd#4705)" >&2
-  exit 1
-fi
-if ! grep -qF "${AUTO_ROLLBACK_KEEP_NEEDLE}" "${RUN_LOG}" || ! grep -qF "${SETTLE_KEEP_NEEDLE}" "${RUN_LOG}" ||
-  ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
-  echo "FAIL: the automatic rollback did not say it kept the queue for ${PREFIX_A}'s record ('${AUTO_ROLLBACK_KEEP_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
 case "${MINIMAL_PARAM_B}" in

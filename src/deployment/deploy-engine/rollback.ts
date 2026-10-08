@@ -6,6 +6,7 @@ import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
+import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import {
   NESTED_PENDING_PARENT_REASON,
   type SettledNestedRows,
@@ -407,6 +408,18 @@ export async function performRollback(
   let crossPrefixAnswer: Promise<ForeignHolding> | undefined;
   const ctx = {
     ...this.rollbackExecutorContext(previousState, stackName),
+    // A `cdkd rollback` replays the journal the keep leaves, from the
+    // top-level stack (a nested child's journal included).
+    createdResourceRetryCommand: pasteableCommand(
+      'cdkd rollback',
+      [
+        {
+          value: (this.options.parentStackInfo?.parentStack ?? stackName).split('~')[0]!,
+          hole: 'stack',
+        },
+      ],
+      recoveryCommandFlags(this.options.refusalRecovery).flags
+    ).command,
     createdResourceHolder:
       crossPrefixHolder === undefined
         ? undefined

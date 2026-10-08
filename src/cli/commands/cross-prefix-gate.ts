@@ -79,7 +79,9 @@ export function startCrossPrefixScans(
             ? { kind: 'denied', error, stage: 'probe' }
             : { kind: 'failed', error };
         }
-        return cache.full(s.stackName, region);
+        // Ahead of need: queued in stack order behind any scan a caller is
+        // waiting on now. The gate promotes it once its engine waits on it.
+        return cache.full(s.stackName, region, 'prestart');
       })();
       return [crossPrefixScanKey(s.stackName, region), firstDeploy];
     })
@@ -97,11 +99,14 @@ export function createCrossPrefixDeployGate(opts: {
   bucket: string;
   recovery?: LockRecoveryContext | undefined;
   scan: Promise<CrossPrefixScanResult> | undefined;
+  /** The engine now waits on the scan: raise its priority (go-to-k/cdkd#4705 review R6-3). */
+  promote?: (() => void) | undefined;
 }): (stackName: string, state: StackState | undefined) => Promise<void> {
   return async (gateStackName, state) => {
     if (gateStackName !== opts.stackName) return;
     if (state !== undefined) return;
     if (opts.scan === undefined) return;
+    opts.promote?.();
     applyCrossPrefixScan(
       await opts.scan,
       {
@@ -173,6 +178,7 @@ export function createCrossPrefixHolder(opts: {
         return {
           kind: 'unreadable',
           what: safeMsg`the other state prefixes of bucket ${opts.bucket} could not be checked`,
+          retryable: true,
         };
       case 'denied':
         getLogger().warn(
@@ -218,6 +224,7 @@ export function crossPrefixEngineOptions(opts: {
       bucket: opts.bucket,
       recovery: opts.recovery,
       scan: opts.firstDeploy,
+      promote: () => opts.cache.target.rank(opts.stackName, opts.region, 'now'),
     }),
     onDestructivePlan: createCrossPrefixDestructiveGate({
       region: opts.region,

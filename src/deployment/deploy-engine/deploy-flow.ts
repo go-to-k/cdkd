@@ -1397,6 +1397,9 @@ export async function doDeployWithPrefetch(
       deleteSkipped: actualCounts.deleteSkipped + journaledOrphansLeft,
       updatePartial: actualCounts.updatePartial,
       nestedUpdatePartial: actualCounts.nestedUpdatePartial,
+      ...((actualCounts.crossPrefixKept ?? 0) > 0 && {
+        crossPrefixKept: actualCounts.crossPrefixKept,
+      }),
       unchanged: unchangedCount,
       durationMs,
       outputs: this.buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),

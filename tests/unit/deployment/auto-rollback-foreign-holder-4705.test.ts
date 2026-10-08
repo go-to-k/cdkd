@@ -12,7 +12,10 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import type { ForeignHolding } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import { createCrossPrefixHolder } from '../../../src/cli/commands/cross-prefix-gate.js';
-import { CrossPrefixScanCache } from '../../../src/state/cross-prefix-stack-scan.js';
+import {
+  CrossPrefixScanCache,
+  type CrossPrefixScanResult,
+} from '../../../src/state/cross-prefix-stack-scan.js';
 
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
   (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
@@ -78,6 +81,11 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
     otherStacks?: Record<string, Record<string, ResourceState>>;
     /** A region-less legacy record under this prefix: the same-prefix scan's fail-closed case. */
     legacyRef?: boolean;
+    /** Deploy as a nested CHILD engine (review R6-2). */
+    parentStackInfo?: { parentStack: string; parentLogicalId: string; parentRegion: string };
+    /** Two created queues before FailLater (review R6-8). */
+    twoQueues?: boolean;
+    refusalRecovery?: { profile?: string; stateBucket?: string };
   }): DeployEngine {
     const provider = {
       create: vi.fn(async (logicalId: string) => {
@@ -120,7 +128,9 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
       }),
     };
     lastBackend = stateBackend;
-    const deps: Record<string, string[]> = { Queue: [], FailLater: ['Queue'] };
+    const deps: Record<string, string[]> = opts.twoQueues
+      ? { Queue: [], Queue2: [], FailLater: ['Queue', 'Queue2'] }
+      : { Queue: [], FailLater: ['Queue'] };
     return new DeployEngine(
       stateBackend as never,
       {
@@ -129,13 +139,16 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
       } as never,
       {
         buildGraph: vi.fn().mockReturnValue({}),
-        getExecutionLevels: vi.fn().mockReturnValue([['Queue'], ['FailLater']]),
+        getExecutionLevels: vi
+          .fn()
+          .mockReturnValue(opts.twoQueues ? [['Queue', 'Queue2'], ['FailLater']] : [['Queue'], ['FailLater']]),
         getDirectDependencies: vi.fn((_dag: unknown, id: string) => deps[id] ?? []),
       } as never,
       {
         calculateDiff: vi.fn().mockResolvedValue(
           new Map([
             ['Queue', create('Queue')],
+            ...(opts.twoQueues ? ([['Queue2', create('Queue2')]] as const) : []),
             ['FailLater', create('FailLater')],
           ])
         ),
@@ -155,6 +168,8 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
       {
         concurrency: 4,
         ...(opts.crossPrefixHolder !== undefined && { crossPrefixHolder: opts.crossPrefixHolder }),
+        ...(opts.parentStackInfo !== undefined && { parentStackInfo: opts.parentStackInfo }),
+        ...(opts.refusalRecovery !== undefined && { refusalRecovery: opts.refusalRecovery }),
       },
       'us-east-1'
     );
@@ -230,6 +245,73 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
     );
     expect(deleteCalls).toEqual(['Queue']);
     expect(lastBackend!.listStacks).not.toHaveBeenCalled();
+  });
+
+  it('a nested CHILD engine asks by its own stack name and keeps on found (review R6-2)', async () => {
+    const child = 'App~Child';
+    const crossPrefixHolder = vi.fn(
+      async (): Promise<ForeignHolding> => ({
+        kind: 'unreadable',
+        what: 'bucket b also records this stack under another state prefix (team-a), whose record may hold it',
+      })
+    );
+    await expect(
+      buildEngine({
+        crossPrefixHolder,
+        parentStackInfo: { parentStack: STACK, parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+      }).deploy(child, template)
+    ).rejects.toThrow(/FailLater/);
+    expect(crossPrefixHolder).toHaveBeenCalledWith(child);
+    expect(deleteCalls).toEqual([]);
+    expect(keptLines()).toHaveLength(1);
+    expect(keptLines()[0]).toContain('(team-a)');
+  });
+
+  it('asks the other prefixes ONCE however many created resources it would delete (review R6-8)', async () => {
+    const crossPrefixHolder = vi.fn(async (): Promise<ForeignHolding> => undefined);
+    await expect(
+      buildEngine({ crossPrefixHolder, twoQueues: true }).deploy(STACK, template)
+    ).rejects.toThrow(/FailLater/);
+    expect(deleteCalls.sort()).toEqual(['Queue', 'Queue2']);
+    expect(crossPrefixHolder).toHaveBeenCalledTimes(1);
+  });
+
+  // Review R6-6: a keep because the check FAILED names how to finish the job.
+  const holderOver = (scan: CrossPrefixScanResult) => {
+    const cache = new CrossPrefixScanCache({
+      prefix: 'cdkd',
+      ownRecordExists: vi.fn(),
+      listTopLevelPrefixes: vi.fn(),
+      recordUnderPrefix: vi.fn(),
+    });
+    vi.spyOn(cache, 'full').mockResolvedValue(scan);
+    return createCrossPrefixHolder({ region: 'us-east-1', bucket: 'my-bucket', cache });
+  };
+
+  it('a check that failed keeps the resource and names the cdkd rollback, with the run\'s flags, that finishes it', async () => {
+    await expect(
+      buildEngine({
+        crossPrefixHolder: holderOver({ kind: 'failed', error: new Error('boom') }),
+        refusalRecovery: { profile: 'prod', stateBucket: 'my-bucket' },
+      }).deploy(STACK, template)
+    ).rejects.toThrow(/FailLater/);
+    expect(deleteCalls).toEqual([]);
+    expect(keptLines()).toHaveLength(1);
+    expect(keptLines()[0]).toMatch(
+      /Once S3 can be read, finish the rollback with: cdkd rollback App .*--profile prod.*--state-bucket my-bucket/
+    );
+  });
+
+  it('a found holder keeps the resource without that retry line (re-running cannot settle it)', async () => {
+    await expect(
+      buildEngine({
+        crossPrefixHolder: holderOver({ kind: 'found', prefixes: ['team-a'] }),
+        refusalRecovery: { profile: 'prod', stateBucket: 'my-bucket' },
+      }).deploy(STACK, template)
+    ).rejects.toThrow(/FailLater/);
+    expect(keptLines()).toHaveLength(1);
+    expect(keptLines()[0]).toContain('(team-a)');
+    expect(keptLines()[0]).not.toContain('finish the rollback');
   });
 
   it('clear: deletes the created resource as before', async () => {

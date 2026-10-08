@@ -887,12 +887,15 @@ export class NestedStackProvider implements ResourceProvider {
         parameters: childParameters,
         // go-to-k/cdkd#4705: the cross-prefix destructive-plan check is the
         // TOP-LEVEL stack's, taken before the parent's first provider call
-        // (a nested-stack row in the parent's plan triggers it). A child
-        // running it mid-parent-deploy would refuse after the parent changed
-        // things.
+        // (a nested-stack row added or updated in the parent's plan triggers
+        // it). A child running it mid-parent-deploy would refuse after the
+        // parent changed things.
         onDestructivePlan: undefined,
-        // Only the root engine settles a journal (go-to-k/cdkd#4705).
-        crossPrefixHolder: undefined,
+        // `crossPrefixHolder` IS inherited (go-to-k/cdkd#4705 review R6-2): a
+        // child's creates can be handed resources its twin under another
+        // prefix records (`Parent~Child`), and the child's AUTOMATIC rollback
+        // asks it, by the child's own name, before deleting one. A child never
+        // settles a journal, so that is its only use there.
         // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding
         // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
         // child's lines and is carried into its consuming resources' bags.
