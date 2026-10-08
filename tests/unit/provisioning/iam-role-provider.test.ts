@@ -396,6 +396,51 @@ describe('IAMRoleProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    // A secret-derived Path is recorded as its reference and handed here
+    // resolved (go-to-k/cdkd#4275): that is no change when the live role is on
+    // the resolved path, so an unrelated update stays in place. Refusing it
+    // would let `--replace` delete and re-create the role.
+    describe('a secret-derived Path (recorded as its reference)', () => {
+      const doc = { Version: '2012-10-17', Statement: [] };
+      const REF = '{{resolve:secretsmanager:role-path}}';
+      const updateWith = (): Promise<unknown> =>
+        withStackName('MyStack', () =>
+          provider.update(
+            'L',
+            'MyStack-L',
+            'AWS::IAM::Role',
+            { AssumeRolePolicyDocument: doc, Path: '/svc/', Description: 'v2' },
+            { AssumeRolePolicyDocument: doc, Path: REF, Description: 'v1' }
+          )
+        ).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      const sentOf = (klass: { new (...args: never[]): unknown }): unknown[] =>
+        mockSend.mock.calls.filter((c) => c[0] instanceof klass);
+
+      it('updates in place when the live role is on the resolved path', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/svc/' } } : {})
+        );
+
+        expect(await updateWith()).toBeUndefined();
+        expect(sentOf(UpdateRoleCommand)).toHaveLength(1);
+        expect(sentOf(CreateRoleCommand)).toHaveLength(0);
+        expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+      });
+
+      it('still refuses when the live role is on another path', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          Promise.resolve(cmd instanceof GetRoleCommand ? { Role: { Path: '/' } } : {})
+        );
+
+        expect(await updateWith()).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect(sentOf(CreateRoleCommand)).toHaveLength(0);
+        expect(sentOf(DeleteRoleCommand)).toHaveLength(0);
+      });
+    });
+
     // Issue #1819: a RoleName change is immutable, so the provider replaces --
     // create the new role, then delete the old. When that delete fails the old
     // role survives untracked, and before the outcome channel that was a bare

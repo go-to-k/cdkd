@@ -8,6 +8,7 @@
  * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../utils/logger.js';
 import { sameLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 
@@ -167,7 +168,7 @@ export function iamRolePathChanged(oldValue: unknown, newValue: unknown): boolea
   const oldPath = effective(oldValue);
   const newPath = effective(newValue);
   if (typeof oldPath === 'string' && typeof newPath === 'string') return oldPath !== newPath;
-  return JSON.stringify(oldPath) !== JSON.stringify(newPath);
+  return !isDeepStrictEqual(oldPath, newPath);
 }
 
 /**

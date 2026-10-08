@@ -23,12 +23,17 @@ describe('ReplacementRulesRegistry - AWS::IAM::Role Path (#4739)', () => {
     expect(registry.requiresReplacement(TYPE, 'Path', '/', undefined)).toBe(false);
     expect(registry.requiresReplacement(TYPE, 'Path', undefined, '/')).toBe(false);
     expect(registry.requiresReplacement(TYPE, 'Path', '', '/')).toBe(false);
+    expect(registry.requiresReplacement(TYPE, 'Path', '/', '')).toBe(false);
+    expect(registry.requiresReplacement(TYPE, 'Path', '/', null)).toBe(false);
+    expect(registry.requiresReplacement(TYPE, 'Path', '/a/', '')).toBe(true);
     expect(registry.requiresReplacement(TYPE, 'Path', '/a/', '/a/')).toBe(false);
   });
 
   it('a non-string side that differs is a replacement', () => {
     expect(iamRolePathChanged({ Ref: 'P' }, '/a/')).toBe(true);
     expect(iamRolePathChanged({ Ref: 'P' }, { Ref: 'P' })).toBe(false);
+    // Key order is not a difference.
+    expect(iamRolePathChanged({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(false);
   });
 
   it('stays classified, so the schema fallback does not decide it', () => {

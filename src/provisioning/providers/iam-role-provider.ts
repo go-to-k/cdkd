@@ -34,10 +34,13 @@ import { withRemovalDefaults } from '../update-removal.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
+  isSecretDerivedValue,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -428,7 +431,49 @@ export class IAMRoleProvider implements ResourceProvider {
     // RoleName and Path are immutable - cannot be changed after creation
     const newPath = (properties['Path'] as string | undefined) || '/';
     const oldPath = (previousProperties['Path'] as string | undefined) || '/';
-    const needsReplacement = newRoleName !== physicalId || newPath !== oldPath;
+    // A secret-derived Path is recorded as its `{{resolve:...}}` reference and
+    // handed here resolved, which is no change (go-to-k/cdkd#4275, the managed
+    // policy's sibling guard): the role's live path is the evidence. Read only
+    // for such a record, so an ordinary update pays no extra call. Without it,
+    // an unrelated update of such a role would be refused below, and under
+    // `--replace` the engine's fallback would delete and re-create it.
+    const pathBehindSecret =
+      newPath !== oldPath &&
+      isSecretDerivedValue(previousProperties['Path'], maskerOrIdentity(undefined));
+    let livePath: string | undefined;
+    if (pathBehindSecret) {
+      try {
+        livePath = (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role
+          ?.Path;
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapMaskedError(
+          log.mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to read the path of IAM role ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+      }
+    }
+    const pathChanged =
+      newPath !== oldPath &&
+      !(
+        pathBehindSecret &&
+        (await unchangedBehindSecretReference({
+          resourceType,
+          key: 'Path',
+          desired: newPath,
+          previous: previousProperties['Path'],
+          physicalName: livePath,
+        }))
+      );
+    const needsReplacement = newRoleName !== physicalId || pathChanged;
 
     // Issue #4023: the replacement arm re-derives the name inside `create()`,
     // so on a revert it would still create under the derived name and delete

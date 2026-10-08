@@ -282,6 +282,25 @@ describe('DeployEngine - an IAM role Path change replaces the role (go-to-k/cdkd
       expect(text).toContain(`user-supplied physical name (${STACK}-my-role)`);
       expect(text).toMatch(/cdkd deploy --replace/);
     });
+
+    it('under --replace is re-created under its name on the new path', async () => {
+      const err = await deploy(
+        { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Path: '/a/' },
+        { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Path: '/b/' },
+        { replace: true }
+      );
+
+      expect(err).toBeUndefined();
+      expect(callsFor(sdk.update, 'Role')).toHaveLength(0);
+      expect(calls.filter((c) => c.endsWith(' Role'))).toEqual([
+        'create Role',
+        'delete Role',
+        'create Role',
+      ]);
+      const newArn = arnOf('/b/', `${STACK}-my-role`);
+      expect(savedRole()?.attributes?.['Arn']).toBe(newArn);
+      expect((callsFor(sdk.update, 'Fn')[0]![3] as Record<string, unknown>)['Role']).toBe(newArn);
+    });
   });
 
   describe('what stays in place', () => {
