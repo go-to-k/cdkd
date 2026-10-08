@@ -721,7 +721,9 @@ export async function revertNestedChildFromJournal(args: {
       // flag; never from `ctx.options`: a deploy's automatic rollback, the
       // other driver of this replay, carries the deploy's context, which has
       // no such flag. The foreign-holder scan travels with it, scoped to the
-      // CHILD: its own record is not "another stack", every other one is.
+      // CHILD: its own record is not "another stack", every other one is. Only
+      // a journaled orphan's delete asks it, and this replay passes completed
+      // ops alone, so today it guards nothing but a future failed-ops arm.
       ...(ctx.destroyOptions?.removeProtection === true && {
         removeProtection: true,
         foreignHolder: makeForeignHolderScan(ctx.stateBackend)({
