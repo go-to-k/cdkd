@@ -91,7 +91,7 @@ drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#
 drift-revert-vpc	2026-10-07T18:43:38Z	PASS	371	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
-dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
+dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
 dynamodb-globaltable	2026-10-07T20:26:24Z	PASS	1613	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-gsi-update	2026-10-03T04:22:26Z	PASS	1316	verify.sh	rc ok, orph clean (#4283 PR #4449)
