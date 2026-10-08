@@ -84,7 +84,7 @@ describe('withRetry interrupt keeps the created-before-failure mark (go-to-k/cdk
 // made, which it deletes under its usual guards (state holds the id, Retain /
 // Snapshot), instead of leaving it untracked.
 describe('the rollback re-create retry keeps the mark on an interrupt (go-to-k/cdkd#4757)', () => {
-  it('on the inner loop', async () => {
+  it('through both loops', async () => {
     let interrupted = false;
     const create = vi.fn(() => {
       interrupted = true;
@@ -104,7 +104,8 @@ describe('the rollback re-create retry keeps the mark on an interrupt (go-to-k/c
       (e: unknown) => e
     );
     expect(create).toHaveBeenCalledOnce();
-    expect(String((error as Error).message)).toContain('interrupted');
+    // The outer loop's interrupt, carrying the mark the inner one took.
+    expect((error as Error).message).toBe('Rollback interrupted');
     expect(createdBeforeFailure(error, ID, TYPE)).toBe('bucket-1');
   });
 });
