@@ -478,9 +478,15 @@ AWS exposes a synchronous "flip protection off" API call.
   refused and the journal keeps it for a re-run. `cdkd rollback
   --remove-protection` does the same for the resources it deletes that a
   failed CREATE left behind (a journaled orphan, or under `--revert-failed` the
-  failed CREATE itself). On a journaled failed nested stack, the flag
-  cascades to that child stack's resources. A deploy's automatic rollback and the settle a
-  successful deploy runs never turn protection off.
+  failed CREATE itself), and for a resource whose CREATE the failed deploy
+  completed: that one is this stack's own state record, matched to the id the
+  journal recorded, so it is deleted with its protection off as `cdkd destroy
+  --remove-protection` deletes any resource in state. On a nested stack it
+  deletes, the flag cascades to that child stack's resources; a resource the
+  rollback reverts inside an existing nested stack, through that child's own
+  journal, keeps its protection. A deploy's
+  automatic rollback and the settle a successful deploy runs never turn
+  protection off.
 - **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
   protected resource — a replacement is a delete plus a create — fails at the
   delete whatever replace flags were passed. Clear the protection flag first:

@@ -9,6 +9,7 @@ import {
 } from './messages.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { runDeleteAttempt } from '../../provisioning/providers/deletion-protection-compensation.js';
 
 /** `replaySingle`'s 'orphan-flag' arm (#4426). */
 export async function replayOrphanFlag(s: ReplayOpScope): Promise<void> {
@@ -250,13 +251,22 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     op.logicalId,
     stateResources
   );
-  const createRollbackDelete = await provider.delete(
-    op.logicalId,
-    op.physicalId,
-    op.resourceType,
-    op.properties,
-    {
+  // go-to-k/cdkd#4678: `cdkd rollback --remove-protection` reaches a protected
+  // resource the rolled-back deploy CREATED and completed. Its identity is this
+  // stack's own state record, which `classifyRollbackOp` matched to
+  // `op.physicalId` — the trust `cdkd destroy --remove-protection` gives that
+  // record, and the one a state-recorded failed CREATE gets under
+  // `--revert-failed` (so no live identity read and no foreign-holder scan,
+  // which guard a journaled orphan no record holds). A deploy's automatic
+  // rollback and a nested child's in-process revert never set the flag. ONE
+  // attempt, no outer re-entry: the scope tells a protection flip's
+  // compensation that any failure is the last, so the guard is put back.
+  const removeProtection = ctx.removeProtection === true;
+  const physicalId = op.physicalId;
+  const deleteCreated = (): ReturnType<typeof provider.delete> =>
+    provider.delete(op.logicalId, physicalId, op.resourceType, op.properties, {
       expectedRegion: ctx.region,
+      ...(removeProtection && { removeProtection: true }),
       ...(createRollbackClaimed && { inlinePolicyClaimed: createRollbackClaimed }),
       ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
       ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
@@ -268,8 +278,10 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
       recordedAttributes: stateResources[op.logicalId]?.attributes,
       // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
       recordedNoEchoLeaves: stateResources[op.logicalId]?.noEchoLeaves,
-    }
-  );
+    });
+  const createRollbackDelete = removeProtection
+    ? await runDeleteAttempt(true, deleteCreated)
+    : await deleteCreated();
   throwIfDeleteSkipped(
     createRollbackDelete,
     op.logicalId,
