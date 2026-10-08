@@ -600,7 +600,7 @@ export async function updateInPlace(
       // go-to-k/cdkd#4682: still in the template, so a custom resource's
       // delete of the old record gets today's values at its NoEcho
       // coordinates instead of being skipped. Never persisted or logged.
-      const noEchoDeleteValues = noEchoDeleteValuesFromResolved({
+      const noEchoDeleteValues = await noEchoDeleteValuesFromResolved({
         record: currentResource,
         templateResource: template?.Resources?.[logicalId],
         resolvedProperties: resolvedProps,
@@ -608,6 +608,9 @@ export async function updateInPlace(
           this.noEchoPositionSources(stateResources, template)?.parameters ?? new Set(),
         conditions: this.noEchoConditions,
         secrets: updateSecrets,
+        inputSources:
+          template &&
+          this.maskedInputSources(template, stateResources, this.noEchoConditions, stackName),
       });
       this.logger.info(
         retainOldOnReplace

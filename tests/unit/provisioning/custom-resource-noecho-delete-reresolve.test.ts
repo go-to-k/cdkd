@@ -169,6 +169,8 @@ describe('CustomResourceProvider.delete: re-resolved NoEcho coordinates (go-to-k
       expect(result).toEqual({ outcome: 'skipped', reason: CR_MASKED_PROPERTIES_SKIP_REASON });
       expect(mockLambdaSend).not.toHaveBeenCalled();
       expect(logged.join('\n')).toContain('which no NoEcho coordinate of the record names');
+      // The import / scrub remedy: a deploy records the positions first.
+      expect(logged.join('\n')).toContain("a 'cdkd deploy' of the app first records");
     }
   );
 

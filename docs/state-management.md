@@ -988,8 +988,12 @@ report it" row above:
 
 On a `Delete`, cdkd re-resolves a position only while today's template still
 reads a `NoEcho` parameter there, for a resource of the same type, and, where
-the record holds the hash of the template text the last deploy used for that
-property (`maskedPropertyFingerprints`), only while today's text is the same.
+the record holds the hashes the last deploy took of that property's template
+text and of its resolved non-secret inputs (`maskedPropertyFingerprints`,
+`maskedPropertyInputFingerprints`), only while today's are the same: a changed
+expression, `Default`, condition or list element is refused. A hash the record
+holds but cannot compare (a refused one, an input unknown today) refuses too;
+a property the record never hashed (an older cdkd) is accepted.
 On `cdkd destroy` the expression must be built from parameters, the pseudo
 parameters `AWS::Region`, `AWS::Partition`, `AWS::URLSuffix`, `AWS::AccountId`
 and `AWS::StackName`, and literals; a nested stack's child gets the value its
@@ -1002,8 +1006,8 @@ last deploy, it is the new one. The delete stays skipped when:
 - the position read an attribute a custom resource or nested stack declared
   `NoEcho`, and the template still does: there is no template value to
   re-resolve;
-- the template no longer reads a `NoEcho` parameter there, its text for that
-  property changed since the last deploy, the resource changed type, the
+- the template no longer reads a `NoEcho` parameter there, that property's text
+  or resolved inputs changed since the last deploy, the resource changed type, the
   template carries a `Transform` (destroy does not expand macros), or it was
   synthesized for another region;
 - on `cdkd destroy`, the expression reads anything else (a resource, a
@@ -1013,7 +1017,9 @@ last deploy, it is the new one. The delete stays skipped when:
   dynamic reference, which a custom resource is never sent;
 - the record holds `***` at a position its `noEchoLeaves` does not name (one
   embedded through `Fn::Join`, a record an earlier cdkd wrote, or one
-  `cdkd import` / `cdkd scrub` wrote): nothing names what it stood for.
+  `cdkd import` / `cdkd scrub` wrote): nothing names what it stood for. For an
+  import / scrub record, a `cdkd deploy` of the app first records the `NoEcho`
+  positions, after which `cdkd destroy` sends the delete.
 
 The value goes into the handler's request only; the record keeps `***`. The
 warnings, errors and handler log lines cdkd prints are masked like a create's:

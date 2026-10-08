@@ -12,6 +12,7 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { NoEchoDeleteValues } from '../../../src/deployment/noecho-delete-reresolution.js';
+import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -131,7 +132,10 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
     );
   }
 
-  function state(): StackState {
+  const CR = 'Custom::Seed';
+  const TOKEN_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:h';
+
+  function state(resourceType = CR): StackState {
     return {
       version: 11 as never,
       region: REGION,
@@ -139,17 +143,40 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
       resources: {
         Topic: {
           physicalId: 'arn:aws:sns:us-east-1:123456789012:old-name',
-          resourceType: 'AWS::SNS::Topic',
+          resourceType,
           properties: { TopicName: 'old-name', DisplayName: SECRET_MASK },
           attributes: {},
           dependencies: [],
           noEchoLeaves: [['DisplayName']],
+          provisionedBy: 'sdk',
         },
       },
       outputs: {},
       lastModified: 0,
     };
   }
+
+  function templateOf(
+    properties: Record<string, unknown>,
+    parameters: Record<string, unknown> = {
+      Secret: { Type: 'String', NoEcho: true, Default: VALUE },
+    },
+    resourceType = CR
+  ): CloudFormationTemplate {
+    return {
+      Parameters: parameters,
+      Resources: { Topic: { Type: resourceType, Properties: properties } },
+    } as CloudFormationTemplate;
+  }
+
+  /** `--recreate-via-sdk-provider Topic`: a replacement of a resource still in the template. */
+  const recreate = {
+    recreateTargets: {
+      stackName: STACK,
+      viaCcApi: new Set<string>(),
+      viaSdkProvider: new Set(['Topic']),
+    },
+  };
 
   function topicDeleteContext(): Record<string, unknown> {
     const del = provider.delete!.mock.calls.filter((c) => c[0] === 'Topic');
@@ -167,18 +194,12 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
     }
   }
 
-  it("re-resolves the replaced record's NoEcho coordinate while the resource is still in the template", async () => {
+  it("re-resolves a custom resource's NoEcho coordinate on a replacement while it is still in the template", async () => {
     stateBackend.getState!.mockResolvedValue({ state: state(), etag: 'etag-old' });
-    const template = {
-      Parameters: { Secret: { Type: 'String', NoEcho: true, Default: VALUE } },
-      Resources: {
-        Topic: {
-          Type: 'AWS::SNS::Topic',
-          Properties: { TopicName: 'new-name', DisplayName: { Ref: 'Secret' } },
-        },
-      },
-    } as CloudFormationTemplate;
-    await makeEngine().deploy(STACK, template);
+    await makeEngine(recreate).deploy(
+      STACK,
+      templateOf({ ServiceToken: TOKEN_ARN, TopicName: 'old-name', DisplayName: { Ref: 'Secret' } })
+    );
 
     const context = topicDeleteContext();
     expect(context['recordedNoEchoLeaves']).toEqual([['DisplayName']]);
@@ -190,6 +211,24 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
       DisplayName: SECRET_MASK,
     });
     nothingPersistedOrLoggedCarries(VALUE);
+  });
+
+  it("hands NO values to a replacement of a type whose delete does not read them (an SNS topic)", async () => {
+    stateBackend.getState!.mockResolvedValue({
+      state: state('AWS::SNS::Topic'),
+      etag: 'etag-old',
+    });
+    await makeEngine().deploy(
+      STACK,
+      templateOf(
+        { TopicName: 'new-name', DisplayName: { Ref: 'Secret' } },
+        undefined,
+        'AWS::SNS::Topic'
+      )
+    );
+    const context = topicDeleteContext();
+    expect(context['recordedNoEchoLeaves']).toEqual([['DisplayName']]);
+    expect(context).not.toHaveProperty('noEchoDeleteValues');
   });
 
   it('hands NO values to the delete of a resource the template removed (the skip stays)', async () => {
@@ -216,54 +255,47 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
       { ChildSecret: { Ref: 'ParentSecret' } },
       { parameters: new Set(['ParentSecret']) }
     );
-    const template = {
-      // Declared PLAIN in the child: only the parent knows it is NoEcho.
-      Parameters: { ChildSecret: { Type: 'String' } },
-      Resources: {
-        Topic: {
-          Type: 'AWS::SNS::Topic',
-          Properties: { TopicName: 'new-name', DisplayName: { Ref: 'ChildSecret' } },
-        },
-      },
-    } as CloudFormationTemplate;
     await makeEngine({
+      ...recreate,
       parameters: { ChildSecret: VALUE },
       inheritedSecrets: inherited,
       passedNoEchoParameters: passedNoEchoParametersOf(inherited),
       parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: REGION },
-    }).deploy(STACK, template);
+    }).deploy(
+      STACK,
+      // Declared PLAIN in the child: only the parent knows it is NoEcho.
+      templateOf(
+        { ServiceToken: TOKEN_ARN, TopicName: 'old-name', DisplayName: { Ref: 'ChildSecret' } },
+        { ChildSecret: { Type: 'String' } }
+      )
+    );
 
     const values = topicDeleteContext()['noEchoDeleteValues'] as NoEchoDeleteValues;
     expect(values.leaves).toEqual([{ coordinate: ['DisplayName'], value: VALUE }]);
     nothingPersistedOrLoggedCarries(VALUE);
   });
 
-  it.each([
-    ['--recreate-via-sdk-provider (delete first)', 'sdk', 'old-name'],
-    ['--recreate-via-cc-api (delete first)', 'cc', 'old-name'],
-    ['--recreate-via-cc-api under a new name (create first)', 'cc', 'new-name'],
-  ])('re-resolves on the %s replacement too', async (_label, via, topicName) => {
+  it("refuses a coordinate whose property's resolved non-secret INPUT moved since the deploy (#4543)", async () => {
     const recorded = state();
-    recorded.resources['Topic']!.provisionedBy = via === 'sdk' ? 'cc-api' : 'sdk';
+    const template = templateOf(
+      {
+        ServiceToken: TOKEN_ARN,
+        TopicName: 'old-name',
+        DisplayName: { 'Fn::Join': [':', [{ Ref: 'Host' }, { Ref: 'Secret' }]] },
+      },
+      {
+        Secret: { Type: 'String', NoEcho: true, Default: VALUE },
+        Host: { Type: 'String', Default: 'host-today' },
+      }
+    );
+    const text = maskedPropertyFingerprint(template.Resources['Topic']!.Properties!['DisplayName']);
+    // The text is today's; the INPUT half was taken when `Host` was different.
+    recorded.resources['Topic']!.maskedPropertyFingerprints = { DisplayName: text };
+    recorded.resources['Topic']!.maskedPropertyInputFingerprints = {
+      DisplayName: `inputs-sha256:${'0'.repeat(64)}+${text}`,
+    };
     stateBackend.getState!.mockResolvedValue({ state: recorded, etag: 'etag-old' });
-    const template = {
-      Parameters: { Secret: { Type: 'String', NoEcho: true, Default: VALUE } },
-      Resources: {
-        Topic: {
-          Type: 'AWS::SNS::Topic',
-          Properties: { TopicName: topicName, DisplayName: { Ref: 'Secret' } },
-        },
-      },
-    } as CloudFormationTemplate;
-    await makeEngine({
-      recreateTargets: {
-        stackName: STACK,
-        viaCcApi: via === 'cc' ? new Set(['Topic']) : new Set<string>(),
-        viaSdkProvider: via === 'sdk' ? new Set(['Topic']) : new Set<string>(),
-      },
-    }).deploy(STACK, template);
-    const values = topicDeleteContext()['noEchoDeleteValues'] as NoEchoDeleteValues;
-    expect(values.leaves).toEqual([{ coordinate: ['DisplayName'], value: VALUE }]);
-    nothingPersistedOrLoggedCarries(VALUE);
+    await makeEngine(recreate).deploy(STACK, template);
+    expect(topicDeleteContext()).not.toHaveProperty('noEchoDeleteValues');
   });
 });

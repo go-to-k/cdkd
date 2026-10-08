@@ -8,7 +8,10 @@ import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.
 import { displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getLogger } from '../../utils/logger.js';
-import type { TemplateNoEchoReresolver } from '../../deployment/noecho-delete-reresolution.js';
+import {
+  type TemplateNoEchoReresolver,
+  readsNoEchoDeleteValues,
+} from '../../deployment/noecho-delete-reresolution.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import {
@@ -2632,13 +2635,4 @@ export async function scanActiveConsumers(
     })
   );
   return results.filter((r) => r !== null).flat();
-}
-
-/** The delete providers that read `DeleteContext.noEchoDeleteValues` (go-to-k/cdkd#4682). */
-function readsNoEchoDeleteValues(resourceType: string): boolean {
-  return (
-    resourceType === 'AWS::CloudFormation::CustomResource' ||
-    resourceType.startsWith('Custom::') ||
-    resourceType === 'AWS::CloudFormation::Stack'
-  );
 }

@@ -150,7 +150,7 @@ export const CR_MASKED_PROPERTIES_SKIP_REASON =
 const NOECHO_RERESOLUTION_BOUND =
   `cdkd re-resolves such a coordinate only where it holds the template — 'cdkd destroy' ` +
   `with the app, or a 'cdkd deploy' replacing a resource still in its template — and only ` +
-  `while today's template reads a NoEcho parameter there with the property's text unchanged; ` +
+  `while today's template reads a NoEcho parameter there with the property's text and inputs unchanged; ` +
   `an attribute a producer declared NoEcho has no template value to re-resolve.`;
 
 /** The NoEcho-mask skip's remedy for this delete's phase. */
@@ -2143,7 +2143,9 @@ export class CustomResourceProvider implements ResourceProvider {
           `'***' redaction mask, which no NoEcho coordinate of the record names, so cdkd cannot ` +
           `re-resolve it and its handler would receive the mask in ResourceProperties; skipping ` +
           `deletion — the handler is not invoked, so anything this custom resource manages is ` +
-          `LEFT IN PLACE. ` +
+          `LEFT IN PLACE. For a record 'cdkd import' or 'cdkd scrub' wrote, a 'cdkd deploy' of the ` +
+          `app first records which positions hold a NoEcho value, after which 'cdkd destroy' ` +
+          `sends the delete. ` +
           safeMsg`${noEchoPropertiesRemedy(context, logicalId)}`
       );
       return { outcome: 'skipped', reason: CR_MASKED_PROPERTIES_SKIP_REASON };

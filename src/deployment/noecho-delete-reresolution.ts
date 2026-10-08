@@ -17,8 +17,15 @@ import {
 } from './secret-redaction.js';
 import { canonicalJson } from './secret-redaction/noecho-leaves.js';
 import {
+  type InputFingerprinter,
+  type MaskedInputSources,
+  type PassedParameterClass,
+  classifyPassedParameters,
+  inputFingerprinter,
   maskedPropertyFingerprint,
   maskedPropertyFingerprintsOf,
+  maskedPropertyInputFingerprintsOf,
+  parameterInputsFor,
 } from './masked-property-fingerprints.js';
 import { carriesResolvedSecret } from '../provisioning/custom-resource-secure-references.js';
 import { getLogger } from '../utils/logger.js';
@@ -49,6 +56,23 @@ export interface NoEchoDeleteValues {
   readonly leaves: readonly { readonly coordinate: NoEchoCoordinate; readonly value: unknown }[];
   /** Masks every re-resolved value, and the `NoEcho` values read, in a text about to be printed. */
   readonly maskSecrets: (text: string) => string;
+}
+
+/**
+ * The delete providers that read {@link NoEchoDeleteValues}: a custom
+ * resource, and a nested-stack row handing them to its child. No other
+ * provider's `DeleteContext` is given the plaintext.
+ */
+export function readsNoEchoDeleteValues(resourceType: string): boolean {
+  return (
+    resourceType === 'AWS::CloudFormation::CustomResource' ||
+    resourceType.startsWith('Custom::') ||
+    resourceType === 'AWS::CloudFormation::Stack'
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** The record's `noEchoLeaves` coordinates whose value holds the mask. */
@@ -115,29 +139,39 @@ function templateNodesAt(
 }
 
 /**
- * Whether today's template spells the top-level property holding
- * `coordinate` as the deploy that wrote the record did: the record's
- * `maskedPropertyFingerprints` (go-to-k/cdkd#4451) hash that template TEXT. A
- * coordinate whose property text moved may read ANOTHER source today (a
- * different `NoEcho` parameter, an attribute then, a parameter now), so it is
- * refused. A record with no usable fingerprint for the property (an older
- * cdkd, a refused hash) has nothing to compare and is accepted.
+ * Whether the top-level property holding `coordinate` is today what the deploy
+ * that wrote the record sent: its template TEXT (`maskedPropertyFingerprints`,
+ * go-to-k/cdkd#4451) and, where the record holds one bound to that text, its
+ * resolved non-secret INPUTS (`maskedPropertyInputFingerprints`, #4543: a
+ * changed `Default`, a flipped condition, a dropped `AWS::NoValue` element). A
+ * coordinate whose property moved may read ANOTHER source today, so it is
+ * refused. An entry the record holds but cannot compare (a refused or
+ * malformed text hash, an input fingerprint unknown today) refuses too; only
+ * a property the record never fingerprinted (an older cdkd) is accepted.
  */
-function templateTextUnchanged(
+async function fingerprintsUnchanged(
   record: ResourceState,
   templateProperties: unknown,
-  coordinate: NoEchoCoordinate
-): boolean {
+  coordinate: NoEchoCoordinate,
+  fingerprinter: InputFingerprinter | undefined
+): Promise<boolean> {
   const key = coordinate[0];
   if (typeof key !== 'string') return false;
-  const recorded = maskedPropertyFingerprintsOf(record).get(key);
-  if (recorded === undefined) return true;
   const props =
     templateProperties !== null && typeof templateProperties === 'object'
       ? (templateProperties as Record<string, unknown>)
       : {};
-  if (!Object.hasOwn(props, key)) return false;
-  return recorded === maskedPropertyFingerprint(props[key]);
+  const raw = (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints;
+  const hasEntry = raw !== null && typeof raw === 'object' && Object.hasOwn(raw, key);
+  if (!hasEntry) return true;
+  const recorded = maskedPropertyFingerprintsOf(record).get(key);
+  if (recorded === undefined || !Object.hasOwn(props, key)) return false;
+  if (recorded !== maskedPropertyFingerprint(props[key])) return false;
+  const bound = maskedPropertyInputFingerprintsOf(record).get(key);
+  if (bound === undefined) return true;
+  // Same text half by construction, so the whole strings compare the inputs.
+  const now = fingerprinter === undefined ? undefined : await fingerprinter(key);
+  return now !== undefined && now === bound;
 }
 
 /**
@@ -146,15 +180,19 @@ function templateTextUnchanged(
  * at each coordinate the template still serves from a `NoEcho` parameter.
  * `secrets` is the resolution pass's bag; it is copied, never written.
  */
-export function noEchoDeleteValuesFromResolved(options: {
+export async function noEchoDeleteValuesFromResolved(options: {
   record: ResourceState;
   templateResource: { Type?: unknown; Properties?: unknown } | undefined;
   resolvedProperties: Record<string, unknown> | undefined;
   noEchoParameters: ReadonlySet<string>;
   conditions?: Readonly<Record<string, boolean>> | undefined;
   secrets: RecordedSecretValues;
-}): NoEchoDeleteValues | undefined {
+  /** This deploy's input-fingerprint sources (`DeployEngine.maskedInputSources`). */
+  inputSources?: MaskedInputSources | undefined;
+}): Promise<NoEchoDeleteValues | undefined> {
   const { record, templateResource, resolvedProperties } = options;
+  // Only the providers that read the values are handed plaintext.
+  if (!readsNoEchoDeleteValues(record.resourceType)) return undefined;
   const masked = maskedNoEchoCoordinates(record.properties, noEchoLeavesOf(record));
   if (masked.length === 0 || templateResource === undefined || resolvedProperties === undefined) {
     return undefined;
@@ -171,10 +209,15 @@ export function noEchoDeleteValuesFromResolved(options: {
   );
   const bag: RecordedSecretValues = new Map(options.secrets);
   carryLogOnlyValues(options.secrets, bag);
+  const templateProps = isRecord(templateResource.Properties) ? templateResource.Properties : {};
+  const fingerprinter =
+    options.inputSources === undefined
+      ? undefined
+      : inputFingerprinter(templateProps, options.inputSources);
   const leaves: { coordinate: NoEchoCoordinate; value: unknown }[] = [];
   for (const coordinate of masked) {
     if (!nodes.has(canonicalJson(coordinate))) continue;
-    if (!templateTextUnchanged(record, templateResource.Properties, coordinate)) continue;
+    if (!(await fingerprintsUnchanged(record, templateProps, coordinate, fingerprinter))) continue;
     const value = valueAtCoordinate(resolvedProperties, coordinate);
     if (value === undefined || carriesSecretMask(value)) continue;
     recordLeaves(bag, value);
@@ -268,6 +311,8 @@ export interface TemplateNoEchoReresolverOptions {
   maskedParameters?: ReadonlySet<string> | undefined;
   /** The parent's log-only needles, so the child's masks cover what it was handed. */
   inheritedSecrets?: RecordedSecretValues | undefined;
+  /** How the parent classed each value it passes (#4543), for the child's input fingerprints. */
+  passedClasses?: ReadonlyMap<string, PassedParameterClass> | undefined;
 }
 
 /**
@@ -332,6 +377,36 @@ export class TemplateNoEchoReresolver {
     return this.parametersPromise;
   }
 
+  /**
+   * The input-fingerprint sources a deploy of this template builds (#4543),
+   * over no resource records: a `Ref` / `Fn::GetAtt` of a resource reads as
+   * an unknown input, which refuses a property that bound one.
+   */
+  private inputSources(parameters: Record<string, unknown>): MaskedInputSources {
+    const { parameterInput, bound } = parameterInputsFor({
+      template: this.options.template,
+      values: parameters,
+      nestedChild: this.options.parameters !== undefined,
+      supplied: this.options.parameters,
+      passedClasses: this.options.passedClasses,
+    });
+    return {
+      template: this.options.template,
+      parameterInput,
+      resolve: async (node: unknown) => {
+        const secrets: RecordedSecretValues = new Map();
+        const value = await this.resolver.resolve(structuredClone(node), {
+          template: this.options.template,
+          resources: {},
+          parameters: bound,
+          stackName: this.options.stackName,
+          recordedSecretValues: secrets,
+        });
+        return { value, secrets };
+      },
+    };
+  }
+
   /** This stack's `NoEcho` values (and what it inherited) as log-only needles of a fresh bag. */
   private async noEchoNeedles(): Promise<RecordedSecretValues> {
     const bag = this.newBag();
@@ -371,6 +446,8 @@ export class TemplateNoEchoReresolver {
       undefined
     );
     const declared = new Set(Object.keys(this.options.template.Parameters ?? {}));
+    const templateProps = isRecord(templateResource.Properties) ? templateResource.Properties : {};
+    const fingerprinter = inputFingerprinter(templateProps, this.inputSources(parameters));
     const refused = this.options.maskedParameters ?? new Set<string>();
     const bag = await this.noEchoNeedles();
     const leaves: { coordinate: NoEchoCoordinate; value: unknown }[] = [];
@@ -379,7 +456,9 @@ export class TemplateNoEchoReresolver {
       if (!nodes.has(key)) continue;
       const node = nodes.get(key);
       if (!readsParametersOnly(node, declared, refused)) continue;
-      if (!templateTextUnchanged(record, templateResource.Properties, coordinate)) continue;
+      if (!(await fingerprintsUnchanged(record, templateProps, coordinate, fingerprinter))) {
+        continue;
+      }
       let value: unknown;
       try {
         value = await this.resolver.resolve(structuredClone(node), {
@@ -466,7 +545,21 @@ export class TemplateNoEchoReresolver {
           carryLogOnlyValuesCarriedBy(parentNeedles, inheritedSecrets, parameters[name]);
         }
       }
+      // How this stack classes each value the row passes, as its deploy did,
+      // so the child's input fingerprints compare like for like.
+      const parameters0 = await this.boundParameters();
+      const rowTemplate = (
+        this.options.template.Resources as Record<string, unknown> | undefined
+      )?.[logicalId] as { Properties?: { Parameters?: unknown } } | undefined;
+      const passedClasses =
+        parameters0 === undefined
+          ? undefined
+          : await classifyPassedParameters(
+              rowTemplate?.Properties?.Parameters,
+              this.inputSources(parameters0)
+            ).catch(() => undefined);
       return new TemplateNoEchoReresolver({
+        ...(passedClasses !== undefined && { passedClasses }),
         template: child.template,
         stackName: childStackName,
         region: this.options.region,

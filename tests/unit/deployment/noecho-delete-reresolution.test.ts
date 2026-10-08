@@ -23,7 +23,11 @@ import {
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
+import {
+  maskedInputFingerprint,
+  maskedPropertyFingerprint,
+  parameterInputsFor,
+} from '../../../src/deployment/masked-property-fingerprints.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 const VALUE = 'parent-noecho-default-4682';
@@ -273,8 +277,8 @@ describe('noEchoDeleteValuesFromResolved (a deploy replacing a resource still in
     secrets: new Map<string, string>(),
   };
 
-  it("takes today's resolved value at a coordinate the template serves from a NoEcho parameter", () => {
-    const values = noEchoDeleteValuesFromResolved({
+  it("takes today's resolved value at a coordinate the template serves from a NoEcho parameter", async () => {
+    const values = await noEchoDeleteValuesFromResolved({
       ...base,
       record: record({ Token: SECRET_MASK }, [['Token']]),
     });
@@ -287,9 +291,9 @@ describe('noEchoDeleteValuesFromResolved (a deploy replacing a resource still in
     ['the type changed', { templateResource: { ...base.templateResource, Type: 'Custom::Other' } }],
     ['the parameter is no longer NoEcho', { noEchoParameters: new Set<string>() }],
     ['the resolved bag holds the mask', { resolvedProperties: { ServiceToken: TOKEN, Token: SECRET_MASK } }],
-  ])('answers nothing when %s', (_label, override) => {
+  ])('answers nothing when %s', async (_label, override) => {
     expect(
-      noEchoDeleteValuesFromResolved({
+      await noEchoDeleteValuesFromResolved({
         ...base,
         ...override,
         record: record({ Token: SECRET_MASK }, [['Token']]),
@@ -430,7 +434,7 @@ describe('review round 1 (PR #4742)', () => {
     );
     expect(moved).toBeUndefined();
     expect(
-      noEchoDeleteValuesFromResolved({
+      await noEchoDeleteValuesFromResolved({
         record: recordWith(maskedPropertyFingerprint({ Ref: 'OtherSecret' })),
         templateResource: today.Resources['Cr'] as never,
         resolvedProperties: { ServiceToken: TOKEN, Token: VALUE },
@@ -440,9 +444,9 @@ describe('review round 1 (PR #4742)', () => {
     ).toBeUndefined();
   });
 
-  it('N1: a deploy whose resource bag holds a resolved secret hands the delete nothing', () => {
+  it('N1: a deploy whose resource bag holds a resolved secret hands the delete nothing', async () => {
     expect(
-      noEchoDeleteValuesFromResolved({
+      await noEchoDeleteValuesFromResolved({
         record: record({ Token: SECRET_MASK }, [['Token']]),
         templateResource: { Type: 'Custom::Seed', Properties: { Token: { Ref: 'Secret' } } },
         resolvedProperties: { Token: VALUE },
@@ -481,5 +485,66 @@ describe('review round 1 (PR #4742)', () => {
     );
     expect(values).toBeUndefined();
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('a REFUSED or malformed text fingerprint refuses the coordinate (it cannot be compared)', async () => {
+    const today = template({ Token: { Ref: 'Secret' } });
+    for (const entry of ['refused:secret-in-template', 'garbage', 42]) {
+      const values = await reresolver(today).valuesFor('Cr', {
+        ...record({ Token: SECRET_MASK }, [['Token']]),
+        maskedPropertyFingerprints: { Token: entry } as never,
+      });
+      expect(values).toBeUndefined();
+    }
+    // Only a property the record never fingerprinted is accepted.
+    expect(
+      (await reresolver(today).valuesFor('Cr', record({ Token: SECRET_MASK }, [['Token']])))?.leaves
+    ).toEqual([{ coordinate: ['Token'], value: VALUE }]);
+  });
+
+  it("refuses on destroy when the property's resolved non-secret input moved (a changed Default)", async () => {
+    const node = { 'Fn::Join': [':', [{ Ref: 'Plain' }, { Ref: 'Secret' }]] };
+    const today = template({ Token: node });
+    const text = maskedPropertyFingerprint(node);
+    const withInput = (input: string): ResourceState => ({
+      ...record({ Token: SECRET_MASK }, [['Token']]),
+      maskedPropertyFingerprints: { Token: text },
+      maskedPropertyInputFingerprints: { Token: input },
+    });
+    // The fingerprint a deploy of TODAY's template stamps.
+    const sources = {
+      template: today,
+      parameterInput: parameterInputsFor({
+        template: today,
+        values: { Secret: VALUE, Plain: 'plain' },
+      }).parameterInput,
+      resolve: () => Promise.reject(new Error('no resources')),
+    };
+    const current = await maskedInputFingerprint(node, sources);
+    expect(current).toBeDefined();
+    expect((await reresolver(today).valuesFor('Cr', withInput(current!)))?.leaves).toEqual([
+      { coordinate: ['Token'], value: `plain:${VALUE}` },
+    ]);
+    // Stamped when `Plain` held another value: the same text, another input.
+    const before = await maskedInputFingerprint(node, {
+      ...sources,
+      parameterInput: parameterInputsFor({
+        template: today,
+        values: { Secret: VALUE, Plain: 'plain-before' },
+      }).parameterInput,
+    });
+    expect(await reresolver(today).valuesFor('Cr', withInput(before!))).toBeUndefined();
+  });
+
+  it('the deploy twin hands nothing to a type whose delete does not read the values', async () => {
+    expect(
+      await noEchoDeleteValuesFromResolved({
+        record: record({ Token: SECRET_MASK }, [['Token']], 'AWS::SNS::Topic'),
+        templateResource: { Type: 'AWS::SNS::Topic', Properties: { Token: { Ref: 'Secret' } } },
+        resolvedProperties: { Token: VALUE },
+        noEchoParameters: new Set(['Secret']),
+        secrets: new Map(),
+      })
+    ).toBeUndefined();
   });
 });

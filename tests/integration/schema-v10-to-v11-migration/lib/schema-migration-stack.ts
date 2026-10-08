@@ -32,6 +32,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   CDKD_V11_CR_SEED        the NoEcho custom resource's Seed property
  *   CDKD_V11_ADD_DEPENDENT  `1` adds a dependent reading the custom resource's
  *                           declared-NoEcho attribute (#2449's refusal)
+ *   CDKD_V11_PARAM_CR_HANDLER2 `1` points ParamCr at a second handler, so a
+ *                           deploy replaces it and deletes the old copy (#4682)
  *   CDKD_V11_PARAM_CR       `1` adds ParamCr, a custom resource reading
  *                           TokenParam (review round 9): removing it, or a
  *                           template-less state destroy, must SKIP the delete
@@ -118,11 +120,7 @@ export class SchemaV10ToV11MigrationStack extends cdk.Stack {
     // A custom resource answering `NoEcho: true` (issue #2274; its declared
     // attribute names are persisted from v11, issue #2449). The simple-handler
     // response shape, as in custom-resource-getatt-data.
-    const handler = new lambda.Function(this, 'NoEchoCrHandler', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      timeout: cdk.Duration.seconds(30),
-      code: lambda.Code.fromInline(`
+    const handlerCode = `
 exports.handler = async (event) => {
   if (event.RequestType === 'Delete') {
     // ParamCr only: a Delete that reaches the handler writes this marker. Its
@@ -139,29 +137,40 @@ exports.handler = async (event) => {
     }
     return { Status: 'SUCCESS', PhysicalResourceId: event.PhysicalResourceId || 'cr-v11' };
   }
-  const seed = (event.ResourceProperties || {}).Seed || 'noseed';
+  const props = event.ResourceProperties || {};
+  const seed = props.Seed || 'noseed';
   return {
-    PhysicalResourceId: 'cr-v11-' + seed,
+    // ParamCr names its own id, so a replacement's new copy is told apart.
+    PhysicalResourceId: props.PhysicalId || 'cr-v11-' + seed,
     // An inert literal, distinctive per seed so verify.sh can grep for it.
     Data: { Secret: 'cdkdv11crsecret' + seed },
     NoEcho: true,
   };
 };
-`),
-    });
+`;
     const markerName = `${prefix}/param-cr-delete-marker`;
-    handler.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['ssm:PutParameter'],
-        resources: [
-          cdk.Stack.of(this).formatArn({
-            service: 'ssm',
-            resource: 'parameter',
-            resourceName: markerName.slice(1),
-          }),
-        ],
-      })
-    );
+    const newHandler = (id: string): lambda.Function => {
+      const fn = new lambda.Function(this, id, {
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: 'index.handler',
+        timeout: cdk.Duration.seconds(30),
+        code: lambda.Code.fromInline(handlerCode),
+      });
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['ssm:PutParameter'],
+          resources: [
+            cdk.Stack.of(this).formatArn({
+              service: 'ssm',
+              resource: 'parameter',
+              resourceName: markerName.slice(1),
+            }),
+          ],
+        })
+      );
+      return fn;
+    };
+    const handler = newHandler('NoEchoCrHandler');
     const cr = new cdk.CustomResource(this, 'NoEchoCr', {
       serviceToken: handler.functionArn,
       properties: { Seed: required('CDKD_V11_CR_SEED') },
@@ -184,9 +193,17 @@ exports.handler = async (event) => {
       // template-less `cdkd state destroy`, skip its Delete rather than send the
       // mask (#4043 round 8); `cdkd destroy` with this app re-resolves the
       // Token and delivers it (#4682).
+      // `CDKD_V11_PARAM_CR_HANDLER2=1` points it at a second handler (same
+      // code): `ServiceToken` is create-only, so a deploy REPLACES ParamCr and
+      // deletes the old copy while it is still in the template (#4682).
+      const second = process.env.CDKD_V11_PARAM_CR_HANDLER2 === '1';
       new cdk.CustomResource(this, 'ParamCr', {
-        serviceToken: handler.functionArn,
-        properties: { Token: token.valueAsString, MarkerName: markerName },
+        serviceToken: (second ? newHandler('ParamCrHandler2') : handler).functionArn,
+        properties: {
+          Token: token.valueAsString,
+          MarkerName: markerName,
+          PhysicalId: second ? 'param-cr-b' : 'param-cr-a',
+        },
       });
     }
   }
