@@ -276,6 +276,7 @@
         "lost-child-after-failed-deploy",
         "macro-expansion",
         "migrate-from-cfn",
+        "neptune-fix-forward-orphan",
         "nested-required-preflight",
         "nested-stack",
         "nested-stack-3level",
@@ -440,6 +441,7 @@
         "fsx-lustre",
         "import-retain-destroy",
         "lambda-url-authtype-replay",
+        "neptune-fix-forward-orphan",
         "nested-stack-rollback",
         "rds-fix-forward-orphan",
         "remove-protection-journaled-orphan",
@@ -652,6 +654,7 @@
         "macro-expansion",
         "migrate-from-cfn",
         "multi-asset",
+        "neptune-fix-forward-orphan",
         "nested-required-preflight",
         "nested-stack-3level",
         "nested-stack-deep",
@@ -998,6 +1001,7 @@
         "macro-expansion",
         "migrate-from-cfn",
         "multi-asset",
+        "neptune-fix-forward-orphan",
         "nested-required-preflight",
         "nested-stack",
         "nested-stack-3level",
@@ -1144,6 +1148,7 @@
       "integs": [
         "docdb-fix-forward-orphan",
         "docdb-neptune",
+        "neptune-fix-forward-orphan",
         "rds-fix-forward-orphan",
         "remove-protection"
       ]
@@ -1156,6 +1161,7 @@
         "fsx-lustre",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
+        "neptune-fix-forward-orphan",
         "rds-fix-forward-orphan",
         "remove-protection-compensation",
         "rollback-command"
@@ -1175,6 +1181,7 @@
         "deletion-policy-snapshot",
         "deletion-policy-snapshot-heavy",
         "docdb-fix-forward-orphan",
+        "neptune-fix-forward-orphan",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-fix-forward-orphan",
@@ -1378,6 +1385,7 @@
         "lost-child-after-failed-deploy",
         "macro-expansion",
         "multi-asset",
+        "neptune-fix-forward-orphan",
         "nested-required-preflight",
         "nested-stack",
         "nested-stack-3level",
