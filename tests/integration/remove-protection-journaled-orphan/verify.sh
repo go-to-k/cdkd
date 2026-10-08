@@ -426,8 +426,12 @@ case "${COMPLETED_LB_ARN}" in
     exit 1
     ;;
 esac
-if ! grep -q "FailLater" "${RUN_LOG}"; then
-  echo "FAIL: the deploy failed, but not at FailLater (output above)" >&2
+# The failure point: FailLater is the journal's failed CREATE and state has no
+# record of it, so the deploy stopped after CompletedLb completed.
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.FailLater.physicalId // "<absent>"')" != "<absent>" ] ||
+  [ "$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq -r \
+    '[.segments[]?.failedOperations[]? | select(.logicalId == "FailLater" and .changeType == "CREATE")] | length')" = "0" ]; then
+  echo "FAIL: the deploy failed, but not at FailLater's CREATE (output above)" >&2
   exit 1
 fi
 if [ "$(lb_protection "${COMPLETED_LB_ARN}")" != "true" ]; then
