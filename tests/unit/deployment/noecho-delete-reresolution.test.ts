@@ -547,4 +547,72 @@ describe('review round 1 (PR #4742)', () => {
       })
     ).toBeUndefined();
   });
+
+  it('N2: a dynamic reference beside the coordinate is kept as written in the input hash, never resolved; a resource read refuses', async () => {
+    const stampAndRead = async (
+      config: Record<string, unknown>,
+      deployResources: Record<string, ResourceState> = {}
+    ) => {
+      const today = template({ Config: config });
+      const parameters = { Secret: VALUE, Plain: 'plain' };
+      const { parameterInput, bound } = parameterInputsFor({ template: today, values: parameters });
+      // The deploy's sources: an input never resolves a dynamic reference.
+      const deployResolver = new IntrinsicFunctionResolver('us-east-1');
+      const stamped = await maskedInputFingerprint(config, {
+        template: today,
+        parameterInput,
+        resolve: async (node: unknown) => ({
+          value: await deployResolver.resolve(structuredClone(node), {
+            template: today,
+            resources: deployResources,
+            parameters: bound,
+            skipDynamicReferences: true,
+          }),
+        }),
+      });
+      const resolve = vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolve');
+      const values = await reresolver(today).valuesFor('Cr', {
+        ...record({ Config: { Token: SECRET_MASK, Other: SECRET_MASK } }, [['Config', 'Token']]),
+        properties: {
+          ServiceToken: TOKEN,
+          Config: { Token: SECRET_MASK, ...Object.fromEntries(Object.keys(config).filter((k) => k !== 'Token').map((k) => [k, SECRET_MASK])) },
+        },
+        maskedPropertyFingerprints: { Config: maskedPropertyFingerprint(config) },
+        ...(stamped !== undefined && { maskedPropertyInputFingerprints: { Config: stamped } }),
+      });
+      const resolved = resolve.mock.calls.map((c) => JSON.stringify(c[0]));
+      resolve.mockRestore();
+      return { stamped, values, resolved };
+    };
+
+    const withReference = await stampAndRead({
+      Token: { Ref: 'Secret' },
+      Pw: '{{resolve:ssm-secure:/p}}',
+      // A reference inside an intrinsic the input walk hands to `resolve`.
+      Joined: { 'Fn::Join': ['-', [{ Ref: 'AWS::Region' }, '{{resolve:ssm:/plain}}']] },
+    });
+    expect(withReference.stamped).toBeDefined();
+    expect(withReference.values?.leaves).toEqual([
+      { coordinate: ['Config', 'Token'], value: VALUE },
+    ]);
+    // Only the coordinate's own node was resolved for the payload, never the reference.
+    expect(withReference.resolved.some((n) => n.includes('{{resolve:'))).toBe(false);
+
+    // A sibling reading a resource: unknown on destroy, so a hashed input refuses.
+    // The deploy read `Producer` from its state record; destroy has none.
+    const withResource = await stampAndRead(
+      { Token: { Ref: 'Secret' }, Bucket: { Ref: 'Producer' } },
+      {
+        Producer: {
+          physicalId: 'producer-id',
+          resourceType: 'Custom::Producer',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      }
+    );
+    expect(withResource.stamped).toBeDefined();
+    expect(withResource.values).toBeUndefined();
+  });
 });

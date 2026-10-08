@@ -1018,8 +1018,6 @@ last deploy, it is the new one. The delete stays skipped when:
 - on `cdkd destroy`, the expression reads anything else (a resource, a
   condition, another stack, a dynamic reference), a parameter cannot be bound,
   or a nested child reads a row parameter its parent could not re-resolve;
-- on a deploy, the resource's resolved properties hold a secret from a
-  dynamic reference, which a custom resource is never sent;
 - the record holds `***` at a position its `noEchoLeaves` does not name (one
   embedded through `Fn::Join`, a record an earlier cdkd wrote, or one
   `cdkd import` / `cdkd scrub` wrote): nothing names what it stood for. For an
