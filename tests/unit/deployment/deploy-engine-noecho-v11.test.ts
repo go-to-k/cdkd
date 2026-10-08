@@ -15,6 +15,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 
@@ -85,6 +86,25 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
 });
 
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+
+// A knob for the lost-child arm (go-to-k/cdkd#4656 review): when set, the
+// named resource reads as a child whose parent this deploy re-created.
+const lostChildKnob = vi.hoisted(() => ({
+  forType: undefined as string | undefined,
+}));
+vi.mock('../../../src/deployment/child-of-recreated-parent.js', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('../../../src/deployment/child-of-recreated-parent.js')>();
+  return {
+    ...original,
+    childLostWithRecreatedParent: (
+      input: Parameters<typeof original.childLostWithRecreatedParent>[0]
+    ) =>
+      lostChildKnob.forType === input.resourceType
+        ? { parent: 'Param', property: 'DisplayName', mode: 'recreate' as const }
+        : original.childLostWithRecreatedParent(input),
+  };
+});
 
 const STACK = 'noecho-v11-stack';
 const REGION = 'us-east-1';
@@ -178,6 +198,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
   const logger = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
+    lostChildKnob.forType = undefined;
     describeType.writeOnly.clear();
     describeType.fail = false;
     clearCreateOnlyPropertiesCache();
@@ -225,6 +246,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         getRegisteredTypes: vi.fn().mockReturnValue([]),
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
       } as never,
       { dryRun: false, captureObservedState: false, ...options },
       REGION,
@@ -1567,6 +1589,81 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const approveDeployment = vi.fn(async () => ++asked === 1);
       const tpl = rotatedTemplate();
       (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = true;
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      const creates = callsFor(provider.create, 'Topic');
+      expect(creates).toHaveLength(1);
+      // The rotated value reaches the new resource.
+      expect((creates[0]![2] as Record<string, unknown>)['TopicName']).toBe(ROTATED);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('asks nothing for a --recreate-via-cc-api target, which is replaced anyway', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      // The flag's own question is never reached, so a "no" changes nothing.
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({
+        requireApproval: 'destructive',
+        approveDeployment,
+        recreateTargets: { stackName: STACK, viaCcApi: new Set(['Topic']), viaSdkProvider: new Set() },
+      }).deploy(STACK, rotatedTemplate());
+      expect(approveDeployment).not.toHaveBeenCalled();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('asks nothing for a child whose re-created parent took it, which is re-created anyway', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      lostChildKnob.forType = 'AWS::SNS::Topic';
+      const approveDeployment = vi.fn(async () => false);
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(
+        STACK,
+        rotatedTemplate()
+      );
+      expect(approveDeployment).not.toHaveBeenCalled();
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
+    it('asks nothing more when another NoEcho create-only path MOVED under a replacement ceiling, which replaces anyway', async () => {
+      // FifoTopic reads Dep, which this deploy replaces (its create-only name
+      // changed), so the diff raises a replacement ceiling on it; its template
+      // text also moved around the NoEcho value (its recorded fingerprint,
+      // #4451), so the ceiling stands. TopicName's readback proves a change
+      // through the flag.
+      const state = exactState();
+      state.resources['Topic'] = {
+        ...state.resources['Topic']!,
+        properties: { TopicName: '***', DisplayName: 'd', FifoTopic: '***' },
+        dependencies: ['Dep'],
+        noEchoLeaves: [['FifoTopic'], ['TopicName']],
+        maskedPropertyFingerprints: {
+          FifoTopic: maskedPropertyFingerprint({ 'Fn::Sub': '${Fifo}+${Dep}' }),
+        },
+      };
+      state.resources['Dep'] = {
+        physicalId: 'dep-old-phys',
+        resourceType: 'AWS::SNS::Topic',
+        properties: { TopicName: 'dep-old' },
+        attributes: {},
+        dependencies: [],
+      };
+      stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      const tpl = rotatedTemplate();
+      tpl.Parameters!['Fifo'] = { Type: 'String', NoEcho: true, Default: 'fifo-flag-value' };
+      tpl.Resources['Dep'] = { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'dep-new' } };
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = {
+        'Fn::Sub': '${Fifo}-${Dep}',
+      };
+      // Yes to the up-front prompt (it covers Dep's replacement), no after it.
+      let asked = 0;
+      const approveDeployment = vi.fn(async () => ++asked === 1);
       await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
       expect(approveDeployment).toHaveBeenCalledTimes(1);
       expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
