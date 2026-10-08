@@ -1043,9 +1043,11 @@ export async function provisionUpdate(
       const moved = movedAt(pc.path);
       if (moved) {
         // go-to-k/cdkd#4737: the path is create-only by the SCHEMA, while the
-        // diff decided its replacement registry-first; a path the registry
-        // updates in place (a Budget's `NotificationsWithSubscribers`) is sent
-        // as an update, so the line saying it is replaced would be false.
+        // diff decided whether it replaces (registry first, then a whole
+        // create-only property). A path the diff did not mark (a Budget's
+        // `NotificationsWithSubscribers`, which the registry updates in place)
+        // is sent as an update, so the line saying it is replaced would be
+        // false.
         if (pc.requiresReplacement) warnWitnessReplacement(pc.path);
         lowered.push(pc);
         continue;

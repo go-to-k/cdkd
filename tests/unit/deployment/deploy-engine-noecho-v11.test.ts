@@ -1073,13 +1073,13 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         };
         return state;
       };
-      const budgetTemplate = (): CloudFormationTemplate => {
+      const budgetTemplate = (address: unknown): CloudFormationTemplate => {
         const tpl = template(TOKEN, {
           Bud: {
             Type: 'AWS::Budgets::Budget',
             Properties: {
               Budget: { BudgetName: 'b' },
-              NotificationsWithSubscribers: notifications({ Ref: 'Mail' }),
+              NotificationsWithSubscribers: notifications(address),
             },
           },
         });
@@ -1087,14 +1087,18 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         return tpl;
       };
 
+      // A bare `Ref` names the parameter as the cause, an `Fn::Sub` around it
+      // the position (review round 9 m4); neither is printed for an update.
       it.each([
-        ['a record with no NoEcho leaf yet (schema v11)', STATE_SCHEMA_VERSION_CURRENT],
-        ['a record a pre-v11 binary wrote (the migration witness)', 10],
+        ['a bare Ref, schema v11', { Ref: 'Mail' }, STATE_SCHEMA_VERSION_CURRENT],
+        ['a bare Ref, pre-v11 (the migration witness)', { Ref: 'Mail' }, 10],
+        ['an Fn::Sub around it, schema v11', { 'Fn::Sub': 'ops+${Mail}' }, STATE_SCHEMA_VERSION_CURRENT],
+        ['an Fn::Sub around it, pre-v11 (the migration witness)', { 'Fn::Sub': 'ops+${Mail}' }, 10],
       ])(
         'updates a registry-updatable create-only path in place, with no "is replaced" line: %s',
-        async (_label, version) => {
+        async (_label, address, version) => {
           stateBackend.getState.mockResolvedValue({ state: budgetState(version), etag: 'etag-old' });
-          await makeEngine().deploy(STACK, budgetTemplate());
+          await makeEngine().deploy(STACK, budgetTemplate(address));
           const updates = callsFor(provider.update, 'Bud');
           expect(updates).toHaveLength(1);
           // The new value is sent.
@@ -1102,9 +1106,15 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
           expect(callsFor(provider.create, 'Bud')).toHaveLength(0);
           expect(callsFor(provider.delete, 'Bud')).toHaveLength(0);
           expect(lines(logger.warn).filter((l) => l.includes('Bud'))).toEqual([]);
-          expect(lastSaved().resources['Bud']!.noEchoLeaves).toEqual([
+          const saved = lastSaved().resources['Bud']!;
+          expect(saved.noEchoLeaves).toEqual([
             ['NotificationsWithSubscribers', 0, 'Subscribers', 0, 'Address'],
           ]);
+          // The value reaches neither state nor any log line.
+          expect(allSaved()).not.toContain('new-addr@example.com');
+          for (const fn of [logger.debug, logger.info, logger.warn, logger.error]) {
+            expect(lines(fn!).some((l) => l.includes('new-addr@example.com'))).toBe(false);
+          }
         }
       );
 
