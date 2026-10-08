@@ -18,6 +18,7 @@ import type { Logger } from '../types/config.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { MacroExpansionError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   isListParameterType,
   SSM_PARAMETER_VALUE_PREFIX,
@@ -857,5 +858,5 @@ function formatErr(err: unknown): string {
   // this module's own transient name, but the SDK is free to quote more. This
   // is what makes the module header's "one spelling for AWS-or-parser text"
   // true rather than aspirational ([#3479](https://github.com/go-to-k/cdkd/issues/3479)).
-  return displayAwsMessage(err instanceof Error ? err.message : String(err));
+  return displayAwsMessage(describeAwsFailure(err).detail);
 }

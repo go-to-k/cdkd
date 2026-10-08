@@ -10,6 +10,7 @@ import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isSensitiveAttributeName } from '../utils/stringify.js';
 import { isCustomResourceType } from '../provisioning/custom-resource-secure-references.js';
 import { injectiveKey } from '../state/record-keys.js';
@@ -499,11 +500,7 @@ class AttributeFetcher {
       this.cache.set(cacheKey, chosen);
       return { ok: true, value: chosen };
     } catch (err) {
-      return this.cacheFallback(
-        orphanLogicalId,
-        attribute,
-        err instanceof Error ? err.message : String(err)
-      );
+      return this.cacheFallback(orphanLogicalId, attribute, describeAwsFailure(err).detail);
     }
   }
 
