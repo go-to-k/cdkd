@@ -731,8 +731,13 @@ export async function provisionUpdate(
   // showed none. So it is asked about now (`approveLateReplacement`), ONCE for
   // the resource, whichever of its paths proved it: one answer replaces the
   // resource or keeps it. A kept one warns why; the rest of the deploy goes on.
+  // A resource another path replaces anyway (a create-only template edit, a
+  // `--recreate-via-*` target), the up-front prompt already asked about: it is
+  // replaced without a second question, and nothing says it is kept.
+  let replacedAnyway = false;
   let lateApproval: Promise<boolean> | undefined;
   const approveReplacementOf = (pc: PropertyChange): Promise<boolean> => {
+    if (replacedAnyway) return Promise.resolve(true);
     const { noEchoPromoted: _promoted, ...asReplacement } = pc;
     lateApproval ??= approveLateReplacement({
       options: this.options,
@@ -1015,18 +1020,27 @@ export async function provisionUpdate(
         : 'differs';
     };
     const lowered: PropertyChange[] = [];
+    // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
+    // pre-v11 record's witness that differs, an exact change): the
+    // replacement stands, as CloudFormation would replace.
+    const movedAt = (path: string): boolean =>
+      movedMasked.has(path) ||
+      keyOrderFreeJson(desiredForSkipCheckAsWritten[path]) !==
+        keyOrderFreeJson(currentPropsAsWritten[path]);
+    replacedAnyway =
+      this.recreateDirectionFor(stackName, logicalId) !== undefined ||
+      lostWithParent !== undefined ||
+      (change.propertyChanges ?? []).some(
+        (other) =>
+          other.requiresReplacement &&
+          (!parameterCreateOnlyPaths.has(other.path) || movedAt(other.path))
+      );
     for (const pc of change.propertyChanges ?? []) {
       if (!parameterCreateOnlyPaths.has(pc.path)) {
         lowered.push(pc);
         continue;
       }
-      // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
-      // pre-v11 record's witness that differs, an exact change): the
-      // replacement stands, as CloudFormation would replace.
-      const moved =
-        movedMasked.has(pc.path) ||
-        keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
-          keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+      const moved = movedAt(pc.path);
       if (moved) {
         warnWitnessReplacement(pc.path);
         lowered.push(pc);

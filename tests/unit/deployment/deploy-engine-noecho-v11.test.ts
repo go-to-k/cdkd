@@ -1559,6 +1559,22 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       for (const line of warned) expect(line).toContain('the replacement was not approved');
     });
 
+    it('asks nothing more when another path replaces the resource anyway, and says nothing is kept', async () => {
+      stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+      // Yes to the up-front prompt (it covers the template's create-only edit),
+      // no to anything after it.
+      let asked = 0;
+      const approveDeployment = vi.fn(async () => ++asked === 1);
+      const tpl = rotatedTemplate();
+      (tpl.Resources['Topic']!.Properties as Record<string, unknown>)['FifoTopic'] = true;
+      await makeEngine({ requireApproval: 'destructive', approveDeployment }).deploy(STACK, tpl);
+      expect(approveDeployment).toHaveBeenCalledTimes(1);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      expect(lines(logger.warn).some((l) => l.includes('the replacement was not approved'))).toBe(
+        false
+      );
+    });
+
     it('replaces once the late prompt approves (what --yes answers)', async () => {
       stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
       const approveDeployment = vi.fn(async () => true);

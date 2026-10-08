@@ -2189,6 +2189,7 @@
     "--snapshot-ids",
     "--snapshot-name",
     "--snapshot-type",
+    "--source",
     "--stack-name",
     "--stack-region",
     "--stack-status-filter",

@@ -167,14 +167,26 @@ CR_SEED_B="$(openssl rand -hex 8)"
 CR_SECRET_A="cdkdv11crsecret${CR_SEED_A}"
 CR_SECRET_B="cdkdv11crsecret${CR_SEED_B}"
 # The values no object version written from Phase 3 on may carry. The topic
-# name is NOT here: it names the resource, so it is in the physical id, which
-# stays in the clear by design (AWS publishes it); it is asserted by coordinate.
+# and group names are NOT here: each names its resource, so it is in (or IS)
+# the physical id, which stays in the clear by design (AWS publishes it); they
+# are asserted by coordinate.
 TOKENS="${TOKEN} ${TOKEN_ROTATED} ${CR_SECRET_A} ${CR_SECRET_B}"
 # The same needles BY NAME, so a failure says which one leaked without printing
 # it (`${!name}` is bash 3.2 indirect expansion). The exact-scalar needles are
 # the values too short, or too public, for a blob scan.
 BLOB_NEEDLE_NAMES="TOKEN TOKEN_ROTATED CR_SECRET_A CR_SECRET_B"
-SCALAR_NEEDLE_NAMES="SHORT_VALUE TOPIC_NAME TOPIC_NAME_ROTATED GROUP_NAME GROUP_NAME_ROTATED"
+SCALAR_NEEDLE_NAMES="SHORT_VALUE TOPIC_NAME TOPIC_NAME_ROTATED"
+# The group's name IS its physical id (`warnNoEchoPhysicalId`, design §3.3), so
+# a scalar equal to it is allowed at a `physicalId` key and nowhere else; in
+# state.json only at `resources.NormalizedGroup.physicalId`.
+PHYSICAL_ID_NEEDLE_NAMES="GROUP_NAME GROUP_NAME_ROTATED"
+# What RDS reports back (lowercased): never in a record's `properties` or
+# `observedProperties`, where the name's position holds the mask.
+READBACK_NEEDLE_NAMES="GROUP_NAME_LOWER GROUP_NAME_ROTATED_LOWER"
+# An out-of-band parameter on the group: a replacement under the same name
+# (delete-first) would lose it, as the topic's marker shows for the topic.
+GROUP_MARKER_PARAM="log_min_duration_statement"
+GROUP_MARKER_VALUE="$((RANDOM % 9000 + 1000))"
 
 export CDKD_V11_TOKEN="${TOKEN}"
 export CDKD_V11_SHORT="${SHORT_VALUE}"
@@ -339,12 +351,27 @@ assert_no_tokens_in_state() { # <label>
       hits="${hits}${name} (whole scalar) at: $(paths_equal "${v}" <"${STATE_FILE}" | tr '\n' ' ')"$'\n'
     fi
   done
+  local where
+  for name in ${PHYSICAL_ID_NEEDLE_NAMES}; do
+    v="${!name}"
+    where="$(paths_equal "${v}" <"${STATE_FILE}" | grep -vxF "resources.${GROUP_ID}.physicalId" | tr '\n' ' ' || true)"
+    if [ -n "${where}" ]; then
+      hits="${hits}${name} (whole scalar, outside ${GROUP_ID}.physicalId) at: ${where}"$'\n'
+    fi
+  done
+  for name in ${READBACK_NEEDLE_NAMES}; do
+    v="${!name}"
+    where="$(jq -r --arg v "${v}" '[.resources | to_entries[] | .key as $id | (.value.properties, .value.observedProperties) | select(. != null) | paths(scalars) as $p | select(getpath($p) == $v) | "\($id).\($p | map(tostring) | join("."))"] | .[]' "${STATE_FILE}" | tr '\n' ' ')"
+    if [ -n "${where}" ]; then
+      hits="${hits}${name} (whole scalar in properties / observedProperties) at: ${where}"$'\n'
+    fi
+  done
   if [ -n "${hits}" ]; then
     # A jq PATH can spell a value too (an alias key holding it): redacted.
     printf '%s' "${hits}" | redact_tokens >&2
     fail "$1: state.json carries a NoEcho value or a NoEcho-served name (needles and paths above, values withheld)"
   fi
-  pass "$1: no NoEcho value anywhere in state.json (blob), and no short value / topic name as a whole scalar"
+  pass "$1: no NoEcho value anywhere in state.json (blob), no short value / topic name as a whole scalar, and the group's name only as its physical id"
 }
 
 ssm_value() { # <name> — strict
@@ -373,6 +400,11 @@ group_name_in_aws() { # <lowercase name> -- the name AWS holds, or <absent>
   fi
   aws rds describe-db-parameter-groups --region "${REGION}" --db-parameter-group-name "$1" \
     --query 'DBParameterGroups[0].DBParameterGroupName' --output text
+}
+group_marker() { # <lowercase name> -- the marker parameter's user value (strict)
+  aws rds describe-db-parameters --region "${REGION}" --db-parameter-group-name "$1" \
+    --source user --query "Parameters[?ParameterName=='${GROUP_MARKER_PARAM}'].ParameterValue | [0]" \
+    --output text
 }
 # Exact-scalar occurrences of <value> in a JSON (or JSON-lines) body on stdin:
 # a short value (3 characters) or a name cannot be blob-grepped meaningfully,
@@ -528,12 +560,21 @@ assert_no_tokens_in_versions() { # <scope> <label> <own|shared>
     done
     # The short value and the topic names cannot be blob-grepped (a short
     # needle, and a name AWS publishes inside the physical id), but no SCALAR
-    # of a cdkd document may EQUAL one of them.
+    # of a cdkd document may EQUAL one of them. The group's name IS its
+    # physical id: allowed only under a `physicalId` key (a record's, a
+    # deployment event's), nowhere else.
     for name in ${SCALAR_NEEDLE_NAMES}; do
       v="${!name}"
       if [ "$(printf '%s' "${body}" | exact_scalar_count "${v}")" != "0" ]; then
         where="$(printf '%s' "${body}" | paths_equal "${v}" | tr '\n' ' ')"
         hits="${hits}  ${ordinal_key}: s3://${STATE_BUCKET}/${key} version ${vid} holds ${name} as a whole scalar at: ${where}"$'\n'
+      fi
+    done
+    for name in ${PHYSICAL_ID_NEEDLE_NAMES}; do
+      v="${!name}"
+      where="$(printf '%s' "${body}" | paths_equal "${v}" | grep -vE '(^|\.)physicalId$' | tr '\n' ' ' || true)"
+      if [ -n "${where}" ]; then
+        hits="${hits}  ${ordinal_key}: s3://${STATE_BUCKET}/${key} version ${vid} holds ${name} as a whole scalar outside a physicalId at: ${where}"$'\n'
       fi
     done
   done <<< "${rows}"
@@ -590,6 +631,10 @@ assert_eq "v10 deploy: ${SHORT_ID}.observedProperties.Value holds the short valu
 # LOWERCASED, so a readback can never report the mixed-case value it was sent.
 assert_eq "v10 deploy: RDS holds the group's name lowercased (the normalization premise)" \
   "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
+aws rds modify-db-parameter-group --region "${REGION}" --db-parameter-group-name "${GROUP_NAME_LOWER}" \
+  --parameters "ParameterName=${GROUP_MARKER_PARAM},ParameterValue=${GROUP_MARKER_VALUE},ApplyMethod=immediate" >/dev/null
+GROUP_MARKER_NOW="$(group_marker "${GROUP_NAME_LOWER}")"
+assert_eq "v10 deploy: the out-of-band group marker is set" "${GROUP_MARKER_NOW}" "${GROUP_MARKER_VALUE}"
 aws sns set-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}" \
   --attribute-name DisplayName --attribute-value "${TOPIC_MARKER}" >/dev/null
 assert_eq "v10 deploy: the out-of-band topic marker is set" \
@@ -653,8 +698,17 @@ assert_eq "v11 migration deploy: ${GROUP_ID}.noEchoLeaves" \
   "$(jq -c ".resources[\"${GROUP_ID}\"].noEchoLeaves" "${STATE_FILE}")" '[["DBParameterGroupName"]]'
 assert_eq "v11 migration deploy: ${GROUP_ID} has no noEchoExactEchoLeaves" \
   "$(state_field ".resources[\"${GROUP_ID}\"].noEchoExactEchoLeaves // \"absent\"")" "absent"
-assert_eq "v11 migration deploy: the group was not replaced" \
-  "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
+GROUP_MARKER_NOW="$(group_marker "${GROUP_NAME_LOWER}")"
+assert_eq "v11 migration deploy: the group was not replaced (out-of-band marker kept)" \
+  "${GROUP_MARKER_NOW}" "${GROUP_MARKER_VALUE}"
+assert_eq "v11 migration deploy: ${GROUP_ID}.observedProperties.DBParameterGroupName" \
+  "$(state_field ".resources[\"${GROUP_ID}\"].observedProperties.DBParameterGroupName // \"<absent>\"")" "${SECRET_MASK}"
+# The group's name IS its physical id: kept in the clear by design, at that one
+# path (the scan above allows nothing else), and the deploy says so once.
+assert_eq "v11 migration deploy: the group's name is held only as its physical id" \
+  "$(paths_equal "${GROUP_NAME}" <"${STATE_FILE}" | tr '\n' ' ')" "resources.${GROUP_ID}.physicalId "
+assert_log_has "v11 migration deploy: the physical-id warning names the group" \
+  "${GROUP_ID}: its physical id contains a NoEcho parameter value."
 # The negative control stays in the clear.
 assert_eq "v11 migration deploy: ${PLAIN_ID}.properties.Value (ordinary parameter)" \
   "$(state_field ".resources[\"${PLAIN_ID}\"].properties.Value")" "${PLAIN_VALUE}"
@@ -706,8 +760,9 @@ if ! grep -F -- "${GROUP_ID}.DBParameterGroupName" "${DEPLOY_LOG}" \
   fail "v11 unchanged redeploy: no line names ${GROUP_ID}.DBParameterGroupName with the normalization reason"
 fi
 pass "v11 unchanged redeploy: the group's normalized readback is warned about, naming why"
-assert_eq "v11 unchanged redeploy: the group was not replaced" \
-  "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
+GROUP_MARKER_NOW="$(group_marker "${GROUP_NAME_LOWER}")"
+assert_eq "v11 unchanged redeploy: the group was not replaced (out-of-band marker kept)" \
+  "${GROUP_MARKER_NOW}" "${GROUP_MARKER_VALUE}"
 fetch_state "v11 unchanged redeploy"
 assert_no_tokens_in_state "v11 unchanged redeploy"
 run_cdkd ok "v11 diff --fail on an unchanged stack" "${LOCAL_DIST}" diff "${STACK}" \
@@ -744,7 +799,7 @@ assert_eq "the refused dependent is not in state" \
   "$(state_field '.resources.CrDependent // "absent"')" "absent"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 7: rotate the token and the topic name"
+echo "==> Phase 7: rotate the token, the topic name and the group name"
 # ---------------------------------------------------------------------------
 export CDKD_V11_TOKEN="${TOKEN_ROTATED}"
 export CDKD_V11_TOPIC_NAME="${TOPIC_NAME_ROTATED}"
@@ -783,7 +838,9 @@ assert_eq "v11 rotation deploy: the topic was REPLACED under the rotated name" \
 assert_gone "v11 rotation deploy: the replaced topic ${TOPIC_ARN_1##*:} still exists" \
   aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_1}"
 pass "v11 rotation deploy: the old topic is gone"
-if [ "$(topic_display "${TOPIC_ARN_2}")" = "${TOPIC_MARKER}" ]; then
+# Bare assignment: a replacement topic that does not exist fails the run here.
+DISPLAY_2="$(topic_display "${TOPIC_ARN_2}")"
+if [ "${DISPLAY_2}" = "${TOPIC_MARKER}" ]; then
   fail "v11 rotation deploy: the new topic carries the old one's out-of-band marker — it was not a real replacement"
 fi
 pass "v11 rotation deploy: the out-of-band marker is LOST (a real replacement)"
@@ -795,17 +852,22 @@ assert_eq "v11 rotation deploy: ${TOPIC_ID}.noEchoExactEchoLeaves (the new topic
 # replaced on a readback's word.
 assert_eq "v11 rotation deploy: the group was NOT replaced (old name still held)" \
   "$(group_name_in_aws "${GROUP_NAME_LOWER}")" "${GROUP_NAME_LOWER}"
+GROUP_MARKER_NOW="$(group_marker "${GROUP_NAME_LOWER}")"
+assert_eq "v11 rotation deploy: the group kept its out-of-band marker" \
+  "${GROUP_MARKER_NOW}" "${GROUP_MARKER_VALUE}"
 assert_eq "v11 rotation deploy: no group exists under the rotated name" \
   "$(group_name_in_aws "${GROUP_NAME_ROTATED_LOWER}")" "<absent>"
 assert_eq "v11 rotation deploy: ${GROUP_ID}.properties.DBParameterGroupName" \
   "$(state_field ".resources[\"${GROUP_ID}\"].properties.DBParameterGroupName")" "${SECRET_MASK}"
 # ONE line names both the property and the remedy (the wording
 # noecho-parameter-masking's Phase 3b negative grep relies on).
-if ! grep -F -- "${GROUP_ID}.DBParameterGroupName" "${DEPLOY_LOG}" | grep -qF -- "--recreate-via-cc-api"; then
+if ! grep -F -- "${GROUP_ID}.DBParameterGroupName" "${DEPLOY_LOG}" \
+    | grep -F -- "the provider is not known to report this property exactly" \
+    | grep -qF -- "--recreate-via-cc-api"; then
   redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
-  fail "v11 rotation deploy: no single line names both ${GROUP_ID}.DBParameterGroupName and --recreate-via-cc-api — the create-only warning did not fire, or its wording drifted"
+  fail "v11 rotation deploy: no single line names ${GROUP_ID}.DBParameterGroupName, the normalization reason and --recreate-via-cc-api — the create-only warning did not fire, or its wording drifted"
 fi
-pass "v11 rotation deploy: one create-only warning line names ${GROUP_ID}.DBParameterGroupName and --recreate-via-cc-api"
+pass "v11 rotation deploy: one create-only warning line names ${GROUP_ID}.DBParameterGroupName, the normalization reason and --recreate-via-cc-api"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 7b: add a custom resource reading the NoEcho parameter"
@@ -963,8 +1025,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 137 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 137 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 142 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 142 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

@@ -940,9 +940,11 @@ re-resolved on every deploy, and:
 a readback handed the
 record, which holds `***` there, reported exactly the string cdkd sent. It
 describes how the provider reports the property, never the value. The deploy
-that creates or replaces the resource reads it back once to set it, and so does
-the migration deploy below; any later readback that holds the value sets it
-too. A readback that differs never clears it, and one that fails or cannot
+that creates the resource, or replaces it on a create-only change, reads it
+back once to set it, and so does the migration deploy below; any later
+readback that holds the value sets it too. A replacement a provider's update
+falls back to takes no such readback: the new resource starts without it until
+a later readback holds the value. A readback that differs never clears it, and one that fails or cannot
 report the property leaves it unset. Only a whole string value under a
 create-only property is eligible: a list, a number, or a value inside a list is
 never trusted, since a provider may reorder or retype what it reports. Without
@@ -956,7 +958,8 @@ guard (`--force-stateful-recreation`) and name-collision checks as any other.
 The approval prompt before the deploy sees no replacement in a diff that
 cannot read AWS, so under `--require-approval=destructive` or `any-change` the
 deploy asks again when it reaches such a replacement (`--yes` approves it). A
-"no", or a terminal that cannot be asked, keeps the resource and warns, and
+"no", a terminal that cannot be asked, or a resource deadline that already
+expired keeps the resource and warns, and
 `--recreate-via-*` applies the value.
 
 One case the flag cannot catch: a provider whose readback right after a create
@@ -1029,8 +1032,10 @@ count as a change for `--fail`.
   `noEchoLeaves`, and leave a value shorter than 4 characters, a number, or a
   value other than the current `Default` in plain text. The next `cdkd deploy`
   masks every position and writes the field.
-- A resource's physical id is never masked. A `NoEcho` value used as a NAME is
-  published by AWS, and the deploy warns once per such resource.
+- A resource's physical id is never masked, whether it embeds a `NoEcho` value
+  or IS one (a name-identified resource, such as an RDS parameter group named
+  by the parameter). A `NoEcho` value used as a NAME is published by AWS, and
+  the deploy warns once per such resource.
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target, or any property of a custom resource, whose handler would
   receive `***`) cannot be addressed from its record, which holds `***`.

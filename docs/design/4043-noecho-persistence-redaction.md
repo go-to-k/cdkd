@@ -991,10 +991,11 @@ review. Items 1 and 6 are the maintainer's; the rest are lane decisions.
    auto-replacement is restored where a one-bit echo-fidelity flag,
    `ResourceState.noEchoExactEchoLeaves` (optional, no bump), records that a
    readback handed the masked record reported the leaf exactly. Set by the
-   readback at the create or replacement create, at the migration deploy
+   readback at the create or create-only replacement, at the migration deploy
    (against a copy with the witness coordinates pre-masked) and by a later
-   `held`; `differs` never changes it, `not-readable` / `read-failed` leave
-   it absent. Only a whole string leaf under a create-only path, reached by
+   `held` (a replacement a provider's update falls back to takes no
+   readback, so it starts without the flag); `differs` never changes it,
+   `not-readable` / `read-failed` leave it absent. Only a whole string leaf under a create-only path, reached by
    object keys, is eligible. Flag set and `differs`: the existing create-first
    replacement and its guards. Flag absent: decision 1, the warning naming
    the reason. Lane decisions (not the maintainer's), recorded in PR #4699:
