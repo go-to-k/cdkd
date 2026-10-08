@@ -51,6 +51,7 @@ import {
   CustomResourceProvider,
   CR_MASKED_SERVICE_TOKEN_SKIP_REASON,
   CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON,
+  CR_MASKED_PROPERTIES_SKIP_REASON,
   CR_NO_PROPERTIES_SKIP_REASON,
   CR_NO_SERVICE_TOKEN_SKIP_REASON,
   CR_DELETE_INVOKE_FAILED_SKIP_REASON,
@@ -167,20 +168,18 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
       expect(warnText()).not.toContain('redaction mask');
     });
 
-    it('a masked NON-token property does not block the delete', async () => {
-      // The Delete request carries the record's other properties too; a mask
-      // there is the handler's concern, not an addressing failure.
-      send.mockRejectedValueOnce(notFound());
-
+    it('a masked NON-token property is not read as a masked ServiceToken', async () => {
+      // The ServiceToken arm is not this one's: the token addresses the
+      // handler. Since go-to-k/cdkd#4682 a mask no NoEcho coordinate names is
+      // skipped with its OWN reason, before any AWS call.
       await expect(
         new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
           ServiceToken: LAMBDA_ARN,
           Upstream: SECRET_MASK,
         }, STACK_DESTROY)
-      ).resolves.toEqual(GONE_SKIP);
+      ).resolves.toEqual({ outcome: 'skipped', reason: CR_MASKED_PROPERTIES_SKIP_REASON });
 
-      expect(send).toHaveBeenCalledTimes(1);
-      expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: LAMBDA_ARN });
+      expect(send).not.toHaveBeenCalled();
     });
   });
 });

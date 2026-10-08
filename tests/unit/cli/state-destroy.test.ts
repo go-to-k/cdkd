@@ -302,6 +302,8 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].resolveSecretDerivedPrincipals).toEqual({});
     // go-to-k/cdkd#2115: a top-level state destroy is a whole-stack teardown.
     expect(callArgs?.[2].stackDestroy).toBe(true);
+    // go-to-k/cdkd#4682: no template, so no NoEcho re-resolution source.
+    expect(callArgs?.[2]).not.toHaveProperty('noEchoReresolver');
   });
 
   /**

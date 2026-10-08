@@ -571,6 +571,27 @@ export class NestedStackProvider implements ResourceProvider {
       childUnaddressed: undefined,
     };
 
+    // go-to-k/cdkd#4682: a `cdkd destroy` holding the parent's template
+    // re-resolves the child's NoEcho coordinates from the child's template
+    // and the parameters this row hands it. Absent on a deploy's removal.
+    const childNoEchoReresolver =
+      deleteContext?.noEchoReresolver === undefined
+        ? undefined
+        : await deleteContext.noEchoReresolver.forNestedChild(
+            logicalId,
+            {
+              properties: _properties,
+              noEchoLeaves: deleteContext.recordedNoEchoLeaves,
+              values: deleteContext.noEchoDeleteValues,
+            },
+            childStackName,
+            (templatePath) => {
+              const { template, grandchildTemplates } = this.readChildTemplate(templatePath);
+              return { template, nestedTemplates: grandchildTemplates };
+            },
+            (properties) => this.extractParameters(properties)
+          );
+
     const childResult = await withNestedStackContext(childCtx, () =>
       runDestroyForStack(childStackName, childStateData.state, {
         stateBackend: ctx.stateBackend,
@@ -613,6 +634,7 @@ export class NestedStackProvider implements ResourceProvider {
         // deploy removes stays on the deploy-side warn-and-drop, since
         // CloudFormation ignores delete failures in an update's cleanup phase.
         ...(deleteContext?.stackDestroy === true && { stackDestroy: true }),
+        ...(childNoEchoReresolver !== undefined && { noEchoReresolver: childNoEchoReresolver }),
         // `--skip-final-snapshot` reaches a whole-nested-stack removal from
         // BOTH directions: `cdkd destroy` / `state destroy` thread it via
         // ctx.destroyOptions, while `cdkd deploy` (template-removal delete of

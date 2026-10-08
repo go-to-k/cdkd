@@ -1,3 +1,4 @@
+import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
 import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
@@ -179,7 +180,9 @@ export async function replaceDeleteFirstAndRecreate(
   secrets: RecordedSecretValues,
   updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
   /** The layer `oldDeleteProvider` was routed to, for a guard row (issue #2422). */
-  oldDeleteProvisionedBy: 'sdk' | 'cc-api' | undefined
+  oldDeleteProvisionedBy: 'sdk' | 'cc-api' | undefined,
+  /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
+  noEchoDeleteValues?: NoEchoDeleteValues
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
   // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
@@ -212,6 +215,7 @@ export async function replaceDeleteFirstAndRecreate(
         recordedAttributes: currentResource.attributes,
         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
         recordedNoEchoLeaves: currentResource.noEchoLeaves,
+        ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
       }
     );
   } catch (deleteError) {
@@ -591,6 +595,8 @@ export async function createFirstThenDeleteOld(
     trigger: string;
     /** `UpdateReplacePolicy: Retain`: create only, the old resource stays. */
     retainOld?: boolean;
+    /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
+    noEchoDeleteValues?: NoEchoDeleteValues | undefined;
   }
 ): Promise<ResourceCreateResult> {
   const { logicalId, resourceType, currentResource, secrets } = input;
@@ -683,7 +689,8 @@ export async function createFirstThenDeleteOld(
     finalSnapshotIdentifier,
     input.deletePolicy,
     secrets,
-    input.deleteProvisionedBy
+    input.deleteProvisionedBy,
+    input.noEchoDeleteValues
   );
   return createResult;
 }
@@ -708,7 +715,9 @@ export async function deleteReplacedAfterCreate(
   updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
   secrets: RecordedSecretValues,
   /** The layer `deleteProvider` was routed to, for a guard row (issue #2422). */
-  deleteProvisionedBy: 'sdk' | 'cc-api' | undefined
+  deleteProvisionedBy: 'sdk' | 'cc-api' | undefined,
+  /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
+  noEchoDeleteValues?: NoEchoDeleteValues
 ): Promise<void> {
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
@@ -728,6 +737,7 @@ export async function deleteReplacedAfterCreate(
         recordedAttributes: currentResource.attributes,
         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
         recordedNoEchoLeaves: currentResource.noEchoLeaves,
+        ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
       }
     );
   } catch (deleteError) {

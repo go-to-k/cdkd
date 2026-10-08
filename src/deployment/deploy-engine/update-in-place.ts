@@ -1,3 +1,4 @@
+import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
@@ -596,6 +597,21 @@ export async function updateInPlace(
         secrets: updateSecrets,
       });
       const createFirst = !retainOldOnReplace && fallbackNameChange !== undefined;
+      // go-to-k/cdkd#4682: still in the template, so a custom resource's
+      // delete of the old record gets today's values at its NoEcho
+      // coordinates instead of being skipped. Never persisted or logged.
+      const noEchoDeleteValues = await noEchoDeleteValuesFromResolved({
+        record: currentResource,
+        templateResource: template?.Resources?.[logicalId],
+        resolvedProperties: resolvedProps,
+        noEchoParameters:
+          this.noEchoPositionSources(stateResources, template)?.parameters ?? new Set(),
+        conditions: this.noEchoConditions,
+        secrets: updateSecrets,
+        inputSources:
+          template &&
+          this.maskedInputSources(template, stateResources, this.noEchoConditions, stackName),
+      });
       this.logger.info(
         retainOldOnReplace
           ? `UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
@@ -658,6 +674,7 @@ export async function updateInPlace(
               recordedAttributes: currentResource.attributes,
               // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
               recordedNoEchoLeaves: currentResource.noEchoLeaves,
+              ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
             }
           );
         } catch (deleteError) {
@@ -752,6 +769,7 @@ export async function updateInPlace(
                   template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
                   currentResource.updateReplacePolicy,
                 trigger: 'the provisioning layer cannot update it in place',
+                noEchoDeleteValues,
               })
             : await this.withRetry(
                 () =>

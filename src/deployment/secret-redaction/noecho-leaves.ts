@@ -154,13 +154,21 @@ function literalIndex(index: unknown): number | undefined {
  * selected branch is walked against the same resolved node), and an
  * `Fn::Select` with a literal index over a literal list. A leaf the resolution
  * dropped (`resolved` holds nothing there) is no coordinate.
+ *
+ * `onCoordinate` also hands each coordinate's TEMPLATE node to a caller that
+ * re-resolves it (go-to-k/cdkd#4682); the returned list is unchanged by it.
  */
 export function noEchoCoordinatesOf(
   template: unknown,
   resolved: unknown,
-  sources: NoEchoPositionSources
+  sources: NoEchoPositionSources,
+  onCoordinate?: (coordinate: NoEchoCoordinate, templateNode: unknown) => void
 ): NoEchoCoordinate[] {
   const coordinates: NoEchoCoordinate[] = [];
+  const push = (path: NoEchoCoordinate, node: unknown): void => {
+    coordinates.push(path);
+    onCoordinate?.(path, node);
+  };
   const ancestors = new Set<object>();
   const parametersOnly: NoEchoPositionSources = {
     parameters: sources.parameters,
@@ -181,7 +189,7 @@ export function noEchoCoordinatesOf(
         if (Array.isArray(value) && value.length === source.length) {
           source.forEach((item, index) => walk(item, value[index], [...path, index]));
         } else if (readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt)) {
-          coordinates.push(path);
+          push(path, source);
         }
         return;
       }
@@ -189,7 +197,7 @@ export function noEchoCoordinatesOf(
       const intrinsic = intrinsicKeyOf(record);
       if (intrinsic === undefined) {
         if (!isPlainObject(value)) {
-          if (readsNoEchoSource(record, parametersOnly)) coordinates.push(path);
+          if (readsNoEchoSource(record, parametersOnly)) push(path, source);
           return;
         }
         for (const [key, child] of Object.entries(record)) {
@@ -208,7 +216,7 @@ export function noEchoCoordinatesOf(
           // Unknown verdict: either branch being a bare declared GetAtt
           // positions the leaf.
           if (isBareDeclaredGetAtt(argument[1]) || isBareDeclaredGetAtt(argument[2])) {
-            coordinates.push(path);
+            push(path, source);
             return;
           }
         }
@@ -231,10 +239,10 @@ export function noEchoCoordinatesOf(
       // to the value arm's containment rule, which spares an echoed PUBLIC
       // value (the region, the stack name) that position cannot tell apart.
       if (intrinsic === 'Fn::GetAtt') {
-        if (getAttReadsNoEcho(record['Fn::GetAtt'], sources)) coordinates.push(path);
+        if (getAttReadsNoEcho(record['Fn::GetAtt'], sources)) push(path, source);
         return;
       }
-      if (readsNoEchoSource(record, parametersOnly)) coordinates.push(path);
+      if (readsNoEchoSource(record, parametersOnly)) push(path, source);
     } finally {
       ancestors.delete(source);
     }
@@ -324,6 +332,42 @@ export function maskAtCoordinates<T>(bag: T, coordinates: readonly NoEchoCoordin
     }
     const last = coordinate[coordinate.length - 1]!;
     node[last] = maskWholeValue(node[last]);
+  }
+  return root as T;
+}
+
+/**
+ * A copy of `bag` with the leaf at each entry's coordinate replaced by its
+ * `value` (go-to-k/cdkd#4682: a custom resource's `Delete` payload). Only the
+ * containers on a coordinate's path are copied, keys are DEFINED (a
+ * `__proto__` key stays a key), and a coordinate `bag` lacks is skipped.
+ */
+export function replaceAtCoordinates<T>(
+  bag: T,
+  entries: readonly { readonly coordinate: NoEchoCoordinate; readonly value: unknown }[]
+): T {
+  let root: unknown = bag;
+  for (const { coordinate, value } of entries) {
+    if (!readAt(root, coordinate).found) continue;
+    if (coordinate.length === 0) {
+      root = value;
+      continue;
+    }
+    root = cloneContainer(root);
+    let node = root as Record<string | number, unknown>;
+    for (let i = 0; i <= coordinate.length - 1; i++) {
+      const segment = coordinate[i]!;
+      const next = i === coordinate.length - 1 ? value : cloneContainer(node[segment]);
+      if (typeof segment === 'number') node[segment] = next;
+      else
+        Object.defineProperty(node, segment, {
+          value: next,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      node = next as Record<string | number, unknown>;
+    }
   }
   return root as T;
 }
