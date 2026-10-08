@@ -16,6 +16,15 @@ Seven layers, each feeding the next:
 6. **Deployment** (`src/deployment/`) — orchestration, parallel execution, diff detection.
 7. **Provisioning** (`src/provisioning/`) — create/update/delete via SDK Providers with Cloud Control fallback.
 
+## Design trade-offs (maintainer's priorities)
+
+When a design must give up one property for another, decide in this order (#4705):
+
+1. **Security and data safety are never traded away.**
+2. **Guard a rare case when it can be detected.** Rarity is no reason to leave a destructive path open, and implementation size is not a cost to weigh.
+3. **Everyday speed is the product.** A check on the deploy or destroy path must be O(1): never scaling with stacks or resources, run concurrently with existing work, and well under 1s. Prefer paying it once, e.g. on a stack's first deploy.
+4. **No user friction.** Prefer handling the user never notices (like state-schema auto-migration) or a one-time action. Avoid a flag or step the user must remember each time.
+
 ## Key Architectural Decisions
 
 ### 1. Hybrid provisioning
