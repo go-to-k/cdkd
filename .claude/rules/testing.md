@@ -12,8 +12,8 @@ paths:
 - **Import test APIs from `'vite-plus/test'`, never `'vitest'`** — a bare
   `'vitest'` resolves locally but fails `vp run typecheck:test` with TS2307.
 - **`os.tmpdir()` is a per-run directory**: `tests/run-tmpdir-setup.ts` points
-  `TMPDIR` at `cdkd-vitest-*` and removes it when the run ends, so a forgotten
-  `mkdtempSync` cleanup leaks nothing into the user's real temp directory.
+  `TMPDIR` at `cdkd-vitest-*` and removes it when the run ends normally, so a
+  forgotten `mkdtempSync` cleanup does not pile up in the user's temp directory.
 - **A green run must print nothing**: `tests/setup.ts` buffers raw stdout/stderr
   and replays only on FAILURE — [test-stream-fence.md](test-stream-fence.md).
 - **Mocking `src/utils/aws-clients.js` does NOT isolate a provider that builds

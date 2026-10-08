@@ -94,7 +94,7 @@ describe('resolveAssemblyPath', () => {
     const dir = tmp();
 
     // Enough `..` to reach the root from any temp-dir depth (the run's own
-    // TMPDIR already sits seven levels deep on macOS); resolve clamps at `/`.
+    // TMPDIR adds a level); resolve clamps at `/`.
     const result = refused(resolveAssemblyPath(dir, `${'../'.repeat(32)}etc/passwd`));
 
     expect(result.escape).toBe('lexical');

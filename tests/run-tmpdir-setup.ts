@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,9 +17,14 @@ import { join } from 'node:path';
  * Only the run's own directory is removed, so a concurrent run (another
  * worktree, another session) is never touched. A run killed before teardown
  * leaves that one directory behind, named `cdkd-vitest-*`.
+ *
+ * The path is deliberately NOT realpath'd: on macOS `tmpdir()` sits behind
+ * the `/var` -> `/private/var` link, and suites such as
+ * `asset-path-containment.test.ts` exercise that two-spellings case only when
+ * `tmpdir()` still goes through the link.
  */
 export default function setup(): () => void {
-  const runDir = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-vitest-')));
+  const runDir = mkdtempSync(join(tmpdir(), 'cdkd-vitest-'));
   const saved = process.env['TMPDIR'];
   process.env['TMPDIR'] = runDir;
   return () => {
