@@ -32,6 +32,8 @@ import {
   positionByEmbeddedSpan,
   rendersLiteralTo,
 } from '../../../src/deployment/secret-redaction/positions.js';
+import { inheritedRenderedSpan } from '../../../src/deployment/secret-redaction/nested-stack.js';
+import { crossStackSourceKey } from '../../../src/deployment/secret-redaction/cross-stack.js';
 import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -552,6 +554,24 @@ describe('a two-token literal parameter persists its own spelling in either pare
     expect(
       (redactSecretsForState({ Env: `x-${CONN}` }, child, source) as Record<string, unknown>)['Env']
     ).toBe(`x-${SPELLING}`);
+  });
+
+  it('inheritedRenderedSpan: refuses a span text other than the recorded value, and a child-only plaintext inside it', () => {
+    const parent = reversedParent();
+    const key = crossStackSourceKey({ Ref: PARAM_A })!;
+    const child: RecordedSecretValues = new Map([
+      [USER, USER_EXPR],
+      [SHARED, EXPR_B],
+    ]);
+    recordInheritedParameterRead(child, parent, PARAM_A);
+    expect(inheritedRenderedSpan(child, key, CONN)).toEqual({ value: CONN, spelling: SPELLING });
+    expect(inheritedRenderedSpan(child, key)).toEqual({ value: CONN, spelling: SPELLING });
+    expect(inheritedRenderedSpan(child, key, `${CONN}x`)).toBeUndefined();
+    expect(inheritedRenderedSpan(child, crossStackSourceKey({ Ref: PARAM_B })!, SHARED)).toBeUndefined();
+    // A child-only plaintext INSIDE a token's plaintext: the spelling would
+    // hide it, but the child scan cuts it apart, so the span keeps the scan.
+    child.set(USER.slice(0, 8), '{{resolve:secretsmanager:child/only:SecretString:x::}}');
+    expect(inheritedRenderedSpan(child, key, CONN)).toBeUndefined();
   });
 
   it('a name recorded twice against DIFFERENT spellings is poisoned: the reader keeps the scan', () => {
