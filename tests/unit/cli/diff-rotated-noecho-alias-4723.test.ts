@@ -9,7 +9,10 @@
  * cannot account for is withheld, in the human rows and in `--json`.
  */
 
-import { describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -35,14 +38,20 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
 });
 
 import {
+  buildDiffTree,
   computeStackDiff,
   diffTreeToJson,
   renderOutputChangeLines,
   type DiffTreeNode,
 } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { computeOutputsDiff, resolveTemplateOutputs } from '../../../src/analyzer/outputs-diff.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
-import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
+import {
+  STATE_SCHEMA_VERSION_CURRENT,
+  type ResourceState,
+  type StackState,
+} from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { WITHHELD_NAME_DISPLAY } from '../../../src/deployment/outputs-export-alias/warnings.js';
 
@@ -241,5 +250,154 @@ describe('cdkd diff withholds a stored alias spelling a ROTATED NoEcho value (go
       { inheritedNoEchoParameters: new Set(['Short']) }
     );
     expect(rows(result.outputChanges)).toEqual(['REMOVE x-ab-y (withheld)']);
+  });
+});
+
+describe('the gate without the diff\'s NoEcho sources (go-to-k/cdkd#4723)', () => {
+  const template = templateOf(EXPORTER);
+  const passOf = (sources?: { parameters: ReadonlySet<string> }) => ({
+    resolveInto: () => async (value: unknown) => value,
+    secrets: new Map(),
+    ...(sources !== undefined && { noEchoNameSources: sources }),
+  });
+
+  it('stays false with no NoEcho sources, so a stale alias prints as before', async () => {
+    const resolved = await resolveTemplateOutputs(template, async (value) => value, undefined, undefined, undefined, passOf());
+    expect(resolved.exportNameReadsNoEcho).toBe(false);
+    // Premise: the same template with the sources turns it on.
+    const withSources = await resolveTemplateOutputs(
+      template,
+      async (value) => value,
+      undefined,
+      undefined,
+      undefined,
+      passOf({ parameters: new Set(['Short']) })
+    );
+    expect(withSources.exportNameReadsNoEcho).toBe(true);
+    const changes = computeOutputsDiff({ Out: 'v', 'x-ab-y': 'v' }, { Out: 'v' }, new Set(), new Set(), {
+      declaredKeys: resolved.declaredKeys,
+      exportNameReadsNoEcho: resolved.exportNameReadsNoEcho,
+      storedExportNames: ['x-ab-y'],
+    });
+    expect(rows(changes)).toEqual(['REMOVE x-ab-y']);
+  });
+});
+
+describe('a nested child whose parent row feeds the NoEcho value through an Fn::If today drops (go-to-k/cdkd#4723)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cdkd-diff-4723-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const res = (properties: Record<string, unknown>, resourceType = 'AWS::SSM::Parameter'): ResourceState => ({
+    physicalId: 'pid',
+    resourceType,
+    properties,
+    attributes: {},
+    dependencies: [],
+  });
+
+  async function childChanges(parentNoEcho: boolean): Promise<DiffTreeNode['outputChanges']> {
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { Short: { Type: 'String' } },
+        Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+        Outputs: EXPORTER,
+      })
+    );
+    // Published while `On` was TRUE and the parent's NoEcho value was `ab`.
+    const row = { Short: { 'Fn::If': ['On', { Ref: 'Pw' }, 'lit'] } };
+    const states: Record<string, StackState> = {
+      Parent: {
+        ...stateWith({}),
+        stackName: 'Parent',
+        resources: { Child: res({ Parameters: { Short: 'ab' } }, 'AWS::CloudFormation::Stack') },
+      },
+      'Parent~Child': {
+        ...stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']),
+        stackName: 'Parent~Child',
+      },
+    };
+    const backend = {
+      getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+    } as unknown as S3StateBackend;
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Parameters: { Pw: { Type: 'String', NoEcho: parentNoEcho, Default: 'cd' } },
+        Conditions: { On: { 'Fn::Equals': ['a', 'b'] } },
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: { Parameters: row },
+          },
+        },
+      } as unknown as CloudFormationTemplate,
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+    return root.children[0]!.outputChanges;
+  }
+
+  it("withholds the child's stale alias, in human and --json output", async () => {
+    const changes = await childChanges(true);
+    expect(rows(changes)).toContain('REMOVE x-ab-y (withheld)');
+    const { human, json } = rendered(changes);
+    for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
+  });
+
+  it('prints it when the parent parameter is not NoEcho (negative control)', async () => {
+    expect(rows(await childChanges(false))).toContain('REMOVE x-ab-y');
+  });
+});
+
+describe('an Export.Name reading a NoEcho custom-resource ATTRIBUTE (go-to-k/cdkd#4723)', () => {
+  // Published while the attribute was `ab`; the record now holds `cd`.
+  async function changesOf(declaredNoEcho: boolean) {
+    const state: StackState = {
+      ...stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']),
+      resources: {
+        Cr: {
+          physicalId: 'cr-pid',
+          resourceType: 'Custom::Secret',
+          properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:f' },
+          attributes: { Secret: 'cd' },
+          dependencies: [],
+          ...(declaredNoEcho && { noEchoAttributeNames: ['Secret'] }),
+        },
+      },
+    };
+    const template = {
+      Resources: {
+        Cr: {
+          Type: 'Custom::Secret',
+          Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:f' },
+        },
+      },
+      Outputs: { Out: { Value: 'v', Export: { Name: { 'Fn::Sub': 'x-${Cr.Secret}-y' } } } },
+    } as unknown as CloudFormationTemplate;
+    return (await diffOf(state, template)).outputChanges;
+  }
+
+  it('withholds the stale alias, in human and --json output', async () => {
+    const changes = await changesOf(true);
+    expect(rows(changes)).toContain('REMOVE x-ab-y (withheld)');
+    const { human, json } = rendered(changes);
+    for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
+  });
+
+  it('prints it when the attribute is not declared NoEcho (negative control)', async () => {
+    expect(rows(await changesOf(false))).toContain('REMOVE x-ab-y');
   });
 });

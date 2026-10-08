@@ -1290,6 +1290,11 @@ export async function computeStackDiff(
      */
     inheritedNoEchoParameters?: ReadonlySet<string>;
     /**
+     * The same, under ANY parent condition verdict (go-to-k/cdkd#4723), for
+     * the stale-alias gate only: a stored alias was published under a past one.
+     */
+    inheritedNoEchoParametersAnyVerdict?: ReadonlySet<string>;
+    /**
      * The READ-ONLY stale-attribute healer (issue go-to-k/cdkd#3456), on every
      * resolver context below — condition evaluation, the resource diff and the
      * outputs pass — as `DeployEngine` puts its healer on every context it
@@ -1338,6 +1343,7 @@ export async function computeStackDiff(
     attributeHealer,
     parentUnresolvedParameters,
     inheritedNoEchoParameters,
+    inheritedNoEchoParametersAnyVerdict,
   } = options;
   // This template's `NoEcho` parameters, plus (in a nested child) the ones the
   // parent fills from a `NoEcho` source (go-to-k/cdkd#4043 review round 9).
@@ -2158,6 +2164,15 @@ export async function computeStackDiff(
       : Object.fromEntries(
           Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
         );
+  // An attribute the record declares `NoEcho` (a custom resource's, a nested
+  // stack's output): the comparison below and the stale-alias gate read it.
+  const recordDeclaresNoEchoAttribute = (logicalId: string, attribute: string): boolean => {
+    const record = Object.hasOwn(stateForDiff.resources, logicalId)
+      ? stateForDiff.resources[logicalId]
+      : undefined;
+    const names = record?.noEchoAttributeNames as unknown;
+    return Array.isArray(names) && names.includes(attribute);
+  };
   const resolved = await resolveTemplateOutputs(
     effectiveTemplate,
     resolveFn,
@@ -2176,6 +2191,10 @@ export async function computeStackDiff(
         parameters: noEchoParametersOf(effectiveTemplate),
         ...(knownConditions !== undefined && { conditions: knownConditions }),
       },
+      ...(inheritedNoEchoParametersAnyVerdict !== undefined && {
+        noEchoNameParametersAnyVerdict: inheritedNoEchoParametersAnyVerdict,
+      }),
+      noEchoAttributeIsNoEcho: recordDeclaresNoEchoAttribute,
     }
   );
   // The RAW template too whenever a parameter is unbound or a condition has no
@@ -2200,13 +2219,7 @@ export async function computeStackDiff(
   }
   const compareNoEchoOutputs = noEchoOutputsComparison(outputTemplateValues, {
     parameters: noEchoParametersOf(effectiveTemplate),
-    attributeIsNoEcho: (logicalId, attribute) => {
-      const record = Object.hasOwn(stateForDiff.resources, logicalId)
-        ? stateForDiff.resources[logicalId]
-        : undefined;
-      const names = record?.noEchoAttributeNames as unknown;
-      return Array.isArray(names) && names.includes(attribute);
-    },
+    attributeIsNoEcho: recordDeclaresNoEchoAttribute,
     ...(knownConditions !== undefined && { conditions: knownConditions }),
   });
   const diffOutputsAgainst = (
@@ -3143,6 +3156,8 @@ export async function buildDiffTree(args: {
    * child engine does. Absent at the root.
    */
   inheritedNoEchoParameters?: ReadonlySet<string>;
+  /** The same under ANY verdict (go-to-k/cdkd#4723); absent at the root. */
+  inheritedNoEchoParametersAnyVerdict?: ReadonlySet<string>;
   /**
    * The run's account flags (go-to-k/cdkd#4159), carried on every
    * malformed-record warning's `cdkd state show` pointer at every node.
@@ -3170,6 +3185,7 @@ export async function buildDiffTree(args: {
     isNestedChild,
     inheritedSecrets,
     inheritedNoEchoParameters,
+    inheritedNoEchoParametersAnyVerdict,
     refusalRecovery,
   } = args;
   const attributeHealer = attributeHealerFor?.(stackName, region);
@@ -3229,6 +3245,7 @@ export async function buildDiffTree(args: {
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
         ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
+        ...(inheritedNoEchoParametersAnyVerdict && { inheritedNoEchoParametersAnyVerdict }),
         ...(attributeHealer && { attributeHealer }),
         ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
@@ -3395,6 +3412,19 @@ export async function buildDiffTree(args: {
       knownConditions,
       stateAfterAdoption.resources
     );
+    // The same under ANY verdict (go-to-k/cdkd#4723), for the child's
+    // stale-alias gate only: a row's `Fn::If` today's verdict drops may have
+    // fed the value when the child's alias was published.
+    const childNoEchoParametersAnyVerdict = noEchoFedChildParameters(
+      resource,
+      new Set([
+        ...noEchoParameterNamesOf(effectiveTemplate),
+        ...(inheritedNoEchoParameters ?? []),
+        ...(inheritedNoEchoParametersAnyVerdict ?? []),
+      ]),
+      undefined,
+      stateAfterAdoption.resources
+    );
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -3432,6 +3462,9 @@ export async function buildDiffTree(args: {
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
         ...(childNoEchoParameters.size > 0 && { inheritedNoEchoParameters: childNoEchoParameters }),
+        ...(childNoEchoParametersAnyVerdict.size > 0 && {
+          inheritedNoEchoParametersAnyVerdict: childNoEchoParametersAnyVerdict,
+        }),
         ...(refusalRecovery && { refusalRecovery }),
       })
     );

@@ -460,7 +460,9 @@ withheld** in a stack whose template references a secret: a REMOVE row for a
 key the template no longer declares that contains a character an Output
 logical ID cannot (anything outside `A-Z`, `a-z`, `0-9`) and, on a record that
 lists `exportNames`, is listed there. A removed ordinary Output keeps its name,
-even one exported under its own name. Two gaps remain, and each prints unless
+even one exported under its own name, except while a declared `Export.Name`
+reads a `NoEcho` parameter: then a self-exported one, and every removed key of
+a record that lists no `exportNames`, is withheld too. Two gaps remain, and each prints unless
 the search above finds its secret: an alias made only of letters and digits,
 which reads as an Output logical ID; and any alias in a stack whose template no
 longer references a secret through `{{resolve:secretsmanager:` or
@@ -522,8 +524,9 @@ Limits:
   switched away from a `NoEcho` parameter in that deploy. The stored previous
   plaintext prints as its `old:` side. An export alias published under a
   previous value is the exception: while any declared `Export.Name` reads a
-  `NoEcho` parameter (in any `Fn::If` branch), every stale alias's REMOVE row
-  name is withheld, an unrelated one included. Likewise a stored `Fn::Split` piece of
+  `NoEcho` parameter or custom-resource attribute (in any `Fn::If` branch,
+  a nested child's parent row included), every stale alias's REMOVE row name
+  is withheld, an unrelated one included. Likewise a stored `Fn::Split` piece of
   the current value prints once no `Fn::Split` over the value by that delimiter
   is left in the template.
 - A `NoEcho` parameter fed a plain `{{resolve:ssm:...}}` reference to a

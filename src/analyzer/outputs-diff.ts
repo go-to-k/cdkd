@@ -16,6 +16,7 @@ import {
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   hasMaskableValues,
   printingCorpusOf,
+  readsNoEchoSource,
   shareLogOnlyValues,
   type NoEchoPositionSources,
   type RecordedSecretValues,
@@ -235,8 +236,10 @@ export interface ResolvedTemplateOutputs {
   refusedNoEchoExportNames: string[];
   /**
    * True when ANY declared output, a condition-skipped one included, has an
-   * intrinsic `Export.Name` that can read a `NoEcho` parameter under ANY
-   * `Fn::If` verdict (go-to-k/cdkd#4723). An older binary published that name
+   * intrinsic `Export.Name` that can read a `NoEcho` parameter (in a nested
+   * child, one the parent fills from a `NoEcho` source) or a `NoEcho`
+   * attribute, under ANY `Fn::If` verdict (go-to-k/cdkd#4723). An older binary
+   * published that name
    * with the value and the verdicts of THEN, so a stored alias may spell a
    * value since rotated, or come from a branch today's verdict drops, which
    * neither {@link refusedNoEchoExportNames} nor the printing corpus (today's
@@ -659,6 +662,19 @@ export async function resolveTemplateOutputs(
      * this diff KNOWS (go-to-k/cdkd#4657): the deploy's positional refusal.
      */
     noEchoNameSources?: NoEchoPositionSources;
+    /**
+     * A nested child's parameters the parent fills from a `NoEcho` source
+     * under ANY condition verdict (go-to-k/cdkd#4723): read only by the
+     * `exportNameReadsNoEcho` gate, whose stored alias was published under a
+     * past verdict. Pass 3 keeps `noEchoNameSources`, today's.
+     */
+    noEchoNameParametersAnyVerdict?: ReadonlySet<string>;
+    /**
+     * Whether `Fn::GetAtt` of `attribute` on `logicalId` serves a value its
+     * producer declared `NoEcho`, per the stored record. Read only by the
+     * `exportNameReadsNoEcho` gate (go-to-k/cdkd#4723), never by pass 3.
+     */
+    noEchoAttributeIsNoEcho?: (logicalId: string, attribute: string) => boolean;
   }
 ): Promise<ResolvedTemplateOutputs> {
   const resolveValue = outputsPass?.resolveInto(outputsPass.secrets) ?? resolveFn;
@@ -806,10 +822,17 @@ export async function resolveTemplateOutputs(
   // the resolve loop below yet can still sit on the stored side and print as a
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
-  // The `NoEcho` sources minus today's condition verdicts, for the
-  // `exportNameReadsNoEcho` gate in the loop below.
-  const { conditions: _todaysVerdicts, ...everyBranch } = outputsPass?.noEchoNameSources ?? {
-    parameters: new Set<string>(),
+  // The `NoEcho` sources for the `exportNameReadsNoEcho` gate in the loop
+  // below: no condition verdicts; in a nested child, each parameter the parent
+  // fills from a `NoEcho` source under ANY verdict; and a `NoEcho` attribute.
+  const everyBranch: NoEchoPositionSources = {
+    parameters: new Set([
+      ...(outputsPass?.noEchoNameSources?.parameters ?? []),
+      ...(outputsPass?.noEchoNameParametersAnyVerdict ?? []),
+    ]),
+    ...(outputsPass?.noEchoAttributeIsNoEcho !== undefined && {
+      attributeIsNoEcho: outputsPass.noEchoAttributeIsNoEcho,
+    }),
   };
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     // Every declared key, secret-bearing or not (issue #1948): a stored key
@@ -821,10 +844,14 @@ export async function resolveTemplateOutputs(
     // exporter's stored alias is a REMOVE row too. And NO condition verdicts,
     // unlike pass 3's refusal of today's name: the stored alias was published
     // under a past verdict, so an `Fn::If` branch today drops still counts.
+    // A LITERAL name reads nothing, as for pass 3.
+    const name: unknown = output.Export?.Name;
     if (
       !exportNameReadsNoEcho &&
       outputsPass?.noEchoNameSources !== undefined &&
-      exportNameNoEchoParameters(output.Export?.Name, everyBranch).length > 0
+      name !== null &&
+      typeof name === 'object' &&
+      readsNoEchoSource(name, everyBranch)
     ) {
       exportNameReadsNoEcho = true;
     }
@@ -1530,8 +1557,9 @@ export function computeOutputsDiff(
   // a secret, and a key that can only be an export ALIAS: carrying a character
   // a CloudFormation Output logical id cannot (outside `[A-Za-z0-9]`), and,
   // when the record lists `exportNames` (v9+), listed there. A plain Output
-  // logical id is never withheld -- not even one listed in `exportNames`,
+  // logical id is never withheld HERE -- not even one listed in `exportNames`,
   // which a self-aliased output (`exportName` equal to its own id) puts there.
+  // `withholdsRotatedNoEchoAlias` below can withhold one (go-to-k/cdkd#4723).
   //
   // TWO BOUNDS remain, each printing unless the corpus or the span covers it:
   // - an alphanumeric-only alias key, which reads as an Output logical id;
