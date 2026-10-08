@@ -6,7 +6,7 @@ paths:
 
 # Key Files and Directories - src/analyzer
 
-DAG builder, template parser, intrinsic-function resolution. The `drift-*`
+DAG builder, template parser, intrinsic resolution. The `drift-*`
 normalizers live with `cdkd drift` ([layout-drift.md](layout-drift.md)); index
 of every area: [code-layout.md](code-layout.md).
 
@@ -36,7 +36,7 @@ The `Outputs` resolution and comparison behind `cdkd diff`'s Outputs section
   cannot evaluate that predicate. State holding the alias KEY is proof a
   previous deploy evaluated it over the same name, so the preview republishes
   that key with TODAY's value (the stored VALUE is not evidence). An ABSENT key
-  records no verdict and keeps the old behaviour of suppressing the delta.
+  records no verdict and keeps suppressing the delta.
 - **`isUnresolvedValue` is deliberately WIDER than the deploy side's
   `v === undefined`**, because this resolver fails in more ways: `undefined`, a
   SYMBOL (a top-level `Fn::If` selecting `Ref: AWS::NoValue`), a surviving
@@ -109,7 +109,8 @@ none. Its corpus: the proving keys' values (the whole bag when the merge
 FORCES the verdict), plus for an unaccountable name, unaccountable values
 and `secretSpanInStoredKey`. A removed non-alphanumeric ALIAS (listed in
 `exportNames` when recorded) is withheld in a secret-referencing stack, and any
-unaccounted one while an `Export.Name` reads a `NoEcho` parameter (#4723);
+unaccounted one while an `Export.Name` reads a `NoEcho` parameter or CR attribute
+(#4723);
 other names are control-stripped.
 
 **A deliberate SECOND implementation, not shared code**: extracting the

@@ -360,6 +360,86 @@ describe('a nested child whose parent row feeds the NoEcho value through an Fn::
   it('prints it when the parent parameter is not NoEcho (negative control)', async () => {
     expect(rows(await childChanges(false))).toContain('REMOVE x-ab-y');
   });
+
+  // Three levels: the any-verdict set a child inherits is carried into its
+  // OWN child, which reads it through a parameter the child passes on.
+  async function grandchildChanges(rootNoEcho: boolean): Promise<DiffTreeNode['outputChanges']> {
+    writeFileSync(
+      join(dir, 'child.json'),
+      JSON.stringify({
+        Parameters: { Mid: { Type: 'String' } },
+        Resources: {
+          Grand: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'grand.json' },
+            Properties: { Parameters: { Short: { Ref: 'Mid' } } },
+          },
+        },
+      })
+    );
+    writeFileSync(
+      join(dir, 'grand.json'),
+      JSON.stringify({
+        Parameters: { Short: { Type: 'String' } },
+        Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+        Outputs: EXPORTER,
+      })
+    );
+    const states: Record<string, StackState> = {
+      Parent: {
+        ...stateWith({}),
+        stackName: 'Parent',
+        resources: { Child: res({ Parameters: { Mid: 'ab' } }, 'AWS::CloudFormation::Stack') },
+      },
+      'Parent~Child': {
+        ...stateWith({}),
+        stackName: 'Parent~Child',
+        resources: { Grand: res({ Parameters: { Short: 'ab' } }, 'AWS::CloudFormation::Stack') },
+      },
+      'Parent~Child~Grand': {
+        ...stateWith({ Out: 'v', 'x-ab-y': 'v' }, ['x-ab-y']),
+        stackName: 'Parent~Child~Grand',
+      },
+    };
+    const backend = {
+      getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+    } as unknown as S3StateBackend;
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Parameters: { Pw: { Type: 'String', NoEcho: rootNoEcho, Default: 'cd' } },
+        Conditions: { On: { 'Fn::Equals': ['a', 'b'] } },
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: { Parameters: { Mid: { 'Fn::If': ['On', { Ref: 'Pw' }, 'lit'] } } },
+          },
+        },
+      } as unknown as CloudFormationTemplate,
+      nestedTemplates: { Child: join(dir, 'child.json') },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+    const grand = root.children[0]?.children[0];
+    expect(grand?.stackName).toBe('Parent~Child~Grand');
+    return grand!.outputChanges;
+  }
+
+  it("withholds a GRANDchild's stale alias the root's dropped branch fed", async () => {
+    const changes = await grandchildChanges(true);
+    expect(rows(changes)).toContain('REMOVE x-ab-y (withheld)');
+    const { human, json } = rendered(changes);
+    for (const surface of [human, json]) expect(surface).not.toContain('x-ab-y');
+  });
+
+  it("prints the grandchild's alias when the root parameter is not NoEcho (negative control)", async () => {
+    expect(rows(await grandchildChanges(false))).toContain('REMOVE x-ab-y');
+  });
 });
 
 describe('an Export.Name reading a NoEcho custom-resource ATTRIBUTE (go-to-k/cdkd#4723)', () => {
