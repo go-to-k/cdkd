@@ -17,6 +17,7 @@ import { type RollbackJournalSegment, splitImportedOps } from '../../types/rollb
 import type { ResourceState, StackState } from '../../types/state.js';
 import { RESOURCE_NOT_FOUND, type ResourceIdentityVerdict } from '../../types/resource.js';
 import { orphanDeleteNeedsIdentity, readResourceIdentity } from './orphan-identity.js';
+import { physicalIdKey, samePhysicalId } from '../replacement-name-holder/name-keys.js';
 import {
   hasReadableOrphans,
   unreadableOrphanRecords,
@@ -649,10 +650,15 @@ async function applySuccessRule(
       // A record of this stack holding this very resource tracks it (an
       // idempotent create, an adoption): settled here, silently, without the
       // classifier, whose same-logical-id check would call a record holding
-      // another resource under that id a mismatch.
+      // another resource under that id a mismatch. Under the type's case rule
+      // (go-to-k/cdkd#4692): `mycluster` holds the cluster `MyCluster` names.
+      const opId = op.physicalId;
       if (
         Object.values(stateResources).some(
-          (r) => r?.resourceType === op.resourceType && r.physicalId === op.physicalId
+          (r) =>
+            r?.resourceType === op.resourceType &&
+            typeof r.physicalId === 'string' &&
+            samePhysicalId(op.resourceType, r.physicalId, opId)
         )
       ) {
         tracked.add(op);
@@ -841,7 +847,9 @@ export function makeForeignHolderScan(
     unreadable?: string;
   };
   let scan: Promise<Scan> | undefined;
-  const key = (type: string, id: string): string => JSON.stringify([type, id]);
+  // Under the type's case rule (go-to-k/cdkd#4692): another stack's record
+  // spelling the id `mycluster` holds the cluster a journal names `MyCluster`.
+  const key = (type: string, id: string): string => JSON.stringify([type, physicalIdKey(type, id)]);
   const run = async (): Promise<Scan> => {
     const holders: Scan['holders'] = new Map();
     let refs: Awaited<ReturnType<S3StateBackend['listStacks']>>;

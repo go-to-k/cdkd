@@ -407,6 +407,33 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     expect(del).not.toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#4692: a record spelling the made id in another case holds it
+  // where AWS matches the type's ids case-insensitively, and only there.
+  it('never deletes an id a state record holds in another case, for a case-insensitive type', async () => {
+    const RDS = 'AWS::RDS::DBCluster';
+    const made = (): Error => markCreatedBeforeFailure(new Error('x'), 'S', RDS, 'Db-A');
+    const opts = { type: RDS, prev: { deletionPolicy: 'Delete' as const } };
+    const held = run(made(), {
+      ...opts,
+      extraState: { Held: res({ physicalId: 'db-a', resourceType: RDS }) },
+    });
+    await held.result;
+    expect(held.del).not.toHaveBeenCalled();
+    // Reached: with no such record, the same re-create's resource is deleted.
+    const free = run(made(), opts);
+    await free.result;
+    expect(free.del.mock.calls.map((c) => c[1])).toEqual(['Db-A']);
+  });
+
+  it('control: a case-sensitive type deletes beside a record that differs in case only', async () => {
+    const { del, result } = run(
+      markCreatedBeforeFailure(new Error('x'), 'S', TYPE, 'Stream-C'),
+      { extraState: { Other: res({ physicalId: 'stream-c' }) } }
+    );
+    await result;
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['Stream-C']);
+  });
+
   it('control: an unmarked re-create failure deletes nothing', async () => {
     const { del, result } = run(new Error('retention rejected'));
     await result;
