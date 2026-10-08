@@ -467,9 +467,9 @@ export class IAMRoleProvider implements ResourceProvider {
     }
 
     if (needsReplacement) {
-      const reason = newRoleName !== physicalId ? 'RoleName' : 'Path';
+      // Only a rename reaches here: a Path-only change was refused above.
       log.debug(
-        `${reason} changed, replacing role: ${v(physicalId)} (${reason}: ${reason === 'RoleName' ? `from ${v(physicalId)} to ${v(newRoleName)}` : `from ${v(oldPath)} to ${v(newPath)}`})`
+        `RoleName changed, replacing role: ${v(physicalId)} (RoleName: from ${v(physicalId)} to ${v(newRoleName)})`
       );
 
       // Create new role. The masker is forwarded (issue #2177) and NOTHING
