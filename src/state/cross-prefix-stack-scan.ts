@@ -15,8 +15,8 @@
  * What it reads: one `ListObjectsV2` with `Delimiter: '/'` for the bucket's
  * top-level prefixes. Each listed segment `p` stands for two prefixes cdkd can
  * have written under it, `p` and `p/` (a `--state-prefix team-a/` keys records
- * as `team-a//<stack>/...`; the twins are probed in a second pass, only when no
- * `p` held the stack). Each candidate costs one listing of `<p>/<stack>/`;
+ * as `team-a//<stack>/...`); both go through ONE pool, the segments first and
+ * their twins after them. Each candidate costs one listing of `<p>/<stack>/`;
  * only a hit reads the region-scoped record, the legacy region-less record and
  * the rollback journal, in parallel and strictly
  * (`S3StateBackend.recordUnderPrefix`), through a pool of

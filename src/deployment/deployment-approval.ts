@@ -31,9 +31,10 @@ const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
  * outlived it) refuses without asking: the parent has failed, so a "yes"
  * could only provision a child nothing will track.
  *
- * Resolves `true` when it asked (and was approved), `false` when it did not
- * ask (go-to-k/cdkd#4705: a prompt that waited makes the generated-name
- * lookups re-read at each create).
+ * Resolves `true` when it asked someone (and was approved), `false` when it
+ * did not ask, or the approver answers without asking (`--yes`;
+ * go-to-k/cdkd#4705: only a prompt that waited makes the generated-name
+ * lookups re-read).
  */
 export async function requireDeploymentApproval(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -97,7 +98,8 @@ export async function requireDeploymentApproval(args: {
       )
     );
   }
-  return true;
+  // Review H-3: `--yes` answered without asking; nothing waited.
+  return approve.autoApproves !== true;
 }
 
 /**
@@ -189,7 +191,7 @@ export async function approveLateReplacement(args: {
         ),
       })
     );
-    args.onAsked?.();
+    if (approve.autoApproves !== true) args.onAsked?.();
     return approved;
   } catch {
     return false;

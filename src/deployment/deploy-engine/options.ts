@@ -461,7 +461,7 @@ export interface DeployEngineOptions {
    * request, serializes prompts across concurrent stacks and handles `--yes`
    * and a non-interactive stdin.
    */
-  approveDeployment?: (request: DeploymentApprovalRequest) => Promise<boolean>;
+  approveDeployment?: DeploymentApprover;
 
   /**
    * go-to-k/cdkd#4705: called after the diff and the `--dry-run` return, BEFORE
@@ -498,6 +498,15 @@ export interface DeployEngineOptions {
 
 /** The `--require-approval` levels cdkd implements (CDK's `broadening` needs a security diff cdkd has none of). */
 export type RequireApprovalLevel = 'never' | 'any-change' | 'destructive';
+
+/**
+ * {@link DeployEngineOptions.approveDeployment}. `autoApproves` (go-to-k/cdkd#4705
+ * review H-3): it answers yes without asking anyone (`--yes`), so no wait
+ * passed and the generated-name lookups are not read again.
+ */
+export type DeploymentApprover = ((request: DeploymentApprovalRequest) => Promise<boolean>) & {
+  readonly autoApproves?: boolean;
+};
 
 /** What {@link DeployEngineOptions.approveDeployment} is asked to approve. */
 export interface DeploymentApprovalRequest {

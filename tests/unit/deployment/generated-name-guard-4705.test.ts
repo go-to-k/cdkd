@@ -361,6 +361,23 @@ describe('the verdicts', () => {
     await expect(guard.verdict('B')).resolves.toMatchObject({ kind: 'unchecked' });
   });
 
+  it('H-7: an S3 301 (the bucket exists in another region) is held, never failed', async () => {
+    for (const redirect of [
+      Object.assign(new Error('UnknownError'), { name: 'Unknown', $metadata: { httpStatusCode: 301 } }),
+      Object.assign(new Error('moved'), { name: 'PermanentRedirect' }),
+    ]) {
+      const bucket = providerOf({}, { batch: false });
+      bucket.import.mockRejectedValue(redirect);
+      const guard = GeneratedNameGuard.start(inputOf([create('B', BUCKET)], { [BUCKET]: bucket }))!;
+      await expect(guard.verdict('B')).resolves.toEqual({ kind: 'held', holder: 'gen-B' });
+    }
+    // Another type's 301-shaped failure stays a failure.
+    const q = providerOf({}, { batch: false });
+    q.import.mockRejectedValue(Object.assign(new Error('x'), { $metadata: { httpStatusCode: 301 } }));
+    const other = GeneratedNameGuard.start(inputOf([create('T', TOPIC)], { [TOPIC]: q }))!;
+    await expect(other.verdict('T')).resolves.toMatchObject({ kind: 'failed' });
+  });
+
   it('lists the creates that took back a kept resource and came back, for retained.json to let go', async () => {
     const q = providerOf({ 'gen-A': URL });
     const guard = GeneratedNameGuard.start(

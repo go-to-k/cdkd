@@ -65,6 +65,9 @@ describe('createApprovalPrompter', () => {
 
   it('approves under --yes without asking or printing', async () => {
     await expect(createApprovalPrompter({ yes: true })(request('S'))).resolves.toBe(true);
+    // go-to-k/cdkd#4705 review H-3: and says it asks no one.
+    expect(createApprovalPrompter({ yes: true }).autoApproves).toBe(true);
+    expect(createApprovalPrompter({ yes: false }).autoApproves).toBeUndefined();
     expect(mockConfirm).not.toHaveBeenCalled();
     expect(stdout).not.toHaveBeenCalled();
   });

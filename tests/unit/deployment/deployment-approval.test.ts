@@ -47,6 +47,13 @@ describe('requireDeploymentApproval', () => {
     ]);
   });
 
+  it('H-3 (go-to-k/cdkd#4705): an approver that answers without asking (--yes) reports that no one was asked', async () => {
+    const yes = Object.assign(vi.fn(async () => true), { autoApproves: true as const });
+    await expect(run('any-change', [change('Q', 'CREATE')], yes)).resolves.toBe(false);
+    expect(yes).toHaveBeenCalledTimes(1);
+    await expect(run('any-change', [change('Q', 'CREATE')], approve)).resolves.toBe(true);
+  });
+
   it('does not ask under destructive for a plain in-place update', async () => {
     await run('destructive', [change('Fn', 'UPDATE')], approve);
     expect(approve).not.toHaveBeenCalled();
@@ -185,6 +192,22 @@ describe('approveLateReplacement (go-to-k/cdkd#4656)', () => {
     await expect(run('destructive', async () => false)).resolves.toHaveBeenCalledTimes(1);
     await expect(run('never', async () => true)).resolves.not.toHaveBeenCalled();
     await expect(run('destructive', () => Promise.reject(new Error('no tty')))).resolves.not.toHaveBeenCalled();
+  });
+
+  it('H-3: onAsked never runs for an approver that answers without asking (--yes)', async () => {
+    const onAsked = vi.fn();
+    await approveLateReplacement({
+      options: {
+        requireApproval: 'destructive',
+        approveDeployment: Object.assign(async () => true, { autoApproves: true as const }),
+      },
+      stackName: 'S',
+      change: replacement,
+      records: { Q: rec('AWS::SQS::Queue') },
+      template: { Resources: {} },
+      onAsked,
+    });
+    expect(onAsked).not.toHaveBeenCalled();
   });
 
   describe('inside a resource deadline', () => {

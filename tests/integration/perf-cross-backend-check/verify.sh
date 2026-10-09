@@ -109,9 +109,10 @@ VERBOSE="${PERF_VERBOSE:-0}"
 LOG_DIR=""
 LOG_SEQ=0
 arm_on() { case " ${ARMS} " in *" $1 "*) return 0 ;; esac; return 1; }
-# Digits only: every name and prefix below is built from it, and the sweeps'
-# guards match that shape.
-RUN_ID="$(date +%s)$$"
+# <epoch>-<pid>: every name and prefix below is built from it, and the sweeps'
+# guards match that shape. The separator keeps two runs' ids from reading as
+# one another's prefix.
+RUN_ID="$(date +%s)-$$"
 STACK_BASE="CdkdPerf${RUN_ID}"
 SEED_BASE="cdkd-perf-${RUN_ID}"
 RUN_PREFIX_BASE="cdkd-perfrun-${RUN_ID}"
@@ -146,9 +147,9 @@ build_ref() { # usage: build_ref <ref> <dir>
 sweep_seeds() {
   local i payload
   case "${SEED_BASE:-}" in
-    cdkd-perf-[0-9]*) ;;
+    cdkd-perf-[0-9]*-[0-9]*) ;;
     *)
-      echo "WARN: teardown sweep refused: seed base '${SEED_BASE:-}' is not cdkd-perf-<digits>" >&2
+      echo "WARN: teardown sweep refused: seed base '${SEED_BASE:-}' is not cdkd-perf-<digits>-<digits>" >&2
       return 0
       ;;
   esac
@@ -176,9 +177,9 @@ seed_prefixes() {
 sweep_named() {
   local url arn param table
   case "${STACK_BASE:-}" in
-    CdkdPerf[0-9]*) ;;
+    CdkdPerf[0-9]*-[0-9]*) ;;
     *)
-      echo "WARN: teardown sweep refused: stack base '${STACK_BASE:-}' is not CdkdPerf<digits>" >&2
+      echo "WARN: teardown sweep refused: stack base '${STACK_BASE:-}' is not CdkdPerf<digits>-<digits>" >&2
       return 0
       ;;
   esac
@@ -347,9 +348,9 @@ rescan() {
 sweep_run_prefixes() {
   local left
   case "${RUN_PREFIX_BASE:-}" in
-    cdkd-perfrun-[0-9]*) ;;
+    cdkd-perfrun-[0-9]*-[0-9]*) ;;
     *)
-      echo "WARN: teardown sweep refused: prefix base '${RUN_PREFIX_BASE:-}' is not cdkd-perfrun-<digits>" >&2
+      echo "WARN: teardown sweep refused: prefix base '${RUN_PREFIX_BASE:-}' is not cdkd-perfrun-<digits>-<digits>" >&2
       return 0
       ;;
   esac

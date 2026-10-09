@@ -99,10 +99,16 @@ stack's own evidence names that resource:
   sent, that came back (their resource is then in the record, or the
   rollback deleted it), or that AWS rejected outright (a 4xx such as a
   validation error); an intent stays only for a create whose outcome is
-  unknown (a crash, a timeout, a 5xx). An intent licenses only a holder
-  created no earlier than it was written, for a type that reports a
-  creation time; for one that does not, an intent a hard crash left for a
-  create that was never sent licenses by name (a crash-only residual). When
+  unknown (a crash, a timeout, a 5xx), stamped with when that create came
+  back failed. An intent licenses only a holder created no earlier than it
+  was written and, once its create came back failed, no later than that,
+  for a type that reports a creation time (a creation time this identity is
+  not granted to read counts as none); for one that does not, an intent a
+  hard crash left for a create that was never sent licenses by name (a
+  crash-only residual). If the deploy's end cannot drop the intents (the
+  write is retried once), it records the run as ended at that moment, so
+  they are bounded as below; only if that write fails too does the residual
+  extend past a crash, and the deploy warns. When
   the re-run knows when the crashed run stopped -- it took over that run's
   expired lock, or `cdkd force-unlock` released it, and the lock's last
   renewal (at most two minutes before the crash) is the bound -- the intent
@@ -114,7 +120,10 @@ stack's own evidence names that resource:
   deploy that removed them from the template. The next deploy under the same
   prefix that creates them again takes them back, and drops them from that
   list once its record names them. Another prefix or another bucket does not
-  see the list, so a redeploy there is refused. `cdkd state orphan` empties
+  see the list, so a redeploy there is refused. A deploy records what it
+  kept in one write when it ends, before its final state save; a crash before
+  that leaves them unrecorded, and their re-create is refused with the
+  `cdkd import` remedy. `cdkd state orphan` empties
   it, with or without a record left, and so does a destroy that keeps nothing:
   the empty list is a tombstone, never deleted. One destroy (or orphan) by this
   cdkd therefore ends the older-cdkd history license below for that stack and
@@ -181,7 +190,7 @@ success path's ledger cleanup runs beside the other writes that follow the
 state save. Only when a `--require-approval` prompt ran (up front, or for a
 replacement decided late) are the verdicts decided before its answer read
 again, at once, in one batched pass per type; a deploy without a prompt
-re-reads nothing, however long it runs. A re-read that cannot answer keeps
+(`--yes` included, which asks no one) re-reads nothing, however long it runs. A re-read that cannot answer keeps
 the earlier verdict, with a warning.
 
 **Permissions.** The lookups need the read permission of each type a stack
@@ -196,6 +205,14 @@ Two more permissions are optional, beside the registry's below:
 `s3:ListBucketVersions` and `s3:GetObjectVersion` on the state bucket, for the
 earlier record versions after an upgrade; without them that source licenses
 nothing.
+
+**After `cdkd state orphan`.** The orphan drops the record and empties the
+kept list, so nothing this stack records names its resources any more: a
+redeploy under the same prefix that would create one of them again by its
+generated name is refused, and `cdkd import <stack> --resource
+<logicalId>=<physicalId>` (the command the refusal prints) adopts it. This is
+deliberate: the orphan is how a record is handed over, and cdkd does not take
+the resources back on its own.
 
 **What it does not see.** A holder created between the lookup and the create:
 two first deploys of the same stack name at the same moment. In one bucket the
@@ -213,7 +230,8 @@ and an ELBv2 target group -- a kept resource deleted out of band and
 re-created by another backend under the same name is licensed by its name.
 (`ListBuckets` reports a bucket's `CreationDate`, but AWS documents that it
 can change when the bucket is edited, so it does not prove when the bucket was
-made.) And a create that threw a 4xx after its
+made.) A bucket of the name in another region (S3 answers 301) is held. The
+deletion-cooldown wait for a queue or bucket ends at once on Ctrl-C. And a create that threw a 4xx after its
 provider had already made the resource without saying so loses its intent.
 
 ### The stack registry

@@ -9,6 +9,7 @@ import { Option } from 'commander';
 import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
 import type {
   DeploymentApprovalRequest,
+  DeploymentApprover,
   RequireApprovalLevel,
 } from '../../deployment/deploy-engine/options.js';
 import { displayIdent } from '../../utils/display-safe.js';
@@ -67,11 +68,12 @@ export function resolveRequireApproval(
  * terminal rather than through the logger, whose per-stack buffer would hold
  * it until that stack's deploy ends — after the question it explains.
  */
-export function createApprovalPrompter(options: {
-  yes: boolean;
-}): (request: DeploymentApprovalRequest) => Promise<boolean> {
+export function createApprovalPrompter(options: { yes: boolean }): DeploymentApprover {
+  if (options.yes) {
+    // go-to-k/cdkd#4705 review H-3: says so, so the engine knows no one waited.
+    return Object.assign(() => Promise.resolve(true), { autoApproves: true as const });
+  }
   return (request) => {
-    if (options.yes) return Promise.resolve(true);
     return serializePrompt(() =>
       getLiveRenderer().suspendWhile(async () => {
         process.stdout.write(renderApprovalRequest(request));

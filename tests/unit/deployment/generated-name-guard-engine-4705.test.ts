@@ -399,6 +399,43 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(provider.lookupNames).toHaveBeenCalledTimes(1);
     });
 
+    it('H-3: --require-approval with --yes (an approver that asks no one) re-reads nothing', async () => {
+      const levels = [['Q1'], ['Q2'], ['Q3']];
+      const records = {
+        Old: { physicalId: urlOf('App-Old'), resourceType: QUEUE, properties: {} } as ResourceState,
+      };
+      const lookups = async (approve: () => Promise<boolean>): Promise<number> => {
+        const { engine, provider } = buildEngine({
+          levels,
+          records,
+          approve,
+          extraChanges: [
+            { logicalId: 'Old', changeType: 'DELETE', resourceType: QUEUE, currentProperties: {} } as ResourceChange,
+          ],
+          // Every lookup is decided before the approval point.
+          onDestructivePlan: async () => {
+            await new Promise((r) => setTimeout(r, 20));
+          },
+        });
+        await engine.deploy(STACK, templateOf(levels));
+        return provider.lookupNames.mock.calls.length;
+      };
+      await expect(lookups(Object.assign(async () => true, { autoApproves: true as const }))).resolves.toBe(1);
+      // A prompt that really asked re-reads them once, batched.
+      await expect(lookups(async () => true)).resolves.toBe(2);
+    });
+
+    it('H-6: the plan-time asks route quietly; the create routes (and logs) once', async () => {
+      const { engine, provider } = buildEngine({ levels: [['Q1']] });
+      void provider;
+      const registry = (engine as unknown as { providerRegistry: { getProviderFor: ReturnType<typeof vi.fn> } })
+        .providerRegistry;
+      await engine.deploy(STACK, templateOf([['Q1']]));
+      const asks = registry.getProviderFor.mock.calls.map((c) => (c[0] as { quiet?: boolean }).quiet === true);
+      expect(asks.filter(Boolean)).toHaveLength(1);
+      expect(asks.filter((q) => !q).length).toBeGreaterThan(0);
+    });
+
     it('H-1: two Retain removals cost ONE retained.json read and ONE write, before the final state save', async () => {
       const levels = [['Q1']];
       const kept = (id: string): ResourceState =>

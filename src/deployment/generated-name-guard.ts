@@ -888,6 +888,24 @@ export class GeneratedNameGuard {
   }
 }
 
+/**
+ * S3's answer for a bucket that exists in another region: 301
+ * PermanentRedirect (SDK v3 surfaces a HEAD's as a synthetic `Unknown` error
+ * carrying the 301 status).
+ */
+function isPermanentRedirect(error: unknown): boolean {
+  const e = error as {
+    name?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+    $response?: { statusCode?: unknown };
+  } | null;
+  return (
+    e?.name === 'PermanentRedirect' ||
+    e?.$metadata?.httpStatusCode === 301 ||
+    e?.$response?.statusCode === 301
+  );
+}
+
 /** Every candidate's holder (by logical id), and the types whose lookup failed. */
 async function lookupAll(
   input: GeneratedNameGuardInput,
@@ -1002,15 +1020,23 @@ async function lookupType(
       }
       // A 403 (S3 answers it for a bucket ANOTHER account owns, too) throws:
       // the 403 contract, unchecked (warn and create), never silently free.
-      const found = await lookup({
-        logicalId: c.logicalId,
-        resourceType,
-        stackName: input.stackName,
-        region: input.region,
-        properties:
-          c.property === undefined ? c.properties : { ...c.properties, [c.property]: name },
-        ...(arn !== undefined && { knownPhysicalId: arn.arn }),
-      });
+      let found: Awaited<ReturnType<typeof lookup>>;
+      try {
+        found = await lookup({
+          logicalId: c.logicalId,
+          resourceType,
+          stackName: input.stackName,
+          region: input.region,
+          properties:
+            c.property === undefined ? c.properties : { ...c.properties, [c.property]: name },
+          ...(arn !== undefined && { knownPhysicalId: arn.arn }),
+        });
+      } catch (error) {
+        // Review H-7: S3's 301 for HeadBucket is a bucket of that name in
+        // another region -- the name is held, not unreadable.
+        if (resourceType === 'AWS::S3::Bucket' && isPermanentRedirect(error)) return name;
+        throw error;
+      }
       return found?.physicalId;
     });
   });

@@ -1303,7 +1303,7 @@ export async function doDeployWithPrefetch(
       stackName,
       region: this.stackRegion,
       changes: changes.values(),
-      providerFor: (input) => this.providerRegistry.getProviderFor(input),
+      providerFor: (input) => this.providerRegistry.getProviderFor({ ...input, quiet: true }),
       records: currentState.resources,
       orphans: currentState.orphans,
       loadJournal: () => this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
