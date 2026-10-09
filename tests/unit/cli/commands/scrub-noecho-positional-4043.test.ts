@@ -476,7 +476,8 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
 
   // Round 4 (#4764), R4 / security M2: the PARENT side of decision 8. A row
   // parameter fed by an echoed NoEcho attribute counts once the plan's fixed
-  // point declared it; a plaintext or an Fn::If row parameter does not.
+  // point declared it; a plaintext one does not; an Fn::If one counts and is
+  // listed as conditional (round 5).
   it("decision 8, parent side: the nested child's NoEcho-filled parameters, read off the row", async () => {
     const info = stackInfo('q7z');
     info.template.Conditions = { Always: { 'Fn::Equals': ['a', 'a'] } } as never;
@@ -505,7 +506,68 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
       logger: logger as never,
     });
     const child = res.nestedChildren.find((c) => c.logicalId === 'Child');
-    expect(child?.input?.noEchoParameters).toEqual(['ListIn', 'FromAttr']);
+    expect(child?.input?.noEchoParameters).toEqual(['ListIn', 'FromAttr', 'Chosen']);
+    expect(child?.input?.noEchoConditionalParameters).toEqual(['Chosen']);
+  });
+
+  // Round 5 (#4764): a row parameter filled through an Fn::If is positioned
+  // in the child, but what the child stored there may be the OTHER branch's
+  // literal, so it is no needle for the rest of the record.
+  async function childScrub(conditional: string[] | undefined): Promise<ResourceState> {
+    const literal = 'other-branch-literal';
+    const childTemplate = {
+      Parameters: { ListIn: { Type: 'String' } },
+      Resources: {
+        Param: {
+          Type: SSM,
+          Properties: {
+            Name: '/app/p',
+            Type: 'String',
+            Value: { Ref: 'ListIn' },
+            Description: literal,
+          },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    const state = legacyState(literal);
+    state.resources['Param']!.properties['Description'] = literal;
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    await scrubStack(
+      { stackName: 'NoEchoScrubStack~Child', template: childTemplate } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: false,
+        logger: logger as never,
+        nestedChild: {
+          logicalId: 'Child',
+          stackName: 'NoEchoScrubStack~Child',
+          input: {
+            parameters: { ListIn: literal },
+            inheritedSecrets: new Map(),
+            noEchoParameters: ['ListIn'],
+            ...(conditional !== undefined && { noEchoConditionalParameters: conditional }),
+          },
+        },
+      } as never
+    );
+    const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
+    return saved.resources['Param']!;
+  }
+
+  it('an Fn::If row parameter is positioned in the child, and its stored value is no needle', async () => {
+    const record = await childScrub(['ListIn']);
+    expect(record.properties['Value']).toBe('***');
+    expect(record.noEchoLeaves).toEqual([['Value']]);
+    // The same literal elsewhere in the record stays in the clear.
+    expect(record.properties['Description']).toBe('other-branch-literal');
+  });
+
+  it('a row parameter read without an Fn::If still makes its stored value a needle', async () => {
+    const record = await childScrub(undefined);
+    expect(record.properties['Value']).toBe('***');
+    expect(record.properties['Description']).toBe('***');
   });
 
   it('G9: an attribute equal to the physical id is not taken as an echo', async () => {

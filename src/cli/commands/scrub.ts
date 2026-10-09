@@ -753,6 +753,13 @@ export interface NestedChildScrubInput {
    * own template does not declare `NoEcho`.
    */
   noEchoParameters?: readonly string[];
+  /**
+   * The subset of {@link noEchoParameters} the row fills through an `Fn::If`.
+   * Positioned like the rest, but a plaintext the child stored there is no
+   * migration needle: it may be the OTHER branch's literal, which as a needle
+   * would mask unrelated copies of it.
+   */
+  noEchoConditionalParameters?: readonly string[];
 }
 
 /** One nested child a parent's scrub found, for `scrubCommand` to visit next. */
@@ -8078,7 +8085,8 @@ export async function scrubStack(
       stack.template,
       perResourceTemplateProps,
       conditions,
-      nestedInput?.noEchoParameters ?? []
+      nestedInput?.noEchoParameters ?? [],
+      nestedInput?.noEchoConditionalParameters ?? []
     );
 
     // The nested children this stack deploys (go-to-k/cdkd#2252): every
@@ -8144,10 +8152,21 @@ export async function scrubStack(
           inheritedSecrets: perResourceSecrets.get(logicalId) ?? new Map<string, string>(),
           // Read against the plan's FINAL declared attributes (its fixed
           // point), so a row fed by an echoed `NoEcho` attribute counts.
-          noEchoParameters: noEchoFilledRowParameters(
-            templateResources[logicalId]?.Properties,
-            noEchoPlans.sources
-          ),
+          ...((): Pick<
+            NestedChildScrubInput,
+            'noEchoParameters' | 'noEchoConditionalParameters'
+          > => {
+            const filled = noEchoFilledRowParameters(
+              templateResources[logicalId]?.Properties,
+              noEchoPlans.sources
+            );
+            return {
+              noEchoParameters: filled.names,
+              ...(filled.conditional.length > 0 && {
+                noEchoConditionalParameters: filled.conditional,
+              }),
+            };
+          })(),
         },
       });
     }
@@ -8909,8 +8928,12 @@ export function createScrubCommand(): Command {
 interface ScrubNoEchoPlan {
   /** The coordinates the record is written with. */
   readonly leaves: NoEchoCoordinate[];
-  /** The plaintext the record still held at a coordinate (the migration witness). */
-  readonly stored: ReadonlyArray<{ coordinate: NoEchoCoordinate; value: unknown }>;
+  /**
+   * The plaintext the record still held at a coordinate (the migration
+   * witness). `needle` is false where only a conditional row parameter
+   * positions it: masked there, but no needle for the rest of the record.
+   */
+  readonly stored: ReadonlyArray<{ coordinate: NoEchoCoordinate; value: unknown; needle: boolean }>;
   /** Attribute names declared `NoEcho`: the record's own, plus echoes found now. */
   readonly attributeNames: readonly string[];
 }
@@ -8933,14 +8956,17 @@ interface ScrubNoEchoPlan {
  *
  * `changesAny` lets a stack with no other recorded secret still be scrubbed.
  * `passedParameters` are the child parameters a parent's row fills from a
- * `NoEcho` source, for a nested child (the deploy's decision 8).
+ * `NoEcho` source, for a nested child (the deploy's decision 8). Those in
+ * `conditionalParameters` (filled through an `Fn::If`) are positioned, but a
+ * stored plaintext only they position is no migration needle.
  */
 function planScrubNoEcho(
   state: StackState,
   template: CloudFormationTemplate,
   templateProps: ReadonlyMap<string, Record<string, unknown>>,
   conditions: Record<string, boolean>,
-  passedParameters: readonly string[] = []
+  passedParameters: readonly string[] = [],
+  conditionalParameters: readonly string[] = []
 ): {
   byLogicalId: Map<string, ScrubNoEchoPlan>;
   outputKeys: string[];
@@ -8971,42 +8997,74 @@ function planScrubNoEcho(
       Object.hasOwn(templateResources, logicalId) &&
       templateResources[logicalId]?.Type === record.resourceType
   );
-  const leavesOf = new Map<string, NoEchoCoordinate[]>();
-  for (let round = 0; round <= eligible.length; round++) {
-    let grew = false;
-    for (const [logicalId, record] of eligible) {
-      const own = noEchoLeavesOf(record);
-      const leaves = canonicalCoordinates(
-        own ?? noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, sources)
-      );
-      leavesOf.set(logicalId, leaves);
-      for (const [name, attribute] of Object.entries(record.attributes ?? {})) {
-        if (attribute === record.physicalId || persisted(attribute)) continue;
-        const echoes = leaves.some(
-          (coordinate) =>
-            coordinate[0] === name &&
-            JSON.stringify(valueAtCoordinate(record.properties, coordinate)) ===
-              JSON.stringify(attribute)
+  // The positions and declarations reached from `params`, to a fixed point.
+  const positionFrom = (
+    params: ReadonlySet<string>,
+    names: Map<string, Set<string>>
+  ): Map<string, NoEchoCoordinate[]> => {
+    const from = {
+      ...sources,
+      parameters: params,
+      attributeIsNoEcho: (id: string, attribute: string): boolean =>
+        names.get(id)?.has(attribute) === true,
+    };
+    const leavesOf = new Map<string, NoEchoCoordinate[]>();
+    for (let round = 0; round <= eligible.length; round++) {
+      let grew = false;
+      for (const [logicalId, record] of eligible) {
+        const own = noEchoLeavesOf(record);
+        const leaves = canonicalCoordinates(
+          own ?? noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, from)
         );
-        const names = declared.get(logicalId)!;
-        if (echoes && !names.has(name)) {
-          names.add(name);
-          grew = true;
+        leavesOf.set(logicalId, leaves);
+        for (const [name, attribute] of Object.entries(record.attributes ?? {})) {
+          if (attribute === record.physicalId || persisted(attribute)) continue;
+          const echoes = leaves.some(
+            (coordinate) =>
+              coordinate[0] === name &&
+              JSON.stringify(valueAtCoordinate(record.properties, coordinate)) ===
+                JSON.stringify(attribute)
+          );
+          const recordNames = names.get(logicalId)!;
+          if (echoes && !recordNames.has(name)) {
+            recordNames.add(name);
+            grew = true;
+          }
         }
       }
+      if (!grew) break;
     }
-    if (!grew) break;
-  }
+    return leavesOf;
+  };
+  const leavesOf = positionFrom(parameters, declared);
+  // The coordinates whose stored plaintext is a migration NEEDLE: those a
+  // source other than a conditional row parameter positions.
+  const conditional = new Set(conditionalParameters);
+  const needleLeavesOf =
+    conditional.size === 0
+      ? leavesOf
+      : positionFrom(
+          new Set([...parameters].filter((name) => !conditional.has(name))),
+          new Map(
+            Object.entries(resources).map(([id, record]) => [
+              id,
+              new Set(noEchoAttributeNamesOf(record) ?? []),
+            ])
+          )
+        );
   let changesAny = false;
   for (const [logicalId, record] of eligible) {
     const leaves = leavesOf.get(logicalId) ?? [];
     const attributeNames = [...(declared.get(logicalId) ?? [])].sort();
     if (leaves.length === 0 && attributeNames.length === 0) continue;
-    const stored: Array<{ coordinate: NoEchoCoordinate; value: unknown }> = [];
+    const stored: Array<{ coordinate: NoEchoCoordinate; value: unknown; needle: boolean }> = [];
+    const needleCoordinates = new Set(
+      (needleLeavesOf.get(logicalId) ?? []).map((coordinate) => JSON.stringify(coordinate))
+    );
     for (const coordinate of leaves) {
       const value = valueAtCoordinate(record.properties, coordinate);
       if (value === undefined || value === null || persisted(value)) continue;
-      stored.push({ coordinate, value });
+      stored.push({ coordinate, value, needle: needleCoordinates.has(JSON.stringify(coordinate)) });
     }
     byLogicalId.set(logicalId, { leaves, stored, attributeNames });
     const unmaskedAttribute = attributeNames.some(
@@ -9053,8 +9111,9 @@ function scrubMigrationNeedles(
 ): RecordedSecretValues | undefined {
   if (plan === undefined || plan.stored.length === 0) return undefined;
   const needles: RecordedSecretValues = new Map();
-  for (const { value } of plan.stored)
-    recordNoEchoParameterFreshValue(value, needles, publicTokens);
+  for (const { value, needle } of plan.stored) {
+    if (needle) recordNoEchoParameterFreshValue(value, needles, publicTokens);
+  }
   return needles.size > 0 ? needles : undefined;
 }
 
@@ -9146,21 +9205,33 @@ function applyScrubNoEcho(
  * The child parameters a nested-stack row fills from a `NoEcho` source
  * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8: `recordPassedNoEchoParameters`):
  * each `Parameters` entry whose template value reads a `NoEcho` parameter or a
- * declared `NoEcho` attribute. Not through an `Fn::If`: the deploy reads only
- * the branch its condition selects, which scrub's default-bound verdicts may
- * not reproduce.
+ * declared `NoEcho` attribute. One read through an `Fn::If` is counted on
+ * either branch (the deploy's branch may have read the source) and is also
+ * listed in `conditional`: scrub's default-bound verdicts may not reproduce
+ * that branch, so the child positions it but takes no needle from it.
  */
 function noEchoFilledRowParameters(
   rowProperties: unknown,
   sources: NoEchoPositionSources
-): string[] {
-  if (rowProperties === null || typeof rowProperties !== 'object') return [];
+): { names: string[]; conditional: string[] } {
+  const names: string[] = [];
+  const conditional: string[] = [];
+  if (rowProperties === null || typeof rowProperties !== 'object') return { names, conditional };
   const passed = (rowProperties as Record<string, unknown>)['Parameters'];
-  if (passed === null || typeof passed !== 'object' || Array.isArray(passed)) return [];
-  return Object.entries(passed as Record<string, unknown>)
-    .filter(
-      ([, value]) =>
-        !JSON.stringify(value).includes('"Fn::If"') && readsNoEchoSource(value, sources)
-    )
-    .map(([name]) => name);
+  if (passed === null || typeof passed !== 'object' || Array.isArray(passed)) {
+    return { names, conditional };
+  }
+  // No condition verdicts: an `Fn::If` is read on both branches.
+  const unconditioned: NoEchoPositionSources = {
+    parameters: sources.parameters,
+    ...(sources.attributeIsNoEcho !== undefined && {
+      attributeIsNoEcho: sources.attributeIsNoEcho,
+    }),
+  };
+  for (const [name, value] of Object.entries(passed as Record<string, unknown>)) {
+    if (!readsNoEchoSource(value, unconditioned)) continue;
+    names.push(name);
+    if (JSON.stringify(value).includes('"Fn::If"')) conditional.push(name);
+  }
+  return { names, conditional };
 }

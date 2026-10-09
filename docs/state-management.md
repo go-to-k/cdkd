@@ -1020,9 +1020,9 @@ last deploy, it is the new one. The delete stays skipped when:
   or a nested child reads a row parameter its parent could not re-resolve;
 - the record holds `***` at a position its `noEchoLeaves` does not name (one
   embedded through `Fn::Join`, or a record an earlier cdkd wrote): nothing
-  names what it stood for. A `cdkd deploy` of the app (or a `cdkd scrub` of
-  the stack) first records the `NoEcho` positions, after which `cdkd destroy`
-  sends the delete.
+  names what it stood for. A `cdkd deploy` of the app (or, for a record with
+  no `noEchoLeaves`, a `cdkd scrub` of the stack) first records the `NoEcho`
+  positions, after which `cdkd destroy` sends the delete.
 
 The value goes into the handler's request only; the record keeps `***`. The
 warnings, errors and handler log lines cdkd prints are masked like a create's:
@@ -1079,8 +1079,9 @@ count as a change for `--fail`.
   length, and write `noEchoLeaves` for it, as a deploy does. `cdkd scrub` also
   masks a plaintext the record still holds there (an older `Default`)
   wherever else the same record holds it, and a declared output the parameter
-  serves. A value a nested child received from its parent's row is masked only
-  by a deploy.
+  serves. A value a nested child received from its parent's row is masked by
+  a deploy and by `cdkd scrub` (positioned by the row; see
+  [`cdkd scrub`](cli-scrub.md)); `cdkd import` leaves it to a deploy.
 - A resource's physical id is never masked, whether it embeds a `NoEcho` value
   or IS one (a name-identified resource, such as an RDS parameter group named
   by the parameter). A `NoEcho` value used as a NAME is published by AWS, and

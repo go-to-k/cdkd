@@ -958,12 +958,18 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
   names the position in `noEchoLeaves`. So does the observed baseline there.
   A record that already names its positions keeps them, as a deploy does. A
   nested child's parameter its parent's row fills from a `NoEcho` source
-  counts as one too.
+  counts as one too. One the row fills through an `Fn::If` counts whichever
+  branch reads the source, because scrub cannot tell which branch the deploy
+  took: the child stores `***` there, but a plaintext it held there is not
+  masked elsewhere in the record (it may be the other branch's literal). A
+  position marked this way when the deploy took the plain branch reads back
+  from AWS until the next deploy rewrites it.
 - **By the stored value.** Where the record still holds a plaintext at such a
   position (a stack deployed before state `version: 11`, or under an older
   `Default`), that value is masked wherever else the same record holds it, a
   leaf embedding it included (4 characters or more). Another record holding
-  the same literal is left alone.
+  the same literal is left alone, and so is a value only an `Fn::If` row
+  parameter positions.
 - **Attributes.** An attribute of the same name as such a property that
   equals its value (an SSM parameter's `Value`) is masked at any length and
   declared `NoEcho`, so a resource reading it through `Fn::GetAtt` is

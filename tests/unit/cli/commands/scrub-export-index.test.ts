@@ -1129,6 +1129,63 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
   // go-to-k/cdkd#4043 Phase C: a converge onto the mask records no needle
   // for the value the entry still holds, so the name is masked by the entry's
   // own value.
+  function heldValueSetup(held: string, patchOk = true) {
+    const leakyName = `alias-${held}-suffix`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: leakyName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [leakyName]: '***' },
+        exportNames: [leakyName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([[leakyName, entry(held, 'MyStack', 'us-east-1')]]), patchOk })
+    );
+    return leakyName;
+  }
+
+  it('masks the held value in the could-NOT-write warn and the unwritten name of the failure', async () => {
+    const held = 'noecho-held-4043-unwritten';
+    heldValueSetup(held, false);
+
+    const err = await scrubCommand([], commandOptions()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    const out = logLines();
+    expect(out).toContain('could NOT be written');
+    expect(out).not.toContain(held);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain('masked:');
+    expect(err!.message).not.toContain(held);
+  });
+
+  // The #1919 floor: a value under 4 characters is no needle of the name
+  // display, so a name embedding one prints whole (a recorded residual).
+  it('a held value under the 4-character floor does not mask the name it is embedded in', async () => {
+    const leakyName = heldValueSetup('q7z');
+
+    await scrubCommand([], commandOptions());
+
+    expect(logLines()).toContain(`Converged exports index entry ${leakyName} (us-east-1)`);
+  });
+
   it('masks a converge line whose export name embeds the value the entry still holds', async () => {
     const held = 'noecho-held-4043-value';
     const leakyName = `alias-${held}-suffix`;
