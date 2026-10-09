@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { CrossPrefixScanCache } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import {
   commandHole,
   pasteableCommand,
@@ -790,7 +790,7 @@ async function destroyCommand(
     // result, which promotes it ahead of the rest.
     // Only in the region the loop will destroy, and not for a stack its
     // termination protection skips.
-    const crossPrefixCheck = { cache: new CrossPrefixScanCache(stateBackend) };
+    const crossPrefixCheck = { cache: new CrossPrefixGuard(stateBackend) };
     for (const name of stackNames) {
       const synth = appStacks.find((s) => s.stackName === name);
       if (synth?.terminationProtection === true && !options.removeProtection) continue;

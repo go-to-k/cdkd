@@ -1,22 +1,22 @@
 /**
- * The deploy half of go-to-k/cdkd#4705 (`src/state/cross-prefix-stack-scan.ts`).
+ * The deploy half of go-to-k/cdkd#4705 (`src/state/stack-registry.ts`,
+ * `src/state/cross-prefix-stack-scan.ts`).
  *
- * Scans of the bucket's other state prefixes are LAZY, memoized per stack and
- * region in one `CrossPrefixScanCache` per run (one shared listing, one
- * run-wide probe cap), so an ordinary redeploy issues no listing and no probe:
+ * Every check reads the bucket's stack registry through one
+ * `CrossPrefixGuard` per run, memoized per stack and region, so an ordinary
+ * redeploy issues no request at all:
  *
- * - {@link startCrossPrefixScans}: once synth has finished, each stack asks
- *   whether this prefix records it; only when it does not (a FIRST deploy) is
- *   its scan started, overlapping the pre-lock phase. The engine's
- *   `onCurrentStateLoaded` gate ({@link createCrossPrefixDeployGate}) awaits it
- *   when no record was loaded.
+ * - {@link createCrossPrefixDeployGate} (`onCurrentStateLoaded`): when no
+ *   record was loaded (a FIRST deploy), claim the stack's marker, or act on the
+ *   one there, before the first provider call.
  * - {@link createCrossPrefixDestructiveGate} (`onDestructivePlan`): a plan that
- *   deletes, replaces or may replace a resource, or updates a nested-stack row
- *   (`checkDestructivePlan`), starts (or reuses) the scan on demand, before the
- *   approval prompt; so does a replacement decided late, on a readback
- *   (`stage` `'late'`), whose refusal keeps that resource.
- * - {@link createCrossPrefixHolder} (`crossPrefixHolder`): a successful deploy's
- *   settle starts (or reuses) it before deleting a journaled orphan.
+ *   deletes, replaces or may replace a resource, or adds or updates a
+ *   nested-stack row (`checkDestructivePlan`), reads it before the approval
+ *   prompt; so does a replacement decided late, on a readback (`stage`
+ *   `'late'`), whose refusal keeps that resource.
+ * - {@link createCrossPrefixHolder} (`crossPrefixHolder`): a successful
+ *   deploy's settle, and a failed deploy's automatic rollback, read it before
+ *   deleting a resource another deployment may hold.
  *
  * {@link crossPrefixEngineOptions} builds all three for one stack; deploy.ts
  * spreads its result into the engine options.
@@ -29,17 +29,20 @@ import type { StackState } from '../../types/state.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import {
-  CrossPrefixScanCache,
   applyCrossPrefixScan,
   crossPrefixDeniedWarning,
-  isAccessDenied,
   type CrossPrefixScanResult,
 } from '../../state/cross-prefix-stack-scan.js';
+import type { CrossPrefixGuard } from '../../state/stack-registry.js';
+
+/** What a check consults: the run's guard (or, in a test, a bare scan cache). */
+export type CrossPrefixSource = Pick<CrossPrefixGuard, 'full'>;
 
 /**
  * The region a deploy runs a stack in: its synthesized region, else the run's
  * base region. The ONE expression both the engine (`runStackInner`) and the
- * cross-prefix scans use, so a scan reads the key the engine's state load does.
+ * cross-prefix checks use, so a check reads the key the engine's state load
+ * does.
  */
 export function deployStackRegion(
   stack: { region?: string | undefined },
@@ -48,66 +51,24 @@ export function deployStackRegion(
   return stack.region || baseRegion;
 }
 
-/** The key a deploy's scans are stored under: one per stack AND region. */
-export function crossPrefixScanKey(stackName: string, region: string): string {
-  return JSON.stringify([stackName, region]);
-}
-
-/**
- * Once synth has finished, for every stack of a deploy set: ask whether this
- * prefix records it, and only when it does not (a first deploy) start its scan
- * through `cache`. Keyed by {@link crossPrefixScanKey}; each value is the
- * first-deploy answer (`own-record`, or the scan's result). `regionOf` must be
- * the engine's region for the stack (deploy.ts passes {@link deployStackRegion}).
- * Never rejects.
- */
-export function startCrossPrefixScans(
-  stacks: readonly { stackName: string; region?: string | undefined }[],
-  cache: CrossPrefixScanCache,
-  regionOf: (stack: { stackName: string; region?: string | undefined }) => string
-): Map<string, Promise<CrossPrefixScanResult>> {
-  return new Map(
-    stacks.map((s) => {
-      const region = regionOf(s);
-      const firstDeploy = (async (): Promise<CrossPrefixScanResult> => {
-        try {
-          if (await cache.target.ownRecordExists(s.stackName, region)) {
-            return { kind: 'own-record' };
-          }
-        } catch (error) {
-          return isAccessDenied(error)
-            ? { kind: 'denied', error, stage: 'probe' }
-            : { kind: 'failed', error };
-        }
-        // Ahead of need: queued in stack order behind any scan a caller is
-        // waiting on now. The gate promotes it once its engine waits on it.
-        return cache.full(s.stackName, region, 'prestart');
-      })();
-      return [crossPrefixScanKey(s.stackName, region), firstDeploy];
-    })
-  );
-}
-
 /**
  * Build the first-deploy gate for one top-level stack. A no-op for any other
- * stack name (nested children inherit the parent engine's options), for a
- * loaded record, and when no scan was started.
+ * stack name (nested children inherit the parent engine's options) and for a
+ * loaded record. Otherwise it claims the stack's registry marker (or acts on
+ * the one there) and refuses before any provider call when another prefix
+ * holds the stack.
  */
 export function createCrossPrefixDeployGate(opts: {
   stackName: string;
   region: string;
   bucket: string;
   recovery?: LockRecoveryContext | undefined;
-  scan: Promise<CrossPrefixScanResult> | undefined;
-  /** The engine now waits on the scan: raise its priority (go-to-k/cdkd#4705 review R6-3). */
-  promote?: (() => void) | undefined;
+  guard: Pick<CrossPrefixGuard, 'firstDeploy'>;
 }): (stackName: string, state: StackState | undefined) => Promise<void> {
   return async (gateStackName, state) => {
     if (gateStackName !== opts.stackName) return;
     if (state !== undefined) return;
-    if (opts.scan === undefined) return;
-    opts.promote?.();
-    const result = await opts.scan;
+    const result = await opts.guard.firstDeploy(opts.stackName, opts.region);
     applyCrossPrefixScan(
       result,
       {
@@ -142,14 +103,14 @@ function reportOnce(
 }
 
 /**
- * Build the destructive-plan gate: scan (or reuse the memoized scan of) the
+ * Build the destructive-plan gate: read (or reuse the run's answer for) the
  * stack the engine names, on demand, and refuse when another prefix holds it.
  */
 export function createCrossPrefixDestructiveGate(opts: {
   region: string;
   bucket: string;
   recovery?: LockRecoveryContext | undefined;
-  cache: CrossPrefixScanCache;
+  cache: CrossPrefixSource;
 }): (
   stackName: string,
   destructive: readonly DestructiveChange[],
@@ -167,12 +128,17 @@ export function createCrossPrefixDestructiveGate(opts: {
 }
 
 /**
- * The settle's cross-prefix question (`DeployEngineOptions.crossPrefixHolder`):
- * before a successful deploy deletes a proven journaled orphan of `stackName`,
- * does the bucket record that stack under another state prefix?
+ * The cross-prefix question (`DeployEngineOptions.crossPrefixHolder`) a
+ * successful deploy's settle asks before deleting a proven journaled orphan of
+ * `stackName`, and a failed deploy's automatic rollback before deleting a
+ * resource it created: does the bucket record that stack under another state
+ * prefix? (A nested child asks by its own name; the guard reads its top-level
+ * stack's marker.)
  *
  * - `found`: such a record may hold the resource, so it is answered as an
- *   unreadable holding and the settle keeps the orphan, with its warning.
+ *   unreadable holding and the resource is kept, with a warning.
+ * - `in-progress`: a deploy under the prefix the registry names may be
+ *   running: the same.
  * - `failed`: the check could not answer, so the same (fail closed).
  * - `denied`: S3 answered 403, which is the common case for an identity whose
  *   policy covers only its own prefix and has no second prefix at all. It warns,
@@ -183,7 +149,7 @@ export function createCrossPrefixDestructiveGate(opts: {
 export function createCrossPrefixHolder(opts: {
   region: string;
   bucket: string;
-  cache: CrossPrefixScanCache;
+  cache: CrossPrefixSource;
 }): (stackName: string) => Promise<ForeignHolding> {
   return async (stackName) => {
     const result = await opts.cache.full(stackName, opts.region);
@@ -192,6 +158,11 @@ export function createCrossPrefixHolder(opts: {
         return {
           kind: 'unreadable',
           what: safeMsg`bucket ${opts.bucket} also records this stack under another state prefix (${displayIdent(result.prefixes[0])}), whose record may hold it`,
+        };
+      case 'in-progress':
+        return {
+          kind: 'unreadable',
+          what: safeMsg`bucket ${opts.bucket} assigns this stack to another state prefix (${displayIdent(result.prefix)}), where a deploy may be in progress`,
         };
       case 'failed':
         return {
@@ -215,18 +186,17 @@ export function createCrossPrefixHolder(opts: {
 }
 
 /**
- * The engine options of one top-level stack's cross-prefix checks: the
- * first-deploy gate over the scan {@link startCrossPrefixScans} may have
- * started, and the on-demand destructive gate and settle holder over the run's
- * `cache`. deploy.ts spreads this, so a test of it is a test of the real wiring.
+ * The engine options of one top-level stack's cross-prefix checks, all over
+ * the run's `guard`: the first-deploy gate, the on-demand destructive gate,
+ * and the settle and automatic-rollback holder. deploy.ts spreads this, so a
+ * test of it is a test of the real wiring.
  */
 export function crossPrefixEngineOptions(opts: {
   stackName: string;
   region: string;
   bucket: string;
   recovery?: LockRecoveryContext | undefined;
-  firstDeploy: Promise<CrossPrefixScanResult> | undefined;
-  cache: CrossPrefixScanCache;
+  guard: Pick<CrossPrefixGuard, 'full' | 'firstDeploy'>;
 }): {
   firstDeployGate: (stackName: string, state: StackState | undefined) => Promise<void>;
   onDestructivePlan: (
@@ -242,19 +212,18 @@ export function crossPrefixEngineOptions(opts: {
       region: opts.region,
       bucket: opts.bucket,
       recovery: opts.recovery,
-      scan: opts.firstDeploy,
-      promote: () => opts.cache.target.rank(opts.stackName, opts.region, 'now'),
+      guard: opts.guard,
     }),
     onDestructivePlan: createCrossPrefixDestructiveGate({
       region: opts.region,
       bucket: opts.bucket,
       recovery: opts.recovery,
-      cache: opts.cache,
+      cache: opts.guard,
     }),
     crossPrefixHolder: createCrossPrefixHolder({
       region: opts.region,
       bucket: opts.bucket,
-      cache: opts.cache,
+      cache: opts.guard,
     }),
   };
 }

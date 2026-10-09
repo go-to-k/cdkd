@@ -245,6 +245,38 @@ export class ObservedBaselineRefusals extends Set<string> {
   hadDeployedParameterSource = false;
 }
 
+/**
+ * go-to-k/cdkd#4705: point a top-level stack's registry marker at this prefix
+ * after an import wrote its record, when no marker exists yet. A marker naming
+ * another prefix is left alone and named: two prefixes now record the stack,
+ * and a later destroy or destructive deploy under either is refused until one
+ * record is dropped. Best-effort: a failure is warned, never fatal.
+ */
+async function claimRegistryMarkerAfterImport(
+  backend: Pick<S3StateBackend, 'claimRegistryMarker' | 'getRegistryMarker' | 'prefix'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  try {
+    if ((await backend.claimRegistryMarker(stackName, region)) === 'claimed') return;
+    const marker = await backend.getRegistryMarker(stackName, region);
+    if (marker === null || marker.prefix === backend.prefix) return;
+    logger.warn(
+      `The state bucket's stack registry assigns ${displayStackName(stackName)} ` +
+        `(${displaySafe(region, { asciiOnly: true })}) to another state prefix ` +
+        `(${displayIdent(marker.prefix)}). One stack name per account and region is supported: ` +
+        `drop one of the two records with 'cdkd state orphan' before deploying or destroying ` +
+        `either.`
+    );
+  } catch (error) {
+    logger.warn(
+      `Could not record ${displayStackName(stackName)} in the state bucket's stack registry ` +
+        `(${describeAwsFailure(error).summary}). Its next guarded command records it.`
+    );
+  }
+}
+
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
   // Awaited first, so provider construction below stays synchronous once the
   // stack client scope / globals are set (see `loadProviderClasses`).
@@ -1062,6 +1094,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       );
       await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState, saveOptions);
       logger.info(`✓ State written: ${stackInfo.stackName} (${targetRegion})`);
+      // go-to-k/cdkd#4705: the stack now has a record here, so it claims its
+      // stack registry marker (record first, then marker).
+      await claimRegistryMarkerAfterImport(stateBackend, stackInfo.stackName, targetRegion, logger);
       logger.info(
         `  ${importedRows.length} resource(s) imported. ` +
           `Run 'cdkd diff' to see how the imported state lines up with the template.`

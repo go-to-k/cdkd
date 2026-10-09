@@ -54,6 +54,7 @@ import { UNRENDERABLE } from './lock-contention-message.js';
 import { producerRecordKey } from './record-keys.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import {
   purgeNoncurrentKeyVersions,
   purgeNoncurrentVersionsUnderPrefix,
@@ -206,6 +207,7 @@ export class S3StateBackend {
   private config: StateBackendConfig;
   private clientOpts: S3ClientOptions;
   private clientResolved = false;
+  private scanClient: S3Client | undefined;
   private resolveInFlight: Promise<void> | null = null;
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
@@ -235,6 +237,28 @@ export class S3StateBackend {
    */
   destroyClient(): void {
     this.s3Client.destroy();
+    this.scanClient?.destroy();
+  }
+
+  /**
+   * The S3 client the cross-prefix scan probes through (go-to-k/cdkd#4705): a
+   * second client for the same bucket region and credentials, so its up to
+   * `PROBE_CONCURRENCY` probes in flight hold sockets of THEIR pool, never
+   * the deploy's. A client whose region cannot be read (a test double) is used
+   * as it is.
+   */
+  private async clientForScan(): Promise<S3Client> {
+    await this.ensureClientForBucket();
+    if (this.scanClient !== undefined) return this.scanClient;
+    const base = this.s3Client as { config?: { region?: unknown; credentials?: unknown } };
+    if (typeof base.config?.region !== 'function') return this.s3Client;
+    const region = (await (base.config.region as () => Promise<string>)()) as string;
+    this.scanClient = new S3Client({
+      ...awsClientDefaults(this.clientOpts.profile ? { profile: this.clientOpts.profile } : {}),
+      region,
+      credentials: this.s3Client.config.credentials,
+    });
+    return this.scanClient;
   }
 
   get prefix(): string {
@@ -893,40 +917,17 @@ export class S3StateBackend {
   }
 
   /**
-   * Does this prefix hold a state record (either layout) OR a rollback journal
-   * for the stack? A journal alone is an interrupted first deploy of this
-   * prefix (go-to-k/cdkd#4705, `cross-prefix-stack-scan.ts`). Errors propagate.
-   */
-  async ownRecordExists(stackName: string, region: string): Promise<boolean> {
-    await this.ensureClientForBucket();
-    // The three probes are independent, so they run at once; the answer is the
-    // one the serial `stateExists() || journal HEAD` gives, read IN THAT ORDER
-    // from the settled results: the state HEAD's error wins over everything,
-    // then a hit, then the legacy record, then the journal HEAD.
-    const [state, legacy, journal] = await Promise.allSettled([
-      this.headObject(this.getStateKey(stackName, region)),
-      this.legacyBelongsToRegion(stackName, region),
-      this.headObject(this.getRollbackJournalKey(stackName, region)),
-    ]);
-    for (const probe of [state, legacy, journal]) {
-      if (probe.status === 'rejected') throw probe.reason;
-      if (probe.value) return true;
-    }
-    return false;
-  }
-
-  /**
    * The bucket's top-level key prefixes, decoded and without their trailing
    * `/` (`ListObjectsV2` with `Delimiter: '/'`, every page). An empty
    * `--state-prefix` keys records under `/`, which lists here as `''`. One
    * that will not decode is skipped. Errors propagate (go-to-k/cdkd#4705).
    */
   async listTopLevelPrefixes(): Promise<string[]> {
-    await this.ensureClientForBucket();
+    const client = await this.clientForScan();
     const out: string[] = [];
     let continuationToken: string | undefined;
     do {
-      const response = await this.s3Client.send(
+      const response = await client.send(
         new ListObjectsV2Command({
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
@@ -948,6 +949,8 @@ export class S3StateBackend {
           continue;
         }
         if (decoded === undefined || !decoded.endsWith('/')) continue;
+        // The registry's own root is no state prefix (go-to-k/cdkd#4705).
+        if (decoded === `${REGISTRY_ROOT}/`) continue;
         out.push(decoded.slice(0, -1));
       }
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
@@ -973,13 +976,13 @@ export class S3StateBackend {
     stackName: string,
     region: string
   ): Promise<RecordUnderPrefix> {
-    await this.ensureClientForBucket();
-    const sibling = new S3StateBackend(this.s3Client, { ...this.config, prefix }, this.clientOpts);
+    const client = await this.clientForScan();
+    const sibling = new S3StateBackend(client, { ...this.config, prefix }, this.clientOpts);
     sibling.clientResolved = true;
     const stackDir = `${prefix}/${stackName}/`;
     let listed: { KeyCount?: number | undefined; Contents?: unknown[] | undefined };
     try {
-      listed = await this.s3Client.send(
+      listed = await client.send(
         new ListObjectsV2Command({
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
@@ -1066,6 +1069,122 @@ export class S3StateBackend {
    * Raw sidecar-object read under the state bucket. Returns `null` when
    * the key does not exist; other errors propagate.
    */
+  /**
+   * The bucket-root key of a stack's registry marker (go-to-k/cdkd#4705):
+   * `_cdkd-registry/<region>/<stack>.json`, holding `{ "prefix": "<p>" }`, the
+   * one state prefix of this bucket the stack and region belong to. Outside
+   * every prefix, so no `--state-prefix` can address it.
+   */
+  registryMarkerKey(stackName: string, region: string): string {
+    return `${REGISTRY_ROOT}/${region}/${stackName}.json`;
+  }
+
+  /**
+   * The stack's registry marker, or `null` when there is none. A marker that
+   * does not read as `{ prefix: <a state prefix> }` throws a
+   * `CrossPrefixReadError` naming the key, as does any error but a 404 (a 403
+   * included: the caller tells "denied" from "failed").
+   */
+  async getRegistryMarker(
+    stackName: string,
+    region: string
+  ): Promise<{ prefix: string; etag: string } | null> {
+    await this.ensureClientForBucket();
+    const key = this.registryMarkerKey(stackName, region);
+    let body: string | undefined;
+    let etag: string | undefined;
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, ...(await this.ownerParam()), Key: key })
+      );
+      body = await response.Body?.transformToString();
+      etag = response.ETag;
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return null;
+      throw new CrossPrefixReadError(key, error);
+    }
+    const prefix = registryMarkerPrefix(body);
+    if (prefix === undefined || etag === undefined) {
+      throw new CrossPrefixReadError(
+        key,
+        Object.assign(new Error('not a registry marker'), { name: 'MalformedMarker' })
+      );
+    }
+    return { prefix, etag };
+  }
+
+  /**
+   * Point the stack's marker at THIS prefix: create it (`If-None-Match: *`),
+   * or, with `ifMatch`, replace exactly that version. `'conflict'` when the
+   * condition failed (another writer got there first). Other errors throw.
+   */
+  async claimRegistryMarker(
+    stackName: string,
+    region: string,
+    ifMatch?: string
+  ): Promise<'claimed' | 'conflict'> {
+    await this.ensureClientForBucket();
+    const key = this.registryMarkerKey(stackName, region);
+    try {
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          Body: JSON.stringify({ prefix: this.config.prefix }),
+          ContentType: 'application/json',
+          ...(ifMatch === undefined ? { IfNoneMatch: '*' } : { IfMatch: ifMatch }),
+        })
+      );
+      return 'claimed';
+    } catch (error) {
+      if (isConditionFailure(error)) return 'conflict';
+      throw new CrossPrefixReadError(key, error);
+    }
+  }
+
+  /**
+   * Delete the stack's marker when it points at THIS prefix (read, then
+   * delete: a general-purpose bucket's DeleteObject takes no condition).
+   * `'elsewhere'` leaves another prefix's marker alone. Errors throw.
+   */
+  async releaseRegistryMarker(
+    stackName: string,
+    region: string
+  ): Promise<'released' | 'absent' | 'elsewhere'> {
+    const marker = await this.getRegistryMarker(stackName, region);
+    if (marker === null) return 'absent';
+    if (marker.prefix !== this.config.prefix) return 'elsewhere';
+    await this.s3Client.send(
+      new DeleteObjectCommand({
+        Bucket: this.config.bucket,
+        ...(await this.ownerParam()),
+        Key: this.registryMarkerKey(stackName, region),
+      })
+    );
+    return 'released';
+  }
+
+  /**
+   * Does `prefix` (another prefix of this bucket) hold the stack's lock, in
+   * either layout? A 404 is no; any other error throws a
+   * `CrossPrefixReadError` naming the key.
+   */
+  async lockUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean> {
+    await this.ensureClientForBucket();
+    const keys = [`${prefix}/${stackName}/${region}/lock.json`, `${prefix}/${stackName}/lock.json`];
+    const held = await Promise.all(
+      keys.map(async (key) => {
+        try {
+          return await this.headObject(key);
+        } catch (error) {
+          throw new CrossPrefixReadError(key, error);
+        }
+      })
+    );
+    return held.some(Boolean);
+  }
+
   async getRawObject(key: string): Promise<string | null> {
     await this.ensureClientForBucket();
     try {
@@ -2267,6 +2386,44 @@ export class S3StateBackend {
  * `GetObject` and `{name: 'NoSuchKey'}` from low-level callsites; HeadObject
  * raises `{name: 'NotFound'}` instead.
  */
+/** The bucket-root segment registry markers live under (go-to-k/cdkd#4705). */
+export const REGISTRY_ROOT = '_cdkd-registry';
+
+/**
+ * The state prefix a registry marker body names, or `undefined` when it is
+ * not `{ "prefix": <string> }` with a prefix cdkd could have written: at most
+ * 1024 characters, no control character, no `<` or `>` (the placeholder
+ * `parseStatePrefix` refuses). Validated before it is used as a key or shown.
+ */
+export function registryMarkerPrefix(body: string | undefined): string | undefined {
+  if (body === undefined) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const prefix = (value as { prefix?: unknown }).prefix;
+  if (typeof prefix !== 'string' || prefix.length > 1024) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f<>]/.test(prefix)) return undefined;
+  return prefix;
+}
+
+/** A conditional write that lost: 412, or the 409 S3 answers for a concurrent one. */
+function isConditionFailure(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
+    ?.httpStatusCode;
+  return (
+    name === 'PreconditionFailed' ||
+    name === 'ConditionalRequestConflict' ||
+    status === 412 ||
+    status === 409
+  );
+}
+
 function isNoSuchKey(error: unknown): boolean {
   if (error instanceof NoSuchKey) return true;
   const name = (error as { name?: string } | null)?.name;

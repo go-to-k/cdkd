@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
-import { CrossPrefixScanCache, applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
+import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { isIamRoleArn } from '../../utils/role-arn.js';
 import {
@@ -767,7 +768,7 @@ export async function rollbackCommand(
     // be the other deployment's resource (a create handed it back). Started
     // here, awaited under the lock before the plan, the prompt and any replay.
     // Never rejects.
-    const crossPrefixScan = new CrossPrefixScanCache(setup.stateBackend).full(stackName, region);
+    const crossPrefixScan = new CrossPrefixGuard(setup.stateBackend).full(stackName, region);
 
     // Region-pinned clients for the whole replay: the pre-delete final
     // snapshots a `DeletionPolicy: Snapshot` rolled-back CREATE takes (issue

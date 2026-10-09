@@ -35,10 +35,8 @@ import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { acquireStackLock } from './stack-lock-guard.js';
-import {
-  applyCrossPrefixScan,
-  type CrossPrefixScanCache,
-} from '../../state/cross-prefix-stack-scan.js';
+import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
+import type { CrossPrefixSource } from './cross-prefix-gate.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -222,7 +220,7 @@ export interface DestroyRunnerContext {
    * scan before the sequential loop (one listing, one run-wide probe cap), and
    * this awaits the stack's own memoized result.
    */
-  crossPrefixCheck?: { cache: CrossPrefixScanCache };
+  crossPrefixCheck?: { cache: CrossPrefixSource };
 
   /**
    * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
@@ -554,6 +552,33 @@ export function countProtectedJournaledOrphans(
  *   file is preserved (trimmed to the remaining resources, outputs/imports
  *   cleared) so the user can retry.
  */
+/**
+ * go-to-k/cdkd#4705: once a top-level stack's record is gone (deleted FIRST, so
+ * the registry never names a prefix for a stack it no longer records), delete
+ * its registry marker when it names this prefix. Only for `cdkd destroy` /
+ * `cdkd state destroy` of a top-level stack (`crossPrefixCheck` is set exactly
+ * then). Best-effort: a marker left behind names a prefix with no record, which
+ * another prefix's next check treats as stale and re-claims.
+ */
+async function releaseRegistryMarkerAfterDestroy(
+  ctx: Pick<DestroyRunnerContext, 'crossPrefixCheck' | 'stateBackend'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  if (ctx.crossPrefixCheck === undefined) return;
+  try {
+    const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region);
+    logger.debug(`Stack registry marker: ${released}`);
+  } catch (error) {
+    logger.warn(
+      `Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
+        `(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
+        `records the stack, so a deploy under another prefix treats it as stale.`
+    );
+  }
+}
+
 export async function runDestroyForStack(
   stackName: string,
   state: StackState,
@@ -866,6 +891,7 @@ export async function runDestroyForStack(
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.info(`${green('✓')} State deleted`);
+      await releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
     } finally {
       await emptyLock.release({
         failureMessage: 'Failed to release lock after empty-state cleanup',
@@ -2279,6 +2305,7 @@ export async function runDestroyForStack(
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
+      await releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
       // Drop this stack's entries from the exports index so the next
       // resolver lookup doesn't return stale values. Best-effort —
       // failures don't fail the destroy (state.json is the canonical

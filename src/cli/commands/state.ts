@@ -4,7 +4,7 @@ import {
   plainOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { CrossPrefixScanCache } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -2262,6 +2262,30 @@ interface StateOrphanOptions {
   verbose: boolean;
 }
 
+/**
+ * go-to-k/cdkd#4705: delete a top-level stack's registry marker when it names
+ * this prefix, after its record was removed. Best-effort: a marker left behind
+ * names a prefix with no record, which another prefix's next check treats as
+ * stale.
+ */
+async function releaseRegistryMarkerQuietly(
+  backend: Pick<S3StateBackend, 'releaseRegistryMarker'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  if (stackName.includes('~')) return;
+  try {
+    logger.debug(`Stack registry marker: ${await backend.releaseRegistryMarker(stackName, region)}`);
+  } catch (error) {
+    logger.warn(
+      `Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
+        `(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
+        `records the stack, so a deploy under another prefix treats it as stale.`
+    );
+  }
+}
+
 async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -2475,6 +2499,9 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           await warnOnLiveForeignLock(setup.lockManager, stackName, target.region, logger);
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
+          // go-to-k/cdkd#4705: the record is gone, so the stack registry
+          // marker naming this prefix goes too (record first, then marker).
+          await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, target.region, logger);
         } else {
           // Pure legacy record without a region body field. Both keys are the
           // region-less ones, and they are separate objects: issue #2537, the
@@ -3001,7 +3028,7 @@ async function stateDestroyCommand(
     // the loop's order; each stack's destroy then awaits its own memoized
     // result, which promotes it ahead of the rest.
     // Only for the records the loop below destroys (`stateDestroyTargets`).
-    const crossPrefixCheck = { cache: new CrossPrefixScanCache(setup.stateBackend) };
+    const crossPrefixCheck = { cache: new CrossPrefixGuard(setup.stateBackend) };
     for (const name of stackNames) {
       const refs = stateRefs.filter((r) => r.stackName === name);
       for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {

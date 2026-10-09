@@ -113,11 +113,9 @@ import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import {
   composeStateLoadedGates,
   crossPrefixEngineOptions,
-  crossPrefixScanKey,
   deployStackRegion,
-  startCrossPrefixScans,
 } from './cross-prefix-gate.js';
-import { CrossPrefixScanCache } from '../../state/cross-prefix-stack-scan.js';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
@@ -603,18 +601,16 @@ async function deployCommand(
     // the backstop for a context this command did not build.
     refuseMalformedNestedTemplateTrees(targetStacks);
 
-    // go-to-k/cdkd#4705: the run's cross-prefix scans, LAZY and memoized per
-    // stack and region (one shared listing, one run-wide probe cap). Here, after
-    // synth, only a stack this prefix does not record yet (a first deploy) has
-    // its scan started, overlapping macro expansion, STS, asset handling and the
-    // lock; the destructive-plan gate and the settle start one on demand. An
-    // ordinary redeploy lists nothing. `deployStackRegion` is the ONE function
-    // both this and `runStackInner` (the engine's region) use.
+    // go-to-k/cdkd#4705: the run's stack-registry checks, LAZY and memoized
+    // per stack and region: a first deploy claims its marker once its state
+    // load finds no record; a destructive plan, the settle and the automatic
+    // rollback read it on demand. An ordinary redeploy makes no request. A dry
+    // run writes no marker. `deployStackRegion` is the ONE function both the
+    // checks and `runStackInner` (the engine's region) use.
     const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
-    const crossPrefixCache = new CrossPrefixScanCache(preflightStateBackend);
-    const crossPrefixFirstDeploy = startCrossPrefixScans(targetStacks, crossPrefixCache, (s) =>
-      deployStackRegion(s, baseRegion)
-    );
+    const crossPrefixGuard = new CrossPrefixGuard(preflightStateBackend, {
+      readOnly: options.dryRun === true,
+    });
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
@@ -939,10 +935,7 @@ async function deployCommand(
           region: stackRegion,
           bucket: stateBucket,
           recovery: refusalRecovery,
-          firstDeploy: crossPrefixFirstDeploy.get(
-            crossPrefixScanKey(stackInfo.stackName, stackRegion)
-          ),
-          cache: crossPrefixCache,
+          guard: crossPrefixGuard,
         });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+

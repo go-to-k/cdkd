@@ -41,8 +41,6 @@ import { recoveryCommandFlags, type LockRecoveryContext } from './lock-contentio
 export interface CrossPrefixScanTarget {
   /** The prefix this backend reads and writes under. */
   readonly prefix: string;
-  /** Does this prefix hold a state record OR a rollback journal for the stack? */
-  ownRecordExists(stackName: string, region: string): Promise<boolean>;
   /** The bucket's top-level key segments, without their trailing `/`. */
   listTopLevelPrefixes(): Promise<string[]>;
   /**
@@ -99,8 +97,6 @@ export function recordCanOwnResources(
 
 /** What the scan found. */
 export type CrossPrefixScanResult =
-  /** This prefix already holds the stack: not a first deploy, nothing scanned. */
-  | { kind: 'own-record' }
   /**
    * No other prefix holds the stack in this region. `stale` names prefixes
    * whose record for it can own no resource (a failed first deploy).
@@ -112,9 +108,20 @@ export type CrossPrefixScanResult =
    * S3 answered 403: to the bucket LISTING (`stage: 'list'`, e.g. an IAM
    * policy scoped to one prefix), or to a read under a listed prefix.
    */
-  | { kind: 'denied'; error: unknown; stage: 'list' | 'probe'; stale?: string[] }
+  | {
+      kind: 'denied';
+      error: unknown;
+      /** `'registry'`: S3 refused the stack's registry marker (`stack-registry.ts`). */
+      stage: 'list' | 'probe' | 'registry';
+      stale?: string[];
+    }
   /** Any other failure (a {@link CrossPrefixReadError} names the object). */
-  | { kind: 'failed'; error: unknown; stale?: string[] };
+  | { kind: 'failed'; error: unknown; stale?: string[] }
+  /**
+   * The registry assigns the stack to `prefix`, which records nothing for it
+   * yet but holds its lock: a first deploy there may be running.
+   */
+  | { kind: 'in-progress'; prefix: string };
 
 /**
  * A read under another prefix that failed, naming the object it was reading so
@@ -137,12 +144,11 @@ export class CrossPrefixReadError extends Error {
 
 /**
  * How many candidate prefixes are probed at once. A probe is one listing, plus
- * three parallel reads only on a hit, so at most 30 requests are in flight:
- * inside the 50-socket cap of the shared HTTP agent
- * (`src/utils/proxy-routing-agent.ts`), with headroom for the deploy's own
- * calls.
+ * three parallel reads only on a hit. The scan runs on its own S3 client
+ * (`S3StateBackend.clientForScan`), whose sockets the deploy's own calls never
+ * wait behind, so it can use that client's whole 50-socket pool.
  */
-export const PROBE_CONCURRENCY = 10;
+export const PROBE_CONCURRENCY = 50;
 
 /**
  * A 403 from S3: AccessDenied on a List or a Get, a bare 403 on a Head --
@@ -164,9 +170,9 @@ export function isAccessDenied(error: unknown): boolean {
 
 /**
  * The prefixes another deployment can have written under the listed segments,
- * minus this backend's own, in two passes: each segment `p` itself, then its
- * trailing-slash twin `p/` (a `--state-prefix team-a/` keys records as
- * `team-a//<stack>/...`). The twins are probed only when no `p` held the stack.
+ * minus this backend's own: each segment `p` itself, then its trailing-slash
+ * twin `p/` (a `--state-prefix team-a/` keys records as `team-a//<stack>/...`).
+ * The scan probes both lists in ONE pass.
  */
 export function candidatePrefixPasses(
   segments: readonly string[],
@@ -188,12 +194,8 @@ export function candidatePrefixPasses(
 }
 
 /**
- * Look for the stack under every OTHER prefix of the bucket.
- *
- * `checkOwnRecord` (a first-deploy check): first ask whether this prefix
- * already holds the stack, and stop with `own-record` when it does. Destroy,
- * rollback and the destructive-plan check pass `false`: they act on the record
- * they hold.
+ * Look for the stack under every OTHER prefix of the bucket (the registry's
+ * fallback, `stack-registry.ts`).
  *
  * The verdict, over every probe: any holder refuses (`found`), whatever else
  * failed; then any failure other than a 403 (`failed`); then any 403
@@ -202,18 +204,8 @@ export function candidatePrefixPasses(
 export async function scanOtherPrefixesForStack(
   target: CrossPrefixScanTarget,
   stackName: string,
-  region: string,
-  opts: { checkOwnRecord: boolean }
+  region: string
 ): Promise<CrossPrefixScanResult> {
-  try {
-    if (opts.checkOwnRecord && (await target.ownRecordExists(stackName, region))) {
-      return { kind: 'own-record' };
-    }
-  } catch (error) {
-    return isAccessDenied(error)
-      ? { kind: 'denied', error, stage: 'probe' }
-      : { kind: 'failed', error };
-  }
   let segments: string[];
   try {
     segments = await target.listTopLevelPrefixes();
@@ -245,9 +237,8 @@ export async function scanOtherPrefixesForStack(
       Array.from({ length: Math.min(PROBE_CONCURRENCY, candidates.length) }, () => worker())
     );
   };
-  const [firstPass, twins] = candidatePrefixPasses(segments, target.prefix);
-  await probeAll(firstPass);
-  if (found.length === 0) await probeAll(twins);
+  const [segmentsThemselves, twins] = candidatePrefixPasses(segments, target.prefix);
+  await probeAll([...segmentsThemselves, ...twins]);
   const extra = stale.length > 0 ? { stale } : {};
   if (found.length > 0) return { kind: 'found', prefixes: found, ...extra };
   if (failed !== undefined) return { kind: 'failed', error: failed, ...extra };
@@ -371,7 +362,6 @@ export function withSharedListing(target: CrossPrefixScanTarget): SharedScanTarg
       }
       if (moved) for (let i = (heap.length >> 1) - 1; i >= 0; i--) siftDown(i);
     },
-    ownRecordExists: (stackName, region) => target.ownRecordExists(stackName, region),
     listTopLevelPrefixes: () => (listing ??= target.listTopLevelPrefixes()),
     recordUnderPrefix: async (prefix, stackName, region) => {
       await acquire(stackName, region);
@@ -402,7 +392,7 @@ export class CrossPrefixScanCache {
     this.target = withSharedListing(target);
   }
 
-  /** The scan of every other prefix for `stackName` in `region` (`checkOwnRecord: false`). */
+  /** The scan of every other prefix for `stackName` in `region`. */
   full(
     stackName: string,
     region: string,
@@ -412,7 +402,7 @@ export class CrossPrefixScanCache {
     const key = JSON.stringify([stackName, region]);
     let scan = this.scans.get(key);
     if (scan === undefined) {
-      scan = scanOtherPrefixesForStack(this.target, stackName, region, { checkOwnRecord: false });
+      scan = scanOtherPrefixesForStack(this.target, stackName, region);
       this.scans.set(key, scan);
     }
     return scan;
@@ -624,8 +614,16 @@ function failedKeyText(error: unknown): string {
 export function crossPrefixDeniedWarning(
   s: CrossPrefixSubject,
   error: unknown,
-  stage: 'list' | 'probe' = 'probe'
+  stage: 'list' | 'probe' | 'registry' = 'probe'
 ): string {
+  if (stage === 'registry') {
+    return (
+      `Could not use the stack registry for stack ${subjectText(s)}: S3 refused` +
+      `${failedKeyText(error)} (${errorName(error, 'AccessDenied')}), so the bucket's other ` +
+      `state prefixes were scanned instead, which is slower. Grant s3:GetObject, s3:PutObject ` +
+      `and s3:DeleteObject on ${displayIdent(s.bucket)}/_cdkd-registry/* to use it. Continuing.`
+    );
+  }
   const what =
     stage === 'list'
       ? `S3 refused to list bucket ${displayIdent(s.bucket)}`
@@ -634,6 +632,37 @@ export function crossPrefixDeniedWarning(
     `Could not check the other state prefixes for stack ${subjectText(s)}: ${what} ` +
     `(${errorName(error, 'AccessDenied')}). Continuing. Deploying one stack name under two ` +
     `state prefixes in one account and region is unsupported.`
+  );
+}
+
+/**
+ * The refusal while the prefix the registry names records nothing yet but
+ * holds the stack's lock: a deploy there may be in progress.
+ */
+export function inProgressUnderOtherPrefixMessage(
+  s: CrossPrefixSubject,
+  action: CrossPrefixAction,
+  prefix: string
+): string {
+  const account = recoveryCommandFlags({
+    profile: s.recovery?.profile,
+    stateBucket: s.recovery?.stateBucket ?? s.bucket,
+  });
+  const unlock = pasteableCommand(
+    'cdkd force-unlock',
+    [
+      { value: s.stackName, hole: 'stack' },
+      { flag: '--stack-region', value: s.region, hole: 'region' },
+      { flag: '--state-prefix', value: prefix, hole: 'prefix' },
+    ],
+    account.flags
+  ).command;
+  return (
+    `Refusing to ${VERB[action]} stack ${subjectText(s)}: bucket ${displayIdent(s.bucket)} ` +
+    `assigns it to state prefix ${displayIdent(prefix)}, which records nothing for it yet but ` +
+    `holds its lock, so a deploy there may be in progress. ${UNSUPPORTED_SENTENCE} ` +
+    `${NOTHING[action]} Re-run once that deploy has finished; if none is running, remove its ` +
+    `lock with \`${unlock}\` and re-run.`
   );
 }
 
@@ -663,11 +692,14 @@ export function applyCrossPrefixScan(
   warn: (message: string) => void,
   info?: (message: string) => void
 ): void {
-  if (result.kind !== 'own-record' && result.stale !== undefined && result.stale.length > 0) {
+  if (
+    result.kind !== 'in-progress' &&
+    result.stale !== undefined &&
+    result.stale.length > 0
+  ) {
     info?.(staleRecordNotice(s, result.stale));
   }
   switch (result.kind) {
-    case 'own-record':
     case 'clear':
       return;
     case 'denied':
@@ -688,6 +720,11 @@ export function applyCrossPrefixScan(
       // No `cause`: a parse error's message quotes another prefix's record.
       throw new CdkdError(
         crossPrefixFailedMessage(s, action, result.error),
+        STACK_UNDER_OTHER_PREFIX
+      );
+    case 'in-progress':
+      throw new CdkdError(
+        inProgressUnderOtherPrefixMessage(s, action, result.prefix),
         STACK_UNDER_OTHER_PREFIX
       );
   }
