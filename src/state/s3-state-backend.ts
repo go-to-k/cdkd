@@ -1070,6 +1070,69 @@ export class S3StateBackend {
    * Raw sidecar-object read under the state bucket. Returns `null` when
    * the key does not exist; other errors propagate.
    */
+  /** The key of a stack's retained-resource record (go-to-k/cdkd#4705). */
+  private getRetainedKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/retained.json`;
+  }
+
+  /**
+   * The resources a destroy of this stack under THIS prefix kept
+   * (`DeletionPolicy: Retain`) that a later create of the same stack here may
+   * take back by name (go-to-k/cdkd#4705). A sibling of `state.json` that a
+   * destroy does not delete. `[]` when there is none. A body that will not read
+   * as such a record throws, naming the key.
+   */
+  async loadRetainedResources(stackName: string, region: string): Promise<RetainedResource[]> {
+    const key = this.getRetainedKey(stackName, region);
+    let body: string | null;
+    try {
+      body = await this.getRawObject(key);
+    } catch (error) {
+      throw new CrossPrefixReadError(key, error);
+    }
+    if (body === null) return [];
+    const entries = parseRetainedResources(body);
+    if (entries === undefined) {
+      throw new CrossPrefixReadError(
+        key,
+        Object.assign(new Error('not a retained-resource record'), { name: 'MalformedRecord' })
+      );
+    }
+    return entries;
+  }
+
+  /**
+   * Replace the stack's retained-resource record with `entries` (deleting it
+   * when empty). Errors throw.
+   */
+  async saveRetainedResources(
+    stackName: string,
+    region: string,
+    entries: readonly RetainedResource[]
+  ): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getRetainedKey(stackName, region);
+    if (entries.length === 0) {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+        })
+      );
+      return;
+    }
+    await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: this.config.bucket,
+        ...(await this.ownerParam()),
+        Key: key,
+        Body: JSON.stringify({ retainedVersion: 1, resources: entries }),
+        ContentType: 'application/json',
+      })
+    );
+  }
+
   /**
    * The bucket-root key of a stack's registry marker (go-to-k/cdkd#4705):
    * `_cdkd-registry/<region>/<stack>.json`, holding `{ "prefix": "<p>" }`, the
@@ -2387,6 +2450,42 @@ export class S3StateBackend {
  * `GetObject` and `{name: 'NoSuchKey'}` from low-level callsites; HeadObject
  * raises `{name: 'NotFound'}` instead.
  */
+/**
+ * A resource a destroy kept that a later create of the same stack, under the
+ * same prefix, may take back by its cdkd-generated name (go-to-k/cdkd#4705).
+ */
+export interface RetainedResource {
+  logicalId: string;
+  resourceType: string;
+  physicalId: string;
+}
+
+/** The entries of a `retained.json` body, or `undefined` when it is not one. */
+export function parseRetainedResources(body: string): RetainedResource[] | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const doc = value as { retainedVersion?: unknown; resources?: unknown };
+  if (doc.retainedVersion !== 1 || !Array.isArray(doc.resources)) return undefined;
+  const out: RetainedResource[] = [];
+  for (const entry of doc.resources) {
+    const e = entry as Partial<RetainedResource> | null;
+    if (
+      typeof e?.logicalId === 'string' &&
+      typeof e.resourceType === 'string' &&
+      typeof e.physicalId === 'string' &&
+      e.physicalId !== ''
+    ) {
+      out.push({ logicalId: e.logicalId, resourceType: e.resourceType, physicalId: e.physicalId });
+    }
+  }
+  return out;
+}
+
 /** The bucket-root segment registry markers live under (go-to-k/cdkd#4705). */
 export const REGISTRY_ROOT = '_cdkd-registry';
 

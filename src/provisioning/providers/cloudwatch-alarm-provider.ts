@@ -17,6 +17,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -120,7 +121,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
 
     const alarmName =
       (properties['AlarmName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 256 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
 
     try {
       // PutMetricAlarm carries a `Tags` param for tags-on-create. On UPDATE
@@ -562,6 +563,47 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       }
     }
     return result;
+  }
+
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['AlarmName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 256 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: `DescribeAlarms` by `AlarmNames`, exact names, 100 per
+   * call (its maximum), metric AND composite alarms (a composite alarm holds
+   * the name too), the chunks in parallel through one run-wide limiter of 3:
+   * N alarms cost ceil(N/100) calls in about one round trip, where serial
+   * `AlarmNamePrefix` pages would cost ceil(M/100) round trips for M existing
+   * alarms under the prefix.
+   */
+  async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    const wanted = new Set(names);
+    const found = new Map<string, string>();
+    await Promise.all(
+      chunks(names, 100).map((chunk) =>
+        withApiLimit('cloudwatch:DescribeAlarms', 3, async () => {
+          const resp = await this.cloudWatchClient.send(
+            new DescribeAlarmsCommand({
+              AlarmNames: chunk,
+              AlarmTypes: ['MetricAlarm', 'CompositeAlarm'],
+              MaxRecords: 100,
+            })
+          );
+          for (const alarm of [...(resp.MetricAlarms ?? []), ...(resp.CompositeAlarms ?? [])]) {
+            const name = alarm.AlarmName;
+            if (name !== undefined && wanted.has(name)) found.set(name, name);
+          }
+        })
+      )
+    );
+    return found;
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

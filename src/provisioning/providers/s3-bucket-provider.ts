@@ -6682,11 +6682,7 @@ export class S3BucketProvider implements ResourceProvider {
     const explicitBucketName = Boolean(properties['BucketName']);
     const bucketName =
       (properties['BucketName'] as string | undefined) ||
-      generateResourceName(logicalId, {
-        maxLength: 63,
-        lowercase: true,
-        allowedPattern: /[^a-z0-9.-]/g,
-      });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     // go-to-k/cdkd#4583: true while a bucket THIS call created (`createdNewBucket`)
     // exists with no state record; cleared once the cleanup below deletes it.
     let bucketLeftBehind = false;
@@ -8592,6 +8588,24 @@ export class S3BucketProvider implements ResourceProvider {
    * Returns `null` when nothing matches — caller treats this as
    * "not deployed yet" rather than a failure.
    */
+  /**
+   * go-to-k/cdkd#4705: the name `create()` sends when the template names
+   * none. S3 has no batch lookup, so the plan-time check looks each such
+   * bucket up through `import()` (`HeadBucket`), bounded.
+   */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['BucketName']) return undefined;
+    return generateResourceName(logicalId, {
+      maxLength: 63,
+      lowercase: true,
+      allowedPattern: /[^a-z0-9.-]/g,
+    });
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'BucketName');
     if (explicit) {

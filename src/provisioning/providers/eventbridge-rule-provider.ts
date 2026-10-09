@@ -5,6 +5,7 @@ import {
   RemoveTargetsCommand,
   DeleteRuleCommand,
   DescribeRuleCommand,
+  ListRulesCommand,
   ListTargetsByRuleCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
@@ -18,6 +19,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import {
+  boundedPages,
+  commonPrefix,
+  isAccessDeniedError,
+  lookupEachName,
+  withApiLimit,
+} from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -239,7 +247,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
     const ruleName =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     const targets = properties['Targets'] as RuleTarget[] | undefined;
 
     // go-to-k/cdkd#4583: the ARN of a rule this create made and the wiring
@@ -787,6 +795,86 @@ export class EventBridgeRuleProvider implements ResourceProvider {
    *     name lookup, then verify with `DescribeRule` and return the
    *     rule's ARN as physicalId.
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['Name']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 64 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: per event bus, one `ListRules` by the names' common
+   * prefix (100 per page, at most 5 pages), filtered to whole names, the buses
+   * in parallel; per-name `DescribeRule` when the listing is not granted or
+   * does not end within the bound. A rule's physical id is its ARN.
+   */
+  async lookupNames(
+    _resourceType: string,
+    names: readonly string[],
+    context: { propertiesByName: ReadonlyMap<string, Record<string, unknown>> }
+  ): Promise<Map<string, string>> {
+    const busOf = (name: string): string | undefined => {
+      const bus = context.propertiesByName.get(name)?.['EventBusName'];
+      return typeof bus === 'string' && bus !== '' ? bus : undefined;
+    };
+    const byBus = new Map<string | undefined, string[]>();
+    for (const name of names) {
+      const bus = busOf(name);
+      byBus.set(bus, [...(byBus.get(bus) ?? []), name]);
+    }
+    const found = new Map<string, string>();
+    await Promise.all(
+      [...byBus].map(async ([bus, group]) => {
+        const prefix = commonPrefix(group);
+        try {
+          const rules = await boundedPages(5, async (token) => {
+            const resp = await withApiLimit('events:ListRules', 5, () =>
+              this.eventBridgeClient.send(
+                new ListRulesCommand({
+                  ...(prefix !== '' && { NamePrefix: prefix }),
+                  ...(bus !== undefined && { EventBusName: bus }),
+                  Limit: 100,
+                  ...(token !== undefined && { NextToken: token }),
+                })
+              )
+            );
+            return { items: resp.Rules ?? [], next: resp.NextToken };
+          });
+          if (rules !== undefined) {
+            const wanted = new Set(group);
+            for (const rule of rules) {
+              if (rule.Name !== undefined && rule.Arn !== undefined && wanted.has(rule.Name)) {
+                found.set(rule.Name, rule.Arn);
+              }
+            }
+            return;
+          }
+        } catch (err) {
+          if (!isAccessDeniedError(err)) throw err;
+        }
+        const each = await lookupEachName(group, 'events:DescribeRule', 5, async (name) => {
+          try {
+            const resp = await this.eventBridgeClient.send(
+              new DescribeRuleCommand({
+                Name: name,
+                ...(bus !== undefined && { EventBusName: bus }),
+              })
+            );
+            return resp.Arn;
+          } catch (err) {
+            if (err instanceof ResourceNotFoundException) return undefined;
+            throw err;
+          }
+        });
+        for (const [name, arn] of each) found.set(name, arn);
+      })
+    );
+    return found;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const eventBusName = input.properties['EventBusName'] as string | undefined;
     if (input.knownPhysicalId) {

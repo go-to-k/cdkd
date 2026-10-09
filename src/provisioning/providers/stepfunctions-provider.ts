@@ -4,6 +4,7 @@ import {
   UpdateStateMachineCommand,
   DeleteStateMachineCommand,
   DescribeStateMachineCommand,
+  ListStateMachinesCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -22,6 +23,12 @@ import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import {
+  LookupEachNameInstead,
+  boundedPages,
+  isAccessDeniedError,
+  withApiLimit,
+} from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -113,7 +120,7 @@ export class StepFunctionsProvider implements ResourceProvider {
 
     const stateMachineName =
       (properties['StateMachineName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 80 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     const roleArn = properties['RoleArn'] as string | undefined;
 
     if (!roleArn) {
@@ -481,6 +488,53 @@ export class StepFunctionsProvider implements ResourceProvider {
    * fallback to `Properties.<NameField>` in `resolveExplicitPhysicalId`
    * is skipped here.
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['StateMachineName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 80 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: `ListStateMachines` has no name filter, so one listing
+   * (1000 per page, at most 2 pages), matched on the whole name; past that
+   * bound, or when it is not granted, the caller looks each name up by its ARN
+   * (`DescribeStateMachine`). The physical id is the ARN.
+   */
+  async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    let machines: Array<[string, string]> | undefined;
+    try {
+      machines = await boundedPages(2, async (token) => {
+        const resp = await withApiLimit('states:ListStateMachines', 3, () =>
+          this.getClient().send(
+            new ListStateMachinesCommand({
+              maxResults: 1000,
+              ...(token !== undefined && { nextToken: token }),
+            })
+          )
+        );
+        return {
+          items: (resp.stateMachines ?? []).flatMap((m): Array<[string, string]> =>
+            m.name && m.stateMachineArn ? [[m.name, m.stateMachineArn]] : []
+          ),
+          next: resp.nextToken,
+        };
+      });
+    } catch (err) {
+      if (!isAccessDeniedError(err)) throw err;
+      throw new LookupEachNameInstead('ListStateMachines is not granted');
+    }
+    if (machines === undefined)
+      throw new LookupEachNameInstead('more state machines than one bounded listing');
+    const wanted = new Set(names);
+    const found = new Map<string, string>();
+    for (const [name, arn] of machines) if (wanted.has(name)) found.set(name, arn);
+    return found;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {

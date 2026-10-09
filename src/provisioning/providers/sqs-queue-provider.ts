@@ -4,6 +4,7 @@ import {
   DeleteQueueCommand,
   GetQueueAttributesCommand,
   GetQueueUrlCommand,
+  ListQueuesCommand,
   ListQueueTagsCommand,
   SetQueueAttributesCommand,
   TagQueueCommand,
@@ -18,6 +19,13 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import {
+  boundedPages,
+  commonPrefix,
+  isAccessDeniedError,
+  lookupEachName,
+  withApiLimit,
+} from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -223,6 +231,59 @@ export class SQSQueueProvider implements ResourceProvider {
   /**
    * Create an SQS queue
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['QueueName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 80 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: one `ListQueues` by the names' common prefix (1000 per
+   * page, at most 3 pages), filtered to whole names; per-name `GetQueueUrl`
+   * when the listing is not granted or does not end within the bound.
+   */
+  async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    const prefix = commonPrefix(names);
+    try {
+      const urls = await boundedPages(3, async (token) => {
+        const resp = await withApiLimit('sqs:ListQueues', 5, () =>
+          this.sqsClient.send(
+            new ListQueuesCommand({
+              ...(prefix !== '' && { QueueNamePrefix: prefix }),
+              MaxResults: 1000,
+              ...(token !== undefined && { NextToken: token }),
+            })
+          )
+        );
+        return { items: resp.QueueUrls ?? [], next: resp.NextToken };
+      });
+      if (urls !== undefined) {
+        const wanted = new Set(names);
+        const found = new Map<string, string>();
+        for (const url of urls) {
+          const name = url.slice(url.lastIndexOf('/') + 1);
+          if (wanted.has(name)) found.set(name, url);
+        }
+        return found;
+      }
+    } catch (err) {
+      if (!isAccessDeniedError(err)) throw err;
+    }
+    return lookupEachName(names, 'sqs:GetQueueUrl', 10, async (name) => {
+      try {
+        const resp = await this.sqsClient.send(new GetQueueUrlCommand({ QueueName: name }));
+        return resp.QueueUrl;
+      } catch (err) {
+        if (err instanceof QueueDoesNotExist) return undefined;
+        throw err;
+      }
+    });
+  }
+
   async create(
     logicalId: string,
     resourceType: string,
@@ -234,7 +295,7 @@ export class SQSQueueProvider implements ResourceProvider {
 
     const queueName =
       (properties['QueueName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 80 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
 
     try {
       // Convert CDK properties to SQS attributes

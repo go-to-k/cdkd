@@ -22,6 +22,7 @@ import {
   emptyCreateTokenLedger,
   withStateSavedObserver,
   type CreateTokenLedgerDoc,
+  type SentCreateToken,
 } from '../../state/create-token-ledger.js';
 import { getLogger } from '../../utils/logger.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
@@ -276,6 +277,81 @@ export class CreateTokenLedger {
   }
 
   /**
+   * go-to-k/cdkd#4705: the stored `sent` entries (a copy). Throws when the
+   * ledger cannot be read; `{}` when the stack has none.
+   */
+  sentEntries(): Promise<Record<string, SentCreateToken>> {
+    return this.serialized(async () => {
+      try {
+        const doc = await this.current();
+        return { ...(doc?.sent ?? {}) };
+      } catch (error) {
+        this.stale = true;
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: record, in ONE write and BEFORE any of them is sent,
+   * the creates a deploy is about to send that adopt a resource by name: each
+   * `sent[logicalId] = { base, token: <the name>, firstSentAt }`. A re-run
+   * after a crash between such a create and its state record then finds its
+   * own name here, which licenses taking the resource back. Throws when the
+   * ledger cannot be read or written (the caller refuses those creates).
+   */
+  recordSent(
+    entries: ReadonlyArray<{ logicalId: string; base: string; token: string }>,
+    firstSentAt: number
+  ): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        let doc = await this.current();
+        if (doc === null) {
+          doc = emptyCreateTokenLedger(randomUUID());
+          this.doc = doc;
+          this.startedThisDeploy = true;
+        }
+        let changed = false;
+        for (const entry of entries) {
+          const recorded = doc.sent[entry.logicalId];
+          if (recorded?.base === entry.base && recorded.token === entry.token) continue;
+          doc.sent[entry.logicalId] = { base: entry.base, token: entry.token, firstSentAt };
+          changed = true;
+        }
+        if (changed) await this.persist(doc);
+      } catch (error) {
+        this.stale = true;
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: drop `logicalId`'s `sent` entry when it records a
+   * name-adopting create (`base` starting with {@link ADOPTING_CREATE_BASE}):
+   * the stack let that resource go (a Retain), so its name no longer licenses
+   * a create taking it back. Best-effort; never throws.
+   */
+  dropAdoptingCreate(logicalId: string): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        const doc = await this.current();
+        if (doc?.sent[logicalId]?.base.startsWith(ADOPTING_CREATE_BASE) !== true) return;
+        delete doc.sent[logicalId];
+        await this.persist(doc);
+      } catch (error) {
+        this.stale = true;
+        this.logger.warn(
+          safeMsg`Could not record in this stack's create-token ledger that ${logicalId} was kept (${
+            describeAwsFailure(error).summary
+          }); a later deploy may take the kept resource back.`
+        );
+      }
+    });
+  }
+
+  /**
    * Drop the `sent` entries of `logicalIds` once the deploy that sent them
    * has SUCCEEDED and its state record names each of them (go-to-k/cdkd#4438).
    * An entry exists to find a resource an interrupted deploy made but never
@@ -374,6 +450,55 @@ export function ledgerForStack(
 const ledgerStore = new AsyncLocalStorage<CreateTokenLedger>();
 
 /**
+ * The `base` prefix of a `sent` entry recording a name-adopting create
+ * (go-to-k/cdkd#4705); the rest is its resource type. No token type's base
+ * starts with it.
+ */
+export const ADOPTING_CREATE_BASE = 'adopt-by-name:';
+
+/**
+ * go-to-k/cdkd#4705: the bound ledger's recorded adopting creates, as
+ * logical id → { resource type, name }. `undefined` with no ledger bound.
+ * Throws when the ledger cannot be read.
+ */
+export async function recordedAdoptingCreates(): Promise<
+  ReadonlyMap<string, { resourceType: string; name: string }> | undefined
+> {
+  const ledger = ledgerStore.getStore();
+  if (ledger === undefined) return undefined;
+  const out = new Map<string, { resourceType: string; name: string }>();
+  for (const [logicalId, entry] of Object.entries(await ledger.sentEntries())) {
+    if (entry.base.startsWith(ADOPTING_CREATE_BASE)) {
+      out.set(logicalId, {
+        resourceType: entry.base.slice(ADOPTING_CREATE_BASE.length),
+        name: entry.token,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * go-to-k/cdkd#4705: record the adopting creates a deploy is about to send
+ * (see {@link CreateTokenLedger.recordSent}) in the bound ledger, in one
+ * write. No ledger bound, no-op. Throws when it cannot be written.
+ */
+export async function recordAdoptingCreates(
+  creates: ReadonlyArray<{ logicalId: string; resourceType: string; name: string }>
+): Promise<void> {
+  const ledger = ledgerStore.getStore();
+  if (ledger === undefined || creates.length === 0) return;
+  await ledger.recordSent(
+    creates.map((c) => ({
+      logicalId: c.logicalId,
+      base: `${ADOPTING_CREATE_BASE}${c.resourceType}`,
+      token: c.name,
+    })),
+    Date.now()
+  );
+}
+
+/**
  * Bound around everything that creates or lets go of a stack's resources: the
  * deploy engine's deploy (and the rollback inside it), `cdkd rollback`'s
  * replay, and a nested child's journal replay -- each with that stack's own
@@ -426,7 +551,12 @@ export const LEDGER_TOKEN_RESOURCE_TYPES: ReadonlySet<string> = new Set([
  * otherwise, and with no ledger bound, a no-op.
  */
 export async function noteRetainedResource(resourceType: string, logicalId: string): Promise<void> {
-  if (!LEDGER_TOKEN_RESOURCE_TYPES.has(resourceType)) return;
+  if (!LEDGER_TOKEN_RESOURCE_TYPES.has(resourceType)) {
+    // go-to-k/cdkd#4705: a kept name-adopting resource's recorded create no
+    // longer licenses taking it back.
+    await ledgerStore.getStore()?.dropAdoptingCreate(logicalId);
+    return;
+  }
   await ledgerStore.getStore()?.rotate(logicalId);
 }
 

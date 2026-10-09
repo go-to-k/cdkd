@@ -31,7 +31,9 @@ import {
   isFinalSnapshotError,
   unsupportedFinalSnapshotError,
 } from '../../provisioning/final-snapshot.js';
-import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { RetainedResource, S3StateBackend } from '../../state/s3-state-backend.js';
+import { replacementCreateAdoptsName } from '../../deployment/replacement-name-holder.js';
+import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { acquireStackLock } from './stack-lock-guard.js';
@@ -553,6 +555,52 @@ export function countProtectedJournaledOrphans(
  *   cleared) so the user can retry.
  */
 /**
+ * go-to-k/cdkd#4705: whether a kept resource is one a later create of the
+ * stack would take back by name -- a name-adopting SDK type whose record
+ * carries no template name (its name is cdkd-generated), with a physical id.
+ */
+function keptForReadoption(resource: ResourceState): resource is ResourceState & {
+  physicalId: string;
+} {
+  if (!replacementCreateAdoptsName(resource.resourceType, resource.provisionedBy)) return false;
+  if (typeof resource.physicalId !== 'string' || resource.physicalId === '') return false;
+  const property = explicitNamePropertyFor(resource.resourceType);
+  const properties = resource.properties as Record<string, unknown> | undefined;
+  return property === undefined || !properties?.[property];
+}
+
+/**
+ * go-to-k/cdkd#4705: merge `kept` into the stack's retained-resource record
+ * under this prefix (`S3StateBackend.saveRetainedResources`), replacing an
+ * earlier entry of the same logical id. Best-effort: a failure is warned, and
+ * the next deploy's create of such a resource is then refused with the
+ * `cdkd import` remedy instead of taking it back.
+ */
+async function recordRetainedForReadoption(
+  backend: Pick<S3StateBackend, 'loadRetainedResources' | 'saveRetainedResources'>,
+  stackName: string,
+  region: string,
+  kept: readonly RetainedResource[],
+  logger: { warn(message: string): void }
+): Promise<void> {
+  if (kept.length === 0) return;
+  try {
+    const keptIds = new Set(kept.map((k) => k.logicalId));
+    const earlier = await backend.loadRetainedResources(stackName, region).catch(() => []);
+    await backend.saveRetainedResources(stackName, region, [
+      ...earlier.filter((e) => !keptIds.has(e.logicalId)),
+      ...kept,
+    ]);
+  } catch (error) {
+    logger.warn(
+      `Could not record the ${kept.length} kept resource(s) of ${displayStackName(stackName)} ` +
+        `a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +
+        `refuses to create them over the kept ones; adopt them with 'cdkd import' then.`
+    );
+  }
+}
+
+/**
  * go-to-k/cdkd#4705: once a top-level stack's record is gone (deleted FIRST, so
  * the registry never names a prefix for a stack it no longer records), delete
  * its registry marker when it names this prefix. Only for `cdkd destroy` /
@@ -599,6 +647,8 @@ export async function runDestroyForStack(
     errorCount: 0,
     interrupted: false,
   };
+  // go-to-k/cdkd#4705: the kept resources a later create takes back by name.
+  const retainedForReadoption: RetainedResource[] = [];
   // Issue #2301: the logical ids whose delete proceeded with a guard that
   // could not answer. Named in the aggregate warning so the operator can go
   // straight to `cdkd events` for the reason rather than scrolling back.
@@ -1740,6 +1790,15 @@ export async function runDestroyForStack(
               `  ⊘ ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
             );
             result.retainedCount++;
+            // go-to-k/cdkd#4705: a kept resource a later create of this stack
+            // takes back by its generated name is recorded for that create.
+            if (keptForReadoption(resource)) {
+              retainedForReadoption.push({
+                logicalId,
+                resourceType: resource.resourceType,
+                physicalId: resource.physicalId,
+              });
+            }
             recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_RETAINED',
               stackName,
@@ -2287,6 +2346,16 @@ export async function runDestroyForStack(
     // a chained write can never land after deleteState and re-create the
     // state file. The chain never rejects (each link catches internally).
     await saveChain;
+
+    // go-to-k/cdkd#4705: before the record goes, note what this destroy kept
+    // that the stack's next create here may take back by name.
+    await recordRetainedForReadoption(
+      ctx.stateBackend,
+      stackName,
+      regionForState,
+      retainedForReadoption,
+      logger
+    );
 
     // Preserve state (rather than delete it) when there were delete errors OR
     // the destroy was gracefully interrupted (issue #816) OR a resource was

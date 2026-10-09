@@ -41,6 +41,7 @@ import {
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { chunks, isAccessDeniedError, lookupEachName, withApiLimit } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, refuseMalformedDesiredTags, tagPlanWarning } from '../tag-list.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
@@ -311,6 +312,68 @@ export class LogsLogGroupProvider implements ResourceProvider {
     return wrapMaskedAwsError(mask, error, build);
   }
 
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['LogGroupName']) return undefined;
+    return `/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
+  }
+
+  /**
+   * go-to-k/cdkd#4705: `DescribeLogGroups` by `logGroupIdentifiers` -- exact
+   * names, up to 50 per call -- the chunks in parallel through one run-wide
+   * limiter, so N log groups cost ceil(N/50) calls and about one round trip,
+   * never serial pages. Per-name lookups when the identifiers are refused (a
+   * cross-account monitoring account takes ARNs there) or not granted.
+   */
+  async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    try {
+      const found = new Map<string, string>();
+      const wanted = new Set(names);
+      await Promise.all(
+        chunks(names, 50).map((chunk) =>
+          withApiLimit('logs:DescribeLogGroups', 3, async () => {
+            const resp = await this.logsClient.send(
+              new DescribeLogGroupsCommand({ logGroupIdentifiers: chunk })
+            );
+            for (const group of resp.logGroups ?? []) {
+              const name = group.logGroupName;
+              if (name !== undefined && wanted.has(name)) found.set(name, name);
+            }
+          })
+        )
+      );
+      return found;
+    } catch (err) {
+      const name = (err as { name?: unknown } | null)?.name;
+      if (
+        !isAccessDeniedError(err) &&
+        name !== 'InvalidParameterException' &&
+        name !== 'ValidationException'
+      ) {
+        throw err;
+      }
+    }
+    return lookupEachName(names, 'logs:DescribeLogGroups', 3, async (logGroupName) => {
+      try {
+        const resp = await this.logsClient.send(
+          new DescribeLogGroupsCommand({ logGroupNamePrefix: logGroupName })
+        );
+        // The response is ASCII-sorted, so the exact name sorts first among
+        // every name it prefixes: one page answers.
+        return resp.logGroups?.some((g) => g.logGroupName === logGroupName)
+          ? logGroupName
+          : undefined;
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return undefined;
+        throw err;
+      }
+    });
+  }
+
   /**
    * Create a CloudWatch Logs log group
    */
@@ -324,7 +387,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
 
     const logGroupName =
       (properties['LogGroupName'] as string | undefined) ||
-      `/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
 
     // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);

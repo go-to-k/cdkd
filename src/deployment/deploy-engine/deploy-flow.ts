@@ -1,4 +1,7 @@
 import { freshNoEchoParametersWithDeclared } from './noecho.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { getAccountInfo } from '../intrinsic-function-resolver.js';
+import { GeneratedNameGuard } from '../generated-name-guard.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
@@ -1230,6 +1233,22 @@ export async function doDeployWithPrefetch(
       );
     }
 
+    // go-to-k/cdkd#4705: every planned create of a name-adopting type whose
+    // name cdkd generates is looked up NOW, batched per type and all at once,
+    // overlapping the checks and the prompt below; each create awaits its
+    // own verdict (`refuseUnlicensedGeneratedName`).
+    this.generatedNameGuard = GeneratedNameGuard.start({
+      stackName,
+      region: this.stackRegion,
+      changes: changes.values(),
+      providerFor: (input) => this.providerRegistry.getProviderFor(input),
+      records: currentState.resources,
+      orphans: currentState.orphans,
+      loadJournal: () => this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
+      loadRetained: () => this.stateBackend.loadRetainedResources(stackName, this.stackRegion),
+      accountInfo: () => getAccountInfo(this.stackRegion),
+    });
+
     // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
     // is checked against the bucket's other state prefixes BEFORE the approval
     // prompt and any provider call.
@@ -1329,6 +1348,23 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
     await forgetRecordedCreateTokens(Object.keys(newState.resources));
+    // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
+    // record now names it, so `retained.json` lets it go. Best-effort.
+    const readopted = (await this.generatedNameGuard?.readoptedFromRetained()) ?? [];
+    if (readopted.length > 0) {
+      try {
+        const kept = await this.stateBackend.loadRetainedResources(stackName, this.stackRegion);
+        await this.stateBackend.saveRetainedResources(
+          stackName,
+          this.stackRegion,
+          kept.filter((entry) => !readopted.includes(entry.logicalId))
+        );
+      } catch (error) {
+        this.logger.debug(
+          `Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
+        );
+      }
+    }
 
     // 7c. Two independent post-save S3 writes, run CONCURRENTLY:
     //

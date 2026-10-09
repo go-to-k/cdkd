@@ -23,6 +23,12 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import {
+  LookupEachNameInstead,
+  boundedPages,
+  isAccessDeniedError,
+  withApiLimit,
+} from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
@@ -180,7 +186,7 @@ export class SNSTopicProvider implements ResourceProvider {
 
     const topicName =
       (properties['TopicName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 256 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     // go-to-k/cdkd#4583: the ARN of a topic this create made and failed to clean
     // up; a topic that held the name before (`heldBefore`) is never set here.
     let leftBehindArn: string | undefined;
@@ -1046,6 +1052,50 @@ export class SNSTopicProvider implements ResourceProvider {
    * import resolves ids from CloudFormation's `DescribeStackResources` or the
    * template's physical name; without a `TopicName` there is nothing to match.
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['TopicName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 256 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: `ListTopics` has no name filter, so one listing of the
+   * region's topics (100 per page, at most 5 pages), matched on the ARN's
+   * whole last segment; past that bound, or when the listing is not granted,
+   * the caller looks each name up by its ARN (`GetTopicAttributes`).
+   */
+  async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    let arns: string[] | undefined;
+    try {
+      arns = await boundedPages(5, async (token) => {
+        const resp = await withApiLimit('sns:ListTopics', 3, () =>
+          this.snsClient.send(
+            new ListTopicsCommand({ ...(token !== undefined && { NextToken: token }) })
+          )
+        );
+        return {
+          items: (resp.Topics ?? []).flatMap((t) => (t.TopicArn ? [t.TopicArn] : [])),
+          next: resp.NextToken,
+        };
+      });
+    } catch (err) {
+      if (!isAccessDeniedError(err)) throw err;
+      throw new LookupEachNameInstead('ListTopics is not granted');
+    }
+    if (arns === undefined) throw new LookupEachNameInstead('more topics than one bounded listing');
+    const wanted = new Set(names);
+    const found = new Map<string, string>();
+    for (const arn of arns) {
+      const name = arn.slice(arn.lastIndexOf(':') + 1);
+      if (wanted.has(name)) found.set(name, arn);
+    }
+    return found;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {

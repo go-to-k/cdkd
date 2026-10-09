@@ -1577,6 +1577,41 @@ export interface ResourceProvider {
    * skipped with a warning.
    */
   import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
+
+  /**
+   * go-to-k/cdkd#4705: the name `create()` sends for `logicalId` of
+   * `resourceType` when the template supplies NONE (a cdkd-generated name),
+   * evaluated in the caller's stack-name scope exactly as `create()` evaluates
+   * it; `undefined` when the template supplies a name, or the type takes none.
+   * Implemented by the name-adopting SDK types only
+   * (`NAME_ADOPTING_SDK_CREATE_TYPES`), whose create hands back or overwrites
+   * an existing resource of that name instead of failing.
+   */
+  generatedCreateName?(
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined;
+
+  /**
+   * go-to-k/cdkd#4705: which of `names` (each the generated name of one
+   * planned create of `resourceType`) a resource holds right now, as name →
+   * that resource's physical id in `import()`'s format. Exact names only: a
+   * listing by prefix is filtered to whole-name matches. Batched per type
+   * (one list or batch call where the service has one, bounded pages, then
+   * per-name lookups). Throws when it cannot tell; a 403 throws as one.
+   * `properties` gives each name's create properties (by name), for a type
+   * whose lookup depends on one (an EventBridge rule's bus).
+   */
+  lookupNames?(
+    resourceType: string,
+    names: readonly string[],
+    context: {
+      region: string;
+      stackName: string;
+      propertiesByName: ReadonlyMap<string, Record<string, unknown>>;
+    }
+  ): Promise<Map<string, string>>;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import type { GeneratedNameGuard } from './generated-name-guard.js';
 import { withStackName } from '../provisioning/resource-name.js';
 import {
   ledgerForStack,
@@ -727,6 +728,14 @@ export class DeployEngine {
   attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
+   * go-to-k/cdkd#4705: this deploy's plan-time check of the generated names
+   * its name-adopting creates would take; each create awaits its verdict.
+   * Reset per deploy.
+   */
+  /** @internal */
+  generatedNameGuard: GeneratedNameGuard | undefined;
+
+  /**
    * The live-progress label `provisionResource` gave each resource, and whether
    * its verb said `Replacing` (go-to-k/cdkd#3662). The label is chosen before
    * resolution, so a resource whose only replacement is a CEILING (a synthetic
@@ -966,6 +975,7 @@ export class DeployEngine {
     // otherwise journal the PREVIOUS run's bag against today's template and
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
+    this.generatedNameGuard = undefined;
     this.liveTaskLabels = new Map();
     this.outputSecrets = new Map();
     this.outputsPassSecretMaps = [];

@@ -36,7 +36,10 @@ import {
 
 /** What the guard needs of a state backend. */
 export interface RegistryTarget extends CrossPrefixScanTarget {
-  getRegistryMarker(stackName: string, region: string): Promise<{ prefix: string; etag: string } | null>;
+  getRegistryMarker(
+    stackName: string,
+    region: string
+  ): Promise<{ prefix: string; etag: string } | null>;
   claimRegistryMarker(
     stackName: string,
     region: string,
@@ -165,7 +168,9 @@ export class CrossPrefixGuard {
       try {
         held = await this.backend.recordUnderPrefix(marker.prefix, stackName, region);
         locked =
-          held === 'holder' ? false : await this.backend.lockUnderPrefix(marker.prefix, top, region);
+          held === 'holder'
+            ? false
+            : await this.backend.lockUnderPrefix(marker.prefix, top, region);
       } catch (error) {
         return isAccessDenied(error)
           ? { kind: 'denied', error, stage: 'probe' }

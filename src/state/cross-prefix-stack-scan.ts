@@ -692,11 +692,7 @@ export function applyCrossPrefixScan(
   warn: (message: string) => void,
   info?: (message: string) => void
 ): void {
-  if (
-    result.kind !== 'in-progress' &&
-    result.stale !== undefined &&
-    result.stale.length > 0
-  ) {
+  if (result.kind !== 'in-progress' && result.stale !== undefined && result.stale.length > 0) {
     info?.(staleRecordNotice(s, result.stale));
   }
   switch (result.kind) {

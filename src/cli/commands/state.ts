@@ -2276,12 +2276,35 @@ async function releaseRegistryMarkerQuietly(
 ): Promise<void> {
   if (stackName.includes('~')) return;
   try {
-    logger.debug(`Stack registry marker: ${await backend.releaseRegistryMarker(stackName, region)}`);
+    logger.debug(
+      `Stack registry marker: ${await backend.releaseRegistryMarker(stackName, region)}`
+    );
   } catch (error) {
     logger.warn(
       `Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
         `(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
         `records the stack, so a deploy under another prefix treats it as stale.`
+    );
+  }
+}
+
+/**
+ * go-to-k/cdkd#4705: drop the stack's kept-resource record under this prefix
+ * (`retained.json`): after `state orphan`, a later create no longer takes a
+ * kept resource back by name. Best-effort.
+ */
+async function clearRetainedQuietly(
+  backend: Pick<S3StateBackend, 'saveRetainedResources'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void }
+): Promise<void> {
+  try {
+    await backend.saveRetainedResources(stackName, region, []);
+  } catch (error) {
+    logger.warn(
+      `Could not clear the kept-resource record of ${displayStackName(stackName)} ` +
+        `(${describeAwsFailure(error).summary}).`
     );
   }
 }
@@ -2502,6 +2525,9 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           // go-to-k/cdkd#4705: the record is gone, so the stack registry
           // marker naming this prefix goes too (record first, then marker).
           await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, target.region, logger);
+          // go-to-k/cdkd#4705: and what a destroy kept stops licensing a
+          // later create to take it back by name.
+          await clearRetainedQuietly(setup.stateBackend, stackName, target.region, logger);
         } else {
           // Pure legacy record without a region body field. Both keys are the
           // region-less ones, and they are separate objects: issue #2537, the
