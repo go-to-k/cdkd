@@ -28,7 +28,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-10-03T09:45:36Z	PASS	416	std-flow	rc ok, orph clean (#4505)
+bench-cdk-sample	2026-10-09T06:34:26Z	PASS	446	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
@@ -65,11 +65,11 @@ created-before-failure-revert	2026-10-08T16:17:02Z	PASS	75	verify.sh	PR #4729 (#
 cross-region-concurrent-stacks	2026-10-06T12:30:56Z	PASS	190	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)
-cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (#4505)
+cross-stack-references	2026-10-09T07:58:21Z	PASS	40	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 cross-stack-secret-import	2026-10-05T15:24:10Z	PASS	396	verify.sh	rc ok, orph clean (#2868 PR #4588)
 custom-resource-getatt-data	2026-10-07T18:42:20Z	PASS	96	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 custom-resource-masked-service-token	2026-10-06T17:47:53Z	PASS	175	verify.sh	rc ok, orph clean (#3211 PR #4629)
-custom-resource-noecho-nested	2026-10-08T11:22:30Z	PASS	1467	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
+custom-resource-noecho-nested	2026-10-09T06:13:03Z	PASS	1343	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 custom-resource-provider	2026-10-08T17:12:09Z	PASS	662	verify.sh	rc ok, orph clean
 custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
 custom-resource-service-token-change	2026-10-09T06:16:55Z	PASS	145	verify.sh	rc ok, orph clean (PR #4750 fix round)
@@ -89,9 +89,9 @@ dlm-lifecycle-policy	2026-10-08T06:25:38Z	PASS	110	verify.sh	PR #4697 (#4687 rep
 docdb-fix-forward-orphan	2026-10-08T09:41:20Z	PASS	1880	verify.sh	PR #4691 (#4606 DocDB fix-forward); rc 0, destroy clean, orph clean, dedicated state bucket; probes red: src reverted at step 2, isSameResource off at step 3 (exit 2)
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-08T10:03:42Z	PASS	361	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+drift-revert	2026-10-09T05:50:01Z	PASS	311	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-08T09:57:41Z	PASS	261	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+drift-revert-vpc	2026-10-09T06:33:11Z	PASS	371	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -131,8 +131,8 @@ eventbridge-pipes	2026-10-07T13:48:36Z	PASS	185	verify.sh	PR #4664 (#4639 data/s
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-08T11:09:09Z	PASS	235	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
-export-nested-stack	2026-10-07T18:50:43Z	PASS	190	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
+export	2026-10-09T06:17:00Z	PASS	235	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
+export-nested-stack	2026-10-09T06:20:23Z	PASS	200	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-10-07T15:51:34Z	PASS	2425	verify.sh	#4606 Phase 2c fix-forward deletes the journaled OrphanFs; destroy 0 errors, 0 orphans, 0 backups
@@ -178,7 +178,7 @@ intrinsics-torture-2	2026-10-07T19:51:35Z	PASS	50	verify.sh	rc ok, orph clean (P
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-08T11:11:04Z	PASS	115	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
+lambda	2026-10-09T05:14:58Z	PASS	111	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -236,13 +236,13 @@ loggroup-kms-associate	2026-10-08T06:25:38Z	PASS	65	verify.sh	PR #4697 (#4687 re
 loggroup-never-expire-guard	2026-10-02T20:44:23Z	PASS	131	verify.sh	rc ok, orph clean (#4468)
 lost-child-after-failed-deploy	2026-10-03T13:19:14Z	PASS	100	verify.sh	rc ok, orph clean; #4461 regression
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-microservices	2026-10-03T09:48:11Z	PASS	50	std-flow	rc ok, orph clean (#4505)
+microservices	2026-10-09T06:35:11Z	PASS	45	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 migrate-from-cfn	2026-10-07T19:44:30Z	PASS	351	run.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
-multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
+multi-resource	2026-10-09T06:36:26Z	PASS	75	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
+multi-stack-deps	2026-10-09T07:59:51Z	PASS	90	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 neptune-fix-forward-orphan	2026-10-08T12:02:04Z	PASS	2380	verify.sh	PR #4693 (#4606 Neptune fix-forward); rc 0, destroy clean, orph clean, dedicated state bucket; probes red: src reverted at step 2, isSameResource off at step 3 (exit 2)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
 nested-stack	2026-10-07T12:02:58Z	PASS	90	verify.sh	rc ok, orph clean (#4648)
@@ -253,7 +253,7 @@ nested-stack-rollback	2026-10-07T12:02:58Z	PASS	105	verify.sh	rc ok, orph clean;
 nested-stack-secret	2026-10-08T10:57:57Z	PASS	245	verify.sh	PR #4715 (#4644 multi-token literal parameter spelling; new Reversed/Embed/Select arms; discrimination: FAIL on reverted src); rc 0, destroy clean, 0 surviving state versions
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-noecho-parameter-masking	2026-10-08T12:06:34Z	PASS	1132	verify.sh	rc ok, orph clean (PR #4732 Phase 1c stale alias withheld)
+noecho-parameter-masking	2026-10-09T07:57:41Z	PASS	2465	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
 orphan-getatt-takeover	2026-10-06T05:40:05Z	PASS	50	verify.sh	rc ok, orph clean (#4602 PR #4609)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
@@ -275,7 +275,7 @@ recreate-via-cc-api	2026-10-07T07:15:44Z	PASS	141	verify.sh	PR #4646 on #4650 (#
 recreate-via-sdk-provider	2026-10-07T07:15:44Z	PASS	110	verify.sh	PR #4646 on #4650 (#1889); rc 0, destroy clean, orph clean
 redacted-delete-address	2026-10-06T05:40:55Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-08T10:43:59Z	PASS	1973	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity)
+remove-protection	2026-10-09T06:25:11Z	PASS	2108	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 remove-protection-journaled-orphan	2026-10-08T16:17:02Z	PASS	636	verify.sh	PR #4729 (#4658/#4696 replay orphan guards); rc 0, destroy clean, orph clean, dedicated state bucket
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
@@ -285,15 +285,15 @@ replacement-immutable-name	2026-10-05T02:29:22Z	PASS	135	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-06T11:44:18Z	PASS	641	verify.sh	PR #4622 (NAMED_CREATE_COLLISION adopt command, rebased on #4614); rc 0, destroy clean, orph clean
 retain-orphan-redeploy	2026-10-06T05:42:35Z	PASS	200	verify.sh	rc ok, orph clean (#4602 PR #4609)
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-08T16:17:02Z	PASS	982	verify.sh	PR #4729 (#4658/#4696 replay orphan guards); rc 0, destroy clean, orph clean, dedicated state bucket; O10-O12 new; probes red: src reverted at O10, holder check off at O11
+rollback-command	2026-10-09T05:28:46Z	PASS	947	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 rollback-cross-region-secret	2026-10-05T10:27:06Z	PASS	195	verify.sh	rc ok, orph clean (#2624 PR #4572)
 rollback-deletion-policy-snapshot	2026-10-07T07:00:14Z	PASS	126	verify.sh	rc ok, orph clean (#4628 PR #4638)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
-rollback-failure-injection	2026-10-07T06:56:13Z	PASS	877	verify.sh	rc ok, orph clean (#4628 PR #4638)
-rollback-nested-cross-region-secret	2026-10-02T13:40:55Z	PASS	245	verify.sh	rc ok, orph clean (#4436)
-rollback-replacement-retain	2026-10-07T06:59:18Z	PASS	70	verify.sh	rc ok, orph clean (#4628 PR #4638)
+rollback-failure-injection	2026-10-09T05:35:31Z	PASS	401	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
+rollback-nested-cross-region-secret	2026-10-09T05:43:37Z	PASS	251	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
+rollback-replacement-retain	2026-10-09T05:44:45Z	PASS	65	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 rollback-replay-cc-generated-name	2026-10-04T17:04:46Z	PASS	155	verify.sh	rc ok, orph clean (#4408)
-rollback-replay-effective-props	2026-10-04T03:41:19Z	PASS	246	verify.sh	rc ok, orph clean (#4484)
+rollback-replay-effective-props	2026-10-09T05:39:24Z	PASS	230	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean (#3338/#4356)
 route53	2026-10-06T02:22:44Z	PASS	426	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 s3-analytics-inventory	2026-10-03T04:21:06Z	PASS	167	verify.sh	rc ok, orph clean (#4283 PR #4449)
