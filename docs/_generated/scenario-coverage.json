@@ -913,6 +913,11 @@
       "scenarios": []
     },
     {
+      "name": "dynamodb-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-globaltable",
       "annotated": true,
       "scenarios": [
@@ -3262,6 +3267,7 @@
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",
     "dynamodb-autoscaling",
+    "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",

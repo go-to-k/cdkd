@@ -472,7 +472,7 @@ AWS exposes a synchronous "flip protection off" API call.
   is never reused (an EC2 instance, a load balancer), or a live read returns the
   identity the journal recorded — and no other stack's state record holds it
   now (a later `cdkd import` may have adopted it). One it cannot prove (a
-  DynamoDB table whose name another table may have taken since), or one
+  DynamoDB global table whose name another table may have taken since), or one
   another stack holds or whose holders cannot be read, keeps its protection,
   with a warning. Without the flag, or unproven, a protected one's delete is
   refused and the journal keeps it for a re-run. `cdkd rollback

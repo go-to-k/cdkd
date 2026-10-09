@@ -96,6 +96,7 @@ drift-revert-vpc	2026-10-09T10:24:29Z	PASS	366	verify.sh	rc ok, orph clean (PR #
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
+dynamodb-fix-forward-orphan	2026-10-09T17:56:31Z	PASS	176	verify.sh	PR #4778 (#4606 DynamoDB slice): rc 0, destroy clean, orph clean, dedicated state bucket; fix-forward deleted the failed CREATE's table by TableId and kept the re-created one; pre-fix run RED at step 2's journaled-identity assertion
 dynamodb-globaltable	2026-10-07T20:26:24Z	PASS	1613	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-gsi-update	2026-10-09T10:06:32Z	PASS	1784	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)

@@ -88,11 +88,11 @@ successful deploy before they drop the journal (see [Failed CREATEs that made th
 other stack's state record holds it (a later `cdkd import` into another stack,
 say) and, for a resource whose physical id is a name, AWS still reports the
 identity the failed CREATE recorded (it may have been deleted and its name
-reused). Only a Kinesis stream and an RDS, DocumentDB or Neptune cluster or
-instance record that identity today; a type whose physical id AWS generates and never
+reused). Only a Kinesis stream, an S3 bucket, a DynamoDB table and an RDS,
+DocumentDB or Neptune cluster or instance record that identity today; a type whose physical id AWS generates and never
 reuses (a VPC, a security group, a load balancer, a KMS key, ...) needs none.
-**Every other name-keyed type (an S3 bucket, a Lambda function, an IAM role, a
-DynamoDB table, an SQS queue, ...) records none, so `cdkd rollback` and `cdkd
+**Every other name-keyed type (a Lambda function, an IAM role, a DynamoDB
+global table, an SQS queue, ...) records none, so `cdkd rollback` and `cdkd
 destroy` keep its journaled orphan instead of deleting it.** A kept one is
 warned about, its physical id named, and left in AWS for you to delete by hand
 if it is not in use; `cdkd rollback` and `cdkd destroy` both exit `2`. When
