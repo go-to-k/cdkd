@@ -513,6 +513,20 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     ).toMatchObject({ wasReplaced: false });
   });
 
+  // go-to-k/cdkd#4690: a truthy non-boolean would delete the live new resource
+  // before the re-create.
+  it('refuses a non-boolean oldDeletedBeforeCreate', () => {
+    expect(
+      messageOf(journalWith([{ ...op, changeType: 'UPDATE', oldDeletedBeforeCreate: 'no' }]))
+    ).toContain('oldDeletedBeforeCreate must be a boolean when present (got string).');
+    expect(
+      parseRollbackJournal(
+        journalWith([{ ...op, changeType: 'UPDATE', oldDeletedBeforeCreate: true }]),
+        'S'
+      ).segments[0]!.operations[0]
+    ).toMatchObject({ oldDeletedBeforeCreate: true });
+  });
+
   it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
     // `previousState` is forwarded verbatim from the state record, which
     // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,

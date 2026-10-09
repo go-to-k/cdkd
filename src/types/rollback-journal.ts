@@ -424,6 +424,14 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['wasReplaced'] !== undefined && typeof o['wasReplaced'] !== 'boolean') {
     fail('wasReplaced', o['wasReplaced'], 'a boolean when present');
   }
+  // go-to-k/cdkd#4690: COMPUTED by the engine; a truthy non-boolean would
+  // delete the live new resource before the re-create.
+  if (
+    o['oldDeletedBeforeCreate'] !== undefined &&
+    typeof o['oldDeletedBeforeCreate'] !== 'boolean'
+  ) {
+    fail('oldDeletedBeforeCreate', o['oldDeletedBeforeCreate'], 'a boolean when present');
+  }
   // go-to-k/cdkd#1710: both COMPUTED by the deploy engine and both select a
   // `--revert-failed` delete arm for a resource no state record holds, so a
   // value outside their shape is planted. A misspelled policy would otherwise

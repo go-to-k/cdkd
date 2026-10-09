@@ -102,6 +102,20 @@ export interface CompletedOperation {
    * a changed physical id still reads as a replacement.
    */
   wasReplaced?: boolean | undefined;
+  /**
+   * go-to-k/cdkd#4690: the deploy deleted the OLD resource BEFORE it created
+   * the new one (`--recreate-via-cc-api` / `--recreate-via-sdk-provider`, the
+   * UPDATE-unsupported fallback, `--replace`'s delete-first fallback, or a
+   * child lost with its re-created parent). The reversal then deletes the new
+   * resource before re-creating the old one, mirroring that order: re-creating
+   * first would collide with the new resource on a uniqueness constraint (an
+   * ELBv2 listener's port) the name-holder proof cannot see.
+   *
+   * Stamped on every completed UPDATE. ADDITIVE, no `journalVersion` bump, as
+   * {@link oldResourceRetained}: absent (an older binary's journal) keeps the
+   * create-first reversal.
+   */
+  oldDeletedBeforeCreate?: boolean | undefined;
 }
 
 /**

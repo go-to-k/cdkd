@@ -1914,6 +1914,102 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     });
   });
 
+  // go-to-k/cdkd#4690: the rollback reverses a delete-first replacement by
+  // deleting the new resource first, so the completed UPDATE says which order
+  // the forward ran in.
+  describe('journals oldDeletedBeforeCreate on a completed UPDATE (go-to-k/cdkd#4690)', () => {
+    async function completedB(shape: 'delete-first' | 'create-first' | 'in-place', reuse = false) {
+      const changeB = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        desiredProperties: { p: 'new' },
+        propertyChanges: [
+          { path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: shape === 'create-first' },
+        ],
+      } as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['B', changeB],
+          ['F', makeChange('F')],
+        ]),
+        deps: { B: [], F: ['B'] },
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: {
+          B: {
+            physicalId: 'b-old',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { p: 'old' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { update: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      // Cloud Control's `UnsupportedActionException`: the auto-fallback that
+      // deletes the old resource and then creates the new one.
+      const unsupported = (): void => {
+        provider.update.mockRejectedValue(
+          Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+        );
+      };
+      const tmpl: CloudFormationTemplate = {
+        Resources: {
+          B: { Type: 'AWS::SQS::Queue', Properties: { p: 'new' } },
+          F: { Type: 'AWS::S3::Bucket', Properties: {} },
+        },
+      };
+      if (reuse) {
+        unsupported();
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        provider.update.mockResolvedValue({ physicalId: 'b-old', wasReplaced: false });
+      } else if (shape === 'delete-first') {
+        unsupported();
+      }
+      provider.delete.mockClear();
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      return {
+        op: seg.operations.find((o: { logicalId: string }) => o.logicalId === 'B'),
+        deleted: provider.delete.mock.calls.map((c: unknown[]) => c[1]),
+      };
+    }
+
+    it('records true for a replacement that deleted the old resource before its create', async () => {
+      const { op, deleted } = await completedB('delete-first');
+      // The premise: the fallback deleted `b-old` and the UPDATE completed.
+      expect(deleted).toEqual(['b-old']);
+      expect(op.physicalId).toBe('phys-B');
+      expect(op.oldDeletedBeforeCreate).toBe(true);
+    });
+
+    it('records false for a create-first replacement', async () => {
+      const { op } = await completedB('create-first');
+      expect(op.physicalId).toBe('phys-B');
+      // Present and false: absent means an older binary's journal.
+      expect(op).toHaveProperty('oldDeletedBeforeCreate', false);
+    });
+
+    it('records false for an in-place update', async () => {
+      expect((await completedB('in-place')).op).toHaveProperty('oldDeletedBeforeCreate', false);
+    });
+
+    it("does not carry a previous deploy's delete-first onto a reused engine", async () => {
+      const { op } = await completedB('in-place', true);
+      expect(op).toHaveProperty('oldDeletedBeforeCreate', false);
+    });
+  });
+
   // go-to-k/cdkd#4615: the rollback reverts an in-place update in place even
   // when it changed the physical id, so the provider's answer is journaled.
   describe("journals the provider's wasReplaced on a completed UPDATE (go-to-k/cdkd#4615)", () => {
@@ -2273,6 +2369,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(nonUpdates.length).toBeGreaterThan(0);
       for (const o of nonUpdates) {
         expect(Object.prototype.hasOwnProperty.call(o, 'oldResourceRetained')).toBe(false);
+        // go-to-k/cdkd#4690's stamp shares the UPDATE gate.
+        expect(Object.prototype.hasOwnProperty.call(o, 'oldDeletedBeforeCreate')).toBe(false);
       }
     });
 

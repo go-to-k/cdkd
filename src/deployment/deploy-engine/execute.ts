@@ -502,6 +502,9 @@ export async function executeDeployment(
           // only the `true` case would leave the DROP direction live.
           ...(change.changeType === 'UPDATE' && {
             oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
+            // go-to-k/cdkd#4690: the reversal deletes the new resource first
+            // when the forward deleted the old one first.
+            oldDeletedBeforeCreate: this.oldDeletedBeforeCreate.has(logicalId),
           }),
           // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
           // gave one; absent, the rollback infers a replacement from a changed
