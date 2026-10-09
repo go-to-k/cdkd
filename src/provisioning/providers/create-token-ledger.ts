@@ -332,6 +332,40 @@ export class CreateTokenLedger {
   }
 
   /**
+   * go-to-k/cdkd#4705 review G-1: when an earlier run of this stack was
+   * abandoned (`abandonedAt`), or `undefined`. Throws when the ledger cannot
+   * be read.
+   */
+  abandonedAt(): Promise<number | undefined> {
+    return this.serialized(async () => (await this.current())?.abandonedAt);
+  }
+
+  /**
+   * go-to-k/cdkd#4705 review G-1: record that a run of this stack was
+   * abandoned at `at` (its lock's last renewal), when the ledger holds an
+   * adopting create's intent it may have left. Best-effort; never throws.
+   */
+  noteAbandoned(at: number): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        const doc = await this.current();
+        if (doc === null) return;
+        const intents = Object.values(doc.sent).some((e) =>
+          e.base.startsWith(ADOPTING_CREATE_BASE)
+        );
+        if (!intents || (doc.abandonedAt !== undefined && doc.abandonedAt >= at)) return;
+        doc.abandonedAt = at;
+        await this.persist(doc);
+      } catch (error) {
+        this.stale = true;
+        this.logger.debug(
+          safeMsg`Could not record the abandoned run in this stack's create-token ledger: ${describeAwsFailure(error).summary}`
+        );
+      }
+    });
+  }
+
+  /**
    * go-to-k/cdkd#4705: drop, in one write, the `sent` entries of
    * `logicalIds` that record a name-adopting create's intent (`base`
    * starting with {@link ADOPTING_CREATE_BASE}): the deploy that wrote them is
@@ -506,6 +540,23 @@ export async function recordAdoptingCreates(
     })),
     Date.now()
   );
+}
+
+/**
+ * go-to-k/cdkd#4705 review G-1: record, in the bound ledger, that the run
+ * whose expired lock this deploy took over stopped by `at`. Never throws.
+ */
+export async function noteAbandonedRun(at: number): Promise<void> {
+  await ledgerStore.getStore()?.noteAbandoned(at);
+}
+
+/**
+ * go-to-k/cdkd#4705 review G-1: the bound ledger's abandoned-run time, or
+ * `undefined` (none recorded, or no ledger bound). Throws when it cannot be
+ * read.
+ */
+export async function ledgerAbandonedAt(): Promise<number | undefined> {
+  return ledgerStore.getStore()?.abandonedAt();
 }
 
 /**

@@ -91,8 +91,9 @@ stack's own evidence names that resource:
 - its rollback journal: a completed operation, or a failed one that recorded
   the resource's physical id;
 - its create-token ledger, which records the names of the deploy's planned
-  creates as the stack's intent, in one write after the approval prompt and
-  under the deploy's lock, before the first of those creates is sent, so a
+  creates as the stack's intent, one write per resource type after the
+  approval prompt and under the deploy's lock, before the first of that
+  type's creates is sent, so a
   re-run after a crash between a create and its record takes the resource
   back. When the deploy ends, it drops the intents of creates that were not
   sent, that came back (their resource is then in the record, or the
@@ -101,7 +102,13 @@ stack's own evidence names that resource:
   unknown (a crash, a timeout, a 5xx). An intent licenses only a holder
   created no earlier than it was written, for a type that reports a
   creation time; for one that does not, an intent a hard crash left for a
-  create that was never sent licenses by name (a crash-only residual);
+  create that was never sent licenses by name (a crash-only residual). When
+  the re-run knows when the crashed run stopped -- it took over that run's
+  expired lock, or `cdkd force-unlock` released it, and the lock's last
+  renewal (at most two minutes before the crash) is the bound -- the intent
+  licenses only a holder created by then, and for a type without a creation
+  time it licenses nothing: the create is refused with the `cdkd import`
+  remedy rather than taking a name another backend may have created since;
 - `retained.json`, the resources this stack let go of under this prefix while
   they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
   deploy that removed them from the template. The next deploy under the same
@@ -166,7 +173,10 @@ name is looked up once the plan is known, all at once, and each create waits
 only for its own answer, so a first deploy pays about one round trip whatever
 its size. Each API has one concurrency limit across the whole run,
 `deploy --all` included, so a burst queues instead of throttling. The
-intents cost one ledger write per deploy, whatever its size, and the
+intents cost one ledger write per resource type the deploy creates by name
+(plus one for a name that frees up only later, and one per nested stack),
+each written as soon as that type's lookups answer, so a slow type never
+delays another type's creates; and the
 success path's ledger cleanup runs beside the other writes that follow the
 state save. Only when a `--require-approval` prompt ran (up front, or for a
 replacement decided late) are the verdicts decided before its answer read
@@ -189,7 +199,9 @@ nothing.
 
 **What it does not see.** A holder created between the lookup and the create:
 two first deploys of the same stack name at the same moment. In one bucket the
-stack registry below serializes them; in two buckets that window remains. And
+stack registry below serializes them; in two buckets that window remains, and
+it lasts as long as the deploy runs: the verdicts are read again only after a
+`--require-approval` prompt, never on a timer. And
 a resource this stack let go of that no source above names any more -- for
 example kept by a deploy of an older cdkd that removed it from the template,
 once the history has rotated past it, or at once without the optional
@@ -235,7 +247,10 @@ belongs to. A nested stack is covered by its top-level stack's marker.
 - `cdkd destroy` removes the marker after removing the record, with a delete
   conditional on the version it read, so another prefix's re-claim in between
   is left alone (an endpoint without conditional deletes re-reads it right
-  before an unconditional delete). `cdkd state orphan` of a whole stack
+  before an unconditional delete). The marker's delete and the retained-list
+write run together, one round trip, by the version this run already read;
+when this run claimed the marker itself it re-reads it first, two round trips.
+`cdkd state orphan` of a whole stack
   removes it, `cdkd import` claims it (after the one-time scan below when no
   marker exists), and `cdkd state migrate` copies it with the records.
 

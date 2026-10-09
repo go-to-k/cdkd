@@ -81,6 +81,7 @@ import {
 } from '../custom-resource-service-token.js';
 import {
   forgetRecordedCreateTokens,
+  noteAbandonedRun,
   noteDeployStateRecord,
 } from '../../provisioning/providers/create-token-ledger.js';
 
@@ -141,6 +142,11 @@ export async function doDeployWithPrefetch(
     throw error;
   }
 
+  // go-to-k/cdkd#4705 review P4 / G-6: a first deploy's state gate runs
+  // overlapped with the work before the plan is acted on. When that work
+  // throws while the gate is still pending, the gate's refusal (if it
+  // refuses) is the error reported -- it is the more fundamental one.
+  let firstDeployStateGate: Promise<void> | undefined;
   try {
     // Started INSIDE this `try` (issue #2171): `start()` writes to stdout and
     // can throw (EPIPE on `cdkd deploy | head`), and it sits AFTER the lock
@@ -270,7 +276,6 @@ export async function doDeployWithPrefetch(
     // for a stack with no record; it is awaited before anything acts on the
     // plan (`firstDeployStateGate` below). A loaded record keeps the gate
     // strictly first.
-    let firstDeployStateGate: Promise<void> | undefined;
     if (this.options.onCurrentStateLoaded) {
       const gate = this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
       if (currentStateData === null || currentStateData === undefined) {
@@ -864,7 +869,11 @@ export async function doDeployWithPrefetch(
     }
 
     // The first deploy's state gate (above), before any branch acts on the plan.
-    if (firstDeployStateGate !== undefined) await firstDeployStateGate;
+    if (firstDeployStateGate !== undefined) {
+      const gate = firstDeployStateGate;
+      firstDeployStateGate = undefined;
+      await gate;
+    }
     const hasChanges = this.diffCalculator.hasChanges(changes);
 
     if (!hasChanges) {
@@ -1285,6 +1294,10 @@ export async function doDeployWithPrefetch(
     // overlapping the checks and the prompt below; each create awaits its
     // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intent
     // is written right before each create, and settled in the `finally`.
+    const abandonedRunAt = (
+      this.lockManager as { abandonedLockRenewedAt?: (s: string, r: string) => number | undefined }
+    ).abandonedLockRenewedAt?.(stackName, this.stackRegion);
+    if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
     this.generatedNameGuard = GeneratedNameGuard.start({
       stackName,
       region: this.stackRegion,
@@ -1308,6 +1321,8 @@ export async function doDeployWithPrefetch(
       },
       accountInfo: () => getAccountInfo(this.stackRegion),
       warn: (message) => this.logger.warn(message),
+      // G-1: this deploy took over the lock an abandoned run left.
+      ...(abandonedRunAt !== undefined && { abandonedRunAt }),
     });
     if (this.generatedNameGuard !== undefined) {
       this.logger.debug(
@@ -1518,6 +1533,10 @@ export async function doDeployWithPrefetch(
       outputs: this.buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
       attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
     };
+  } catch (error) {
+    // G-6: the overlapped gate's refusal outranks an error from its window.
+    if (firstDeployStateGate !== undefined) await firstDeployStateGate;
+    throw error;
   } finally {
     // Stop live renderer (clears any remaining in-flight task display).
     //

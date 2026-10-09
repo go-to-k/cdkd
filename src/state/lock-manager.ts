@@ -246,6 +246,8 @@ export class LockManager {
   private readonly renewalDisabled: boolean;
   /** Locks held by THIS process, keyed by S3 lock key. */
   private readonly heldLocks = new Map<string, HeldLock>();
+  /** By lock key: an expired lock this process took over, and its last renewal (G-1). */
+  private readonly abandonedLocks = new Map<string, number>();
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
 
@@ -503,6 +505,13 @@ export class LockManager {
               `if it is in fact still running, both processes are now writing to the same stack.`
           );
 
+          // go-to-k/cdkd#4705 review G-1: the abandoned run's last renewal
+          // (the lock object's write time, renewed at most every
+          // MAX_RENEWAL_INTERVAL_MS while it ran): no create of that run
+          // happened after it.
+          const abandonedAt = existing.lastModified;
+          if (abandonedAt !== undefined) this.abandonedLocks.set(key, abandonedAt);
+
           // Retry once after cleaning up expired lock
           try {
             const retryEtag = await this.putLockObject(key, lockInfo);
@@ -614,7 +623,7 @@ export class LockManager {
   private async getLockRecord(
     stackName: string,
     region: string | undefined
-  ): Promise<{ info: LockInfo; etag: string | undefined } | null> {
+  ): Promise<{ info: LockInfo; etag: string | undefined; lastModified?: number } | null> {
     await this.ensureClientForBucket();
 
     const key = this.getLockKey(stackName, region);
@@ -688,7 +697,13 @@ export class LockManager {
 
       this.logger.debug(`Lock info for stack: ${shownStack}:`, lockInfo);
 
-      return { info: lockInfo, etag: response.ETag };
+      return {
+        info: lockInfo,
+        etag: response.ETag,
+        ...(response.LastModified instanceof Date && {
+          lastModified: response.LastModified.getTime(),
+        }),
+      };
     } catch (error) {
       if (error instanceof NoSuchKey) {
         this.logger.debug(`No lock exists for stack: ${shownStack}`);
@@ -970,7 +985,24 @@ export class LockManager {
    * Pass `region: undefined` to operate on a legacy
    * `{prefix}/{stackName}/lock.json` file.
    */
-  async forceReleaseLock(stackName: string, region: string | undefined): Promise<void> {
+  /**
+   * go-to-k/cdkd#4705 review G-1: when this process took over an EXPIRED lock
+   * of `stackName`, the abandoned run's last renewal (epoch ms, S3's clock),
+   * else `undefined`. No create of the abandoned run happened after it.
+   */
+  abandonedLockRenewedAt(stackName: string, region: string | undefined): number | undefined {
+    return this.abandonedLocks.get(this.getLockKey(stackName, region));
+  }
+
+  /**
+   * Remove the stack's lock whoever holds it. Resolves the removed lock's last
+   * renewal (epoch ms, S3's clock) when one was read (go-to-k/cdkd#4705 review
+   * G-1: the caller records it as when the abandoned run stopped).
+   */
+  async forceReleaseLock(
+    stackName: string,
+    region: string | undefined
+  ): Promise<number | undefined> {
     // The DELETE is UNCONDITIONAL, and that is this method's whole contract: a
     // stuck lock must never make a state record unremovable. `getLockInfo` is
     // consulted for the LOG LINE only. Gating the delete on it (which a
@@ -988,7 +1020,8 @@ export class LockManager {
     // Keyed on `=== undefined` like `getLockKey`, so an empty region shows as
     // the stand-in rather than as absent while the key names `//lock.json`.
     const where = stackRef(stackName, region);
-    const lockInfo = await this.getLockInfo(stackName, region).catch(() => null);
+    const record = await this.getLockRecord(stackName, region).catch(() => null);
+    const lockInfo = record?.info ?? null;
 
     this.logger.warn(
       lockInfo
@@ -1025,6 +1058,7 @@ export class LockManager {
       // swept; the `IsLatest` filter keeps whatever is current intact.
       await this.purgeLockVersions(key, 'reap');
     }
+    return record?.lastModified;
   }
 
   /**

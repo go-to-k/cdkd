@@ -17,6 +17,8 @@ import {
   ADOPTING_CREATE_BASE,
   CreateTokenLedger,
   dropAdoptingCreates,
+  ledgerAbandonedAt,
+  noteAbandonedRun,
   noteRetainedResource,
   recordAdoptingCreates,
   recordedAdoptingCreates,
@@ -134,6 +136,47 @@ describe('dropping the intents of a finished deploy', () => {
     store.load.mockRejectedValue(new Error('S3 down'));
     await expect(
       withCreateTokenLedger(new CreateTokenLedger(store), () => dropAdoptingCreates(['A']))
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('recording an abandoned run (review G-1)', () => {
+  it('writes `abandonedAt` only when the ledger holds an adopting intent, and only a newer time', async () => {
+    const store = storeOf();
+    await withCreateTokenLedger(new CreateTokenLedger(store), async () => {
+      await recordAdoptingCreates([{ logicalId: 'A', resourceType: QUEUE, name: 'App-A' }]);
+      store.save.mockClear();
+      await noteAbandonedRun(5000);
+      expect(store.save).toHaveBeenCalledTimes(1);
+      await expect(ledgerAbandonedAt()).resolves.toBe(5000);
+      await noteAbandonedRun(4000);
+      await noteAbandonedRun(5000);
+      expect(store.save).toHaveBeenCalledTimes(1);
+      await noteAbandonedRun(6000);
+      await expect(ledgerAbandonedAt()).resolves.toBe(6000);
+    });
+    expect(store.current()!.abandonedAt).toBe(6000);
+  });
+
+  it('writes nothing without an adopting intent (a token-only ledger, or none)', async () => {
+    const tokensOnly = storeOf({
+      ledgerVersion: 1,
+      nonce: 'n',
+      sent: { Fs: { base: 'cdkd-Fs-a', token: 'cdkd-Fs-b', firstSentAt: 1 } },
+    } as CreateTokenLedgerDoc);
+    await withCreateTokenLedger(new CreateTokenLedger(tokensOnly), () => noteAbandonedRun(5000));
+    expect(tokensOnly.save).not.toHaveBeenCalled();
+
+    const none = storeOf();
+    await withCreateTokenLedger(new CreateTokenLedger(none), () => noteAbandonedRun(5000));
+    expect(none.save).not.toHaveBeenCalled();
+  });
+
+  it('a failure is swallowed, never thrown', async () => {
+    const store = storeOf();
+    store.load.mockRejectedValue(new Error('S3 down'));
+    await expect(
+      withCreateTokenLedger(new CreateTokenLedger(store), () => noteAbandonedRun(5000))
     ).resolves.toBeUndefined();
   });
 });

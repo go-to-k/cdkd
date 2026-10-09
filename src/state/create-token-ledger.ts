@@ -76,6 +76,13 @@ export interface CreateTokenLedgerDoc {
    * state save never set it, so its re-run still resumes.
    */
   stateRecorded?: boolean;
+  /**
+   * go-to-k/cdkd#4705 review G-1: when a run of this stack was abandoned (its
+   * lock force-released or taken over after it expired): the lock's last
+   * renewal, epoch ms. An adopting create's intent written before it was
+   * never followed by a create after it.
+   */
+  abandonedAt?: number;
 }
 
 const isSent = (value: unknown): value is SentCreateToken => {
@@ -127,6 +134,8 @@ export function parseCreateTokenLedger(body: string): CreateTokenLedgerDoc | nul
     nonce: doc['nonce'],
     sent,
     ...(doc['stateRecorded'] === true && { stateRecorded: true }),
+    ...(typeof doc['abandonedAt'] === 'number' &&
+      Number.isFinite(doc['abandonedAt']) && { abandonedAt: doc['abandonedAt'] }),
   };
 }
 

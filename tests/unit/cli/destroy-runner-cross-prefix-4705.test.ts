@@ -367,6 +367,40 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(h.ensureRetainedTombstone).toHaveBeenCalledTimes(1);
   });
 
+  it('G-5: the MAIN destroy path (resources, none Retain) also starts the tombstone and the release together', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const provider = { delete: vi.fn(async () => undefined) };
+    (h.ctx as unknown as { providerRegistry: unknown }).providerRegistry = {
+      getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
+      getProvider: vi.fn(() => provider),
+    };
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    h.ensureRetainedTombstone.mockImplementation(async () => {
+      started++;
+      await gate;
+    });
+    h.releaseRegistryMarker.mockImplementation(async () => {
+      started++;
+      await gate;
+      return 'released' as const;
+    });
+    const deleted: StackState = {
+      ...emptyState(),
+      resources: {
+        Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
+      } as unknown as StackState['resources'],
+    };
+    const run = runDestroyForStack('App', deleted, h.ctx);
+    for (let i = 0; i < 200 && started < 2; i++) await new Promise((r) => setImmediate(r));
+    expect(started).toBe(2);
+    release();
+    const result = await run;
+    expect(result.errorCount).toBe(0);
+    expect(provider.delete).toHaveBeenCalledTimes(1);
+  });
+
   it('G5: a destroy that keeps the record (a delete failed) keeps the marker', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     const failing: StackState = {

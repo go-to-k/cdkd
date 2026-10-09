@@ -51,7 +51,14 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 
-const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<void>>();
+const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<number | undefined>>();
+const mockNoteAbandoned = vi.fn<(at: number) => Promise<void>>(async () => undefined);
+const mockLedgerForStack = vi.fn((_backend: unknown, _stack: string, _region: string) => ({
+  noteAbandoned: mockNoteAbandoned,
+}));
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
+  ledgerForStack: (...args: [unknown, string, string]) => mockLedgerForStack(...args),
+}));
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
@@ -155,5 +162,23 @@ describe('cdkd force-unlock exit code', () => {
     expect(code).toBe(1);
     // Both regions attempted — a failure in the first must not skip the second.
     expect(mockForceReleaseLock).toHaveBeenCalledTimes(2);
+  });
+
+  it("records the released lock's last renewal in the stack's create-token ledger (go-to-k/cdkd#4705)", async () => {
+    mockForceReleaseLock.mockResolvedValue(5000);
+
+    const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(code).toBeUndefined();
+    expect(mockLedgerForStack).toHaveBeenCalledWith(expect.anything(), 'MyStack', 'us-east-1');
+    expect(mockNoteAbandoned).toHaveBeenCalledWith(5000);
+  });
+
+  it('records nothing when the lock had no LastModified', async () => {
+    mockForceReleaseLock.mockResolvedValue(undefined);
+
+    await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(mockNoteAbandoned).not.toHaveBeenCalled();
   });
 });

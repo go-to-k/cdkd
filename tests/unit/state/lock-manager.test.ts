@@ -292,6 +292,41 @@ describe('LockManager', () => {
       ]);
     });
 
+    it('records the taken-over lock LastModified as the abandoned run bound (issue #4705)', async () => {
+      const preconditionError = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
+      const lastRenewed = new Date(Date.now() - 31 * 60 * 1000);
+      s3Client.send
+        .mockRejectedValueOnce(preconditionError)
+        .mockResolvedValueOnce({
+          ETag: '"expired-etag"',
+          LastModified: lastRenewed,
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                JSON.stringify({
+                  owner: 'old-user@host:123',
+                  timestamp: Date.now() - 60 * 60 * 1000,
+                  expiresAt: Date.now() - 30 * 60 * 1000,
+                  operation: 'deploy',
+                })
+              ),
+          },
+        })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({});
+
+      expect(lockManager.abandonedLockRenewedAt('test-stack', 'us-east-1')).toBeUndefined();
+      expect(await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).toBe(true);
+      expect(lockManager.abandonedLockRenewedAt('test-stack', 'us-east-1')).toBe(lastRenewed.getTime());
+      expect(lockManager.abandonedLockRenewedAt('other-stack', 'us-east-1')).toBeUndefined();
+    });
+
+    it('records no abandoned run bound when the lock is acquired without a takeover', async () => {
+      s3Client.send.mockResolvedValueOnce({});
+      expect(await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).toBe(true);
+      expect(lockManager.abandonedLockRenewedAt('test-stack', 'us-east-1')).toBeUndefined();
+    });
+
     it('should return false if another process acquires lock during expired lock cleanup', async () => {
       // First call: PutObject fails
       const preconditionError1 = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
@@ -708,6 +743,29 @@ describe('LockManager', () => {
       // GetObject + DeleteObject + the issue #2346 site 5 purge listing. No
       // issue #2447 probe: the listing finds nothing to purge.
       expect(s3Client.send).toHaveBeenCalledTimes(3);
+    });
+
+    it("returns the released lock's LastModified (issue #4705)", async () => {
+      const lastRenewed = new Date(Date.now() - 5 * 60 * 1000);
+      s3Client.send
+        .mockResolvedValueOnce({
+          ETag: '"e"',
+          LastModified: lastRenewed,
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                JSON.stringify({
+                  owner: 'other-user@host:456',
+                  timestamp: Date.now(),
+                  expiresAt: Date.now() + 30 * 60 * 1000,
+                  operation: 'deploy',
+                })
+              ),
+          },
+        })
+        .mockResolvedValueOnce({});
+
+      expect(await lockManager.forceReleaseLock('test-stack', 'us-east-1')).toBe(lastRenewed.getTime());
     });
 
     it('deletes a lock whose body cdkd cannot read (issue #2170)', async () => {

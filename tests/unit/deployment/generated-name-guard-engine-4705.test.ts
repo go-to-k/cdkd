@@ -95,6 +95,9 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     concurrency?: number;
     /** The CLI's state-loaded gate (the first deploy's registry claim). */
     stateGate?: (stackName: string, state: unknown) => Promise<void>;
+    /** More plan rows (a DELETE, say), and the destructive-plan hook. */
+    extraChanges?: ResourceChange[];
+    onDestructivePlan?: () => Promise<void>;
   }) {
     const levels = opts.levels ?? [['Q1'], ['Q2'], ['Q3']];
     const ids = levels.flat();
@@ -147,7 +150,10 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     );
     const diffCalculator = {
         calculateDiff: vi.fn().mockResolvedValue(
-          new Map(ids.map((id) => [id, create(id)]))
+          new Map([
+            ...ids.map((id): [string, ResourceChange] => [id, create(id)]),
+            ...(opts.extraChanges ?? []).map((c): [string, ResourceChange] => [c.logicalId, c]),
+          ])
         ),
         hasChanges: vi.fn().mockReturnValue(true),
         filterByType: vi.fn((changes: Map<string, ResourceChange>, type: string) =>
@@ -177,6 +183,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       {
         concurrency: opts.concurrency ?? 4,
         ...(opts.stateGate && { onCurrentStateLoaded: opts.stateGate }),
+        ...(opts.onDestructivePlan && { onDestructivePlan: opts.onDestructivePlan }),
         ...(opts.dryRun && { dryRun: true }),
         ...(opts.refusalRecovery && { refusalRecovery: opts.refusalRecovery }),
         ...(opts.approve && { requireApproval: 'any-change', approveDeployment: opts.approve }),
@@ -365,14 +372,26 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(events.filter((e) => e === 'ledger-write')).toHaveLength(2);
     });
 
-    it('P2: a deploy with no prompt re-reads nothing, however long it runs', async () => {
+    it('P2 / G-5: no prompt -> no re-read, even with every lookup settled before the approval point', async () => {
+      // A DELETE makes the plan destructive, and its hook waits: every lookup
+      // is decided before the approval point, so a re-read that fired without
+      // a prompt would show here (mutation-probed).
       const levels = [['Q1'], ['Q2'], ['Q3']];
+      const records = {
+        Old: { physicalId: urlOf('App-Old'), resourceType: QUEUE, properties: {} } as ResourceState,
+      };
       const { engine, provider } = buildEngine({
         levels,
-        // Every create takes a while: the deploy runs far past a minute in
-        // wall-clock terms of the old rule (the clock is real; the rule is gone).
+        records,
+        extraChanges: [
+          { logicalId: 'Old', changeType: 'DELETE', resourceType: QUEUE, currentProperties: {} } as ResourceChange,
+        ],
+        onDestructivePlan: async () => {
+          await new Promise((r) => setTimeout(r, 20));
+        },
       });
       await engine.deploy(STACK, templateOf(levels));
+      expect(provider.create).toHaveBeenCalledTimes(3);
       expect(provider.lookupNames).toHaveBeenCalledTimes(1);
     });
 
@@ -403,6 +422,33 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       await expect(refused.engine.deploy(STACK, template)).rejects.toThrow(/another state prefix/);
       expect(refused.provider.lookupNames).not.toHaveBeenCalled();
       expect(refused.provider.create).not.toHaveBeenCalled();
+    });
+
+    it('G-3: a failed intent write refuses the create with the explained, non-retryable GENERATED_NAME_HELD', async () => {
+      const levels = [['Q1']];
+      const { engine, provider, stateBackend } = buildEngine({ levels });
+      stateBackend.saveCreateTokenLedger.mockRejectedValue(new Error('S3 PutObject 500'));
+      const error = await engine.deploy(STACK, templateOf(levels)).catch((e: unknown) => e);
+      expect(provider.create).not.toHaveBeenCalled();
+      const chain: unknown[] = [];
+      for (let e: unknown = error; e instanceof Error && chain.length < 6; e = (e as { cause?: unknown }).cause) chain.push(e);
+      expect(chain.some((e) => (e as { code?: unknown }).code === 'GENERATED_NAME_HELD')).toBe(true);
+      expect(stateBackend.saveCreateTokenLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it('G-6: when the overlap window fails too, the overlapped gate\'s refusal is the error reported', async () => {
+      const refused = buildEngine({
+        stateGate: async () => {
+          await new Promise((r) => setTimeout(r, 10));
+          throw new Error('Refusing to deploy stack App: it is already recorded under another state prefix');
+        },
+      });
+      refused.diffCalculator.calculateDiff.mockRejectedValue(new Error('read error in the diff'));
+      await expect(refused.engine.deploy(STACK, template)).rejects.toThrow(/another state prefix/);
+      // A gate that passes leaves the window's own error as it was.
+      const passed = buildEngine({ stateGate: async () => undefined });
+      passed.diffCalculator.calculateDiff.mockRejectedValue(new Error('read error in the diff'));
+      await expect(passed.engine.deploy(STACK, template)).rejects.toThrow(/read error in the diff/);
     });
 
     it('the exact extra calls of a single first deploy with one adopting create', async () => {

@@ -17,6 +17,7 @@ import {
   displayStackName,
 } from '../../utils/display-safe.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { ledgerForStack } from '../../provisioning/providers/create-token-ledger.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -119,8 +120,14 @@ async function forceUnlockCommand(
           : `${displayStackName(stackName)} (legacy lock key)`;
         logger.info(`Force-unlocking stack: ${where}`);
         try {
-          await lockManager.forceReleaseLock(stackName, r);
+          const abandonedAt = await lockManager.forceReleaseLock(stackName, r);
           logger.info(`✓ Lock released for stack: ${where}`);
+          // go-to-k/cdkd#4705 review G-1: the run that held it stopped by its
+          // last renewal; an adopting create it recorded but never sent must
+          // not license a resource created after that.
+          if (abandonedAt !== undefined && r !== undefined) {
+            await ledgerForStack(stateBackend, stackName, r).noteAbandoned(abandonedAt);
+          }
         } catch (error) {
           const message = describeAwsFailure(error).detail;
           if (message.includes('No lock found') || message.includes('NoSuchKey')) {

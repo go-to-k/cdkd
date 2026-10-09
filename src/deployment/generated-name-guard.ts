@@ -37,8 +37,8 @@
  *   403 contract); any other lookup failure refuses.
  *
  * The plan-time reads write nothing. The planned creates' names are recorded
- * as this stack's intent in ONE write after the approval prompt, under the
- * deploy's lock ({@link GeneratedNameGuard.recordPlannedIntents}); only a
+ * as this stack's intent after the approval prompt, under the deploy's lock,
+ * one write per type ({@link GeneratedNameGuard.recordPlannedIntents}); only a
  * name that frees up later is recorded at its own admission. Only an approval
  * prompt that ran makes the verdicts decided before it read again, at once,
  * one batched pass per type (a re-read that cannot answer falls back to the
@@ -60,6 +60,7 @@ import { explicitNamePropertyFor, withSkipPrefix } from '../provisioning/resourc
 import { isAccessDeniedError, lookupEachName } from '../provisioning/name-lookup.js';
 import {
   dropAdoptingCreates,
+  ledgerAbandonedAt,
   recordAdoptingCreates,
   recordedAdoptingCreates,
 } from '../provisioning/providers/create-token-ledger.js';
@@ -143,6 +144,12 @@ export interface GeneratedNameGuardInput {
   loadKeptInHistory?(): Promise<readonly KeptInHistory[]>;
   /** The account the ARNs of SNS / Step Functions names are built in. */
   accountInfo(): Promise<{ partition: string; region: string; accountId: string }>;
+  /**
+   * When this deploy took over an EXPIRED lock: the abandoned run's last
+   * renewal (epoch ms). With the ledger's own record of an abandoned run
+   * (`cdkd force-unlock`), it bounds what that run's intents license (G-1).
+   */
+  abandonedRunAt?: number;
   /** Timing, overridable for tests. */
   timing?: Partial<GuardTiming>;
   /** Where a non-fatal note goes (the deploy's logger). */
@@ -219,7 +226,7 @@ export function provenNothingCreated(
  * time ({@link GeneratedNameGuard.start}), but a name is recorded in the
  * create-token ledger as this stack's INTENT only after the approval prompt
  * and the destructive-plan check, under the deploy's lock, before its create
- * -- in one write for the whole plan ({@link recordPlannedIntents}). The
+ * -- one write per type ({@link recordPlannedIntents}). The
  * deploy's `finally` ({@link settle}, still under the lock) drops every
  * intent whose create was not sent, came back (its resource is then in the
  * record, or the rollback deleted it), or was rejected outright: only a create
@@ -241,14 +248,15 @@ export class GeneratedNameGuard {
   private readonly rejected = new Set<string>();
   /** Each candidate's verdict before any deletion cooldown (what the one planned write records). */
   private readonly firstVerdicts = new Map<string, Promise<GeneratedNameVerdict>>();
-  /** The one intent write after approval, and the creates it covers. */
-  private plannedWrite: Promise<void> | undefined;
+  /** The planned intent writes after approval, one per type, and the creates each covers. */
+  private plannedWrites: Map<string, Promise<void>> | undefined;
   private readonly plannedIds = new Set<string>();
   private queued: Candidate[] = [];
   private flushing: Promise<void> | undefined;
   /** Every intent write started, so `settle` awaits them all. */
   private readonly writes = new Set<Promise<void>>();
   private evidenceRead: Promise<Evidence> | undefined;
+  private abandonedRead: Promise<number | undefined> | undefined;
   private historyRead: Promise<readonly KeptInHistory[]> | undefined;
   private recordedRead:
     | Promise<
@@ -395,29 +403,39 @@ export class GeneratedNameGuard {
 
   /**
    * The deploy is past its approval prompt and destructive-plan check, under
-   * its lock: record, in ONE write, the intent of every planned create whose
-   * name it may take (free, or licensed) -- before the first of them is sent.
-   * Each create awaits this write; one whose name only frees up later (a
-   * deferred lookup, a deletion cooldown) is recorded at its own admission.
-   * Never rejects (a failed write refuses the creates it covered).
+   * its lock: record the intent of every planned create whose name it may take
+   * (free, or licensed) -- before the first of them is sent. One write PER
+   * TYPE, each as soon as that type's lookup answers (review G-2): a slow
+   * type never holds another type's creates, and the writes stay at most one
+   * per type, whatever the resource count. Each create awaits its own type's
+   * write; one whose name only frees up later (a deferred lookup, a deletion
+   * cooldown) is recorded at its own admission. Never rejects (a failed write
+   * refuses the creates it covered).
    */
   recordPlannedIntents(): void {
-    if (this.plannedWrite !== undefined) return;
-    const planned = [...this.candidates.values()].filter((c) => !c.deferred);
-    const write = (async () => {
-      const verdicts = await Promise.all(
-        planned.map((c) => this.firstVerdicts.get(c.logicalId) ?? this.verdicts.get(c.logicalId)!)
-      );
-      const batch = planned.filter(
-        (_c, i) => verdicts[i]!.kind === 'free' || verdicts[i]!.kind === 'licensed'
-      );
-      if (batch.length === 0) return;
-      for (const c of batch) this.plannedIds.add(c.logicalId);
-      await this.writeIntents(batch);
-    })();
-    this.plannedWrite = write;
-    this.writes.add(write);
-    write.catch(() => undefined);
+    if (this.plannedWrites !== undefined) return;
+    this.plannedWrites = new Map();
+    const byType = new Map<string, Candidate[]>();
+    for (const c of this.candidates.values()) {
+      if (c.deferred) continue;
+      byType.set(c.resourceType, [...(byType.get(c.resourceType) ?? []), c]);
+    }
+    for (const [resourceType, group] of byType) {
+      const write = (async () => {
+        const verdicts = await Promise.all(
+          group.map((c) => this.firstVerdicts.get(c.logicalId) ?? this.verdicts.get(c.logicalId)!)
+        );
+        const batch = group.filter(
+          (_c, i) => verdicts[i]!.kind === 'free' || verdicts[i]!.kind === 'licensed'
+        );
+        if (batch.length === 0) return;
+        for (const c of batch) this.plannedIds.add(c.logicalId);
+        await this.writeIntents(batch);
+      })();
+      this.plannedWrites.set(resourceType, write);
+      this.writes.add(write);
+      write.catch(() => undefined);
+    }
   }
 
   /** How many planned creates are checked. */
@@ -459,9 +477,10 @@ export class GeneratedNameGuard {
     const verdict = await this.verdicts.get(logicalId)!;
     if (verdict.kind !== 'free' && verdict.kind !== 'licensed') return verdict;
     try {
-      if (this.plannedWrite !== undefined) {
+      const planned = this.plannedWrites?.get(c.resourceType);
+      if (planned !== undefined) {
         try {
-          await this.plannedWrite;
+          await planned;
         } catch (error) {
           if (this.plannedIds.has(logicalId)) throw error;
         }
@@ -608,7 +627,13 @@ export class GeneratedNameGuard {
         intent.resourceType === c.resourceType &&
         intent.name === c.name
       ) {
-        const byIntent = await this.licenseIfCreatedAfterIntent(c, holder, intent.firstSentAt);
+        const abandonedAt = await this.abandonedRunAt();
+        const byIntent = await this.licenseIfCreatedAfterIntent(
+          c,
+          holder,
+          intent.firstSentAt,
+          abandonedAt !== undefined && intent.firstSentAt <= abandonedAt ? abandonedAt : undefined
+        );
         // An intent older than the holder licenses nothing; the other evidence
         // below may still name it.
         if (byIntent.kind !== 'held') {
@@ -720,10 +745,17 @@ export class GeneratedNameGuard {
   private async licenseIfCreatedAfterIntent(
     c: Candidate,
     holder: string,
-    firstSentAt: number
+    firstSentAt: number,
+    abandonedAt: number | undefined
   ): Promise<GeneratedNameVerdict> {
     const licensed: GeneratedNameVerdict = { kind: 'licensed', holder, via: 'ledger' };
-    if (c.provider.holderCreatedAt === undefined || !Number.isFinite(firstSentAt)) return licensed;
+    const held: GeneratedNameVerdict = { kind: 'held', holder };
+    if (c.provider.holderCreatedAt === undefined) {
+      // No creation time: an intent the abandoned run left (sent or not, the
+      // ledger cannot tell) licenses nothing -- the `cdkd import` remedy is
+      // the safe direction (review G-1). Otherwise, as before.
+      return abandonedAt !== undefined ? held : licensed;
+    }
     let createdAt: number | undefined;
     try {
       createdAt = await withSkipPrefix(true, () =>
@@ -732,8 +764,24 @@ export class GeneratedNameGuard {
     } catch (error) {
       return isAccessDeniedError(error) ? { kind: 'unchecked', error } : { kind: 'failed', error };
     }
-    if (createdAt === undefined || createdAt >= firstSentAt - KEPT_AT_SKEW_MS) return licensed;
-    return { kind: 'held', holder };
+    if (createdAt === undefined) return abandonedAt !== undefined ? held : licensed;
+    if (Number.isFinite(firstSentAt) && createdAt < firstSentAt - KEPT_AT_SKEW_MS) return held;
+    // G-1: the abandoned run made nothing after its last renewal.
+    if (abandonedAt !== undefined && createdAt > abandonedAt + KEPT_AT_SKEW_MS) return held;
+    return licensed;
+  }
+
+  /** The abandoned run's last renewal: this deploy's takeover, or the ledger's record. */
+  private async abandonedRunAt(): Promise<number | undefined> {
+    this.abandonedRead ??= ledgerAbandonedAt()
+      .catch(() => undefined)
+      .then((fromLedger) => {
+        const at = [fromLedger, this.input.abandonedRunAt].filter(
+          (v): v is number => typeof v === 'number' && Number.isFinite(v)
+        );
+        return at.length > 0 ? Math.max(...at) : undefined;
+      });
+    return this.abandonedRead;
   }
 
   /** Re-read held queue / bucket names until they read free or the window ends. */

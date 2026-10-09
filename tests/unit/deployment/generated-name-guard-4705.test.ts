@@ -16,6 +16,7 @@ const ledger = vi.hoisted(() => ({
   writeError: undefined as Error | undefined,
   writes: [] as Array<Array<{ logicalId: string; resourceType: string; name: string }>>,
   drops: [] as string[][],
+  abandonedAt: undefined as number | undefined,
 }));
 vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
   recordedAdoptingCreates: vi.fn(async () => {
@@ -29,6 +30,7 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
   dropAdoptingCreates: vi.fn(async (ids: string[]) => {
     ledger.drops.push([...ids]);
   }),
+  ledgerAbandonedAt: vi.fn(async () => ledger.abandonedAt),
 }));
 
 import {
@@ -115,6 +117,7 @@ beforeEach(() => {
   ledger.writeError = undefined;
   ledger.writes = [];
   ledger.drops = [];
+  ledger.abandonedAt = undefined;
 });
 
 /** Admit every id (the creates of one wave), as the engine does right before sending. */
@@ -875,5 +878,88 @@ describe('review P1: one intent write, and the intent licenses only what its cre
       kind: 'licensed',
       via: 'ledger',
     });
+  });
+});
+
+describe('review round G', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+  const SENT = Date.parse('2026-10-01T00:00:00Z');
+  const CRASHED = SENT + 120_000; // the abandoned run's last lock renewal
+
+  describe('G-1: an abandoned run\'s intent licenses only what that run could have made', () => {
+    const withCreatedAt = (createdAt: number) => {
+      const provider = providerOf({ 'gen-A': URL });
+      (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => createdAt);
+      return provider;
+    };
+    beforeEach(() => {
+      ledger.recorded = new Map([['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: SENT }]]) as never;
+    });
+
+    it('crash, then a twin created after it by another backend, then the re-run: held', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(CRASHED + 3_600_000) }, {
+        abandonedRunAt: CRASHED,
+      });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    });
+
+    it('crash, our own create having landed before it: licensed', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(SENT + 30_000) }, {
+        abandonedRunAt: CRASHED,
+      });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({
+        kind: 'licensed',
+        via: 'ledger',
+      });
+    });
+
+    it('the bound recorded by cdkd force-unlock (the ledger) applies the same way', async () => {
+      ledger.abandonedAt = CRASHED;
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(CRASHED + 3_600_000) });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    });
+
+    it('a type with no creation time: an abandoned run\'s intent licenses nothing (refused, cdkd import remedy)', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+        abandonedRunAt: CRASHED,
+      });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    });
+
+    it('an intent written AFTER the abandonment (a later run) is not bounded by it', async () => {
+      ledger.recorded = new Map([['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: CRASHED + 1 }]]) as never;
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(CRASHED + 3_600_000) }, {
+        abandonedRunAt: CRASHED,
+      });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed' });
+    });
+  });
+
+  it('G-2: a slow type never delays another type\'s creates: one write per type, each when its own lookup answers', async () => {
+    const q = providerOf();
+    const topics = providerOf({}, { batch: false });
+    let releaseTopics!: () => void;
+    const topicsGate = new Promise<void>((r) => (releaseTopics = r));
+    topics.import.mockImplementation(async () => {
+      await topicsGate;
+      return null;
+    });
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE), create('T', TOPIC)], { [QUEUE]: q, [TOPIC]: topics })
+    )!;
+    guard.recordPlannedIntents();
+    await expect(guard.admit('A', {})).resolves.toEqual({ kind: 'free' });
+    expect(ledger.writes.map((w) => w.map((e) => e.logicalId))).toEqual([['A']]);
+    releaseTopics();
+    await expect(guard.admit('T', {})).resolves.toEqual({ kind: 'free' });
+    expect(ledger.writes.map((w) => w.map((e) => e.logicalId))).toEqual([['A'], ['T']]);
+  });
+
+  it('G-3: a failed planned intent write refuses the creates it covered with { kind: failed, error }', async () => {
+    const boom = new Error('S3 PutObject 500');
+    ledger.writeError = boom;
+    const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
+    guard.recordPlannedIntents();
+    await expect(guard.admit('A', {})).resolves.toEqual({ kind: 'failed', error: boom });
   });
 });
