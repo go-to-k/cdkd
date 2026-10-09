@@ -815,6 +815,7 @@
         "deep-getatt-chains",
         "full-stack-demo",
         "log-pipeline",
+        "perf-cross-backend-check",
         "replacement-immutable-name",
         "scheduled-task",
         "sdk-to-cc-autoroute"
@@ -836,6 +837,10 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "replacement-immutable-name": [
           "l2",
@@ -3431,6 +3436,7 @@
         "local-start-alb-from-state",
         "local-start-service",
         "local-start-service-watch-fast",
+        "perf-cross-backend-check",
         "replacement-rename-onto-holder",
         "secret-derived-immutable-names"
       ],
@@ -3466,6 +3472,10 @@
         ],
         "local-start-service-watch-fast": [
           "l1"
+        ],
+        "perf-cross-backend-check": [
+          "l1",
+          "literal"
         ],
         "replacement-rename-onto-holder": [
           "l1",
@@ -3881,6 +3891,7 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "partial-create-handback",
+        "perf-cross-backend-check",
         "replacement-rename-onto-holder"
       ],
       "signals": {
@@ -3909,6 +3920,9 @@
         ],
         "partial-create-handback": [
           "l1",
+          "literal"
+        ],
+        "perf-cross-backend-check": [
           "literal"
         ],
         "replacement-rename-onto-holder": [
@@ -3956,6 +3970,7 @@
         "iam-propagation-stress",
         "nested-stack-secret",
         "partial-create-handback",
+        "perf-cross-backend-check",
         "rename-refactor",
         "replacement-immutable-name",
         "scheduled-task"
@@ -3985,6 +4000,10 @@
         ],
         "partial-create-handback": [
           "l1",
+          "literal"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
           "literal"
         ],
         "rename-refactor": [
@@ -5616,6 +5635,7 @@
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
         "monitoring",
+        "perf-cross-backend-check",
         "remove-protection",
         "retain-orphan-redeploy",
         "route53",
@@ -5701,6 +5721,10 @@
         ],
         "monitoring": [
           "l2"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "remove-protection": [
           "l1",
