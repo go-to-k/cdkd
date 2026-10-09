@@ -365,6 +365,17 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+A replacement that deleted the old resource BEFORE creating the new one
+(`--recreate-via-cc-api`, `--recreate-via-sdk-provider`, the update-unsupported
+fallback, or `--replace`'s delete-first fallback) is reversed in that order
+too: the new resource is deleted first, then the old one is re-created. So a
+port or name that only one of them can hold, such as an ELBv2 listener's port,
+does not collide. If that delete fails or is skipped, state keeps naming the
+new resource and the journal is kept. If the re-create then fails, the resource
+is absent and the message says so; re-deploy to fix it forward. A journal
+written by an older cdkd, and a new resource kept by `UpdateReplacePolicy:
+Retain`, use the create-first order.
+
 What counts as a replacement is what the provider reported. An update applied
 in place is reverted in place even when it changed the physical id, as an SQS
 `QueuePolicy` update does when its first queue changes and an SNS `TopicPolicy`
@@ -373,8 +384,8 @@ record the provider's answer, so there a changed physical id still reads as a
 replacement. A `Type` change, and a Glue table whose recorded database differs
 under an equal id, stay replacements whatever the provider answered.
 
-cdkd deletes the new resource first only when it can show that the new
-resource holds the name the re-create collided on:
+On the create-first order, cdkd deletes the new resource first only when it
+can show that the new resource holds the name the re-create collided on:
 
 - **An explicit name** matches when the new resource's state record has the
   same name property, spelled exactly alike (case is ignored only where the
