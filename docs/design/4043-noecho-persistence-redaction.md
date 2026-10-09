@@ -472,8 +472,9 @@ unchanged.
 Scrub resolves with template `Default`s (`scrub.ts:5993`), so it records the
 same needles. It gains the positional arm, which needs no value, and one
 migration rule. At a template position that reads a `NoEcho` parameter, the
-record's OWN stored plaintext becomes a value-arm needle for that record's
-`observedProperties` and `attributes`. This covers a stack deployed under an
+record's OWN stored plaintext becomes a value-arm needle for that record
+alone (its `properties`, `observedProperties` and `attributes`), never for
+the stack-wide passes. This covers a stack deployed under an
 older `Default`. Scrub is also the migration path for a stack that is never
 redeployed. `--dry-run --fail` reports an unmasked `NoEcho` leaf as a finding.
 

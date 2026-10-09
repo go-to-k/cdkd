@@ -1019,10 +1019,10 @@ last deploy, it is the new one. The delete stays skipped when:
   condition, another stack, a dynamic reference), a parameter cannot be bound,
   or a nested child reads a row parameter its parent could not re-resolve;
 - the record holds `***` at a position its `noEchoLeaves` does not name (one
-  embedded through `Fn::Join`, a record an earlier cdkd wrote, or one
-  `cdkd import` / `cdkd scrub` wrote): nothing names what it stood for. For an
-  import / scrub record, a `cdkd deploy` of the app first records the `NoEcho`
-  positions, after which `cdkd destroy` sends the delete.
+  embedded through `Fn::Join`, or a record an earlier cdkd wrote): nothing
+  names what it stood for. A `cdkd deploy` of the app (or a `cdkd scrub` of
+  the stack) first records the `NoEcho` positions, after which `cdkd destroy`
+  sends the delete.
 
 The value goes into the handler's request only; the record keeps `***`. The
 warnings, errors and handler log lines cdkd prints are masked like a create's:
@@ -1061,8 +1061,9 @@ count as a change for `--fail`.
   never written to state.
 - `cdkd drift` reports a masked position in its own group, without printing
   either side and without affecting the exit code. `cdkd drift --accept` /
-  `--revert` and `cdkd export` still refuse a masked value, as they do for a
-  custom-resource one.
+  `--revert` still refuse a masked value, as they do for a custom-resource
+  one. `cdkd export` exports a record whose only masks sit at `NoEcho`
+  positions: the exported template reads the parameter.
 - A rollback revert reads a masked position back from AWS and sends the value
   AWS holds there, and refuses when it cannot read it (see
   [`cdkd rollback`](cli-rollback.md#known-limitations)).
@@ -1073,11 +1074,13 @@ count as a change for `--fail`.
   too, so `cdkd drift` can report it as drift until a deploy updates or
   replaces that resource. This errs toward hiding a value, never toward
   storing one.
-- `cdkd import` and `cdkd scrub` store `***` for a `NoEcho` value they resolve
-  (the template's `Default`, whole or embedded), but do not write
-  `noEchoLeaves`, and leave a value shorter than 4 characters, a number, or a
-  value other than the current `Default` in plain text. The next `cdkd deploy`
-  masks every position and writes the field.
+- `cdkd import` and `cdkd scrub` store `***` at every position today's
+  template fills from a `NoEcho` parameter, whatever the value's type or
+  length, and write `noEchoLeaves` for it, as a deploy does. `cdkd scrub` also
+  masks a plaintext the record still holds there (an older `Default`)
+  wherever else the same record holds it, and a declared output the parameter
+  serves. A value a nested child received from its parent's row is masked only
+  by a deploy.
 - A resource's physical id is never masked, whether it embeds a `NoEcho` value
   or IS one (a name-identified resource, such as an RDS parameter group named
   by the parameter). A `NoEcho` value used as a NAME is published by AWS, and

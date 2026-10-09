@@ -9991,10 +9991,6 @@ export function createExportCommand(): Command {
 }
 
 /**
- * A copy of `bag` with every coordinate in `coordinates` removed, so a mask
- * test sees only what lies OUTSIDE them (go-to-k/cdkd#4043).
- */
-/**
  * The properties the IAM policy pre-delete reads (`policyDetachTargets`, and
  * `policyTemplateCheck`'s `PolicyName`): a NoEcho mask at one of them leaves
  * the export unable to say what to remove (go-to-k/cdkd#4043 Phase C).
@@ -10006,6 +10002,10 @@ const NOECHO_PRE_DELETE_KEYS: ReadonlySet<string> = new Set([
   'PolicyName',
 ]);
 
+/**
+ * A copy of `bag` with every coordinate in `coordinates` removed, so a mask
+ * test sees only what lies OUTSIDE them (go-to-k/cdkd#4043).
+ */
 function withoutCoordinates(
   bag: Record<string, unknown>,
   coordinates: readonly (readonly (string | number)[])[]

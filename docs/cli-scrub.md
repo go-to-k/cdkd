@@ -961,6 +961,8 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
   `Default`), that value is masked wherever else the same record holds it, a
   leaf embedding it included (4 characters or more), and in an attribute of
   the same name (an SSM parameter's `Value`) at any length.
+- **Outputs.** A declared output the parameter serves holds `***`, and so
+  does every other output key (an export alias) holding the same stored value.
 - **Not found:** a value a position no longer reads, in a record whose
   template stopped reading the parameter, and a value a nested child received
   from its parent's row. A `cdkd deploy` of the stack masks those.

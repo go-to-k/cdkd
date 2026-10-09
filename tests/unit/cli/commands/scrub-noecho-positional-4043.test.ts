@@ -197,4 +197,61 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     ).toBe(true);
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(ALIAS_TOKEN);
   });
+
+  // Review round 1 (#4764), security M1: a declared output a NoEcho parameter
+  // serves, and an alias key holding the same stored value, are masked as the
+  // deploy's `maskOutputsByPosition` writes them -- even with no resource
+  // reading the parameter and no `Default` to bind.
+  it('masks a NoEcho-served output and its alias key, on a stack with no other finding', async () => {
+    const info = stackInfo('unused');
+    const tpl = info.template as unknown as {
+      Parameters: Record<string, Record<string, unknown>>;
+      Resources: Record<string, unknown>;
+      Outputs: unknown;
+    };
+    delete tpl.Parameters['Token']!['Default'];
+    tpl.Resources = {};
+    tpl.Outputs = { Conn: { Value: { Ref: 'Token' }, Export: { Name: 'conn-export' } } };
+    const state = legacyState('x');
+    state.resources = {};
+    state.outputs = { Conn: 'q7z', 'conn-export': 'q7z' };
+    state.exportNames = ['conn-export'];
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    const res = await scrubStack(info as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: false,
+      logger: logger as never,
+    });
+    expect(res.recordsChanged).toBeGreaterThan(0);
+    const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
+    expect({ ...saved.outputs }).toEqual({ Conn: '***', 'conn-export': '***' });
+  });
+
+  it('an Fn::If Export.Name reading a NoEcho parameter in one branch stays a possible live alias', async () => {
+    const res = await aliasScrub({ Probe: 'probe-value', Unnamed: 'x' }, undefined, {
+      'Fn::If': ['NeverTrue', { Ref: 'Token' }, 'public-export-name'],
+    });
+    expect(res.keptAliasOutputKeys).toBe(1);
+  });
+
+  it('a marked coordinate holding a whole {{resolve:...}} token is kept and is no finding', async () => {
+    const token = '{{resolve:secretsmanager:app/pw:SecretString:pw}}';
+    const state = legacyState('x');
+    const record = state.resources['Param']!;
+    record.properties = { Name: '/app/p', Type: 'String', Value: token, Description: '***' };
+    record.noEchoLeaves = [['Description'], ['Value']];
+    record.observedProperties = { Name: '/app/p', Type: 'String', Value: '***', Description: '***' };
+    record.attributes = { Type: 'String' };
+    const info = stackInfo('q7z');
+    // Today's template positions Description only; Value's coordinate came
+    // from a source scrub cannot see (a parent row's reference, say).
+    info.template.Resources['Param']!.Properties = {
+      Name: '/app/p',
+      Type: 'String',
+      // Not the reference itself, which scrub would resolve against AWS.
+      Value: 'from-a-parent-row',
+      Description: { Ref: 'Token' },
+    };
+    const { changed } = await scrub(state, info, true);
+    expect(changed).toBe(0);
+  });
 });
