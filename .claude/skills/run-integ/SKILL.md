@@ -100,18 +100,13 @@ verify, clean up.
    deploy + verify + destroy cycle; the standard flow below is for plain smoke
    tests.
 
-   **CHECK FOR `verify.sh` BEFORE PICKING THE FIXTURE — the standard-flow branch
-   is unreachable from an agent session**: the harness's
-   auto-approval classifier refuses a direct `cdkd deploy`, so a fixture WITHOUT
-   a `verify.sh` dead-ends after dispatch. (rc=127 from `bash verify.sh` means
-   no such file, said on STDERR — read the log, not the rc alone.) Run the
-   standard flow only when a human drives the shell.
+   **Check for `verify.sh` first**: rc=127 from `bash verify.sh` means no such
+   file (said on STDERR); such a fixture takes the standard flow below.
 
    - `cd tests/integration/<test-name>/`; `npm install` if no `node_modules`.
    - **If `verify.sh` exists**:
      `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh` — steps 6/7 STILL
-     run after. Propagate its exit code
-     so a non-zero exit drives the failure path; never swallow failures.
+     run after. Propagate its exit code; never swallow a failure.
    - **Otherwise** (standard flow):
      - `node ../../../dist/cli.js synth --region us-east-1`
      - **Multi-stack apps**: if synth lists more than one stack, pass `--all` to
@@ -138,14 +133,18 @@ verify, clean up.
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
    POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
-   # FIRE also kills verify's `node` child, which would keep calling AWS. The
-   # group outlives a harness kill: before a re-run, `ps -g <old VPID>` is rc=1.
-   perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh > "$LOG" 2>&1 &
+   # FIRE also reaches verify's `node` child. `>>`: cleanup output after a FIRE
+   # must not overwrite WATCHDOG_FIRED. Before a re-run, `ps -g <old VPID>` is rc=1.
+   perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh >> "$LOG" 2>&1 &
    VPID=$!
-   # 5s polls that end on their own: NEVER kill the watchdog — a kill orphans
-   # its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
+   # 5s polls that end on their own: NEVER kill the watchdog (orphaned `sleep`,
+   # false FIRE). A FIRE sends TERM so verify's trap cleans up, then `kill -9`
+   # after 30 min (~ noecho-parameter-masking's two 15-min cleanup loops).
    ( i=0; while [ $i -lt $POLLS ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
-     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 -- -$VPID; } ) &
+     kill -0 $VPID 2>/dev/null || exit 0
+     echo "WATCHDOG_FIRED" >> "$LOG"; kill -TERM -- -$VPID
+     i=0; while [ $i -lt 360 ] && kill -0 $VPID 2>/dev/null; do sleep 5; i=$((i+1)); done
+     kill -9 -- -$VPID 2>/dev/null ) &
    WPID=$!
    wait "$VPID"; RC=$?
    wait "$WPID"   # at most 5s more
@@ -153,8 +152,9 @@ verify, clean up.
    echo "verify.sh rc=$RC"   # the verdict steps 6-11 read
    ```
 
-   The `grep` and `rc` lines are load-bearing: rc=137 is a `kill -9` (a FIRE
-   when the grep counts one, else a manual stop); other non-zero is a FAIL, so read the LOG.
+   The `grep` and `rc` lines are load-bearing: a grep of 1 is a FIRE whatever
+   the rc (143: cleanup ran; 137: cleanup outlived the grace, so step 7 sweeps).
+   With no FIRE, rc=137 is a manual stop and other non-zero is a FAIL: read the LOG.
    **Steps 6-11 are LATER calls that read this output**
    — a marker or a `PASS` ledger row chained into this same call is written
    before any verdict exists.

@@ -155,14 +155,18 @@ describe('ARM 4: a parameter whose deployed value is not provably the bound Defa
     expect(warns[0]).not.toContain('of them because');
   });
 
-  it('WITHOUT the deployed parameters the same shape is captured — the pre-fix behaviour this arm exists for', async () => {
+  it('WITHOUT the deployed parameters the same shape is captured, masked at the NoEcho position', async () => {
     const { refused, state } = await run({
       template: templateWith(PW_PARAM),
       properties: PW_PROPS,
       deployed: 'none',
     });
     expect(refused).toBe(false);
-    expect(JSON.stringify(state.resources['Res']!.observedProperties)).toContain(LIVE_PLAINTEXT);
+    // Captured (this arm does not refuse it), and since go-to-k/cdkd#4043
+    // Phase C masked where the `NoEcho` parameter fills the leaf, as a v11
+    // deploy's capture is.
+    expect(state.resources['Res']!.observedProperties).toEqual({ Detail: { pw: '***' } });
+    expect(JSON.stringify(state)).not.toContain(LIVE_PLAINTEXT);
   });
 
   it('a literal-reference deployed value REFUSES, and the value reaches neither a log line nor the record', async () => {

@@ -410,7 +410,11 @@ describe('EMRInstanceGroupConfigProvider update', () => {
   it('is a no-op when nothing mutable changed', async () => {
     routeSend({});
     const result = await newProvider().update('Grp', GROUP_ID, RESOURCE_TYPE, BASE_PROPS, BASE_PROPS);
-    expect(result).toEqual({ physicalId: GROUP_ID, wasReplaced: false });
+    expect(result).toEqual({
+      physicalId: GROUP_ID,
+      wasReplaced: false,
+      attributes: { Id: GROUP_ID, InstanceGroupId: GROUP_ID },
+    });
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

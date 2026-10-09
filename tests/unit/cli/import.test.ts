@@ -4410,7 +4410,9 @@ describe('cdkd import', () => {
         cfnSend.mockRejectedValue(absent());
         await runImport(['import', '--app', 'x', '--yes']);
         expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['S']);
-        expect(savedResource().observedProperties).toEqual({ BucketName: LIVE });
+        // Captured; masked where the `NoEcho` parameter fills the leaf
+        // (go-to-k/cdkd#4043 Phase C), as a v11 deploy's capture is.
+        expect(savedResource().observedProperties).toEqual({ BucketName: '***' });
         expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('DescribeStacks');
       });
 

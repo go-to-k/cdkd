@@ -396,8 +396,9 @@ export function maskReadbackAtCoordinates(
 /**
  * The readback path `coordinate` of `properties` maps to (see
  * {@link maskReadbackAtCoordinates}). A path SHORTER than `coordinate` names
- * the whole list that no identity field paired; `undefined`, a key the
- * readback lacks. The rollback replay reads AWS's value through it
+ * the whole node the walk could not enter: a list no identity field paired,
+ * or a present value that is not an object where a key was expected (a JSON
+ * string); `undefined`, a key the readback lacks. The rollback replay reads AWS's value through it
  * (go-to-k/cdkd#4043 Phase C) and accepts only a full-length path.
  */
 export function readbackPathFor(
@@ -423,7 +424,11 @@ export function readbackPathFor(
       desired = element;
       continue;
     }
-    if (!isPlainObject(live) || !Object.hasOwn(live, segment)) return undefined;
+    // A present value that is not an object (a JSON string, a list) cannot be
+    // walked to the leaf, so the whole node is masked, as the numeric arm
+    // masks a value that is not a list. An ABSENT key has nothing to mask.
+    if (!isPlainObject(live)) return path.length === 0 ? undefined : path;
+    if (!Object.hasOwn(live, segment)) return undefined;
     path.push(segment);
     live = live[segment];
     desired = isPlainObject(desired) ? desired[segment] : undefined;

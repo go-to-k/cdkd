@@ -458,6 +458,8 @@ child's journal and sends no property).
 
 ### 4.5 `cdkd import`
 
+**As built (Phase C, #4764):** the positional arm runs after every record resolved, iterated to a fixed point over echoed attributes, so a `Fn::GetAtt` consumer is positioned whatever the record order.
+
 `cdkd import` binds `Default`s (`import.ts:2230`) through the same resolver, so
 it records the fresh needle and the persist walk positions it. The imported
 `properties` hold `***` and the marker. The observed capture
@@ -472,10 +474,27 @@ unchanged.
 Scrub resolves with template `Default`s (`scrub.ts:5993`), so it records the
 same needles. It gains the positional arm, which needs no value, and one
 migration rule. At a template position that reads a `NoEcho` parameter, the
-record's OWN stored plaintext becomes a value-arm needle for that record's
-`observedProperties` and `attributes`. This covers a stack deployed under an
+record's OWN stored plaintext becomes a value-arm needle for that record
+alone (its `properties`, `observedProperties` and `attributes`), never for
+the stack-wide passes. This covers a stack deployed under an
 older `Default`. Scrub is also the migration path for a stack that is never
 redeployed. `--dry-run --fail` reports an unmasked `NoEcho` leaf as a finding.
+
+**As built (Phase C, #4764):** a record's own `noEchoLeaves` is authoritative
+and replaces the template's positions; the template positions a record that
+has none. Positioning iterates to a fixed point over echoed attributes, and a
+declared attribute (the record's own `noEchoAttributeNames` or a found echo)
+is masked whole and counted. A nested child's scrub receives the parameters
+its parent's row fills from a `NoEcho` source (decision 8), read against the
+parent's final declared attributes. A row value whose every `NoEcho` read sits
+inside an `Fn::If` (or reads only a parameter its own parent passed as
+conditional, so the mark carries to a grandchild) counts on either branch and
+is passed as conditional; a child `Export.Name` is not refused for reading
+it (only a value the parent's default-bound branch resolved can still refuse
+it by containment), so it stays a possible live alias: the child positions it but takes
+no migration or containment needle from the plaintext it stored there, which
+may be the other branch's literal. An over-marked position stores `***` until
+the next deploy, never a phantom diff elsewhere in the record.
 
 ### 4.7 Cross-stack reads and exports
 
@@ -519,6 +538,8 @@ inherits it through `redactOutputs`.
   names it: the floor residual of section 3.3.
 
 ### 4.8 Other readers of `***`
+
+**As built (Phase C, #4764):** `cdkd export` lets a record masked only at its `noEchoLeaves` through, blocks one whose import identifier embeds the mask or whose IAM policy pre-delete reads a marked principal or name, and refuses a nested child parameter resolving to the mask.
 
 - **`cdkd export`** blocks every record whose `properties` carry `***`
   (`src/cli/commands/export.ts:5100`). CloudFormation receives a `NoEcho`
@@ -622,7 +643,7 @@ the bucket-wide exports index, which any stack's reader can list.
   | A LITERAL name spelling a value only a resource reads | Closed in Phase B: the verdict is seeded with every `NoEcho` parameter value, at the #1919 floor (maintainer decision on #4043); the cost is that an unrelated name containing a short or common value is refused |
   | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview. Phase B's seeding makes it moot for the value itself; a derived needle (an `Fn::Base64` encoding, an `Fn::Split` piece) can still differ |
   | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes. That corpus also holds the pieces of an `Fn::Split` the parent's diff resolved over the value (#4049), so a piece can be refused the same way | Closed in Phase B for a value the parent's row reads by `Ref` or an `Fn::Sub` variable: both sides seed a child's verdict with each parent `NoEcho` value a child parameter carries. The deploy's inherited bag holds only what the row read by `Ref`, while the diff's corpus holds every parent value up front (and their split pieces), so a value reaching a child parameter another way (an echoed `Fn::GetAtt`) is published by the deploy and refused by the preview (fail-closed); closed in Phase B by the declared-attribute mechanism (section 3.3) |
-  | `cdkd scrub` keeping an unnamed possible-alias key when a declared alias is refused (fail-safe) | Phase C, with scrub's key report |
+  | `cdkd scrub` keeping an unnamed possible-alias key when a declared alias is refused (fail-safe) | Closed in Phase C: a name the export-name verdict refuses (the seed's containment, or an intrinsic reading a `NoEcho` parameter) does not make the stored aliases unaccountable; an alias key an older binary published under the value is reported and kept only when its name renders a secret (the secret-bearing key check), and dropped otherwise |
   | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Closed in Phase C: the child's success snapshots a previous export name only while this deploy's verdict still publishes it (`nestedPendingSnapshot`). Residual: an alias spelling a PREVIOUS value this deploy changed is not refused (no process holds the old plaintext), and a record whose `exportNames` is malformed has no readable export set, so nothing is refused |
 - **An `Fn::Split` piece of a value is a log-only needle too** (#4049): the
   resolver records each piece's share of the value, so a name built from one
@@ -814,6 +835,8 @@ Files: `rollback-executor.ts`, `src/deployment/nested-child-journal.ts`,
 `src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`,
 `scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, and
 `docs/cli-scrub.md`.
+
+**As built:** Phase C landed as #4752 (rollback), #4763 (drift) and #4764 (import, scrub, export).
 
 **Phase B also flips every map reader the log-only doc kept blind**
 (`secret-redaction.ts:986-1000`). Each is re-audited in B:

@@ -83,8 +83,11 @@ offending resource is named in one message so you can fix them in one pass.
 | Blocked | Why | Remedy |
 | --- | --- | --- |
 | A template resource with no cdkd state entry | Nothing to hand over — cdkd does not know its physical id. | Import it first, or remove it from the stack. |
-| A resource whose recorded properties hold the redaction mask `***` | A value cdkd cannot re-derive: a `NoEcho` template parameter's value, a `NoEcho` Custom Resource value, the `Fn::Base64` encoding of a secret, or a mask copied from another record. | See below. |
+| A resource whose recorded properties hold the redaction mask `***` outside the positions a `NoEcho` template parameter fills | A value cdkd cannot re-derive: a `NoEcho` Custom Resource value, the `Fn::Base64` encoding of a secret, or a mask copied from another record. | See below. |
+| A resource whose import identifier, or (for an `AWS::IAM::Policy` re-created between phases) principals or name, a `NoEcho` template parameter fills | cdkd stores only `***` there, so it cannot name the resource or what to remove. | Export without it and adopt it into CloudFormation by hand, passing the parameter value yourself. |
+| A resource whose CloudFormation import identifier, or the properties overlay it is built into, embeds `***` inside a longer value | It was built from a value cdkd stores only as the mask: a `NoEcho` template parameter, or another record's masked attribute substituted through `Fn::Sub`. Applies whatever let the record's properties through. | Export without it and adopt it into CloudFormation by hand, passing the value yourself. |
 | A resource whose CloudFormation import identifier would be the redaction mask `***` | The recorded attribute cdkd reads as the identifier (an `AWS::S3Tables::Table` `TableARN`, an `AWS::EC2::SecurityGroupIngress` `Id`, ...) was masked by a Cloud Control import, or the physical id itself is masked. | Re-import the resource with `cloudformation:DescribeType` granted, or export without it. See below. |
+| A nested-stack row's Parameter that resolves to, or embeds, `***` (`EXPORT_MASKED_CHILD_PARAMETER`) | A `NoEcho` value cdkd stores only as the mask; forwarding it would hand the child the mask, and falling back to the child's `Default` would hand it a different value. | Export without that nested stack, or adopt it into CloudFormation by hand, passing the value yourself. |
 | An `AWS::CloudFormation::Stack` row with no matching nested-stack entry in cdkd state | The child's state record is missing, so its resources cannot be imported. | Repair or re-import the child's state. |
 | A resource type CloudFormation cannot import | See [Resource types CloudFormation cannot import](#resource-types-cloudformation-cannot-import). | Remove the resource, or destroy it and let CloudFormation create it fresh. |
 | A composite-id type with no registered identifier mapping | cdkd cannot turn its physical id into the field map CloudFormation expects. | Remove the resource before exporting. |
@@ -112,9 +115,10 @@ child.
 **About the `***` mask.** The remedy depends on what put the mask there:
 
 - **A `NoEcho` template parameter's value.** cdkd stores only `***` where such
-  a parameter fills a property (the record names those positions), so the
-  export has no value to declare. Export the stack without that resource and
-  adopt it into CloudFormation by hand.
+  a parameter fills a property, and the record names those positions. That
+  mask is no block: the exported template still reads the parameter, and
+  CloudFormation receives its value as a stack parameter. It blocks only where
+  the export itself reads the position, as the table above lists.
 
 For the other three the record does not say which put the mask there:
 
@@ -444,7 +448,12 @@ number and boolean values pass through. Intrinsic-valued Parameters
 at import time against the parent's resolved Parameters and cdkd state, in a
 root-first pre-pass — a child's Parameters resolve against its parent's. A
 value cdkd cannot resolve degrades to a warning, and the child template's
-Parameter `Default` must then cover it.
+Parameter `Default` must then cover it. A value that resolves to, or embeds,
+the redaction mask `***` (a `NoEcho` value cdkd stores only as the mask) is
+never forwarded and never left to the `Default`: the export refuses with
+`EXPORT_MASKED_CHILD_PARAMETER` before anything is locked or submitted.
+Export the stack without that nested stack, or adopt it into CloudFormation by
+hand, passing the value yourself.
 
 When a parent passes one of its SSM-typed Parameters
 (`AWS::SSM::Parameter::Value<...>`) to a child, CloudFormation hands the nested

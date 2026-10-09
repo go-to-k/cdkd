@@ -6930,6 +6930,7 @@
         "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-nested-stack",
+        "import-noecho-parameter",
         "import-reimport-masked-attrs",
         "import-retain-destroy",
         "import-secret-observed",
@@ -7110,6 +7111,10 @@
         ],
         "import-nested-stack": [
           "l2",
+          "literal"
+        ],
+        "import-noecho-parameter": [
+          "l1",
           "literal"
         ],
         "import-reimport-masked-attrs": [

@@ -1308,6 +1308,11 @@
       ]
     },
     {
+      "name": "import-noecho-parameter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-reimport-masked-attrs",
       "annotated": false,
       "scenarios": []
@@ -3286,6 +3291,7 @@
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
     "iam-secret-derived-principals",
+    "import-noecho-parameter",
     "import-reimport-masked-attrs",
     "import-secret-observed",
     "inplace-attr-propagation",
