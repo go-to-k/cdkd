@@ -1278,10 +1278,13 @@ the same name instead of failing (as `CreateQueue`, `CreateTopic`,
   `create()` sends when the template declares none (`undefined` when it does),
   and have `create()` call it, so the two cannot drift;
 - `lookupNames(resourceType, names, ctx)` — which of those names a resource
-  already holds, as a `Map<name, physicalId>`: one batched or listing call per
-  type, exact matches only, pages bounded, each API behind `withApiLimit`
-  (`src/provisioning/name-lookup.ts`). Without it, `import()` by name is asked
-  once per name.
+  already holds, as a `Map<name, physicalId>`: an exact read by name -- a
+  batch read by name where the service has one, else one read per name --
+  never a listing (eventually consistent: it can omit a resource just
+  created), a resource being deleted read as absent, each API behind
+  `withApiLimit` (`src/provisioning/name-lookup.ts`). Without it, `import()`
+  is asked once per name. If the lookup needs a property the plan cannot know
+  yet, also implement `lookupNeedsResolvedProperties`.
 
 A deploy then refuses a create whose generated name another resource holds
 unless this stack's own records name it

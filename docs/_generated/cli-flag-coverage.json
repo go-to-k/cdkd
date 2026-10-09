@@ -1592,6 +1592,7 @@
         "opensearch-domain-getatt",
         "output-never-resolved-diff",
         "partial-create-handback",
+        "perf-cross-backend-check",
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-sqs-cooldown",

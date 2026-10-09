@@ -1263,6 +1263,11 @@ export async function doDeployWithPrefetch(
       },
       accountInfo: () => getAccountInfo(this.stackRegion),
     });
+    if (this.generatedNameGuard !== undefined) {
+      this.logger.debug(
+        safeMsg`Generated-name check: looking up ${String(this.generatedNameGuard.size)} planned create(s)`
+      );
+    }
 
     // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
     // is checked against the bucket's other state prefixes BEFORE the approval

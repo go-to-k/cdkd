@@ -18,10 +18,14 @@ paths:
   [lock-contention-message.md](lock-contention-message.md).
   **malformed-resources-bag.ts**:
   [state-malformed-containers.md](state-malformed-containers.md).
+- **earlier-state-versions.ts** — READ-only noncurrent `state.json` versions;
+  kept out of `s3-state-backend.ts`, whose version listings must go through the
+  shared purge.
 - **stack-registry.ts** — `_cdkd-registry/<region>/<stack>.json` names a
   top-level stack's ONE prefix ([#4705](https://github.com/go-to-k/cdkd/issues/4705)).
-  Only a marker naming THIS prefix is released or overwritten unconditionally;
-  every other write is `If-None-Match` / `If-Match`. `listTopLevelPrefixes`
+  Every write is conditional (`If-None-Match` / `If-Match`, the release
+  `If-Match` on the version read); any claim but a first deploy's fresh one
+  runs the prefix scan once first. `listTopLevelPrefixes`
   must skip `_cdkd-registry/`. `retained.json` (a destroy's kept resources) is
   a `state.json` sibling that `deleteState` must NOT sweep: it exists to
   outlive the record.

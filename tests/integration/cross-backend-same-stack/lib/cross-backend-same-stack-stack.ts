@@ -66,9 +66,13 @@ export class CrossBackendSameStack extends cdk.Stack {
 
     const retention = Number(process.env.CDKD_4705_RETENTION_DAYS ?? '7') as logs.RetentionDays;
 
-    new iam.Role(this, 'Role', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-    });
+    // Phase 2b leaves the Role out: its native EntityAlreadyExists could fail
+    // the deploy before the queue and log group reach their refusal.
+    if (process.env.CDKD_4705_B_NO_ROLE !== '1') {
+      new iam.Role(this, 'Role', {
+        assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      });
+    }
 
     new sqs.Queue(this, 'Queue', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,

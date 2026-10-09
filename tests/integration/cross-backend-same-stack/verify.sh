@@ -488,8 +488,10 @@ echo "==> Phase 2b: CROSS-BUCKET -- deploy B of the SAME stack into a second, pe
 # Nothing in the second bucket knows A: no marker, no record. B's creates run,
 # and each that would adopt A's queue or log group by its generated name must
 # be refused BEFORE it is sent (go-to-k/cdkd#4705 C): the log group keeps A's
-# retention and A's queue survives. The Role collides natively; B's KMS key
-# is B's own, and its rollback deletes it.
+# retention and A's queue survives. B runs WITHOUT the Role
+# (CDKD_4705_B_NO_ROLE=1), whose native EntityAlreadyExists could otherwise end
+# the deploy before the queue and log group are admitted; B's KMS key is B's
+# own, and its rollback deletes it.
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 case "${ACCOUNT_ID}" in
   [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
@@ -504,19 +506,27 @@ else
 fi
 BUCKET_X="${BUCKET_X_NAME}"
 set +e
-CDKD_4705_RETENTION_DAYS="${RETENTION_B}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
-  --state-bucket "${BUCKET_X}" --state-prefix "${PREFIX_B}" --yes >"${RUN_LOG}" 2>&1
+CDKD_4705_B_NO_ROLE=1 CDKD_4705_RETENTION_DAYS="${RETENTION_B}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --region "${REGION}" --state-bucket "${BUCKET_X}" --state-prefix "${PREFIX_B}" --yes >"${RUN_LOG}" 2>&1
 XB_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
-XB_STATE="$( (aws s3 cp "s3://${BUCKET_X}/${STATE_KEY_B}" - 2>/dev/null || true) | jq -c '[(.resources // {})[] | .physicalId]' 2>/dev/null || true)"
 RETENTION_AFTER_XB="$(log_group_retention)"
-echo "OBSERVE: cross-bucket-deploy-rc=${XB_RC} b-records=${XB_STATE:-<none>} log-group-retention=${RETENTION_AFTER_XB}"
-# B's own KMS key, if its record or events name one, for the trap.
+# B's events in the second bucket, one compact object per line. Its record is
+# gone after the rollback, so the events are what show an adoption: a
+# RESOURCE_SUCCEEDED naming A's queue URL or log group name.
+XB_EVENTS=""
 for k in $( (aws s3 ls "s3://${BUCKET_X}/${PREFIX_B}/" --recursive 2>/dev/null || true) | awk '{print $4}' | grep 'deployments/.*\.jsonl$' || true); do
-  for id in $( (aws s3 cp "s3://${BUCKET_X}/${k}" - 2>/dev/null || true) | jq -r 'select(.eventType == "RESOURCE_SUCCEEDED" and .resourceType == "AWS::KMS::Key") | .physicalId // empty' 2>/dev/null || true); do
-    KEY_IDS="${KEY_IDS} ${id}"
-  done
+  XB_EVENTS="${XB_EVENTS}$( (aws s3 cp "s3://${BUCKET_X}/${k}" - 2>/dev/null || true) | jq -c '.' 2>/dev/null || true)
+"
+done
+XB_RUNS="$(printf '%s' "${XB_EVENTS}" | jq -s '[.[] | select(.eventType == "RUN_STARTED")] | length')"
+XB_ADOPTED="$(printf '%s' "${XB_EVENTS}" | jq -s --arg q "${QUEUE_URL_A}" --arg l "${LOG_GROUP_NAME}" \
+  '[.[] | select(.eventType == "RESOURCE_SUCCEEDED" and (.physicalId == $q or .physicalId == $l))] | length')"
+echo "OBSERVE: cross-bucket-deploy-rc=${XB_RC} b-runs=${XB_RUNS} b-adoptions=${XB_ADOPTED} log-group-retention=${RETENTION_AFTER_XB}"
+# B's own KMS key, if its events name one, for the trap.
+for id in $(printf '%s' "${XB_EVENTS}" | jq -r 'select(.eventType == "RESOURCE_SUCCEEDED" and .resourceType == "AWS::KMS::Key") | .physicalId // empty' 2>/dev/null || true); do
+  KEY_IDS="${KEY_IDS} ${id}"
 done
 if [ "${XB_RC}" -eq 0 ]; then
   echo "FAIL: deployment B of ${STACK} in a second bucket SUCCEEDED; its adopting creates must be refused (go-to-k/cdkd#4705)" >&2
@@ -526,12 +536,15 @@ if ! grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
   echo "FAIL: deployment B in a second bucket was not refused at an adopting create ('${ADOPT_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-case "${XB_STATE}" in
-  *"${QUEUE_URL_A}"* | *"${LOG_GROUP_NAME}"*)
-    echo "FAIL: B's record in the second bucket names A's queue or log group: it adopted it (${XB_STATE}) (go-to-k/cdkd#4705)" >&2
-    exit 1
-    ;;
-esac
+# Not vacuous: B's run must have left its events in the second bucket.
+if [ "${XB_RUNS:-0}" -lt 1 ]; then
+  echo "FAIL: no event stream of B's run in s3://${BUCKET_X}/${PREFIX_B}/ -- the adoption check below would see nothing" >&2
+  exit 1
+fi
+if [ "${XB_ADOPTED}" != "0" ]; then
+  echo "FAIL: B's events in the second bucket record a create that returned A's queue or log group: it adopted it (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
 if [ "${RETENTION_AFTER_XB}" != "${RETENTION_A}" ]; then
   echo "FAIL: A's log group ${LOG_GROUP_NAME} has retention '${RETENTION_AFTER_XB}' after B's cross-bucket deploy (expected A's ${RETENTION_A}): B's create adopted and rewrote it (go-to-k/cdkd#4705)" >&2
   exit 1

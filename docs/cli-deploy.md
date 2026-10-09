@@ -581,14 +581,15 @@ the refusals print. A deploy enforces it twice:
   creating a queue, topic, log group, alarm, EventBridge rule, S3 bucket, ECS
   cluster, load balancer, target group or state machine under a name cdkd
   generated, the deploy looks the name up. An existing holder that this
-  stack's state, rollback journal, create-token ledger or `retained.json` does
-  not name refuses that create (`GENERATED_NAME_HELD`), as CloudFormation
-  refuses a name that already exists; nothing is created for it. This holds
-  whatever backend the other deployment uses — another prefix, bucket or
-  account's bucket. The lookups all start once the plan is known and are
-  batched per type, so a first deploy pays about one round trip; a redeploy
-  that creates nothing looks nothing up. A lookup refused with 403 warns and
-  creates.
+  stack's state, rollback journal, create-token ledger, `retained.json` or
+  (for what an older cdkd kept) its own history does not name refuses that
+  create (`GENERATED_NAME_HELD`), as CloudFormation refuses a name that
+  already exists; that resource is not created. This holds whatever backend
+  the other deployment uses — another prefix, bucket or account's bucket. The
+  lookups are exact reads by name, all started once the plan is known, so a
+  first deploy pays about one round trip; a redeploy that creates nothing
+  looks nothing up. A lookup refused with 403 warns and creates; any other
+  lookup failure refuses that create.
 - **The stack registry.** A first deploy claims the bucket's marker
   `_cdkd-registry/<region>/<stack>.json` for this prefix before its first
   provider call, and refuses when the marker names another prefix that holds

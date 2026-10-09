@@ -227,6 +227,11 @@ export class GeneratedNameGuard {
     }
   }
 
+  /** How many planned creates are checked. */
+  get size(): number {
+    return this.candidates.size;
+  }
+
   /** The plan-time verdict for `logicalId`'s create, or `undefined` when it was not asked about. */
   verdict(logicalId: string): Promise<GeneratedNameVerdict> | undefined {
     return this.verdicts.get(logicalId);

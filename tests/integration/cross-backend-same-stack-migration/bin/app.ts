@@ -17,3 +17,9 @@ new MigrationStack(app, 'Cdkd4705MigratePair', {
   env,
   withRole: false,
 });
+new MigrationStack(app, 'Cdkd4705MigrateRetain', {
+  description: 'cdkd #4705 migration probe: a log group kept by an older release, redeployed by this one',
+  env,
+  withRole: false,
+  retainLogGroup: true,
+});

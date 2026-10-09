@@ -80,16 +80,21 @@ export AWS_REGION="${REGION}"
 OLD_CDKD_VERSION="${OLD_CDKD_VERSION:-0.296.13}"
 SINGLE="Cdkd4705MigrateSingle"
 PAIR="Cdkd4705MigratePair"
+RETAIN="Cdkd4705MigrateRetain"
 RUN_ID="$(date +%s)-$$"
 PREFIX_S="${STATE_PREFIX_S:-cdkd-4705ms-${RUN_ID}}"
 PREFIX_A="${STATE_PREFIX_A:-cdkd-4705ma-${RUN_ID}}"
 PREFIX_B="${STATE_PREFIX_B:-cdkd-4705mb-${RUN_ID}}"
+PREFIX_R="${STATE_PREFIX_R:-cdkd-4705mr-${RUN_ID}}"
 STATE_KEY_S="${PREFIX_S}/${SINGLE}/${REGION}/state.json"
 JOURNAL_KEY_S="${PREFIX_S}/${SINGLE}/${REGION}/rollback-journal.json"
 STATE_KEY_A="${PREFIX_A}/${PAIR}/${REGION}/state.json"
 JOURNAL_KEY_A="${PREFIX_A}/${PAIR}/${REGION}/rollback-journal.json"
 STATE_KEY_B="${PREFIX_B}/${PAIR}/${REGION}/state.json"
 JOURNAL_KEY_B="${PREFIX_B}/${PAIR}/${REGION}/rollback-journal.json"
+STATE_KEY_R="${PREFIX_R}/${RETAIN}/${REGION}/state.json"
+JOURNAL_KEY_R="${PREFIX_R}/${RETAIN}/${REGION}/rollback-journal.json"
+RETAINED_KEY_R="${PREFIX_R}/${RETAIN}/${REGION}/retained.json"
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 # Copied from src/state/cross-prefix-stack-scan.ts.
 # Any cross-prefix refusal (used to assert there was NONE).
@@ -102,6 +107,7 @@ DESTRUCTIVE_REFUSAL_NEEDLE="this deploy deletes or replaces resources, and the s
 # The stack registry markers, at the bucket root (src/state/s3-state-backend.ts).
 MARKER_S="_cdkd-registry/${REGION}/${SINGLE}.json"
 MARKER_P="_cdkd-registry/${REGION}/${PAIR}.json"
+MARKER_R="_cdkd-registry/${REGION}/${RETAIN}.json"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -122,6 +128,7 @@ LOG_GROUP_A=""
 DEPLOYED_S=""
 DEPLOYED_A=""
 DEPLOYED_B=""
+DEPLOYED_R=""
 
 state_physical_id() { # usage: state_physical_id <key> <type>
   local body
@@ -151,7 +158,7 @@ sweep_prefix() { # usage: sweep_prefix <prefix> <state key> <journal key>
     */*)
       echo "WARN: teardown sweep refused: prefix '$1' contains '/'" >&2
       ;;
-    cdkd-4705ms-[0-9]*-[0-9]* | cdkd-4705ma-[0-9]*-[0-9]* | cdkd-4705mb-[0-9]*-[0-9]*)
+    cdkd-4705ms-[0-9]*-[0-9]* | cdkd-4705ma-[0-9]*-[0-9]* | cdkd-4705mb-[0-9]*-[0-9]* | cdkd-4705mr-[0-9]*-[0-9]*)
       if ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "$2" ) &&
         ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "$3" ); then
         aws s3 rm "s3://${STATE_BUCKET}/$1/" --recursive >/dev/null 2>&1
@@ -169,9 +176,9 @@ sweep_prefix() { # usage: sweep_prefix <prefix> <state key> <journal key>
 # parameters: names starting with exactly `<stack>-`, for the two literal stacks.
 sweep_named() {
   local stack url role arn policy lg param
-  for stack in "${SINGLE:-}" "${PAIR:-}"; do
+  for stack in "${SINGLE:-}" "${PAIR:-}" "${RETAIN:-}"; do
     case "${stack}" in
-      Cdkd4705MigrateSingle | Cdkd4705MigratePair) ;;
+      Cdkd4705MigrateSingle | Cdkd4705MigratePair | Cdkd4705MigrateRetain) ;;
       *)
         echo "WARN: teardown sweep refused: stack '${stack}' is not one of this fixture's" >&2
         continue
@@ -221,7 +228,7 @@ warn_left() {
 
 rescan() {
   local stack p
-  for stack in "${SINGLE}" "${PAIR}"; do
+  for stack in "${SINGLE}" "${PAIR}" "${RETAIN}"; do
     warn_left "queues named ${stack}-* (a just-deleted queue can list for 60s)" \
       aws sqs list-queues --queue-name-prefix "${stack}-" --region "${REGION}" --query 'QueueUrls' --output text
     warn_left "roles named ${stack}-*" \
@@ -231,7 +238,7 @@ rescan() {
     warn_left "SSM parameters named ${stack}-*" \
       aws ssm describe-parameters --parameter-filters "Key=Name,Option=BeginsWith,Values=${stack}-" --region "${REGION}" --query 'Parameters[].Name' --output text
   done
-  for p in "${PREFIX_S}" "${PREFIX_A}" "${PREFIX_B}"; do
+  for p in "${PREFIX_S}" "${PREFIX_A}" "${PREFIX_B}" "${PREFIX_R}"; do
     warn_left "objects under s3://${STATE_BUCKET:-}/${p}/" \
       aws s3api list-objects-v2 --bucket "${STATE_BUCKET:-}" --prefix "${p}/" --query 'Contents[].Key' --output text
   done
@@ -260,18 +267,23 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${SINGLE}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${PREFIX_S}" --region "${REGION}" \
       --yes >/dev/null 2>&1
   fi
-  if [ -n "${DEPLOYED_S:-}${DEPLOYED_A:-}" ]; then
+  if [ "${DEPLOYED_R:-}" = "1" ] && ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_R}" ); then
+    node "${LOCAL_DIST}" state destroy "${RETAIN}" --state-bucket "${STATE_BUCKET:-}" --state-prefix "${PREFIX_R}" --region "${REGION}" \
+      --yes >/dev/null 2>&1
+  fi
+  if [ -n "${DEPLOYED_S:-}${DEPLOYED_A:-}${DEPLOYED_R:-}" ]; then
     sweep_named
   fi
   # A registry marker, only when it names one of THIS run's prefixes.
-  for marker in "${MARKER_S}" "${MARKER_P}"; do
+  for marker in "${MARKER_S}" "${MARKER_P}" "${MARKER_R}"; do
     case "$(marker_prefix "${marker}")" in
-      "${PREFIX_S}" | "${PREFIX_A}" | "${PREFIX_B}") aws s3 rm "s3://${STATE_BUCKET}/${marker}" >/dev/null 2>&1 ;;
+      "${PREFIX_S}" | "${PREFIX_A}" | "${PREFIX_B}" | "${PREFIX_R}") aws s3 rm "s3://${STATE_BUCKET}/${marker}" >/dev/null 2>&1 ;;
     esac
   done
   sweep_prefix "${PREFIX_S}" "${STATE_KEY_S}" "${JOURNAL_KEY_S}"
   sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
   sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
+  sweep_prefix "${PREFIX_R}" "${STATE_KEY_R}" "${JOURNAL_KEY_R}"
   rescan
   if [ -n "${OLD_TMPDIR:-}" ] && [ -d "${OLD_TMPDIR}" ]; then
     rm -rf "${OLD_TMPDIR}"
@@ -305,13 +317,13 @@ case "${OLD_REPORTED}" in
 esac
 
 echo "==> Pre-flight"
-for key in "${STATE_KEY_S}" "${STATE_KEY_A}" "${STATE_KEY_B}" "${JOURNAL_KEY_S}" "${JOURNAL_KEY_A}" "${JOURNAL_KEY_B}" "${MARKER_S}" "${MARKER_P}"; do
+for key in "${STATE_KEY_S}" "${STATE_KEY_A}" "${STATE_KEY_B}" "${STATE_KEY_R}" "${JOURNAL_KEY_S}" "${JOURNAL_KEY_A}" "${JOURNAL_KEY_B}" "${JOURNAL_KEY_R}" "${MARKER_S}" "${MARKER_P}" "${MARKER_R}"; do
   if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"; then
     echo "FAIL: s3://${STATE_BUCKET}/${key} already exists -- clean up a previous run first" >&2
     exit 1
   fi
 done
-for stack in "${SINGLE}" "${PAIR}"; do
+for stack in "${SINGLE}" "${PAIR}" "${RETAIN}"; do
   LEFT="$(aws sqs list-queues --queue-name-prefix "${stack}-" --region "${REGION}" --query 'QueueUrls' --output text)"
   LEFT="${LEFT}$(aws iam list-roles --query "Roles[?starts_with(RoleName, '${stack}-')].RoleName" --output text)"
   LEFT="${LEFT}$(aws logs describe-log-groups --log-group-name-prefix "/cdkd/${stack}-" --region "${REGION}" --query 'logGroups[].logGroupName' --output text)"
@@ -511,12 +523,59 @@ queue_exists "${QUEUE_URL_A}" && { echo "WARN: A's queue still lists after the d
 assert_gone "the registry marker ${MARKER_P} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_P}"
 
+# --- (c) a log group an older release kept (review CB-14b) ------------------
+# The previous release's destroy keeps a RETAIN log group and writes no
+# retained.json. This build's redeploy under the SAME prefix must take it back
+# (licensed by that prefix's own earlier record / event history), not refuse
+# its generated name; and this build's destroy then records it in
+# retained.json.
+DEPLOYED_R=1
+run_logged "(c)1 the previous release deploys ${RETAIN} under ${PREFIX_R}" "${OLD_BIN}" deploy "${RETAIN}" \
+  --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --yes
+[ "${CMD_RC}" -eq 0 ] || { echo "FAIL: the previous release's deploy of ${RETAIN} failed (output above)" >&2; exit 1; }
+LOG_GROUP_R="$(state_physical_id "${STATE_KEY_R}" 'AWS::Logs::LogGroup')"
+[ -n "${LOG_GROUP_R}" ] || { echo "FAIL: ${RETAIN}'s record names no log group" >&2; exit 1; }
+# The previous release's destroy, through the CLI name the integ fences read.
+CLI="${OLD_BIN}"
+run_logged "(c)2 the previous release destroys ${RETAIN} (the log group is kept)" "${CLI}" destroy "${RETAIN}" \
+  --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force
+[ "${CMD_RC}" -eq 0 ] || { echo "FAIL: the previous release's destroy of ${RETAIN} failed (output above)" >&2; exit 1; }
+assert_gone "the old release wrote a retained.json (${RETAINED_KEY_R}); the arm needs one that did not" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${RETAINED_KEY_R}"
+LG_KEPT="$(aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP_R}" --region "${REGION}" \
+  --query "length(logGroups[?logGroupName=='${LOG_GROUP_R}'])" --output text)"
+[ "${LG_KEPT}" = "1" ] || { echo "FAIL: the old destroy did not keep ${LOG_GROUP_R} (count '${LG_KEPT}')" >&2; exit 1; }
+run_logged "(c)3 this build redeploys ${RETAIN} under the same prefix" "${LOCAL_DIST}" deploy "${RETAIN}" \
+  --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --yes
+if [ "${CMD_RC}" -ne 0 ] || grep -qF "nothing this stack records names that resource" "${RUN_LOG}"; then
+  echo "FAIL: this build refused to take back the log group the previous release kept (go-to-k/cdkd#4705 review CB-14b)" >&2
+  exit 1
+fi
+[ "$(state_physical_id "${STATE_KEY_R}" 'AWS::Logs::LogGroup')" = "${LOG_GROUP_R}" ] || {
+  echo "FAIL: the redeployed record does not name the kept log group ${LOG_GROUP_R}" >&2
+  exit 1
+}
+run_logged "(c)4 this build destroys ${RETAIN}: retained.json lists the log group" "${LOCAL_DIST}" destroy "${RETAIN}" \
+  --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force
+[ "${CMD_RC}" -eq 0 ] || { echo "FAIL: this build's destroy of ${RETAIN} failed (output above)" >&2; exit 1; }
+KEPT_R="$(aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_R}" - | jq -r '[.resources[].physicalId] | join(" ")')"
+case " ${KEPT_R} " in
+  *" ${LOG_GROUP_R} "*) ;;
+  *) echo "FAIL: ${RETAINED_KEY_R} does not list ${LOG_GROUP_R} (got '${KEPT_R}')" >&2; exit 1 ;;
+esac
+run_logged "(c)5 state orphan clears the kept-resource record (no record left)" "${LOCAL_DIST}" state orphan "${RETAIN}" \
+  --stack-region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force
+assert_gone "${RETAINED_KEY_R} still exists after state orphan" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${RETAINED_KEY_R}"
+aws logs delete-log-group --log-group-name "${LOG_GROUP_R}" --region "${REGION}"
+
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
 sweep_named
 sweep_prefix "${PREFIX_S}" "${STATE_KEY_S}" "${JOURNAL_KEY_S}"
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
+sweep_prefix "${PREFIX_R}" "${STATE_KEY_R}" "${JOURNAL_KEY_R}"
 rescan
 rm -rf "${OLD_TMPDIR}"
-echo "[verify] PASS — stacks the previous release (${OLD_CDKD_VERSION}) deployed redeploy and destroy under this build; a pre-fix pair's destroy and rollback under the second prefix are refused and keep the first deployment's queue (#4705)"
+echo "[verify] PASS — stacks the previous release (${OLD_CDKD_VERSION}) deployed redeploy and destroy under this build; a pre-fix pair's destroy and rollback under the second prefix are refused and keep the first deployment's queue; a log group the previous release kept is taken back by this build's redeploy (#4705)"

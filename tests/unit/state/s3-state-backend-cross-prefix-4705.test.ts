@@ -580,7 +580,7 @@ describe('the stack registry marker (go-to-k/cdkd#4705)', () => {
     bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
     client.send.mockClear();
     let reads = 0;
-    const realSend = client.send.getMockImplementation()!;
+    const realSend = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
     client.send.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof GetObjectCommand && cmd.input.Key === MARKER && ++reads === 2) {
         bodies.set(MARKER, JSON.stringify({ prefix: 'team-b' }));

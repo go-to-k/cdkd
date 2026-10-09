@@ -90,48 +90,77 @@ stack's own evidence names that resource:
 - its state record (under any logical id), or its rollback orphans;
 - its rollback journal: a completed operation, or a failed one that recorded
   the resource's physical id;
-- its create-token ledger, which records the names a deploy is about to create
-  in one write before the first of those creates is sent, so a re-run after a
-  crash between a create and its record takes the resource back;
-- `retained.json`, the resources a `cdkd destroy` of this stack under this
-  prefix kept (`RemovalPolicy.RETAIN`). The next deploy under the same prefix
-  takes them back, and drops them from that list once its record names them.
-  Another prefix, another bucket or `cdkd state orphan` does not see the list
-  (orphan removes it), so a redeploy there is refused.
+- its create-token ledger, which records each name as the stack's intent right
+  before its create is sent (after the approval prompt, under the deploy's
+  lock), so a re-run after a crash between a create and its record takes the
+  resource back. When the deploy ends, it drops the intents of creates that
+  were not sent, or that came back (their resource is then in the record, or
+  the rollback deleted it);
+- `retained.json`, the resources this stack let go of under this prefix while
+  they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
+  deploy that removed them from the template. The next deploy under the same
+  prefix that creates them again takes them back, and drops them from that
+  list once its record names them. Another prefix or another bucket does not
+  see the list, so a redeploy there is refused. `cdkd state orphan` removes
+  it, with or without a record left;
+- for a resource an older cdkd kept before `retained.json` existed, this
+  prefix's own history: an earlier version of the stack's record (on a
+  versioned state bucket) that names the resource with a Retain policy, or an
+  event history whose `RESOURCE_RETAINED` row follows a create that recorded
+  its physical id (the history keeps the newest 20 runs). Read only for a held
+  name nothing else licenses.
 
 Otherwise the deploy refuses before that create, as CloudFormation refuses a
-name that already exists, and creates nothing for it. The message names the
+name that already exists; that resource is not created (resources the deploy
+created before are rolled back as with any failure). The message names the
 holder, the likely cause (the stack is also deployed under another state
 backend), and `cdkd import <stack> --resource <logicalId>=<physicalId>` for a
 resource that is in fact this stack's own. This covers a second deployment in
 another prefix, another bucket and another account's bucket alike. A name the
 template declares is not looked up: declaring a name is choosing it.
 
+**How it looks.** Every lookup is an exact read by name, never a listing: a
+listing such as `ListQueues` is eventually consistent and can omit a resource
+created a minute earlier. Where the service reads many names in one call it
+is used: alarms 100 names per `DescribeAlarms` call (both alarm kinds), log
+groups 50 per `DescribeLogGroups` call, ECS clusters 100 per
+`DescribeClusters`, the calls in parallel. Queues (`GetQueueUrl`), topics
+(`GetTopicAttributes`), rules (`DescribeRule`, on the rule's own event bus),
+load balancers and target groups (`Describe...` by name), state machines
+(`DescribeStateMachine`) and S3 buckets (`HeadBucket`; S3 has no batch read)
+are read one name per call, in parallel. A resource being deleted (an
+`INACTIVE` ECS cluster, a `DELETING` state machine, a queue or bucket already
+gone) reads as absent, so its create waits out the deletion as before. A rule
+whose `EventBusName` is an intrinsic is looked up at its create, on the
+resolved bus, never on the default one.
+
 **What it costs.** Nothing on a redeploy: only a CREATE row is looked up, so an
 update, a no-change deploy and a destroy make no lookup. For the creates, every
-name is looked up once the plan is known, all at once, batched per type, and
-each create waits only for its own answer, so a first deploy pays about one
-round trip whatever its size. Per type: alarms 100 names per
-`DescribeAlarms` call (both alarm kinds) and log groups 50 per
-`DescribeLogGroups` call, the calls in parallel; queues, topics, rules, load
-balancers, target groups and state machines one listing by name prefix, its
-pages bounded; ECS clusters 100 per `DescribeClusters`. A listing that does
-not end within its bound falls back to one lookup per name. Each API has one
-concurrency limit across the whole run, `deploy --all` included.
+name is looked up once the plan is known, all at once, and each create waits
+only for its own answer, so a first deploy pays about one round trip whatever
+its size. Each API has one concurrency limit across the whole run,
+`deploy --all` included, so a burst queues instead of throttling.
 
 **Permissions.** The lookups need the read permission of each type a stack
-creates: `sqs:ListQueues` (or `sqs:GetQueueUrl`), `sns:ListTopics`,
-`logs:DescribeLogGroups`, `cloudwatch:DescribeAlarms`, `events:ListRules`
-(or `events:DescribeRule`), `ecs:DescribeClusters`,
-`elasticloadbalancing:DescribeLoadBalancers` /
-`elasticloadbalancing:DescribeTargetGroups`, `states:ListStateMachines`, and
-the bucket's own `s3:ListBucket` for an S3 bucket. A lookup refused with 403
-warns and creates, as before the check existed; any other lookup failure
-refuses that create.
+creates: `sqs:GetQueueUrl`, `sns:GetTopicAttributes`,
+`logs:DescribeLogGroups`, `cloudwatch:DescribeAlarms`, `events:DescribeRule`,
+`ecs:DescribeClusters`, `elasticloadbalancing:DescribeLoadBalancers` /
+`elasticloadbalancing:DescribeTargetGroups`, `states:DescribeStateMachine`,
+and `s3:ListBucket` on the bucket for an S3 bucket. A lookup refused with 403
+(S3 also answers 403 for a bucket another account owns) warns and creates,
+as before the check existed; any other lookup failure refuses that create.
+Reading an earlier record version needs `s3:ListBucketVersions` and
+`s3:GetObjectVersion` on the state bucket; without them that source licenses
+nothing.
 
 **What it does not see.** A holder created between the lookup and the create:
 two first deploys of the same stack name at the same moment. In one bucket the
-stack registry below serializes them; in two buckets that window remains.
+stack registry below serializes them; in two buckets that window remains. And
+a resource this stack let go of that no source above names any more -- for
+example kept by a deploy of an older cdkd that removed it from the template,
+once the history has rotated past it: re-adding it is refused, and
+`cdkd import <stack> --resource <logicalId>=<physicalId>` (the command the
+refusal prints) adopts it.
 
 ### The stack registry
 
@@ -161,9 +190,12 @@ belongs to. A nested stack is covered by its top-level stack's marker.
   prefix holds the stack, or the question cannot be answered, the resource is
   kept, with a warning, and stays in the journal (the successful deploy exits
   2).
-- `cdkd destroy` removes the marker after removing the record (only when it
-  still names this prefix). `cdkd state orphan` of a whole stack removes it,
-  `cdkd import` claims it, and `cdkd state migrate` moves it with the record.
+- `cdkd destroy` removes the marker after removing the record, with a delete
+  conditional on the version it read, so another prefix's re-claim in between
+  is left alone (an endpoint without conditional deletes re-reads it right
+  before an unconditional delete). `cdkd state orphan` of a whole stack
+  removes it, `cdkd import` claims it (after the one-time scan below when no
+  marker exists), and `cdkd state migrate` copies it with the records.
 
 A marker naming another prefix is weighed against what that prefix holds. A
 record there that can own a resource (it lists resources or rollback-orphaned
@@ -172,7 +204,9 @@ that recorded a physical id) refuses, naming the prefix and the remedies. Only
 a lock there means a deploy is in progress: the command refuses and names
 `cdkd force-unlock` for a lock a crashed run left. Nothing there at all is a
 stale marker (its owner was removed without the marker, for example by an
-older cdkd), and this prefix claims it. The empty record a failed first deploy
+older cdkd): this prefix claims it, but only after the one-time prefix scan
+below answers clear, so a pair that predates the registry cannot hide behind
+it. The empty record a failed first deploy
 that created nothing leaves behind blocks nothing; the command prints a note
 naming its prefix and the `cdkd state orphan` command that removes it.
 
@@ -184,9 +218,10 @@ listings in parallel, a single pass), then claims the marker, so every later
 command is one read again. A dry run reads the registry and never writes it.
 
 **Permissions.** `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on
-`<bucket>/_cdkd-registry/*`. When S3 refuses the marker (403), the command
-warns and falls back to the prefix listing, whose own 403 also warns and
-continues. A read that fails otherwise (a server error, a record or marker that
+`<bucket>/_cdkd-registry/*`. When S3 refuses the marker (403), or an
+S3-compatible endpoint does not implement its conditional write
+(`NotImplemented`), the command warns and falls back to the prefix listing,
+whose own 403 also warns and continues. A read that fails otherwise (a server error, a record or marker that
 will not parse) refuses, naming the object it could not read.
 
 **What it does not see.** A record in a different bucket (the create check

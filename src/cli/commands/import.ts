@@ -254,7 +254,7 @@ export class ObservedBaselineRefusals extends Set<string> {
  * destructive deploy under either is refused until one record is dropped.
  * Never throws: every outcome but `clear` is a warning.
  */
-async function claimRegistryMarkerAfterImport(
+export async function claimRegistryMarkerAfterImport(
   backend: S3StateBackend,
   stackName: string,
   region: string,

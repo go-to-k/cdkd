@@ -489,6 +489,21 @@ variant_run() { # usage: variant_run <adopt|cw> <OLD|NEW> <run#>
     timed "${arm} ${which} #${n} redeploy" "${bin}" deploy "${stack}" --region "${REGION}" \
       --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --yes
     record "${arm}" redeploy "${which}" "${ELAPSED}"
+    if [ "${which}" = NEW ]; then
+      # G9: a NO_CHANGE redeploy makes zero generated-name lookups. Untimed,
+      # --verbose so the check's debug line would show; the "No changes"
+      # line proves the run reached the plan.
+      timed "${arm} ${which} #${n} redeploy (verbose, untimed)" "${bin}" deploy "${stack}" \
+        --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --yes --verbose
+      grep -q 'No changes detected' "${RUN_LOG}" || {
+        echo "FAIL: the verbose NO_CHANGE redeploy of ${stack} printed no 'No changes detected'" >&2
+        exit 1
+      }
+      if grep -q 'Generated-name check: looking up' "${RUN_LOG}"; then
+        echo "FAIL: the NO_CHANGE redeploy of ${stack} looked generated names up (go-to-k/cdkd#4705)" >&2
+        exit 1
+      fi
+    fi
   fi
   timed "${arm} ${which} #${n} destroy" "${bin}" destroy "${stack}" --region "${REGION}" \
     --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --force

@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -75,6 +76,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     retained?: Array<{ logicalId: string; resourceType: string; physicalId: string }>;
     /** Replaces the lookup's answer (after it is recorded in `events`). */
     lookup?: (names: readonly string[]) => Promise<Map<string, string>>;
+    refusalRecovery?: Record<string, string>;
   }) {
     const provider = {
       generatedCreateName: vi.fn((_t: string, logicalId: string) => `${STACK}-${logicalId}`),
@@ -142,7 +144,11 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
       } as never,
-      { concurrency: 4, ...(opts.dryRun && { dryRun: true }) },
+      {
+        concurrency: 4,
+        ...(opts.dryRun && { dryRun: true }),
+        ...(opts.refusalRecovery && { refusalRecovery: opts.refusalRecovery }),
+      },
       'us-east-1'
     );
     return { engine, provider, stateBackend };
@@ -164,6 +170,23 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     await expect(engine.deploy(STACK, template)).rejects.toThrow(/Q2/);
     expect(provider.create.mock.calls.map((c) => c[0])).not.toContain('Q2');
     expect(provider.create.mock.calls.map((c) => c[0])).not.toContain('Q3');
+  });
+
+  it('CB-3/CB-10: the refusal names this resource as not created, and its import carries the account flags', async () => {
+    const { engine } = buildEngine({
+      holders: { 'App-Q1': urlOf('App-Q1') },
+      refusalRecovery: { profile: 'dev', stateBucket: 'my-bucket', statePrefix: 'team-a' },
+    });
+    const error = await engine.deploy(STACK, template).catch((e: unknown) => e);
+    const text = [error, (error as { cause?: unknown }).cause]
+      .map((e) => (e instanceof Error ? e.message : ''))
+      .join('\n');
+    const all = `${text}\n${JSON.stringify(error, Object.getOwnPropertyNames(error as object))}`;
+    expect(all).toMatch(/Q1 was not created/);
+    expect(all).not.toMatch(/Nothing was created/);
+    expect(all).toMatch(
+      /cdkd import App --resource 'Q1=https:\/\/sqs\.us-east-1\.amazonaws\.com\/123456789012\/App-Q1' --profile dev --state-bucket my-bucket --state-prefix team-a/
+    );
   });
 
   it("creates a name this stack's record licenses, as before", async () => {
@@ -215,6 +238,13 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     expect(outcome).toBeInstanceOf(Error);
     expect(String((outcome as Error).message)).toMatch(/Q1/);
     expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('logs the lookup count at debug (the line the perf harness asserts absent on a NO_CHANGE redeploy)', async () => {
+    const { engine } = buildEngine({});
+    vi.mocked(getLogger().debug).mockClear();
+    await engine.deploy(STACK, template);
+    expect(getLogger().debug).toHaveBeenCalledWith('Generated-name check: looking up 3 planned create(s)');
   });
 
   it('a dry run looks nothing up and writes nothing', async () => {

@@ -8,6 +8,11 @@ import type { Construct } from 'constructs';
 export interface MigrationStackProps extends cdk.StackProps {
   /** Add an unnamed IAM Role (a type whose create refuses an existing name). */
   withRole: boolean;
+  /**
+   * Keep the log group on destroy (`RemovalPolicy.RETAIN`): the retain arm
+   * (go-to-k/cdkd#4705 review CB-14b).
+   */
+  retainLogGroup?: boolean;
 }
 
 /**
@@ -49,7 +54,7 @@ export class MigrationStack extends cdk.Stack {
     if (process.env.CDKD_4705_DROP_LOGGROUP !== '1') {
       new logs.LogGroup(this, 'LogGroup', {
         retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        removalPolicy: props.retainLogGroup === true ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       });
     }
 
