@@ -134,7 +134,7 @@ describe('reversing a delete-first replacement (go-to-k/cdkd#4690)', () => {
   it('deletes through the new layer and re-creates through the old one', async () => {
     const m = portModel();
     const byLayer = {
-      sdk: { create: vi.fn(), delete: vi.fn(async () => undefined) },
+      sdk: { create: vi.fn(), delete: vi.fn(async (_l: string, _p: string) => undefined) },
       'cc-api': { create: vi.fn(async () => ({ physicalId: 'listener-old-2', attributes: {} })), delete: vi.fn() },
     };
     (m.ctx.providerRegistry as unknown as { getProviderFor: unknown }).getProviderFor = (r: {
