@@ -510,4 +510,157 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     expect(row).not.toContain('sdin-diff-secret-queue');
     expect(hasMaskableValues(result.printingSecrets)).toBe(false);
   });
+
+  describe('below the child: a grandchild the value is passed on to', () => {
+    const SECRET_NAME = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
+    const empty = (stackName: string, resources: StackState['resources'] = {}): StackState => ({
+      stackName,
+      region: 'us-east-1',
+      version: 9,
+      resources,
+      outputs: {},
+      lastModified: 0,
+    });
+    const nestedRow = (path: string, parameters: Record<string, unknown>) => ({
+      Type: 'AWS::CloudFormation::Stack',
+      Metadata: { 'aws:asset:path': path },
+      Properties: { Parameters: parameters },
+    });
+    const stackRecord = (id: string, parameters: Record<string, unknown>) => ({
+      physicalId: `arn:aws:cloudformation:us-east-1:123456789012:stack/${id}/1`,
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: parameters },
+      attributes: {},
+      dependencies: [],
+    });
+
+    /**
+     * Parent -> Child (fed `Ref Queue`) -> GC (fed the child's `Ref QueueUrl`,
+     * a parameter, so the child row reads no secret-named resource itself).
+     * `liveGc: false` drops GC from the child's template: its stored output
+     * then diffs as a REMOVE.
+     */
+    async function diffThreeLevels(
+      recordedQueueName: string,
+      templateQueueName: string,
+      liveGc: boolean
+    ) {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-gc-'));
+      try {
+        const gcPath = join(dir, 'gc.json');
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          gcPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+            },
+          })
+        );
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: liveGc ? { GC: nestedRow('gc.json', { QueueUrl: { Ref: 'QueueUrl' } }) } : {},
+          })
+        );
+        const parent = state(recordedQueueName);
+        parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+        const tpl = template(templateQueueName);
+        tpl.Resources['Child'] = nestedRow('child.json', { QueueUrl: { Ref: 'Queue' } });
+        const gc = empty('S~Child~GC', {
+          Reader: {
+            physicalId: 'reader-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'older' },
+            attributes: {},
+            dependencies: [],
+          },
+        });
+        gc.outputs = { GOut: URL };
+        const states: Record<string, StackState> = {
+          S: parent,
+          'S~Child': empty('S~Child', { GC: stackRecord('S-Child-GC', { QueueUrl: URL }) }),
+          'S~Child~GC': gc,
+        };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const child = tree.children.find((c) => c.stackName === 'S~Child');
+        return child?.children.find((c) => c.stackName === 'S~Child~GC');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it.each([
+      ['a secret-named target', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a live grandchild's rows: %s", async (_l, name, shown) => {
+      const gc = await diffThreeLevels(name, name, true);
+      const row = JSON.stringify(gc?.changes.get('Reader')?.propertyChanges);
+      // Premise: the row is rendered.
+      expect(row).toContain('"path":"Value"');
+      expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+
+    it.each([
+      ['a secret-named target', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted grandchild's stored output: %s", async (_l, recorded, shown) => {
+      // The template now names the queue literally, so no template above is
+      // secret-bearing and the REMOVE row keeps its old value: only the
+      // derived name the record still spells as a reference can mask it.
+      const gc = await diffThreeLevels(recorded, 'plain-queue-name', false);
+      const out = JSON.stringify(gc?.outputChanges.find((c) => c.name === 'GOut'));
+      // Premise: the REMOVE row carries its old value (masked or not).
+      expect(out).toContain('"changeType":"REMOVE"');
+      expect(out).toContain('"oldValue"');
+      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+
+    it.each([
+      ['a secret-named target', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted child's stored output with the root's own reads: %s", async (_l, recorded, shown) => {
+      // The root's Policy reads the queue; the child row is gone from the
+      // template, so only the root's own derived names can mask its output.
+      const parent = state(recorded);
+      parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+      const child = empty('S~Child');
+      child.outputs = { COut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: template('plain-queue-name'),
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const node = tree.children.find((c) => c.stackName === 'S~Child');
+      const out = JSON.stringify(node?.outputChanges.find((c) => c.name === 'COut'));
+      expect(out).toContain('"changeType":"REMOVE"');
+      expect(out).toContain('"oldValue"');
+      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+  });
 });
