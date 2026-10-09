@@ -481,7 +481,22 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       },
     };
     const result = await computeStackDiff(
-      { stackName: 'S~Child', region: 'us-east-1', version: 9, resources: {}, outputs: {}, lastModified: 0 },
+      {
+        stackName: 'S~Child',
+        region: 'us-east-1',
+        version: 9,
+        resources: {
+          Reader: {
+            physicalId: 'reader-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'older' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
       tpl,
       'us-east-1',
       'S~Child',
@@ -489,8 +504,10 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       new DiffCalculator(),
       { parameters: { QueueUrl: URL }, inheritedDerivedNames }
     );
-    // Premise: the row is masked with it.
-    expect(JSON.stringify(result.changes.get('Reader'))).not.toContain('sdin-diff-secret-queue');
+    // The row is masked with it. Premise: the row is rendered.
+    const row = JSON.stringify(result.changes.get('Reader')?.propertyChanges);
+    expect(row).toContain('"path":"Value"');
+    expect(row).not.toContain('sdin-diff-secret-queue');
     expect(hasMaskableValues(result.printingSecrets)).toBe(false);
   });
 });
