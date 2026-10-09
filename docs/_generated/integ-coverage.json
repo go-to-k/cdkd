@@ -5998,9 +5998,11 @@
         "s3-analytics-inventory",
         "s3-cloudfront",
         "s3-event-notification",
+        "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
+        "s3-retry-own-bucket",
         "s3-subconfig-removal",
         "state-destroy",
         "stream-delete-redeploy",
@@ -6155,6 +6157,9 @@
         "s3-event-notification": [
           "l2"
         ],
+        "s3-fix-forward-orphan": [
+          "l1"
+        ],
         "s3-lifecycle": [
           "l1",
           "l2",
@@ -6167,6 +6172,9 @@
         "s3-replication-and-filter": [
           "l1",
           "literal"
+        ],
+        "s3-retry-own-bucket": [
+          "l1"
         ],
         "s3-subconfig-removal": [
           "l1",

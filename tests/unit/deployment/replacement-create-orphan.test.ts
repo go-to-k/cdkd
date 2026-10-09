@@ -27,6 +27,7 @@ import {
 import { settleJournaledOrphansOnSuccess } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { withRetry } from '../../../src/deployment/retry.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
@@ -438,6 +439,52 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     const { del, result } = run(new Error('retention rejected'));
     await result;
     expect(del).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#4757: a `cdkd rollback` stopped while the re-create waits to
+  // retry. The real retry loop runs here, so the stop's error is the one the
+  // replay reads the mark from.
+  describe('stopped during the re-create retry wait (go-to-k/cdkd#4757)', () => {
+    async function interrupted(prev: Partial<ResourceState> = {}) {
+      const actual = await vi.importActual<typeof import('../../../src/deployment/retry.js')>(
+        '../../../src/deployment/retry.js'
+      );
+      vi.mocked(withRetry).mockImplementation(actual.withRetry);
+      try {
+        let stopped = false;
+        const create = vi.fn(async () => {
+          stopped = true;
+          // Retryable, so the loop waits, and meets the stop there.
+          throw markCreatedBeforeFailure(new Error('Rate exceeded'), 'S', TYPE, 'stream-a');
+        });
+        const del = vi.fn(async (..._args: unknown[]) => undefined);
+        const { ctx } = ctxWith({ create, delete: del });
+        const state: Record<string, ResourceState> = {
+          S: res({ physicalId: 'stream-b', properties: { Name: 'stream-b' }, provisionedBy: 'sdk' }),
+        };
+        const result = await replayRollback([replacementOp(prev)], state, 'Stack', ctx, {
+          isInterrupted: () => stopped,
+        });
+        return { create, del, result };
+      } finally {
+        vi.mocked(withRetry).mockImplementation((fn: () => Promise<unknown>) => fn());
+      }
+    }
+
+    it('deletes what the re-create made', async () => {
+      const { create, del, result } = await interrupted();
+      // Premise: one attempt, stopped in its wait rather than retried.
+      expect(create).toHaveBeenCalledOnce();
+      expect(result.failures).toBe(1);
+      expect(del.mock.calls.map((c) => c[1])).toEqual(['stream-a']);
+    });
+
+    it('keeps it, named, under the old record’s Retain', async () => {
+      const { del } = await interrupted({ deletionPolicy: 'Retain' });
+      expect(del).not.toHaveBeenCalled();
+      expect(warned()).toContain('made stream-a before failing');
+      expect(warned()).toContain('DeletionPolicy: Retain');
+    });
   });
 });
 

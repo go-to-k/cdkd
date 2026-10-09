@@ -1,0 +1,497 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+
+// go-to-k/cdkd#4606 / #4655, the S3 slice: a failed CREATE's proven orphan
+// bucket is deleted by a later successful deploy only when (a) the record
+// under its logical id holds ANOTHER bucket (`isSameResource`), and (b) the
+// bucket under the journaled name is still the generation that CREATE made
+// (`resourceIdentity`: name + region + this account's ListBuckets
+// CreationDate). Every doubt answers 'unknown' / undefined, which keeps the
+// bucket.
+
+const { mockSend, clientRegion } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  clientRegion: { value: 'us-east-1' },
+}));
+
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-s3')>()),
+  ...(await import('../s3-create-client-forward.js')).forwardedS3Client(),
+}));
+
+vi.mock('../../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    s3: { send: mockSend, config: { region: () => Promise.resolve(clientRegion.value) } },
+  }),
+}));
+
+const { debugSpy } = vi.hoisted(() => ({ debugSpy: vi.fn() }));
+vi.mock('../../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: debugSpy,
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return { getLogger: () => ({ child: () => childLogger }) };
+});
+
+import { NoSuchBucket } from '@aws-sdk/client-s3';
+import {
+  FAILED_CREATE_ORPHAN_NOT_EMPTY_SKIP_REASON,
+  S3BucketProvider,
+} from '../../../../src/provisioning/providers/s3-bucket-provider.js';
+import { S3_AUTO_DELETE_OBJECTS_TAG } from '../../../../src/provisioning/data-delete-intent.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+
+const TYPE = 'AWS::S3::Bucket';
+const ORPHAN = 'stack-orphan-bucket-a';
+const RECORD = 'stack-orphan-bucket-b';
+const CREATED = new Date('2026-10-09T01:02:03.000Z');
+const CTX = { expectedRegion: 'us-east-1' };
+
+type Cmd = { constructor: { name: string }; input: Record<string, unknown> };
+
+const noSuchBucket = (): Error =>
+  new NoSuchBucket({ message: 'The specified bucket does not exist', $metadata: { httpStatusCode: 404 } });
+const denied = (): Error =>
+  Object.assign(new Error('Access Denied'), {
+    name: 'AccessDenied',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 403 },
+  });
+
+/** Buckets by name: where each lives, and what this account's list says of it. */
+function world(buckets: Record<string, { region?: string; listed?: Date | 'unlisted' } | Error>): void {
+  mockSend.mockImplementation((cmd: Cmd) => {
+    const name = cmd.constructor.name;
+    const bucket = cmd.input['Bucket'] as string | undefined;
+    if (name === 'GetBucketLocationCommand') {
+      const b = buckets[bucket ?? ''];
+      if (b === undefined) return Promise.reject(noSuchBucket());
+      if (b instanceof Error) return Promise.reject(b);
+      const region = b.region ?? 'us-east-1';
+      return Promise.resolve({ LocationConstraint: region === 'us-east-1' ? null : region });
+    }
+    if (name === 'ListBucketsCommand') {
+      const prefix = (cmd.input['Prefix'] as string | undefined) ?? '';
+      return Promise.resolve({
+        Buckets: Object.entries(buckets)
+          .filter(([n, b]) => n.startsWith(prefix) && !(b instanceof Error) && b.listed !== 'unlisted')
+          .map(([Name, b]) => ({ Name, CreationDate: (b as { listed?: Date }).listed ?? CREATED })),
+      });
+    }
+    return Promise.resolve({});
+  });
+}
+
+const sent = (): string[] => mockSend.mock.calls.map((c) => (c[0] as Cmd).constructor.name);
+
+describe('S3BucketProvider.isSameResource (go-to-k/cdkd#4606)', () => {
+  let provider: S3BucketProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
+    provider = new S3BucketProvider();
+  });
+
+  it("is 'different' for two names once the record's bucket reads back in the region", async () => {
+    world({ [ORPHAN]: {}, [RECORD]: {} });
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: RECORD }, TYPE, CTX)).resolves.toBe(
+      'different'
+    );
+    // The record's bucket is what must be read; the orphan needs no read.
+    const located = mockSend.mock.calls
+      .map((c) => c[0] as Cmd)
+      .filter((c) => c.constructor.name === 'GetBucketLocationCommand')
+      .map((c) => c.input['Bucket']);
+    expect(located).toEqual([RECORD]);
+  });
+
+  it("is 'same' for one name, with no read", async () => {
+    world({});
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: ORPHAN }, TYPE, CTX)).resolves.toBe(
+      'same'
+    );
+    expect(sent()).toEqual([]);
+  });
+
+  it.each([
+    ["the record's bucket is gone", { [ORPHAN]: {} }],
+    ["the record's bucket is in another region", { [ORPHAN]: {}, [RECORD]: { region: 'us-west-2' } }],
+    ["the record's bucket cannot be located", { [ORPHAN]: {}, [RECORD]: denied() }],
+  ] as const)("is 'unknown' when %s", async (_label, buckets) => {
+    world(buckets as Parameters<typeof world>[0]);
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: RECORD }, TYPE, CTX)).resolves.toBe(
+      'unknown'
+    );
+  });
+
+  it("is 'unknown' from a client in another region than the stack's", async () => {
+    clientRegion.value = 'us-west-2';
+    world({ [ORPHAN]: {}, [RECORD]: {} });
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: RECORD }, TYPE, CTX)).resolves.toBe(
+      'unknown'
+    );
+    expect(sent()).toEqual([]);
+  });
+
+  it.each([
+    ['an ARN', 'arn:aws:s3:::stack-orphan-bucket-a'],
+    ['a legacy mixed-case name', 'Stack_Orphan'],
+    ['an empty string', ''],
+  ])("is 'unknown' for %s on either side, with no read", async (_label, odd) => {
+    world({});
+
+    await expect(provider.isSameResource(odd, { physicalId: RECORD }, TYPE, CTX)).resolves.toBe(
+      'unknown'
+    );
+    await expect(provider.isSameResource(ORPHAN, { physicalId: odd }, TYPE, CTX)).resolves.toBe(
+      'unknown'
+    );
+    expect(sent()).toEqual([]);
+  });
+
+  it("is 'unknown' for another type, with no read", async () => {
+    // A world where the S3 answer WOULD be 'different', so only the type gate
+    // can make this 'unknown'.
+    world({ [ORPHAN]: {}, [RECORD]: {} });
+
+    await expect(
+      provider.isSameResource(ORPHAN, { physicalId: RECORD }, 'AWS::S3::BucketPolicy', CTX)
+    ).resolves.toBe('unknown');
+    expect(sent()).toEqual([]);
+  });
+
+  // go-to-k/cdkd#4606 review (C-m1): each 'unknown' arm in a world where the
+  // record's bucket would otherwise read as different.
+  it("is 'unknown' when the record's bucket answers NoSuchBucket", async () => {
+    world({ [ORPHAN]: {} });
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: RECORD }, TYPE, CTX)).resolves.toBe(
+      'unknown'
+    );
+    expect(sent()).toEqual(['GetBucketLocationCommand']);
+  });
+
+  it("is 'unknown' when the record's bucket is located in another region", async () => {
+    world({ [ORPHAN]: {}, [RECORD]: { region: 'us-west-2' } });
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: RECORD }, TYPE, CTX)).resolves.toBe(
+      'unknown'
+    );
+  });
+
+  it("is 'unknown' for a non-plain record name whose bucket would read back", async () => {
+    world({ [ORPHAN]: {}, Not_Plain: {} });
+
+    await expect(
+      provider.isSameResource(ORPHAN, { physicalId: 'Not_Plain' }, TYPE, CTX)
+    ).resolves.toBe('unknown');
+    expect(sent()).toEqual([]);
+  });
+
+  it.each([
+    ['64 characters', `a${'b'.repeat(62)}c`, 'unknown'],
+    ['63 characters', `a${'b'.repeat(61)}c`, 'different'],
+    ['a leading dot', '.stack-orphan-bucket-b', 'unknown'],
+    ['a trailing dot', 'stack-orphan-bucket-b.', 'unknown'],
+    ['a leading hyphen', '-stack-orphan-bucket-b', 'unknown'],
+    ['a trailing hyphen', 'stack-orphan-bucket-b-', 'unknown'],
+    ['two characters', 'ab', 'unknown'],
+    ['three characters', 'abc', 'different'],
+  ] as const)('reads a record name of %s as %s (plain-name boundaries)', async (_label, name, want) => {
+    world({ [ORPHAN]: {}, [name]: {} });
+
+    await expect(provider.isSameResource(ORPHAN, { physicalId: name }, TYPE, CTX)).resolves.toBe(
+      want
+    );
+  });
+});
+
+describe('S3BucketProvider.resourceIdentity (go-to-k/cdkd#4606)', () => {
+  let provider: S3BucketProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
+    provider = new S3BucketProvider();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('names the bucket generation by name, region and this account\'s CreationDate', async () => {
+    world({ [ORPHAN]: {} });
+
+    await expect(provider.resourceIdentity(ORPHAN, TYPE, CTX)).resolves.toBe(
+      `${ORPHAN}|us-east-1|2026-10-09T01:02:03.000Z`
+    );
+    const list = mockSend.mock.calls
+      .map((c) => c[0] as Cmd)
+      .find((c) => c.constructor.name === 'ListBucketsCommand');
+    expect(list?.input['Prefix']).toBe(ORPHAN);
+  });
+
+  it('gives a re-created bucket (a later CreationDate) another token', async () => {
+    world({ [ORPHAN]: {} });
+    const first = await provider.resourceIdentity(ORPHAN, TYPE, CTX);
+    world({ [ORPHAN]: { listed: new Date('2026-10-09T02:00:00.000Z') } });
+
+    await expect(provider.resourceIdentity(ORPHAN, TYPE, CTX)).resolves.not.toBe(first);
+  });
+
+  it('matches the exact name only, never a longer one the prefix also lists', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    world({ [ORPHAN]: { listed: 'unlisted' }, [`${ORPHAN}-other`]: {} });
+
+    const pending = provider.resourceIdentity(ORPHAN, TYPE, CTX);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it('answers RESOURCE_NOT_FOUND only on NoSuchBucket', async () => {
+    world({});
+
+    await expect(provider.resourceIdentity(ORPHAN, TYPE, CTX)).resolves.toBe(RESOURCE_NOT_FOUND);
+    expect(sent()).toEqual(['GetBucketLocationCommand']);
+  });
+
+  it('re-reads a list that has not caught up yet, then names it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    let lists = 0;
+    mockSend.mockImplementation((cmd: Cmd) => {
+      if (cmd.constructor.name === 'GetBucketLocationCommand') {
+        return Promise.resolve({ LocationConstraint: null });
+      }
+      lists++;
+      return Promise.resolve({
+        Buckets: lists < 2 ? [] : [{ Name: ORPHAN, CreationDate: CREATED }],
+      });
+    });
+
+    const pending = provider.resourceIdentity(ORPHAN, TYPE, CTX);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(`${ORPHAN}|us-east-1|2026-10-09T01:02:03.000Z`);
+    expect(lists).toBe(2);
+  });
+
+  it('stops re-reading once its own budget is spent, inside the caller\'s 10s race', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    let lists = 0;
+    mockSend.mockImplementation((cmd: Cmd) => {
+      if (cmd.constructor.name === 'GetBucketLocationCommand') {
+        return Promise.resolve({ LocationConstraint: null });
+      }
+      lists++;
+      // A slow list: each read costs 5s of the budget.
+      vi.setSystemTime(Date.now() + 5_000);
+      return Promise.resolve({ Buckets: [] });
+    });
+
+    const pending = provider.resourceIdentity(ORPHAN, TYPE, CTX);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBeUndefined();
+    // 5s, then 1.5s + 5s: past the 6s budget, so no third read.
+    expect(lists).toBe(2);
+  });
+
+  it.each([
+    ['a bucket this account does not list (another account\'s)', { [ORPHAN]: { listed: 'unlisted' } }],
+    ['a bucket in another region', { [ORPHAN]: { region: 'us-west-2' } }],
+    ['a location that cannot be read', { [ORPHAN]: denied() }],
+  ] as const)('is undefined for %s', async (_label, buckets) => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    world(buckets as Parameters<typeof world>[0]);
+
+    const pending = provider.resourceIdentity(ORPHAN, TYPE, CTX);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it('is undefined when the client is in the stack region but the bucket is located elsewhere', async () => {
+    // C-m2: listed (so only the location check can refuse it).
+    world({ [ORPHAN]: { region: 'us-west-2' } });
+
+    await expect(provider.resourceIdentity(ORPHAN, TYPE, CTX)).resolves.toBeUndefined();
+    expect(sent()).toEqual(['GetBucketLocationCommand']);
+  });
+
+  it('is undefined for an unreadable CreationDate', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    world({ [ORPHAN]: { listed: new Date('not a date') } });
+
+    const pending = provider.resourceIdentity(ORPHAN, TYPE, CTX);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it('is undefined when the list itself cannot be read', async () => {
+    mockSend.mockImplementation((cmd: Cmd) =>
+      cmd.constructor.name === 'GetBucketLocationCommand'
+        ? Promise.resolve({ LocationConstraint: null })
+        : Promise.reject(denied())
+    );
+
+    await expect(provider.resourceIdentity(ORPHAN, TYPE, CTX)).resolves.toBeUndefined();
+    // T-m4: the failure's debug line names no bucket. The settle reads the
+    // identity outside any operation masker, and a name can be secret-derived.
+    const lines = debugSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(lines).toContain('ListBuckets failed');
+    expect(lines).not.toContain(ORPHAN);
+  });
+
+  it('is undefined from a client in another region, and for a name that is not plain', async () => {
+    world({ [ORPHAN]: {} });
+    clientRegion.value = 'us-west-2';
+    await expect(provider.resourceIdentity(ORPHAN, TYPE, CTX)).resolves.toBeUndefined();
+    clientRegion.value = 'us-east-1';
+    await expect(provider.resourceIdentity('Not_Plain', TYPE, CTX)).resolves.toBeUndefined();
+    await expect(provider.resourceIdentity(ORPHAN, 'AWS::SQS::Queue', CTX)).resolves.toBeUndefined();
+    expect(sent()).toEqual([]);
+  });
+});
+
+describe('S3BucketProvider.delete of a failed CREATE\'s orphan (go-to-k/cdkd#4606)', () => {
+  let provider: S3BucketProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
+    provider = new S3BucketProvider();
+  });
+
+  /** A template that opted into CDK's autoDeleteObjects. */
+  const AUTO_DELETE = {
+    BucketName: ORPHAN,
+    Tags: [{ Key: S3_AUTO_DELETE_OBJECTS_TAG, Value: 'true' }],
+  };
+  const notEmpty = (): Error =>
+    Object.assign(new Error('The bucket you tried to delete is not empty'), {
+      name: 'BucketNotEmpty',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 409 },
+    });
+
+  function bucketHoldingData(): void {
+    mockSend.mockImplementation((cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'GetBucketLocationCommand') return Promise.resolve({ LocationConstraint: null });
+      if (name === 'DeleteBucketCommand') return Promise.reject(notEmpty());
+      if (name === 'ListObjectVersionsCommand') {
+        return Promise.resolve({ Versions: [{ Key: 'data', VersionId: 'v1' }] });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('never empties it, whatever the template declared: the bucket is kept with a skip', async () => {
+    bucketHoldingData();
+
+    const result = await provider.delete(ORPHAN, ORPHAN, TYPE, AUTO_DELETE, {
+      expectedRegion: 'us-east-1',
+      failedCreateOrphan: true,
+    });
+
+    expect(result).toEqual({
+      outcome: 'skipped',
+      reason: FAILED_CREATE_ORPHAN_NOT_EMPTY_SKIP_REASON,
+    });
+    expect(sent()).not.toContain('ListObjectVersionsCommand');
+    expect(sent()).not.toContain('DeleteObjectsCommand');
+    // A fixed constant without the already-deleted phrases a classifier reads.
+    expect(FAILED_CREATE_ORPHAN_NOT_EMPTY_SKIP_REASON).not.toMatch(/does not exist|not found|NoSuch/i);
+  });
+
+  it('never empties it under --force-stateful-recreation consent either', async () => {
+    bucketHoldingData();
+
+    const result = await provider.delete(ORPHAN, ORPHAN, TYPE, { BucketName: ORPHAN }, {
+      expectedRegion: 'us-east-1',
+      failedCreateOrphan: true,
+      forceDataDelete: true,
+    });
+
+    expect(result).toEqual({
+      outcome: 'skipped',
+      reason: FAILED_CREATE_ORPHAN_NOT_EMPTY_SKIP_REASON,
+    });
+    expect(sent()).not.toContain('ListObjectVersionsCommand');
+  });
+
+  it('fails, not skips, on any other DeleteBucket error', async () => {
+    mockSend.mockImplementation((cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'GetBucketLocationCommand') return Promise.resolve({ LocationConstraint: null });
+      if (name === 'DeleteBucketCommand') return Promise.reject(denied());
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.delete(ORPHAN, ORPHAN, TYPE, AUTO_DELETE, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).rejects.toThrow(/AccessDenied/);
+  });
+
+  it('reads a bucket already gone as deleted, not skipped', async () => {
+    mockSend.mockImplementation((cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'GetBucketLocationCommand') return Promise.reject(noSuchBucket());
+      if (name === 'DeleteBucketCommand') return Promise.reject(noSuchBucket());
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.delete(ORPHAN, ORPHAN, TYPE, AUTO_DELETE, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it('deletes an empty one with a plain DeleteBucket', async () => {
+    mockSend.mockImplementation((cmd: Cmd) =>
+      cmd.constructor.name === 'GetBucketLocationCommand'
+        ? Promise.resolve({ LocationConstraint: null })
+        : Promise.resolve({})
+    );
+
+    await expect(
+      provider.delete(ORPHAN, ORPHAN, TYPE, AUTO_DELETE, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      })
+    ).resolves.toBeUndefined();
+    expect(sent().filter((n) => n === 'DeleteBucketCommand')).toHaveLength(1);
+  });
+
+  it('still empties a recorded bucket that opted in (the negative control)', async () => {
+    let deletes = 0;
+    mockSend.mockImplementation((cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'GetBucketLocationCommand') return Promise.resolve({ LocationConstraint: null });
+      if (name === 'DeleteBucketCommand') {
+        deletes++;
+        return deletes === 1 ? Promise.reject(notEmpty()) : Promise.resolve({});
+      }
+      if (name === 'ListObjectVersionsCommand') {
+        return Promise.resolve({ Versions: [{ Key: 'data', VersionId: 'v1' }] });
+      }
+      return Promise.resolve({});
+    });
+
+    await provider.delete(ORPHAN, ORPHAN, TYPE, AUTO_DELETE, { expectedRegion: 'us-east-1' });
+
+    expect(sent()).toContain('ListObjectVersionsCommand');
+    expect(deletes).toBe(2);
+  });
+});

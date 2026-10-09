@@ -759,6 +759,18 @@ recording the bucket. It is deliberately retryable by text ("already exists"):
 a delete-first re-create retries that text while its own deleted name is
 released, and no other caller's classifier retries a collision.
 
+A bucket has no immutable AWS id, so its `resourceIdentity` (the token a
+fix-forward settle compares before deleting a failed CREATE's orphan, issue
+[#4606](https://github.com/go-to-k/cdkd/issues/4606)) is its name, its region
+and the `CreationDate` this account's own `ListBuckets` reports. A bucket the
+list does not show, or shows in another region, has no token. A bucket
+re-created under the name reports the new create's second (measured in
+us-east-1 and us-west-2, and asserted by the `s3-fix-forward-orphan` fixture
+before it trusts the token). Outside us-east-1 the date also moves to the
+second of a versioning, tagging, encryption or policy write, so the token is
+read only after the failed CREATE's last write; a moved date reads as another
+bucket and keeps the orphan, the safe direction.
+
 Note what that last choice COSTS, because it is a new IAM dependency rather than
 a free win: the guard works only where the caller can call `GetBucketLocation`
 on the target. A principal without that grant is NOT an unrelated population —

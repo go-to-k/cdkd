@@ -2133,6 +2133,11 @@
       "scenarios": []
     },
     {
+      "name": "s3-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-lifecycle",
       "annotated": false,
       "scenarios": []
@@ -2144,6 +2149,11 @@
     },
     {
       "name": "s3-replication-and-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-retry-own-bucket",
       "annotated": false,
       "scenarios": []
     },
@@ -3329,9 +3339,11 @@
     "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",
     "s3-event-notification",
+    "s3-fix-forward-orphan",
     "s3-lifecycle",
     "s3-object-lock",
     "s3-replication-and-filter",
+    "s3-retry-own-bucket",
     "scheduler-custom-group",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
