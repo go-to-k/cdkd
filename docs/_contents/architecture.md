@@ -833,7 +833,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
          ┌─────────────────────────┐
          │ Deployment Layer        │
          │ - Deploy Engine         │
-         │ - Execute by Levels     │
+         │ - Event-driven dispatch │
          └────────┬────────────────┘
                   │
          ┌────────┴─────────┐

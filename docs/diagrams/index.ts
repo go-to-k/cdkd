@@ -212,7 +212,7 @@ const deployCreate: Diagram = {
   id: 'deploy-create',
   title: 'A first deployment, where every resource is created',
   description:
-    'cdkd deploy goes through the CLI layer, which resolves --app and --state-bucket, and the synthesis layer, which runs the CDK app and parses the cloud assembly. Per stack, pipelined, the assets layer publishes to S3 and ECR, skipping what exists (8 file and 4 Docker assets at a time). The state layer acquires the lock and finds no state; the analysis layer parses the template, builds the DAG and diffs everything as a CREATE. The deployment layer runs the deploy engine through SDK providers, preferred, or the Cloud Control provider as the fallback, and the state layer then resolves outputs, saves state and releases the lock.',
+    'cdkd deploy goes through the CLI layer, which resolves --app and --state-bucket, and the synthesis layer, which runs the CDK app and parses the cloud assembly. Per stack, pipelined, the assets layer publishes to S3 and ECR, skipping what exists (8 file and 4 Docker assets at a time). The state layer acquires the lock and finds no state; the analysis layer parses the template, builds the DAG and diffs everything as a CREATE. The deployment layer’s deploy engine starts each resource once its own dependencies finish, through SDK providers, preferred, or the Cloud Control provider as the fallback, and the state layer then resolves outputs, saves state and releases the lock.',
   rows: [
     ['user'],
     ['cli'],
@@ -270,7 +270,7 @@ const deployCreate: Diagram = {
       id: 'deploy',
       title: 'Deployment layer',
       route: true,
-      detail: ['Deploy engine', 'Execute by levels'],
+      detail: ['Deploy engine', 'Each resource starts once its own dependencies finish'],
     },
     {
       id: 'sdk',
