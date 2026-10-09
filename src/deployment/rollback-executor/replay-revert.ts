@@ -414,9 +414,6 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     skipUnaddressableReplay(s, logger, op, 'restore');
     return;
   }
-  logger.info(
-    `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
-  );
   // Route via the provider that owns the resource right now per state.
   const { provider, provisionedBy: revertVia } = ctx.providerRegistry.getProviderFor({
     resourceType: op.resourceType,
@@ -446,12 +443,18 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     ctx,
     secrets,
     routedVia: [op.provisionedBy, revertVia],
+    stackName,
   });
   const desiredProps = noEcho.desired;
   // Issue #2274: the DESIRED side only — that is the bag `update()`
   // writes. `currentProps` below becomes `previousProperties`, where a
   // mask is harmless. Any mask left is not a marked NoEcho leaf.
   refuseMaskedReplayBaseline(desiredProps, op.logicalId, noEcho.inert);
+  // Announced only once nothing above refused (go-to-k/cdkd#3203's rule):
+  // the NoEcho readback and the masked-baseline refusal run first.
+  logger.info(
+    `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
+  );
   const currentProps = noEcho.onPreviousSide(
     await resolveReplayProps(current.properties, resolver, secrets, ctx, op.logicalId)
   );

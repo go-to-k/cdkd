@@ -56,8 +56,11 @@
 #      holds only `***`) and leaves the value as AWS holds it while it restores
 #      the Description: state holds `***` named in `noEchoLeaves`, and no
 #      deployments/*.jsonl object carries a value (#4043 Phase C).
-#   2c. The same with a third value under the deploy's automatic rollback.
-#      Phase 3 later asserts that the next deploy restores the first value.
+#   2c. The same with a third value under the deploy's automatic rollback,
+#      which keeps a failed-only journal for NoEchoFailingQueue (by design,
+#      issue #1208). Then no object VERSION under the stack's prefix carries
+#      any of the three values. Phase 3 later asserts that the next deploy
+#      restores the first value and deletes that journal.
 #   3a. `cdkd diff --verbose` and `cdkd diff --json --fail` with
 #      CDKD_TEST_NOECHO_RENAME=true, before the redeploy that applies it:
 #      NoEchoRenamed's TopicName row prints its new side masked and its old
@@ -312,6 +315,12 @@ cleanup() {
   # By exact name, in case state destroy missed them. NoEchoReject exists only
   # if AWS stopped rejecting the value.
   aws ssm delete-parameters --names "${CONSUMER_NAME}" "${REJECT_NAME}" "${SPLIT_NAME}" "${SPLIT_CHILD_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # NoEchoFailingQueue exists only if SQS stopped rejecting its retention.
+  failing_queue_url=$(aws sqs get-queue-url --queue-name "cdkd-test-noecho-failing-${ACCOUNT_ID:-}" \
+    --region "${REGION}" --query QueueUrl --output text 2>/dev/null)
+  if [ -n "${failing_queue_url}" ]; then
+    aws sqs delete-queue --queue-url "${failing_queue_url}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   aws sns delete-topic --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   # NoEchoSnapshotGroup and the final snapshot its removal takes (#3869),
@@ -1030,7 +1039,10 @@ consumer_field() { # consumer_field <Value|Description>
 assert_noecho_rollback_kept() {
   # <min-reverted>: the events recording NoEchoConsumer's revert so far, so a
   # later arm cannot pass on an earlier arm's event.
-  local phase="$1" tok="$2" out="$3" min_reverted="$4" value description state leaf event_keys scanned=0 reverted=0
+  # <journal>: `gone` after `cdkd rollback`, which pops the whole segment;
+  # `failed-only` after the deploy's own clean rollback, which keeps the
+  # failed op's record for `--revert-failed` (by design, issue #1208).
+  local phase="$1" tok="$2" out="$3" min_reverted="$4" journal="$5" value description state leaf event_keys scanned=0 reverted=0 journal_body
   if [[ "${out}" == *"${tok}"* ]] || [[ "${out}" == *"${TOKEN}"* ]]; then
     echo "FAIL: the Phase ${phase} rollback output carries a NoEcho value in plaintext (issue #4043)" >&2
     exit 1
@@ -1070,9 +1082,30 @@ assert_noecho_rollback_kept() {
     echo "FAIL: state.json after the Phase ${phase} rollback does not hold *** at NoEchoConsumer.Value named in noEchoLeaves (got ${leaf})" >&2
     exit 1
   fi
-  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_PREFIX}rollback-journal.json"; then
-    echo "FAIL: the rollback journal survived the clean Phase ${phase} rollback" >&2
-    exit 1
+  if [ "${journal}" = gone ]; then
+    if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_PREFIX}rollback-journal.json"; then
+      echo "FAIL: the rollback journal survived the clean Phase ${phase} rollback" >&2
+      exit 1
+    fi
+  else
+    # Sentinel pair: the kept-record line, and a journal holding ONLY the
+    # failed op (no completed op left to replay, so NoEchoConsumer is done).
+    if ! grep -qF 'pre-failure record was kept' <<< "${out}"; then
+      echo "FAIL: premise: the Phase ${phase} deploy printed no 'pre-failure record was kept' line -- the clean rollback did not keep a failed-only journal" >&2
+      exit 1
+    fi
+    journal_body=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_PREFIX}rollback-journal.json" - --region "${REGION}") || {
+      echo "FAIL: the Phase ${phase} clean rollback kept no failed-only journal" >&2
+      exit 1
+    }
+    if [[ "${journal_body}" == *"${tok}"* ]] || [[ "${journal_body}" == *"${TOKEN}"* ]]; then
+      echo "FAIL: the Phase ${phase} failed-only journal carries a NoEcho value in plaintext (issue #4043)" >&2
+      exit 1
+    fi
+    if [ "$(jq -c '[.segments[] | {o: (.operations | length), f: [.failedOperations[]?.logicalId]}]' <<< "${journal_body}")" != '[{"o":0,"f":["NoEchoFailingQueue"]}]' ]; then
+      echo "FAIL: the Phase ${phase} journal is not one failed-only segment for NoEchoFailingQueue" >&2
+      exit 1
+    fi
   fi
   event_keys=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
     --prefix "${STATE_PREFIX}deployments/" --output json | jq -r '.Contents // [] | .[].Key') || return 1
@@ -1152,11 +1185,13 @@ ROLLBACK_OUT_P2B=$(node "${LOCAL_DIST}" rollback "${STACK}" \
 P2B_ROLLBACK_RC=$?
 set -e
 if [ "${P2B_ROLLBACK_RC}" -ne 0 ]; then
-  if [[ "${ROLLBACK_OUT_P2B}" != *"${TOKEN_RB}"* ]]; then diag_output "${ROLLBACK_OUT_P2B}"; fi
+  if [[ "${ROLLBACK_OUT_P2B}" != *"${TOKEN_RB}"* ]] && [[ "${ROLLBACK_OUT_P2B}" != *"${TOKEN}"* ]]; then
+    diag_output "${ROLLBACK_OUT_P2B}"
+  fi
   echo "FAIL: cdkd rollback exited ${P2B_ROLLBACK_RC} -- the marked NoEcho leaf was not read back (issue #4043 Phase C)" >&2
   exit 1
 fi
-assert_noecho_rollback_kept 2b "${TOKEN_RB}" "${ROLLBACK_OUT_P2B}" 1
+assert_noecho_rollback_kept 2b "${TOKEN_RB}" "${ROLLBACK_OUT_P2B}" 1 gone
 
 echo "==> Phase 2c: the same failure under the deploy's automatic rollback"
 TOKEN_RB2="$(gen_rb_token rb2)"
@@ -1173,7 +1208,35 @@ if [[ "${DEPLOY_OUT_P2C}" == *"${TOKEN_RB}"* ]]; then
   echo "FAIL: the Phase 2c deploy output carries the Phase 2b NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
-assert_noecho_rollback_kept 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}" 2
+assert_noecho_rollback_kept 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}" 2 failed-only
+
+# Every object VERSION under the stack's prefix, noncurrent included: both
+# rollbacks save state per op, so an intermediate version holding a value
+# would pass every check of the current objects above.
+echo "==> Phase 2b/2c: no object version under the stack's prefix carries a NoEcho value"
+P2_VERSION_ROWS=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}" --output json \
+  | jq -r '.Versions // [] | .[] | "\(.Key)\t\(.VersionId)"')
+P2_VERSIONS_SCANNED=0
+while IFS=$'\t' read -r version_key version_id || [ -n "${version_key}" ]; do
+  [ -n "${version_key}" ] || continue
+  VERSION_FILE=$(mktemp)
+  SCRATCH_FILES+=("${VERSION_FILE}")
+  aws s3api get-object --bucket "${STATE_BUCKET}" --key "${version_key}" \
+    --version-id "${version_id}" "${VERSION_FILE}" >/dev/null
+  P2_VERSIONS_SCANNED=$((P2_VERSIONS_SCANNED + 1))
+  if grep -qF -- "${TOKEN_RB}" "${VERSION_FILE}" || grep -qF -- "${TOKEN_RB2}" "${VERSION_FILE}" \
+    || grep -qF -- "${TOKEN}" "${VERSION_FILE}"; then
+    echo "FAIL: an object version of ${version_key} carries a NoEcho value in plaintext (issue #4043)" >&2
+    exit 1
+  fi
+done < <(printf '%s\n' "${P2_VERSION_ROWS}")
+# Floor: the two rollbacks alone wrote several state versions.
+if [ "${P2_VERSIONS_SCANNED}" -lt 4 ]; then
+  echo "FAIL: the version scan read ${P2_VERSIONS_SCANNED} object version(s) under ${STATE_PREFIX} -- the negative above passes for free" >&2
+  exit 1
+fi
+echo "    OK: no object version under the stack's prefix carries a NoEcho value (${P2_VERSIONS_SCANNED} versions)"
 
 # --- Phase 3a: cdkd diff renders the pending rename masked -------------------
 # BEFORE Phase 3 applies it, so state still holds the literal name and the
@@ -1310,6 +1373,11 @@ if ! DEPLOY_OUT_P3=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_REJECT
   --yes 2>&1); then
   echo "FAIL: the Phase 3 deploy exited non-zero" >&2
   diag_output "${DEPLOY_OUT_P3}"
+  exit 1
+fi
+# The first successful deploy since Phase 2c deletes its failed-only journal.
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_PREFIX}rollback-journal.json"; then
+  echo "FAIL: the Phase 3 deploy left Phase 2c's failed-only rollback journal in place" >&2
   exit 1
 fi
 # Phase 2b/2c left the rollbacks' values in AWS; this ordinary deploy with the

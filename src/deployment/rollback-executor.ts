@@ -1236,6 +1236,7 @@ async function replayFailedOperationsUnbound(
             ctx,
             secrets,
             routedVia: [op.provisionedBy ?? current.provisionedBy, revertVia],
+            stackName,
           });
           const desiredProps = noEcho.desired;
           // Issue #2274: the `--revert-failed` twin of the `revert` arm's

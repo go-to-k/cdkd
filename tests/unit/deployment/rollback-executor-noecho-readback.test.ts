@@ -488,8 +488,10 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       const readCurrentState = vi.fn().mockResolvedValue({ Readable: LIVE });
       const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'by-failed-deploy' } }) };
 
-      await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
 
+      expect(update).not.toHaveBeenCalled();
+      expect(result.failures).toBe(1);
       const text = lines.join('\n');
       expect(text).toContain('at WriteOnly,');
       expect(text).not.toContain('Readable');
@@ -566,8 +568,10 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
         .mockResolvedValue({ Tags: [{ Key: 'a', Value: 'x' }, { Key: 's', Value: 'q7z' }] });
       const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'by-failed-deploy' } }) };
 
-      await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
 
+      expect(result.failures).toBe(0);
+      expect(update).toHaveBeenCalledTimes(1);
       expect(persisted(state)).not.toContain('q7z');
     });
 
@@ -741,6 +745,66 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
           );
       expect(update).not.toHaveBeenCalled();
       expect(result.failures).toBe(1);
+    });
+
+    it('an attribute under ANOTHER name that EMBEDS the value is flattened whole in the restored record', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'phys',
+        wasReplaced: false,
+        attributes: { ConnectionString: `postgres://u:${LIVE}@host:5432/db`, Plain: 'kept' },
+      });
+      const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: LIVE });
+      const { state, ops } = marked();
+
+      await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(state['Param']!.attributes).toEqual({ ConnectionString: SECRET_MASK, Plain: 'kept' });
+    });
+
+    it('an OBJECT value at a marked coordinate masks each of its scalars in lines, a number included', async () => {
+      const update = vi
+        .fn()
+        .mockRejectedValue(new Error('ValidationException: port 4242 is not allowed'));
+      const prev = res({
+        properties: { Config: { Host: SECRET_MASK, Port: SECRET_MASK }, Description: 'd' },
+        noEchoLeaves: [['Config']],
+      });
+      const readCurrentState = vi
+        .fn()
+        .mockResolvedValue({ Config: { Host: 'object-live-host', Port: 4242 }, Description: 'd' });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'x' } }) };
+
+      await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(lines.join('\n')).not.toContain('4242');
+      expect(JSON.stringify(events)).not.toContain('4242');
+    });
+
+    it('a list the provider returned unpairable is masked whole AND named whole in noEchoLeaves', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'phys',
+        wasReplaced: false,
+        // No identity field on the returned elements.
+        effectiveProperties: { Tags: [{ Value: 'q7z' }, { Value: 'x' }] },
+      });
+      const prev = res({
+        properties: { Tags: [{ Key: 'a', Value: 'x' }, { Key: 's', Value: SECRET_MASK }] },
+        noEchoLeaves: [['Tags', 1, 'Value']],
+      });
+      const readCurrentState = vi
+        .fn()
+        .mockResolvedValue({ Tags: [{ Key: 'a', Value: 'x' }, { Key: 's', Value: 'q7z' }] });
+      const state = { Param: res({ properties: { ...structuredClone(prev.properties), Changed: 'x' } }) };
+
+      const result = await replayRollback(opFor(prev), state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(result.failures).toBe(0);
+      expect(state['Param']!.properties['Tags']).toEqual([
+        { Value: SECRET_MASK },
+        { Value: SECRET_MASK },
+      ]);
+      expect(state['Param']!.noEchoLeaves).toEqual([['Tags']]);
     });
 
     it('a nested stack row whose bag ALSO holds an unmarked mask keeps the general refusal', async () => {

@@ -1338,6 +1338,26 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       });
     });
 
+    // Phase C: with no export-name verdict (no outputs pass ran), the
+    // nested child's snapshot keeps no previous export, and says so.
+    it('(Phase C) a nested pending snapshot with NO verdict refuses every previous export name, with a warning', async () => {
+      const engine = makeEngine({
+        parentStackInfo: { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: REGION },
+      }) as unknown as Record<string, unknown> & {
+        settleJournalAfterSuccess: (...args: unknown[]) => Promise<number>;
+      };
+      engine['carriedExportAliasRefusal'] = undefined;
+      const state = v11State();
+      state.outputs = { Kept: 'v' };
+      state.exportNames = ['Kept'];
+      await engine.settleJournalAfterSuccess(STACK, [], state, state.resources, false);
+      const segment = stateBackend.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
+        previousOutputs: { outputs: object; exportNames?: string[] };
+      };
+      expect(segment.previousOutputs).toEqual({ outputs: {}, exportNames: [] });
+      expect(lines(logger.warn).some((l) => l.includes('no export-name verdict is available'))).toBe(true);
+    });
+
     it('(3) an orphan record is masked by today\'s template positions', () => {
       const engine = makeEngine() as unknown as Record<string, unknown> & {
         redactStateForPersist: (state: StackState) => StackState;

@@ -11,9 +11,9 @@ import {
   noEchoLeavesOf,
   readbackPathFor,
   recordLogOnlyParameterValue,
-  recordMaskOnlyValue,
+  recordNoEchoParameterFreshValue,
+  canonicalCoordinates,
   valueAtCoordinate,
-  wholeStringLeavesOf,
   SECRET_MASK,
   type NoEchoCoordinate,
   type RecordedSecretValues,
@@ -287,8 +287,10 @@ export async function substituteMarkedNoEchoLeaves(input: {
    * out the nested row's inert arm.
    */
   routedVia: readonly (string | undefined)[];
+  /** The stack the op belongs to: a public token the containment arm spares. */
+  stackName: string;
 }): Promise<NoEchoReplaySubstitution> {
-  const { desired, baseline, live, logicalId, ctx, secrets, routedVia } = input;
+  const { desired, baseline, live, logicalId, ctx, secrets, routedVia, stackName } = input;
   const identity: NoEchoReplaySubstitution = {
     desired,
     onPreviousSide: (bag) => bag,
@@ -331,8 +333,14 @@ export async function substituteMarkedNoEchoLeaves(input: {
     throw unreadableNoEchoLeafRefusal(logicalId, unreadable, 'not-readable');
   let substituted: Record<string, unknown> = desired;
   for (const { coordinate, value } of values) {
-    recordLogOnlyParameterValue(secrets, value);
-    for (const leaf of wholeStringLeavesOf(value)) recordMaskOnlyValue(secrets, leaf);
+    // Every scalar leaf, at any depth: `recordLogOnlyParameterValue` spells a
+    // scalar or a list, and an object value's leaves are values too.
+    for (const leaf of loggableLeavesOf(value)) recordLogOnlyParameterValue(secrets, leaf);
+    // The deploy's value arm for a NoEcho parameter: a FRESH mask-only needle
+    // AND a containment needle, so a leaf EMBEDDING the value under another
+    // name (`postgres://u:<value>@host`) is flattened whole in the restored
+    // record. The region and the stack name stay out of the containment arm.
+    recordNoEchoParameterFreshValue(value, secrets, new Set([ctx.region, stackName]));
     substituted = replaceAtCoordinate(substituted, coordinate, value);
   }
   return {
@@ -350,6 +358,17 @@ export async function substituteMarkedNoEchoLeaves(input: {
       return out;
     },
   };
+}
+
+/** A value's scalar leaves, and each list whole (its joined spelling prints too). */
+function loggableLeavesOf(value: unknown): unknown[] {
+  if (value === null || typeof value !== 'object') return [value];
+  if (Array.isArray(value)) {
+    return value.every((item) => item === null || typeof item !== 'object')
+      ? [value]
+      : value.flatMap(loggableLeavesOf);
+  }
+  return Object.values(value as Record<string, unknown>).flatMap(loggableLeavesOf);
 }
 
 function declaredNoEchoAttributeNames(record: ResourceState): string[] {
@@ -414,10 +433,20 @@ export function maskRestoredNoEchoRecord(
     reshaped.length === 0
       ? byIndex
       : maskReadbackAtCoordinates(byIndex, baseline.properties, reshaped);
+  // A list masked WHOLE (nothing paired an element) is named by its own path,
+  // so every `***` the record holds stays a coordinate it lists: drift and
+  // export read an unlisted mask as another population's.
+  const widened = reshaped
+    .map((coordinate) => readbackPathFor(byIndex, baseline.properties, coordinate))
+    .filter(
+      (path, i): path is NoEchoCoordinate => path !== undefined && path.length < reshaped[i]!.length
+    );
+  const leaves =
+    widened.length === 0 ? baseline.noEchoLeaves : canonicalCoordinates([...marked, ...widened]);
   return {
     ...record,
     properties,
     ...(attributes !== record.attributes && { attributes }),
-    ...(baseline.noEchoLeaves !== undefined && { noEchoLeaves: baseline.noEchoLeaves }),
+    ...(leaves !== undefined && { noEchoLeaves: leaves }),
   };
 }
