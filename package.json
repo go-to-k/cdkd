@@ -115,20 +115,27 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@ox-content/theme-swiss": "^3.2.8",
+    "@iconify-json/lucide": "^1.2.141",
+    "@ox-content/islands": "3.2.13",
     "@ox-content/vite-plugin": "3.2.13",
+    "@ox-content/vite-plugin-vue": "3.2.13",
     "@types/adm-zip": "^0.5.8",
     "@types/archiver": "^8.0.0",
     "@types/graphlib": "^2.1.12",
     "@types/node": "^26.4.1",
     "@types/proxy-from-env": "^1.0.4",
+    "@types/three": "^0.186.0",
     "@types/ws": "^8.18.1",
+    "@vizejs/vite-plugin": "^0.435.0",
     "aws-cdk-lib": "^2.260.0",
     "constructs": "^10.5.0",
     "marked": "18.0.14",
     "playwright": "1.63.0",
+    "three": "^0.186.1",
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3",
-    "vite-plus": "^1.0.0"
+    "vite-plus": "^1.0.0",
+    "vize": "^0.435.0",
+    "vue": "^3.5.43"
   }
 }

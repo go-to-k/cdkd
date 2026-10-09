@@ -437,7 +437,7 @@ describe('assumeRoleForCrossAccountStateRead', () => {
   // NICE-TO-HAVE 9: trust-policy hint wrapping
   // ---------------------------------------------------------------------------
 
-  it('wraps STS errors with the trust-policy / cross-stack-references hint', async () => {
+  it('wraps STS errors with the trust-policy hint and its cdkd.dev link', async () => {
     const original = new Error(
       'AccessDenied: User: arn:aws:iam::111:role/cdkd-deployer is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::222:role/cross-acct',
     );
@@ -447,11 +447,12 @@ describe('assumeRoleForCrossAccountStateRead', () => {
       assumeRoleForCrossAccountStateRead('arn:aws:iam::222:role/cross-acct'),
     ).rejects.toThrow(/trust-policy/i);
 
-    // Same call, fresh: assert full message shape including the docs pointer.
+    // Same call, fresh: the docs pointer is the published section, not a
+    // repository path, which moves with the docs tree.
     mockStsSend.mockRejectedValueOnce(original);
     await expect(
       assumeRoleForCrossAccountStateRead('arn:aws:iam::222:role/cross-acct'),
-    ).rejects.toThrow(/docs\/cross-stack-references\.md/);
+    ).rejects.toThrow(/See https:\/\/cdkd\.dev\/cross-stack-internals\/#iam-permissions for/);
   });
 
   it('chains the original STS error as `cause` on the trust-policy wrapper', async () => {

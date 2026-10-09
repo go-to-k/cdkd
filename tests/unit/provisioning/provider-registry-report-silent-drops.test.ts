@@ -270,7 +270,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     // destroy-and-recreate.") — which is the failure this round exists to
     // prevent, one step further along — and by a mis-subjected sentence.
     expect(warned, 'the remedy has no hand-off — the outcome is stated and abandoned').toContain(
-      'docs/cli-deploy-safety.md'
+      'see https://cdkd.dev/cli-deploy-safety/. Widening'
     );
     expect(warned, 'the "widening alone is not enough" clause is gone').toMatch(
       /Widening --prefer-sdk-route alone cannot/

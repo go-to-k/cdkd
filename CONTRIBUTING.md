@@ -62,10 +62,15 @@ vp run dev
 vp run test:coverage
 vp test --ui
 
-# Documentation site (https://cdkd.dev) -- a separate vite.docs.config.ts
+# Documentation site (https://cdkd.dev) -- a separate docs/_site/vite.config.ts
 vp run docs:dev
 vp run docs:build
 vp run docs:preview
+
+# The site's Vue app (components and client code under docs/_site/), through vize
+vp run vue:lint         # Vue components, opinionated preset
+vp run vue:fmt          # vue:fmt:check only reports
+vp run vue:check        # strict type check
 ```
 
 Every task is registered in `vite.config.ts` and invoked as `vp run <task>`;

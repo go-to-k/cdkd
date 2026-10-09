@@ -129,7 +129,7 @@ describe('the extension / lockfile skip list', () => {
   it.each([
     'docs/image.png',
     'assets/cdk-vs-cdkd.gif',
-    'docs-site/logo.svg',
+    'docs/_site/logo.svg',
     'assets/x.jpeg',
     'a/b.webp',
     'a/b.pdf',

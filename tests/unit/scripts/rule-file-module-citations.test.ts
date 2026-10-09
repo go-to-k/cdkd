@@ -87,7 +87,7 @@ const SKIP_DIRS = new Set([
   'cdk.out',
   'coverage',
   '.claude',
-  'docs-site',
+  '_site',
 ]);
 
 /**

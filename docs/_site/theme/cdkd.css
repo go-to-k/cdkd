@@ -1,0 +1,951 @@
+/*
+ * cdkd.dev theme layer on Ox Content's core stylesheet -- the reading pages.
+ *
+ * These pages are for finding and reading: a quiet header, a sidebar whose
+ * groups fold, an outline that tracks the section, and text set at the
+ * brand's body measure. Every value comes from a `--cdkd-*` token (generated
+ * from docs/_site/brand/cdkd.tokens.json); Ox Content's `--octc-*` variables
+ * are pointed at those tokens once, below, so core components follow the
+ * brand without per-component overrides. Structure comes from space and the
+ * three surface tones -- not rules, numbering, capitals or glow.
+ */
+
+/* -- Ox Content variables, resolved through the brand tokens ---------------- */
+/* `:root:root` outranks both of core's dark blocks; the `--cdkd-*` values
+   switch on their own, so one declaration covers every theme state. */
+:root:root {
+  --octc-font-sans: var(--cdkd-font-sans);
+  --octc-font-mono: var(--cdkd-font-mono);
+  --octc-header-height: 64px;
+  --octc-sidebar-width: 272px;
+  --octc-max-content-width: 760px;
+
+  --octc-color-bg: var(--cdkd-color-bg);
+  --octc-color-bg-alt: var(--cdkd-color-surface-alt);
+  --octc-color-text: var(--cdkd-color-text);
+  --octc-color-text-muted: var(--cdkd-color-text-muted);
+  --octc-color-border: var(--cdkd-color-border-subtle);
+  --octc-color-primary: var(--cdkd-color-link);
+  --octc-color-primary-hover: var(--cdkd-color-link-hover);
+  --octc-color-on-primary: var(--cdkd-color-on-accent);
+  --octc-color-backdrop: rgb(13 20 30 / 56%);
+  --octc-surface-glass: var(--cdkd-color-surface);
+  --octc-surface-line: var(--cdkd-color-border-subtle);
+  --octc-surface-noise-image: none;
+
+  --octc-color-tip: var(--cdkd-color-success);
+  --octc-color-info: var(--cdkd-color-info);
+  --octc-color-warning: var(--cdkd-color-warning);
+  --octc-color-danger: var(--cdkd-color-danger);
+  --octc-color-success: var(--cdkd-color-success);
+
+  --octc-color-code-bg: var(--cdkd-color-code-bg);
+  --octc-color-code-bg-top: var(--cdkd-color-code-bg);
+  --octc-color-code-text: var(--cdkd-color-code-text);
+  --octc-color-code-frame-border: var(--cdkd-code-frame);
+
+  --octc-focus-ring: var(--cdkd-border-focus-width) solid var(--cdkd-color-focus);
+  --octc-focus-offset: var(--cdkd-border-focus-offset);
+  --octc-motion-base: var(--cdkd-motion-normal);
+  --octc-motion-ease: var(--cdkd-motion-ease);
+  --octc-touch-target: var(--cdkd-size-control-height);
+
+  /* Lets `height: auto` animate, for the folding sidebar groups. */
+  interpolate-size: allow-keywords;
+}
+
+/* -- Page --------------------------------------------------------------------- */
+html {
+  background: var(--cdkd-color-bg);
+}
+
+body {
+  font-family: var(--cdkd-font-sans);
+  font-feature-settings: var(--cdkd-font-features-ui);
+  color: var(--cdkd-color-text);
+  background: var(--cdkd-color-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--cdkd-color-selected);
+  color: var(--cdkd-color-text);
+}
+
+:where(a, button, input, summary, [tabindex]):focus-visible {
+  outline: var(--cdkd-border-focus-width) solid var(--cdkd-color-focus);
+  outline-offset: var(--cdkd-border-focus-offset);
+}
+
+.cdkd-visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Without scripting, core hides every island. One the build rendered is
+   finished markup, so it stays (theme/home.css keeps the hero's in place). */
+@media (scripting: none) {
+  [data-ox-island][data-ox-ssr] {
+    display: contents !important;
+  }
+}
+
+/* Icons are masks painted with a background color, which forced colors
+   would clear: they take the text color instead. */
+@media (forced-colors: active) {
+  .iconify-icon {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+}
+
+/* The search button's name where core hides its visible word (640px and
+   below); elsewhere the visible word names it and this stays out of it. */
+.search-button .cdkd-search-name {
+  display: none;
+
+  @media (max-width: 640px) {
+    display: block;
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* Page to page, the content crossfades while the chrome stays put. */
+@view-transition {
+  navigation: auto;
+}
+
+/* Named only for navigation. During a theme toggle the whole page has to be
+   one snapshot: a named element is captured on its own, cross-fades above
+   the circle and switches theme ahead of it. */
+:root:not([data-ox-theme-transition]) {
+  & .header {
+    view-transition-name: cdkd-header;
+  }
+
+  & .sidebar {
+    view-transition-name: cdkd-sidebar;
+  }
+}
+
+::view-transition-group(*) {
+  animation-duration: var(--cdkd-motion-slow);
+  animation-timing-function: var(--cdkd-motion-ease);
+}
+
+/* Going light, Ox Content shrinks the outgoing snapshot with a clip-path
+   animation that does not fill forwards: on its last frame the dark
+   snapshot is shown whole again before the transition ends. Its resting
+   clip is already the end of the shrink, so that frame shows nothing. */
+:root[data-ox-theme-transition='shrink']::view-transition-old(root) {
+  clip-path: circle(0);
+}
+
+/* -- Header ------------------------------------------------------------------- */
+/* Quiet on purpose: the page's own ground, no rule, no boxes. */
+.header {
+  background: var(--cdkd-color-bg);
+  border-bottom: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  transition:
+    background-color var(--cdkd-motion-normal) var(--cdkd-motion-ease),
+    color var(--cdkd-motion-normal) var(--cdkd-motion-ease);
+
+  /* The lockup: wordmark at 20px and the symbol one em tall beside it, so
+     the cloud spans the letters from ascender to baseline. */
+  & .header-title {
+    gap: var(--cdkd-space-2);
+    font-size: 1.25rem;
+    line-height: 1;
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: -0.03em;
+    color: var(--cdkd-color-text);
+  }
+
+  & .header-logo {
+    inline-size: auto;
+    block-size: 1em;
+    margin-inline-end: 0;
+  }
+
+  & .header-nav {
+    margin-inline-start: var(--cdkd-space-8);
+  }
+
+  & .header-nav-list {
+    gap: var(--cdkd-space-6);
+  }
+
+  & .header-nav-item a {
+    font-size: var(--cdkd-type-small-size);
+    color: var(--cdkd-color-text-secondary);
+    text-decoration: none;
+    transition: color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+    &:hover {
+      color: var(--cdkd-color-text);
+    }
+  }
+
+  & .header-actions {
+    gap: var(--cdkd-space-1);
+
+    & :is(.social-link, .theme-toggle, .search-button) {
+      border: 0;
+      border-radius: var(--cdkd-radius-md);
+      background: transparent;
+      color: var(--cdkd-color-text-secondary);
+      box-shadow: none;
+      transition:
+        background-color var(--cdkd-motion-fast) var(--cdkd-motion-ease),
+        color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+      &:hover {
+        background: var(--cdkd-color-surface-alt);
+        color: var(--cdkd-color-text);
+      }
+    }
+
+    & .search-button {
+      min-block-size: 36px;
+      font-size: var(--cdkd-type-small-size);
+
+      & kbd {
+        border: 0;
+        background: transparent;
+        font-family: var(--cdkd-font-sans);
+        font-size: var(--cdkd-type-caption-size);
+        color: var(--cdkd-color-text-muted);
+      }
+    }
+  }
+
+  /* A phone has the bottom bar for navigation; the header keeps the name. */
+  @media (max-width: 48rem) {
+    & .header-nav {
+      display: none;
+    }
+  }
+}
+
+/* -- Sidebar ------------------------------------------------------------------ */
+/* The page's own ground in every theme; core tints it per theme with
+   selectors this one outranks. */
+:root:root .sidebar {
+  background: var(--cdkd-color-bg);
+}
+
+.sidebar {
+  border-inline-end: 0;
+
+  & .nav-section + .nav-section {
+    margin-block-start: var(--cdkd-space-4);
+  }
+
+  & .nav-title {
+    border: 0;
+    padding-block: var(--cdkd-space-2);
+    font-size: var(--cdkd-type-small-size);
+    line-height: var(--cdkd-type-small-leading);
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--cdkd-color-text);
+  }
+
+  /* A folding group: the whole title row is the control, its chevron turns,
+     and the list opens to its own height. */
+  & .nav-section--collapsible {
+    & > .nav-title--summary {
+      align-items: center;
+      justify-content: space-between;
+      border-radius: var(--cdkd-radius-sm);
+      padding-inline: var(--cdkd-space-2);
+      transition: background-color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+      &::before {
+        order: 1;
+        margin: 0;
+        inline-size: 0.375rem;
+        block-size: 0.375rem;
+        border-width: 0 1.5px 1.5px 0;
+        color: var(--cdkd-color-text-muted);
+        transition: transform var(--cdkd-motion-normal) var(--cdkd-motion-ease);
+      }
+
+      &:hover {
+        background: var(--cdkd-color-surface-alt);
+      }
+    }
+
+    &::details-content {
+      block-size: 0;
+      overflow: clip;
+      transition:
+        block-size var(--cdkd-motion-normal) var(--cdkd-motion-ease),
+        content-visibility var(--cdkd-motion-normal) allow-discrete;
+    }
+
+    &[open]::details-content {
+      block-size: auto;
+    }
+  }
+
+  & .nav-list {
+    margin-block-start: var(--cdkd-space-1);
+  }
+
+  & .nav-link {
+    position: relative;
+    display: block;
+    border: 0;
+    border-radius: var(--cdkd-radius-sm);
+    padding: 0.375rem var(--cdkd-space-3);
+    font-size: var(--cdkd-type-small-size);
+    line-height: var(--cdkd-type-small-leading);
+    color: var(--cdkd-color-text-secondary);
+    transition:
+      background-color var(--cdkd-motion-fast) var(--cdkd-motion-ease),
+      color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+    &:hover {
+      padding-inline-start: var(--cdkd-space-3);
+      background: var(--cdkd-color-surface-alt);
+      color: var(--cdkd-color-text);
+    }
+
+    /* The current page: tint, ink and weight together, so the state never
+       rests on one cue. The tint settles in place as the page arrives;
+       nothing moves between rows. */
+    &.active {
+      padding-inline-start: var(--cdkd-space-3);
+      background: var(--cdkd-color-selected);
+      color: var(--cdkd-color-on-selected);
+      font-weight: var(--cdkd-weight-semibold);
+      box-shadow: none;
+      animation: cdkd-current-page var(--cdkd-motion-normal) var(--cdkd-motion-ease);
+    }
+  }
+}
+
+@keyframes cdkd-current-page {
+  from {
+    background-color: transparent;
+  }
+}
+
+/* -- Content ------------------------------------------------------------------ */
+.content {
+  font-size: var(--cdkd-type-body-size);
+  line-height: var(--cdkd-type-body-leading);
+
+  & p {
+    max-width: none;
+  }
+
+  & :is(h1, h2, h3, h4) {
+    font-weight: var(--cdkd-weight-semibold);
+    color: var(--cdkd-color-text);
+    scroll-margin-block-start: calc(var(--octc-header-height) + var(--cdkd-space-6));
+  }
+
+  & h1 {
+    font-size: var(--cdkd-type-h1-size);
+    line-height: var(--cdkd-type-h1-leading);
+    letter-spacing: var(--cdkd-type-h1-tracking);
+    margin-block-end: var(--cdkd-space-4);
+  }
+
+  & h2 {
+    font-size: 1.75rem;
+    line-height: 2.25rem;
+    letter-spacing: var(--cdkd-type-h2-tracking);
+    margin-block-start: var(--cdkd-space-16);
+    padding: 0;
+    border: 0;
+  }
+
+  & h3 {
+    font-size: 1.25rem;
+    line-height: 1.75rem;
+    letter-spacing: var(--cdkd-type-h3-tracking);
+    margin-block-start: var(--cdkd-space-10);
+  }
+
+  & h2 + h3 {
+    margin-block-start: var(--cdkd-space-6);
+  }
+
+  & h4 {
+    font-size: var(--cdkd-type-body-size);
+    line-height: 1.5rem;
+    margin-block-start: var(--cdkd-space-8);
+  }
+
+  & strong {
+    font-weight: var(--cdkd-weight-semibold);
+  }
+
+  & a:not(.ox-copy, .pager-link) {
+    color: var(--cdkd-color-link);
+    text-decoration-line: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.2em;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+    transition: text-decoration-color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+    &:hover {
+      color: var(--cdkd-color-link-hover);
+      text-decoration-color: currentColor;
+    }
+
+    & code {
+      color: inherit;
+    }
+  }
+
+  & :not(pre) > code {
+    font-family: var(--cdkd-font-mono);
+    font-feature-settings: var(--cdkd-font-features-code);
+    font-size: 0.875em;
+    padding: 0.125em 0.375em;
+    border: 1px solid var(--cdkd-color-border-subtle);
+    border-radius: var(--cdkd-radius-sm);
+    background: var(--cdkd-color-surface-alt);
+    color: var(--cdkd-color-text);
+    /* One token, one line (a flag never splits after its dashes); a span
+       too long for that is marked long by plugins/code-spans.ts. */
+    white-space: nowrap;
+
+    /* Between words first, inside one only when a single word would not fit. */
+    &.cdkd-code-long {
+      white-space: normal;
+      overflow-wrap: break-word;
+    }
+  }
+
+  /* Heading text is its anchor id, so a heading's code is not marked and
+     wraps as heading text does. */
+  & :is(h1, h2, h3, h4, h5, h6) code {
+    white-space: normal;
+  }
+
+  & hr {
+    border: 0;
+    border-block-start: 1px solid var(--cdkd-color-border-subtle);
+    margin-block: var(--cdkd-space-12);
+  }
+
+  & kbd {
+    font-family: var(--cdkd-font-mono);
+    font-size: 0.8125em;
+    padding: 0.0625em 0.375em;
+    border: 1px solid var(--cdkd-color-border);
+    border-block-end-width: 2px;
+    border-radius: var(--cdkd-radius-sm);
+    background: var(--cdkd-color-surface);
+  }
+
+  /* Code: Night in both themes, per the brand; on a Night page the frame
+     keeps its edge. */
+  & .ox-code {
+    position: relative;
+  }
+
+  & pre {
+    font-family: var(--cdkd-font-mono);
+    font-feature-settings: var(--cdkd-font-features-code);
+    border: 1px solid var(--cdkd-code-frame);
+    border-radius: var(--cdkd-radius-md);
+    line-height: var(--cdkd-type-code-leading);
+
+    & code {
+      font-size: var(--cdkd-type-code-size);
+    }
+  }
+
+  & .ox-copy {
+    border-radius: var(--cdkd-radius-sm);
+    color: var(--cdkd-color-code-muted);
+
+    &:hover {
+      color: var(--cdkd-color-code-text);
+      background: color-mix(in srgb, var(--cdkd-color-code-text) 10%, transparent);
+    }
+  }
+
+  /* Package-manager tabs: one code frame, with the choice as its header.
+     The active manager takes the brand route as its underline. */
+  & .ox-tabs {
+    margin-block: var(--cdkd-space-6);
+    border: 1px solid var(--cdkd-code-frame);
+    border-radius: var(--cdkd-radius-md);
+    background: var(--cdkd-color-code-bg);
+  }
+
+  & .ox-tabs-header {
+    gap: var(--cdkd-space-1);
+    padding: 0 var(--cdkd-space-2);
+    border-block-end: 1px solid color-mix(in srgb, var(--cdkd-color-code-text) 14%, transparent);
+
+    & label {
+      min-block-size: var(--cdkd-size-control-height);
+      padding: 0 var(--cdkd-space-3);
+      font-family: var(--cdkd-font-mono);
+      font-size: var(--cdkd-type-small-size);
+      font-weight: var(--cdkd-weight-regular);
+      color: var(--cdkd-color-code-muted);
+      border-block-end-width: 2px;
+      margin-block-end: -1px;
+
+      &:hover {
+        color: var(--cdkd-color-code-text);
+      }
+    }
+
+    & input[type='radio']:checked + label {
+      color: var(--cdkd-color-code-text);
+      border-block-end-color: var(--cdkd-color-accent);
+    }
+
+    & input[type='radio']:focus-visible + label {
+      outline: var(--cdkd-border-focus-width) solid var(--cdkd-color-focus);
+      outline-offset: -4px;
+      border-radius: var(--cdkd-radius-sm);
+    }
+
+    @media (forced-colors: active) {
+      & label {
+        forced-color-adjust: none;
+        color: CanvasText;
+        border-block-end-color: Canvas;
+      }
+
+      & input[type='radio']:checked + label {
+        color: Highlight;
+        border-block-end-color: Highlight;
+      }
+    }
+  }
+
+  /* Diagrams (docs/_site/diagrams) are drawn in the page's own colors, so they
+     follow the theme; on a phone the narrow drawing stands in for the wide
+     one rather than shrinking its text. */
+  & .cdkd-diagram {
+    margin: var(--cdkd-space-8) 0;
+
+    & svg {
+      display: block;
+      inline-size: 100%;
+      block-size: auto;
+      overflow: visible;
+      font-family: var(--cdkd-font-sans);
+    }
+
+    & .cdkd-diagram__svg--wide {
+      max-inline-size: 45rem;
+    }
+
+    & .cdkd-diagram__svg--narrow {
+      display: none;
+      max-inline-size: 22.5rem;
+    }
+
+    & .d-node rect {
+      fill: var(--cdkd-color-surface);
+      stroke: var(--cdkd-color-border);
+      stroke-width: 1;
+    }
+
+    & .d-node--route rect {
+      stroke: var(--cdkd-color-accent);
+      stroke-width: 1.5;
+    }
+
+    & .d-title {
+      fill: var(--cdkd-color-text);
+      font-size: 15px;
+      font-weight: var(--cdkd-weight-semibold);
+    }
+
+    & :is(.d-detail, .d-mono) {
+      fill: var(--cdkd-color-text-secondary);
+      font-size: 13px;
+    }
+
+    & .d-mono {
+      font-family: var(--cdkd-font-mono);
+      font-size: 12.5px;
+    }
+
+    & .d-note {
+      fill: var(--cdkd-color-text-muted);
+      font-size: 13px;
+    }
+
+    & .d-label {
+      fill: var(--cdkd-color-text-muted);
+      font-size: 12px;
+    }
+
+    & .d-edge {
+      fill: none;
+      stroke: var(--cdkd-color-text-muted);
+      stroke-width: 1.25;
+    }
+
+    & .d-head {
+      fill: var(--cdkd-color-text-muted);
+    }
+
+    /* In the reader's high-contrast palette, the route in its highlight. */
+    @media (forced-colors: active) {
+      & svg {
+        forced-color-adjust: none;
+      }
+
+      & .d-node rect {
+        fill: Canvas;
+        stroke: CanvasText;
+      }
+
+      & .d-node--route rect {
+        stroke: Highlight;
+      }
+
+      & :is(.d-title, .d-detail, .d-mono, .d-note, .d-label, .d-head) {
+        fill: CanvasText;
+      }
+
+      & .d-edge {
+        stroke: CanvasText;
+      }
+    }
+
+    @media (max-width: 40rem) {
+      & .cdkd-diagram__svg--wide {
+        display: none;
+      }
+
+      & .cdkd-diagram__svg--narrow {
+        display: block;
+      }
+    }
+  }
+
+  & .ox-tab-panel {
+    padding: 0;
+    background: transparent;
+
+    & pre {
+      margin: 0;
+      border: 0;
+      border-radius: 0 0 var(--cdkd-radius-md) var(--cdkd-radius-md);
+    }
+  }
+
+  /* Tables: the header row set apart by weight and one firmer rule, rows by
+     hairlines, numbers on their digits. */
+  & table {
+    border: 1px solid var(--cdkd-color-border-subtle);
+    border-radius: var(--cdkd-radius-md);
+    background: var(--cdkd-color-surface);
+    font-size: var(--cdkd-type-small-size);
+    line-height: var(--cdkd-type-small-leading);
+    font-variant-numeric: var(--cdkd-numeric-data);
+  }
+
+  & :is(th, td) {
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--cdkd-color-border-subtle);
+    /* A row reads from its first line: a flag sits level with the start of
+       its description, not halfway down it. */
+    vertical-align: baseline;
+  }
+
+  & th {
+    background: var(--cdkd-color-surface);
+    font-weight: var(--cdkd-weight-semibold);
+    color: var(--cdkd-color-text);
+    border-block-end-color: var(--cdkd-color-border);
+  }
+
+  /* Quotes and callouts are tinted surfaces, not ruled ones. Callouts use
+     the audited semantic pairs; orange is the brand route, never a warning. */
+  & blockquote {
+    border: 0;
+    border-radius: var(--cdkd-radius-md);
+    padding: var(--cdkd-space-4) var(--cdkd-space-5);
+    background: var(--cdkd-color-surface-alt);
+    color: var(--cdkd-color-text-secondary);
+
+    &.ox-callout {
+      --cdkd-callout-ink: var(--cdkd-color-info);
+      --cdkd-callout-bg: var(--cdkd-color-info-bg);
+
+      border: 0;
+      background: var(--cdkd-callout-bg);
+      color: var(--cdkd-color-text);
+    }
+
+    &.ox-callout--tip {
+      --cdkd-callout-ink: var(--cdkd-color-success);
+      --cdkd-callout-bg: var(--cdkd-color-success-bg);
+    }
+
+    &:is(.ox-callout--warning, .ox-callout--important) {
+      --cdkd-callout-ink: var(--cdkd-color-warning);
+      --cdkd-callout-bg: var(--cdkd-color-warning-bg);
+    }
+
+    &.ox-callout--caution {
+      --cdkd-callout-ink: var(--cdkd-color-danger);
+      --cdkd-callout-bg: var(--cdkd-color-danger-bg);
+    }
+  }
+
+  & .ox-callout-title {
+    font-size: var(--cdkd-type-label-size);
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--cdkd-callout-ink);
+  }
+
+  @media (max-width: 48rem) {
+    /* A phone has no room for columns: each row is set as a block, its first
+       cell as the row's name and every other cell under its column's label.
+       The labels and table roles come from the theme script; without it the
+       table keeps its columns and scrolls sideways. */
+    & table {
+      inline-size: auto;
+    }
+
+    & table[data-cdkd-stack] {
+      overflow: visible;
+
+      & thead {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      & :is(tbody, tr, td) {
+        display: block;
+      }
+
+      & tr {
+        padding: var(--cdkd-space-4);
+        border-block-end: 1px solid var(--cdkd-color-border-subtle);
+
+        &:last-child {
+          border-block-end: 0;
+        }
+      }
+
+      & td {
+        padding: 0;
+        border: 0;
+        /* Core keeps a phone's cells on one line for sideways scrolling. */
+        white-space: normal;
+
+        & + td {
+          margin-block-start: var(--cdkd-space-2);
+        }
+
+        &:first-child {
+          font-weight: var(--cdkd-weight-semibold);
+          color: var(--cdkd-color-text);
+        }
+
+        &:not(:first-child)[data-label]::before {
+          content: attr(data-label);
+          /* Seen only: a screen reader already names the cell's column. */
+          content: attr(data-label) / '';
+          margin-inline-end: var(--cdkd-space-2);
+          font-size: var(--cdkd-type-caption-size);
+          line-height: var(--cdkd-type-caption-leading);
+          color: var(--cdkd-color-text-muted);
+        }
+      }
+    }
+
+    & h2 {
+      font-size: 1.5rem;
+      line-height: 2rem;
+      margin-block-start: var(--cdkd-space-12);
+    }
+
+    & h3 {
+      font-size: 1.1875rem;
+      line-height: 1.625rem;
+    }
+  }
+}
+
+/* Status marks (docs/_site/plugins/status-icons.ts): icon and color
+   together, so shape alone still tells yes from no. */
+.cdkd-status {
+  display: inline-flex;
+  vertical-align: -0.1875em;
+  color: var(--cdkd-color-text-muted);
+
+  &.cdkd-status--yes {
+    color: var(--cdkd-color-success);
+  }
+
+  &.cdkd-status--no {
+    color: var(--cdkd-color-danger);
+  }
+
+  &.cdkd-status--caution {
+    color: var(--cdkd-color-warning);
+  }
+
+  & .cdkd-status__icon {
+    display: inline-block;
+    inline-size: 1.125rem;
+    block-size: 1.125rem;
+    background-color: currentColor;
+  }
+}
+
+/* -- On this page ------------------------------------------------------------- */
+.toc {
+  border-inline-start: 0;
+
+  & .toc-title {
+    border: 0;
+    font-size: var(--cdkd-type-small-size);
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--cdkd-color-text);
+  }
+
+  & .toc-link {
+    border: 0;
+    border-radius: var(--cdkd-radius-sm);
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+    color: var(--cdkd-color-text-muted);
+    transition: color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+    &:hover,
+    &.active {
+      color: var(--cdkd-color-text);
+    }
+
+    &.active {
+      font-weight: var(--cdkd-weight-medium);
+    }
+  }
+}
+
+/* Core shows the outline only from 1440px; a 1280 or 1366 laptop -- the
+   common sizes -- got none, on pages like troubleshooting.md that carry 60
+   headings. Lower it to 1280px and restate both declarations: `display`
+   alone would float the outline over the text, since the reserve lives in
+   the same block. */
+@media (min-width: 1280px) {
+  .toc {
+    display: block;
+  }
+
+  .main--with-toc {
+    padding-inline-end: 17rem;
+  }
+}
+
+/* -- Page end ----------------------------------------------------------------- */
+.pager {
+  border-block-start: 0;
+  gap: var(--cdkd-space-4);
+
+  & .pager-link {
+    flex: 1 1 0;
+    padding: var(--cdkd-space-4);
+    border: 1px solid var(--cdkd-color-border-subtle);
+    border-radius: var(--cdkd-radius-md);
+    background: var(--cdkd-color-surface);
+    transition: border-color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+    &:hover {
+      border-color: var(--cdkd-color-border);
+
+      & .pager-title {
+        color: var(--cdkd-color-text);
+      }
+    }
+  }
+
+  & .pager-label {
+    font-size: var(--cdkd-type-caption-size);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+}
+
+.last-updated {
+  font-size: var(--cdkd-type-caption-size);
+  color: var(--cdkd-color-text-muted);
+  font-variant-numeric: var(--cdkd-numeric-data);
+}
+
+.site-footer {
+  border-block-start: 0;
+  color: var(--cdkd-color-text-muted);
+  font-size: var(--cdkd-type-caption-size);
+}
+
+/* -- Search ------------------------------------------------------------------- */
+.search-modal {
+  border: 1px solid var(--cdkd-color-border-subtle);
+  border-radius: var(--cdkd-radius-lg);
+  background: var(--cdkd-color-surface);
+  box-shadow: var(--cdkd-shadow-lg);
+
+  /* The open modal already says where focus is; a ring inside it is noise. */
+  & .search-input {
+    font-family: var(--cdkd-font-sans);
+    color: var(--cdkd-color-text);
+
+    &:focus-visible {
+      outline: none;
+    }
+  }
+
+  & .search-result:is(.selected, :hover) {
+    background: var(--cdkd-color-selected);
+  }
+}
+
+/* -- Phone chrome ------------------------------------------------------------- */
+.mobile-footer {
+  background: var(--cdkd-color-bg);
+  border-block-start: 1px solid var(--cdkd-color-border-subtle);
+
+  & .mobile-footer-btn {
+    color: var(--cdkd-color-text-secondary);
+  }
+
+  & .mobile-footer-label {
+    font-size: 0.6875rem;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+}

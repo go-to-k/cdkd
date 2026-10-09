@@ -1,0 +1,478 @@
+/*
+ * cdkd.dev home page: Ox Content's entry layout, composed as one poster.
+ *
+ * The first screen is the hero alone: the header steps aside while the hero
+ * is under it (the `cdkd-hero-in-view` class, set by the theme script) and
+ * returns once it has scrolled away. The hero splits in two. The copy holds
+ * the left half on the page's own ground, so it follows the theme. The right
+ * half is a field of Cloud Navy in both themes, and the symbol stands in it
+ * far larger than the field, cut cleanly by the field's own edges: the route
+ * enters from the copy's side and its head points out of the top corner,
+ * always inside the frame. Below 52rem the field moves to the top. The
+ * static symbol (the poster) sets that box in CSS; the key visual draws over
+ * the poster's box.
+ */
+
+/* The hero runs edge to edge and up under the fixed header. */
+.entry-page .layout {
+  padding-block-start: 0;
+}
+
+.entry-page .main {
+  padding: 0;
+}
+
+.entry-page > .header {
+  transition:
+    opacity var(--cdkd-motion-normal) var(--cdkd-motion-ease),
+    translate var(--cdkd-motion-normal) var(--cdkd-motion-ease),
+    visibility var(--cdkd-motion-normal) allow-discrete;
+}
+
+.entry-page.cdkd-hero-in-view > .header {
+  opacity: 0;
+  translate: 0 calc(-2 * var(--cdkd-motion-distance));
+  visibility: hidden;
+}
+
+/* -- Hero --------------------------------------------------------------------- */
+.entry-page .hero {
+  /* The copy lines up with the page column, until a very wide screen would
+     strand it in a fixed box beside an ever-larger field: from there it keeps
+     a share of the width instead, and the headline keeps growing. */
+  --cdkd-hero-inline: max(
+    var(--cdkd-layout-gutter),
+    min(calc((100vw - var(--cdkd-layout-max)) / 2), 14vw)
+  );
+
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  inline-size: 100%;
+  max-inline-size: none;
+  block-size: max(40rem, 100svh);
+  margin: 0;
+  padding: 0;
+  text-align: start;
+  color: var(--cdkd-color-text);
+  background: var(--cdkd-color-bg);
+  border: 0;
+  overflow: hidden;
+
+  &::after {
+    content: none;
+  }
+
+  & .hero-content {
+    position: relative;
+    grid-column: 1;
+    grid-row: 1;
+    max-inline-size: none;
+    margin: 0;
+    padding: var(--cdkd-space-16) var(--cdkd-space-16) var(--cdkd-space-16) var(--cdkd-hero-inline);
+
+    /* The copy settles in step with the symbol's assembly: each line rises
+       the brand's 8px, in reading order. Reduced motion zeroes both. */
+    & > * {
+      animation: cdkd-rise var(--cdkd-motion-slow) var(--cdkd-motion-ease) both;
+    }
+
+    & > :nth-child(2) {
+      animation-delay: 60ms;
+    }
+
+    & > :nth-child(3) {
+      animation-delay: 120ms;
+    }
+
+    & > :nth-child(n + 4) {
+      animation-delay: 180ms;
+    }
+
+    /* An island is `display: contents` by default, which would skip the rise. */
+    & > [data-ox-island] {
+      display: block;
+    }
+  }
+
+  /* h1 carries the product name, set small as the line the headline hangs
+     from; the headline carries the size. */
+  & .hero-name {
+    display: flex;
+    align-items: baseline;
+    gap: var(--cdkd-space-3);
+    margin: 0 0 var(--cdkd-space-8);
+    font-size: 1.25rem;
+    line-height: 1.5rem;
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: -0.03em;
+    color: var(--cdkd-color-text);
+
+    &::after {
+      content: 'CDK Direct';
+      font-size: var(--cdkd-type-body-size);
+      font-weight: var(--cdkd-weight-regular);
+      letter-spacing: 0;
+      color: var(--cdkd-color-text-muted);
+    }
+  }
+
+  & .hero-text {
+    max-inline-size: 7em;
+    margin: 0;
+    font-size: clamp(3rem, 1.25rem + 3.6vw, 7rem);
+    line-height: 0.98;
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: -0.052em;
+    color: var(--cdkd-color-text);
+    text-wrap: balance;
+  }
+
+  & .hero-tagline {
+    max-inline-size: 24em;
+    margin: var(--cdkd-space-8) 0 0;
+    font-size: clamp(1.1875rem, 0.75rem + 0.55vw, 1.5rem);
+    line-height: 1.52;
+    color: var(--cdkd-color-text-secondary);
+    text-align: start;
+    text-wrap: pretty;
+  }
+
+  /* One primary action; the second is a bordered secondary; the third is a
+     plain link. */
+  & .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: var(--cdkd-space-3);
+    margin-block-start: var(--cdkd-space-12);
+  }
+
+  & .hero-action {
+    min-inline-size: 0;
+    min-block-size: var(--cdkd-size-control-height);
+    padding: 0 var(--cdkd-space-6);
+    border: 1px solid transparent;
+    border-radius: var(--cdkd-radius-md);
+    font-size: var(--cdkd-type-label-size);
+    line-height: var(--cdkd-type-label-leading);
+    font-weight: var(--cdkd-weight-medium);
+    text-decoration: none;
+    transition:
+      background-color var(--cdkd-motion-fast) var(--cdkd-motion-ease),
+      border-color var(--cdkd-motion-fast) var(--cdkd-motion-ease),
+      transform var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+    &:active {
+      transform: translateY(1px);
+    }
+  }
+
+  & .hero-action-brand {
+    background: var(--cdkd-color-accent);
+    border-color: var(--cdkd-color-accent-border);
+    color: var(--cdkd-color-on-accent);
+
+    &:hover {
+      background: var(--cdkd-color-accent-hover);
+      border-color: var(--cdkd-color-accent-border);
+      color: var(--cdkd-color-on-accent);
+    }
+
+    &:active {
+      background: var(--cdkd-color-accent-active);
+    }
+  }
+
+  & .hero-action-alt {
+    background: var(--cdkd-color-surface);
+    border-color: var(--cdkd-color-border);
+    color: var(--cdkd-color-text);
+
+    &:hover {
+      background: var(--cdkd-color-surface-alt);
+      border-color: var(--cdkd-color-border);
+      color: var(--cdkd-color-text);
+    }
+
+    &:last-child {
+      padding-inline: var(--cdkd-space-3);
+      border-color: transparent;
+      background: transparent;
+      color: var(--cdkd-color-text-secondary);
+
+      &:hover {
+        background: transparent;
+        color: var(--cdkd-color-text);
+      }
+    }
+  }
+
+  & .hero-content .cdkd-command {
+    max-inline-size: 24rem;
+    margin-block-start: var(--cdkd-space-6);
+  }
+
+  /* The field: Cloud Navy in both themes, the symbol cut by its edges. The
+     symbol is the light-ground colorway on it, whatever the page theme, and
+     the key visual reads its colors from here. */
+  & .hero-image {
+    --cdkd-color-logo-cloud: var(--cdkd-cloud);
+    --cdkd-color-logo-route: var(--cdkd-orange);
+
+    position: relative;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: stretch;
+    max-inline-size: none;
+    margin: 0;
+    overflow: hidden;
+    background: var(--cdkd-navy);
+    pointer-events: none;
+
+    & img {
+      position: absolute;
+      inset-block-start: 13%;
+      inset-inline-end: 6.5%;
+      inline-size: 140%;
+      block-size: auto;
+      max-inline-size: none;
+    }
+
+    & > [data-ox-island] {
+      position: absolute;
+      inset: 0;
+      display: block;
+    }
+  }
+
+  /* Narrow: the field becomes the top of the screen -- never less than a
+     third of it -- and the copy follows on the page's ground, standing clear
+     of the phone's bottom bar. */
+  @media (max-width: 52rem) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(36svh, 1fr) auto;
+    align-items: stretch;
+
+    & .hero-image {
+      grid-column: 1;
+      grid-row: 1;
+
+      & img {
+        inset-block-start: 10%;
+        inline-size: max(120%, 52rem);
+      }
+    }
+
+    & .hero-content {
+      grid-row: 2;
+      max-inline-size: 40rem;
+      padding: var(--cdkd-space-10) var(--cdkd-layout-gutter)
+        calc(var(--octc-mobile-footer-height) + var(--cdkd-space-8));
+    }
+  }
+
+  @media (max-width: 48rem) {
+    & .hero-content {
+      padding-inline: var(--cdkd-layout-gutter-mobile);
+      padding-block-start: var(--cdkd-space-8);
+    }
+
+    & .hero-image img {
+      inline-size: 150%;
+    }
+
+    & .hero-name {
+      margin-block-end: var(--cdkd-space-3);
+      font-size: 1.125rem;
+
+      &::after {
+        font-size: var(--cdkd-type-small-size);
+      }
+    }
+
+    & .hero-text {
+      font-size: clamp(2.25rem, 9.2vw, 2.875rem);
+      line-height: 1;
+      max-inline-size: none;
+    }
+
+    & .hero-tagline {
+      margin-block-start: var(--cdkd-space-4);
+      font-size: var(--cdkd-type-body-size);
+      line-height: var(--cdkd-type-body-leading);
+    }
+
+    & .hero-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      max-inline-size: 28rem;
+      margin-block-start: var(--cdkd-space-6);
+    }
+
+    & .hero-action {
+      inline-size: 100%;
+      justify-content: center;
+    }
+
+    & .hero-action-brand {
+      grid-column: 1 / -1;
+    }
+
+    & .hero-content .cdkd-command {
+      display: none;
+    }
+  }
+}
+
+/* The field always takes the light-on-navy symbol; core's own
+   `display: block` on hero images outranks the theme-asset toggle. */
+.entry-page .hero-image img.theme-asset--light {
+  display: none;
+}
+
+.entry-page .hero-image img.theme-asset--dark {
+  display: block;
+}
+
+/* Without scripting, the hero's rendered islands keep their place (core
+   would hide them; theme/cdkd.css keeps the rest). */
+@media (scripting: none) {
+  .entry-page .hero .hero-content > [data-ox-island][data-ox-ssr] {
+    display: block !important;
+  }
+}
+
+/* With scripting on, the poster waits for the scene, which opens from the
+   line screen rather than the solid symbol; it shows after a beat if the
+   scene never comes. */
+@media (scripting: enabled) {
+  .entry-page .hero-image img {
+    opacity: 0;
+    animation: cdkd-poster-fallback 0s linear 1.5s forwards;
+  }
+
+  .entry-page .hero-image:is(.has-poster, .has-scene) img {
+    animation: none;
+  }
+
+  .entry-page .hero-image.has-poster img {
+    opacity: 1;
+  }
+}
+
+@keyframes cdkd-rise {
+  from {
+    opacity: 0;
+    translate: 0 calc(2 * var(--cdkd-motion-distance));
+  }
+}
+
+@keyframes cdkd-poster-fallback {
+  to {
+    opacity: 1;
+  }
+}
+
+/* -- Features ----------------------------------------------------------------- */
+.entry-page .features {
+  max-inline-size: var(--cdkd-layout-max);
+  margin: 0 auto;
+  padding: var(--cdkd-space-24) var(--cdkd-layout-gutter) var(--cdkd-space-20);
+
+  & .features-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--cdkd-space-12);
+    max-inline-size: none;
+    border: 0;
+  }
+
+  & .feature-card {
+    display: block;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+
+    &:hover {
+      background: transparent;
+
+      & .feature-title {
+        color: var(--cdkd-color-text);
+      }
+    }
+  }
+
+  & .feature-icon {
+    display: block;
+    inline-size: auto;
+    block-size: auto;
+    margin-block-end: var(--cdkd-space-5);
+    border-radius: 0;
+    background: none;
+    color: var(--cdkd-color-text);
+
+    & .iconify-icon {
+      display: block;
+      inline-size: 28px;
+      block-size: 28px;
+      background-color: currentColor;
+    }
+  }
+
+  & .feature-title {
+    margin: 0 0 var(--cdkd-space-2);
+    font-size: 1.25rem;
+    line-height: 1.75rem;
+    font-weight: var(--cdkd-weight-semibold);
+    letter-spacing: -0.02em;
+    color: var(--cdkd-color-text);
+  }
+
+  & .feature-details {
+    font-size: var(--cdkd-type-body-size);
+    line-height: var(--cdkd-type-body-leading);
+    color: var(--cdkd-color-text-secondary);
+  }
+
+  @media (max-width: 48rem) {
+    padding: var(--cdkd-space-16) var(--cdkd-layout-gutter-mobile) var(--cdkd-space-12);
+
+    & .features-grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--cdkd-space-10);
+    }
+  }
+}
+
+/* -- Body sections ------------------------------------------------------------ */
+.entry-page .entry-content {
+  max-inline-size: var(--cdkd-layout-max);
+  padding: 0 var(--cdkd-layout-gutter) var(--cdkd-space-24);
+
+  & .content {
+    max-inline-size: none;
+    padding: 0;
+
+    & h2 {
+      margin-block-start: 0;
+      font-size: var(--cdkd-type-h1-size);
+      line-height: var(--cdkd-type-h1-leading);
+      letter-spacing: var(--cdkd-type-h1-tracking);
+    }
+
+    & h2 + p {
+      max-inline-size: 40rem;
+      font-size: 1.125rem;
+      line-height: 1.75rem;
+      color: var(--cdkd-color-text-secondary);
+    }
+  }
+
+  @media (max-width: 48rem) {
+    padding-inline: var(--cdkd-layout-gutter-mobile);
+  }
+}

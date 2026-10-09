@@ -687,7 +687,7 @@ async function saveScrubbedState(
             safeMsg`could not be verified (${describeAwsFailure(err).detail}). ` +
             `Check that key yourself and, if it exists, delete it (aws s3api delete-object ` +
             `--bucket <state-bucket> --key <that key>), then purge its earlier versions as ` +
-            `docs/cli-scrub.md describes. A re-run will not check it again.`,
+            `https://cdkd.dev/cli-scrub/#what-a-real-run-removes-and-what-it-cannot describes. A re-run will not check it again.`,
           'SCRUB_LEGACY_STATE_KEY_UNVERIFIED'
         );
       }
@@ -697,7 +697,7 @@ async function saveScrubbedState(
             safeMsg`but its legacy key ${legacyKey} could not be deleted and still holds the ` +
             `pre-scrub record as its CURRENT object. Delete it (aws s3api delete-object ` +
             `--bucket <state-bucket> --key <that key>), then purge its earlier versions as ` +
-            `docs/cli-scrub.md describes.`,
+            `https://cdkd.dev/cli-scrub/#what-a-real-run-removes-and-what-it-cannot describes.`,
           'SCRUB_LEGACY_STATE_KEY_SURVIVES'
         );
       }

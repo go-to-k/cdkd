@@ -8,8 +8,8 @@
 // suppress the suffix (probed: `titleSuffix`, `titleTemplate`, `head:` — all
 // ignored, each build yielding `… - cdkd`). Setting the long title in
 // frontmatter therefore renders `cdkd - The fastest way to deploy AWS CDK. -
-// cdkd`, and also breaks og-template.ts's home detection, which keys on the
-// title being the site name.
+// cdkd`, and also breaks the OG card's home detection (docs/_site/og/og-image.vue),
+// which keys on the title being the site name.
 //
 // So the frontmatter stays `title: cdkd` (the OG image, JSON-LD, llms.txt and
 // the hero keep working off it) and this plugin rewrites the title surfaces
@@ -40,7 +40,7 @@ export function heroTextOf(markdown: string): string | undefined {
   // Same delimiter shape as Ox Content's own parseFrontmatter (CRLF-tolerant).
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(markdown);
   if (!fm) return undefined;
-  const doc: unknown = parseYaml(fm[1]);
+  const doc: unknown = parseYaml(fm[1] ?? '');
   const hero = (doc as { hero?: unknown } | null)?.hero;
   const text = (hero as { text?: unknown } | null | undefined)?.text;
   return typeof text === 'string' && text.trim() !== '' ? text.trim() : undefined;
@@ -68,8 +68,14 @@ const titleNeedles = (siteName: string, homeTitle: string): Array<[string, strin
   const full = escapeAttr(homeTitle);
   return [
     [`<title>${bare}</title>`, `<title>${full}</title>`],
-    [`<meta property="og:title" content="${bare}">`, `<meta property="og:title" content="${full}">`],
-    [`<meta name="twitter:title" content="${bare}">`, `<meta name="twitter:title" content="${full}">`],
+    [
+      `<meta property="og:title" content="${bare}">`,
+      `<meta property="og:title" content="${full}">`,
+    ],
+    [
+      `<meta name="twitter:title" content="${bare}">`,
+      `<meta name="twitter:title" content="${full}">`,
+    ],
     [`"headline":${JSON.stringify(siteName)}`, `"headline":${JSON.stringify(homeTitle)}`],
   ];
 };
@@ -131,7 +137,7 @@ export function homeTitlePlugin(options: HomeTitlePluginOptions): Plugin {
       const indexHtml = join(resolve(root, options.outDir), 'index.html');
       const homeTitle = homeTitleOf(
         options.siteName,
-        readFileSync(resolve(root, options.indexMarkdownPath), 'utf8')
+        readFileSync(resolve(root, options.indexMarkdownPath), 'utf8'),
       );
       const before = readFileSync(indexHtml, 'utf8');
       const after = rewriteHomeTitle(before, options.siteName, homeTitle);
@@ -142,7 +148,7 @@ export function homeTitlePlugin(options: HomeTitlePluginOptions): Plugin {
         .map(([from]) => from);
       if (missing.length > 0) {
         throw new Error(
-          `[home-title] ${indexHtml}: could not rewrite ${missing.join(', ')} — the SSG's head shape changed; update docs-site/home-title.ts`
+          `[home-title] ${indexHtml}: could not rewrite ${missing.join(', ')} — the SSG's head shape changed; update docs/_site/plugins/home-title.ts`,
         );
       }
       if (after !== before) writeFileSync(indexHtml, after);
