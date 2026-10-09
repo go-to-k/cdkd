@@ -36,7 +36,8 @@ import {
 import type { CrossPrefixGuard } from '../../state/stack-registry.js';
 
 /** What a check consults: the run's guard (or, in a test, a bare scan cache). */
-export type CrossPrefixSource = Pick<CrossPrefixGuard, 'full'>;
+export type CrossPrefixSource = Pick<CrossPrefixGuard, 'full'> &
+  Partial<Pick<CrossPrefixGuard, 'knownMarker'>>;
 
 /**
  * The region a deploy runs a stack in: its synthesized region, else the run's

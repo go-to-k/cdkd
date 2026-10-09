@@ -84,7 +84,10 @@ function makeCtx(opts: {
   });
   const recordUnderPrefix = vi.fn(async (p: string) => (opts.holders?.[p] ? 'holder' : 'absent'));
   const saveRetainedResources = vi.fn(async () => undefined);
-  const releaseRegistryMarker = vi.fn(async () => 'released' as const);
+  const releaseRegistryMarker = vi.fn(
+    async (_s: string, _r: string, _known?: unknown) => 'released' as const
+  );
+  const ensureRetainedTombstone = vi.fn(async (_s: string, _r: string) => undefined);
   const stateBackend = {
     prefix: 'cdkd',
     getState: vi.fn().mockResolvedValue(null),
@@ -96,6 +99,7 @@ function makeCtx(opts: {
     recordUnderPrefix,
     loadRetainedResources: vi.fn(async () => opts.retained ?? []),
     loadRetainedRecord: vi.fn(async () => opts.retained ?? null),
+    ensureRetainedTombstone,
     saveRetainedResources,
     releaseRegistryMarker,
   };
@@ -106,6 +110,7 @@ function makeCtx(opts: {
     recordUnderPrefix,
     saveRetainedResources,
     releaseRegistryMarker,
+    ensureRetainedTombstone,
     ctx: {
       stateBackend: stateBackend as unknown as S3StateBackend,
       lockManager: {
@@ -289,7 +294,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
   it('releases the registry marker AFTER the record is deleted, for a top-level stack', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     await runDestroyForStack('App', retainedState(), h.ctx);
-    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION);
+    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION, undefined);
     expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
       h.deleteState.mock.invocationCallOrder[0]!
     );
@@ -301,8 +306,8 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(result.skippedEmpty).toBe(true);
     expect(h.deleteState).toHaveBeenCalledTimes(1);
     // D-1: kept nothing and no record yet: the empty tombstone is written.
-    expect(h.saveRetainedResources).toHaveBeenCalledWith('App', REGION, []);
-    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION);
+    expect(h.ensureRetainedTombstone).toHaveBeenCalledWith('App', REGION);
+    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION, undefined);
     expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
       h.deleteState.mock.invocationCallOrder[0]!
     );
@@ -324,14 +329,42 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     const result = await runDestroyForStack('App', deleted, h.ctx);
     expect(result.errorCount).toBe(0);
     expect(h.deleteState).toHaveBeenCalledTimes(1);
-    expect(h.saveRetainedResources).toHaveBeenCalledWith('App', REGION, []);
+    expect(h.ensureRetainedTombstone).toHaveBeenCalledWith('App', REGION);
   });
 
   it('E-7: a destroy whose tombstone write fails warns (never silent)', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
-    h.saveRetainedResources.mockRejectedValueOnce(new Error('AccessDenied'));
+    h.ensureRetainedTombstone.mockRejectedValueOnce(new Error('AccessDenied'));
     await runDestroyForStack('App', emptyState(), h.ctx);
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Could not write the empty kept-resource record of App/));
+  });
+
+  it('P3: the destroy tail is the tombstone PUT and the marker DELETE, started together, with the marker read earlier', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const known = { prefix: 'cdkd', etag: '"e7"' };
+    (h.ctx.crossPrefixCheck as unknown as { cache: { knownMarker: unknown } }).cache.knownMarker = vi.fn(
+      async () => known
+    );
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    h.ensureRetainedTombstone.mockImplementation(async () => {
+      started++;
+      await gate;
+    });
+    h.releaseRegistryMarker.mockImplementation(async () => {
+      started++;
+      await gate;
+      return 'released' as const;
+    });
+    const run = runDestroyForStack('App', emptyState(), h.ctx);
+    // Both in flight before either finished: one round trip, not two.
+    for (let i = 0; i < 50 && started < 2; i++) await new Promise((r) => setImmediate(r));
+    expect(started).toBe(2);
+    release();
+    await run;
+    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION, known);
+    expect(h.ensureRetainedTombstone).toHaveBeenCalledTimes(1);
   });
 
   it('G5: a destroy that keeps the record (a delete failed) keeps the marker', async () => {

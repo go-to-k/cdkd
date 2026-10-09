@@ -592,6 +592,25 @@ describe('the stack registry marker (go-to-k/cdkd#4705)', () => {
     expect(JSON.parse(bodies.get(MARKER)!)).toEqual({ prefix: 'team-b' });
   });
 
+  it('P3: releasing the version this run already read is ONE conditional DELETE -- no GET', async () => {
+    bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
+    client.send.mockClear();
+    await expect(
+      backend.releaseRegistryMarker('App', 'us-east-1', { prefix: 'cdkd', etag: '"e"' })
+    ).resolves.toBe('released');
+    expect(client.send.mock.calls.map((c) => (c[0] as object).constructor.name)).toEqual([
+      'DeleteObjectCommand',
+    ]);
+    expect(commandsOf(DeleteObjectCommand)[0]!.input.IfMatch).toBe('"e"');
+    // A known marker naming another prefix (or none) sends nothing at all.
+    client.send.mockClear();
+    await expect(
+      backend.releaseRegistryMarker('App', 'us-east-1', { prefix: 'team-b', etag: '"e"' })
+    ).resolves.toBe('elsewhere');
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1', null)).resolves.toBe('absent');
+    expect(client.send).not.toHaveBeenCalled();
+  });
+
   it("probes another prefix's lock in both layouts", async () => {
     await expect(backend.lockUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe(false);
     bodies.set('team-b/App/lock.json', '{}');
@@ -628,6 +647,21 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     await backend.saveRetainedResources('App', 'us-east-1', [entry]);
     expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [{ ...entry, keptAt: 5_000 }] });
     await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([{ ...entry, keptAt: 5_000 }]);
+  });
+
+  it('P3: the tombstone is ONE conditional PUT (If-None-Match), no GET; an existing record is left as it is', async () => {
+    client.send.mockClear();
+    await backend.ensureRetainedTombstone('App', 'us-east-1');
+    expect(client.send.mock.calls.map((c) => (c[0] as object).constructor.name)).toEqual([
+      'PutObjectCommand',
+    ]);
+    expect(commandsOf(PutObjectCommand)[0]!.input.IfNoneMatch).toBe('*');
+    expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [] });
+    bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));
+    client.send.mockClear();
+    await backend.ensureRetainedTombstone('App', 'us-east-1'); // 412: kept
+    expect(JSON.parse(bodies.get(KEY)!).resources).toEqual([entry]);
+    expect(client.send).toHaveBeenCalledTimes(1);
   });
 
   it('D-1: saving none writes the empty tombstone, which reads as present (not absent)', async () => {

@@ -66,6 +66,8 @@ export interface CreateTokenLedgerStack {
 /** One stack's ledger for the length of one deploy. */
 export class CreateTokenLedger {
   private doc: CreateTokenLedgerDoc | undefined;
+  /** The store was read and held no ledger (go-to-k/cdkd#4705 P1: not read again). */
+  private loadedAbsent = false;
   /**
    * Set when a read or write failed: what is in memory may not be what is
    * stored, so the next use reads the ledger again.
@@ -124,8 +126,10 @@ export class CreateTokenLedger {
    */
   private async current(): Promise<CreateTokenLedgerDoc | null> {
     if (this.doc !== undefined && !this.stale) return this.doc;
+    if (this.loadedAbsent && !this.stale) return null;
     const loaded = await this.store.load();
     this.stale = false;
+    this.loadedAbsent = loaded === null;
     if (loaded !== null && this.replaceRecordedLedger && loaded.stateRecorded === true) {
       // No state record, yet the ledger says one was saved: an earlier cdkd
       // version deleted the record (a destroy, perhaps keeping resources) and
@@ -467,16 +471,17 @@ export const ADOPTING_CREATE_BASE = 'adopt-by-name:';
  * Throws when the ledger cannot be read.
  */
 export async function recordedAdoptingCreates(): Promise<
-  ReadonlyMap<string, { resourceType: string; name: string }> | undefined
+  ReadonlyMap<string, { resourceType: string; name: string; firstSentAt: number }> | undefined
 > {
   const ledger = ledgerStore.getStore();
   if (ledger === undefined) return undefined;
-  const out = new Map<string, { resourceType: string; name: string }>();
+  const out = new Map<string, { resourceType: string; name: string; firstSentAt: number }>();
   for (const [logicalId, entry] of Object.entries(await ledger.sentEntries())) {
     if (entry.base.startsWith(ADOPTING_CREATE_BASE)) {
       out.set(logicalId, {
         resourceType: entry.base.slice(ADOPTING_CREATE_BASE.length),
         name: entry.token,
+        firstSentAt: entry.firstSentAt,
       });
     }
   }

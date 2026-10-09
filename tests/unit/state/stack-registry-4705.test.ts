@@ -227,6 +227,18 @@ describe('an S3-compatible endpoint without conditional writes (review CB-6)', (
   });
 });
 
+describe('P3: the marker a run already read is reused for the release', () => {
+  it('knownMarker returns the version read by full(), for a nested child its top-level stack\'s; nothing read -> undefined', async () => {
+    const b = backendOf({ markers: { App: 'cdkd' } });
+    const guard = new CrossPrefixGuard(b);
+    await expect(guard.knownMarker('App', 'r')).resolves.toBeUndefined();
+    await guard.full('App', 'r');
+    await expect(guard.knownMarker('App', 'r')).resolves.toEqual({ prefix: 'cdkd', etag: '"e0"' });
+    await expect(guard.knownMarker('App~Child', 'r')).resolves.toEqual({ prefix: 'cdkd', etag: '"e0"' });
+    expect(b.getRegistryMarker).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('G3: a nested child is locked by its TOP-LEVEL name', () => {
   it("the other prefix's lock on the parent makes the child's answer in-progress", async () => {
     const b = backendOf({ markers: { App: 'team-b' }, locks: ['team-b|App'] });

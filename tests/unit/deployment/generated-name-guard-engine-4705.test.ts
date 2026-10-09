@@ -90,7 +90,14 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     earlierRecords?: Array<{ resources: Record<string, unknown>; writtenAt?: number }>;
     /** Run `--require-approval any-change` with this answer. */
     approve?: () => Promise<boolean>;
+    /** The DAG's levels (default Q1 <- Q2 <- Q3); each depends on the previous level's first. */
+    levels?: string[][];
+    concurrency?: number;
+    /** The CLI's state-loaded gate (the first deploy's registry claim). */
+    stateGate?: (stackName: string, state: unknown) => Promise<void>;
   }) {
+    const levels = opts.levels ?? [['Q1'], ['Q2'], ['Q3']];
+    const ids = levels.flat();
     const provider = {
       generatedCreateName: vi.fn((_t: string, logicalId: string) => `${STACK}-${logicalId}`),
       lookupNames: vi.fn(async (_t: string, names: readonly string[]) => {
@@ -135,7 +142,18 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         ledgerDoc = JSON.parse(JSON.stringify(doc));
       }),
     };
-    const deps: Record<string, string[]> = { Q1: [], Q2: ['Q1'], Q3: ['Q2'] };
+    const deps: Record<string, string[]> = Object.fromEntries(
+      levels.flatMap((level, i) => level.map((id) => [id, i === 0 ? [] : [levels[i - 1]![0]!]]))
+    );
+    const diffCalculator = {
+        calculateDiff: vi.fn().mockResolvedValue(
+          new Map(ids.map((id) => [id, create(id)]))
+        ),
+        hasChanges: vi.fn().mockReturnValue(true),
+        filterByType: vi.fn((changes: Map<string, ResourceChange>, type: string) =>
+          [...changes.values()].filter((c) => c.changeType === type)
+        ),
+    };
     const engine = new DeployEngine(
       stateBackend as never,
       {
@@ -144,18 +162,10 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       } as never,
       {
         buildGraph: vi.fn().mockReturnValue({}),
-        getExecutionLevels: vi.fn().mockReturnValue([['Q1'], ['Q2'], ['Q3']]),
+        getExecutionLevels: vi.fn().mockReturnValue(levels),
         getDirectDependencies: vi.fn((_dag: unknown, id: string) => deps[id] ?? []),
       } as never,
-      {
-        calculateDiff: vi.fn().mockResolvedValue(
-          new Map(['Q1', 'Q2', 'Q3'].map((id) => [id, create(id)]))
-        ),
-        hasChanges: vi.fn().mockReturnValue(true),
-        filterByType: vi.fn((changes: Map<string, ResourceChange>, type: string) =>
-          [...changes.values()].filter((c) => c.changeType === type)
-        ),
-      } as never,
+      diffCalculator as never,
       {
         getProvider: vi.fn().mockReturnValue(provider),
         getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
@@ -165,7 +175,8 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         validateResourceProperties: vi.fn(),
       } as never,
       {
-        concurrency: 4,
+        concurrency: opts.concurrency ?? 4,
+        ...(opts.stateGate && { onCurrentStateLoaded: opts.stateGate }),
         ...(opts.dryRun && { dryRun: true }),
         ...(opts.refusalRecovery && { refusalRecovery: opts.refusalRecovery }),
         ...(opts.approve && { requireApproval: 'any-change', approveDeployment: opts.approve }),
@@ -177,7 +188,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         .filter(([, e]) => e.base.startsWith('adopt-by-name:'))
         .map(([id]) => id)
         .sort();
-    return { engine, provider, stateBackend, adoptIntents };
+    return { engine, provider, stateBackend, adoptIntents, diffCalculator };
   }
 
   it('looks every planned name up in ONE call before the first create, and records them before any create', async () => {
@@ -308,7 +319,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     expect(provider.create.mock.calls.map((c) => c[0])).toEqual(['Q1', 'Q2', 'Q3']);
   });
 
-  it('E-1: no prompt -> one lookup for the whole plan; a prompt that ran -> the creates re-read (batched)', async () => {
+  it('E-1 / P2: no prompt -> one lookup for the whole plan; a prompt that ran -> one batched re-read', async () => {
     const plain = buildEngine({});
     await plain.engine.deploy(STACK, template);
     expect(plain.provider.lookupNames).toHaveBeenCalledTimes(1);
@@ -321,8 +332,94 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       },
     });
     await prompted.engine.deploy(STACK, template);
-    // The plan-time read, then one re-read per DAG wave (Q1, Q2, Q3 are chained).
-    expect(prompted.provider.lookupNames).toHaveBeenCalledTimes(4);
+    // P2: the plan-time read, then ONE batched re-read once the prompt is
+    // answered -- not one per DAG wave (Q1, Q2, Q3 are chained).
+    expect(prompted.provider.lookupNames).toHaveBeenCalledTimes(2);
+  });
+
+  describe('review P1-P4: what the check costs, counted', () => {
+    const templateOf = (levels: string[][]): CloudFormationTemplate => ({
+      Resources: Object.fromEntries(
+        levels.flatMap((level, i) =>
+          level.map((id) => [
+            id,
+            { Type: QUEUE, Properties: {}, ...(i > 0 && { DependsOn: [levels[i - 1]![0]!] }) },
+          ])
+        )
+      ),
+    });
+
+    it('P1: 250 creates across 3 DAG levels at concurrency 10 -> ONE intent write, then one cleanup write', async () => {
+      const levels = [0, 1, 2].map((l) =>
+        Array.from({ length: l === 0 ? 84 : 83 }, (_, i) => `Q${l}x${i}`)
+      );
+      const { engine, provider, stateBackend } = buildEngine({ levels, concurrency: 10 });
+      await engine.deploy(STACK, templateOf(levels));
+      expect(provider.create).toHaveBeenCalledTimes(250);
+      expect(provider.lookupNames).toHaveBeenCalledTimes(1);
+      // The intent write before the first create; the success path's cleanup
+      // (forget) after the state save. No write per create, none per wave.
+      expect(stateBackend.saveCreateTokenLedger).toHaveBeenCalledTimes(2);
+      const firstCreate = events.findIndex((e) => e.startsWith('create:'));
+      expect(events.indexOf('ledger-write')).toBeLessThan(firstCreate);
+      expect(events.filter((e) => e === 'ledger-write')).toHaveLength(2);
+    });
+
+    it('P2: a deploy with no prompt re-reads nothing, however long it runs', async () => {
+      const levels = [['Q1'], ['Q2'], ['Q3']];
+      const { engine, provider } = buildEngine({
+        levels,
+        // Every create takes a while: the deploy runs far past a minute in
+        // wall-clock terms of the old rule (the clock is real; the rule is gone).
+      });
+      await engine.deploy(STACK, templateOf(levels));
+      expect(provider.lookupNames).toHaveBeenCalledTimes(1);
+    });
+
+    it('P4: a first deploy\'s registry claim overlaps the diff, and a refusal still stops it before any lookup or create', async () => {
+      let claimDone!: () => void;
+      const claim = new Promise<void>((r) => (claimDone = r));
+      const order: string[] = [];
+      const ok = buildEngine({
+        stateGate: async () => {
+          order.push('claim-start');
+          await claim;
+          order.push('claim-end');
+        },
+      });
+      ok.diffCalculator.calculateDiff.mockImplementation(async () => {
+        order.push('diff');
+        claimDone();
+        return new Map(['Q1', 'Q2', 'Q3'].map((id) => [id, create(id)]));
+      });
+      await ok.engine.deploy(STACK, template);
+      expect(order).toEqual(['claim-start', 'diff', 'claim-end']);
+      events = [];
+      const refused = buildEngine({
+        stateGate: async () => {
+          throw new Error('Refusing to deploy stack App: it is already recorded under another state prefix');
+        },
+      });
+      await expect(refused.engine.deploy(STACK, template)).rejects.toThrow(/another state prefix/);
+      expect(refused.provider.lookupNames).not.toHaveBeenCalled();
+      expect(refused.provider.create).not.toHaveBeenCalled();
+    });
+
+    it('the exact extra calls of a single first deploy with one adopting create', async () => {
+      const levels = [['Q1']];
+      const { engine, provider, stateBackend } = buildEngine({ levels });
+      await engine.deploy(STACK, templateOf(levels));
+      // One lookup; the ledger read once; two ledger writes (the intent, and
+      // the success cleanup run beside the post-save writes); no evidence
+      // read (nothing held), no retained.json, no history, no re-read.
+      expect(provider.lookupNames).toHaveBeenCalledTimes(1);
+      expect(stateBackend.loadCreateTokenLedger).toHaveBeenCalledTimes(1);
+      expect(stateBackend.saveCreateTokenLedger).toHaveBeenCalledTimes(2);
+      expect(stateBackend.loadRetainedRecord).not.toHaveBeenCalled();
+      expect(stateBackend.saveRetainedResources).not.toHaveBeenCalled();
+      expect(stateBackend.earlierStateResources).not.toHaveBeenCalled();
+      expect(stateBackend.getRawObject).not.toHaveBeenCalled();
+    });
   });
 
   it('a dry run looks nothing up and writes nothing', async () => {

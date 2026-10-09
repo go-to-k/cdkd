@@ -123,6 +123,17 @@ export class CrossPrefixGuard {
     return answer;
   }
 
+  /**
+   * The marker this run already read for `stackName`'s top-level stack, or
+   * `undefined` when it read none (go-to-k/cdkd#4705 review P3: a destroy
+   * releases it by the version read, with no second GET). Never rejects.
+   */
+  async knownMarker(stackName: string, region: string): Promise<Marker | undefined> {
+    const read = this.markers.get(JSON.stringify([topLevelStackName(stackName), region]));
+    if (read === undefined) return undefined;
+    return read.catch(() => undefined);
+  }
+
   private marker(top: string, region: string, fresh = false): Promise<Marker> {
     const key = JSON.stringify([top, region]);
     let read = fresh ? undefined : this.markers.get(key);

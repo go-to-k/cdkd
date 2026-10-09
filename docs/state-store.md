@@ -90,14 +90,18 @@ stack's own evidence names that resource:
 - its state record (under any logical id), or its rollback orphans;
 - its rollback journal: a completed operation, or a failed one that recorded
   the resource's physical id;
-- its create-token ledger, which records each name as the stack's intent right
-  before its create is sent (after the approval prompt, under the deploy's
-  lock), so a re-run after a crash between a create and its record takes the
-  resource back. When the deploy ends, it drops the intents of creates that
-  were not sent, that came back (their resource is then in the record, or
-  the rollback deleted it), or that AWS rejected outright (a 4xx such as a
+- its create-token ledger, which records the names of the deploy's planned
+  creates as the stack's intent, in one write after the approval prompt and
+  under the deploy's lock, before the first of those creates is sent, so a
+  re-run after a crash between a create and its record takes the resource
+  back. When the deploy ends, it drops the intents of creates that were not
+  sent, that came back (their resource is then in the record, or the
+  rollback deleted it), or that AWS rejected outright (a 4xx such as a
   validation error); an intent stays only for a create whose outcome is
-  unknown (a crash, a timeout, a 5xx);
+  unknown (a crash, a timeout, a 5xx). An intent licenses only a holder
+  created no earlier than it was written, for a type that reports a
+  creation time; for one that does not, an intent a hard crash left for a
+  create that was never sent licenses by name (a crash-only residual);
 - `retained.json`, the resources this stack let go of under this prefix while
   they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
   deploy that removed them from the template. The next deploy under the same
@@ -162,13 +166,13 @@ name is looked up once the plan is known, all at once, and each create waits
 only for its own answer, so a first deploy pays about one round trip whatever
 its size. Each API has one concurrency limit across the whole run,
 `deploy --all` included, so a burst queues instead of throttling. The
-intents cost one ledger write per wave of name-adopting creates the deploy
-starts together. When a `--require-approval` prompt ran, every verdict
-decided before its answer is read again at its create (one exact read per
-such create, batched with the creates starting together), as is any verdict
-more than a minute old; an ordinary deploy pays no re-read for creates that
-start within a minute of the lookup. A re-read that cannot answer keeps the earlier verdict, with a
-warning.
+intents cost one ledger write per deploy, whatever its size, and the
+success path's ledger cleanup runs beside the other writes that follow the
+state save. Only when a `--require-approval` prompt ran (up front, or for a
+replacement decided late) are the verdicts decided before its answer read
+again, at once, in one batched pass per type; a deploy without a prompt
+re-reads nothing, however long it runs. A re-read that cannot answer keeps
+the earlier verdict, with a warning.
 
 **Permissions.** The lookups need the read permission of each type a stack
 creates: `sqs:GetQueueUrl`, `sns:GetTopicAttributes`,
@@ -249,7 +253,11 @@ that created nothing leaves behind blocks nothing; the command prints a note
 naming its prefix and the `cdkd state orphan` command that removes it.
 
 **What it costs.** One read of one small object, once per command run, only on
-the commands above; a first deploy adds one conditional write. Records written
+the commands above (a destroy starts it beside its own state read); a first
+deploy adds one conditional write, overlapped with its diff. A destroy ends
+with two writes run together, one round trip: the empty `retained.json`
+(written only when there is none) and the marker's release, conditional on the
+version read earlier. Records written
 before the registry existed have no marker: the first command that needs the
 answer for such a stack lists the bucket's top-level prefixes once (50
 listings in parallel, a single pass), then claims the marker, so every later

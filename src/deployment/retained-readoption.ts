@@ -40,7 +40,10 @@ export function keptForReadoption(resource: ResourceState): resource is Resource
  * then still licenses).
  */
 export async function recordRetainedForReadoption(
-  backend: Pick<S3StateBackend, 'loadRetainedRecord' | 'saveRetainedResources'>,
+  backend: Pick<
+    S3StateBackend,
+    'loadRetainedRecord' | 'saveRetainedResources' | 'ensureRetainedTombstone'
+  >,
   stackName: string,
   region: string,
   kept: readonly RetainedResource[],
@@ -48,9 +51,7 @@ export async function recordRetainedForReadoption(
 ): Promise<void> {
   if (kept.length === 0) {
     try {
-      if ((await backend.loadRetainedRecord(stackName, region)) === null) {
-        await backend.saveRetainedResources(stackName, region, []);
-      }
+      await backend.ensureRetainedTombstone(stackName, region);
     } catch (error) {
       logger.warn(
         safeMsg`Could not write the empty kept-resource record of ${displayStackName(stackName)} ` +

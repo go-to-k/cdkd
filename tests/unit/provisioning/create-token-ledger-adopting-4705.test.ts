@@ -50,8 +50,8 @@ describe('recording name-adopting creates', () => {
       expect(store.save).toHaveBeenCalledTimes(1);
       await expect(recordedAdoptingCreates()).resolves.toEqual(
         new Map([
-          ['A', { resourceType: QUEUE, name: 'App-A' }],
-          ['B', { resourceType: QUEUE, name: 'App-B' }],
+          ['A', { resourceType: QUEUE, name: 'App-A', firstSentAt: expect.any(Number) }],
+          ['B', { resourceType: QUEUE, name: 'App-B', firstSentAt: expect.any(Number) }],
         ])
       );
     });

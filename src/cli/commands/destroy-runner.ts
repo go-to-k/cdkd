@@ -542,7 +542,8 @@ async function releaseRegistryMarkerAfterDestroy(
 ): Promise<void> {
   if (ctx.crossPrefixCheck === undefined) return;
   try {
-    const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region);
+    const known = await ctx.crossPrefixCheck.cache.knownMarker?.(stackName, region);
+    const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region, known);
     logger.debug(safeMsg`Stack registry marker: ${released}`);
   } catch (error) {
     logger.warn(
@@ -897,9 +898,12 @@ export async function runDestroyForStack(
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.info(`${green('✓')} State deleted`);
-      // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1).
-      await recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger);
-      await releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
+      // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
+      // marker's release -- one round trip, concurrently (review P3).
+      await Promise.all([
+        recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger),
+        releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
+      ]);
     } finally {
       await emptyLock.release({
         failureMessage: 'Failed to release lock after empty-state cleanup',
@@ -2335,11 +2339,14 @@ export async function runDestroyForStack(
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
-      if (retainedForReadoption.length === 0) {
-        // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1).
-        await recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger);
-      }
-      await releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
+      // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
+      // marker's release -- one round trip, concurrently (review P3).
+      await Promise.all([
+        retainedForReadoption.length === 0
+          ? recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger)
+          : Promise.resolve(),
+        releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
+      ]);
       // Drop this stack's entries from the exports index so the next
       // resolver lookup doesn't return stale values. Best-effort —
       // failures don't fail the destroy (state.json is the canonical

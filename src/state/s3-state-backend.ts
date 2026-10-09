@@ -1135,6 +1135,36 @@ export class S3StateBackend {
   }
 
   /**
+   * go-to-k/cdkd#4705 review P3: write the empty retained-resource record
+   * (the tombstone) only when there is none, in ONE conditional write
+   * (`If-None-Match: *`); an existing record is left as it is. An endpoint
+   * without conditional writes falls back to a read, then the write. Errors
+   * throw.
+   */
+  async ensureRetainedTombstone(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getRetainedKey(stackName, region);
+    try {
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          Body: JSON.stringify({ retainedVersion: 1, resources: [] }),
+          ContentType: 'application/json',
+          IfNoneMatch: '*',
+        })
+      );
+    } catch (error) {
+      if (isConditionFailure(error)) return;
+      if (!isNotImplemented(error)) throw error;
+      if ((await this.loadRetainedRecord(stackName, region)) === null) {
+        await this.saveRetainedResources(stackName, region, []);
+      }
+    }
+  }
+
+  /**
    * Replace the stack's retained-resource record with `entries`. An empty list
    * is written, not deleted: it is the tombstone that ends the history license
    * (go-to-k/cdkd#4705 review D-1). Errors throw.
@@ -1269,9 +1299,15 @@ export class S3StateBackend {
    */
   async releaseRegistryMarker(
     stackName: string,
-    region: string
+    region: string,
+    known?: { prefix: string; etag: string } | null
   ): Promise<'released' | 'absent' | 'elsewhere'> {
-    const marker = await this.getRegistryMarker(stackName, region);
+    // The version this run already read (review P3): no second GET. Without
+    // its ETag (a marker this run claimed), read it.
+    const marker =
+      known !== undefined && (known === null || known.etag !== '')
+        ? known
+        : await this.getRegistryMarker(stackName, region);
     if (marker === null) return 'absent';
     if (marker.prefix !== this.config.prefix) return 'elsewhere';
     const key = this.registryMarkerKey(stackName, region);

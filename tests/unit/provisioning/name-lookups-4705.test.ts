@@ -450,3 +450,37 @@ describe('review D-2: when a holder was created', () => {
     await expect(new SQSQueueProvider().holderCreatedAt('AWS::SQS::Queue', 'u')).rejects.toThrow('503');
   });
 });
+
+describe('review P2: after an approval prompt, 250 alarms are re-read in ceil(N/100) DescribeAlarms', () => {
+  it('3 calls at plan time, 3 more after the prompt -- none per create', async () => {
+    const { GeneratedNameGuard } = await import('../../../src/deployment/generated-name-guard.js');
+    cloudWatchSend.mockResolvedValue({ MetricAlarms: [], CompositeAlarms: [] });
+    const provider = new CloudWatchAlarmProvider();
+    const changes = Array.from({ length: 250 }, (_, i) => ({
+      logicalId: `Alarm${i}`,
+      changeType: 'CREATE' as const,
+      resourceType: 'AWS::CloudWatch::Alarm',
+      desiredProperties: {},
+    }));
+    const guard = withStackName('App', () =>
+      GeneratedNameGuard.start({
+        stackName: 'App',
+        region: 'us-east-1',
+        changes,
+        providerFor: () => ({ provider, provisionedBy: 'sdk' }),
+        records: {},
+        orphans: undefined,
+        loadJournal: async () => null,
+        loadRetained: async () => null,
+        accountInfo: async () => ({ partition: 'aws', region: 'us-east-1', accountId: '1' }),
+        timing: { cooldownMs: 0 },
+      })
+    )!;
+    await guard.verdict('Alarm0');
+    const describes = () => callsOf(cloudWatchSend, DescribeAlarmsCommand).length;
+    expect(describes()).toBe(3);
+    guard.noteApprovalPrompted();
+    await Promise.all(changes.map((c) => guard.verdict(c.logicalId)));
+    expect(describes()).toBe(6);
+  });
+});

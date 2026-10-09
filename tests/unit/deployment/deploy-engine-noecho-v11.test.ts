@@ -1940,6 +1940,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const fakeGuard = {
         size: 0,
         noteApprovalPrompted,
+        recordPlannedIntents: vi.fn(),
         settle: vi.fn(async () => undefined),
         readoptedFromRetained: vi.fn(async () => []),
         candidate: () => undefined,

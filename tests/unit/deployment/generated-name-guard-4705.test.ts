@@ -706,28 +706,6 @@ describe('review round CB2', () => {
     });
   });
 
-  it('D-12: a verdict older than staleAfterMs (a long approval prompt) is read again at admission, batched', async () => {
-    let clock = 0;
-    const q = providerOf();
-    const guard = GeneratedNameGuard.start(
-      inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q }, {
-        timing: { now: () => clock, staleAfterMs: 5_000, cooldownMs: 0 },
-      })
-    )!;
-    await guard.verdict('A');
-    expect(q.lookupNames).toHaveBeenCalledTimes(1);
-    clock = 60_000; // the prompt was answered a minute later; meanwhile a twin took gen-B
-    q.lookupNames.mockImplementation(async (_t: string, names: readonly string[]) =>
-      new Map(names.filter((n) => n === 'gen-B').map((n) => [n, `https://q/${n}`]))
-    );
-    const [a, b] = await Promise.all([guard.admit('A', {}), guard.admit('B', {})]);
-    expect(a).toEqual({ kind: 'free' });
-    expect(b).toMatchObject({ kind: 'held' });
-    // One batched re-read for both; only A, still free, is recorded.
-    expect(q.lookupNames).toHaveBeenCalledTimes(2);
-    expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
-  });
-
   it('D-14 / E-5: settle waits for EVERY intent write in flight -- an earlier one still pending included', async () => {
     let releaseFirst!: () => void;
     const firstPending = new Promise<void>((resolve) => (releaseFirst = resolve));
@@ -760,7 +738,7 @@ describe('review round CB2', () => {
 describe('review round CB3', () => {
   const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
 
-  describe('E-1: re-read at admission only after an approval prompt, or a gap over a minute', () => {
+  describe('E-1 / P2: re-read only after an approval prompt that ran, in one batched pass per type', () => {
     function clocked(q: ReturnType<typeof providerOf>, warn = vi.fn()) {
       let clock = 0;
       const guard = GeneratedNameGuard.start(
@@ -772,48 +750,55 @@ describe('review round CB3', () => {
       return { guard, warn, at: (t: number) => (clock = t) };
     }
 
-    it('an ordinary multi-level first deploy (no prompt, waves 30 s apart) pays no re-read', async () => {
+    it('P2: a deploy running far past a minute with no prompt re-reads nothing', async () => {
       const q = providerOf();
       const { guard, at } = clocked(q);
       await guard.verdict('A');
-      at(10_000);
+      guard.recordPlannedIntents();
+      at(120_000);
       await guard.admit('A', {});
-      at(40_000);
+      at(300_000);
       await guard.admit('B', {});
       expect(q.lookupNames).toHaveBeenCalledTimes(1);
     });
 
-    it('after a prompt that ran, every earlier verdict is read again, however quick the answer', async () => {
+    it('after a prompt that ran, every decided verdict is read again at once -- one call per type, however many creates', async () => {
       const q = providerOf();
-      const { guard, at } = clocked(q);
+      const { guard } = clocked(q);
       await guard.verdict('A');
-      at(1_000);
       guard.noteApprovalPrompted();
-      at(2_000);
+      expect(q.lookupNames).toHaveBeenCalledTimes(2);
+      expect(q.lookupNames.mock.calls[1]![1]).toEqual(['gen-A', 'gen-B']);
+      guard.recordPlannedIntents();
       await Promise.all([guard.admit('A', {}), guard.admit('B', {})]);
       expect(q.lookupNames).toHaveBeenCalledTimes(2);
     });
 
-    it('a gap over a minute without a prompt re-reads too', async () => {
+    it('a holder that appeared while the prompt waited is refused', async () => {
       const q = providerOf();
-      const { guard, at } = clocked(q);
+      const { guard } = clocked(q);
       await guard.verdict('A');
-      at(61_000);
-      await guard.admit('A', {});
-      expect(q.lookupNames).toHaveBeenCalledTimes(2);
+      q.lookupNames.mockImplementation(async (_t: string, names: readonly string[]) =>
+        new Map(names.filter((n) => n === 'gen-B').map((n) => [n, `https://q/${n}`]))
+      );
+      guard.noteApprovalPrompted();
+      guard.recordPlannedIntents();
+      const [a, b] = await Promise.all([guard.admit('A', {}), guard.admit('B', {})]);
+      expect(a).toEqual({ kind: 'free' });
+      expect(b).toMatchObject({ kind: 'held' });
+      expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
     });
 
     it('a re-read that fails transiently keeps the plan-time verdict, with a warning -- never a mid-deploy refusal', async () => {
       const q = providerOf();
-      const { guard, warn, at } = clocked(q);
+      const { guard, warn } = clocked(q);
       await guard.verdict('A');
-      at(1_000);
-      guard.noteApprovalPrompted();
-      at(5_000);
       q.lookupNames.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { $metadata: { httpStatusCode: 503 } }));
+      guard.noteApprovalPrompted();
+      guard.recordPlannedIntents();
       await expect(guard.admit('A', {})).resolves.toEqual({ kind: 'free' });
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/A: could not re-read/));
-      expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
+      expect(ledger.writes.flat().map((w) => w.logicalId).sort()).toEqual(['A', 'B']);
     });
   });
 
@@ -854,6 +839,41 @@ describe('review round CB3', () => {
       q.lookupNames.mockResolvedValue(new Map());
       wake();
       await expect(guard.verdict('A')).resolves.toEqual({ kind: 'free' });
+    });
+  });
+});
+
+describe('review P1: one intent write, and the intent licenses only what its create made', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+  const T = Date.parse('2026-10-01T00:00:00Z');
+
+  it('recordPlannedIntents writes every free planned create once; admits do not write again; a held one is not recorded', async () => {
+    const q = providerOf({ 'gen-C': 'https://q/gen-C' });
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE), create('B', QUEUE), create('C', QUEUE)], { [QUEUE]: q })
+    )!;
+    guard.recordPlannedIntents();
+    await Promise.all([guard.admit('A', {}), guard.admit('B', {}), guard.admit('C', {})]);
+    expect(ledger.writes.map((w) => w.map((e) => e.logicalId))).toEqual([['A', 'B']]);
+  });
+
+  it.each([
+    ['created after the intent (the create it announced made it)', T + 5_000, 'licensed'],
+    ['created long before the intent (another backend\'s, left by a crash)', T - 3_600_000, 'held'],
+  ] as const)('a holder %s is %s', async (_what, createdAt, kind) => {
+    ledger.recorded = new Map([['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: T }]]) as never;
+    const provider = providerOf({ 'gen-A': URL });
+    (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => createdAt);
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: provider });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind });
+  });
+
+  it('a type with no creation time is licensed by the intent alone (the crash-only residual)', async () => {
+    ledger.recorded = new Map([['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: T }]]) as never;
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({
+      kind: 'licensed',
+      via: 'ledger',
     });
   });
 });

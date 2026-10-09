@@ -264,8 +264,21 @@ export async function doDeployWithPrefetch(
     // call — so a caller that declines here has changed nothing. Reuses
     // the state read just performed instead of making the CLI issue its
     // own pre-lock GET of the same object.
+    // go-to-k/cdkd#4705 review P4: for a FIRST deploy (no record) the gate's
+    // work -- the cross-prefix registry claim -- overlaps the journal read,
+    // the parse and the diff, which make no provider call and change nothing
+    // for a stack with no record; it is awaited before anything acts on the
+    // plan (`firstDeployStateGate` below). A loaded record keeps the gate
+    // strictly first.
+    let firstDeployStateGate: Promise<void> | undefined;
     if (this.options.onCurrentStateLoaded) {
-      await this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
+      const gate = this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
+      if (currentStateData === null || currentStateData === undefined) {
+        firstDeployStateGate = gate;
+        gate.catch(() => undefined);
+      } else {
+        await gate;
+      }
     }
 
     // 1b. If a rollback journal exists, a previous deploy failed / was
@@ -850,6 +863,8 @@ export async function doDeployWithPrefetch(
       });
     }
 
+    // The first deploy's state gate (above), before any branch acts on the plan.
+    if (firstDeployStateGate !== undefined) await firstDeployStateGate;
     const hasChanges = this.diffCalculator.hasChanges(changes);
 
     if (!hasChanges) {
@@ -1325,6 +1340,9 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
     // it are read again at each create.
     if (prompted) this.generatedNameGuard?.noteApprovalPrompted();
+    // The one intent write (review P1): past the prompt and the destructive
+    // check, under the lock, before the first create (each awaits it).
+    this.generatedNameGuard?.recordPlannedIntents();
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path
@@ -1401,24 +1419,28 @@ export async function doDeployWithPrefetch(
     this.logger.debug(`State saved (ETag: ${newEtag})`);
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
-    await forgetRecordedCreateTokens(Object.keys(newState.resources));
     // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
-    // record now names it, so `retained.json` lets it go. Best-effort.
-    const readopted = (await this.generatedNameGuard?.readoptedFromRetained()) ?? [];
-    if (readopted.length > 0) {
-      try {
-        const kept = await this.stateBackend.loadRetainedResources(stackName, this.stackRegion);
-        await this.stateBackend.saveRetainedResources(
-          stackName,
-          this.stackRegion,
-          kept.filter((entry) => !readopted.includes(entry.logicalId))
-        );
-      } catch (error) {
-        this.logger.debug(
-          safeMsg`Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
-        );
+    // record now names it, so `retained.json` lets it go. Best-effort. Both
+    // run beside 7c's writes below (review P4): disjoint objects, read by
+    // neither, so no serial round trip on a successful deploy.
+    const ledgerAndKeptCleanup = (async (): Promise<void> => {
+      await forgetRecordedCreateTokens(Object.keys(newState.resources));
+      const readopted = (await this.generatedNameGuard?.readoptedFromRetained()) ?? [];
+      if (readopted.length > 0) {
+        try {
+          const kept = await this.stateBackend.loadRetainedResources(stackName, this.stackRegion);
+          await this.stateBackend.saveRetainedResources(
+            stackName,
+            this.stackRegion,
+            kept.filter((entry) => !readopted.includes(entry.logicalId))
+          );
+        } catch (error) {
+          this.logger.debug(
+            safeMsg`Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
+          );
+        }
       }
-    }
+    })();
 
     // 7c. Two independent post-save S3 writes, run CONCURRENTLY:
     //
@@ -1473,6 +1495,7 @@ export async function doDeployWithPrefetch(
             })
           )
         : Promise.resolve(),
+      ledgerAndKeptCleanup,
     ]);
 
     const durationMs = Date.now() - startTime;
