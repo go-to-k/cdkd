@@ -2,12 +2,14 @@
  * Shared plumbing for `ResourceProvider.lookupNames` (go-to-k/cdkd#4705): the
  * plan-time check of which generated names a resource already holds.
  *
- * Every lookup is BATCHED per type -- a batch call or a bounded listing, never
- * one call per resource where the service has a batch -- and every API call
- * goes through ONE run-wide limiter per API, so a `deploy --all` of many
- * stacks shares each API's concurrency instead of multiplying it into
- * throttling. A listing by prefix is filtered to whole-name matches by the
- * caller (`App-Queue1` never matches `App-Queue10`).
+ * Every lookup is an EXACT read by name: a batch read by name where the
+ * service has one (`DescribeAlarms` `AlarmNames`, `DescribeLogGroups`
+ * `logGroupIdentifiers`, `DescribeClusters`), otherwise one read per name.
+ * Never a listing (`ListQueues`, `ListTopics`, `ListRules`, ...): a listing is
+ * eventually consistent and omitted a queue another deployment had created a
+ * minute earlier, so the create adopted it. Every API call goes through ONE
+ * run-wide limiter per API, so a `deploy --all` of many stacks shares each
+ * API's concurrency instead of multiplying it into throttling.
  */
 
 /** In-flight calls per API, process-wide. */
@@ -45,23 +47,10 @@ export function chunks<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-/** The longest prefix every one of `names` starts with (`''` for none). */
-export function commonPrefix(names: readonly string[]): string {
-  if (names.length === 0) return '';
-  let prefix = names[0]!;
-  for (const name of names.slice(1)) {
-    let i = 0;
-    while (i < prefix.length && i < name.length && prefix[i] === name[i]) i++;
-    prefix = prefix.slice(0, i);
-    if (prefix === '') break;
-  }
-  return prefix;
-}
-
 /**
  * Look `names` up one by one with `lookupOne` (its holder's physical id, or
  * `undefined`), at most `concurrency` at once through `api`'s limiter: the
- * fallback for a type whose batch answer is inexact or too long to page.
+ * read for a type with no batch read by name.
  */
 export async function lookupEachName(
   names: readonly string[],
@@ -81,26 +70,6 @@ export async function lookupEachName(
   return found;
 }
 
-/**
- * Page through a listing until it ends or `maxPages` pages were read.
- * `undefined` when the listing did not end within the bound: the caller then
- * looks the names up one by one instead of reading on.
- */
-export async function boundedPages<T>(
-  maxPages: number,
-  page: (token: string | undefined) => Promise<{ items: T[]; next: string | undefined }>
-): Promise<T[] | undefined> {
-  const out: T[] = [];
-  let token: string | undefined;
-  for (let n = 0; n < maxPages; n++) {
-    const { items, next } = await page(token);
-    out.push(...items);
-    if (next === undefined || next === '') return out;
-    token = next;
-  }
-  return undefined;
-}
-
 /** A 403 (AccessDenied on a List / Describe): the batch call is not granted. */
 export function isAccessDeniedError(error: unknown): boolean {
   const name = (error as { name?: unknown } | null)?.name;
@@ -113,16 +82,4 @@ export function isAccessDeniedError(error: unknown): boolean {
     name === 'UnauthorizedOperation' ||
     status === 403
   );
-}
-
-/**
- * Thrown by a `lookupNames` whose batch cannot answer exactly here (its
- * listing is not granted, or does not end within its bound): the caller then
- * looks each name up through the provider's own `import()`, bounded.
- */
-export class LookupEachNameInstead extends Error {
-  constructor(why: string) {
-    super(why);
-    this.name = 'LookupEachNameInstead';
-  }
 }

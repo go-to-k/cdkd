@@ -2,6 +2,8 @@ import { freshNoEchoParametersWithDeclared } from './noecho.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard } from '../generated-name-guard.js';
+import { loadKeptInHistory } from '../kept-in-history.js';
+import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
@@ -1234,9 +1236,10 @@ export async function doDeployWithPrefetch(
     }
 
     // go-to-k/cdkd#4705: every planned create of a name-adopting type whose
-    // name cdkd generates is looked up NOW, batched per type and all at once,
+    // name cdkd generates is looked up NOW (exact reads, all at once),
     // overlapping the checks and the prompt below; each create awaits its
-    // own verdict (`refuseUnlicensedGeneratedName`).
+    // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intent
+    // is written right before each create, and settled in the `finally`.
     this.generatedNameGuard = GeneratedNameGuard.start({
       stackName,
       region: this.stackRegion,
@@ -1246,6 +1249,18 @@ export async function doDeployWithPrefetch(
       orphans: currentState.orphans,
       loadJournal: () => this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
       loadRetained: () => this.stateBackend.loadRetainedResources(stackName, this.stackRegion),
+      loadKeptInHistory: () => {
+        const reader = new DeploymentEventsReader(this.stateBackend);
+        return loadKeptInHistory(
+          {
+            earlierStateResources: (s, r) => this.stateBackend.earlierStateResources(s, r),
+            listRuns: (s, r) => reader.listRuns(s, r),
+            readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
+          },
+          stackName,
+          this.stackRegion
+        );
+      },
       accountInfo: () => getAccountInfo(this.stackRegion),
     });
 
@@ -1477,6 +1492,15 @@ export async function doDeployWithPrefetch(
     // across deploys. The underlying promises already have a `.catch` so
     // dropping the references will not produce an unhandled rejection.
     this.observedCaptureTasks.clear();
+
+    // go-to-k/cdkd#4705: under the lock, drop the name-adopting intents whose
+    // create was not sent or came back. Guarded like every step before
+    // `releaseLock`.
+    try {
+      await this.generatedNameGuard?.settle();
+    } catch {
+      // `settle` warns on its own failures.
+    }
 
     // Always release lock
     try {

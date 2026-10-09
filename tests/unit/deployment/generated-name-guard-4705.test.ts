@@ -2,7 +2,9 @@
  * go-to-k/cdkd#4705 (C): the plan-time check of the names cdkd GENERATES for
  * the creates of name-adopting types (`src/deployment/generated-name-guard.ts`):
  * which creates it asks about, that it batches per type and starts everything
- * at once, each verdict, the license sources, and the one ledger write.
+ * at once, each verdict, the license sources, and the intent ledger: written
+ * only when a create is admitted (never at plan time), one write per wave,
+ * and settled at the deploy's end (review CB-1).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -13,6 +15,7 @@ const ledger = vi.hoisted(() => ({
   readError: undefined as Error | undefined,
   writeError: undefined as Error | undefined,
   writes: [] as Array<Array<{ logicalId: string; resourceType: string; name: string }>>,
+  drops: [] as string[][],
 }));
 vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
   recordedAdoptingCreates: vi.fn(async () => {
@@ -23,10 +26,12 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
     if (ledger.writeError) throw ledger.writeError;
     ledger.writes.push(creates);
   }),
+  dropAdoptingCreates: vi.fn(async (ids: string[]) => {
+    ledger.drops.push([...ids]);
+  }),
 }));
 
 import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../../../src/deployment/generated-name-guard.js';
-import { LookupEachNameInstead } from '../../../src/provisioning/name-lookup.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
@@ -102,7 +107,12 @@ beforeEach(() => {
   ledger.readError = undefined;
   ledger.writeError = undefined;
   ledger.writes = [];
+  ledger.drops = [];
 });
+
+/** Admit every id (the creates of one wave), as the engine does right before sending. */
+const admitAll = (guard: GeneratedNameGuard, ids: string[]) =>
+  Promise.all(ids.map((id) => guard.admit(id, {})));
 
 describe('which creates are asked about', () => {
   it('only CREATE rows of name-adopting types whose name cdkd generates', () => {
@@ -158,11 +168,9 @@ describe('batched per type, all started at once', () => {
     expect(providers[QUEUE]!.lookupNames.mock.calls[0]![1]).toEqual(['gen-R0', 'gen-R6', 'gen-R12', 'gen-R18']);
   });
 
-  it('a provider without a batch, or one that asks for it, is looked up name by name through import()', async () => {
+  it('a provider without lookupNames (SNS, Step Functions) is read name by name through import(), by exact ARN', async () => {
     const noBatch = providerOf({ 'gen-A': 'held-A' }, { batch: false });
-    const asks = providerOf({ 'gen-T': 'arn:aws:sns:us-east-1:123456789012:gen-T' }, {
-      lookupError: new LookupEachNameInstead('too many'),
-    });
+    const asks = providerOf({ 'gen-T': 'arn:aws:sns:us-east-1:123456789012:gen-T' }, { batch: false });
     const guard = GeneratedNameGuard.start(
       inputOf([create('A', QUEUE), create('T', TOPIC)], { [QUEUE]: noBatch, [TOPIC]: asks })
     )!;
@@ -176,10 +184,12 @@ describe('batched per type, all started at once', () => {
 });
 
 describe('the verdicts', () => {
-  it('free: no holder, and the name is recorded in the ledger in ONE write before any create', async () => {
+  it('free: no holder; nothing is written at plan time, and admitting a wave writes its intents in ONE write', async () => {
     const q = providerOf();
     const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q }))!;
     await expect(guard.verdict('A')).resolves.toEqual({ kind: 'free' });
+    expect(ledger.writes).toEqual([]);
+    await expect(admitAll(guard, ['A', 'B'])).resolves.toEqual([{ kind: 'free' }, { kind: 'free' }]);
     expect(ledger.writes).toEqual([
       [
         { logicalId: 'A', resourceType: QUEUE, name: 'gen-A' },
@@ -192,8 +202,8 @@ describe('the verdicts', () => {
     const q = providerOf({ 'gen-A': 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A' });
     const input = inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q });
     const guard = GeneratedNameGuard.start(input)!;
-    await expect(guard.verdict('A')).resolves.toMatchObject({ kind: 'held' });
-    await expect(guard.verdict('B')).resolves.toEqual({ kind: 'free' });
+    await expect(guard.admit('A', {})).resolves.toMatchObject({ kind: 'held' });
+    await expect(guard.admit('B', {})).resolves.toEqual({ kind: 'free' });
     expect(ledger.writes).toEqual([[{ logicalId: 'B', resourceType: QUEUE, name: 'gen-B' }]]);
     expect(input.loadJournal).toHaveBeenCalledTimes(1);
   });
@@ -250,8 +260,8 @@ describe('the verdicts', () => {
     const guard = GeneratedNameGuard.start(
       inputOf([create('A', QUEUE)], { [QUEUE]: q }, extra as Partial<GeneratedNameGuardInput>)
     )!;
-    await expect(guard.verdict('A')).resolves.toEqual({ kind: 'licensed', holder: URL, via });
-    // Recorded too: a re-run after a crash finds it as its own.
+    await expect(guard.admit('A', {})).resolves.toEqual({ kind: 'licensed', holder: URL, via });
+    // Recorded too once admitted: a re-run after a crash finds it as its own.
     expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
   });
 
@@ -300,31 +310,51 @@ describe('the verdicts', () => {
     await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'failed' });
   });
 
-  it('a ledger that cannot be read or written refuses the creates that rely on it', async () => {
+  it('a ledger that cannot be written refuses the create at admission; one that cannot be read refuses a held name', async () => {
     ledger.writeError = new Error('ledger write failed');
     const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
-    await expect(guard.verdict('A')).resolves.toMatchObject({ kind: 'failed' });
+    await expect(guard.admit('A', {})).resolves.toMatchObject({ kind: 'failed' });
     ledger.writeError = undefined;
     ledger.readError = new Error('ledger read failed');
-    const again = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
+    const again = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) })
+    )!;
     await expect(again.verdict('A')).resolves.toMatchObject({ kind: 'failed' });
   });
 
-  it('S3 answering 403 for a bucket another account owns reads as free (its create fails natively)', async () => {
+  it('an S3 403 (a bucket another account owns, or HeadBucket not granted) is unchecked: warn and create, never silently free (CB-4)', async () => {
     const bucket = providerOf({}, { batch: false });
     bucket.import.mockRejectedValue(accessDenied());
     const guard = GeneratedNameGuard.start(inputOf([create('B', BUCKET)], { [BUCKET]: bucket }))!;
-    await expect(guard.verdict('B')).resolves.toEqual({ kind: 'free' });
+    await expect(guard.verdict('B')).resolves.toMatchObject({ kind: 'unchecked' });
   });
 
-  it('lists the creates that took back a kept resource, for retained.json to let go', async () => {
+  it('lists the creates that took back a kept resource and came back, for retained.json to let go', async () => {
     const q = providerOf({ 'gen-A': URL });
     const guard = GeneratedNameGuard.start(
       inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q }, {
         loadRetained: async () => [{ logicalId: 'A', resourceType: QUEUE, physicalId: URL }],
       })
     )!;
+    await admitAll(guard, ['A', 'B']);
+    // Not yet sent: nothing was taken back.
+    await expect(guard.readoptedFromRetained()).resolves.toEqual([]);
+    guard.noteSent('A');
+    guard.noteReturned('A');
     await expect(guard.readoptedFromRetained()).resolves.toEqual(['A']);
+  });
+
+  it('G1: evidence licenses only a holder of the SAME type (a record of another type with that id does not)', async () => {
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+      records: { Other: { physicalId: URL, resourceType: TOPIC, properties: {} } as ResourceState },
+    });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'held' });
+  });
+
+  it('G2: a ledger intent of the same logical id and name but ANOTHER type licenses nothing', async () => {
+    ledger.recorded = new Map([['A', { resourceType: TOPIC, name: 'gen-A' }]]);
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'held' });
   });
 });
 
@@ -349,4 +379,137 @@ describe('deploy -> destroy (Retain) -> deploy (go-to-k/cdkd#4705 maintainer dec
       await expect(other.verdict('B')).resolves.toEqual({ kind: 'held', holder: held });
     }
   );
+});
+
+describe('the intent ledger across a deploy (review CB-1 / CB-16)', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+
+  it('approval declined: no create admitted, nothing written, and the re-run finds the name held', async () => {
+    const q = providerOf({ 'gen-A': URL });
+    // The declined deploy: the plan was looked up, nothing was admitted.
+    const declined = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: q }))!;
+    await declined.verdict('A');
+    await declined.settle();
+    expect(ledger.writes).toEqual([]);
+    expect(ledger.drops).toEqual([]);
+    // Meanwhile another backend created the name; the re-run must not take it.
+    const rerun = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: q }))!;
+    await expect(rerun.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+  });
+
+  it('a failed level: the sibling admitted but never sent has its intent dropped; the one sent and never returned keeps it', async () => {
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: providerOf() })
+    )!;
+    await admitAll(guard, ['A', 'B']);
+    guard.noteSent('A'); // A's create was sent, and failed before returning.
+    await guard.settle();
+    expect(ledger.drops).toEqual([['B']]);
+  });
+
+  it('a create that returned (then rolled back, or recorded) has its intent dropped', async () => {
+    const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
+    await admitAll(guard, ['A']);
+    guard.noteSent('A');
+    guard.noteReturned('A');
+    await guard.settle();
+    expect(ledger.drops).toEqual([['A']]);
+  });
+
+  it('a crash between the create and its record (no settle) still licenses the re-run (decision 2)', async () => {
+    const first = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
+    await admitAll(first, ['A']);
+    first.noteSent('A');
+    // Process dies here: `settle` never runs; the ledger keeps the intent.
+    ledger.recorded = new Map(ledger.writes.flat().map((w) => [w.logicalId, { resourceType: w.resourceType, name: w.name }]));
+    const rerun = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }))!;
+    await expect(rerun.verdict('A')).resolves.toEqual({ kind: 'licensed', holder: URL, via: 'ledger' });
+  });
+
+  it('creates admitted in separate waves write separately, each before its own create', async () => {
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: providerOf() })
+    )!;
+    await guard.admit('A', {});
+    expect(ledger.writes).toEqual([[{ logicalId: 'A', resourceType: QUEUE, name: 'gen-A' }]]);
+    await guard.admit('B', {});
+    expect(ledger.writes.map((w) => w.map((e) => e.logicalId))).toEqual([['A'], ['B']]);
+  });
+});
+
+describe('a lookup that needs the resolved properties waits for the create (review CB-18)', () => {
+  it('an EventBridge rule on an unresolved bus is not looked up at plan time, then on its resolved bus', async () => {
+    const rule = providerOf({ 'gen-R': 'arn:custom/gen-R' });
+    (rule as unknown as { lookupNeedsResolvedProperties: unknown }).lookupNeedsResolvedProperties = (
+      _t: string,
+      p: Record<string, unknown>
+    ) => typeof p['EventBusName'] === 'object';
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('R', RULE, { EventBusName: { Ref: 'Bus' } })], { [RULE]: rule })
+    )!;
+    expect(rule.lookupNames).not.toHaveBeenCalled();
+    await expect(guard.admit('R', { EventBusName: 'custom' })).resolves.toMatchObject({ kind: 'held' });
+    const [, names, ctx] = rule.lookupNames.mock.calls[0]! as unknown as [
+      string,
+      string[],
+      { propertiesByName: Map<string, Record<string, unknown>> },
+    ];
+    expect(names).toEqual(['gen-R']);
+    expect(ctx.propertiesByName.get('gen-R')).toEqual({ EventBusName: 'custom' });
+  });
+});
+
+describe('a name property the plan cannot read is skipped, never a crash (review CB-13)', () => {
+  it('generatedCreateName throwing (an intrinsic Name) drops that create from the check only', async () => {
+    const q = providerOf();
+    q.generatedCreateName.mockImplementation((_t: string, logicalId: string) => {
+      if (logicalId === 'Bad') throw new TypeError('name.replace is not a function');
+      return `gen-${logicalId}`;
+    });
+    const guard = GeneratedNameGuard.start(inputOf([create('Bad', QUEUE), create('A', QUEUE)], { [QUEUE]: q }))!;
+    expect(guard.candidate('Bad')).toBeUndefined();
+    await expect(guard.verdict('A')).resolves.toEqual({ kind: 'free' });
+  });
+});
+
+describe("a license from this prefix's own history (review CB-14b: a destroy by a cdkd that wrote no retained.json)", () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+
+  it('a held name the history shows this stack kept, by the same id, type and logical id, is licensed', async () => {
+    const loadKeptInHistory = vi.fn(async () => [{ logicalId: 'A', resourceType: QUEUE, physicalId: URL }]);
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, { loadKeptInHistory });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({
+      kind: 'licensed',
+      holder: URL,
+      via: 'history',
+    });
+  });
+
+  it.each([
+    ['another logical id', { logicalId: 'B', resourceType: QUEUE, physicalId: URL }],
+    ['another type', { logicalId: 'A', resourceType: TOPIC, physicalId: URL }],
+    ['another physical id', { logicalId: 'A', resourceType: QUEUE, physicalId: `${URL}x` }],
+  ])('history naming %s licenses nothing', async (_what, kept) => {
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+      loadKeptInHistory: async () => [kept],
+    });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'held' });
+  });
+
+  it('the history is read only for a held name nothing else licenses, and unreadable history licenses nothing', async () => {
+    const loadKeptInHistory = vi.fn(async () => {
+      throw new Error('unreadable');
+    });
+    const free = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }, { loadKeptInHistory });
+    await GeneratedNameGuard.start(free)!.verdict('A');
+    const recorded = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+      loadKeptInHistory,
+      records: { A: { physicalId: URL, resourceType: QUEUE, properties: {} } as ResourceState },
+    });
+    await GeneratedNameGuard.start(recorded)!.verdict('A');
+    expect(loadKeptInHistory).not.toHaveBeenCalled();
+    const held = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, { loadKeptInHistory });
+    await expect(GeneratedNameGuard.start(held)!.verdict('A')).resolves.toMatchObject({ kind: 'held' });
+    expect(loadKeptInHistory).toHaveBeenCalledTimes(1);
+  });
 });

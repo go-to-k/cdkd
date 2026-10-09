@@ -35,6 +35,7 @@ import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 import {
   CrossPrefixReadError,
+  isNotImplemented,
   recordCanOwnResources,
   type RecordUnderPrefix,
 } from './cross-prefix-stack-scan.js';
@@ -52,6 +53,7 @@ import { UNRENDERABLE } from './lock-contention-message.js';
 // module that reaches `error-handler` / `retryable-errors` /
 // `lock-contention-message` for nothing.
 import { producerRecordKey } from './record-keys.js';
+import { readEarlierStateResources } from './earlier-state-versions.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
@@ -1067,9 +1069,28 @@ export class S3StateBackend {
   }
 
   /**
-   * Raw sidecar-object read under the state bucket. Returns `null` when
-   * the key does not exist; other errors propagate.
+   * go-to-k/cdkd#4705: the `resources` maps of this stack's EARLIER records
+   * under this prefix -- the newest `max` noncurrent versions of its
+   * `state.json` on a versioned bucket (a destroy leaves a delete marker over
+   * the last one) -- newest first. Read only to prove that a resource holding
+   * a generated name is one this stack kept before `retained.json` existed.
+   * A version whose body will not parse is skipped; any request error throws.
    */
+  async earlierStateResources(
+    stackName: string,
+    region: string,
+    max = 10
+  ): Promise<Array<Record<string, unknown>>> {
+    await this.ensureClientForBucket();
+    return readEarlierStateResources(
+      this.s3Client,
+      this.config.bucket,
+      await this.ownerParam(),
+      this.getStateKey(stackName, region),
+      max
+    );
+  }
+
   /** The key of a stack's retained-resource record (go-to-k/cdkd#4705). */
   private getRetainedKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/retained.json`;
@@ -1208,9 +1229,13 @@ export class S3StateBackend {
   }
 
   /**
-   * Delete the stack's marker when it points at THIS prefix (read, then
-   * delete: a general-purpose bucket's DeleteObject takes no condition).
-   * `'elsewhere'` leaves another prefix's marker alone. Errors throw.
+   * Delete the stack's marker when it points at THIS prefix, conditionally on
+   * the version read (`If-Match`), so another prefix's re-claim between the
+   * read and the delete is left alone (`'elsewhere'`). An endpoint that does
+   * not implement the condition gets a re-read of the same version right
+   * before an unconditional delete: the window then shrinks to one request,
+   * and a lost re-claim is re-made by that prefix's next guarded command (no
+   * marker is a scan, then a claim). Errors throw.
    */
   async releaseRegistryMarker(
     stackName: string,
@@ -1219,11 +1244,29 @@ export class S3StateBackend {
     const marker = await this.getRegistryMarker(stackName, region);
     if (marker === null) return 'absent';
     if (marker.prefix !== this.config.prefix) return 'elsewhere';
+    const key = this.registryMarkerKey(stackName, region);
+    try {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          IfMatch: marker.etag,
+        })
+      );
+      return 'released';
+    } catch (error) {
+      if (isConditionFailure(error)) return 'elsewhere';
+      if (!isNotImplemented(error)) throw error;
+    }
+    const again = await this.getRegistryMarker(stackName, region);
+    if (again === null) return 'absent';
+    if (again.prefix !== this.config.prefix || again.etag !== marker.etag) return 'elsewhere';
     await this.s3Client.send(
       new DeleteObjectCommand({
         Bucket: this.config.bucket,
         ...(await this.ownerParam()),
-        Key: this.registryMarkerKey(stackName, region),
+        Key: key,
       })
     );
     return 'released';
@@ -1249,6 +1292,10 @@ export class S3StateBackend {
     return held.some(Boolean);
   }
 
+  /**
+   * Raw sidecar-object read under the state bucket. Returns `null` when
+   * the key does not exist; other errors propagate.
+   */
   async getRawObject(key: string): Promise<string | null> {
     await this.ensureClientForBucket();
     try {

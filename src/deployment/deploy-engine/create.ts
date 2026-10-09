@@ -1,3 +1,4 @@
+import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
@@ -204,6 +205,7 @@ export async function provisionCreate(
     resourceType,
     stackName,
     createdVia: createDecision.provisionedBy,
+    resolvedProps,
   });
 
   // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
@@ -219,6 +221,9 @@ export async function provisionCreate(
     stateResources,
   });
 
+  // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent and
+  // never returned) and drops (not sent, or returned).
+  this.generatedNameGuard?.noteSent(logicalId);
   const result = await this.withRetry(
     () =>
       // Issue #1903: the SAME bag, bound to this call's async chain so
@@ -240,6 +245,8 @@ export async function provisionCreate(
     undefined,
     createProvider
   );
+
+  this.generatedNameGuard?.noteReturned(logicalId);
 
   // Issue #2274: BEFORE the record is built, so the needles exist by the
   // time anything is persisted, and before any dependent resolves against
@@ -318,13 +325,14 @@ export async function provisionCreate(
 }
 
 /**
- * go-to-k/cdkd#4705: act on the plan-time verdict for this create's
- * cdkd-generated name (`GeneratedNameGuard`). A free name, or a holder this
- * stack's own evidence names, creates as before; a lookup S3 or the service
- * refused (403) warns and creates; any other holder, or a lookup that failed
- * otherwise, refuses before the create -- CloudFormation fails a create whose
- * name is taken with "already exists", and cdkd's create of these types would
- * instead take the resource over and record it as this stack's.
+ * go-to-k/cdkd#4705: act on the verdict for this create's cdkd-generated name
+ * (`GeneratedNameGuard.admit`, which also records the name as this stack's
+ * intent right before the create). A free name, or a holder this stack's own
+ * evidence names, creates as before; a lookup the service refused (403) warns
+ * and creates; any other holder, or a lookup that failed otherwise, refuses
+ * this create before it is sent -- CloudFormation fails a create whose name is
+ * taken with "already exists", and cdkd's create of these types would instead
+ * take the resource over and record it as this stack's.
  */
 async function refuseUnlicensedGeneratedName(
   this: DeployEngine,
@@ -333,15 +341,16 @@ async function refuseUnlicensedGeneratedName(
     resourceType: string;
     stackName: string;
     createdVia: ProvisionedBy | undefined;
+    resolvedProps: Record<string, unknown>;
   }
 ): Promise<void> {
   const { logicalId, resourceType } = input;
-  const pending = this.generatedNameGuard?.verdict(logicalId);
   const asked = this.generatedNameGuard?.candidate(logicalId);
   // Routed to Cloud Control at create time after all: its handlers refuse an
   // existing name themselves.
-  if (pending === undefined || asked === undefined || input.createdVia === 'cc-api') return;
-  const verdict = await pending;
+  if (asked === undefined || input.createdVia === 'cc-api') return;
+  const verdict = await this.generatedNameGuard!.admit(logicalId, input.resolvedProps);
+  if (verdict === undefined) return;
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
   const named = `the cdkd-generated ${asked.property ?? 'name'} ${displaySafe(asked.name)}`;
   const adoptsText =
@@ -368,7 +377,7 @@ async function refuseUnlicensedGeneratedName(
       return refuse(
         `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
           `whether another resource already holds it (${describeAwsFailure(verdict.error).summary}). ` +
-          `Nothing was created. Re-run the deploy once the check can succeed.`
+          `${displaySafe(logicalId)} was not created. Re-run the deploy once the check can succeed.`
       );
     case 'held': {
       const nested = input.stackName.includes('~');
@@ -376,22 +385,26 @@ async function refuseUnlicensedGeneratedName(
       const importLine = nested
         ? `adopt it through the top-level stack ${quotedOrDescribed(top, 'stack name')} with \`cdkd import\``
         : `adopt it with \`${
-            pasteableCommand('cdkd import', [
-              { value: input.stackName, hole: 'stack' },
-              {
-                flag: '--resource',
-                value: `${logicalId}=${verdict.holder}`,
-                hole: 'logicalId=physicalId',
-              },
-            ]).command
+            pasteableCommand(
+              'cdkd import',
+              [
+                { value: input.stackName, hole: 'stack' },
+                {
+                  flag: '--resource',
+                  value: `${logicalId}=${verdict.holder}`,
+                  hole: 'logicalId=physicalId',
+                },
+              ],
+              recoveryCommandFlags(this.options.refusalRecovery).flags
+            ).command
           }\``;
       return refuse(
         `${subject} would be created with ${named}, which an existing resource ` +
           `(${displaySafe(verdict.holder)}) already holds, and nothing this stack records names ` +
           `that resource: not its state, its rollback journal or create-token ledger, nor what a ` +
           `destroy of it under this state prefix kept. Since ${adoptsText}, creating it would take ` +
-          `that resource over, as CloudFormation refuses with "already exists". Nothing was ` +
-          `created. The likely cause: this stack is also deployed under another state backend ` +
+          `that resource over, as CloudFormation refuses with "already exists". ` +
+          `${displaySafe(logicalId)} was not created. The likely cause: this stack is also deployed under another state backend ` +
           `(another --state-prefix, --state-bucket or account), where cdkd generates the same ` +
           `names. One stack name per account and region is supported (go-to-k/cdkd#4705): ` +
           `deploy it under one backend only, or give this stack another name. If the resource ` +

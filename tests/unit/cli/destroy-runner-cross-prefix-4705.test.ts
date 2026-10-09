@@ -284,6 +284,38 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     );
   });
 
+  it('G5: the empty-state path releases the marker too, after its record is deleted', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const result = await runDestroyForStack('App', emptyState(), h.ctx);
+    expect(result.skippedEmpty).toBe(true);
+    expect(h.deleteState).toHaveBeenCalledTimes(1);
+    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION);
+    expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      h.deleteState.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('G5: a destroy that keeps the record (a delete failed) keeps the marker', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const failing: StackState = {
+      ...emptyState(),
+      resources: {
+        Queue: {
+          physicalId: 'https://q/App-Queue',
+          resourceType: 'AWS::SQS::Queue',
+          properties: {},
+          provisionedBy: 'sdk',
+        },
+      } as unknown as StackState['resources'],
+    };
+    const result = await runDestroyForStack('App', failing, h.ctx);
+    // The delete failed (no provider answers), so the record is preserved.
+    expect(result.errorCount).toBeGreaterThan(0);
+    expect(h.acquireLock).toHaveBeenCalled();
+    expect(h.deleteState).not.toHaveBeenCalled();
+    expect(h.releaseRegistryMarker).not.toHaveBeenCalled();
+  });
+
   it('a nested child (no crossPrefixCheck) never touches the registry marker', async () => {
     const h = makeCtx({});
     await runDestroyForStack('App~Child', retainedState(), h.ctx);

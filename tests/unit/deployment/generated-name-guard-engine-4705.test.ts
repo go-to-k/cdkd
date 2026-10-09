@@ -73,11 +73,14 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     records?: Record<string, ResourceState>;
     dryRun?: boolean;
     retained?: Array<{ logicalId: string; resourceType: string; physicalId: string }>;
+    /** Replaces the lookup's answer (after it is recorded in `events`). */
+    lookup?: (names: readonly string[]) => Promise<Map<string, string>>;
   }) {
     const provider = {
       generatedCreateName: vi.fn((_t: string, logicalId: string) => `${STACK}-${logicalId}`),
       lookupNames: vi.fn(async (_t: string, names: readonly string[]) => {
         events.push(`lookup:${names.join(',')}`);
+        if (opts.lookup) return opts.lookup(names);
         return new Map(names.flatMap((n) => (opts.holders?.[n] ? [[n, opts.holders[n]!] as const] : [])));
       }),
       create: vi.fn(async (logicalId: string) => {
@@ -184,6 +187,34 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     await engine.deploy(STACK, template);
     expect(provider.create.mock.calls.map((c) => c[0])).toContain('Q2');
     expect(stateBackend.saveRetainedResources).toHaveBeenCalledWith(STACK, 'us-east-1', [kept[1]]);
+  });
+
+  it('a lookup that FAILS refuses every create it was asked about: nothing is created (fail closed)', async () => {
+    const { engine, provider } = buildEngine({
+      lookup: () => Promise.reject(Object.assign(new Error('Service Unavailable'), { name: 'ServiceUnavailable' })),
+    });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Q1/);
+    expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('a create WAITS for a slow lookup, and a holder it then reports is refused, never adopted', async () => {
+    let answer!: (found: Map<string, string>) => void;
+    const { engine, provider } = buildEngine({
+      lookup: () => new Promise((resolve) => (answer = resolve)),
+    });
+    const run = engine.deploy(STACK, template).then(
+      () => 'ok',
+      (e: unknown) => e
+    );
+    // Let the engine reach Q1's create and wait there.
+    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+    expect(events.some((e) => e.startsWith('lookup:'))).toBe(true);
+    expect(provider.create).not.toHaveBeenCalled();
+    answer(new Map([['App-Q1', urlOf('App-Q1')]]));
+    const outcome = await run;
+    expect(outcome).toBeInstanceOf(Error);
+    expect(String((outcome as Error).message)).toMatch(/Q1/);
+    expect(provider.create).not.toHaveBeenCalled();
   });
 
   it('a dry run looks nothing up and writes nothing', async () => {

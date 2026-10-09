@@ -32,8 +32,10 @@ import {
   unsupportedFinalSnapshotError,
 } from '../../provisioning/final-snapshot.js';
 import type { RetainedResource, S3StateBackend } from '../../state/s3-state-backend.js';
-import { replacementCreateAdoptsName } from '../../deployment/replacement-name-holder.js';
-import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
+import {
+  keptForReadoption,
+  recordRetainedForReadoption,
+} from '../../deployment/retained-readoption.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { acquireStackLock } from './stack-lock-guard.js';
@@ -525,6 +527,33 @@ export function countProtectedJournaledOrphans(
 }
 
 /**
+ * go-to-k/cdkd#4705: once a top-level stack's record is gone (deleted FIRST, so
+ * the registry never names a prefix for a stack it no longer records), delete
+ * its registry marker when it names this prefix. Only for `cdkd destroy` /
+ * `cdkd state destroy` of a top-level stack (`crossPrefixCheck` is set exactly
+ * then). Best-effort: a marker left behind names a prefix with no record, which
+ * another prefix's next check treats as stale and re-claims.
+ */
+async function releaseRegistryMarkerAfterDestroy(
+  ctx: Pick<DestroyRunnerContext, 'crossPrefixCheck' | 'stateBackend'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  if (ctx.crossPrefixCheck === undefined) return;
+  try {
+    const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region);
+    logger.debug(safeMsg`Stack registry marker: ${released}`);
+  } catch (error) {
+    logger.warn(
+      safeMsg`Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
+        `records the stack, so a deploy under another prefix treats it as stale.`
+    );
+  }
+}
+
+/**
  * Run the destroy lifecycle for one stack against an already-loaded
  * `StackState`, reusing the caller's state backend / lock manager.
  *
@@ -554,79 +583,6 @@ export function countProtectedJournaledOrphans(
  *   file is preserved (trimmed to the remaining resources, outputs/imports
  *   cleared) so the user can retry.
  */
-/**
- * go-to-k/cdkd#4705: whether a kept resource is one a later create of the
- * stack would take back by name -- a name-adopting SDK type whose record
- * carries no template name (its name is cdkd-generated), with a physical id.
- */
-function keptForReadoption(resource: ResourceState): resource is ResourceState & {
-  physicalId: string;
-} {
-  if (!replacementCreateAdoptsName(resource.resourceType, resource.provisionedBy)) return false;
-  if (typeof resource.physicalId !== 'string' || resource.physicalId === '') return false;
-  const property = explicitNamePropertyFor(resource.resourceType);
-  const properties = resource.properties as Record<string, unknown> | undefined;
-  return property === undefined || !properties?.[property];
-}
-
-/**
- * go-to-k/cdkd#4705: merge `kept` into the stack's retained-resource record
- * under this prefix (`S3StateBackend.saveRetainedResources`), replacing an
- * earlier entry of the same logical id. Best-effort: a failure is warned, and
- * the next deploy's create of such a resource is then refused with the
- * `cdkd import` remedy instead of taking it back.
- */
-async function recordRetainedForReadoption(
-  backend: Pick<S3StateBackend, 'loadRetainedResources' | 'saveRetainedResources'>,
-  stackName: string,
-  region: string,
-  kept: readonly RetainedResource[],
-  logger: { warn(message: string): void }
-): Promise<void> {
-  if (kept.length === 0) return;
-  try {
-    const keptIds = new Set(kept.map((k) => k.logicalId));
-    const earlier = await backend.loadRetainedResources(stackName, region).catch(() => []);
-    await backend.saveRetainedResources(stackName, region, [
-      ...earlier.filter((e) => !keptIds.has(e.logicalId)),
-      ...kept,
-    ]);
-  } catch (error) {
-    logger.warn(
-      safeMsg`Could not record the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
-        safeMsg`a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +
-        `refuses to create them over the kept ones; adopt them with 'cdkd import' then.`
-    );
-  }
-}
-
-/**
- * go-to-k/cdkd#4705: once a top-level stack's record is gone (deleted FIRST, so
- * the registry never names a prefix for a stack it no longer records), delete
- * its registry marker when it names this prefix. Only for `cdkd destroy` /
- * `cdkd state destroy` of a top-level stack (`crossPrefixCheck` is set exactly
- * then). Best-effort: a marker left behind names a prefix with no record, which
- * another prefix's next check treats as stale and re-claims.
- */
-async function releaseRegistryMarkerAfterDestroy(
-  ctx: Pick<DestroyRunnerContext, 'crossPrefixCheck' | 'stateBackend'>,
-  stackName: string,
-  region: string,
-  logger: { warn(message: string): void; debug(message: string): void }
-): Promise<void> {
-  if (ctx.crossPrefixCheck === undefined) return;
-  try {
-    const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region);
-    logger.debug(safeMsg`Stack registry marker: ${released}`);
-  } catch (error) {
-    logger.warn(
-      safeMsg`Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
-        safeMsg`(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
-        `records the stack, so a deploy under another prefix treats it as stale.`
-    );
-  }
-}
-
 export async function runDestroyForStack(
   stackName: string,
   state: StackState,

@@ -328,24 +328,29 @@ export class CreateTokenLedger {
   }
 
   /**
-   * go-to-k/cdkd#4705: drop `logicalId`'s `sent` entry when it records a
-   * name-adopting create (`base` starting with {@link ADOPTING_CREATE_BASE}):
-   * the stack let that resource go (a Retain), so its name no longer licenses
-   * a create taking it back. Best-effort; never throws.
+   * go-to-k/cdkd#4705: drop, in one write, the `sent` entries of
+   * `logicalIds` that record a name-adopting create's intent (`base`
+   * starting with {@link ADOPTING_CREATE_BASE}): the deploy that wrote them is
+   * over and their create was not sent, or came back (the record or the
+   * rollback has the resource now). Best-effort; never throws.
    */
-  dropAdoptingCreate(logicalId: string): Promise<void> {
+  dropAdoptingCreates(logicalIds: readonly string[]): Promise<void> {
     return this.serialized(async () => {
       try {
         const doc = await this.current();
-        if (doc?.sent[logicalId]?.base.startsWith(ADOPTING_CREATE_BASE) !== true) return;
-        delete doc.sent[logicalId];
+        if (doc === null) return;
+        const present = logicalIds.filter(
+          (id) => doc.sent[id]?.base.startsWith(ADOPTING_CREATE_BASE) === true
+        );
+        if (present.length === 0) return;
+        for (const id of present) delete doc.sent[id];
         await this.persist(doc);
       } catch (error) {
         this.stale = true;
         this.logger.warn(
-          safeMsg`Could not record in this stack's create-token ledger that ${logicalId} was kept (${
+          safeMsg`Could not clear this deploy's unsent name-adopting creates from the stack's create-token ledger (${
             describeAwsFailure(error).summary
-          }); a later deploy may take the kept resource back.`
+          }); a later deploy may take a resource of those names back. They are cleared by the next successful deploy.`
         );
       }
     });
@@ -499,6 +504,15 @@ export async function recordAdoptingCreates(
 }
 
 /**
+ * go-to-k/cdkd#4705: drop the bound ledger's name-adopting intents of
+ * `logicalIds` (see {@link CreateTokenLedger.dropAdoptingCreates}). Outside a
+ * bound ledger, a no-op.
+ */
+export async function dropAdoptingCreates(logicalIds: readonly string[]): Promise<void> {
+  await ledgerStore.getStore()?.dropAdoptingCreates(logicalIds);
+}
+
+/**
  * Bound around everything that creates or lets go of a stack's resources: the
  * deploy engine's deploy (and the rollback inside it), `cdkd rollback`'s
  * replay, and a nested child's journal replay -- each with that stack's own
@@ -551,12 +565,10 @@ export const LEDGER_TOKEN_RESOURCE_TYPES: ReadonlySet<string> = new Set([
  * otherwise, and with no ledger bound, a no-op.
  */
 export async function noteRetainedResource(resourceType: string, logicalId: string): Promise<void> {
-  if (!LEDGER_TOKEN_RESOURCE_TYPES.has(resourceType)) {
-    // go-to-k/cdkd#4705: a kept name-adopting resource's recorded create no
-    // longer licenses taking it back.
-    await ledgerStore.getStore()?.dropAdoptingCreate(logicalId);
-    return;
-  }
+  // No ledger read for any other type (go-to-k/cdkd#4705 review CB-19): a
+  // kept name-adopting resource is licensed back through `retained.json`, so
+  // its intent, if any, needs no change here.
+  if (!LEDGER_TOKEN_RESOURCE_TYPES.has(resourceType)) return;
   await ledgerStore.getStore()?.rotate(logicalId);
 }
 

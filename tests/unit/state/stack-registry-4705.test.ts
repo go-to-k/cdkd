@@ -183,6 +183,61 @@ describe('a marker naming a prefix', () => {
   });
 });
 
+describe('a stale marker is re-claimed only after the one-time scan (review CB-2)', () => {
+  it('marker -> C (stale), a pre-registry holder under B: found, naming B, and the marker is NOT taken', async () => {
+    const b = backendOf({
+      markers: { App: 'team-c' },
+      segments: ['cdkd', 'team-b', 'team-c'],
+      scanHolders: { 'team-b|App': 'holder' },
+    });
+    await expect(new CrossPrefixGuard(b).full('App', 'r')).resolves.toMatchObject({
+      kind: 'found',
+      prefixes: ['team-b'],
+    });
+    expect(b.claimRegistryMarker).not.toHaveBeenCalled();
+    expect(b.markers.get('App')?.prefix).toBe('team-c');
+    // A first deploy meets the same stale marker: scanned too, refused.
+    await expect(new CrossPrefixGuard(b).firstDeploy('App', 'r')).resolves.toMatchObject({
+      kind: 'found',
+      prefixes: ['team-b'],
+    });
+    expect(b.claimRegistryMarker).not.toHaveBeenCalled();
+  });
+
+  it('marker -> C (stale) and a clear scan: re-claimed, with the scan paid once', async () => {
+    const b = backendOf({ markers: { App: 'team-c' }, segments: ['cdkd', 'team-c'] });
+    await expect(new CrossPrefixGuard(b).full('App', 'r')).resolves.toEqual({ kind: 'clear' });
+    expect(b.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
+    expect(b.markers.get('App')?.prefix).toBe('cdkd');
+  });
+});
+
+describe('an S3-compatible endpoint without conditional writes (review CB-6)', () => {
+  it('NotImplemented on the claim falls back to the scan (reported like a registry 403), never refusing', async () => {
+    const notImplemented = Object.assign(new Error('Not Implemented'), {
+      name: 'NotImplemented',
+      $metadata: { httpStatusCode: 501 },
+    });
+    const b = backendOf({ claimError: notImplemented, segments: ['cdkd'] });
+    await expect(new CrossPrefixGuard(b).firstDeploy('App', 'r')).resolves.toMatchObject({
+      kind: 'denied',
+      stage: 'registry',
+    });
+    expect(b.listTopLevelPrefixes).toHaveBeenCalled();
+  });
+});
+
+describe('G3: a nested child is locked by its TOP-LEVEL name', () => {
+  it("the other prefix's lock on the parent makes the child's answer in-progress", async () => {
+    const b = backendOf({ markers: { App: 'team-b' }, locks: ['team-b|App'] });
+    await expect(new CrossPrefixGuard(b).full('App~Child', 'r')).resolves.toEqual({
+      kind: 'in-progress',
+      prefix: 'team-b',
+    });
+    expect(b.lockUnderPrefix).toHaveBeenCalledWith('team-b', 'App', 'r');
+  });
+});
+
 describe('no marker for a recorded stack (a record that predates the registry)', () => {
   it('pays the scan ONCE, then claims, so the next read is O(1)', async () => {
     const b = backendOf({ segments: ['cdkd', 'team-b'] });

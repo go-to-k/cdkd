@@ -2,7 +2,8 @@
  * go-to-k/cdkd#4705 (C): the create-token ledger records a deploy's
  * name-adopting creates BEFORE they are sent, in one write, so a re-run after
  * a crash between such a create and its state record finds the name as its
- * own; a Retain that lets the resource go drops the entry.
+ * own. The deploy's end drops the intents it no longer needs; a Retain reads
+ * nothing (its license is `retained.json`).
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
@@ -15,6 +16,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import {
   ADOPTING_CREATE_BASE,
   CreateTokenLedger,
+  dropAdoptingCreates,
   noteRetainedResource,
   recordAdoptingCreates,
   recordedAdoptingCreates,
@@ -95,27 +97,43 @@ describe('recording name-adopting creates', () => {
   });
 });
 
-describe('a Retain lets the resource go', () => {
-  it("drops an adopting create's entry, so its name no longer licenses taking it back", async () => {
+describe('a Retain lets the resource go (review CB-19)', () => {
+  it('reads and writes nothing for a type that takes no token: retained.json licenses taking it back', async () => {
     const store = storeOf();
     const ledger = new CreateTokenLedger(store);
     await withCreateTokenLedger(ledger, async () => {
-      await recordAdoptingCreates([{ logicalId: 'A', resourceType: QUEUE, name: 'App-A' }]);
       await noteRetainedResource(QUEUE, 'A');
-      await expect(recordedAdoptingCreates()).resolves.toEqual(new Map());
+      await noteRetainedResource('AWS::S3::Bucket', 'Bucket');
     });
-    expect(store.current()!.sent['A']).toBeUndefined();
+    expect(store.load).not.toHaveBeenCalled();
+    expect(store.save).not.toHaveBeenCalled();
   });
+});
 
-  it('leaves a token entry of another type alone', async () => {
+describe('dropping the intents of a finished deploy', () => {
+  it('drops, in one write, only the adopting entries of the given logical ids', async () => {
     const store = storeOf({
       ledgerVersion: 1,
       nonce: 'n',
-      sent: { Bucket: { base: 'not-adopting', token: 't', firstSentAt: 1 } },
+      sent: { Efs: { base: 'efs-base', token: 't', firstSentAt: 1 } },
     });
-    await withCreateTokenLedger(new CreateTokenLedger(store), () =>
-      noteRetainedResource('AWS::S3::Bucket', 'Bucket')
-    );
-    expect(store.save).not.toHaveBeenCalled();
+    await withCreateTokenLedger(new CreateTokenLedger(store), async () => {
+      await recordAdoptingCreates([
+        { logicalId: 'A', resourceType: QUEUE, name: 'App-A' },
+        { logicalId: 'B', resourceType: QUEUE, name: 'App-B' },
+      ]);
+      store.save.mockClear();
+      await dropAdoptingCreates(['A', 'Efs', 'Missing']);
+    });
+    expect(store.save).toHaveBeenCalledTimes(1);
+    expect(Object.keys(store.current()!.sent).sort()).toEqual(['B', 'Efs']);
+  });
+
+  it('a failure is warned, never thrown', async () => {
+    const store = storeOf();
+    store.load.mockRejectedValue(new Error('S3 down'));
+    await expect(
+      withCreateTokenLedger(new CreateTokenLedger(store), () => dropAdoptingCreates(['A']))
+    ).resolves.toBeUndefined();
   });
 });

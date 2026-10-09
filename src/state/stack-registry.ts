@@ -14,25 +14,33 @@
  * - a marker naming another prefix X reads X's record and journal and applies
  *   the holder rules (`recordCanOwnResources`): a holder refuses; nothing
  *   there but X's lock is a deploy in progress; nothing at all (no record that
- *   can own a resource, no journal, no lock) is a stale marker, re-claimed for
- *   this prefix with `If-Match` on the version read;
+ *   can own a resource, no journal, no lock) is a stale marker: the prefix
+ *   scan runs ONCE first (a pair that predates the registry must not hide
+ *   behind it), and only a clear answer re-claims it with `If-Match`;
  * - no marker, for a stack already recorded (a record that predates the
  *   registry), pays the prefix scan ONCE: a clear answer then claims it, so
  *   the next command is O(1) again. A first deploy claims without scanning: a
  *   create can no longer adopt another deployment's resource
- *   (`createAdoptionLicense`), so a first deploy needs no scan to be safe.
+ *   (`GeneratedNameGuard`), so a first deploy needs no scan to be safe.
  *
- * A 403 on the marker falls back to the scan (the 403 contract: warn, and
- * continue on what the scan can see). The registry is a safety check against
+ * A 403 on the marker -- or an S3-compatible endpoint that does not implement
+ * its conditional write (`NotImplemented`) -- falls back to the scan (the 403
+ * contract: warn, and continue on what the scan can see). The registry is a safety check against
  * one stack name under two prefixes of ONE bucket, not an access control.
  */
 import {
   CrossPrefixReadError,
   CrossPrefixScanCache,
   isAccessDenied,
+  isNotImplemented,
   type CrossPrefixScanResult,
   type CrossPrefixScanTarget,
 } from './cross-prefix-stack-scan.js';
+
+/** The S3 error behind a `CrossPrefixReadError` (the error itself otherwise). */
+function unwrapReadError(error: unknown): unknown {
+  return error instanceof CrossPrefixReadError ? error.cause : error;
+}
 
 /** What the guard needs of a state backend. */
 export interface RegistryTarget extends CrossPrefixScanTarget {
@@ -178,13 +186,23 @@ export class CrossPrefixGuard {
       }
       if (held === 'holder') return { kind: 'found', prefixes: [marker.prefix] };
       if (locked) return { kind: 'in-progress', prefix: marker.prefix };
-      const stale = held === 'empty' ? { stale: [marker.prefix] } : {};
+      const stale = held === 'empty' ? [marker.prefix] : [];
       // Nothing there that can own a resource, no journal, no lock: a stale
-      // marker. A child does not claim its top-level stack's marker.
-      if (!claimable) return { kind: 'clear', ...stale };
+      // marker. Before taking it over, the one-time scan: a pair that
+      // predates the registry (two other prefixes recording this stack) must
+      // not become invisible behind a marker this prefix now holds.
+      const scanned = await this.scan.full(stackName, region, when);
+      if (scanned.kind !== 'clear') return scanned;
+      const allStale = [...new Set([...stale, ...(scanned.stale ?? [])])];
+      const answer: CrossPrefixScanResult = {
+        kind: 'clear',
+        ...(allStale.length > 0 && { stale: allStale }),
+      };
+      // A child does not claim its top-level stack's marker.
+      if (!claimable) return answer;
       const claimed = await this.claim(top, region, marker.etag);
       if (claimed === 'conflict') continue;
-      return { kind: 'clear', ...stale };
+      return answer;
     }
     // Two lost races in a row: another deploy keeps rewriting it.
     return {
@@ -228,7 +246,11 @@ export class CrossPrefixGuard {
     when: 'prestart' | 'now',
     error: unknown
   ): Promise<CrossPrefixScanResult> {
-    if (!isAccessDenied(error)) return { kind: 'failed', error };
+    // A 403, or an S3-compatible endpoint without conditional writes
+    // (`NotImplemented`): the registry cannot be used, the scan answers.
+    if (!isAccessDenied(error) && !isNotImplemented(unwrapReadError(error))) {
+      return { kind: 'failed', error };
+    }
     const scanned = await this.scan.full(stackName, region, when);
     return scanned.kind === 'clear'
       ? { kind: 'denied', error, stage: 'registry', ...(scanned.stale && { stale: scanned.stale }) }

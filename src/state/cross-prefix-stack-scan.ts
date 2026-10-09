@@ -151,6 +151,17 @@ export class CrossPrefixReadError extends Error {
 export const PROBE_CONCURRENCY = 50;
 
 /**
+ * An S3-compatible endpoint that does not implement a request feature (a
+ * conditional write or delete): 501 / `NotImplemented`.
+ */
+export function isNotImplemented(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
+    ?.httpStatusCode;
+  return name === 'NotImplemented' || status === 501;
+}
+
+/**
  * A 403 from S3: AccessDenied on a List or a Get, a bare 403 on a Head --
  * also when a state read wrapped it (a bounded walk of `cause`).
  */

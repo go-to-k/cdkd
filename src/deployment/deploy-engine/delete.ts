@@ -23,12 +23,24 @@ import { reportDeleteGuards } from '../delete-guard-scope.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
 import { nestedChildStackName } from '../nested-child-journal.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { keptForReadoption, recordRetainedForReadoption } from '../retained-readoption.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     provisionDelete: OmitThisParameter<typeof provisionDelete>;
   }
+}
+
+/**
+ * go-to-k/cdkd#4705: one engine's `retained.json` updates, one at a time
+ * (each is a read-merge-write; parallel deletes would lose entries).
+ */
+const keptWrites = new WeakMap<DeployEngine, Promise<void>>();
+function recordKeptSerially(engine: DeployEngine, write: () => Promise<void>): Promise<void> {
+  const next = (keptWrites.get(engine) ?? Promise.resolve()).then(write, write);
+  keptWrites.set(engine, next);
+  return next;
 }
 
 /** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
@@ -70,6 +82,19 @@ export async function provisionDelete(
     // go-to-k/cdkd#4438: the kept resource still holds this stack's create
     // token, so a later create of the logical id must not send it again.
     await noteRetainedResource(resourceType, logicalId);
+    // go-to-k/cdkd#4705: and a later deploy that adds it back takes it back
+    // by its generated name rather than refusing that name.
+    if (keptForReadoption(currentResource)) {
+      await recordKeptSerially(this, () =>
+        recordRetainedForReadoption(
+          this.stateBackend,
+          stackName,
+          this.stackRegion,
+          [{ logicalId, resourceType, physicalId: currentResource.physicalId }],
+          this.logger
+        )
+      );
+    }
     return;
   }
 

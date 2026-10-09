@@ -4,7 +4,6 @@ import {
   DeleteQueueCommand,
   GetQueueAttributesCommand,
   GetQueueUrlCommand,
-  ListQueuesCommand,
   ListQueueTagsCommand,
   SetQueueAttributesCommand,
   TagQueueCommand,
@@ -19,13 +18,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  boundedPages,
-  commonPrefix,
-  isAccessDeniedError,
-  lookupEachName,
-  withApiLimit,
-} from '../name-lookup.js';
+import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -242,37 +235,13 @@ export class SQSQueueProvider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#4705: one `ListQueues` by the names' common prefix (1000 per
-   * page, at most 3 pages), filtered to whole names; per-name `GetQueueUrl`
-   * when the listing is not granted or does not end within the bound.
+   * go-to-k/cdkd#4705: one exact `GetQueueUrl` per name. Never `ListQueues`:
+   * its listing is eventually consistent and omitted a queue another
+   * deployment had created a minute earlier, so the create adopted it (and the
+   * failed deploy's rollback deleted it). Any failure but `QueueDoesNotExist`
+   * throws, which refuses the create.
    */
   async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
-    const prefix = commonPrefix(names);
-    try {
-      const urls = await boundedPages(3, async (token) => {
-        const resp = await withApiLimit('sqs:ListQueues', 5, () =>
-          this.sqsClient.send(
-            new ListQueuesCommand({
-              ...(prefix !== '' && { QueueNamePrefix: prefix }),
-              MaxResults: 1000,
-              ...(token !== undefined && { NextToken: token }),
-            })
-          )
-        );
-        return { items: resp.QueueUrls ?? [], next: resp.NextToken };
-      });
-      if (urls !== undefined) {
-        const wanted = new Set(names);
-        const found = new Map<string, string>();
-        for (const url of urls) {
-          const name = url.slice(url.lastIndexOf('/') + 1);
-          if (wanted.has(name)) found.set(name, url);
-        }
-        return found;
-      }
-    } catch (err) {
-      if (!isAccessDeniedError(err)) throw err;
-    }
     return lookupEachName(names, 'sqs:GetQueueUrl', 10, async (name) => {
       try {
         const resp = await this.sqsClient.send(new GetQueueUrlCommand({ QueueName: name }));

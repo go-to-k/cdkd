@@ -10,6 +10,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
@@ -44,6 +45,10 @@ let bodies: Map<string, string>;
 let errors: Map<string, Error>;
 /** Top-level CommonPrefixes as S3 returns them (already url-encoded), per page. */
 let pages: string[][];
+/** How a conditional DeleteObject answers: as S3 does, a 412, or `NotImplemented`. */
+let conditionalDelete: 'ok' | 'precondition' | 'not-implemented';
+/** Earlier object versions: `{Key, VersionId, LastModified, body}`. */
+let versions: Array<{ Key: string; VersionId: string; LastModified: Date; body: string }>;
 
 const notFound = (): Error =>
   Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
@@ -101,8 +106,32 @@ function makeClient(): {
       return { ETag: '"e2"' };
     }
     if (cmd instanceof DeleteObjectCommand) {
+      if (cmd.input.IfMatch !== undefined && conditionalDelete !== 'ok') {
+        throw conditionalDelete === 'precondition'
+          ? Object.assign(new Error('PreconditionFailed'), {
+              name: 'PreconditionFailed',
+              $metadata: { httpStatusCode: 412 },
+            })
+          : Object.assign(new Error('Not Implemented'), {
+              name: 'NotImplemented',
+              $metadata: { httpStatusCode: 501 },
+            });
+      }
       bodies.delete(cmd.input.Key!);
       return {};
+    }
+    if (cmd instanceof ListObjectVersionsCommand) {
+      const prefix = cmd.input.Prefix!;
+      return {
+        Versions: versions
+          .filter((v) => v.Key.startsWith(prefix))
+          .map(({ Key, VersionId, LastModified }) => ({ Key, VersionId, LastModified })),
+      };
+    }
+    if (cmd instanceof GetObjectCommand && cmd.input.VersionId !== undefined) {
+      const v = versions.find((x) => x.Key === cmd.input.Key && x.VersionId === cmd.input.VersionId);
+      if (v === undefined) throw noSuchKey();
+      return { Body: { transformToString: async () => v.body } };
     }
     if (cmd instanceof HeadObjectCommand || cmd instanceof GetObjectCommand) {
       const key = cmd.input.Key!;
@@ -137,6 +166,8 @@ beforeEach(async () => {
   bodies = new Map();
   errors = new Map();
   pages = [[]];
+  conditionalDelete = 'ok';
+  versions = [];
   client = makeClient();
   backend = new S3StateBackend(
     client as unknown as S3Client,
@@ -520,15 +551,44 @@ describe('the stack registry marker (go-to-k/cdkd#4705)', () => {
     expect(error).toBeInstanceOf(CrossPrefixReadError);
   });
 
-  it('releases only a marker naming this prefix (read, then delete)', async () => {
+  it('releases only a marker naming this prefix, conditionally on the version read (If-Match)', async () => {
     await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('absent');
     bodies.set(MARKER, JSON.stringify({ prefix: 'team-b' }));
     await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('elsewhere');
     expect(commandsOf(DeleteObjectCommand)).toHaveLength(0);
     bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
     await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('released');
-    expect(commandsOf(DeleteObjectCommand).map((c) => c.input.Key)).toEqual([MARKER]);
+    expect(commandsOf(DeleteObjectCommand).map((c) => c.input)).toEqual([
+      expect.objectContaining({ Key: MARKER, IfMatch: '"e"', ExpectedBucketOwner: '999999999999' }),
+    ]);
     expect(bodies.has(MARKER)).toBe(false);
+  });
+
+  it("CB-12: another prefix's re-claim between the read and the delete (412) is left alone", async () => {
+    bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
+    conditionalDelete = 'precondition';
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('elsewhere');
+    expect(bodies.has(MARKER)).toBe(true);
+  });
+
+  it('CB-12: an endpoint without conditional deletes re-reads right before an unconditional delete', async () => {
+    bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
+    conditionalDelete = 'not-implemented';
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('released');
+    expect(commandsOf(DeleteObjectCommand).map((c) => c.input.IfMatch)).toEqual(['"e"', undefined]);
+    // The re-read sees another prefix's marker: left alone.
+    bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
+    client.send.mockClear();
+    let reads = 0;
+    const realSend = client.send.getMockImplementation()!;
+    client.send.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof GetObjectCommand && cmd.input.Key === MARKER && ++reads === 2) {
+        bodies.set(MARKER, JSON.stringify({ prefix: 'team-b' }));
+      }
+      return realSend(cmd);
+    });
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('elsewhere');
+    expect(JSON.parse(bodies.get(MARKER)!)).toEqual({ prefix: 'team-b' });
   });
 
   it("probes another prefix's lock in both layouts", async () => {
@@ -589,5 +649,29 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));
     await backend.deleteState('App', 'us-east-1').catch(() => undefined);
     expect(bodies.has(KEY)).toBe(true);
+  });
+});
+
+describe("a stack's earlier records (noncurrent state.json versions, review CB-14b)", () => {
+  const KEY = 'cdkd/App/us-east-1/state.json';
+
+  it('reads the newest versions of exactly that key, newest first, owner-pinned and url-encoded', async () => {
+    const body = (id: string) => JSON.stringify({ resources: { [id]: { physicalId: id } } });
+    versions = [
+      { Key: KEY, VersionId: 'v1', LastModified: new Date(1), body: body('old') },
+      { Key: KEY, VersionId: 'v2', LastModified: new Date(2), body: body('new') },
+      { Key: `${KEY}.bak`, VersionId: 'x', LastModified: new Date(3), body: body('other-key') },
+      { Key: KEY, VersionId: 'v3', LastModified: new Date(0), body: 'not json' },
+    ];
+    await expect(backend.earlierStateResources('App', 'us-east-1')).resolves.toEqual([
+      { new: { physicalId: 'new' } },
+      { old: { physicalId: 'old' } },
+    ]);
+    const listing = commandsOf(ListObjectVersionsCommand)[0]!;
+    expect(listing.input).toMatchObject({
+      Prefix: KEY,
+      EncodingType: 'url',
+      ExpectedBucketOwner: '999999999999',
+    });
   });
 });

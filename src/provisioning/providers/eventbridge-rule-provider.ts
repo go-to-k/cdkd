@@ -5,7 +5,6 @@ import {
   RemoveTargetsCommand,
   DeleteRuleCommand,
   DescribeRuleCommand,
-  ListRulesCommand,
   ListTargetsByRuleCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
@@ -19,13 +18,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  boundedPages,
-  commonPrefix,
-  isAccessDeniedError,
-  lookupEachName,
-  withApiLimit,
-} from '../name-lookup.js';
+import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -806,10 +799,22 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#4705: per event bus, one `ListRules` by the names' common
-   * prefix (100 per page, at most 5 pages), filtered to whole names, the buses
-   * in parallel; per-name `DescribeRule` when the listing is not granted or
-   * does not end within the bound. A rule's physical id is its ARN.
+   * go-to-k/cdkd#4705: a rule's lookup reads its own event bus, so a bus
+   * given as an intrinsic waits for the create's resolved properties.
+   */
+  lookupNeedsResolvedProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): boolean {
+    const bus = properties['EventBusName'];
+    return bus !== undefined && bus !== null && bus !== '' && typeof bus !== 'string';
+  }
+
+  /**
+   * go-to-k/cdkd#4705: one exact `DescribeRule` per name on its own event bus,
+   * never `ListRules` (an eventually consistent listing can omit a rule just
+   * created). Any failure but `ResourceNotFoundException` throws, which
+   * refuses the create. A rule's physical id is its ARN.
    */
   async lookupNames(
     _resourceType: string,
@@ -818,7 +823,11 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   ): Promise<Map<string, string>> {
     const busOf = (name: string): string | undefined => {
       const bus = context.propertiesByName.get(name)?.['EventBusName'];
-      return typeof bus === 'string' && bus !== '' ? bus : undefined;
+      if (bus === undefined || bus === null || bus === '') return undefined;
+      // Never the default bus for one not yet known: the guard defers such a
+      // lookup to the create (`lookupNeedsResolvedProperties`).
+      if (typeof bus !== 'string') throw new Error(`EventBusName of rule ${name} is not resolved`);
+      return bus;
     };
     const byBus = new Map<string | undefined, string[]>();
     for (const name of names) {
@@ -828,33 +837,6 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     const found = new Map<string, string>();
     await Promise.all(
       [...byBus].map(async ([bus, group]) => {
-        const prefix = commonPrefix(group);
-        try {
-          const rules = await boundedPages(5, async (token) => {
-            const resp = await withApiLimit('events:ListRules', 5, () =>
-              this.eventBridgeClient.send(
-                new ListRulesCommand({
-                  ...(prefix !== '' && { NamePrefix: prefix }),
-                  ...(bus !== undefined && { EventBusName: bus }),
-                  Limit: 100,
-                  ...(token !== undefined && { NextToken: token }),
-                })
-              )
-            );
-            return { items: resp.Rules ?? [], next: resp.NextToken };
-          });
-          if (rules !== undefined) {
-            const wanted = new Set(group);
-            for (const rule of rules) {
-              if (rule.Name !== undefined && rule.Arn !== undefined && wanted.has(rule.Name)) {
-                found.set(rule.Name, rule.Arn);
-              }
-            }
-            return;
-          }
-        } catch (err) {
-          if (!isAccessDeniedError(err)) throw err;
-        }
         const each = await lookupEachName(group, 'events:DescribeRule', 5, async (name) => {
           try {
             const resp = await this.eventBridgeClient.send(

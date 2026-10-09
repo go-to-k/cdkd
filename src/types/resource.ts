@@ -1596,12 +1596,14 @@ export interface ResourceProvider {
   /**
    * go-to-k/cdkd#4705: which of `names` (each the generated name of one
    * planned create of `resourceType`) a resource holds right now, as name →
-   * that resource's physical id in `import()`'s format. Exact names only: a
-   * listing by prefix is filtered to whole-name matches. Batched per type
-   * (one list or batch call where the service has one, bounded pages, then
-   * per-name lookups). Throws when it cannot tell; a 403 throws as one.
-   * `properties` gives each name's create properties (by name), for a type
-   * whose lookup depends on one (an EventBridge rule's bus).
+   * that resource's physical id in `import()`'s format. An EXACT read by
+   * name: a batch read by name where the service has one, else one read per
+   * name -- never a listing, which is eventually consistent and can omit a
+   * resource just created. A resource being deleted reads as absent (its
+   * create waits out the deletion itself). Throws when it cannot tell; a 403
+   * throws as one. `properties` gives each name's create properties (by
+   * name), for a type whose lookup depends on one (an EventBridge rule's
+   * bus). Without it, the guard reads each name through `import()`.
    */
   lookupNames?(
     resourceType: string,
@@ -1612,6 +1614,17 @@ export interface ResourceProvider {
       propertiesByName: ReadonlyMap<string, Record<string, unknown>>;
     }
   ): Promise<Map<string, string>>;
+
+  /**
+   * go-to-k/cdkd#4705: `true` when the lookup of this create's name needs a
+   * property the plan does not know yet (an intrinsic still unresolved, such
+   * as an EventBridge rule's `EventBusName`): the guard then looks it up at
+   * the create, with the resolved properties, rather than guess.
+   */
+  lookupNeedsResolvedProperties?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): boolean;
 }
 
 /**

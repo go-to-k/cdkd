@@ -1,20 +1,30 @@
 /**
- * go-to-k/cdkd#4705 (C): the batched `lookupNames` of every name-adopting
- * SDK provider -- the call counts (batched per type, never one call per
- * resource where the service has a batch), whole-name matching
- * (`App-Queue1` never matches `App-Queue10`), bounded pagination with a
- * per-name fallback, and one run-wide limiter per API -- and that
+ * go-to-k/cdkd#4705 (C): the `lookupNames` of every name-adopting SDK
+ * provider is an EXACT read by name -- a batch read by name where the service
+ * has one (alarms, log groups, ECS clusters; their call counts pinned here),
+ * otherwise one read per name -- never an eventually consistent listing,
+ * which can omit a resource just created. One run-wide limiter per API. And
  * `generatedCreateName` is the name `create()` sends.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { CreateQueueCommand, GetQueueUrlCommand, ListQueuesCommand, QueueDoesNotExist } from '@aws-sdk/client-sqs';
 import { DescribeAlarmsCommand, PutMetricAlarmCommand } from '@aws-sdk/client-cloudwatch';
 import { CreateLogGroupCommand, DescribeLogGroupsCommand } from '@aws-sdk/client-cloudwatch-logs';
-import { ListRulesCommand } from '@aws-sdk/client-eventbridge';
-import { ListTopicsCommand } from '@aws-sdk/client-sns';
+import {
+  DescribeRuleCommand,
+  ListRulesCommand,
+  ResourceNotFoundException as EventsNotFound,
+} from '@aws-sdk/client-eventbridge';
+import {
+  GetTopicAttributesCommand,
+  ListTopicsCommand,
+  NotFoundException as SnsNotFound,
+} from '@aws-sdk/client-sns';
 import { DescribeClustersCommand } from '@aws-sdk/client-ecs';
-import { DescribeLoadBalancersCommand } from '@aws-sdk/client-elastic-load-balancing-v2';
-import { ListStateMachinesCommand } from '@aws-sdk/client-sfn';
+import {
+  DescribeLoadBalancersCommand,
+  DescribeTargetGroupsCommand,
+} from '@aws-sdk/client-elastic-load-balancing-v2';
 
 const sqsSend = vi.fn();
 const cloudWatchSend = vi.fn();
@@ -51,7 +61,6 @@ import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { StepFunctionsProvider } from '../../../src/provisioning/providers/stepfunctions-provider.js';
-import { LookupEachNameInstead } from '../../../src/provisioning/name-lookup.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
 
 const ctx = { region: 'us-east-1', stackName: 'App', propertiesByName: new Map() };
@@ -65,40 +74,37 @@ beforeEach(() => {
   for (const s of [sqsSend, cloudWatchSend, logsSend, eventBridgeSend, snsSend]) s.mockReset();
 });
 
-describe('SQS: one ListQueues by the common prefix', () => {
-  it('matches whole names only and makes one call', async () => {
-    sqsSend.mockResolvedValue({
-      QueueUrls: [
-        'https://sqs.us-east-1.amazonaws.com/1/App-Queue1',
-        'https://sqs.us-east-1.amazonaws.com/1/App-Queue10',
-      ],
-    });
-    const found = await new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Queue1', 'App-Queue2']);
-    expect([...found]).toEqual([['App-Queue1', 'https://sqs.us-east-1.amazonaws.com/1/App-Queue1']]);
-    const lists = callsOf(sqsSend, ListQueuesCommand);
-    expect(lists).toHaveLength(1);
-    expect(lists[0]!.input).toMatchObject({ QueueNamePrefix: 'App-Queue', MaxResults: 1000 });
-  });
-
-  it('a listing that does not end within 3 pages, or is not granted, falls back to GetQueueUrl per name', async () => {
+describe('SQS: one exact GetQueueUrl per name, never ListQueues', () => {
+  // The real-AWS repro (cross-backend-same-stack, Phase 2b): ListQueues by
+  // prefix omitted a queue another deployment had created about a minute
+  // earlier, so the create adopted it and the rollback deleted it.
+  it('finds a holder a listing would omit: ListQueues is never sent', async () => {
     sqsSend.mockImplementation(async (cmd: unknown) => {
-      if (cmd instanceof ListQueuesCommand) return { QueueUrls: [], NextToken: 'more' };
+      if (cmd instanceof ListQueuesCommand) return { QueueUrls: [] };
       if (cmd instanceof GetQueueUrlCommand) {
-        if (cmd.input.QueueName === 'App-Q1') return { QueueUrl: 'u1' };
+        if (cmd.input.QueueName === 'App-Queue1') return { QueueUrl: 'https://q/App-Queue1' };
         throw new QueueDoesNotExist({ message: 'no', $metadata: {} });
       }
       throw new Error('unexpected');
     });
-    const found = await new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Q1', 'App-Q2']);
-    expect([...found]).toEqual([['App-Q1', 'u1']]);
-    expect(callsOf(sqsSend, ListQueuesCommand)).toHaveLength(3);
+    const found = await new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Queue1', 'App-Queue2']);
+    expect([...found]).toEqual([['App-Queue1', 'https://q/App-Queue1']]);
+    expect(callsOf(sqsSend, ListQueuesCommand)).toHaveLength(0);
+    expect(callsOf(sqsSend, GetQueueUrlCommand).map((c) => c.input['QueueName'])).toEqual([
+      'App-Queue1',
+      'App-Queue2',
+    ]);
+  });
+
+  it('a read that fails otherwise (throttle, 403) throws: the guard refuses or warns, never reads it as free', async () => {
+    sqsSend.mockRejectedValue(Object.assign(new Error('slow down'), { name: 'ThrottlingException' }));
+    await expect(new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Q1'])).rejects.toThrow(
+      'slow down'
+    );
     sqsSend.mockReset();
-    sqsSend.mockImplementation(async (cmd: unknown) => {
-      if (cmd instanceof ListQueuesCommand) throw accessDenied();
-      return { QueueUrl: 'u' };
-    });
-    await expect(new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Q1'])).resolves.toEqual(
-      new Map([['App-Q1', 'u']])
+    sqsSend.mockRejectedValue(accessDenied());
+    await expect(new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Q1'])).rejects.toThrow(
+      'denied'
     );
   });
 });
@@ -179,57 +185,70 @@ describe('log groups: DescribeLogGroups by logGroupIdentifiers, 50 per call, in 
   });
 });
 
-describe('EventBridge rules: one ListRules per bus, by the common prefix', () => {
-  it('lists each bus once and matches whole names, mapping to the rule ARN', async () => {
-    eventBridgeSend.mockImplementation(async (cmd: { input: Record<string, unknown> }) => ({
-      Rules:
-        cmd.input['EventBusName'] === 'custom'
-          ? [{ Name: 'App-R2', Arn: 'arn:custom/App-R2' }]
-          : [
-              { Name: 'App-R1', Arn: 'arn:default/App-R1' },
-              { Name: 'App-R10', Arn: 'arn:default/App-R10' },
-            ],
-    }));
-    const found = await new EventBridgeRuleProvider().lookupNames('AWS::Events::Rule', ['App-R1', 'App-R2'], {
-      propertiesByName: new Map([['App-R2', { EventBusName: 'custom' }]]),
+describe('EventBridge rules: one exact DescribeRule per name, on its own bus', () => {
+  it('finds a holder a listing would omit, on the default and a custom bus; ListRules is never sent', async () => {
+    eventBridgeSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof ListRulesCommand) return { Rules: [] };
+      if (cmd instanceof DescribeRuleCommand) {
+        const bus = cmd.input.EventBusName ?? 'default';
+        if (cmd.input.Name === 'App-R1' && bus === 'default') return { Arn: 'arn:default/App-R1' };
+        if (cmd.input.Name === 'App-R2' && bus === 'custom') return { Arn: 'arn:custom/App-R2' };
+        throw new EventsNotFound({ message: 'no', $metadata: {} });
+      }
+      throw new Error('unexpected');
     });
+    const found = await new EventBridgeRuleProvider().lookupNames(
+      'AWS::Events::Rule',
+      ['App-R1', 'App-R2', 'App-R3'],
+      { propertiesByName: new Map([['App-R2', { EventBusName: 'custom' }]]) }
+    );
     expect(Object.fromEntries(found)).toEqual({ 'App-R1': 'arn:default/App-R1', 'App-R2': 'arn:custom/App-R2' });
-    expect(callsOf(eventBridgeSend, ListRulesCommand)).toHaveLength(2);
+    expect(callsOf(eventBridgeSend, ListRulesCommand)).toHaveLength(0);
+  });
+
+  it('a read that fails otherwise throws', async () => {
+    eventBridgeSend.mockRejectedValue(new Error('boom'));
+    await expect(
+      new EventBridgeRuleProvider().lookupNames('AWS::Events::Rule', ['App-R1'], { propertiesByName: new Map() })
+    ).rejects.toThrow('boom');
   });
 });
 
-describe('SNS and Step Functions: one listing, or name by name', () => {
-  it('SNS matches the whole last ARN segment; too many pages or a 403 asks for per-name lookups', async () => {
-    snsSend.mockResolvedValue({
-      Topics: [{ TopicArn: 'arn:aws:sns:us-east-1:1:App-T1' }, { TopicArn: 'arn:aws:sns:us-east-1:1:App-T10' }],
-    });
-    const found = await new SNSTopicProvider().lookupNames('AWS::SNS::Topic', ['App-T1']);
-    expect([...found.keys()]).toEqual(['App-T1']);
-    expect(callsOf(snsSend, ListTopicsCommand)).toHaveLength(1);
-    snsSend.mockReset();
-    snsSend.mockResolvedValue({ Topics: [], NextToken: 'more' });
-    await expect(new SNSTopicProvider().lookupNames('AWS::SNS::Topic', ['x'])).rejects.toBeInstanceOf(
-      LookupEachNameInstead
-    );
-    snsSend.mockReset();
-    snsSend.mockRejectedValue(accessDenied());
-    await expect(new SNSTopicProvider().lookupNames('AWS::SNS::Topic', ['x'])).rejects.toBeInstanceOf(
-      LookupEachNameInstead
-    );
+describe('SNS and Step Functions: no listing; the guard reads each ARN exactly through import()', () => {
+  it('neither provider offers a listing-based lookupNames', () => {
+    expect((new SNSTopicProvider() as { lookupNames?: unknown }).lookupNames).toBeUndefined();
+    expect((new StepFunctionsProvider() as { lookupNames?: unknown }).lookupNames).toBeUndefined();
   });
 
-  it('Step Functions matches whole names to ARNs in one listing', async () => {
-    const send = vi.fn().mockResolvedValue({
-      stateMachines: [
-        { name: 'App-S1', stateMachineArn: 'arn:s1' },
-        { name: 'App-S10', stateMachineArn: 'arn:s10' },
-      ],
+  it('SNS import of a known ARN is one GetTopicAttributes; NotFound is free, anything else throws', async () => {
+    snsSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof ListTopicsCommand) return { Topics: [] };
+      if (cmd instanceof GetTopicAttributesCommand) return { Attributes: {} };
+      throw new Error('unexpected');
     });
-    const provider = new StepFunctionsProvider();
-    (provider as unknown as { sfnClient: unknown }).sfnClient = { send };
-    const found = await provider.lookupNames('AWS::StepFunctions::StateMachine', ['App-S1']);
-    expect([...found]).toEqual([['App-S1', 'arn:s1']]);
-    expect(send.mock.calls.filter((c) => c[0] instanceof ListStateMachinesCommand)).toHaveLength(1);
+    const arn = 'arn:aws:sns:us-east-1:1:App-T1';
+    const found = await new SNSTopicProvider().import({
+      logicalId: 'T1',
+      resourceType: 'AWS::SNS::Topic',
+      stackName: 'App',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: arn,
+    });
+    expect(found?.physicalId).toBe(arn);
+    expect(callsOf(snsSend, ListTopicsCommand)).toHaveLength(0);
+    snsSend.mockReset();
+    snsSend.mockRejectedValue(new SnsNotFound({ message: 'no', $metadata: {} }));
+    await expect(
+      new SNSTopicProvider().import({
+        logicalId: 'T1',
+        resourceType: 'AWS::SNS::Topic',
+        stackName: 'App',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: arn,
+      })
+    ).resolves.toBeNull();
   });
 });
 
@@ -255,18 +274,21 @@ describe('ECS clusters and ELBv2', () => {
     await expect(provider.lookupNames('AWS::ECS::Cluster', ['x'])).rejects.toThrow(/did not answer/);
   });
 
-  it('ELBv2: one listing of the region, matched on the whole name, case-insensitively', async () => {
-    const send = vi.fn(async (_cmd: unknown) => ({
-      LoadBalancers: [
-        { LoadBalancerName: 'app-lb1', LoadBalancerArn: 'arn:lb1' },
-        { LoadBalancerName: 'App-LB10', LoadBalancerArn: 'arn:lb10' },
-      ],
-    }));
+  it('ELBv2: one exact Describe by Names per name, never a region listing; a failure throws', async () => {
+    const send = vi.fn(async (cmd: { input: { Names?: string[] } }) => {
+      const asked = cmd.input.Names;
+      if (asked === undefined) return { LoadBalancers: [] };
+      if (asked[0] === 'App-LB1') return { LoadBalancers: [{ LoadBalancerName: 'App-LB1', LoadBalancerArn: 'arn:lb1' }] };
+      throw Object.assign(new Error('nf'), { name: 'LoadBalancerNotFoundException' });
+    });
     const provider = new ELBv2Provider();
     (provider as unknown as { elbv2Client: unknown }).elbv2Client = { send };
-    const found = await provider.lookupNames('AWS::ElasticLoadBalancingV2::LoadBalancer', ['App-LB1']);
+    const found = await provider.lookupNames('AWS::ElasticLoadBalancingV2::LoadBalancer', ['App-LB1', 'App-LB2']);
     expect([...found]).toEqual([['App-LB1', 'arn:lb1']]);
-    expect(send.mock.calls.filter((c) => c[0] instanceof DescribeLoadBalancersCommand)).toHaveLength(1);
+    const calls = send.mock.calls.map((c) => c[0]).filter((c) => c instanceof DescribeLoadBalancersCommand);
+    expect(calls.map((c) => c.input.Names)).toEqual([['App-LB1'], ['App-LB2']]);
+    send.mockRejectedValue(new Error('throttled'));
+    await expect(provider.lookupNames('AWS::ElasticLoadBalancingV2::LoadBalancer', ['x'])).rejects.toThrow('throttled');
   });
 });
 
@@ -299,5 +321,102 @@ describe('generatedCreateName is the name create() sends', () => {
   it('is undefined when the template names the resource', () => {
     expect(new SQSQueueProvider().generatedCreateName('AWS::SQS::Queue', 'Q', { QueueName: 'mine' })).toBeUndefined();
     expect(new ECSProvider().generatedCreateName('AWS::ECS::Service', 'S', {})).toBeUndefined();
+  });
+});
+
+describe('review CB-13: an ELBv2 Name given as an intrinsic is a declared name, never a crash', () => {
+  it.each(['AWS::ElasticLoadBalancingV2::LoadBalancer', 'AWS::ElasticLoadBalancingV2::TargetGroup'])(
+    '%s with Name {Ref} (and Fn::Join, Fn::Sub, Fn::ImportValue): no generated name',
+    (type) => {
+      const provider = new ELBv2Provider();
+      for (const Name of [{ Ref: 'P' }, { 'Fn::Join': ['-', ['a', 'b']] }, { 'Fn::Sub': 'x-${AWS::Region}' }, { 'Fn::ImportValue': 'E' }]) {
+        expect(withStackName('App', () => provider.generatedCreateName(type, 'Lb', { Name })), JSON.stringify(Name)).toBeUndefined();
+      }
+      expect(withStackName('App', () => provider.generatedCreateName(type, 'Lb', {}))).toMatch(/^App-Lb/);
+    }
+  );
+});
+
+describe('G6: the ELBv2 target group lookup', () => {
+  it('one exact DescribeTargetGroups by Names per name; not found is free', async () => {
+    const send = vi.fn(async (cmd: { input: { Names?: string[] } }) => {
+      if (cmd.input.Names?.[0] === 'App-Tg1') {
+        return { TargetGroups: [{ TargetGroupName: 'App-Tg1', TargetGroupArn: 'arn:tg1' }] };
+      }
+      throw Object.assign(new Error('nf'), { name: 'TargetGroupNotFoundException' });
+    });
+    const provider = new ELBv2Provider();
+    (provider as unknown as { elbv2Client: unknown }).elbv2Client = { send };
+    const found = await provider.lookupNames('AWS::ElasticLoadBalancingV2::TargetGroup', ['App-Tg1', 'App-Tg2']);
+    expect([...found]).toEqual([['App-Tg1', 'arn:tg1']]);
+    const calls = send.mock.calls.map((c) => c[0]).filter((c) => c instanceof DescribeTargetGroupsCommand);
+    expect(calls.map((c) => (c as { input: { Names?: string[] } }).input.Names)).toEqual([['App-Tg1'], ['App-Tg2']]);
+  });
+});
+
+describe('review CB-15: a resource being deleted reads as absent, so its create waits out the deletion itself', () => {
+  it('Step Functions: a DELETING state machine is not a holder', async () => {
+    const send = vi.fn(async () => ({ status: 'DELETING', name: 'App-S1' }));
+    const provider = new StepFunctionsProvider();
+    (provider as unknown as { sfnClient: unknown }).sfnClient = { send };
+    await expect(
+      provider.import({
+        logicalId: 'S1',
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        stackName: 'App',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: 'arn:aws:states:us-east-1:1:stateMachine:App-S1',
+      })
+    ).resolves.toBeNull();
+    send.mockResolvedValue({ status: 'ACTIVE', name: 'App-S1' } as never);
+    await expect(
+      provider.import({
+        logicalId: 'S1',
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        stackName: 'App',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: 'arn:aws:states:us-east-1:1:stateMachine:App-S1',
+      })
+    ).resolves.toMatchObject({ physicalId: 'arn:aws:states:us-east-1:1:stateMachine:App-S1' });
+  });
+
+  it('SQS: a queue deleted within the minute answers GetQueueUrl with QueueDoesNotExist, which is free', async () => {
+    sqsSend.mockRejectedValue(new QueueDoesNotExist({ message: 'gone', $metadata: {} }));
+    await expect(new SQSQueueProvider().lookupNames('AWS::SQS::Queue', ['App-Q1'])).resolves.toEqual(new Map());
+  });
+
+  it('ECS: an INACTIVE (deleted) cluster frees its name (covered above); S3: a 404 HeadBucket is free', async () => {
+    const { S3BucketProvider } = await import('../../../src/provisioning/providers/s3-bucket-provider.js');
+    const provider = new S3BucketProvider();
+    const send = vi.fn(async () => {
+      throw Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
+    });
+    (provider as unknown as { s3Client: unknown }).s3Client = { send };
+    await expect(
+      provider.import({
+        logicalId: 'B',
+        resourceType: 'AWS::S3::Bucket',
+        stackName: 'App',
+        region: 'us-east-1',
+        properties: { BucketName: 'app-b' },
+      })
+    ).resolves.toBeNull();
+  });
+});
+
+describe('review CB-18: an EventBridge rule on an intrinsic bus never reads the default bus', () => {
+  it('asks the guard to wait for the resolved bus, and refuses to guess one if asked anyway', async () => {
+    const provider = new EventBridgeRuleProvider();
+    expect(provider.lookupNeedsResolvedProperties('AWS::Events::Rule', { EventBusName: { Ref: 'Bus' } })).toBe(true);
+    expect(provider.lookupNeedsResolvedProperties('AWS::Events::Rule', { EventBusName: 'custom' })).toBe(false);
+    expect(provider.lookupNeedsResolvedProperties('AWS::Events::Rule', {})).toBe(false);
+    await expect(
+      provider.lookupNames('AWS::Events::Rule', ['App-R1'], {
+        propertiesByName: new Map([['App-R1', { EventBusName: { Ref: 'Bus' } }]]),
+      })
+    ).rejects.toThrow(/not resolved/);
+    expect(eventBridgeSend).not.toHaveBeenCalled();
   });
 });

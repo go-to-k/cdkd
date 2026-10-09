@@ -40,6 +40,7 @@ import {
   stringifyJsonPayload,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
+  displaySafe,
 } from '../../utils/display-safe.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import {
@@ -2308,6 +2309,41 @@ async function clearRetainedQuietly(
   }
 }
 
+/**
+ * go-to-k/cdkd#4705: for a stack with NO record under this prefix, delete its
+ * `retained.json` in `stackRegion` (or every region that has one) and release
+ * the registry marker there when it names this prefix. The regions cleared.
+ * Best-effort: a failure is warned.
+ */
+async function clearRetainedWithoutRecord(
+  backend: S3StateBackend,
+  stackName: string,
+  stackRegion: string | undefined,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<string[]> {
+  if (stackName.includes('/')) return [];
+  const base = `${backend.prefix}/${stackName}/`;
+  let regions: string[];
+  try {
+    regions = (await backend.listRawKeys(base))
+      .map((key) => key.slice(base.length).split('/'))
+      .filter((parts) => parts.length === 2 && parts[1] === 'retained.json' && parts[0] !== '')
+      .map((parts) => parts[0]!)
+      .filter((region) => stackRegion === undefined || region === stackRegion);
+  } catch (error) {
+    logger.warn(
+      safeMsg`Could not look for a kept-resource record of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}).`
+    );
+    return [];
+  }
+  for (const region of regions) {
+    await clearRetainedQuietly(backend, stackName, region, logger);
+    await releaseRegistryMarkerQuietly(backend, stackName, region, logger);
+  }
+  return regions;
+}
+
 async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -2334,6 +2370,23 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
     for (const stackName of stackArgs) {
       const stackRefs = refs.filter((r) => r.stackName === stackName);
       if (stackRefs.length === 0) {
+        // go-to-k/cdkd#4705: a destroyed stack keeps its `retained.json`
+        // (what that destroy kept, which a redeploy here takes back by name).
+        // With no record left, orphan clears that, and the registry marker.
+        const cleared = await clearRetainedWithoutRecord(
+          setup.stateBackend,
+          stackName,
+          options.stackRegion,
+          logger
+        );
+        if (cleared.length > 0) {
+          logger.info(
+            safeMsg`Cleared the kept-resource record of ${plainOrDescribed(stackName, 'stack name')} ` +
+              safeMsg`(${cleared.map((r) => displaySafe(r, { asciiOnly: true })).join(', ')}): ` +
+              `a later deploy here no longer takes those resources back.`
+          );
+          continue;
+        }
         // Every line `state orphan` prints can sit beside a labelled
         // `Destroy with:` row -- this one above the NEXT stack's banner -- so
         // it names the stack only when it is a plain identifier

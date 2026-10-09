@@ -1,3 +1,4 @@
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { constructPathOf } from '../../analyzer/destructive-changes.js';
@@ -247,33 +248,48 @@ export class ObservedBaselineRefusals extends Set<string> {
 
 /**
  * go-to-k/cdkd#4705: point a top-level stack's registry marker at this prefix
- * after an import wrote its record, when no marker exists yet. A marker naming
- * another prefix is left alone and named: two prefixes now record the stack,
- * and a later destroy or destructive deploy under either is refused until one
- * record is dropped. Best-effort: a failure is warned, never fatal.
+ * after an import wrote its record, through the guard: no marker (or a stale
+ * one) is claimed only after the one-time prefix scan answers clear. Another
+ * prefix holding the stack is named, not overridden: a later destroy or
+ * destructive deploy under either is refused until one record is dropped.
+ * Never throws: every outcome but `clear` is a warning.
  */
 async function claimRegistryMarkerAfterImport(
-  backend: Pick<S3StateBackend, 'claimRegistryMarker' | 'getRegistryMarker' | 'prefix'>,
+  backend: S3StateBackend,
   stackName: string,
   region: string,
   logger: { warn(message: string): void; debug(message: string): void }
 ): Promise<void> {
-  try {
-    if ((await backend.claimRegistryMarker(stackName, region)) === 'claimed') return;
-    const marker = await backend.getRegistryMarker(stackName, region);
-    if (marker === null || marker.prefix === backend.prefix) return;
-    logger.warn(
-      safeMsg`The state bucket's stack registry assigns ${displayStackName(stackName)} ` +
-        safeMsg`(${displaySafe(region, { asciiOnly: true })}) to another state prefix ` +
-        safeMsg`(${displayIdent(marker.prefix)}). One stack name per account and region is supported: ` +
-        `drop one of the two records with 'cdkd state orphan' before deploying or destroying ` +
-        `either.`
-    );
-  } catch (error) {
-    logger.warn(
-      safeMsg`Could not record ${displayStackName(stackName)} in the state bucket's stack registry ` +
-        safeMsg`(${describeAwsFailure(error).summary}). Its next guarded command records it.`
-    );
+  // The guard's own path (go-to-k/cdkd#4705 review CB-2): with no marker, or
+  // a stale one, the prefix scan runs once and only a clear answer claims.
+  const answer = await new CrossPrefixGuard(backend).full(stackName, region);
+  const regionShown = displaySafe(region, { asciiOnly: true });
+  switch (answer.kind) {
+    case 'clear':
+      return;
+    case 'found':
+      logger.warn(
+        safeMsg`The state bucket also records ${displayStackName(stackName)} (${regionShown}) under another state prefix ` +
+          safeMsg`(${answer.prefixes.map((p) => displayIdent(p)).join(', ')}). One stack name per ` +
+          `account and region is supported: drop one of the records with 'cdkd state orphan' ` +
+          `before deploying or destroying either.`
+      );
+      return;
+    case 'in-progress':
+      logger.warn(
+        safeMsg`A deploy of ${displayStackName(stackName)} (${regionShown}) holds a lock under another state prefix ` +
+          safeMsg`(${displayIdent(answer.prefix)}). One stack name per account and region is ` +
+          `supported: keep one of the two before deploying or destroying either.`
+      );
+      return;
+    default:
+      logger.warn(
+        safeMsg`Could not record ${displayStackName(stackName)} (${regionShown}) in the state bucket's stack registry` +
+          (answer.kind === 'denied' || answer.kind === 'failed'
+            ? safeMsg` (${describeAwsFailure(answer.error).summary})`
+            : '') +
+          `. Its next guarded command records it.`
+      );
   }
 }
 

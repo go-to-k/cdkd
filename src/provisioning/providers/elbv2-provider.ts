@@ -58,7 +58,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
-import { boundedPages, isAccessDeniedError, lookupEachName, withApiLimit } from '../name-lookup.js';
+import { lookupEachName } from '../name-lookup.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import {
   protectedReplacementAdvice,
@@ -3639,66 +3639,24 @@ export class ELBv2Provider implements ResourceProvider {
     ) {
       return undefined;
     }
+    // Any declared Name -- a string, a number, or an intrinsic not yet
+    // resolved -- is not a generated one (go-to-k/cdkd#4705 review CB-13).
     const declared = properties['Name'];
-    if ((typeof declared === 'string' && declared !== '') || typeof declared === 'number') {
-      return undefined;
-    }
+    if (declared !== undefined && declared !== null && declared !== '') return undefined;
     return sentElbv2Name(properties, logicalId);
   }
 
   /**
-   * go-to-k/cdkd#4705: one listing of the region's load balancers (or target
-   * groups), 400 per page, at most 3 pages, matched on the whole name (ELBv2
-   * names compare case-insensitively). A `Names` batch fails outright when any
-   * one name is missing, which on a first deploy is every time, so the listing
-   * is the one call. Per-name lookups when it is not granted or does not end
-   * within the bound. The physical id is the ARN.
+   * go-to-k/cdkd#4705: one exact `Describe...` with `Names: [name]` per name
+   * (a `Names` batch fails outright when any one name is missing, which on a
+   * first deploy is every time), never a region listing, which can omit a
+   * resource just created. Any failure but the not-found error throws, which
+   * refuses the create. The physical id is the ARN.
    */
   async lookupNames(resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
     const lb = resourceType === 'AWS::ElasticLoadBalancingV2::LoadBalancer';
     if (!lb && resourceType !== 'AWS::ElasticLoadBalancingV2::TargetGroup') return new Map();
-    const wanted = new Map(names.map((n) => [n.toLowerCase(), n]));
     const api = lb ? 'elbv2:DescribeLoadBalancers' : 'elbv2:DescribeTargetGroups';
-    try {
-      const listed = await boundedPages(3, async (marker) => {
-        if (lb) {
-          const resp = await withApiLimit(api, 3, () =>
-            this.getClient().send(
-              new DescribeLoadBalancersCommand({
-                PageSize: 400,
-                ...(marker !== undefined && { Marker: marker }),
-              })
-            )
-          );
-          return {
-            items: (resp.LoadBalancers ?? []).map((l) => [l.LoadBalancerName, l.LoadBalancerArn]),
-            next: resp.NextMarker,
-          };
-        }
-        const resp = await withApiLimit(api, 3, () =>
-          this.getClient().send(
-            new DescribeTargetGroupsCommand({
-              PageSize: 400,
-              ...(marker !== undefined && { Marker: marker }),
-            })
-          )
-        );
-        return {
-          items: (resp.TargetGroups ?? []).map((t) => [t.TargetGroupName, t.TargetGroupArn]),
-          next: resp.NextMarker,
-        };
-      });
-      if (listed !== undefined) {
-        const found = new Map<string, string>();
-        for (const [name, arn] of listed) {
-          const asked = name === undefined ? undefined : wanted.get(name.toLowerCase());
-          if (asked !== undefined && arn !== undefined) found.set(asked, arn);
-        }
-        return found;
-      }
-    } catch (err) {
-      if (!isAccessDeniedError(err)) throw err;
-    }
     return lookupEachName(names, api, 3, async (name) => {
       try {
         if (lb) {

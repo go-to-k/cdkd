@@ -10846,6 +10846,7 @@
           ],
           "seededBy": [
             "create",
+            "lookupNeedsResolvedProperties",
             "update"
           ]
         },
