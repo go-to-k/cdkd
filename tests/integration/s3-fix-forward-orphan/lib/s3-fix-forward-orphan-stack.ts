@@ -15,11 +15,14 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   as proven orphans, with the bucket's identity (name, region and this
  *   account's `ListBuckets` `CreationDate`, which outside us-east-1 the
  *   versioning write has already moved).
- * - `OrphanD` is a third such bucket, declaring CDK's autoDeleteObjects
- *   opt-in; verify.sh writes an object into it before the fix-forward, which
- *   must keep it rather than empty it.
+ * - `OrphanD`, `OrphanE` and `OrphanF` are three more such buckets,
+ *   declaring CDK's autoDeleteObjects opt-in; verify.sh writes an object into
+ *   each before the fix-forward, which must keep them rather than empty them.
+ *   D, emptied by the user, is deleted by the next deploy; a later
+ *   `cdkd destroy` re-checks E and F (go-to-k/cdkd#4754): E emptied by the
+ *   user is deleted, F deleted by hand is settled as gone.
  * - `ORPHAN_FIX_FORWARD=true` keeps every orphan logical id under other names
- *   (`-b`), so the fix-forward deploy creates three new buckets. Before it,
+ *   (`-b`), so the fix-forward deploy creates five new buckets. Before it,
  *   verify.sh deletes `OrphanC`'s bucket and re-creates the name itself (one
  *   made outside the stack): the fix-forward must delete `OrphanA`'s bucket
  *   and keep that one.
@@ -44,6 +47,8 @@ export class S3FixForwardOrphanStack extends cdk.Stack {
         ['OrphanA', 'a'],
         ['OrphanC', 'c'],
         ['OrphanD', 'd'],
+        ['OrphanE', 'e'],
+        ['OrphanF', 'f'],
       ] as const) {
         new s3.CfnBucket(this, logicalId, {
           bucketName: `cdkd-s3ffo-${stem}${suffix}-${account}`,
@@ -51,7 +56,7 @@ export class S3FixForwardOrphanStack extends cdk.Stack {
           // OrphanD declares CDK's autoDeleteObjects opt-in (the tag the S3
           // provider reads): a failed CREATE's orphan must still never be
           // emptied.
-          ...(stem === 'd' && {
+          ...((stem === 'd' || stem === 'e' || stem === 'f') && {
             tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }],
           }),
         });

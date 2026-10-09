@@ -13,13 +13,14 @@
 #   2. The failed CREATE. A role is created that may create a bucket and
 #      enable its versioning (and list and locate buckets) but may neither tag
 #      nor delete it. A `--no-rollback` deploy run as that role with
-#      WITH_ORPHANS=true creates `OrphanA`'s, `OrphanC`'s and `OrphanD`'s buckets, enables
+#      WITH_ORPHANS=true creates `OrphanA`'s, `OrphanC`'s, `OrphanD`'s, `OrphanE`'s and `OrphanF`'s buckets, enables
 #      their versioning, fails on the tagging call that follows, and the
 #      provider's own cleanup cannot delete them. (The AccessDenied is retried
-#      as IAM propagation; the retry meets the bucket and refuses it as an
-#      explicit name already held, so the deploy's last line for each is that
-#      refusal, while the first attempt's created-bucket mark is carried to
-#      the journal.) Asserted: the
+#      as IAM propagation; each retry proves the bucket is its own first
+#      attempt's leftover (#4758), takes it back without a CreateBucket, and
+#      fails on the tagging call again until the retries give up, while the
+#      created-bucket mark is carried to the journal, an abort during the
+#      backoff included (#4757).) Asserted: the
 #      deploy failed, every orphan bucket exists, no state record holds them, and the
 #      rollback journal carries each as a proven orphan with its identity
 #      `<name>|<region>|<CreationDate>`, equal to what ListBuckets reports.
@@ -27,22 +28,29 @@
 #      again outside the stack, with a marker tag. Asserted: ListBuckets now
 #      reports another CreationDate for it (the premise the identity rests on).
 #   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps all
-#      three orphan logical ids under other names (`-b`). Asserted: `OrphanA`'s earlier
+#      five orphan logical ids under other names (`-b`). Asserted: `OrphanA`'s earlier
 #      bucket is deleted (`deleting partially-created OrphanA`), the re-created
 #      `OrphanC` name is kept with its marker and warned about as another
 #      bucket (exit 2, the warning's code), and the state records hold the new
 #      buckets. Before #4606 the deploy kept
 #      `OrphanA`'s bucket too.
-#   2c. An object is written into `OrphanD`'s bucket (a third orphan, whose
-#      template declares CDK's autoDeleteObjects opt-in).
-#   (3, also) `OrphanD`'s bucket is NOT emptied: it keeps the object, the
-#      deploy says cdkd never empties such a bucket, and the journal keeps that
-#      entry alone.
+#   2c. An object is written into `OrphanD`'s, `OrphanE`'s and `OrphanF`'s
+#      buckets (three more orphans, whose template declares CDK's
+#      autoDeleteObjects opt-in).
+#   (3, also) None of them is emptied: each keeps the object, the deploy says
+#      cdkd never empties such a bucket, and the journal keeps exactly those
+#      three entries.
 #   3b. `OrphanD`'s bucket is emptied by hand (its CreationDate must not move),
-#      and a deploy of the same template exits 0: its settle deletes the
-#      bucket and drops the journal. The guard only defers the delete.
-#   4. Destroy, and every bucket and the state file are gone, and the state
-#      prefix's object versions are swept.
+#      and a deploy of the same template deletes it: the guard only defers the
+#      delete. It exits 2 for the still non-empty E and F, whose entries alone
+#      the journal keeps.
+#   4. go-to-k/cdkd#4754: the user empties `OrphanE` and empties and deletes
+#      `OrphanF` by hand, then runs `cdkd destroy` instead of another deploy.
+#      The destroy re-checks both kept entries: it deletes `OrphanE`, settles
+#      `OrphanF` as already gone, warns about neither ("manual attention") and
+#      exits 0. Before #4754 it skipped both with that warning and exited 2.
+#      Then every bucket and the state file are gone, and the state prefix's
+#      object versions are swept.
 #
 # Region: us-west-2 by default, the stricter case. Measured for #4606 (us-east-1
 # and us-west-2, 2026-10-08): outside us-east-1 a bucket's `CreationDate` moves
@@ -129,9 +137,13 @@ BUCKET_C="cdkd-s3ffo-c-${ACCOUNT_ID}"
 BUCKET_C_B="cdkd-s3ffo-c-b-${ACCOUNT_ID}"
 BUCKET_D="cdkd-s3ffo-d-${ACCOUNT_ID}"
 BUCKET_D_B="cdkd-s3ffo-d-b-${ACCOUNT_ID}"
-ALL_BUCKETS=("${BASE_BUCKET}" "${BUCKET_A}" "${BUCKET_A_B}" "${BUCKET_C}" "${BUCKET_C_B}" "${BUCKET_D}" "${BUCKET_D_B}")
+BUCKET_E="cdkd-s3ffo-e-${ACCOUNT_ID}"
+BUCKET_E_B="cdkd-s3ffo-e-b-${ACCOUNT_ID}"
+BUCKET_F="cdkd-s3ffo-f-${ACCOUNT_ID}"
+BUCKET_F_B="cdkd-s3ffo-f-b-${ACCOUNT_ID}"
+ALL_BUCKETS=("${BASE_BUCKET}" "${BUCKET_A}" "${BUCKET_A_B}" "${BUCKET_C}" "${BUCKET_C_B}" "${BUCKET_D}" "${BUCKET_D_B}" "${BUCKET_E}" "${BUCKET_E_B}" "${BUCKET_F}" "${BUCKET_F_B}")
 
-# The one object this run writes, into OrphanD's bucket.
+# The one object this run writes, into OrphanD's, OrphanE's and OrphanF's buckets.
 D_OBJECT_KEY="cdkd-integ/held-data.txt"
 
 DENY_ROLE="${STACK}-no-tagging"
@@ -186,7 +198,7 @@ delete_bucket_by_name() { ( # usage: delete_bucket_by_name <bucket>  (best-effor
   aws s3api delete-bucket --bucket "$1" --region "${REGION}" >/dev/null 2>&1
   true
 ); }
-# OrphanD's bucket is versioned and holds the one object this run wrote:
+# Each D/E/F orphan bucket is versioned and holds the one object this run wrote:
 # delete every version and delete marker of that key (best-effort).
 empty_bucket_by_name() { ( # usage: empty_bucket_by_name <bucket>
   set +eu
@@ -224,9 +236,11 @@ cleanup() {
     # would otherwise synthesize whatever app the caller's cwd holds.
     (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)
     # Then by name, for the buckets no state record holds (the orphans and
-    # the re-created name). OrphanD's holds the one object step 2c wrote,
+    # the re-created name). D/E/F each hold the one object step 2c wrote,
     # emptied first.
     empty_bucket_by_name "${BUCKET_D}"
+    empty_bucket_by_name "${BUCKET_E}"
+    empty_bucket_by_name "${BUCKET_F}"
     for b in "${ALL_BUCKETS[@]}"; do
       delete_bucket_by_name "${b}"
     done
@@ -386,7 +400,7 @@ if [ "${INJECT_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the --no-rollback deploy as ${DENY_ROLE} unexpectedly SUCCEEDED" >&2
   exit 1
 fi
-for b in "${BUCKET_A}" "${BUCKET_C}" "${BUCKET_D}"; do
+for b in "${BUCKET_A}" "${BUCKET_C}" "${BUCKET_D}" "${BUCKET_E}" "${BUCKET_F}"; do
   if ! aws s3api head-bucket --bucket "${b}" --region "${REGION}" >/dev/null 2>&1; then
     echo "[verify] FAIL: bucket ${b} does not exist after step 2 -- its CREATE failed before CreateBucket returned (output above)" >&2
     exit 1
@@ -400,7 +414,7 @@ for b in "${BUCKET_A}" "${BUCKET_C}" "${BUCKET_D}"; do
   fi
 done
 STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
-for lid in OrphanA OrphanC OrphanD; do
+for lid in OrphanA OrphanC OrphanD OrphanE OrphanF; do
   if [ "$(printf '%s' "${STATE_2}" | jq --arg l "${lid}" '.resources | has($l)')" != "false" ]; then
     echo "[verify] FAIL: state records ${lid} after step 2 (expected no record for a CREATE that threw)" >&2
     exit 1
@@ -431,6 +445,8 @@ assert_journaled() { # usage: assert_journaled <logicalId> <bucket>
 assert_journaled OrphanA "${BUCKET_A}"
 assert_journaled OrphanC "${BUCKET_C}"
 assert_journaled OrphanD "${BUCKET_D}"
+assert_journaled OrphanE "${BUCKET_E}"
+assert_journaled OrphanF "${BUCKET_F}"
 C_CREATED="$(listed_creation_date "${BUCKET_C}")"
 echo "[verify] step 2 ok: ${BUCKET_A} and ${BUCKET_C} are in AWS, journaled with their identities, with no state record"
 
@@ -459,8 +475,10 @@ echo "[verify] step 2b ok: ${BUCKET_C} re-created outside the stack (CreationDat
 echo "[verify] step 2c: something writes data into ${BUCKET_D}"
 D_CREATED="$(listed_creation_date "${BUCKET_D}")"
 printf 'held by someone else\n' > "${LOG_DIR}/held-data.txt"
-aws s3api put-object --bucket "${BUCKET_D}" --region "${REGION}" --key "${D_OBJECT_KEY}" \
-  --body "${LOG_DIR}/held-data.txt" >/dev/null
+for b in "${BUCKET_D}" "${BUCKET_E}" "${BUCKET_F}"; do
+  aws s3api put-object --bucket "${b}" --region "${REGION}" --key "${D_OBJECT_KEY}" \
+    --body "${LOG_DIR}/held-data.txt" >/dev/null
+done
 # Premise: an object write does not move the bucket's CreationDate (not part
 # of the #4606 measurement). If it did, OrphanD would read as another bucket
 # and be kept for that reason, and step 3 would measure the wrong guard.
@@ -483,24 +501,24 @@ env WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true ${CLI} deploy "${STACK}" \
 FF_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/fix-forward.log" || true
-# 2: OrphanC's re-used name and OrphanD's non-empty bucket are left in place
+# 2: OrphanC's re-used name and the D/E/F non-empty buckets are left in place
 # with warnings, which counts as unaddressed (journaled-orphans.ts,
 # `settleJournaledOrphansOnSuccess`). Any other code is a failed deploy, or a
 # settle that skipped the warnings.
 if [ "${FF_RC}" -ne 2 ]; then
-  echo "[verify] FAIL: the fix-forward deploy exited ${FF_RC} (expected 2: OrphanC's re-used name and OrphanD's non-empty bucket are warned about and kept -- output above)" >&2
+  echo "[verify] FAIL: the fix-forward deploy exited ${FF_RC} (expected 2: OrphanC's re-used name and the D/E/F non-empty buckets are warned about and kept -- output above)" >&2
   exit 1
 fi
-# OrphanD's delete did not complete, so the journal is kept with that entry
-# alone (the next successful deploy retries it).
+# The D/E/F deletes did not complete, so the journal is kept with those
+# entries alone (the next successful deploy retries them).
 if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
-  echo "[verify] FAIL: the fix-forward dropped the rollback journal (expected it kept with OrphanD's entry, whose delete the never-empty guard skipped -- output above)" >&2
+  echo "[verify] FAIL: the fix-forward dropped the rollback journal (expected it kept with the D/E/F entries, whose deletes the never-empty guard skipped -- output above)" >&2
   exit 1
 fi
 JOURNAL_3="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
 J3_IDS="$(printf '%s' "${JOURNAL_3}" | jq -r '[.segments[].failedOperations[]? | select(.physicalIdRecoveredFromError == true) | .logicalId] | sort | join(",")')"
-if [ "${J3_IDS}" != "OrphanD" ]; then
-  echo "[verify] FAIL: after the fix-forward the journal keeps proven orphans [${J3_IDS}] (expected exactly [OrphanD])" >&2
+if [ "${J3_IDS}" != "OrphanD,OrphanE,OrphanF" ]; then
+  echo "[verify] FAIL: after the fix-forward the journal keeps proven orphans [${J3_IDS}] (expected exactly [OrphanD,OrphanE,OrphanF])" >&2
   exit 1
 fi
 assert_gone_eventually "the earlier attempt's bucket ${BUCKET_A} still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
@@ -521,7 +539,7 @@ case "${D_OBJECT}" in
     exit 1
     ;;
 esac
-for b in "${BUCKET_A_B}" "${BUCKET_C_B}" "${BUCKET_D_B}" "${BASE_BUCKET}"; do
+for b in "${BUCKET_A_B}" "${BUCKET_C_B}" "${BUCKET_D_B}" "${BUCKET_E_B}" "${BUCKET_F_B}" "${BASE_BUCKET}"; do
   if ! aws s3api head-bucket --bucket "${b}" --region "${REGION}" >/dev/null 2>&1; then
     echo "[verify] FAIL: the record's bucket ${b} is missing after the fix-forward (the settle must not delete the records' buckets)" >&2
     exit 1
@@ -544,6 +562,8 @@ assert_record() { # usage: assert_record <logicalId> <bucket>
 assert_record OrphanA "${BUCKET_A_B}"
 assert_record OrphanC "${BUCKET_C_B}"
 assert_record OrphanD "${BUCKET_D_B}"
+assert_record OrphanE "${BUCKET_E_B}"
+assert_record OrphanF "${BUCKET_F_B}"
 assert_record BaseBucket "${BASE_BUCKET}"
 # The assertions above decide the step on AWS's own answers. The log lines
 # below only confirm the deploy's account of it, so a reworded line fails
@@ -608,8 +628,8 @@ env WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true ${CLI} deploy "${STACK}" \
 SD_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/settle-d.log" || true
-if [ "${SD_RC}" -ne 0 ]; then
-  echo "[verify] FAIL: the deploy after emptying ${BUCKET_D} exited ${SD_RC} (expected 0: its settle deletes the now-empty orphan -- output above)" >&2
+if [ "${SD_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the deploy after emptying ${BUCKET_D} exited ${SD_RC} (expected 2: its settle deletes the now-empty orphan and keeps the non-empty ${BUCKET_E} / ${BUCKET_F} -- output above)" >&2
   exit 1
 fi
 SD_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/settle-d.log" | tr '\n' ' ' | tr -s ' ')"
@@ -619,14 +639,76 @@ if ! printf '%s' "${SD_FLAT}" | grep -qF 'deleting partially-created OrphanD'; t
 fi
 assert_gone_eventually "step 3b: ${BUCKET_D} still exists after the settle that deleted it" \
   aws s3api head-bucket --bucket "${BUCKET_D}" --region "${REGION}"
-assert_gone "step 3b: the rollback journal is still present after the settle deleted its last entry" \
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
-echo "[verify] step 3b ok: the settle deleted the emptied ${BUCKET_D} and dropped the journal"
+J3B_IDS="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq -r '[.segments[].failedOperations[]? | select(.physicalIdRecoveredFromError == true) | .logicalId] | sort | join(",")')"
+if [ "${J3B_IDS}" != "OrphanE,OrphanF" ]; then
+  echo "[verify] FAIL: after the settle deleted ${BUCKET_D} the journal keeps proven orphans [${J3B_IDS}] (expected exactly [OrphanE,OrphanF])" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: the settle deleted the emptied ${BUCKET_D} and kept the non-empty E and F in the journal"
 
-echo "[verify] step 4: destroy"
-# The re-created name is no record's: this run made it, so it removes it.
+echo "[verify] step 4: the user cleans up E and F by hand and runs cdkd destroy, not another deploy"
+# go-to-k/cdkd#4754: the destroy replays the journal's two kept entries. It
+# must re-ask the settle's question (is the record under the id another
+# resource?) instead of skipping them unchecked: OrphanE, emptied by the user,
+# is proven again and deleted; OrphanF, deleted by hand, is settled as gone.
+# Before #4754 it skipped both for "manual attention" and exited 2.
+# The re-created C is no record's: this run made it, so it removes it.
 aws s3api delete-bucket --bucket "${BUCKET_C}" --region "${REGION}"
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
+E_CREATED_BEFORE_EMPTY="$(listed_creation_date "${BUCKET_E}")"
+empty_bucket_by_name "${BUCKET_E}"
+E_LEFT="$(aws s3api list-object-versions --bucket "${BUCKET_E}" --region "${REGION}" \
+  --query 'length([Versions || `[]`, DeleteMarkers || `[]`][])' --output text)"
+if [ "${E_LEFT}" != "0" ]; then
+  echo "[verify] FAIL: ${BUCKET_E} still holds ${E_LEFT} object version(s) after emptying it" >&2
+  exit 1
+fi
+# Premise, as in step 3b: emptying must not move the date, or the destroy
+# below would read another bucket and keep it.
+E_CREATED_AFTER_EMPTY=""
+for _ in 1 2 3 4 5; do
+  E_CREATED_AFTER_EMPTY="$(listed_creation_date "${BUCKET_E}")"
+  [ "${E_CREATED_AFTER_EMPTY}" != "${E_CREATED_BEFORE_EMPTY}" ] && break
+  sleep 3
+done
+if [ -z "${E_CREATED_BEFORE_EMPTY}" ] || [ "${E_CREATED_AFTER_EMPTY}" != "${E_CREATED_BEFORE_EMPTY}" ]; then
+  echo "[verify] FAIL: premise -- ${BUCKET_E}'s CreationDate moved from '${E_CREATED_BEFORE_EMPTY}' to '${E_CREATED_AFTER_EMPTY}' when it was emptied, so the destroy cannot prove it again" >&2
+  exit 1
+fi
+empty_bucket_by_name "${BUCKET_F}"
+F_LEFT="$(aws s3api list-object-versions --bucket "${BUCKET_F}" --region "${REGION}" \
+  --query 'length([Versions || `[]`, DeleteMarkers || `[]`][])' --output text)"
+if [ "${F_LEFT}" != "0" ]; then
+  echo "[verify] FAIL: ${BUCKET_F} still holds ${F_LEFT} object version(s) after emptying it" >&2
+  exit 1
+fi
+aws s3api delete-bucket --bucket "${BUCKET_F}" --region "${REGION}"
+# The replay's identity read asks GetBucketLocation first: wait until IT
+# reports the bucket gone.
+assert_gone_eventually "step 4: ${BUCKET_F} still located after its delete" \
+  aws s3api get-bucket-location --bucket "${BUCKET_F}" --region "${REGION}"
+set +e
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/destroy.log" 2>&1
+DESTROY_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/destroy.log" || true
+DS_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/destroy.log" | tr '\n' ' ' | tr -s ' ')"
+if printf '%s' "${DS_FLAT}" | grep -qF 'which is not the resource state tracks under this id'; then
+  echo "[verify] FAIL: the destroy skipped a kept orphan unchecked (\"manual attention\", go-to-k/cdkd#4754 -- output above)" >&2
+  exit 1
+fi
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: the destroy exited ${DESTROY_RC} (expected 0: ${BUCKET_E} deleted, ${BUCKET_F} found gone -- output above)" >&2
+  exit 1
+fi
+if ! printf '%s' "${DS_FLAT}" | grep -qF 'deleting partially-created OrphanE'; then
+  echo "[verify] FAIL: the destroy did not delete OrphanE's emptied bucket (output above)" >&2
+  exit 1
+fi
+if ! printf '%s' "${DS_FLAT}" | grep -qF 'partially-created OrphanF (AWS::S3::Bucket) is already gone'; then
+  echo "[verify] FAIL: the destroy did not settle OrphanF's hand-deleted bucket as gone (output above)" >&2
+  exit 1
+fi
+echo "[verify] step 4 ok: the destroy deleted ${BUCKET_E}, found ${BUCKET_F} gone, exited 0"
 for b in "${ALL_BUCKETS[@]}"; do
   assert_gone_eventually "bucket ${b} still exists after destroy" \
     aws s3api head-bucket --bucket "${b}" --region "${REGION}"
@@ -641,4 +723,4 @@ rm -rf "${LOG_DIR}"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "s3-fix-forward-orphan state teardown"
 
-echo "[verify] PASS -- the fix-forward deleted the earlier failed CREATE's bucket and kept one whose name was re-used (go-to-k/cdkd#4606)"
+echo "[verify] PASS -- the fix-forward deleted the earlier failed CREATE's bucket and kept one whose name was re-used (go-to-k/cdkd#4606); a later destroy re-checked the kept orphans (go-to-k/cdkd#4754)"
