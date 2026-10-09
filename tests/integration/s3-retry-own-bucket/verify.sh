@@ -8,7 +8,9 @@
 #   1. A role that may create the fixture's bucket and read it, but may
 #      neither tag nor delete it (explicit denies, probed until bound).
 #   2. `cdkd deploy --no-rollback` as that role, in the background. The
-#      CREATE makes the bucket, fails on its tagging call (an AccessDenied the
+#      CREATE makes the bucket, enables its versioning (a configuration
+#      write, which outside us-east-1 moves the bucket's CreationDate before
+#      the identity is recorded), fails on its tagging call (an AccessDenied the
 #      deploy engine retries as IAM propagation), and its cleanup DeleteBucket
 #      is denied, so the bucket stays. Once the bucket exists, the role's
 #      policy is rewritten to allow tagging (DeleteBucket stays denied). Each
@@ -140,6 +142,10 @@ cleanup() {
     kill "${DEPLOY_PID}" >/dev/null 2>&1
     wait "${DEPLOY_PID}" >/dev/null 2>&1
   fi
+  # A deploy cut short by a signal has not been printed yet.
+  if [ -f "${LOG_DIR}/deploy.log" ] && [ -z "${DEPLOY_LOG_SHOWN:-}" ]; then
+    sed 's/^/  /' "${LOG_DIR}/deploy.log"
+  fi
   rm -rf "${LOG_DIR}"
   if [ -n "${ROLE_CREATED}" ]; then
     delete_role
@@ -209,7 +215,7 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # DeleteBucket stays denied throughout, so the provider's own cleanup cannot
 # remove the bucket its failed attempt made.
 role_policy() { # usage: role_policy <Deny|Allow>   (the PutBucketTagging effect)
-  node -e 'const [bucket,stack,acct,tagging]=process.argv.slice(1);const ours=`arn:aws:s3:::cdkd-s3rob-*${acct}`;const st=[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["s3:CreateBucket","s3:ListBucket","s3:GetBucketLocation","s3:GetBucketTagging"],Resource:ours},{Effect:"Allow",Action:["s3:ListAllMyBuckets","cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["s3:DeleteBucket"],Resource:ours},{Effect:tagging,Action:["s3:PutBucketTagging"],Resource:ours}];process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:st}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "$1"
+  node -e 'const [bucket,stack,acct,tagging]=process.argv.slice(1);const ours=`arn:aws:s3:::cdkd-s3rob-*${acct}`;const st=[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["s3:CreateBucket","s3:PutBucketVersioning","s3:ListBucket","s3:GetBucketLocation","s3:GetBucketTagging"],Resource:ours},{Effect:"Allow",Action:["s3:ListAllMyBuckets","cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Deny",Action:["s3:DeleteBucket"],Resource:ours},{Effect:tagging,Action:["s3:PutBucketTagging"],Resource:ours}];process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:st}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "$1"
 }
 aws iam create-role --role-name "${ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=s3-retry-own-bucket >/dev/null
@@ -281,8 +287,15 @@ probe_explicit_deny put-bucket-tagging --tagging 'TagSet=[{Key=probe,Value=1}]'
 
 echo "[verify] step 2: deploy as ${ROLE}; tagging is allowed once the bucket exists"
 set +e
-as_role ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback \
-  > "${LOG_DIR}/deploy.log" 2>&1 &
+# --verbose: the provider's debug lines say why a retry did or did not take
+# the bucket back (no record, or another CreationDate).
+# Inline rather than through `as_role`: `exec` in the backgrounded subshell
+# makes `$!` the deploy itself, so cleanup's `kill` stops it.
+(
+  unset AWS_PROFILE AWS_DEFAULT_PROFILE
+  export AWS_ACCESS_KEY_ID="${ROLE_AK}" AWS_SECRET_ACCESS_KEY="${ROLE_SK}" AWS_SESSION_TOKEN="${ROLE_ST}"
+  exec ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback --verbose
+) > "${LOG_DIR}/deploy.log" 2>&1 &
 DEPLOY_PID=$!
 set -e
 # The first attempt makes the bucket at once, then fails on tagging; lift the
@@ -307,6 +320,7 @@ DEPLOY_RC=$?
 set -e
 DEPLOY_PID=""
 sed 's/^/  /' "${LOG_DIR}/deploy.log" || true
+DEPLOY_LOG_SHOWN=1
 # The role is not needed again. Still flagged until confirmed gone, so a
 # failure here leaves cleanup to retry the delete.
 delete_role
@@ -336,7 +350,10 @@ if printf '%s' "${FLAT}" | grep -qF 'its BucketName is set explicitly'; then
   exit 1
 fi
 if [ "${DEPLOY_RC}" -ne 0 ]; then
-  if printf '%s' "${FLAT}" | grep -qF 'IAM-propagation retr'; then
+  # Only the deny this fixture lifts: any other AccessDenied also reads as
+  # IAM propagation, and is a gap in the role's policy, so it FAILs.
+  if printf '%s' "${FLAT}" | grep -qF 'IAM-propagation retr' &&
+    printf '%s' "${FLAT}" | grep -qF 's3:PutBucketTagging'; then
     echo "[verify] INCONCLUSIVE: tagging allow did not propagate within the retry budget (exit ${DEPLOY_RC}, no refusal -- output above)" >&2
     exit 1
   fi

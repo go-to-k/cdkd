@@ -16,6 +16,10 @@ export class S3RetryOwnBucketStack extends cdk.Stack {
     super(scope, id, props);
     const bucket = new s3.CfnBucket(this, 'Bucket', {
       bucketName: `cdkd-s3rob-${cdk.Stack.of(this).account}`,
+      // A configuration write before the denied tagging call: outside
+      // us-east-1 it moves the bucket's CreationDate, so the identity the
+      // failed attempt records must be read after it.
+      versioningConfiguration: { status: 'Enabled' },
       tags: [{ key: 'cdkd:integ-fixture', value: 's3-retry-own-bucket' }],
     });
     bucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);

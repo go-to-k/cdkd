@@ -25,11 +25,12 @@ vi.mock('../../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -49,6 +50,7 @@ const BUCKET = 'own-leftover-bucket-4758';
 const EXPLICIT = { BucketName: BUCKET, VersioningConfiguration: { Status: 'Enabled' } };
 const D1 = new Date('2026-10-09T01:00:00.000Z');
 const D2 = new Date('2026-10-09T01:05:00.000Z');
+const MOVED_BY_409 = new Date('2026-10-09T01:09:00.000Z');
 
 const denied = (action: string): Error =>
   Object.assign(
@@ -79,26 +81,39 @@ function world(opts: {
   wiring: 'fail' | 'ok';
   deleteFails?: boolean;
   bucketRegion?: string;
+  listFails?: boolean;
+  listHangs?: boolean;
+  locationFailsOnce?: boolean;
 }): void {
+  let locationFailures = opts.locationFailsOnce ? 1 : 0;
   let exists = opts.exists;
+  let created = opts.created;
   const region = opts.bucketRegion ?? clientRegion.value;
   mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
     switch (cmd.constructor.name) {
       case 'GetBucketLocationCommand':
+        if (locationFailures > 0) {
+          locationFailures--;
+          return Promise.reject(Object.assign(new Error('Rate exceeded'), { name: 'SlowDown' }));
+        }
         return exists
           ? Promise.resolve({ LocationConstraint: region === 'us-east-1' ? undefined : region })
           : Promise.reject(noSuchBucket());
       case 'CreateBucketCommand':
         if (exists) {
-          return region === 'us-east-1'
-            ? Promise.resolve({})
-            : Promise.reject(ownedHere(region));
+          if (region === 'us-east-1') return Promise.resolve({});
+          // Measured (go-to-k/cdkd#4758, us-west-2): the 409 moves the
+          // bucket's ListBuckets CreationDate to its own second.
+          created = MOVED_BY_409;
+          return Promise.reject(ownedHere(region));
         }
         exists = true;
         return Promise.resolve({});
       case 'ListBucketsCommand':
+        if (opts.listHangs) return new Promise(() => {});
+        if (opts.listFails) return Promise.reject(Object.assign(new Error('Rate exceeded'), { name: 'SlowDown' }));
         return Promise.resolve({
-          Buckets: exists ? [{ Name: BUCKET, CreationDate: opts.created }] : [],
+          Buckets: exists ? [{ Name: BUCKET, CreationDate: created }] : [],
         });
       case 'PutBucketVersioningCommand':
         return opts.wiring === 'fail'
@@ -160,6 +175,8 @@ describe('a retried explicit-name create meeting its own first attempt’s bucke
 
     expect(result.physicalId).toBe(BUCKET);
     expect(sent()).toContain('PutBucketVersioningCommand');
+    // Proven before any send: a CreateBucket's 409 would have moved the date.
+    expect(sent()).not.toContain('CreateBucketCommand');
   });
 
   it('treats the adopted bucket as its own: a second failure cleans it up and marks it', async () => {
@@ -187,8 +204,9 @@ describe('a retried explicit-name create meeting its own first attempt’s bucke
     await firstAttemptLeavesBucket(provider);
     world({ exists: true, created: D1, wiring: 'ok', bucketRegion: 'us-west-2' });
 
-    await failed(provider.create('MyBucket', TYPE, EXPLICIT));
+    const error = await failed(provider.create('MyBucket', TYPE, EXPLICIT));
 
+    expect(error.message).toContain('us-west-2');
     expect(sent()).not.toContain('PutBucketVersioningCommand');
   });
 
@@ -227,6 +245,7 @@ describe('a retried explicit-name create meeting its own first attempt’s bucke
   it('records nothing when the cleanup deleted the bucket', async () => {
     world({ exists: false, created: D1, wiring: 'fail', deleteFails: false });
     await failed(provider.create('MyBucket', TYPE, EXPLICIT));
+    expect(sent()).not.toContain('GetBucketLocationCommand');
     expect(sent()).not.toContain('ListBucketsCommand');
   });
 
@@ -245,6 +264,25 @@ describe('a retried explicit-name create meeting its own first attempt’s bucke
 
     expect(result.physicalId).toBe(BUCKET);
     expect(sent()).not.toContain('CreateBucketCommand');
+    // Nothing was re-created over it, so the legacy-200 ACL warning is not owed.
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('ADOPTED');
+  });
+
+  it('adopts in us-east-1 when the pre-flight could not answer but the identity read could', async () => {
+    clientRegion.value = 'us-east-1';
+    await firstAttemptLeavesBucket(provider);
+    world({
+      exists: true,
+      created: D1,
+      wiring: 'ok',
+      bucketRegion: 'us-east-1',
+      locationFailsOnce: true,
+    });
+
+    const result = await provider.create('MyBucket', TYPE, EXPLICIT);
+
+    expect(result.physicalId).toBe(BUCKET);
+    expect(sent()).not.toContain('CreateBucketCommand');
   });
 
   it('refuses in us-east-1 a bucket re-created under the name since', async () => {
@@ -256,6 +294,47 @@ describe('a retried explicit-name create meeting its own first attempt’s bucke
 
     expect(error.message).toContain(REFUSED);
     expect(sent()).not.toContain('CreateBucketCommand');
+  });
+
+  it('refuses when the bucket\u2019s identity cannot be read on the retry', async () => {
+    await firstAttemptLeavesBucket(provider);
+    world({ exists: true, created: D1, wiring: 'ok', listFails: true });
+
+    const error = await failed(provider.create('MyBucket', TYPE, EXPLICIT));
+
+    expect(error.message).toContain(REFUSED);
+  });
+
+  it('bounds the identity read on the failure path: a hung list records nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      world({ exists: false, created: D1, wiring: 'fail', listHangs: true });
+      const run = provider.create('MyBucket', TYPE, EXPLICIT).then(
+        () => expect.fail('create resolved'),
+        (e: unknown) => e
+      );
+      await vi.advanceTimersByTimeAsync(10_001);
+      const error = (await run) as Error;
+      // The mark still names the bucket; only the record is missing.
+      expect(createdBeforeFailure(error, 'MyBucket', TYPE)).toBe(BUCKET);
+    } finally {
+      vi.useRealTimers();
+    }
+    mockSend.mockClear();
+    world({ exists: true, created: D1, wiring: 'ok' });
+    const error = await failed(provider.create('MyBucket', TYPE, EXPLICIT));
+    expect(error.message).toContain(REFUSED);
+  });
+
+  it('never takes it on a rollback\u2019s re-create (replayingState)', async () => {
+    await firstAttemptLeavesBucket(provider);
+    world({ exists: true, created: D1, wiring: 'ok' });
+
+    const error = await failed(
+      provider.create('MyBucket', TYPE, EXPLICIT, { replayingState: true } as never)
+    );
+
+    expect(error.message).toContain(REFUSED);
   });
 
   it("through the deploy engine's retry loop: the AccessDenied is retried and the deploy finishes", async () => {

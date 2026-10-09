@@ -1581,6 +1581,7 @@
         "rollback-sqs-cooldown",
         "route53",
         "s3-lifecycle",
+        "s3-retry-own-bucket",
         "secret-derived-immutable-names",
         "secrets-array-nested",
         "secrets-dynamic-ref",
