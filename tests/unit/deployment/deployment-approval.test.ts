@@ -169,6 +169,24 @@ describe('approveLateReplacement (go-to-k/cdkd#4656)', () => {
     ).resolves.toBe(false);
   });
 
+  it('F-2 (go-to-k/cdkd#4705): onAsked runs after an answered question, and never when nothing asked', async () => {
+    const run = (level: 'never' | 'destructive', approve?: () => Promise<boolean>) => {
+      const onAsked = vi.fn();
+      return approveLateReplacement({
+        options: { requireApproval: level, ...(approve && { approveDeployment: approve }) },
+        stackName: 'S',
+        change: replacement,
+        records: { Q: rec('AWS::SQS::Queue') },
+        template: { Resources: {} },
+        onAsked,
+      }).then(() => onAsked);
+    };
+    await expect(run('destructive', async () => true)).resolves.toHaveBeenCalledTimes(1);
+    await expect(run('destructive', async () => false)).resolves.toHaveBeenCalledTimes(1);
+    await expect(run('never', async () => true)).resolves.not.toHaveBeenCalled();
+    await expect(run('destructive', () => Promise.reject(new Error('no tty')))).resolves.not.toHaveBeenCalled();
+  });
+
   describe('inside a resource deadline', () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());

@@ -54,6 +54,7 @@ import { UNRENDERABLE } from './lock-contention-message.js';
 // `lock-contention-message` for nothing.
 import { producerRecordKey } from './record-keys.js';
 import { readEarlierStateResources, type EarlierStateRecord } from './earlier-state-versions.js';
+import { RetainedTimeUnconfirmedError } from './retained-time.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
@@ -1157,17 +1158,30 @@ export class S3StateBackend {
           })
         )
       );
-    await put(entries);
-    if (entries.every((e) => e.keptAt !== undefined)) return;
-    // A new entry is stamped with S3's own clock (review E-8): the time of
-    // the write that recorded it, read back from the object, never this
-    // machine's clock. A holder created later is not the resource kept.
-    const head = await this.s3Client.send(
-      new HeadObjectCommand({ Bucket: this.config.bucket, ...(await this.ownerParam()), Key: key })
-    );
-    const keptAt = head.LastModified instanceof Date ? head.LastModified.getTime() : undefined;
-    if (keptAt === undefined) return;
-    await put(entries.map((e) => (e.keptAt === undefined ? { ...e, keptAt } : e)));
+    const fresh = new Set(entries.filter((e) => e.keptAt === undefined));
+    // A new entry is written with this machine's clock first (review F-1): a
+    // crash or a failure before the S3 stamp below then leaves a skewed
+    // bound, never no bound at all.
+    const provisional = Date.now();
+    await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt: provisional } : e)));
+    if (fresh.size === 0) return;
+    // Then S3's own clock (review E-8): the time of the write that recorded
+    // it, read back from the object. A holder created later is not the
+    // resource kept.
+    try {
+      const head = await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+        })
+      );
+      const keptAt = head.LastModified instanceof Date ? head.LastModified.getTime() : undefined;
+      if (keptAt === undefined) throw new Error('S3 reported no LastModified');
+      await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt } : e)));
+    } catch (error) {
+      throw new RetainedTimeUnconfirmedError(error);
+    }
   }
 
   /**
@@ -2522,9 +2536,10 @@ export interface RetainedResource {
   resourceType: string;
   physicalId: string;
   /**
-   * When this stack let the resource go (epoch ms, S3's clock: the write that
-   * recorded it). A holder created after it is not the resource that was kept
-   * (go-to-k/cdkd#4705 review D-2). cdkd always stamps it; an entry without
+   * When this stack let the resource go (epoch ms): S3's clock, the write
+   * that recorded it -- or, when that read-back failed, this machine's clock
+   * at the write. A holder created after it is not the resource that was kept
+   * (go-to-k/cdkd#4705 review D-2). cdkd always writes one; an entry without
    * one (only a hand edit makes one) is trusted by name alone.
    */
   keptAt?: number;

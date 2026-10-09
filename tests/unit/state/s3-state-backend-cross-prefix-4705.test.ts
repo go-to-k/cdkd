@@ -15,6 +15,7 @@ import {
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { S3StateBackend, registryMarkerPrefix } from '../../../src/state/s3-state-backend.js';
+import { RetainedTimeUnconfirmedError } from '../../../src/state/retained-time.js';
 import { CrossPrefixReadError } from '../../../src/state/cross-prefix-stack-scan.js';
 import { scanOtherPrefixesForStack } from '../../../src/state/cross-prefix-stack-scan.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
@@ -648,6 +649,25 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     await backend.saveRetainedResources('App', 'us-east-1', []);
     expect(commandsOf(HeadObjectCommand)).toHaveLength(0);
     expect(commandsOf(PutObjectCommand)).toHaveLength(1);
+  });
+
+  it("F-1: the first write already carries this machine's clock; a failed S3 read-back leaves that bound and says so", async () => {
+    const before = Date.now();
+    const realSend = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
+    client.send.mockImplementation(async (cmd: unknown) => {
+      // Only the read-back's HEAD fails; the writes succeed.
+      if (cmd instanceof HeadObjectCommand && cmd.input.Key === KEY) throw serviceUnavailable();
+      return realSend(cmd);
+    });
+    const error = await backend
+      .saveRetainedResources('App', 'us-east-1', [{ ...entry, logicalId: 'New' }])
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RetainedTimeUnconfirmedError);
+    const written = JSON.parse(String(commandsOf(PutObjectCommand).at(-1)!.input.Body)) as {
+      resources: Array<{ keptAt?: number }>;
+    };
+    expect(written.resources[0]!.keptAt).toBeGreaterThanOrEqual(before);
+    expect(written.resources[0]!.keptAt).toBeLessThanOrEqual(Date.now());
   });
 
   it('D-2: keeps an entry\'s keptAt; drops a non-number one', async () => {

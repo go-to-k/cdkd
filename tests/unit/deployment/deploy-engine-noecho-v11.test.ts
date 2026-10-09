@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { GeneratedNameGuard } from '../../../src/deployment/generated-name-guard.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -1932,6 +1933,37 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(approveDeployment).toHaveBeenCalledTimes(1);
       expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
+    });
+
+    it('F-2 (go-to-k/cdkd#4705): an answered late prompt tells the generated-name guard, as the up-front one does', async () => {
+      const noteApprovalPrompted = vi.fn();
+      const fakeGuard = {
+        size: 0,
+        noteApprovalPrompted,
+        settle: vi.fn(async () => undefined),
+        readoptedFromRetained: vi.fn(async () => []),
+        candidate: () => undefined,
+        admit: vi.fn(async () => undefined),
+        noteSent: vi.fn(),
+        noteReturned: vi.fn(),
+        noteFailed: vi.fn(),
+      };
+      const start = vi
+        .spyOn(GeneratedNameGuard, 'start')
+        .mockReturnValue(fakeGuard as unknown as GeneratedNameGuard);
+      try {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const approveDeployment = vi.fn(async () => true);
+        await makeEngine({ requireApproval: 'any-change', approveDeployment }).deploy(
+          STACK,
+          rotatedTemplate()
+        );
+        // The one question asked was the late one (the diff showed no change).
+        expect(approveDeployment).toHaveBeenCalledTimes(1);
+        expect(noteApprovalPrompted).toHaveBeenCalledTimes(1);
+      } finally {
+        start.mockRestore();
+      }
     });
 
     it('keeps the resource when the late prompt cannot be asked (no terminal), and the deploy goes on', async () => {

@@ -53,6 +53,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 });
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { RetainedTimeUnconfirmedError } from '../../../src/state/retained-time.js';
 import { CrossPrefixScanCache } from '../../../src/state/cross-prefix-stack-scan.js';
 
 const REGION = 'us-east-1';
@@ -256,6 +257,15 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
       h.deleteState.mock.invocationCallOrder[0]!
     );
+  });
+
+  it('F-1: a record written whose S3 time could not be confirmed warns that it was RECORDED, not that it failed', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    h.saveRetainedResources.mockRejectedValueOnce(new RetainedTimeUnconfirmedError(new Error('HEAD 503')));
+    await runDestroyForStack('App', retainedState(), h.ctx);
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toMatch(/Recorded the 2 kept resource\(s\) of App .*their time could not be confirmed from S3/);
+    expect(text).not.toMatch(/Could not record the/);
   });
 
   it('merges with what an earlier destroy kept, replacing the same logical id', async () => {

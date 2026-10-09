@@ -159,7 +159,9 @@ export async function checkDestructivePlan(args: {
  * otherwise only an approval is `true`: a "no", a refusal to ask (no
  * terminal) and a deadline already past are `false`, never a throw, since the
  * caller keeps the resource instead. The enclosing deadlines pause while the
- * question is open, as for the up-front prompt.
+ * question is open, as for the up-front prompt. `onAsked` runs once the
+ * question was answered (go-to-k/cdkd#4705: the generated-name lookups made
+ * before it are read again at their creates).
  */
 export async function approveLateReplacement(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -167,13 +169,14 @@ export async function approveLateReplacement(args: {
   change: ResourceChange;
   records: Readonly<Record<string, ResourceState>>;
   template?: CloudFormationTemplate | undefined;
+  onAsked?: () => void;
 }): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
   if (level === 'never' || approve === undefined) return true;
   if (enclosingDeadlineExpired()) return false;
   try {
-    return await whileEnclosingDeadlinesPaused(() =>
+    const approved = await whileEnclosingDeadlinesPaused(() =>
       approve({
         stackName: args.stackName,
         level,
@@ -186,6 +189,8 @@ export async function approveLateReplacement(args: {
         ),
       })
     );
+    args.onAsked?.();
+    return approved;
   } catch {
     return false;
   }

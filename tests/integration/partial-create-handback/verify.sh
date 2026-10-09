@@ -81,6 +81,8 @@ REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
+# The stack registry marker the first deploy claims (go-to-k/cdkd#4705).
+MARKER_KEY="_cdkd-registry/${REGION}/${STACK}.json"
 TG_NAME="${STACK}-Tg"
 TOPIC_NAME="${STACK}-Topic"
 RULE_NAME="${STACK}-Rule"
@@ -215,6 +217,18 @@ delete_holders_best_effort() {
   )
 }
 
+# Remove the stack's registry marker, but only when it names this fixture's
+# prefix (`cdkd`) and the stack has no record left there: a marker naming
+# another prefix, or one whose record survived, is not this run's to drop.
+sweep_marker() {
+  local prefix
+  ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ) || return 0
+  prefix="$( (aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null || true) | jq -r '.prefix // ""' 2>/dev/null || true)"
+  if [ "${prefix}" = "cdkd" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
+  fi
+}
+
 cleanup() {
   rc=$?
   echo "[verify] cleanup (rc=${rc})"
@@ -236,6 +250,10 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
+  sweep_marker
+  if ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}" ); then
+    echo "[verify] WARN: stack registry marker left: s3://${STATE_BUCKET}/${MARKER_KEY}" >&2
+  fi
   rm -rf "${LOG_DIR}"
   )
   exit "${rc}"
@@ -417,6 +435,11 @@ assert_gone "subnet ${SUBNET_ID} still exists after destroy" \
 assert_gone "VPC ${VPC_ID} still exists after destroy" \
   aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
+# The destroy released the stack's registry marker; a failed first deploy
+# that never reached a destroy may have left it, which the sweep removes.
+sweep_marker
+assert_gone "the stack registry marker ${MARKER_KEY} still exists after the run" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM

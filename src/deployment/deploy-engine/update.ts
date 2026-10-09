@@ -809,6 +809,8 @@ export async function provisionUpdate(
         change: asChange,
         records: stateResources,
         template,
+        // go-to-k/cdkd#4705: the prompt may have waited, as the up-front one.
+        onAsked: () => this.generatedNameGuard?.noteApprovalPrompted(),
       });
     })();
     return lateApproval;

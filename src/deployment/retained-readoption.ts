@@ -6,6 +6,7 @@
  * generated name. Shared by `cdkd destroy` and the deploy engine.
  */
 import type { RetainedResource, S3StateBackend } from '../state/s3-state-backend.js';
+import { RetainedTimeUnconfirmedError } from '../state/retained-time.js';
 import type { ResourceState } from '../types/state.js';
 import { replacementCreateAdoptsName } from './replacement-name-holder.js';
 import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
@@ -68,6 +69,14 @@ export async function recordRetainedForReadoption(
       ...kept,
     ]);
   } catch (error) {
+    if (error instanceof RetainedTimeUnconfirmedError) {
+      logger.warn(
+        safeMsg`Recorded the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
+          safeMsg`a later deploy takes back by name, but their time could not be confirmed from S3 ` +
+          safeMsg`(${describeAwsFailure(error.cause).summary}); they carry this machine's clock instead.`
+      );
+      return;
+    }
     logger.warn(
       safeMsg`Could not record the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
         safeMsg`a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +

@@ -123,8 +123,9 @@ no later than it was kept (within a minute's clock skew), for a type that
 reports a creation time (an SQS queue, a log group, a state machine, a load
 balancer): a resource of the same name re-created later, after the kept one
 was deleted out of band, is someone else's. The keep time in `retained.json`
-is S3's clock (the write that recorded the entry); an entry without one, which
-only a hand edit produces, is trusted by its name alone.
+is S3's clock (the write that recorded the entry), or this machine's clock at
+that write when reading S3's back failed (a warning says so); an entry without
+one, which only a hand edit produces, is trusted by its name alone.
 
 Otherwise the deploy refuses before that create, as CloudFormation refuses a
 name that already exists; that resource is not created (resources the deploy
@@ -165,8 +166,8 @@ intents cost one ledger write per wave of name-adopting creates the deploy
 starts together. When a `--require-approval` prompt ran, every verdict
 decided before its answer is read again at its create (one exact read per
 such create, batched with the creates starting together), as is any verdict
-more than a minute old; an ordinary deploy, however many DAG levels, pays no
-re-read. A re-read that cannot answer keeps the earlier verdict, with a
+more than a minute old; an ordinary deploy pays no re-read for creates that
+start within a minute of the lookup. A re-read that cannot answer keeps the earlier verdict, with a
 warning.
 
 **Permissions.** The lookups need the read permission of each type a stack
