@@ -223,6 +223,17 @@ describe('cdkd rollback feeds the delete-first guard the failed ops it strips (g
     expect(calls).not.toContain('delete X x-new');
   });
 
+  // The orphan alone (its UPDATE settled earlier) is replayed and stripped on a
+  // plain rollback: only the list captured before that strip still names it.
+  it("a stripped orphan's deleted old resource still blocks", async () => {
+    install([Y_ORPHAN]);
+    await rollbackCommand(STACK, opts()).catch(() => undefined);
+    // The premise: the replay handled the orphan and the strip removed it.
+    expect(backend['setRollbackJournalFailedOperations']).toHaveBeenCalledWith(STACK, REGION, []);
+    expect(firstOnX()).toBe('create X');
+    expect(calls).not.toContain('delete X x-new');
+  });
+
   it('control: with no failed sibling the reversal deletes the new X first', async () => {
     install([]);
     await rollbackCommand(STACK, opts()).catch(() => undefined);

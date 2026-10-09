@@ -974,6 +974,15 @@ describe('the delete-first guard ignores what a gone record shares with others (
     ).toMatchObject({ logicalId: 'Cluster' });
   });
 
+  it('an attribute built on the physical id blocks (a cache endpoint)', () => {
+    const cache = gone('Cache', 'my-cache', {
+      'RedisEndpoint.Address': 'my-cache.abc123.use1.cache.amazonaws.com',
+    });
+    expect(blocker([cache, dependent({ Host: 'my-cache.abc123.use1.cache.amazonaws.com' })])).toMatchObject({
+      logicalId: 'Cache',
+    });
+  });
+
   it('a short physical id is never matched inside an attribute value', () => {
     const short = gone('S', 'abc', { Description: 'xabcx-value' });
     expect(blocker([short, dependent({ Note: 'xabcx-value' })])).toBeUndefined();
