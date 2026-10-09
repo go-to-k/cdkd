@@ -133,6 +133,7 @@ import {
   liveMatchesUnresolvedTokenFrame,
   maskAtCoordinates,
   maskReadbackAtCoordinates,
+  maskedLeafCoordinatesOf,
   maskWholeValue,
   valueAtCoordinate,
   noEchoLeavesOf,
@@ -9122,14 +9123,23 @@ export function createDriftCommand(): Command {
  * nothing pairs; a `properties` baseline is masked by index, as the deploy
  * writes it.
  */
-function maskMarkedNoEchoBaseline(
+/** @internal Exported for its unit tests. */
+export function maskMarkedNoEchoBaseline(
   baseline: Record<string, unknown>,
   record: ResourceState,
   observed: boolean
 ): Record<string, unknown> {
   const marked = noEchoLeavesOf(record) ?? [];
+  // An observed baseline also at every `***` leaf of `properties`, named or
+  // not: a pre-v11 record names no coordinate for a value it holds only as
+  // the mask (as the deploy's capture masks it).
+  if (observed) {
+    const coordinates = [...marked, ...maskedLeafCoordinatesOf(record.properties ?? {})];
+    return coordinates.length === 0
+      ? baseline
+      : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
+  }
   if (marked.length === 0) return baseline;
-  if (observed) return maskReadbackAtCoordinates(baseline, record.properties ?? {}, marked);
   // By index, except where an accepted value REPLACED the list a coordinate
   // runs through (AWS's order, not the record's): that coordinate is paired
   // through the list's identity field against the record instead, which masks
@@ -9144,9 +9154,14 @@ function maskMarkedNoEchoBaseline(
   const replaced = marked.filter((coordinate) => {
     const path = listPathOf(coordinate);
     if (path === undefined) return false;
+    // Every marked coordinate under the same list, masked on both sides, so
+    // two marked elements of one list do not read as a replaced list.
+    const underList = marked.filter(
+      (other) => other.length > path.length && path.every((segment, i) => segment === other[i])
+    );
     return (
-      JSON.stringify(valueAtCoordinate(maskAtCoordinates(baseline, [coordinate]), path)) !==
-      JSON.stringify(valueAtCoordinate(maskAtCoordinates(recorded, [coordinate]), path))
+      JSON.stringify(valueAtCoordinate(maskAtCoordinates(baseline, underList), path)) !==
+      JSON.stringify(valueAtCoordinate(maskAtCoordinates(recorded, underList), path))
     );
   });
   const byIndex = maskAtCoordinates(

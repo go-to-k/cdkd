@@ -143,6 +143,25 @@ describe('masking', () => {
     });
   });
 
+  // go-to-k/cdkd#4043 Phase C (review m1 of #4763): a value PRESENT at an
+  // intermediate key that is not an object cannot be walked to the leaf, so
+  // the whole node is masked, as a non-list is under a numeric segment.
+  it.each([
+    ['a JSON string', { Doc: '{"PW":"s3cr3t"}' }, { Doc: SECRET_MASK }],
+    ['a list', { Doc: [{ PW: 'ab' }] }, { Doc: [{ PW: SECRET_MASK }] }],
+  ])('masks the whole node when %s stands where an object was expected', (_l, readback, masked) => {
+    expect(
+      maskReadbackAtCoordinates(readback, { Doc: { PW: SECRET_MASK } }, [['Doc', 'PW']])
+    ).toEqual(masked);
+  });
+
+  it('leaves a readback alone where the key is ABSENT', () => {
+    const readback = { Other: 'kept' };
+    expect(
+      maskReadbackAtCoordinates(readback, { Doc: { PW: SECRET_MASK } }, [['Doc', 'PW']])
+    ).toEqual({ Other: 'kept' });
+  });
+
   it('masks the WHOLE readback list when no identity field pairs the two lists', () => {
     const properties = { L: ['one', 'secret'] };
     const readback = { L: ['secret', 'one'] };

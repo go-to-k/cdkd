@@ -96,7 +96,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   })),
 }));
 
-import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import { createDriftCommand, maskMarkedNoEchoBaseline } from '../../../src/cli/commands/drift.js';
 
 async function runDrift(args: string[]): Promise<{ output: string; error: unknown }> {
   const output: string[] = [];
@@ -561,5 +561,35 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
         changes: [{ path: 'Value', stateValue: '***' }],
       }),
     ]);
+  });
+});
+
+describe('maskMarkedNoEchoBaseline (go-to-k/cdkd#4043 Phase C, review of #4763)', () => {
+  const record = (properties: Record<string, unknown>, noEchoLeaves?: (string | number)[][]): ResourceState => ({
+    physicalId: 'p',
+    resourceType: SSM_TYPE,
+    properties,
+    ...(noEchoLeaves !== undefined && { noEchoLeaves }),
+  });
+
+  it('n1: an observed baseline is also masked at every *** leaf of properties, named or not (a pre-v11 record)', () => {
+    const out = maskMarkedNoEchoBaseline(
+      { Value: 'q7z', Other: 'zz9', Description: 'a' },
+      record({ Value: SECRET_MASK, Other: SECRET_MASK, Description: 'a' }),
+      true
+    );
+    expect(out).toEqual({ Value: SECRET_MASK, Other: SECRET_MASK, Description: 'a' });
+  });
+
+  it('N1: two marked elements of one list do not read as a replaced list (no public element masked)', () => {
+    const out = maskMarkedNoEchoBaseline(
+      { L: [SECRET_MASK, 'ab', 'x'] },
+      record({ L: ['secretA', 'ab', 'x'] }, [
+        ['L', 0],
+        ['L', 1],
+      ]),
+      false
+    );
+    expect(out).toEqual({ L: [SECRET_MASK, SECRET_MASK, 'x'] });
   });
 });

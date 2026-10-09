@@ -423,7 +423,11 @@ export function readbackPathFor(
       desired = element;
       continue;
     }
-    if (!isPlainObject(live) || !Object.hasOwn(live, segment)) return undefined;
+    // A present value that is not an object (a JSON string, a list) cannot be
+    // walked to the leaf, so the whole node is masked, as the numeric arm
+    // masks a value that is not a list. An ABSENT key has nothing to mask.
+    if (!isPlainObject(live)) return path.length === 0 ? undefined : path;
+    if (!Object.hasOwn(live, segment)) return undefined;
     path.push(segment);
     live = live[segment];
     desired = isPlainObject(desired) ? desired[segment] : undefined;
