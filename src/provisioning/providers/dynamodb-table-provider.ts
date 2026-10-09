@@ -2001,9 +2001,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         createParams.ResourcePolicy = createResourcePolicyDoc;
       }
 
-      const createOut = await (await this.getCreateClient()).send(
-        new CreateTableCommand(createParams)
-      );
+      const createOut = await (
+        await this.getCreateClient()
+      ).send(new CreateTableCommand(createParams));
       tableCreated = true;
       const returnedTableId = createOut?.TableDescription?.TableId;
       if (typeof returnedTableId === 'string' && returnedTableId !== '') {

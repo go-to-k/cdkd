@@ -1051,6 +1051,7 @@
         "composite-stack",
         "data-pipeline",
         "dynamodb-autoscaling",
+        "dynamodb-fix-forward-orphan",
         "dynamodb-gsi-update",
         "dynamodb-ondemand",
         "dynamodb-sse",
@@ -1096,6 +1097,9 @@
         "dynamodb-autoscaling": [
           "l2",
           "literal"
+        ],
+        "dynamodb-fix-forward-orphan": [
+          "l1"
         ],
         "dynamodb-gsi-update": [
           "l2"
