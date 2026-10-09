@@ -235,7 +235,8 @@ the update-unsupported fallback, `--replace`'s delete-first fallback, a child
 lost with its re-created parent): the
 rollback then deletes the new resource before re-creating the old one, so a
 port or name only one of them can hold does not collide. An absent value (an
-older binary's journal) keeps the create-first order. It is deliberately **not** part of the state
+older binary's journal) keeps the create-first order. A failed UPDATE carries
+it too, so the rollback knows the old resource it names is gone. It is deliberately **not** part of the state
 schema (its own `journalVersion` field, no `StackState.version` bump) and
 **not** under the `deployments/` prefix (that layer survives destroy by
 design; the journal must not). Lifecycle: created on a failed / interrupted

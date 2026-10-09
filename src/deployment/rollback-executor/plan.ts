@@ -1047,10 +1047,9 @@ const deleteFirstBlockedBy = new WeakMap<
  * never reach `create()`.
  *
  * A gone resource is named by its old physical id AND by every string value of
- * its old record's attributes (`Arn`, `QueueArn`, ...): a dependent names an
- * SQS queue by its ARN, never by its URL id. A leaf matches a needle exactly,
- * at an ARN or path boundary (`...:name`, `.../name`, `.../name/...`,
- * `...:name:...`, `...:name/...`, or any whole `:`/`/`-separated segment)
+ * its old record's attributes (`Arn`, `QueueArn`, `DNSName`, ...): a dependent
+ * names an SQS queue by its ARN, never by its URL id. A leaf matches a needle
+ * exactly, as any whole `:`/`/`-separated segment (an ARN or path boundary)
  * whatever its length, so a short
  * user-chosen name inside an ARN counts, or, for a needle of 16+ characters,
  * anywhere inside it (an ARN embedded in a document).
@@ -1126,11 +1125,7 @@ export function markDeleteFirstBlocked(
 function namesResource(leaf: string, needle: string): boolean {
   return (
     leaf === needle ||
-    leaf.endsWith(`:${needle}`) ||
-    leaf.endsWith(`/${needle}`) ||
-    leaf.includes(`/${needle}/`) ||
-    leaf.includes(`:${needle}:`) ||
-    leaf.includes(`:${needle}/`) ||
+    // Any ARN or path boundary: `...:name`, `.../name`, `.../name/...`, `...:name:...`.
     leaf.split(/[:/]/).includes(needle) ||
     (needle.length >= 16 && leaf.includes(needle))
   );

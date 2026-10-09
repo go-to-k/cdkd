@@ -653,6 +653,11 @@ describe('what the delete-first guard counts as naming a gone resource (go-to-k/
       logicalId: 'Q',
       physicalId: 'q-old',
     });
+    // A short id that itself holds a separator matches only exactly.
+    expect(blocker([goneBy('Ns', 'ns/name'), dependent({ Path: 'ns/name' })])).toEqual({
+      logicalId: 'Ns',
+      physicalId: 'ns/name',
+    });
   });
 
   it('a short-named function referenced by its ARN blocks', () => {
