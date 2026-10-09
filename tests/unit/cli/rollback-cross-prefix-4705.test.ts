@@ -83,6 +83,11 @@ function install(
   setupMock.mockResolvedValue({
     stateBackend: {
       prefix: 'cdkd',
+      // No registry marker yet (a record that predates it): the one-time
+      // scan of the other prefixes answers, then a clear answer claims it.
+      getRegistryMarker: vi.fn().mockResolvedValue(null),
+      claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
+      lockUnderPrefix: vi.fn().mockResolvedValue(false),
       listTopLevelPrefixes: vi.fn(async () => {
         if (prefixes.listed instanceof Error) throw prefixes.listed;
         return prefixes.listed ?? [];

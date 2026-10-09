@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 /**
- * go-to-k/cdkd#4705: the REAL `cdkd deploy` code path wires the cross-prefix
- * checks into each stack's engine: `onCurrentStateLoaded` (first deploy),
- * `onDestructivePlan` and `crossPrefixHolder`, all over the scan deploy.ts
- * started for that stack, in the region the engine is given
- * (`deployStackRegion` at both call sites). Harness copied from
+ * go-to-k/cdkd#4705: the REAL `cdkd deploy` code path wires the stack-registry
+ * checks into each stack's engine: `onCurrentStateLoaded` (a first deploy
+ * claims its marker), `onDestructivePlan` and `crossPrefixHolder`, all over
+ * the run's ONE guard, in the region the engine is given (`deployStackRegion`
+ * at both call sites). Harness copied from
  * `deploy-cross-region-stack-scope.test.ts`; the engine is mocked and calls the
  * options it was handed.
  */
@@ -49,43 +49,55 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 const scanCalls = vi.hoisted(() => ({
-  own: [] as string[][],
+  /** Every registry marker read, as [stack, region]. */
+  reads: [] as string[][],
+  /** Every marker claim, as [stack, region]. */
+  claims: [] as string[][],
   probes: [] as string[][],
   lists: 0,
-  ownRecord: false,
-  probeNever: false,
+  /** The prefix every marker names, or null for none. */
+  markerPrefix: null as string | null,
+  /** Marker reads never settle until the client is destroyed. */
+  readNever: false,
   /** Every backend deploy.ts built, in order: the first is the preflight one. */
-  backends: [] as Array<{ destroyClient: ReturnType<typeof vi.fn>; probes: number }>,
+  backends: [] as Array<{ destroyClient: ReturnType<typeof vi.fn>; reads: number }>,
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => {
     // Like a real S3Client: destroying it rejects the requests still in flight.
     const aborts: Array<(e: Error) => void> = [];
     const backend = {
-    prefix: 'cdkd',
-    verifyBucketExists: vi.fn(async () => undefined),
-    listStacks: vi.fn(async () => []),
-    getState: vi.fn(async () => null),
-    destroyClient: vi.fn(() => {
-      for (const abort of aborts.splice(0)) abort(new Error('client destroyed'));
-    }),
-    probes: 0,
-    ownRecordExists: vi.fn(async (stack: string, region: string) => {
-      scanCalls.own.push([stack, region]);
-      return scanCalls.ownRecord;
-    }),
-    listTopLevelPrefixes: vi.fn(async () => {
-      scanCalls.lists++;
-      return ['cdkd', 'team-b'];
-    }),
-    recordUnderPrefix: vi.fn(async (prefix: string, stack: string, region: string) => {
-      scanCalls.probes.push([prefix, stack, region]);
-      backend.probes++;
-      if (scanCalls.probeNever) {
-        return new Promise<never>((_resolve, reject) => aborts.push(reject));
-      }
-      return prefix === 'team-b' ? 'holder' : 'absent';
-    }),
+      prefix: 'cdkd',
+      verifyBucketExists: vi.fn(async () => undefined),
+      listStacks: vi.fn(async () => []),
+      getState: vi.fn(async () => null),
+      destroyClient: vi.fn(() => {
+        for (const abort of aborts.splice(0)) abort(new Error('client destroyed'));
+      }),
+      reads: 0,
+      getRegistryMarker: vi.fn(async (stack: string, region: string) => {
+        scanCalls.reads.push([stack, region]);
+        backend.reads++;
+        if (scanCalls.readNever) {
+          return new Promise<never>((_resolve, reject) => aborts.push(reject));
+        }
+        return scanCalls.markerPrefix === null
+          ? null
+          : { prefix: scanCalls.markerPrefix, etag: '"e"' };
+      }),
+      claimRegistryMarker: vi.fn(async (stack: string, region: string) => {
+        scanCalls.claims.push([stack, region]);
+        return 'claimed';
+      }),
+      lockUnderPrefix: vi.fn(async () => false),
+      listTopLevelPrefixes: vi.fn(async () => {
+        scanCalls.lists++;
+        return ['cdkd', 'team-b'];
+      }),
+      recordUnderPrefix: vi.fn(async (prefix: string, stack: string, region: string) => {
+        scanCalls.probes.push([prefix, stack, region]);
+        return prefix === 'team-b' ? 'holder' : 'absent';
+      }),
     };
     scanCalls.backends.push(backend);
     return backend;
@@ -166,7 +178,7 @@ interface Seen {
 const seen = vi.hoisted(() => new Map<string, Seen>());
 /** What the mock engine does with the options it was handed, per test. */
 const scenario = vi.hoisted(() => ({
-  value: 'first-deploy' as 'first-deploy' | 'redeploy' | 'return-at-once',
+  value: 'first-deploy' as 'first-deploy' | 'redeploy' | 'fire-and-return',
 }));
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
@@ -188,6 +200,10 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
           );
           outcomes['destructive'] = await outcome(() => options['onDestructivePlan']!(stackName, []));
           outcomes['holder'] = await outcome(() => options['crossPrefixHolder']!(stackName));
+        } else if (scenario.value === 'fire-and-return') {
+          // The gate starts its marker read and the engine returns at once,
+          // so the read is still pending when the command ends.
+          void options['onCurrentStateLoaded']!(stackName, undefined).catch(() => undefined);
         } else if (scenario.value === 'redeploy') {
           // A record loaded and a plan with nothing destructive: the engine calls
           // only the state-loaded gate.
@@ -267,11 +283,12 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
     process.env['AWS_DEFAULT_REGION'] = BASE_REGION;
     process.env['CDKD_NO_LIVE'] = '1';
     seen.clear();
-    scanCalls.own.length = 0;
+    scanCalls.reads.length = 0;
+    scanCalls.claims.length = 0;
     scanCalls.probes.length = 0;
     scanCalls.lists = 0;
-    scanCalls.ownRecord = false;
-    scanCalls.probeNever = false;
+    scanCalls.markerPrefix = null;
+    scanCalls.readNever = false;
     scanCalls.backends.length = 0;
   });
 
@@ -285,8 +302,9 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
     vi.clearAllMocks();
   });
 
-  it('a first deploy: the gates act on one scan per stack, in the engine region', async () => {
+  it('a first deploy under a marker naming another holding prefix: every gate refuses on ONE read per stack, in the engine region', async () => {
     scenario.value = 'first-deploy';
+    scanCalls.markerPrefix = 'team-b';
     synthStacks.value = [makeStack('HereStack'), makeStack('ThereStack', 'eu-west-1')];
 
     await runDeploy(['--all', '--yes']);
@@ -297,36 +315,63 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
       ['ThereStack', 'eu-west-1'],
     ] as const) {
       const s = seen.get(stackName)!;
-      // deployStackRegion at both call sites: the engine region IS the region scanned.
+      // deployStackRegion at both call sites: the engine region IS the region read.
       expect(s.engineRegion, stackName).toBe(region);
-      expect(scanCalls.own, stackName).toContainEqual([stackName, region]);
-      expect(scanCalls.probes, stackName).toContainEqual(['team-b', stackName, region]);
+      expect(scanCalls.reads.filter((r) => r[0] === stackName), stackName).toEqual([[stackName, region]]);
+      expect(scanCalls.probes.filter((p) => p[1] === stackName), stackName).toEqual([
+        ['team-b', stackName, region],
+      ]);
       expect(String(s.outcomes['firstDeploy']), stackName).toMatch(
         /Refusing to deploy stack .*is already recorded under another state prefix/
       );
       expect(String(s.outcomes['destructive']), stackName).toMatch(/this deploy deletes or replaces resources/);
       expect(s.outcomes['holder'], stackName).toMatchObject({ kind: 'unreadable' });
-      // The first-deploy scan, the destructive gate and the settle share ONE scan.
-      expect(scanCalls.probes.filter((p) => p[1] === stackName && p[0] === 'team-b')).toHaveLength(1);
     }
-    expect(scanCalls.lists).toBe(1);
+    // No prefix scan, and nothing claimed over another prefix's holder.
+    expect(scanCalls.lists).toBe(0);
+    expect(scanCalls.claims).toEqual([]);
   });
 
-  it('a redeploy with a non-destructive plan lists nothing and probes nothing', async () => {
+  it('a first deploy with no marker claims one per stack, in the engine region, and scans nothing', async () => {
+    scenario.value = 'first-deploy';
+    synthStacks.value = [makeStack('HereStack'), makeStack('ThereStack', 'eu-west-1')];
+
+    await runDeploy(['--all', '--yes']);
+
+    expect(scanCalls.claims.sort()).toEqual([
+      ['HereStack', BASE_REGION],
+      ['ThereStack', 'eu-west-1'],
+    ]);
+    expect(seen.get('HereStack')!.outcomes['firstDeploy']).toBe('passed');
+    expect(scanCalls.lists).toBe(0);
+    expect(scanCalls.probes).toEqual([]);
+  });
+
+  it('a dry-run first deploy reads but claims nothing', async () => {
+    scenario.value = 'first-deploy';
+    synthStacks.value = [makeStack('HereStack')];
+
+    await runDeploy(['--all', '--yes', '--dry-run']);
+
+    expect(scanCalls.claims).toEqual([]);
+  });
+
+  it('a redeploy with a non-destructive plan makes no registry request at all', async () => {
     scenario.value = 'redeploy';
-    scanCalls.ownRecord = true;
     synthStacks.value = [makeStack('HereStack')];
 
     await runDeploy(['--all', '--yes']);
 
     expect(seen.get('HereStack')!.outcomes['loaded']).toBe('passed');
+    expect(scanCalls.reads).toEqual([]);
+    expect(scanCalls.claims).toEqual([]);
     expect(scanCalls.lists).toBe(0);
     expect(scanCalls.probes).toEqual([]);
   });
 
-  it("destroys the preflight backend's client at command end, while a scan is still pending", async () => {
-    scenario.value = 'return-at-once';
-    scanCalls.probeNever = true;
+  it("destroys the preflight backend's client at command end, while a marker read is still pending", async () => {
+    scenario.value = 'fire-and-return';
+    scanCalls.readNever = true;
     synthStacks.value = [makeStack('HereStack')];
     const unhandled = vi.fn();
     process.on('unhandledRejection', unhandled);
@@ -336,11 +381,11 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
     } finally {
       process.removeListener('unhandledRejection', unhandled);
     }
-    // A first deploy's scan was started on the PREFLIGHT backend (the first
-    // one built) and was still pending when the command ended.
+    // A first deploy's marker read was started on the PREFLIGHT backend (the
+    // first one built) and was still pending when the command ended.
     const preflight = scanCalls.backends[0]!;
-    expect(preflight.probes).toBeGreaterThan(0);
-    expect(scanCalls.backends.slice(1).every((b) => b.probes === 0)).toBe(true);
+    expect(preflight.reads).toBeGreaterThan(0);
+    expect(scanCalls.backends.slice(1).every((b) => b.reads === 0)).toBe(true);
     // That backend's client is destroyed at command end, which rejects the
     // pending probe; the scan absorbs it, so nothing is unhandled.
     expect(preflight.destroyClient).toHaveBeenCalledTimes(1);

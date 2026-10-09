@@ -122,6 +122,8 @@ interface FakeBackend {
   deleteState: ReturnType<typeof vi.fn>;
   deleteRollbackJournal: ReturnType<typeof vi.fn>;
   listTopLevelPrefixes?: ReturnType<typeof vi.fn>;
+  getRegistryMarker?: ReturnType<typeof vi.fn>;
+  claimRegistryMarker?: ReturnType<typeof vi.fn>;
   setCustomResourceResponseBucket?: ReturnType<typeof vi.fn>;
   loadCreateTokenLedger?: ReturnType<typeof vi.fn>;
   saveCreateTokenLedger?: ReturnType<typeof vi.fn>;
@@ -147,6 +149,8 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
   mockGetLockInfo = vi.fn().mockResolvedValue(null);
   const full: FakeBackend = {
     listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+    getRegistryMarker: vi.fn().mockResolvedValue(null),
+    claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
     listStacks: vi.fn().mockResolvedValue([]),
     listRawKeys: vi.fn().mockResolvedValue([]),
     getState: vi.fn().mockResolvedValue(null),

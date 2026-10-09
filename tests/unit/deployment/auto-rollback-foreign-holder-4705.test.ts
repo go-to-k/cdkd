@@ -280,7 +280,6 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
   const holderOver = (scan: CrossPrefixScanResult) => {
     const cache = new CrossPrefixScanCache({
       prefix: 'cdkd',
-      ownRecordExists: vi.fn(),
       listTopLevelPrefixes: vi.fn(),
       recordUnderPrefix: vi.fn(),
     });
@@ -345,7 +344,6 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
   it('denied (403): warns and deletes, as the settle does', async () => {
     const cache = new CrossPrefixScanCache({
       prefix: 'cdkd',
-      ownRecordExists: vi.fn(),
       listTopLevelPrefixes: vi.fn(),
       recordUnderPrefix: vi.fn(),
     });

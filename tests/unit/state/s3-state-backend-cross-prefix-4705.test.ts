@@ -1,16 +1,20 @@
 /**
- * go-to-k/cdkd#4705: the S3 calls behind the cross-prefix scan --
- * `listTopLevelPrefixes`, the strict `recordUnderPrefix`, `ownRecordExists` --
- * and the scan run against a real backend.
+ * go-to-k/cdkd#4705: the S3 calls behind the stack registry and the
+ * cross-prefix scan -- the registry marker's read, claim and release, the
+ * other prefix's lock probe, `listTopLevelPrefixes`, the strict
+ * `recordUnderPrefix` -- and the scan run against a real backend.
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import {
   type S3Client,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  PutObjectCommand,
 } from '@aws-sdk/client-s3';
-import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { S3StateBackend, registryMarkerPrefix } from '../../../src/state/s3-state-backend.js';
+import { CrossPrefixReadError } from '../../../src/state/cross-prefix-stack-scan.js';
 import { scanOtherPrefixesForStack } from '../../../src/state/cross-prefix-stack-scan.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
@@ -79,6 +83,26 @@ function makeClient(): {
         IsTruncated: index + 1 < pages.length,
         ...(index + 1 < pages.length && { NextContinuationToken: String(index + 1) }),
       };
+    }
+    if (cmd instanceof PutObjectCommand) {
+      const key = cmd.input.Key!;
+      const error = errors.get(key);
+      if (error) throw error;
+      const current = bodies.get(key);
+      const preconditionFailed = (): Error =>
+        Object.assign(new Error('PreconditionFailed'), {
+          name: 'PreconditionFailed',
+          $metadata: { httpStatusCode: 412 },
+        });
+      if (cmd.input.IfNoneMatch === '*' && current !== undefined) throw preconditionFailed();
+      if (cmd.input.IfMatch !== undefined && (current === undefined || cmd.input.IfMatch !== '"e"'))
+        throw preconditionFailed();
+      bodies.set(key, String(cmd.input.Body));
+      return { ETag: '"e2"' };
+    }
+    if (cmd instanceof DeleteObjectCommand) {
+      bodies.delete(cmd.input.Key!);
+      return {};
     }
     if (cmd instanceof HeadObjectCommand || cmd instanceof GetObjectCommand) {
       const key = cmd.input.Key!;
@@ -236,7 +260,7 @@ describe('recordUnderPrefix (strict)', () => {
     });
     pages = [['cdkd/', 'team-b/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toMatchObject({ kind: 'failed' });
   });
 
@@ -345,7 +369,7 @@ describe('recordUnderPrefix (strict)', () => {
     });
     pages = [['cdkd/', 'team-b/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toMatchObject({ kind: 'denied', stage: 'probe' });
   });
 
@@ -353,7 +377,7 @@ describe('recordUnderPrefix (strict)', () => {
     errors.set(LEGACY_B, serviceUnavailable());
     pages = [['cdkd/', 'team-b/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toMatchObject({ kind: 'failed' });
   });
 
@@ -361,7 +385,7 @@ describe('recordUnderPrefix (strict)', () => {
     errors.set(LEGACY_B, accessDenied());
     pages = [['cdkd/', 'team-b/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toMatchObject({ kind: 'denied', stage: 'probe' });
   });
 
@@ -374,82 +398,8 @@ describe('recordUnderPrefix (strict)', () => {
     errors.set('team-b/App/', accessDenied());
     pages = [['cdkd/', 'team-b/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: false })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toMatchObject({ kind: 'denied', stage: 'probe' });
-  });
-});
-
-describe('ownRecordExists', () => {
-  it('is true for a state record', async () => {
-    bodies.set('cdkd/App/us-east-1/state.json', record());
-    await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(true);
-  });
-
-  it('is true for a rollback journal alone (an interrupted first deploy)', async () => {
-    bodies.set('cdkd/App/us-east-1/rollback-journal.json', '{}');
-    await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(true);
-  });
-
-  it('is true for a legacy-only own record of this region (its body is read)', async () => {
-    bodies.set('cdkd/App/state.json', record());
-    await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(true);
-    await expect(backend.ownRecordExists('App', 'eu-west-1')).resolves.toBe(false);
-  });
-
-  it('is false when neither exists', async () => {
-    await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(false);
-  });
-
-  it('sends its three probes at once, not one after another', async () => {
-    const pending: Array<() => void> = [];
-    const original = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
-    client.send.mockImplementation(
-      (cmd: unknown) =>
-        new Promise((resolve, reject) => {
-          pending.push(() => {
-            original(cmd).then(resolve, reject);
-          });
-        })
-    );
-    const answer = backend.ownRecordExists('App', 'us-east-1');
-    for (let i = 0; i < 50 && pending.length < 3; i++) await new Promise((r) => setTimeout(r, 1));
-    expect(pending).toHaveLength(3);
-    const sent = client.send.mock.calls.map((c) => c[0] as { input: { Key?: string } });
-    expect(sent.map((c) => c.input.Key).sort()).toEqual([
-      'cdkd/App/state.json',
-      'cdkd/App/us-east-1/rollback-journal.json',
-      'cdkd/App/us-east-1/state.json',
-    ]);
-    pending.forEach((go) => go());
-    await expect(answer).resolves.toBe(false);
-  });
-
-  it('answers as the serial order would: a failed state HEAD wins over a journal', async () => {
-    errors.set('cdkd/App/us-east-1/state.json', accessDenied());
-    bodies.set('cdkd/App/us-east-1/rollback-journal.json', '{}');
-    await expect(backend.ownRecordExists('App', 'us-east-1')).rejects.toMatchObject({
-      name: 'AccessDenied',
-    });
-  });
-
-  it('answers as the serial order would: (state absent, legacy absent, journal REJECTS) rejects', async () => {
-    errors.set('cdkd/App/us-east-1/rollback-journal.json', serviceUnavailable());
-    await expect(backend.ownRecordExists('App', 'us-east-1')).rejects.toMatchObject({
-      name: 'ServiceUnavailable',
-    });
-  });
-
-  it('answers as the serial order would: a state record wins over a failed journal HEAD', async () => {
-    bodies.set('cdkd/App/us-east-1/state.json', record());
-    errors.set('cdkd/App/us-east-1/rollback-journal.json', accessDenied());
-    await expect(backend.ownRecordExists('App', 'us-east-1')).resolves.toBe(true);
-  });
-
-  it('owner-pins its HEADs', async () => {
-    await backend.ownRecordExists('App', 'us-east-1');
-    for (const head of commandsOf(HeadObjectCommand)) {
-      expect(head.input.ExpectedBucketOwner).toBe('999999999999');
-    }
   });
 });
 
@@ -459,39 +409,15 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
     bodies.set(JOURNAL_B, autoRollbackCleanJournal());
     pages = [['cdkd/', 'team-b/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toEqual({ kind: 'clear', stale: ['team-b'] });
-  });
-
-  it('a legacy-only own record stops at own-record and never lists the bucket', async () => {
-    bodies.set('cdkd/App/state.json', record({ resources: RESOURCE }));
-    bodies.set(KEY_B, record({ resources: RESOURCE }));
-    pages = [['cdkd/', 'team-b/']];
-    await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
-    ).resolves.toEqual({ kind: 'own-record' });
-    expect(commandsOf(ListObjectsV2Command)).toHaveLength(0);
-  });
-
-  it('a stack this prefix already records never lists the bucket and reads only its own keys', async () => {
-    bodies.set('cdkd/App/us-east-1/state.json', record());
-    bodies.set(KEY_B, record({ resources: RESOURCE }));
-    pages = [['cdkd/', 'team-b/']];
-    await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
-    ).resolves.toEqual({ kind: 'own-record' });
-    expect(commandsOf(ListObjectsV2Command)).toHaveLength(0);
-    const keys = [...commandsOf(HeadObjectCommand), ...commandsOf(GetObjectCommand)].map(
-      (c) => c.input.Key!
-    );
-    expect(keys.every((k) => k.startsWith('cdkd/'))).toBe(true);
   });
 
   it('a first deploy finds the record under another prefix', async () => {
     bodies.set(KEY_B, record({ resources: RESOURCE }));
     pages = [['cdkd/', 'team-b/', 'other/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toEqual({ kind: 'found', prefixes: ['team-b'] });
   });
 
@@ -499,7 +425,7 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
     bodies.set('team-a//App/us-east-1/state.json', record({ resources: RESOURCE }));
     pages = [['cdkd/', 'team-a/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toEqual({ kind: 'found', prefixes: ['team-a/'] });
   });
 
@@ -512,7 +438,7 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
     bodies.set('team-a//App/us-east-1/state.json', record({ resources: RESOURCE }));
     pages = [['team-a/']];
     await expect(
-      scanOtherPrefixesForStack(own, 'App', 'us-east-1', { checkOwnRecord: false })
+      scanOtherPrefixesForStack(own, 'App', 'us-east-1')
     ).resolves.toEqual({ kind: 'clear' });
   });
 
@@ -520,7 +446,7 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
     bodies.set('team/b/App/us-east-1/state.json', record({ resources: RESOURCE }));
     pages = [['cdkd/', 'team/']];
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toEqual({ kind: 'clear' });
   });
 
@@ -531,7 +457,103 @@ describe('scanOtherPrefixesForStack against S3StateBackend', () => {
       return original(cmd);
     });
     await expect(
-      scanOtherPrefixesForStack(backend, 'App', 'us-east-1', { checkOwnRecord: true })
+      scanOtherPrefixesForStack(backend, 'App', 'us-east-1')
     ).resolves.toMatchObject({ kind: 'denied', stage: 'list' });
+  });
+});
+
+describe('the stack registry marker (go-to-k/cdkd#4705)', () => {
+  const MARKER = '_cdkd-registry/us-east-1/App.json';
+
+  it('lives at the bucket root, outside every prefix', () => {
+    expect(backend.registryMarkerKey('App', 'us-east-1')).toBe(MARKER);
+  });
+
+  it('reads as null when absent, and as its prefix and ETag when present, owner-pinned', async () => {
+    await expect(backend.getRegistryMarker('App', 'us-east-1')).resolves.toBeNull();
+    bodies.set(MARKER, JSON.stringify({ prefix: 'team-b' }));
+    await expect(backend.getRegistryMarker('App', 'us-east-1')).resolves.toEqual({
+      prefix: 'team-b',
+      etag: '"e"',
+    });
+    const gets = commandsOf(GetObjectCommand).filter((c) => c.input.Key === MARKER);
+    expect(gets.every((c) => c.input.ExpectedBucketOwner === '999999999999')).toBe(true);
+  });
+
+  it('refuses to read a malformed marker as anything, naming the key', async () => {
+    for (const body of ['', 'not json', '[]', '{}', '{"prefix":7}', '{"prefix":"a<b>"}', '{"prefix":"a\u0007"}']) {
+      bodies.set(MARKER, body);
+      const error = await backend.getRegistryMarker('App', 'us-east-1').catch((e: unknown) => e);
+      expect(error, body).toBeInstanceOf(CrossPrefixReadError);
+      expect((error as CrossPrefixReadError).key).toBe(MARKER);
+    }
+  });
+
+  it('throws a 403 on the marker as a read error whose cause is the 403', async () => {
+    errors.set(MARKER, accessDenied());
+    const error = await backend.getRegistryMarker('App', 'us-east-1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CrossPrefixReadError);
+    expect((error as CrossPrefixReadError).cause).toMatchObject({ name: 'AccessDenied' });
+  });
+
+  it('claims with If-None-Match: *, writing only this prefix', async () => {
+    await expect(backend.claimRegistryMarker('App', 'us-east-1')).resolves.toBe('claimed');
+    const put = commandsOf(PutObjectCommand).at(-1)!;
+    expect(put.input).toMatchObject({ Key: MARKER, IfNoneMatch: '*', ExpectedBucketOwner: '999999999999' });
+    expect(JSON.parse(String(put.input.Body))).toEqual({ prefix: 'cdkd' });
+    // A second claim loses the race.
+    await expect(backend.claimRegistryMarker('App', 'us-east-1')).resolves.toBe('conflict');
+  });
+
+  it('re-claims exactly the version read (If-Match), and loses to a changed one', async () => {
+    bodies.set(MARKER, JSON.stringify({ prefix: 'team-b' }));
+    await expect(backend.claimRegistryMarker('App', 'us-east-1', '"e"')).resolves.toBe('claimed');
+    expect(commandsOf(PutObjectCommand).at(-1)!.input.IfMatch).toBe('"e"');
+    await expect(backend.claimRegistryMarker('App', 'us-east-1', '"stale"')).resolves.toBe(
+      'conflict'
+    );
+  });
+
+  it('throws any other claim failure as a read error naming the key', async () => {
+    errors.set(MARKER, serviceUnavailable());
+    const error = await backend.claimRegistryMarker('App', 'us-east-1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CrossPrefixReadError);
+  });
+
+  it('releases only a marker naming this prefix (read, then delete)', async () => {
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('absent');
+    bodies.set(MARKER, JSON.stringify({ prefix: 'team-b' }));
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('elsewhere');
+    expect(commandsOf(DeleteObjectCommand)).toHaveLength(0);
+    bodies.set(MARKER, JSON.stringify({ prefix: 'cdkd' }));
+    await expect(backend.releaseRegistryMarker('App', 'us-east-1')).resolves.toBe('released');
+    expect(commandsOf(DeleteObjectCommand).map((c) => c.input.Key)).toEqual([MARKER]);
+    expect(bodies.has(MARKER)).toBe(false);
+  });
+
+  it("probes another prefix's lock in both layouts", async () => {
+    await expect(backend.lockUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe(false);
+    bodies.set('team-b/App/lock.json', '{}');
+    await expect(backend.lockUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe(true);
+    bodies.delete('team-b/App/lock.json');
+    bodies.set('team-b/App/us-east-1/lock.json', '{}');
+    await expect(backend.lockUnderPrefix('team-b', 'App', 'us-east-1')).resolves.toBe(true);
+    errors.set('team-b/App/lock.json', serviceUnavailable());
+    await expect(backend.lockUnderPrefix('team-b', 'App', 'us-east-1')).rejects.toBeInstanceOf(
+      CrossPrefixReadError
+    );
+  });
+
+  it('is never listed as a state prefix', async () => {
+    pages = [['cdkd/', '_cdkd-registry/', 'team-b/']];
+    await expect(backend.listTopLevelPrefixes()).resolves.toEqual(['cdkd', 'team-b']);
+  });
+
+  it('registryMarkerPrefix accepts a prefix cdkd could have written, including empty and team-a/', () => {
+    for (const prefix of ['cdkd', '', 'team-a/', 'team/a']) {
+      expect(registryMarkerPrefix(JSON.stringify({ prefix }))).toBe(prefix);
+    }
+    expect(registryMarkerPrefix(JSON.stringify({ prefix: 'x'.repeat(1025) }))).toBeUndefined();
+    expect(registryMarkerPrefix(undefined)).toBeUndefined();
   });
 });

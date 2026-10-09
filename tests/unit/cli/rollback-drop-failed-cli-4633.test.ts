@@ -70,6 +70,8 @@ const orphan = (logicalId: string) => ({
 function install() {
   const backend = {
     listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+    getRegistryMarker: vi.fn().mockResolvedValue(null),
+    claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
     listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
     listRawKeys: vi.fn().mockResolvedValue([]),
     getState: vi.fn().mockResolvedValue({

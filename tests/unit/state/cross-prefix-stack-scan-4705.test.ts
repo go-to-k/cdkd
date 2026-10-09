@@ -24,12 +24,10 @@ type Held = boolean | 'empty' | Error;
 
 function target(opts: {
   prefix?: string;
-  own?: boolean | Error;
   prefixes?: string[] | Error;
   holders?: Record<string, Held>;
   delayMs?: number;
 }): CrossPrefixScanTarget & {
-  ownRecordExists: ReturnType<typeof vi.fn>;
   listTopLevelPrefixes: ReturnType<typeof vi.fn>;
   recordUnderPrefix: ReturnType<typeof vi.fn>;
   maxInFlight: () => number;
@@ -38,10 +36,6 @@ function target(opts: {
   let max = 0;
   return {
     prefix: opts.prefix ?? 'cdkd',
-    ownRecordExists: vi.fn(async () => {
-      if (opts.own instanceof Error) throw opts.own;
-      return opts.own ?? false;
-    }),
     listTopLevelPrefixes: vi.fn(async () => {
       if (opts.prefixes instanceof Error) throw opts.prefixes;
       return opts.prefixes ?? [];
@@ -73,8 +67,7 @@ const slowDown = (): Error =>
     $metadata: { httpStatusCode: 503 },
   });
 const SUBJECT = { stackName: 'App', region: 'us-east-1', bucket: 'cdkd-state-123456789012' };
-const scan = (t: CrossPrefixScanTarget, checkOwnRecord = true) =>
-  scanOtherPrefixesForStack(t, 'App', 'us-east-1', { checkOwnRecord });
+const scan = (t: CrossPrefixScanTarget) => scanOtherPrefixesForStack(t, 'App', 'us-east-1');
 
 describe('candidatePrefixPasses', () => {
   it('first the listed segments, then their trailing-slash twins, minus the own prefix', () => {
@@ -98,12 +91,6 @@ describe('candidatePrefixPasses', () => {
 });
 
 describe('scanOtherPrefixesForStack', () => {
-  it('stops at own-record when this prefix already holds the stack: nothing is listed', async () => {
-    const t = target({ own: true, prefixes: ['team-b'], holders: { 'team-b': true } });
-    await expect(scan(t)).resolves.toEqual({ kind: 'own-record' });
-    expect(t.listTopLevelPrefixes).not.toHaveBeenCalled();
-    expect(t.recordUnderPrefix).not.toHaveBeenCalled();
-  });
 
   it('finds the stack under another prefix, and never probes its own prefix', async () => {
     const t = target({ prefixes: ['cdkd', 'team-b'], holders: { cdkd: true, 'team-b': true } });
@@ -121,12 +108,6 @@ describe('scanOtherPrefixesForStack', () => {
     await expect(scan(target({ prefixes: ['cdkd', 'team-b'] }))).resolves.toEqual({
       kind: 'clear',
     });
-  });
-
-  it('skips the own-record check for destroy, which holds the record it destroys', async () => {
-    const t = target({ own: true, prefixes: ['team-b'], holders: { 'team-b': true } });
-    await expect(scan(t, false)).resolves.toEqual({ kind: 'found', prefixes: ['team-b'] });
-    expect(t.ownRecordExists).not.toHaveBeenCalled();
   });
 
   describe('the verdict over mixed probes (found wins, then failed, then denied)', () => {
@@ -167,12 +148,6 @@ describe('scanOtherPrefixesForStack', () => {
       });
     });
 
-    it('a 403 on the own-record check is stage probe', async () => {
-      await expect(scan(target({ own: denied() }))).resolves.toMatchObject({
-        kind: 'denied',
-        stage: 'probe',
-      });
-    });
 
     it('any other listing failure is failed, and the scan never rejects', async () => {
       await expect(scan(target({ prefixes: slowDown() }))).resolves.toMatchObject({
@@ -189,12 +164,11 @@ describe('scanOtherPrefixesForStack', () => {
     expect(t.maxInFlight()).toBe(PROBE_CONCURRENCY);
   });
 
-  it('probes the trailing-slash twins only after every segment missed', async () => {
-    const t = target({ prefixes: ['a', 'b'], holders: { a: true } });
-    await expect(scan(t)).resolves.toMatchObject({ kind: 'found', prefixes: ['a'] });
-    const probed = t.recordUnderPrefix.mock.calls.map((c) => c[0]);
-    expect(probed).not.toContain('a/');
-    expect(probed).not.toContain('b/');
+  it('probes every segment and its trailing-slash twin in ONE pass (go-to-k/cdkd#4705 PR2)', async () => {
+    const t = target({ prefixes: ['a', 'b'], holders: { 'b/': true } });
+    await expect(scan(t)).resolves.toMatchObject({ kind: 'found', prefixes: ['b/'] });
+    // The twins started without waiting for the segments' pass to finish.
+    expect(t.recordUnderPrefix.mock.calls.map((c) => c[0])).toEqual(['a', 'b', 'a/', 'b/']);
     const clear = target({ prefixes: ['a', 'b'] });
     await scan(clear);
     expect(clear.recordUnderPrefix.mock.calls.map((c) => c[0])).toEqual(['a', 'b', 'a/', 'b/']);
@@ -283,12 +257,11 @@ describe('withSharedListing', () => {
     const shared = withSharedListing(t);
     const results = await Promise.all(
       ['A', 'B', 'C'].map((name) =>
-        scanOtherPrefixesForStack(shared, name, 'us-east-1', { checkOwnRecord: true })
+        scanOtherPrefixesForStack(shared, name, 'us-east-1')
       )
     );
     expect(results.map((r) => r.kind)).toEqual(['found', 'found', 'found']);
     expect(t.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
-    expect(t.ownRecordExists).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -318,7 +291,7 @@ describe('applyCrossPrefixScan', () => {
     throw new Error('expected a refusal');
   };
 
-  it.each(['own-record', 'clear'] as const)('does nothing on %s', (kind) => {
+  it.each(['clear'] as const)('does nothing on %s', (kind) => {
     const warn = vi.fn();
     expect(() => applyCrossPrefixScan({ kind }, SUBJECT, 'deploy', warn)).not.toThrow();
     expect(warn).not.toHaveBeenCalled();

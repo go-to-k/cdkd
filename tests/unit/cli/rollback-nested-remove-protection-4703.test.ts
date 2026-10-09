@@ -76,6 +76,8 @@ function install(): void {
   setupMock.mockResolvedValue({
     stateBackend: {
       listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+      getRegistryMarker: vi.fn().mockResolvedValue(null),
+      claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn(async (name: string) =>

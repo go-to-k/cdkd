@@ -1623,7 +1623,6 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const gateOver = (result: CrossPrefixScanResult) => {
         const cache = new CrossPrefixScanCache({
           prefix: 'cdkd',
-          ownRecordExists: vi.fn(),
           listTopLevelPrefixes: vi.fn(),
           recordUnderPrefix: vi.fn(),
         });

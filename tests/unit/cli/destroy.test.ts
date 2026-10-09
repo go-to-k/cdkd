@@ -453,10 +453,10 @@ describe('cdkd destroy: terminationProtection guard', () => {
 
     // go-to-k/cdkd#4705 (review R4-3): every target stack's scan starts before
     // the first stack's destroy, through the run's one cache.
-    const { CrossPrefixScanCache } = await import('../../../src/state/cross-prefix-stack-scan.js');
+    const { CrossPrefixGuard } = await import('../../../src/state/stack-registry.js');
     const order: string[] = [];
     const fullSpy = vi
-      .spyOn(CrossPrefixScanCache.prototype, 'full')
+      .spyOn(CrossPrefixGuard.prototype, 'full')
       .mockImplementation(async (name: string) => {
         order.push(`scan:${name}`);
         return { kind: 'clear' };
@@ -509,9 +509,9 @@ describe('cdkd destroy: terminationProtection guard', () => {
       state: makeStackState(name),
       etag: '"x"',
     }));
-    const { CrossPrefixScanCache } = await import('../../../src/state/cross-prefix-stack-scan.js');
+    const { CrossPrefixGuard } = await import('../../../src/state/stack-registry.js');
     const fullSpy = vi
-      .spyOn(CrossPrefixScanCache.prototype, 'full')
+      .spyOn(CrossPrefixGuard.prototype, 'full')
       .mockResolvedValue({ kind: 'clear' });
     mockRunDestroyForStack.mockImplementation(async (name: string) => ({
       stackName: name,

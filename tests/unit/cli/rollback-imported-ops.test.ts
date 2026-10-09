@@ -121,6 +121,8 @@ function install(resources: StackState['resources'], segments: Record<string, un
   };
   backend = {
     listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+    getRegistryMarker: vi.fn().mockResolvedValue(null),
+    claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
     listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
     listRawKeys: vi.fn().mockResolvedValue([]),
     getState: vi.fn().mockResolvedValue(readAtKeyRegion(record, REGION)),

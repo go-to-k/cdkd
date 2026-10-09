@@ -470,10 +470,10 @@ describe('cdkd state destroy', () => {
       state: makeStackState(name, 'us-east-1'),
       etag: '"x"',
     }));
-    const { CrossPrefixScanCache } = await import('../../../src/state/cross-prefix-stack-scan.js');
+    const { CrossPrefixGuard } = await import('../../../src/state/stack-registry.js');
     const order: string[] = [];
     const fullSpy = vi
-      .spyOn(CrossPrefixScanCache.prototype, 'full')
+      .spyOn(CrossPrefixGuard.prototype, 'full')
       .mockImplementation(async (name: string, region: string) => {
         order.push(`scan:${name}:${region}`);
         return { kind: 'clear' };

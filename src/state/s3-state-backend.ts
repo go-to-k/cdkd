@@ -250,9 +250,10 @@ export class S3StateBackend {
   private async clientForScan(): Promise<S3Client> {
     await this.ensureClientForBucket();
     if (this.scanClient !== undefined) return this.scanClient;
-    const base = this.s3Client as { config?: { region?: unknown; credentials?: unknown } };
-    if (typeof base.config?.region !== 'function') return this.s3Client;
-    const region = (await (base.config.region as () => Promise<string>)()) as string;
+    // Built the way a bucket-region rebuild builds one, and only from a real
+    // client: anything else (a test double) is used as it is.
+    if (!(this.s3Client instanceof S3Client)) return this.s3Client;
+    const region = await this.s3Client.config.region();
     this.scanClient = new S3Client({
       ...awsClientDefaults(this.clientOpts.profile ? { profile: this.clientOpts.profile } : {}),
       region,

@@ -122,6 +122,8 @@ function installSetup(
   setupMock.mockResolvedValue({
     stateBackend: {
       listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+      getRegistryMarker: vi.fn().mockResolvedValue(null),
+      claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({ state: { resources: {}, outputs: {} }, etag: 'e' }),
@@ -179,6 +181,8 @@ function installReplayableSetup(
   setupMock.mockResolvedValue({
     stateBackend: {
       listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+      getRegistryMarker: vi.fn().mockResolvedValue(null),
+      claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({
