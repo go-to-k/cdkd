@@ -139,7 +139,7 @@ verify, clean up.
    VPID=$!
    # 5s polls that end on their own: NEVER kill the watchdog (orphaned `sleep`,
    # false FIRE). A FIRE sends TERM so verify's trap cleans up, then `kill -9`
-   # after 30 min — longer than the slowest cleanup (ElastiCache, ~2x15 min).
+   # after 30 min (~ noecho-parameter-masking's two 15-min cleanup loops).
    ( i=0; while [ $i -lt $POLLS ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
      kill -0 $VPID 2>/dev/null || exit 0
      echo "WATCHDOG_FIRED" >> "$LOG"; kill -TERM -- -$VPID
