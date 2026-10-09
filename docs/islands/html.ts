@@ -158,12 +158,13 @@ export async function renderIslands(
   for (const [index, island] of [...islands.entries()].toReversed()) {
     const inner = await render(island.name, island.props, index);
     if (inner === null) continue;
-    const openTag = output.slice(island.start, island.openEnd);
-    const marks = [
-      /\sdata-ox-ssr\b/i.test(openTag) ? '' : ' data-ox-ssr="true"',
-      /\sdata-cdkd-island\b/i.test(openTag) ? '' : ` data-cdkd-island="${index}"`,
-    ].join('');
-    const marked = `${openTag.slice(0, -1)}${marks}>`;
+    // The number is always this render's: it is the prefix the island was
+    // just rendered with, whatever an earlier pass or the page wrote.
+    const openTag = output
+      .slice(island.start, island.openEnd)
+      .replace(/\sdata-cdkd-island\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    const ssr = /\sdata-ox-ssr\b/i.test(openTag) ? '' : ' data-ox-ssr="true"';
+    const marked = `${openTag.slice(0, -1)}${ssr} data-cdkd-island="${index}">`;
     output = output.slice(0, island.start) + marked + inner + output.slice(island.closeStart);
   }
   return output;

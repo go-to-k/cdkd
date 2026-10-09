@@ -103,6 +103,13 @@ describe('renderIslands', () => {
     const out = await renderIslands(html, async () => '<i>new</i>');
     expect(out).toBe(`<div data-ox-island="s" data-ox-ssr="true" data-cdkd-island="0"><i>new</i></div>`);
   });
+
+  it('numbers an island by this render, whatever number it already carried', async () => {
+    const html = `<div data-ox-island="a"></div><div data-ox-island="b" data-cdkd-island="7"></div>`;
+    const out = await renderIslands(html, async () => '<i></i>');
+    expect(out).toContain('<div data-ox-island="b" data-ox-ssr="true" data-cdkd-island="1">');
+    expect(out).not.toContain('data-cdkd-island="7"');
+  });
 });
 
 describe('relocateIslands', () => {
