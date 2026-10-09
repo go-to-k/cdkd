@@ -155,7 +155,7 @@ export interface StatefulProbeClients {
  * **Probe failures fail CLOSED for the log group, OPEN for the bucket**, and
  * the divergence is deliberate rather than an oversight. The bucket's
  * soft-fail is pre-existing shipped behaviour (issue [#648]) documented on
- * `docs/cli-deploy-safety.md`; the log group's arm is new with issue [#2558],
+ * `docs/_contents/cli-deploy-safety.md`; the log group's arm is new with issue [#2558],
  * whose whole subject is that an unprovable emptiness must not read as empty.
  * So a failed `DescribeLogStreams` (permission denied, throttling) warns AND
  * promotes to `'has-log-events'`: the user gets a refusal naming the remedies,
@@ -248,7 +248,7 @@ export async function probeStatefulRecreateTargetsAsync(
         //     half was the real defect and is what this check adds.
         //
         // The fail-OPEN posture of the `catch` below is unchanged (issue
-        // [#648], published in `docs/cli-deploy-safety.md`): this is about a
+        // [#648], published in `docs/_contents/cli-deploy-safety.md`): this is about a
         // response that arrived, not about a probe that failed.
         const hasVersions = (result.Versions?.length ?? 0) > 0;
         const hasDeleteMarkers = (result.DeleteMarkers?.length ?? 0) > 0;

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { OUTPUT_PATH, assembleChangelog } from '../scripts/assemble-changelog.js';
 
 /**
- * Vitest `globalSetup`: materialises `docs/changelog-cdkd.md` before any test
+ * Vitest `globalSetup`: materialises `docs/_contents/changelog-cdkd.md` before any test
  * file runs.
  *
  * WHY A GLOBAL SETUP AND NOT A TASK DEPENDENCY. Since issue go-to-k/cdkd#2779

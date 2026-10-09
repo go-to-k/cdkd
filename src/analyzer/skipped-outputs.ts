@@ -93,7 +93,7 @@
  * included, since the no-change path persists what resolved rather than
  * keeping the previous bag whole (go-to-k/cdkd#2771; the two shapes it still
  * keeps whole are in `src/deployment/no-change-outputs-merge.ts`).
- * Documented as the accepted limitation in `docs/cli-diff.md`; it is narrower
+ * Documented as the accepted limitation in `docs/_contents/cli-diff.md`; it is narrower
  * than the pre-#2740 behaviour, where the diff was wrong on EVERY run.
  *
  * A repair on the RESOURCE side is NOT on that list either, but the reason is

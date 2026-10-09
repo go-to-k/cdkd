@@ -56,7 +56,7 @@ describe('FirehoseProvider read-update round-trip', () => {
 
   it('Class 1 — DirectPut readCurrentState does NOT emit KinesisStreamSourceConfiguration', async () => {
     // Mechanical guard for Class 1 placeholder regression on type-
-    // discriminator-dependent fields. See docs/provider-rules.md#readcurrentstate-for-drift-detection
+    // discriminator-dependent fields. See docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection
     //  "Read-update round-trip test".
     //
     // KinesisStreamSourceConfiguration is only valid when
@@ -108,7 +108,7 @@ describe('FirehoseProvider read-update round-trip', () => {
   });
 
   it('always emits Tags (even when ListTagsForDeliveryStream fails on a non-NotFound error)', async () => {
-    // Per docs/provider-rules.md#readcurrentstate-for-drift-detection: omitting `Tags` on the
+    // Per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection: omitting `Tags` on the
     // failure path means the comparator's state-keys-only walk skips
     // Tags forever, hiding console-side tag adds from drift on the
     // unlucky run that hit the Tags API throttle.

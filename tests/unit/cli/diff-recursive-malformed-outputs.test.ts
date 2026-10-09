@@ -167,7 +167,7 @@ describe('cdkd diff over a malformed outputs bag (issue go-to-k/cdkd#3189)', () 
     expect(getLogger().warn).toHaveBeenCalledTimes(2);
     // Each container reads as empty independently: no fabricated resource row
     // from `"xy"`, and every template resource previews as a CREATE — the
-    // behaviour `docs/cli-diff.md` states for the repaired `resources` bag.
+    // behaviour `docs/_contents/cli-diff.md` states for the repaired `resources` bag.
     expect([...node.changes.values()].map((c) => [c.logicalId, c.changeType])).toEqual([
       ['A', 'CREATE'],
     ]);
@@ -326,7 +326,7 @@ describe('cdkd diff over a malformed outputs bag (issue go-to-k/cdkd#3189)', () 
     // fabricated row is hardest to spot, and it enters through a second
     // `loadStateOrEmpty` call of its own.
     //
-    // It also covers the per-node claim `docs/cli-diff.md` makes: a healthy
+    // It also covers the per-node claim `docs/_contents/cli-diff.md` makes: a healthy
     // parent sits above a malformed child, and the warning names the stack it
     // came from.
     const parent = record({ Endpoint: 'https://endpoint' });

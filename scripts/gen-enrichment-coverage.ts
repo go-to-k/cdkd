@@ -45,7 +45,7 @@
  *     scripts/gen-property-coverage.ts) to extract, per `case` label, the set of
  *     attribute keys the case assigns (`enriched['Attr'] = ...`).
  *
- * Writes: docs/_generated/enrichment-coverage.{json,md}.
+ * Writes: docs/_contents/_generated/enrichment-coverage.{json,md}.
  *
  * CLASSIFICATION (per CC-routable type with a cached schema)
  * ----------------------------------------------------------
@@ -111,9 +111,9 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const CC_PROVIDER_FILE = resolve(repoRoot, 'src/provisioning/cloud-control-provider.ts');
-const OUT_JSON = resolve(repoRoot, 'docs/_generated/enrichment-coverage.json');
-const OUT_MD = resolve(repoRoot, 'docs/_generated/enrichment-coverage.md');
-const PROVIDER_COVERAGE_JSON = resolve(repoRoot, 'docs/_generated/provider-coverage.json');
+const OUT_JSON = resolve(repoRoot, 'docs/_contents/_generated/enrichment-coverage.json');
+const OUT_MD = resolve(repoRoot, 'docs/_contents/_generated/enrichment-coverage.md');
+const PROVIDER_COVERAGE_JSON = resolve(repoRoot, 'docs/_contents/_generated/provider-coverage.json');
 
 /**
  * Load the set of types that have an SDK provider (Tier 1) from the cached

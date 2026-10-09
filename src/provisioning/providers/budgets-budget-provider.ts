@@ -256,7 +256,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * name somebody else holds. Refused here, the 5xx reaches the deploy
    * engine's retry, which marks the create as possibly replayed (`withRetry`,
    * #3978). Nothing is adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   /**
    * The `ProvisioningError` a failed create / update throws, quoting AWS's

@@ -567,7 +567,7 @@ describe('cross-file fences', () => {
     // different spelling sends the operator to write a marker this script will
     // not find, which is the one recovery that must not go stale. Built FROM the
     // constants, so a rename fails here rather than leaving the page wrong.
-    const runbook = readFileSync(join(REPO_ROOT, 'docs/schema-refresh-runbook.md'), 'utf8');
+    const runbook = readFileSync(join(REPO_ROOT, 'docs/_contents/schema-refresh-runbook.md'), 'utf8');
     expect(runbook).toContain(BLOCK_START);
     expect(runbook).toContain(BLOCK_END);
     // And the two recipes a reader needs when it refuses, by the spellings the

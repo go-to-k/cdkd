@@ -589,15 +589,15 @@ describe('docs error-string checker: the real tree', () => {
 
   it('walks past the generated directory rather than into it', () => {
     /*
-     * Asserting no FINDING under `docs/_generated/` pins nothing — those pages
+     * Asserting no FINDING under `docs/_contents/_generated/` pins nothing — those pages
      * contain no `Error:` line, so the assertion is green with the skip
      * deleted. Assert the walk itself: the directory exists and has pages, and
      * none of them is collected.
      */
-    const generated = join(ROOT, 'docs/_generated');
+    const generated = join(ROOT, 'docs/_contents/_generated');
     const rawCount = readdirSync(generated).filter((f) => f.endsWith('.md')).length;
     expect(rawCount).toBeGreaterThan(0);
-    const walked = collectDocPages(join(ROOT, 'docs'));
+    const walked = collectDocPages(join(ROOT, 'docs', '_contents'));
     expect(walked.some((p) => p.includes(`docs${sep}_generated${sep}`))).toBe(false);
     expect(walked.length).toBeGreaterThan(0);
   });
@@ -652,7 +652,7 @@ describe('docs error-string checker: fails against real code', () => {
    * the flakiest shape there is to debug later.
    */
   const MUTABLE = [
-    'docs/troubleshooting.md',
+    'docs/_contents/troubleshooting.md',
     'src/state/s3-state-backend.ts',
     'src/utils/error-handler.ts',
     'scripts/check-docs-error-strings.ts',
@@ -717,7 +717,7 @@ describe('docs error-string checker: fails against real code', () => {
 
   it('reports a page that drifts from the source', () => {
     const { code, out } = runOnCopy((root) => {
-      const p = join(root, 'docs/troubleshooting.md');
+      const p = join(root, 'docs/_contents/troubleshooting.md');
       const text = readFileSync(p, 'utf8');
       writeFileSync(
         p,
@@ -804,7 +804,7 @@ describe('docs error-string checker: fails against real code', () => {
   it('fails a stale allow-list entry no page quotes any more', () => {
     const { code, out } = runOnCopy((root) => {
       // Retire the only quotation of CredentialsProviderError from the page.
-      const p = join(root, 'docs/troubleshooting.md');
+      const p = join(root, 'docs/_contents/troubleshooting.md');
       const text = readFileSync(p, 'utf8');
       writeFileSync(p, text.replace('CredentialsProviderError: Error:', 'SomeOther: Error:'), 'utf8');
     });

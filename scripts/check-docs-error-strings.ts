@@ -9,7 +9,7 @@
  * audit in issue [#2757](https://github.com/go-to-k/cdkd/issues/2757) found
  * NINE such quotations on one page, the single largest defect class it
  * reported, and nothing in the repo could see any of them: every fence over
- * `docs/**` checks link targets, table shape or index coverage, and none reads
+ * `docs/_contents/**` checks link targets, table shape or index coverage, and none reads
  * the CONTENT of a fenced block.
  *
  * WHAT MAKES IT CHECKABLE. `formatError` renders every failure as
@@ -132,7 +132,7 @@ const ROOT = join(import.meta.dirname, '..');
 export const MIN_TEMPLATE_LITERAL_CHARS = 12;
 
 /**
- * Directories under `docs/` that are written by generators and guarded by
+ * Directories under `docs/_contents/` that are written by generators and guarded by
  * their own staleness checks. Editing one by hand is already a defect, so
  * reporting a finding there would point at the wrong file.
  */
@@ -156,7 +156,7 @@ export const FOREIGN_ERROR_NAMES: ReadonlyMap<string, string> = new Map([
 
 /** Minimum magnitudes proving the scanner still reaches its input. */
 export const FLOORS = {
-  /** Markdown pages walked under `docs/`. */
+  /** Markdown pages walked under `docs/_contents/`. */
   pages: 40,
   /** Fenced code blocks entered across those pages. */
   fencedBlocks: 300,
@@ -224,7 +224,7 @@ export function collectSourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Every hand-written `.md` page under `docs/`, recursively. */
+/** Every hand-written `.md` page under `docs/_contents/`, recursively. */
 export function collectDocPages(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir).sort()) {
     const p = join(dir, entry);
@@ -737,7 +737,7 @@ export function analyze(root: string = ROOT): Report {
   const sourceFiles = collectSourceFiles(join(root, 'src'));
   const errorNames = deriveErrorNames(sourceFiles);
   const templates = extractTemplates(sourceFiles);
-  const pages = collectDocPages(join(root, 'docs'));
+  const pages = collectDocPages(join(root, 'docs', '_contents'));
 
   const findings: Finding[] = [];
   let fencedBlocks = 0;

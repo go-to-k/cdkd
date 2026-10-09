@@ -156,7 +156,7 @@
  *   (`carriedExportAliasExposure`). A 4+ character piece is refused like the
  *   value. `cdkd diff` previews exactly this verdict. Which phase
  *   closes each of these, or why one stays, is listed in section 5 of
- *   `docs/design/4043-noecho-persistence-redaction.md`.
+ *   `docs/_contents/design/4043-noecho-persistence-redaction.md`.
  * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
  *   records into a map that caller discards, while still WARMING the resolver's
  *   dynamic-reference cache — so a PINNED reference (`secretsmanager`, or a

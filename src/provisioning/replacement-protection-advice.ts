@@ -21,7 +21,7 @@
  * `lock-contention-message.ts` exists one directory over, and the reason
  * `display-safe.ts`'s header gives for not widening a rule by hand.
  *
- * `docs/cli-deploy-safety.md`'s "Deletion protection blocks a replacement"
+ * `docs/_contents/cli-deploy-safety.md`'s "Deletion protection blocks a replacement"
  * section names all six types whose refusal says this explicitly (issue
  * [#2658](https://github.com/go-to-k/cdkd/issues/2658)), including the two
  * exceptions worth knowing before adding a seventh: ASG's arm is narrower than
@@ -109,10 +109,10 @@ import { shellQuote } from '../state/lock-contention-message.js';
  * The doc section every caller points at. A single constant so a rename of the
  * heading cannot leave five providers pointing at a section that no longer
  * exists; `tests/unit/provisioning/replacement-remedy-preconditions.test.ts`
- * resolves it against `docs/cli-deploy-safety.md`'s actual headings.
+ * resolves it against `docs/_contents/cli-deploy-safety.md`'s actual headings.
  */
 export const DELETION_PROTECTION_DOC_POINTER =
-  '"Deletion protection blocks a replacement, and deploy cannot clear it" in docs/cli-deploy-safety.md';
+  '"Deletion protection blocks a replacement, and deploy cannot clear it" in docs/_contents/cli-deploy-safety.md';
 
 /**
  * What the message says when the resource id cannot be named on a command

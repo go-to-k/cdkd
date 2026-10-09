@@ -3,8 +3,8 @@ description: SDK-provider ARN/URL attribute-coverage critic
 paths:
   - 'scripts/gen-sdk-attr-coverage.ts'
   - 'tests/unit/scripts/gen-sdk-attr-coverage.test.ts'
-  - 'docs/_generated/sdk-attr-coverage.json'
-  - 'docs/_generated/sdk-attr-coverage.md'
+  - 'docs/_contents/_generated/sdk-attr-coverage.json'
+  - 'docs/_contents/_generated/sdk-attr-coverage.md'
 ---
 
 # sdk-attr-coverage critic

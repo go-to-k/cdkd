@@ -1000,7 +1000,7 @@ function makeCallerAccountResolver(region: string | undefined): () => Promise<st
  * engine's FIRST attempt as a name somebody else holds. Refused here, the 5xx
  * reaches the deploy engine's retry, which marks the create as possibly
  * replayed (`withRetry`, #3978). Nothing is adopted on that collision: a name
- * is not attribution (`docs/provider-rules.md`, "Adopt only on EXACT
+ * is not attribution (`docs/_contents/provider-rules.md`, "Adopt only on EXACT
  * attribution").
  */
 function newGlueClients(region: string | undefined): {
@@ -1943,13 +1943,13 @@ export class GlueProvider implements ResourceProvider {
    * | no             | no              | AWS-AUTHORED -> preserved from live  |
    *
    * That keeps this provider on the repo's established clear-on-removal
-   * position (docs/provider-rules.md#update-removal-semantics-clear-on-removal, issue #1155): a removal the
+   * position (docs/_contents/provider-rules.md#update-removal-semantics-clear-on-removal, issue #1155): a removal the
    * user expressed in the template still reaches AWS. Glue's update APIs are
    * full-replace, so removal needs no explicit reset sentinel — omitting the
    * key IS the reset, and the only thing this helper adds back is the set of
    * keys the user never authored in the first place. The generalized rule for
    * any full-replace update API lives in
-   * docs/provider-rules.md#full-replace-update-apis-erase-aws-authored-values.
+   * docs/_contents/provider-rules.md#full-replace-update-apis-erase-aws-authored-values.
    *
    * Audited siblings that do NOT get this treatment: `JobUpdate`'s
    * `DefaultArguments` / `NonOverridableArguments`, `ConnectionInput`'s
@@ -2223,7 +2223,7 @@ export class GlueProvider implements ResourceProvider {
    * carries the TOCTOU exposure the table merge closes. It is far narrower in
    * practice — nothing commits to a Glue DATABASE out of band the way an
    * Iceberg engine commits to a table — but it is real, and is written up in
-   * docs/supported-resources.md rather than left implicit.
+   * docs/_contents/supported-resources.md rather than left implicit.
    */
   private async readLiveDatabaseParameters(
     logicalId: string,

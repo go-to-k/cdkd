@@ -2404,7 +2404,7 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *  - the readback holds a secret with NO counterpart in the source at all, set
  *    out of band. By design, not a defect in this mechanism: the baseline
  *    records what AWS holds, and a value the template never references has no
- *    expression to redact onto. Decided and documented in `docs/import.md`
+ *    expression to redact onto. Decided and documented in `docs/_contents/import.md`
  *    ([#2868](https://github.com/go-to-k/cdkd/issues/2868), closed as
  *    won't-fix), so `state.json` is sensitive by construction.
  *
@@ -3904,7 +3904,7 @@ export async function captureObservedForImportedResources(
 
 /**
  * Synthesize the cdkd-local ARN that `NestedStackProvider.create` would write
- * for a nested-stack resource (design [docs/design/459-nested-stacks.md](../../../docs/design/459-nested-stacks.md)
+ * for a nested-stack resource (design [docs/_contents/design/459-nested-stacks.md](../../../docs/_contents/design/459-nested-stacks.md)
  * §3, issue [#464](https://github.com/go-to-k/cdkd/issues/464) §6). Partition
  * `cdkd-local` is load-bearing — any consumer that misuses this value as a
  * real AWS ARN fails loudly with "Invalid ARN partition: cdkd-local" rather

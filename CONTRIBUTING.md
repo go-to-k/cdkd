@@ -5,10 +5,10 @@ Thank you for your interest in contributing to cdkd!
 The full contributor guide — project structure, PR flow, the
 integration-test policy (which verification each PR needs, and why you are
 never required to run the AWS-charging tests yourself), and code style —
-lives in **[docs/contributing.md](docs/contributing.md)**, next to the
-[Architecture](docs/architecture.md),
-[Provider Development](docs/provider-development.md), and
-[Testing](docs/testing.md) deep dives (rendered at
+lives in **[docs/_contents/contributing.md](docs/_contents/contributing.md)**, next to the
+[Architecture](docs/_contents/architecture.md),
+[Provider Development](docs/_contents/provider-development.md), and
+[Testing](docs/_contents/testing.md) deep dives (rendered at
 [cdkd.dev/contributing](https://cdkd.dev/contributing/)).
 
 ## Development Setup
@@ -62,7 +62,7 @@ vp run dev
 vp run test:coverage
 vp test --ui
 
-# Documentation site (https://cdkd.dev) -- a separate vite.docs.config.ts
+# Documentation site (https://cdkd.dev) -- a separate docs/vite.config.ts
 vp run docs:dev
 vp run docs:build
 vp run docs:preview
@@ -79,7 +79,7 @@ through tsdown with a Node 22 runtime target.
 
 ## Project Structure
 
-See [docs/architecture.md](docs/architecture.md) for the layer-by-layer
+See [docs/_contents/architecture.md](docs/_contents/architecture.md) for the layer-by-layer
 walkthrough.
 
 ## Making Changes
@@ -92,7 +92,7 @@ walkthrough.
 
 ## Adding a New SDK Provider
 
-See [docs/provider-development.md](docs/provider-development.md) for a
+See [docs/_contents/provider-development.md](docs/_contents/provider-development.md) for a
 step-by-step guide.
 
 ## Adding Integration Tests
@@ -116,14 +116,14 @@ expected to add the fixture in the same PR (see "Adding Integration Tests"
 above) — the maintainer can run it for you.
 
 You are welcome to run them yourself against your own AWS account if you
-prefer — see [docs/testing.md](docs/testing.md) for per-test instructions.
+prefer — see [docs/_contents/testing.md](docs/_contents/testing.md) for per-test instructions.
 Most `local-*` tests are the exception on cost: they need only a local
 Docker daemon and touch no AWS resources (`local-invoke-from-state` is the
 one exception — it also deploys and destroys real AWS resources).
 
 Which verification a PR needs follows from the paths it touches — the table
 lives in
-[docs/contributing.md](docs/contributing.md#when-is-an-integration-test-needed-and-which-one).
+[docs/_contents/contributing.md](docs/_contents/contributing.md#when-is-an-integration-test-needed-and-which-one).
 The deletion-logic and schema-bump rows are enforced by merge gates; their path
 lists are the `integ-destroy` and `integ-schema-migration` scopes in
 [`.markgate.yml`](.markgate.yml).

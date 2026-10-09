@@ -6681,7 +6681,7 @@ describe('cdkd drift over a malformed state record (issue #3018)', () => {
     // Every other case here carries ONE such cause, so the heading's `join`
     // and the ORDER it emits in were unpinned: a derivation reduced to its
     // first match, or reading the order off `ANY_OF_IT_COMPARED` instead of
-    // `UNCOMPARED_REASONS`, stayed green while `docs/cli-drift.md` documents
+    // `UNCOMPARED_REASONS`, stayed green while `docs/_contents/cli-drift.md` documents
     // each present cause being named. Two causes at once is the smallest
     // population that can tell those apart.
     //

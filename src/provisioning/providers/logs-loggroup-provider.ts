@@ -813,7 +813,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       //
       // So: state the refusal, the flag that does not exist, the disable
       // command, and the same-deploy trap — all knowable here — then point at
-      // `docs/cli-deploy-safety.md`, which has the policy in view and room to
+      // `docs/_contents/cli-deploy-safety.md`, which has the policy in view and room to
       // be precise. A shorter message that is TRUE beats a complete one that
       // is not.
       const deletionProtected = isTruthyCfnBoolean(previousProperties['DeletionProtectionEnabled']);
@@ -844,7 +844,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
         ? `Then disable deletion protection — \`${disableCommand}\`, or via the console — and re-deploy with ${replaceFlags}`
         : `${UNNAMEABLE_ID_CLAUSE} Then re-deploy with ${replaceFlags}`;
       const remedy = deletionProtected
-        ? `cdkd's recorded properties for this log group carry DeletionProtectionEnabled, so ${replaceFlags} alone will NOT succeed while AWS still has it on: the replacement normally deletes the log group, AWS refuses that delete while protection is on, and cdkd deploy has no --remove-protection flag to clear it (only cdkd destroy and cdkd state destroy act on one). Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md BEFORE you disable anything: whether disabling helps at all, and what the flag ends up as, depend on your UpdateReplacePolicy and on whether the deploy completes — neither of which this refusal can see. ${disableStep} to delete + recreate the log group under the new class (its stored log events are lost). Setting DeletionProtectionEnabled: false in the template does NOT clear it in the same deploy: this refusal fires before that property is applied, so that route needs its own deploy with the LogGroupClass change reverted. Or revert the LogGroupClass change and keep the current class.`
+        ? `cdkd's recorded properties for this log group carry DeletionProtectionEnabled, so ${replaceFlags} alone will NOT succeed while AWS still has it on: the replacement normally deletes the log group, AWS refuses that delete while protection is on, and cdkd deploy has no --remove-protection flag to clear it (only cdkd destroy and cdkd state destroy act on one). Read "Deletion protection blocks a replacement" in docs/_contents/cli-deploy-safety.md BEFORE you disable anything: whether disabling helps at all, and what the flag ends up as, depend on your UpdateReplacePolicy and on whether the deploy completes — neither of which this refusal can see. ${disableStep} to delete + recreate the log group under the new class (its stored log events are lost). Setting DeletionProtectionEnabled: false in the template does NOT clear it in the same deploy: this refusal fires before that property is applied, so that route needs its own deploy with the LogGroupClass change reverted. Or revert the LogGroupClass change and keep the current class.`
         : `Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change.`;
       // A legal class is a plain enum word (STANDARD / INFREQUENT_ACCESS /
       // DELIVERY) and prints bare; anything else is DESCRIBED, never shown, so no
@@ -1472,7 +1472,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       const result: Record<string, unknown> = {};
       if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
       result['KmsKeyId'] = found.kmsKeyId ?? '';
-      // Always-emit per docs/provider-rules.md#readcurrentstate-for-drift-detection: a console-side
+      // Always-emit per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection: a console-side
       // attach of a retention policy on a previously-unbounded log group
       // must surface as drift. `0` is the semantic "never expire"
       // placeholder — `update()` sends `DeleteRetentionPolicyCommand` for it

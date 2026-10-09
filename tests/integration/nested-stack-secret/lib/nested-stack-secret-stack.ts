@@ -255,7 +255,7 @@ class SecretBearingChild extends cdk.NestedStack {
 
     // THE #2327 ARM's two inputs. The SAME two-references-one-plaintext shape as
     // the pair above, declared `CommaDelimitedList` -- which
-    // `docs/cli-reference.md` names as an ALLOWED spelling for a secret-bearing
+    // `docs/_contents/cli-reference.md` names as an ALLOWED spelling for a secret-bearing
     // nested-stack parameter, alongside `String`. `coerceParameterValue` splits
     // the parent's string on `,` before any redaction runs, so the child's leaf
     // is an ARRAY and the string-only halves of the #2291 mechanism could not

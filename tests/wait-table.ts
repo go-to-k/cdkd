@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 /**
- * Shared reader for the per-resource-type wait table in `docs/cli-deploy.md`.
+ * Shared reader for the per-resource-type wait table in `docs/_contents/cli-deploy.md`.
  *
  * Both `no-wait-doc-coverage.test.ts` and `full-wait-doc-coverage.test.ts` bind
  * to that one table, and they bind to it in ways that differ only by which

@@ -86,7 +86,7 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   `Metadata` at any depth (CFn does not expand transforms there) and tolerating
   malformed input so the malformed-template error surfaces downstream.
 - **macro-expander.ts** — the CFn round-trip
-  ([docs/design/463-cfn-macros.md](../../docs/design/463-cfn-macros.md)). A
+  ([docs/_contents/design/463-cfn-macros.md](../../docs/_contents/design/463-cfn-macros.md)). A
   transient `CreateChangeSet --change-set-type CREATE` auto-creates the stack in
   `REVIEW_IN_PROGRESS`; `GetTemplate --template-stage Processed` is typed
   `string | undefined` but may arrive parsed — handle both; cleanup runs in a

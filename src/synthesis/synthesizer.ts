@@ -99,7 +99,7 @@ export interface SynthesisOptions {
    *
    * Threaded through to {@link expandMacros}; same bucket cdkd uses
    * for state persistence, so the calling identity already has write
-   * access. See `docs/design/463-cfn-macros.md`.
+   * access. See `docs/_contents/design/463-cfn-macros.md`.
    */
   stateBucket?: string;
 
@@ -279,7 +279,7 @@ export class Synthesizer {
         // CloudFormation macros / Fn::Transform via a transient CFn
         // changeset round-trip so the analyzer / provisioner pipeline
         // never sees an unexpanded Transform node. See
-        // docs/design/463-cfn-macros.md. Selection-aware callers set
+        // docs/_contents/design/463-cfn-macros.md. Selection-aware callers set
         // `deferMacroExpansion` and expand after stack selection
         // instead (issue #1150).
         const { stacks } = this.assemblyReader.readAssembly(outputDir, manifest);

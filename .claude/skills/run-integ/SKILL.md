@@ -130,11 +130,11 @@ verify, clean up.
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell
    # Budget: 2x the last PASS's duration, floor 1500s. A FAIL row times the
    # failure, not a pass: walk the ledger's history back to a numeric PASS.
-   L=../../../docs/_generated/integ-last-run.tsv; T="<test-name>"
+   L=../../../docs/_contents/_generated/integ-last-run.tsv; T="<test-name>"
    P='$1==t && $3=="PASS" && $4~/^[0-9]+$/{print $4; exit}'
    LAST=$(awk -F'\t' -v t="$T" "$P" "$L")
    [ -n "$LAST" ] || LAST=$(git log -n 300 --format=%h -- "$L" | while read -r c; do
-     git show "$c:docs/_generated/integ-last-run.tsv" | awk -F'\t' -v t="$T" "$P"; done | head -n 1)
+     git show "$c:docs/_contents/_generated/integ-last-run.tsv" | awk -F'\t' -v t="$T" "$P"; done | head -n 1)
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
    POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
@@ -297,7 +297,7 @@ verify, clean up.
     destroy as well, so it both sweeps clean here AND qualifies for step 9.
 
 11. **Record the run in the integ ledger (MANDATORY — every run, pass OR fail)**:
-    `docs/_generated/integ-last-run.tsv` is a COMMITTED update-type ledger (one
+    `docs/_contents/_generated/integ-last-run.tsv` is a COMMITTED update-type ledger (one
     row per test) feeding `/pick-integ`. Write it on EVERY invocation, right
     after step 9 (or right after a failure).
 
@@ -311,7 +311,7 @@ verify, clean up.
     write then dirties the main tree on `main`. Verify with `pwd`.
 
     ```bash
-    LEDGER="/path/to/repo/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv"
+    LEDGER="/path/to/repo/.claude/worktrees/<branch>/docs/_contents/_generated/integ-last-run.tsv"
     # The file already exists; if it does not, copy its header from git history
     # first — `>>` alone creates it headerless and the normalizer preserves
     # whatever header it finds (none).
@@ -326,7 +326,7 @@ verify, clean up.
     invariant is CI-enforced. When two lanes recorded the SAME test, the rebase
     conflicts and keep-both leaves two rows: re-run `vp run integ-ledger-normalize`
     after any rebase touching this file **and commit the rewrite before pushing**.
-    Confirm with `git status --porcelain -- docs/_generated/`, never the
+    Confirm with `git status --porcelain -- docs/_contents/_generated/`, never the
     normalizer's own output.
 
 ## Choosing the fixture

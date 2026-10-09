@@ -12,7 +12,7 @@
  * Ctrl-C for its whole schedule, and on the destroy path `withResourceTimeout`
  * has by then abandoned the promise WITHOUT cancelling it, so the loop keeps
  * issuing writes behind a run the user was told had ended.
- * `docs/provider-development.md` states the requirement; `vp run
+ * `docs/_contents/provider-development.md` states the requirement; `vp run
  * audit:withretry-interrupt:check` enforces it.
  *
  * WHY IT IS SHARED RATHER THAN PER MODULE

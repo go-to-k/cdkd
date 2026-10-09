@@ -96,7 +96,7 @@ cleanup() {
   # makes `--queue-name-prefix ""` match, and this loop delete, every queue in
   # the account. `case` and not `exit`: this runs in `cleanup` itself, not a
   # subshell, so a refusal must skip the sweep and let the rest of the teardown
-  # run. The convention is in `docs/integ-fixture-conventions.md`.
+  # run. The convention is in `docs/_contents/integ-fixture-conventions.md`.
   case "${STACK}" in
     Cdkd?*)
       for QURL in $(aws sqs list-queues --queue-name-prefix "${STACK}" --region "${REGION}" \

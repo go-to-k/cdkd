@@ -238,11 +238,11 @@ fi
 mk_repo() { # <dir>
   local d="$1"
   mkdir -p "$d/src/provisioning/providers" "$d/src/cli/commands" "$d/src/deployment" \
-           "$d/src/types" "$d/docs/_generated" "$d/tests/integration/foo" \
+           "$d/src/types" "$d/docs/_contents/_generated" "$d/tests/integration/foo" \
            "$d/tests/unit/provisioning" "$d/.claude"
   "$REAL_GIT" init -q -b main "$d"
-  : > "$d/docs/supported-resources.md"; : > "$d/docs/import.md"
-  : > "$d/docs/integ-coverage.md"; : > "$d/docs/_generated/integ-coverage.json"
+  : > "$d/docs/_contents/supported-resources.md"; : > "$d/docs/_contents/import.md"
+  : > "$d/docs/_contents/integ-coverage.md"; : > "$d/docs/_contents/_generated/integ-coverage.json"
   echo "// base" > "$d/src/provisioning/register-providers.ts"
   echo "// base" > "$d/src/deployment/intrinsic-function-resolver.ts"
   echo "// base" > "$d/src/types/state.ts"

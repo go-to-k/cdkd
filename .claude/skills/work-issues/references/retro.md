@@ -53,7 +53,7 @@ instruction, wrong place. Which shape RECURRED is a COUNT. No evidence, no edit.
 
 ### 10-b. Where the fix belongs — pick ONE
 
-- **A row in `docs/tooling-backlog.md`** — the DEFAULT for tooling (hook, rule,
+- **A row in `docs/_contents/tooling-backlog.md`** — the DEFAULT for tooling (hook, rule,
   skill, CI fence, integ harness), and where an already-stated rule violated
   anyway goes on its FIRST occurrence.
 - **A hook, or a `tests/unit/**` test for a committed file** — only on the

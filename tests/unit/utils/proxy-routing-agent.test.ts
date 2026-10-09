@@ -92,7 +92,7 @@ describe('ProxyRoutingAgent', () => {
     });
 
     it('matches a NO_PROXY entry EXACTLY unless it starts with `.` or `*`', () => {
-      // Documented in docs/troubleshooting.md, and different from curl. Getting
+      // Documented in docs/_contents/troubleshooting.md, and different from curl. Getting
       // this wrong produces a config that silently proxies what the user
       // believed was exempt.
       process.env['HTTPS_PROXY'] = 'http://proxy.example:8080';

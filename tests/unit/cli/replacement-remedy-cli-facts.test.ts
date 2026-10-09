@@ -103,16 +103,16 @@ describe('the CLI facts the #2610 remedy messages assert', () => {
 });
 
 describe('the doc pointer every #2610 message prints', () => {
-  it('resolves to a real heading in docs/cli-deploy-safety.md', async () => {
+  it('resolves to a real heading in docs/_contents/cli-deploy-safety.md', async () => {
     // `replacement-protection-advice.ts` sends five providers' users to this
     // section by name. A heading rename would dangle all five silently; the
     // only pre-existing heading fence reads `logs-loggroup-provider.ts` alone.
     const { readFileSync } = await import('node:fs');
-    const doc = readFileSync('docs/cli-deploy-safety.md', 'utf8');
+    const doc = readFileSync('docs/_contents/cli-deploy-safety.md', 'utf8');
     const quoted = DELETION_PROTECTION_DOC_POINTER.match(/^"(.+)" in (.+)$/);
     expect(quoted, 'the pointer is no longer `"<heading>" in <path>`').not.toBeNull();
     const [, heading, path] = quoted!;
-    expect(path).toBe('docs/cli-deploy-safety.md');
+    expect(path).toBe('docs/_contents/cli-deploy-safety.md');
     // The WHOLE heading, anchored as a markdown heading line — a substring
     // match would survive exactly the tail rename this fence exists to catch.
     const headings = doc

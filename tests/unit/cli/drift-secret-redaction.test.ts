@@ -2251,7 +2251,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // The healed text is an unresolvable token, so the leaf is reported as an
     // unresolved token rather than compared: no phantom drift row, nothing for
     // `--accept` to write, and the AWS side is never printed. Measured, because
-    // docs/troubleshooting.md states the consequence of this ordering.
+    // docs/_contents/troubleshooting.md states the consequence of this ordering.
     const healed = `{{resolve:${SECRET_EXPR}}}`;
     const live = `{{resolve:${SECRET_PLAINTEXT}}}`;
     for (const shape of ['whole', 'embedded'] as const) {

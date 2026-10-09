@@ -259,7 +259,7 @@ describe('cdkd diff drops an unusable orphan ROW rather than refusing (go-to-k/c
   it('KEEPS a row whose `properties` map is torn, because the repair below names it', async () => {
     // The half the writers' predicate would get wrong here. `cdkd diff` runs the
     // `properties` repair a second time over the adopted records — the behaviour
-    // `docs/cli-diff.md` and `.claude/rules/state-malformed-properties.md` both
+    // `docs/_contents/cli-diff.md` and `.claude/rules/state-malformed-properties.md` both
     // describe — so dropping this row would make that report unreachable rather
     // than stricter. Taking the writers' full predicate reds this case.
     const torn = {

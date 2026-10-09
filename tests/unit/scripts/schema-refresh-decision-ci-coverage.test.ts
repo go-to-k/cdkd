@@ -304,7 +304,7 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'ci.yml runs the task itself, so an ENVIRONMENTAL failure of the refresh invocation (an ' +
       'empty log, a missing task, an OOM kill — the three that disjunct exists for) counts a ' +
       'decision while CI is green — which is a merge this fence does not stop, the same state ' +
-      'docs/schema-refresh-runbook.md names as one of the two exceptions to "you cannot merge one ' +
+      'docs/_contents/schema-refresh-runbook.md names as one of the two exceptions to "you cannot merge one ' +
       'by mistake". (An earlier revision of this sentence called it "the OVER-count direction, ' +
       'which blocks a merge rather than allowing one". Nothing converts a non-zero count into a ' +
       'block: it drives the title, the body verdict line, the label and the assignment, and the ' +

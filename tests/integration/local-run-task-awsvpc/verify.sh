@@ -8,7 +8,7 @@
 # Before #461 cdkd hard-rejected `awsvpc` at resolver time with
 # `EcsTaskResolutionError`; after #461 it ACCEPTS the task and maps
 # `awsvpc` to a docker bridge network with a startup warn (docker cannot
-# emulate ENI-per-task — see docs/design/461-awsvpc-decision.md).
+# emulate ENI-per-task — see docs/_contents/design/461-awsvpc-decision.md).
 #
 # Asserts:
 #   - `cdkd local run-task` ACCEPTS the awsvpc task (the CLI does not

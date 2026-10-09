@@ -65,7 +65,7 @@ Out of scope:
   literal) and one AWS returns in a field the template does not set. cdkd's
   drift baseline records what AWS holds, by design, so `state.json` is
   sensitive by construction; see
-  [A value your template never references](docs/import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it).
+  [A value your template never references](docs/_contents/import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it).
   This does not cover a credential a provider records in `attributes` so that
   `Fn::GetAtt` can read it (an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a
   Cognito user pool client's `ClientSecret`), nor a `NoEcho` parameter's value,

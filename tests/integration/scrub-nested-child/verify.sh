@@ -30,7 +30,7 @@
 #      holds the expression and no plaintext, and AWS was not touched.
 #   5. VERSIONS (issue #2624). scrub's PutObject supersedes the seeded body,
 #      and scrub then purges the rewritten keys' noncurrent versions
-#      (docs/cli-scrub.md, "What a real run removes, and what it cannot"). On
+#      (docs/_contents/cli-scrub.md, "What a real run removes, and what it cannot"). On
 #      a bucket asserted VERSIONED, NO version of either key, and none under
 #      either stack's prefix, may hold the plaintext -- with no manual delete.
 #      The pre-fix binary left the seeded body readable here.

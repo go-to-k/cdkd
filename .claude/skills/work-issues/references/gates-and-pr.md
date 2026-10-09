@@ -77,8 +77,8 @@ lossless under the squash merge (#3813).
 and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
 Stale `dist/` is the usual failure; a dependency bump is the other, which
 `[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
-(`vp run gen:all-matrices`): `docs/_generated/**` and pages like
-`docs/cli-flag-coverage.md` derive from the TREE.
+(`vp run gen:all-matrices`): `docs/_contents/_generated/**` and pages like
+`docs/_contents/cli-flag-coverage.md` derive from the TREE.
 
 **A clean merge is not evidence that there was no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains

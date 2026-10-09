@@ -167,7 +167,7 @@ export class ElastiCacheProvider implements ResourceProvider {
    * holds. Refused here, the 5xx reaches the deploy engine's retry, which
    * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
    * adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): ElastiCacheClient {
     this.getClient();
@@ -754,7 +754,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         this.logger.debug(safeMsg`CacheCluster ${logicalId} is already deleting; waiting for it`);
       }
       // Not the identifier: it embeds the physical id, which may be secret-derived
-      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/_contents/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
           `Deleting CacheCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`

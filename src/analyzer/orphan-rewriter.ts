@@ -149,7 +149,7 @@ export interface OrphanRewriteOptions {
  * credential Cloud Control records in plaintext (`cloud-control-provider.ts`);
  * that type has no `getAttribute`, so every read of it reaches `--force`'s
  * cache fallback. `AWS::IVS::StreamKey`'s `Value` is the stream key itself
- * (Cloud-Control-routed; `docs/_generated/provider-coverage.json` lists it).
+ * (Cloud-Control-routed; `docs/_contents/_generated/provider-coverage.json` lists it).
  */
 const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
   ['AWS::AppSync::ApiKey', ['ApiKey']],

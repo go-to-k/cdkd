@@ -1,12 +1,13 @@
 ---
-description: Page shape and voice rules for docs/** — the source of the public cdkd.dev site
+description: Page shape and voice rules for docs/_contents/** — the pages of the public cdkd.dev site
 paths:
-  - 'docs/**'
+  - 'docs/_contents/**'
 ---
 
-# Documentation page template (docs/**)
+# Documentation page template (docs/_contents/**)
 
-`docs/**` is the source of the public site at https://cdkd.dev. A page there
+`docs/_contents/**` holds the pages of the public site at https://cdkd.dev (the
+rest of `docs/` is the site's theme, components and assets). A page there
 is read in a browser by someone who does not have the repository open. This
 file is the shape every page follows, and the rules that keep it readable.
 
@@ -107,7 +108,7 @@ release, say it once, at the end of the relevant section, in the form
 - Remedies that tell the reader to edit cdkd's own source. They installed a
   binary.
 
-Content of this kind that contributors genuinely need stays in `docs/`, on a
+Content of this kind that contributors genuinely need stays in `docs/_contents/`, on a
 page carrying `unlisted: true` in its frontmatter — that keeps it out of the
 nav, the sitemap and llms.txt while leaving it reachable and linkable. The
 public page keeps a readable summary and a link.
@@ -119,14 +120,14 @@ public page keeps a readable summary and a link.
 - Anchors are slugified by lowercasing, collapsing each run of non-alphanumeric
   characters to a single hyphen, and trimming. Verify a cross-page anchor
   against the target's actual heading before shipping it.
-- A relative link must stay inside `docs/`. `../AGENTS.md` and `../src/x.ts`
-  resolve to nothing on the built site — use the GitHub blob URL.
+- A relative link must stay inside `docs/_contents/`. `../AGENTS.md` and
+  `../src/x.ts` resolve to nothing on the built site — use the GitHub blob URL.
 
 ## Generated pages
 
-`docs/_generated/**`, `docs/cli-flag-coverage.md`, `docs/integ-coverage.md`
-and `docs/scenario-coverage.md` are written by scripts and guarded by a CI
+`docs/_contents/_generated/**`, `docs/_contents/cli-flag-coverage.md`, `docs/_contents/integ-coverage.md`
+and `docs/_contents/scenario-coverage.md` are written by scripts and guarded by a CI
 staleness check. Never hand-edit them; change the generator. Before running
-any repo-wide sweep over `docs/**`, build the exclusion list from the
+any repo-wide sweep over `docs/_contents/**`, build the exclusion list from the
 generators' output-path constants rather than by grepping for a banner — the
 banner has more than one spelling.

@@ -63,7 +63,7 @@ describe('CodeBuildProvider read-update round-trip', () => {
   it('Class 2 sanitize: empty-string ServiceRole / EncryptionKey / SourceVersion placeholders are dropped before UpdateProject', async () => {
     // Mechanical guard for Class 2 placeholder regression on
     // structurally-incomplete-when-empty fields. See
-    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
+    // docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // readCurrentState emits `''` placeholders for ServiceRole /
     // EncryptionKey / SourceVersion so a console-side ADD on a project

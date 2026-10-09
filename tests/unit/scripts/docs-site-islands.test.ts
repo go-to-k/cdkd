@@ -7,7 +7,7 @@ import {
   registryName,
   relocateIslands,
   renderIslands,
-} from '../../../docs-site/islands/html.js';
+} from '../../../docs/islands/html.js';
 
 // The build-time half of the docs site's Vue islands: finding the island
 // blocks Ox Content passes through from Markdown, rendering them in place,

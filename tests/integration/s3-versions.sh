@@ -331,7 +331,7 @@ _s3v_delete_rows() {
 # BUT THAT PURGE IS CONDITIONAL ON TWO GRANTS, and this is the half a fixture
 # author has to check before trusting it. It needs `s3:ListBucketVersions` on
 # the state bucket and `s3:DeleteObjectVersion` on the key. Neither was in the
-# least-privilege policy `docs/state-management.md` recommends until issue
+# least-privilege policy `docs/_contents/state-management.md` recommends until issue
 # #2340 added them, so a role created from the older four-action policy still
 # lacks both. The purge FAILS SOFT by design -- it warns and never aborts the
 # operation -- so on such a role the run goes green and the noncurrent versions

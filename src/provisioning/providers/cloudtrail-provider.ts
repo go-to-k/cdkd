@@ -240,7 +240,7 @@ export class CloudTrailProvider implements ResourceProvider {
    * holds. Refused here, the 5xx reaches the deploy engine's retry, which
    * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
    * adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): CloudTrailClient {
     this.getClient();
@@ -402,7 +402,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // `readCurrentState` always-emits empty-string `''` placeholders for
     // several optional fields (S3KeyPrefix, KMSKeyId, SnsTopicName) so
     // console-side
-    // adds are detectable as drift (per docs/provider-rules.md#readcurrentstate-for-drift-detection
+    // adds are detectable as drift (per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection
     //  "always emit user-controllable top-level keys"). `cdkd drift
     // --revert` round-trips the placeholder back through this `update()`,
     // and this helper drops the placeholder so the wire layer never sees
@@ -889,7 +889,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // Always-emit user-controllable top-level keys with placeholders so
     // console-side adds become visible to drift (the comparator's top-
     // level walk is state-keys-only, so an omitted key is invisible
-    // forever). See docs/provider-rules.md#readcurrentstate-for-drift-detection.
+    // forever). See docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection.
     const result: Record<string, unknown> = {};
     if (trail.Name !== undefined) result['TrailName'] = trail.Name;
     // S3BucketName is required to create a trail; AWS always returns it.
@@ -933,7 +933,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // discriminator whose false value makes the field illegal on AWS, so a
     // console-side add is impossible and nothing is lost by withholding it.
     // Here the pair's own presence IS the switch, so withholding it hides the
-    // one change worth catching. See docs/provider-development.md ("Two
+    // one change worth catching. See docs/_contents/provider-development.md ("Two
     // failure modes when an always-emit placeholder round-trips").
     result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn ?? '';
     result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn ?? '';

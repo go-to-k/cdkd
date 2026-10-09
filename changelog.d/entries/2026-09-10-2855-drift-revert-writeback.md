@@ -6,4 +6,4 @@
 
   **#2881** — the mask refusal asserted "(a NoEcho custom-resource value)" and prescribed a nonce bump, wrong for the now-common #2852 fail-closed cause. It now names both causes and remedies; both token warnings state the pairing condition (partial: that issue's other messages stay open on it).
 
-  Docs: `docs/cli-drift.md`. Tests: `tests/unit/cli/drift-masked-leaf-preserve.test.ts`, `drift-secret-redaction.test.ts`.
+  Docs: `docs/_contents/cli-drift.md`. Tests: `tests/unit/cli/drift-masked-leaf-preserve.test.ts`, `drift-secret-redaction.test.ts`.

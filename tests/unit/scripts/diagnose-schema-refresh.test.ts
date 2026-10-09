@@ -1506,7 +1506,7 @@ describe('the read-only additions section', () => {
     // revisions and it was wrong in each: 92 went stale on main before
     // go-to-k/cdkd#3324 moved 20 more types into the audit, and the corrected
     // "71 (was 92)" did not even compose. The argument needs "many", not a
-    // figure, and the live number is in `docs/_generated/sdk-attr-coverage.json`
+    // figure, and the live number is in `docs/_contents/_generated/sdk-attr-coverage.json`
     // (`summary.noArnAttr`), regenerated on every run — which is where to read
     // it rather than from a comment nothing re-checks.
     const md = renderDiagnosis({

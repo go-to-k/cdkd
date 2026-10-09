@@ -679,7 +679,7 @@ describe('CloudControlProvider.waitForOperation transport fence (#3236)', () => 
 
     it('announces each re-poll at DEFAULT verbosity, naming the cause and the next poll', async () => {
       // Titled for what it pins, after review caught the earlier title
-      // claiming `docs/troubleshooting.md` quotes this wording. It does not:
+      // claiming `docs/_contents/troubleshooting.md` quotes this wording. It does not:
       // the page quotes the ABANDONMENT message
       // (`cdkd could not reach Cloud Control API for 121s: connect ...`), which
       // a sibling case pins. This warn is the line a user sees FIRST, while the

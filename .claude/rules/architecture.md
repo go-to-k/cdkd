@@ -81,4 +81,4 @@ A deliberate REFUSAL propagates out of `Fn::Sub` rather than being swallowed (is
 - The `RoleArn` (cross-account) path NEVER takes the fallback.
 - It relaxes `cdkd export`'s leaf-first migration ordering: remaining cdkd consumers resolve an exported producer's outputs through the fallback.
 
-Full design: [docs/cross-stack-internals.md](../../docs/cross-stack-internals.md).
+Full design: [docs/_contents/cross-stack-internals.md](../../docs/_contents/cross-stack-internals.md).

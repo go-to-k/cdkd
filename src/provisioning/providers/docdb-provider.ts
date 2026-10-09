@@ -234,7 +234,7 @@ export class DocDBProvider implements ResourceProvider {
    * holds. Refused here, the 5xx reaches the deploy engine's retry, which
    * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
    * adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): DocDBClient {
     this.getClient();
@@ -634,7 +634,7 @@ export class DocDBProvider implements ResourceProvider {
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
       // Not the identifier: it embeds the physical id, which may be secret-derived
-      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/cli-destroy.md).
+      // (#4111). It is `<sanitized physical id>-final-<UTC timestamp>` (docs/_contents/cli-destroy.md).
       if (finalSnapshotId) {
         this.logger.info(
           `Deleting DocDB DBCluster ${logicalId} with a final snapshot (DeletionPolicy: Snapshot)`

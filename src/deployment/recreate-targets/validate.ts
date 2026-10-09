@@ -41,7 +41,7 @@ export interface RecreateTarget {
    * whole design: a reason value would make the target `stateful` and REFUSE
    * it, which is the fail-CLOSED flip this deliberately does not make. The
    * S3 arm fails OPEN by design (issue [#648], published in
-   * `docs/cli-deploy-safety.md`) — a role without `s3:ListBucketVersions`
+   * `docs/_contents/cli-deploy-safety.md`) — a role without `s3:ListBucketVersions`
    * must still be able to recreate an empty bucket without
    * `--force-stateful-recreation`. What was wrong was not the routing but
    * the SCREEN: with `statefulReason` left at `null`, a bucket nothing could

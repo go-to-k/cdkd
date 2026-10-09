@@ -111,8 +111,8 @@ describe('checkPrTitlePrefixScope — BLOCKS a release-triggering title with no 
   });
 
   it.each([
-    ['feat over docs only', 'feat: document new pattern', ['docs/cli-reference.md'], 'docs'],
-    ['fix over docs only', 'fix: docs typo', ['docs/troubleshooting.md'], 'docs'],
+    ['feat over docs only', 'feat: document new pattern', ['docs/_contents/cli-reference.md'], 'docs'],
+    ['fix over docs only', 'fix: docs typo', ['docs/_contents/troubleshooting.md'], 'docs'],
     ['feat over tests only', 'feat: cover the case', ['tests/unit/foo.test.ts'], 'test'],
     ['fix over .claude only', 'fix(hook): pattern bug', ['.claude/hooks/foo.sh'], 'chore'],
     [
@@ -130,7 +130,7 @@ describe('checkPrTitlePrefixScope — BLOCKS a release-triggering title with no 
     [
       'feat(scope) over a mixed non-src diff',
       'feat(review-pr): bump tier',
-      ['.claude/skills/review-pr/SKILL.md', 'docs/cli-reference.md'],
+      ['.claude/skills/review-pr/SKILL.md', 'docs/_contents/cli-reference.md'],
       'chore',
     ],
     [
@@ -154,7 +154,7 @@ describe('checkPrTitlePrefixScope — BLOCKS a release-triggering title with no 
     [
       'fix over the changelog only',
       'fix: correct a changelog entry',
-      ['docs/changelog-cdkd.md'],
+      ['docs/_contents/changelog-cdkd.md'],
       'docs',
     ],
   ])('blocks %s', (_label, title, files, wantSuggestion) => {
@@ -173,7 +173,7 @@ describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: backed by src/**', () =>
     [
       'feat with src + tests + docs (src dominant)',
       'feat: add new flag',
-      ['src/cli/options.ts', 'tests/unit/foo.test.ts', 'docs/cli-reference.md'],
+      ['src/cli/options.ts', 'tests/unit/foo.test.ts', 'docs/_contents/cli-reference.md'],
     ],
     ['breaking feat! with src', 'feat!: rename API', ['src/index.ts']],
     ['breaking feat(scope)! with src', 'feat(cli)!: rename --flag', ['src/cli/options.ts']],
@@ -213,7 +213,7 @@ describe('checkPrTitlePrefixScope — ALLOWS feat:/fix: carrying a changelog fra
         'changelog.d/entries/2026-09-23-3534-front-door-containment.md',
         'package.json',
         'pnpm-lock.yaml',
-        'docs/local-emulation.md',
+        'docs/_contents/local-emulation.md',
       ],
     ],
     [
@@ -354,7 +354,7 @@ describe('checkPrTitlePrefixScope — ALLOWS every non-release-triggering type',
     ['test over tests only', 'test: add coverage', ['tests/unit/foo.test.ts']],
     ['refactor over .claude only', 'refactor(hooks): cleanup', ['.claude/hooks/foo.sh']],
     ['perf over .claude only', 'perf: streamline', ['.claude/hooks/foo.sh']],
-    ['style over docs only', 'style: format', ['docs/state-management.md']],
+    ['style over docs only', 'style: format', ['docs/_contents/state-management.md']],
     ['ci over a workflow only', 'ci: update workflow', ['.github/workflows/ci.yml']],
     ['build over package.json only', 'build: bump tsdown', ['package.json']],
   ])('allows %s', (_label, title, files) => {

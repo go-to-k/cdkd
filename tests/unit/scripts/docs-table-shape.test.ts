@@ -12,14 +12,14 @@ import { describe, expect, it } from 'vite-plus/test';
  * invisible in the Markdown source unless you count `|` characters by hand.
  *
  * Found live: a two-cell row added to a three-column table in
- * `docs/benchmarks.md` put Terraform's run count and region under the
+ * `docs/_contents/benchmarks.md` put Terraform's run count and region under the
  * CloudFormation column, which the page then contradicted fifty lines down.
  *
  * Two things the scan has to get right, both of which produced false positives
  * on the first cut:
  *
- *  - **An escaped `\|` is not a delimiter.** `docs/state-management.md`'s
- *    composite-physical-id table and `docs/local-invoke.md`'s runtime table
+ *  - **An escaped `\|` is not a delimiter.** `docs/_contents/state-management.md`'s
+ *    composite-physical-id table and `docs/_contents/local-invoke.md`'s runtime table
  *    both carry them inside inline code; 25 of the first run's 31 hits were
  *    these.
  *  - **A fenced code block can contain `|` lines.** Several pages embed shell
@@ -29,7 +29,7 @@ import { describe, expect, it } from 'vite-plus/test';
  * Markdown — backticks do not protect it — so those correctly stay violations.
  */
 const ROOT = resolve(import.meta.dirname, '../../..');
-const DOCS = join(ROOT, 'docs');
+const DOCS = join(ROOT, 'docs', '_contents');
 
 // There is NO exclusion list. There was exactly one entry —
 // `scenario-coverage.md`, whose generator interpolated descriptions containing
@@ -138,7 +138,7 @@ describe('published docs tables', () => {
 
   it('still SEES its input — fences recursion, then floors what the scan examined', () => {
     // The named collapse is a `walk` that stopped recursing, losing
-    // docs/design, docs/plans and docs/_generated. It is fenced STRUCTURALLY:
+    // docs/_contents/design, docs/_contents/plans and docs/_contents/_generated. It is fenced STRUCTURALLY:
     // EVERY immediate subdirectory of docs/ must be represented in the result,
     // derived from the tree rather than listed here, so a new subdirectory
     // joins the fence on its own.

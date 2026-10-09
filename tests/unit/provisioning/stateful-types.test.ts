@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
- * The PUBLISHED type tables in `docs/cli-deploy-safety.md`, parsed once and
+ * The PUBLISHED type tables in `docs/_contents/cli-deploy-safety.md`, parsed once and
  * shared by the two fences that anchor on them. Hoisted deliberately: the
  * reason-kind fence below must be anchored on something OTHER than the
  * predicate it is checking, or it is vacuous — deriving the expected set from
@@ -28,7 +28,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * fence is what keeps the anchor honest.
  */
 const doc = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'docs', 'cli-deploy-safety.md'),
+  join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'docs', '_contents', 'cli-deploy-safety.md'),
   'utf8'
 );
 
@@ -211,7 +211,7 @@ describe('STATEFUL_TYPES (#615)', () => {
     });
   });
 
-  describe('the published type tables in docs/cli-deploy-safety.md', () => {
+  describe('the published type tables in docs/_contents/cli-deploy-safety.md', () => {
     // The guard list is a USER-FACING contract: the doc enumerates every type
     // by name, and a reader plans around it. Nothing connected the two, so an
     // addition here could ship with the doc still promising the old list — the

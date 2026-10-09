@@ -462,7 +462,7 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
   });
 
   it('aborts the pre-delivery backoff on Ctrl-C, and leaves no SIGINT listener behind', async () => {
-    // `docs/provider-development.md` requires a new wait site to be
+    // `docs/_contents/provider-development.md` requires a new wait site to be
     // interruptible; a bare `setTimeout` leaves Ctrl-C dead for the whole
     // 47.75s schedule. Only the listeners THIS invocation added are fired, so
     // the harness's own SIGINT handling is untouched.

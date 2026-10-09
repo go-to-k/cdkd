@@ -40,7 +40,7 @@
  * the container falls back to its own credential resolution — which, with no
  * mounted credentials file, usually means the handler's first AWS call fails
  * with `Could not load credentials from any providers`. That is the documented
- * outcome (`docs/cli-reference.md`), and it is the correct one: a loud missing
+ * outcome (`docs/_contents/cli-reference.md`), and it is the correct one: a loud missing
  * credential beats a silent privileged one.
  */
 

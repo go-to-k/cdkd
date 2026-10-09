@@ -131,7 +131,7 @@ export class SSMParameterProvider implements ResourceProvider {
    * engine's FIRST attempt as a name somebody else holds. Refused here, the
    * 5xx reaches the deploy engine's retry, which marks the create as possibly
    * replayed (`withRetry`, #3978). Nothing is adopted on that collision: a
-   * name is not attribution (`docs/provider-rules.md`, "Adopt only on EXACT
+   * name is not attribution (`docs/_contents/provider-rules.md`, "Adopt only on EXACT
    * attribution").
    */
   private getCreateClient(): Promise<SSMClient> {

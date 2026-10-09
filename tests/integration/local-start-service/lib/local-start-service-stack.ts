@@ -25,7 +25,7 @@ export const PULL_REPO_NAME = 'cdkd-local-start-service-pull-fixture';
  * regression coverage is needed.
  *
  * `covers: AWS::ECS::Service` (matrix opt-in marker — see
- * docs/integ-coverage.md).
+ * docs/_contents/integ-coverage.md).
  */
 export class LocalStartServiceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

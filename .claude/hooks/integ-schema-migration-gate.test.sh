@@ -414,17 +414,17 @@ run_case "mixed PR with version bump BLOCKS" 2 \
 # --- False-positive guard: another file mentions "version: 1 | 2"
 # in a comment or test fixture but state.ts itself is not changed -
 
-OTHER_FILE_DIFF='diff --git a/docs/state-management.md b/docs/state-management.md
+OTHER_FILE_DIFF='diff --git a/docs/_contents/state-management.md b/docs/_contents/state-management.md
 index abc..def 100644
---- a/docs/state-management.md
-+++ b/docs/state-management.md
+--- a/docs/_contents/state-management.md
++++ b/docs/_contents/state-management.md
 @@ -10,1 +10,1 @@
 -version: 1 | 2 | 3 | 4 | 5;
 +version: 1 | 2 | 3 | 4 | 5 | 6;'
 
 run_case "version-pattern in docs only passes through" 0 \
   '{"tool_input":{"command":"gh pr merge 600 --squash"}}' \
-  '{"files":[{"path":"docs/state-management.md"}]}' \
+  '{"files":[{"path":"docs/_contents/state-management.md"}]}' \
   "$OTHER_FILE_DIFF"
 
 # --- Infra fail-open paths ---------------------------------------
@@ -438,7 +438,7 @@ run_case "gh pr view failure allows merge (infra fail-open)" 0 \
 
 run_case "gh pr merge no number, non-schema files passes" 0 \
   '{"tool_input":{"command":"gh pr merge --squash --delete-branch"}}' \
-  '{"files":[{"path":"docs/cli-reference.md"}]}' \
+  '{"files":[{"path":"docs/_contents/cli-reference.md"}]}' \
   ''
 
 # --- CWD-AWARE cases (cdkd #559) ----------------------------------

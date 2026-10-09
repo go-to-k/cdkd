@@ -1,6 +1,6 @@
 name: docs-deploy
 
-# Build the cdkd.dev documentation site (Ox Content SSG, vite.docs.config.ts)
+# Build the cdkd.dev documentation site (Ox Content SSG, docs/vite.config.ts)
 # and deploy it to GitHub Pages. PRs only build (deploy job is main-only) so a
 # broken site config fails the PR instead of production.
 
@@ -9,8 +9,6 @@ on:
     branches: [main]
     paths:
       - "docs/**"
-      - "docs-site/**"
-      - "vite.docs.config.ts"
       - ".github/workflows/docs-deploy.yml"
       - "package.json"
       - "pnpm-lock.yaml"

@@ -10,7 +10,7 @@ import type { ResourceChange, ResourceState as StateRecord } from '../../../src/
  *
  * The condition is
  * `propertyDrivenReplacement && !recreateFlagged && updateReplacePolicy !== 'Retain'`,
- * and `docs/cli-deploy-safety.md` documents the exemption: a `--recreate-via-*`
+ * and `docs/_contents/cli-deploy-safety.md` documents the exemption: a `--recreate-via-*`
  * target skips THIS guard because the CLI pre-flight
  * (`probeStatefulRecreateTargetsAsync`) already validated it — and did so with
  * a live emptiness probe the mid-deploy site cannot run.

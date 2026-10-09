@@ -243,7 +243,7 @@ cleanup() {
   # destroy above, whose state deletion is what makes the last `state.json`
   # noncurrent (a purge placed before it would leave exactly that version).
   # The success path below does the full sweep plus the zero-assertion
-  # (docs/integ-fixture-conventions.md).
+  # (docs/_contents/integ-fixture-conventions.md).
   s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   exit "${rc}"
 }

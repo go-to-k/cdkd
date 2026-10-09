@@ -290,7 +290,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     const { out, error } = await runState(['show', 'MyStack']);
 
     expectRendered(error);
-    // The SHAPE docs/cli-state.md promises, not just the id: the two fields
+    // The SHAPE docs/_contents/cli-state.md promises, not just the id: the two fields
     // read `undefined` and the rest their defaults. `toContain('Broken')`
     // alone would still pass if the row rendered as `(unknown)` or dropped
     // every field.
@@ -382,7 +382,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
   });
 
   it('state show --show-nested --json renders that null ENTRY too', async () => {
-    // The second JSON walk `docs/cli-state.md` named as failing on a null
+    // The second JSON walk `docs/_contents/cli-state.md` named as failing on a null
     // entry before this fix; the doc now says it renders, so this pins it.
     bucket.state = record({ resources: { Broken: null } });
 
@@ -431,7 +431,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     const { out, error } = await runState(['show', 'MyStack']);
 
     expectRendered(error);
-    // The exact row `docs/cli-state.md` quotes: the NaN the read substitutes
+    // The exact row `docs/_contents/cli-state.md` quotes: the NaN the read substitutes
     // is reported as an unknown deadline (issue #3083), never pushed through
     // `formatDuration` — which is what printed `expired NaNmNaNs ago`.
     expect(out).toContain('locked by u@h:1, expires at an unknown time');
@@ -485,7 +485,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
   });
 
   it('state show --json emits a THROWING expiresAt as null and a merely-NaN one as stored', async () => {
-    // Both halves of the sentence in `docs/cli-state.md`: only a coercion that
+    // Both halves of the sentence in `docs/_contents/cli-state.md`: only a coercion that
     // THROWS is replaced (with `NaN`, which `JSON.stringify` writes as `null`),
     // while `{}` converts to `NaN` without throwing and is emitted unchanged.
     bucket.lock = JSON.stringify({ owner: 'u@h:1', timestamp: 1, expiresAt: UNCOERCIBLE });
@@ -1063,7 +1063,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
 
     it('a null and an absent bag still render exactly like an empty one', async () => {
       // The render is what must not change for the two shapes
-      // `docs/cli-state.md` documents as tolerated; the added stderr warning is
+      // `docs/_contents/cli-state.md` documents as tolerated; the added stderr warning is
       // the only difference, and it is asserted above.
       bucket.state = record({ resources: {} });
       const empty = await runState(['show', 'MyStack']);

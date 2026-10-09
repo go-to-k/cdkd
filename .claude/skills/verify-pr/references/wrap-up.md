@@ -9,7 +9,7 @@ All three run once, at the end of the run.
   correction: one-off, or recurring? For each pattern, propose where it lands. A
   NEW hook, fence or rule paragraph is added only on the SECOND occurrence — the
   first goes to
-  [../../../../docs/tooling-backlog.md](../../../../docs/tooling-backlog.md) and
+  [../../../../docs/_contents/tooling-backlog.md](../../../../docs/_contents/tooling-backlog.md) and
   nothing is built.
 - The retrospective is part of the checklist, not an optional coda.
 

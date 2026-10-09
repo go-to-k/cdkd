@@ -919,7 +919,7 @@
  * OFFLINE-ONLY (NO AWS)
  * ---------------------
  * Reads fixtures + provider sources + installed SDK typings. Writes
- * `docs/_generated/nested-key-coverage.{json,md}`.
+ * `docs/_contents/_generated/nested-key-coverage.{json,md}`.
  *
  * Usage:
  *   node --experimental-strip-types scripts/gen-nested-key-coverage.ts          # write the matrix
@@ -953,8 +953,8 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
-const OUT_JSON = resolve(repoRoot, 'docs/_generated/nested-key-coverage.json');
-const OUT_MD = resolve(repoRoot, 'docs/_generated/nested-key-coverage.md');
+const OUT_JSON = resolve(repoRoot, 'docs/_contents/_generated/nested-key-coverage.json');
+const OUT_MD = resolve(repoRoot, 'docs/_contents/_generated/nested-key-coverage.md');
 
 /**
  * Parser-regression floor for the SDK side: a client model parse that
@@ -6649,7 +6649,7 @@ const USAGE =
   '  --check               fail on a divergence instead of writing the matrix\n' +
   '  --providers-dir=<p>   TEST SEAM: audit a scratch copy of the providers tree\n' +
   '                        (requires --check; the writer path must only ever\n' +
-  '                        render docs/_generated from src/)\n';
+  '                        render docs/_contents/_generated from src/)\n';
 
 function main(argv: readonly string[] = process.argv.slice(2)): void {
   if (argv.includes('--help') || argv.includes('-h')) {
@@ -6681,7 +6681,7 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   const dirFlag = argv.find((a) => a.startsWith('--providers-dir='));
   if (dirFlag !== undefined && !checkMode) {
     // The WRITER path would render the committed matrix from a scratch tree,
-    // silently rewriting docs/_generated from code that is not `src/`.
+    // silently rewriting docs/_contents/_generated from code that is not `src/`.
     throw new Error('--providers-dir= is a --check-only test seam; refusing to write the matrix');
   }
   const report = loadReport(

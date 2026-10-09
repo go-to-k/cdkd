@@ -599,7 +599,7 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
         // earlier revision gave them the present-versus-consumed split the
         // error line has; generalising that distinction is what review found
         // re-making a false claim on a new input class every round, so it now
-        // lives at exactly one site. Recorded in docs/deployment-events.md.
+        // lives at exactly one site. Recorded in docs/_contents/deployment-events.md.
         `${gray(runListToken(run.startedAt, '?'))} -> ${gray(runListToken(run.finishedAt, '?'))}  ` +
         `${gray(`cdkd ${runListToken(run.cdkdVersion, UNRENDERABLE)}`)}  ` +
         `${gray(`${safeCount(run.eventCount)} events`)}`

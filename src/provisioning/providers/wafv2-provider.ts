@@ -55,7 +55,7 @@ import { parseWebACLArn } from './wafv2-arn.js';
  * through `update()` and surface as a hard AWS rejection, so we sanitize
  * the wire-layer payload while keeping the read-side placeholder
  * intact. This is the Class 2 pattern from
- * `docs/provider-rules.md#readcurrentstate-for-drift-detection`.
+ * `docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection`.
  */
 function sanitizeDescription(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
@@ -511,7 +511,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    * name somebody else holds. Refused here, the 5xx reaches the deploy
    * engine's retry, which marks the create as possibly replayed (`withRetry`,
    * #3978). Nothing is adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): WAFV2Client {
     this.getClient();

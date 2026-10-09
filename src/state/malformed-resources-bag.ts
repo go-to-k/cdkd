@@ -4929,7 +4929,7 @@ export function malformedOrphanResourceAttributesRefusalMessage(
  * deliberately does not ask about that entry's `properties`, because `cdkd diff`
  * has a LATER answer for that one — `computeStackDiff` runs the `properties`
  * repair a second time over the adopted records and names what it emptied, which
- * `docs/cli-diff.md` and `.claude/rules/state-malformed-properties.md` both
+ * `docs/_contents/cli-diff.md` and `.claude/rules/state-malformed-properties.md` both
  * describe. Dropping such a row here instead would make that repair unreachable
  * and silently retire a documented report. A torn `attributes` map rides through
  * for the same reason and gets NO later answer: stated rather than solved, and

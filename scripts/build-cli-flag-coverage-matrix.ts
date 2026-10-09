@@ -35,8 +35,8 @@
  * filed separately as go-to-k/cdkd#423.
  *
  * Outputs:
- *   - docs/_generated/cli-flag-coverage.json: machine-readable matrix.
- *   - docs/cli-flag-coverage.md:               markdown report.
+ *   - docs/_contents/_generated/cli-flag-coverage.json: machine-readable matrix.
+ *   - docs/_contents/cli-flag-coverage.md:               markdown report.
  *
  * Run from the repo root:
  *   node --experimental-strip-types scripts/build-cli-flag-coverage-matrix.ts
@@ -54,8 +54,8 @@ const REPO_ROOT = resolve(__dirname, '..');
 
 const OPTIONS_FILE = join(REPO_ROOT, 'src/cli/options.ts');
 const INTEG_DIR = join(REPO_ROOT, 'tests/integration');
-const OUTPUT_JSON = join(REPO_ROOT, 'docs/_generated/cli-flag-coverage.json');
-const OUTPUT_MD = join(REPO_ROOT, 'docs/cli-flag-coverage.md');
+const OUTPUT_JSON = join(REPO_ROOT, 'docs/_contents/_generated/cli-flag-coverage.json');
+const OUTPUT_MD = join(REPO_ROOT, 'docs/_contents/cli-flag-coverage.md');
 
 /**
  * Parse the Commander `Option(...)` argument string into a normalized
@@ -284,7 +284,7 @@ function renderMarkdown(report: FlagCoverageReport): string {
   );
   lines.push('');
   lines.push(
-    'See the script docstring for the design rationale; the *coverage numbers* here are intentionally not wired to a CI hard-fail (contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification). CI does, however, run a *staleness* check on this generated file — `vp run cli-flag-coverage` followed by `git diff --exit-code` — so the matrix cannot silently drift; that guards freshness, not coverage %.'
+    'See the script docstring for the design rationale; the *coverage numbers* here are intentionally not wired to a CI hard-fail (contrast with the provider-coverage matrix in [docs/_contents/integ-coverage.md](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification). CI does, however, run a *staleness* check on this generated file — `vp run cli-flag-coverage` followed by `git diff --exit-code` — so the matrix cannot silently drift; that guards freshness, not coverage %.'
   );
   lines.push('');
   if (report.uncovered.length > 0) {
@@ -335,7 +335,7 @@ function renderMarkdown(report: FlagCoverageReport): string {
     if (report.unknownFlagsInIntegs.length > cap) {
       lines.push('');
       lines.push(
-        `_(${report.unknownFlagsInIntegs.length - cap} more entries truncated — see \`docs/_generated/cli-flag-coverage.json\` for the full list.)_`
+        `_(${report.unknownFlagsInIntegs.length - cap} more entries truncated — see \`docs/_contents/_generated/cli-flag-coverage.json\` for the full list.)_`
       );
     }
     lines.push('');

@@ -187,7 +187,7 @@ jobs:
           fi
 
       # Issue #398 — fail CI when the cached three-tier provider-coverage
-      # audit (docs/_generated/provider-coverage.json) Tier 1 list drifts
+      # audit (docs/_contents/_generated/provider-coverage.json) Tier 1 list drifts
       # from src/provisioning/register-providers.ts. Offline check (<1s,
       # no AWS calls — the full regeneration via
       # `vp run audit:coverage:regenerate` would take 10-30 min + AWS
@@ -197,7 +197,7 @@ jobs:
       - run: vp run audit:coverage:check
 
       # Issue #2553 — fail CI when a tier-2 stateful CANDIDATE in
-      # docs/_generated/stateful-candidates.json is neither in STATEFUL_TYPES
+      # docs/_contents/_generated/stateful-candidates.json is neither in STATEFUL_TYPES
       # nor dispositioned in the derivation's NOT_GUARDED map (and when a
       # NOT_GUARDED entry has stopped being proposed, so it disposes of
       # nothing). Offline check (<1s, no AWS calls); the regeneration via

@@ -150,7 +150,7 @@ function recordWithPendingChildDeletes(
 /**
  * Provider for `AWS::CloudFormation::Stack` — cdkd's recursive nested-stack
  * adapter. Issue [#459](https://github.com/go-to-k/cdkd/issues/459); see
- * [docs/design/459-nested-stacks.md](../../../docs/design/459-nested-stacks.md)
+ * [docs/_contents/design/459-nested-stacks.md](../../../docs/_contents/design/459-nested-stacks.md)
  * for the full design.
  *
  * A ROLLBACK revert of this row (`update` with `UpdateContext.replayingState`)
@@ -885,10 +885,10 @@ export class NestedStackProvider implements ResourceProvider {
         // particular resource, which is why neither appears in the paragraph
         // above — whose subject is an option naming a specific stack, or one
         // resource in one. The consent flags name no resource at all:
-        // `forceStatefulRecreation` (documented in `docs/cli-deploy-safety.md`
+        // `forceStatefulRecreation` (documented in `docs/_contents/cli-deploy-safety.md`
         // as clearing the guard for every target in the RUN), `replace`
         // (documented there as a STACK-WIDE opt-in that fires wherever an
-        // update hard-rejects), and `skipFinalSnapshot` (`docs/cli-destroy.md`).
+        // update hard-rejects), and `skipFinalSnapshot` (`docs/_contents/cli-destroy.md`).
         // And `parentCtx.providerRegistry`, one argument above this bag,
         // carries the `--allow-unsupported-types` /
         // `--allow-unsupported-properties` allow-lists, keyed by resource TYPE

@@ -5,7 +5,7 @@ Integration test for [issue #555](https://github.com/go-to-k/cdkd/issues/555) A1
 deployed and destroyed through cdkd's recursive `NestedStackProvider`.
 
 Verifies the depth-of-nesting guarantee promised by issue [#459](https://github.com/go-to-k/cdkd/issues/459)
-([design doc](../../../docs/design/459-nested-stacks.md) §1 "Recursive
+([design doc](../../../docs/_contents/design/459-nested-stacks.md) §1 "Recursive
 nesting (parent → child → grandchild) works") that the single-level
 `nested-stack` integ does not exercise — the recursion shape is the same
 at any depth, but the v1 main PR shipped a 1-level test, leaving the

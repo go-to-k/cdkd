@@ -3,7 +3,7 @@
  *
  * WHAT THIS CHECKS
  * ----------------
- * `docs/provider-development.md` states as mandatory that a new `withRetry`
+ * `docs/_contents/provider-development.md` states as mandatory that a new `withRetry`
  * thread `isInterrupted` / `onInterrupted`. The reason is structural rather
  * than stylistic: the deploy engine, `destroy-runner.ts` and
  * `rollback-executor.ts` all poll for an interrupt only BETWEEN operations, and
@@ -101,7 +101,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SCAN_ROOT_REL = join('src', 'provisioning');
 const DEFAULT_SCAN_DIR = join(REPO_ROOT, SCAN_ROOT_REL);
 
-/** The two options a `withRetry` must carry, per `docs/provider-development.md`. */
+/** The two options a `withRetry` must carry, per `docs/_contents/provider-development.md`. */
 const REQUIRED_OPTIONS = ['isInterrupted', 'onInterrupted'] as const;
 
 /** The ONE helper allowed to produce the watch those options read from. */

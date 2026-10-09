@@ -270,7 +270,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     // destroy-and-recreate.") — which is the failure this round exists to
     // prevent, one step further along — and by a mis-subjected sentence.
     expect(warned, 'the remedy has no hand-off — the outcome is stated and abandoned').toContain(
-      'docs/cli-deploy-safety.md'
+      'docs/_contents/cli-deploy-safety.md'
     );
     expect(warned, 'the "widening alone is not enough" clause is gone').toMatch(
       /Widening --prefer-sdk-route alone cannot/
@@ -279,7 +279,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     // remedy there, so a rename dangles a user-facing pointer silently; this
     // repo already fences the mirror case the same way.
     expect(
-      existsSync(new URL('../../../docs/cli-deploy-safety.md', import.meta.url)),
+      existsSync(new URL('../../../docs/_contents/cli-deploy-safety.md', import.meta.url)),
       'the warning points at a docs page that no longer exists'
     ).toBe(true);
     expect(warned, 'the sticky case prescribes a remedy that is a no-op').not.toMatch(

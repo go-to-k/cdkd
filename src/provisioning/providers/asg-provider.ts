@@ -783,7 +783,7 @@ export class ASGProvider implements ResourceProvider {
    * name somebody else holds. Refused here, the 5xx reaches the deploy
    * engine's retry, which marks the create as possibly replayed (`withRetry`,
    * #3978). Nothing is adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): AutoScalingClient {
     this.getClient();

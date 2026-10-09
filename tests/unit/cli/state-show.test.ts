@@ -1226,7 +1226,7 @@ describe('cdkd state show', () => {
     expect(prose.filter((l) => /^\s/.test(l))).toEqual([]);
   });
 
-  it('the legend the binary PRINTS is the legend docs/cli-state.md shows', async () => {
+  it('the legend the binary PRINTS is the legend docs/_contents/cli-state.md shows', async () => {
     // The legend's lines are duplicated verbatim into the docs page and nothing
     // synced them, so any reword left the docs copy stale in silence — the same
     // class of defect as a comment that stops matching its code.
@@ -1276,7 +1276,7 @@ describe('cdkd state show', () => {
     // already the repo's answer to "what does a reader actually see" — see
     // a rendered-anchor reader — and its code token hands
     // back the block's text with the fence gone and the indentation normalized.
-    const page = readFileSync(resolve(import.meta.dirname, '../../../docs/cli-state.md'), 'utf-8');
+    const page = readFileSync(resolve(import.meta.dirname, '../../../docs/_contents/cli-state.md'), 'utf-8');
     // `walkTokens`, not a filter over the top level: a code block inside a
     // blockquote or a list item renders to a reader exactly the same and would
     // otherwise be invisible here, in both directions — a stale nested copy would
@@ -1291,7 +1291,7 @@ describe('cdkd state show', () => {
     // EXACTLY one, and then EVERY one: `find` would check the first and let a
     // second example carry stale prose, or let a matching block added earlier
     // mask the one this section is about.
-    expect(copies, 'docs/cli-state.md carries the block in one code example').toHaveLength(1);
+    expect(copies, 'docs/_contents/cli-state.md carries the block in one code example').toHaveLength(1);
 
     // The whole SEQUENCE, not per-line inclusion: reordering two lines always
     // passes an inclusion check, and a dropped or shortened line passes it
@@ -1618,7 +1618,7 @@ describe('cdkd state show', () => {
       stackName: 'JsonStack',
       region: 'us-west-2',
       outputs: { Endpoint: 'http://x' },
-      // `docs/cli-state.md` sends readers to `--json` for an EXACT digest
+      // `docs/_contents/cli-state.md` sends readers to `--json` for an EXACT digest
       // comparison, so the untruncated digest is part of that promise.
       skippedOutputs: { ApiUrl: 'a'.repeat(64) },
       resources: {

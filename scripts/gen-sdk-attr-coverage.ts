@@ -92,7 +92,7 @@
  *     set of types `constructAttribute` and its `constructAttributeFor*` helpers
  *     reference.
  *
- * Writes: docs/_generated/sdk-attr-coverage.{json,md}.
+ * Writes: docs/_contents/_generated/sdk-attr-coverage.{json,md}.
  *
  * CLASSIFICATION (per SDK-backed type with a cached schema)
  * ---------------------------------------------------------
@@ -146,8 +146,8 @@ export function constructAttributeFiles(dir = RESOLVER_DIR): string[] {
     .sort()
     .map((f) => resolve(dir, f));
 }
-const OUT_JSON = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.json');
-const OUT_MD = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.md');
+const OUT_JSON = resolve(repoRoot, 'docs/_contents/_generated/sdk-attr-coverage.json');
+const OUT_MD = resolve(repoRoot, 'docs/_contents/_generated/sdk-attr-coverage.md');
 
 /**
  * Allow-list of (type -> read-only `Arn`/`Url` attributes) that are NOT a gap

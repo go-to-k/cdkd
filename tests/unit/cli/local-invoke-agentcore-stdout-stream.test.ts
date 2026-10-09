@@ -994,7 +994,7 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
    * therefore never enters it. Here the mocked `invokeAgentCore` calls the
    * closure the command actually passed it, which is what makes "streamed
    * frames are stdout payload" — asserted by this suite's header and by
-   * `docs/cli-reference.md` — a tested claim rather than an asserted one.
+   * `docs/_contents/cli-reference.md` — a tested claim rather than an asserted one.
    */
   it('streams SSE chunks through the command\'s own sink to stdout, prose on stderr', async () => {
     const frame1 = '{"token":"lane2410-sse-1"}';

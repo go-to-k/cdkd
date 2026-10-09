@@ -16,7 +16,7 @@
  * arms (issue #3627: DynamoDB `StreamArn`, IAM `RoleId`, IAM `Arn`), re-reads the resource through its provider's
  * read-only `import()` ONCE per deploy, serves the value from that read, and
  * hands the read-back map to the deploy engine, which merges it into the record
- * at the state-save choke point. Design: `docs/design/1852-stale-attribute-heal.md`.
+ * at the state-save choke point. Design: `docs/_contents/design/1852-stale-attribute-heal.md`.
  * `cdkd diff` supplies a READ-ONLY healer
  * (`read-only-attribute-healer.ts`, issue #3456) issuing the same read, so its
  * preview resolves what the deploy will; that one persists nothing.

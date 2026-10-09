@@ -47,7 +47,7 @@ import { Construct } from 'constructs';
  * documented bridge-fallback path from #461.
  *
  * `covers: AWS::ECS::Service AWS::ServiceDiscovery::PrivateDnsNamespace AWS::ServiceDiscovery::Service`
- * (matrix opt-in marker — see docs/integ-coverage.md).
+ * (matrix opt-in marker — see docs/_contents/integ-coverage.md).
  */
 export class LocalEcsServiceConnectStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

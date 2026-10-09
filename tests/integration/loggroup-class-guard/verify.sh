@@ -192,7 +192,7 @@ sweep_log_groups() { # best-effort teardown; never aborts the sweep
     # without this guard; issue #2621 gave it one, and gave the same treatment
     # to every other teardown in the tree whose filter collapses to the empty
     # string when its scope variable is empty. The convention those all follow
-    # is written up in `docs/integ-fixture-conventions.md`.
+    # is written up in `docs/_contents/integ-fixture-conventions.md`.
     case "${LG_PREFIX}" in
       /cdkd-integ/*/) ;;
       *)
@@ -794,7 +794,7 @@ if [ "${CLASS_P6}" != "STANDARD" ]; then
 fi
 # create() re-applies the flag from the DESIRED bag, which is why the refusal
 # refuses to promise what the flag ends up as and sends the reader to
-# docs/cli-deploy-safety.md instead. Pinned so that claim stays true.
+# docs/_contents/cli-deploy-safety.md instead. Pinned so that claim stays true.
 if [ "${PROT_P6}" != "True" ]; then
   echo "FAIL: expected the recreated log group to carry the template's DeletionProtectionEnabled, got '${PROT_P6}'" >&2
   exit 1

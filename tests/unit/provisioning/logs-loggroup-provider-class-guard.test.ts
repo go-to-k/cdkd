@@ -288,14 +288,14 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
     // here is that the message HANDS OFF rather than narrates: it must send the
     // reader to the doc, and must say why it cannot answer itself.
     expect(message).toContain(
-      'Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md'
+      'Read "Deletion protection blocks a replacement" in docs/_contents/cli-deploy-safety.md'
     );
     expect(message).toContain('depend on your UpdateReplacePolicy');
     // ORDER is load-bearing: a hedge the reader meets only AFTER the command
     // they were told to run has already been run is not a hedge. A review round
     // found it trailing the disable instruction.
     expect(
-      message.indexOf('docs/cli-deploy-safety.md'),
+      message.indexOf('docs/_contents/cli-deploy-safety.md'),
       'the doc hand-off must come BEFORE the disable command, not after it'
     ).toBeLessThan(message.indexOf('put-log-group-deletion-protection'));
     // And it must NOT go back to narrating. These are the three sentences that
@@ -372,7 +372,7 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
         'the physical id cdkd recorded for this resource cannot be reproduced safely on a command line'
       );
       expect(message).toContain('Then re-deploy with --replace --force-stateful-recreation');
-      expect(message).toContain('Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md');
+      expect(message).toContain('Read "Deletion protection blocks a replacement" in docs/_contents/cli-deploy-safety.md');
       expect(message).toContain('cdkd deploy has no --remove-protection flag');
     });
 
@@ -504,7 +504,7 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
 /**
  * Connects the refusal's out-of-band remedy to the page that documents it.
  *
- * `docs/cli-deploy-safety.md` quotes the same
+ * `docs/_contents/cli-deploy-safety.md` quotes the same
  * `aws logs put-log-group-deletion-protection` invocation the protected arm
  * emits, and states the same two facts about it — that `cdkd deploy` has no
  * `--remove-protection`, and that nothing needs re-enabling because the
@@ -526,7 +526,7 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     join(repoRoot, 'src', 'provisioning', 'providers', 'logs-loggroup-provider.ts'),
     'utf8'
   );
-  const doc = readFileSync(join(repoRoot, 'docs', 'cli-deploy-safety.md'), 'utf8');
+  const doc = readFileSync(join(repoRoot, 'docs', '_contents', 'cli-deploy-safety.md'), 'utf8');
   /**
    * Only the doc's FENCED code blocks, whitespace-collapsed.
    *
@@ -561,7 +561,7 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
   });
 
   it('the doc SECTION the refusal tells the reader to open still exists', () => {
-    // The message hands off with `Read "<section>" in docs/cli-deploy-safety.md`
+    // The message hands off with `Read "<section>" in docs/_contents/cli-deploy-safety.md`
     // rather than narrating a mechanism it cannot see. That makes the section
     // TITLE load-bearing: rename the heading and the refusal points nowhere,
     // silently. Derived from the source rather than hard-coded on both sides,
@@ -588,14 +588,14 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     expect(
       headings.filter((h) => h.includes(section)),
       `logs-loggroup-provider.ts sends the reader to "${section}"; exactly one heading in ` +
-        'docs/cli-deploy-safety.md must contain it — zero means the reference is ' +
+        'docs/_contents/cli-deploy-safety.md must contain it — zero means the reference is ' +
         'dangling, more than one means it is ambiguous. Headings: ' +
         headings.join(' | ')
     ).toHaveLength(1);
   });
 
   for (const phrase of PHRASES) {
-    it(`\`${phrase}\` appears in the provider and in docs/cli-deploy-safety.md`, () => {
+    it(`\`${phrase}\` appears in the provider and in docs/_contents/cli-deploy-safety.md`, () => {
       const inSource = providerSrc.split(phrase).length - 1;
       expect(
         inSource,
@@ -605,7 +605,7 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
       expect(
         docFenced,
         `logs-loggroup-provider.ts emits "${phrase}" but no fenced example in ` +
-          'docs/cli-deploy-safety.md contains it — the message and its documented ' +
+          'docs/_contents/cli-deploy-safety.md contains it — the message and its documented ' +
           'runnable example have to move together'
       ).toContain(phrase);
     });

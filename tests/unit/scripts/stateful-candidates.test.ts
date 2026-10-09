@@ -61,9 +61,9 @@ import {
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
-const REPORT_JSON = join(REPO_ROOT, 'docs/_generated/stateful-candidates.json');
-const REPORT_MD = join(REPO_ROOT, 'docs/_generated/stateful-candidates.md');
-const COVERAGE_JSON = join(REPO_ROOT, 'docs/_generated/provider-coverage.json');
+const REPORT_JSON = join(REPO_ROOT, 'docs/_contents/_generated/stateful-candidates.json');
+const REPORT_MD = join(REPO_ROOT, 'docs/_contents/_generated/stateful-candidates.md');
+const COVERAGE_JSON = join(REPO_ROOT, 'docs/_contents/_generated/provider-coverage.json');
 const VITE_CONFIG = join(REPO_ROOT, 'vite.config.ts');
 const CI_YML = join(REPO_ROOT, '.github/workflows/ci.yml');
 
@@ -832,7 +832,7 @@ describe('the committed artifact is a real derivation', () => {
       `| Candidates not guarded | ${s.unguardedCount} |`,
       `| Schemas unreadable (excluded, NOT cleared) | ${report.unreadable.length} |`,
     ]) {
-      expect(md, `stale docs/_generated/stateful-candidates.md — missing row: ${row}`).toContain(
+      expect(md, `stale docs/_contents/_generated/stateful-candidates.md — missing row: ${row}`).toContain(
         row
       );
     }

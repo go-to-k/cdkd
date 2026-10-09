@@ -1337,7 +1337,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     );
   });
 
-  // ─── docs/provider-rules.md#readcurrentstate-for-drift-detection mandatory placeholder block ────
+  // ─── docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection mandatory placeholder block ────
   //
   // The expected key set is DISCRIMINATOR-DEPENDENT, so §3b's single
   // "complete key list" assertion is written once per FileSystemType. The
@@ -1717,7 +1717,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(openzfs['RootVolumeConfiguration']).toBeUndefined();
   });
 
-  // Mandatory round-trip guard (docs/provider-rules.md#readcurrentstate-for-drift-detection): `cdkd drift
+  // Mandatory round-trip guard (docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection): `cdkd drift
   // --revert` feeds a readCurrentState snapshot back through update(). Only the
   // variant block matching FileSystemType is ever emitted, so the Class 1
   // type-discriminator hazard cannot fire; this pins that contract.
@@ -1852,7 +1852,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
   });
 
-  // docs/provider-rules.md#readcurrentstate-for-drift-detection Class 2: a nested sub-block AWS returns
+  // docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection Class 2: a nested sub-block AWS returns
   // only partially populated (AUTOMATIC mode omits Iops) must still be a legal
   // UpdateFileSystem input when --revert pushes the state values back.
   it('round-trip: a partially-populated nested DiskIopsConfiguration reverts without an invalid input', async () => {
@@ -1916,7 +1916,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
   });
 
   it('emits the discriminator-selected variant block as {} when AWS returns it empty', async () => {
-    // Pre-#1096 this asserted the block was OMITTED. Per docs/provider-rules.md#readcurrentstate-for-drift-detection
+    // Pre-#1096 this asserted the block was OMITTED. Per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection
     //  the discriminator-selected block is an always-emit key: omitting it
     // means a file system deployed with an empty OntapConfiguration never
     // carries the key in observedProperties, and the comparator's

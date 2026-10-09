@@ -179,7 +179,7 @@ export class FirehoseProvider implements ResourceProvider {
    * holds. Refused here, the 5xx reaches the deploy engine's retry, which
    * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
    * adopted on that collision: a name is not attribution
-   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): FirehoseClient {
     this.getClient();
@@ -2186,7 +2186,7 @@ export class FirehoseProvider implements ResourceProvider {
     result['DeliveryStreamEncryptionConfigurationInput'] = encOut;
 
     // Tags via ListTagsForDeliveryStream.
-    // Always emit `Tags` (even as `[]`) per docs/provider-rules.md#readcurrentstate-for-drift-detection
+    // Always emit `Tags` (even as `[]`) per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection
     //  "always emit user-controllable top-level keys": omitting the
     // key on the failure path means the comparator's state-keys-only
     // walk skips Tags forever, hiding console-side tag adds from drift.
@@ -2287,7 +2287,7 @@ export class FirehoseProvider implements ResourceProvider {
 // `ProcessingConfiguration`, `DataFormatConversionConfiguration`,
 // `DynamicPartitioningConfiguration`) the SDK reuses the same type as
 // the corresponding `*Configuration` input — so reverse-mapping is a
-// pass-through that strips `undefined` fields. Per docs/provider-rules.md#readcurrentstate-for-drift-detection
+// pass-through that strips `undefined` fields. Per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection
 //  "always emit user-controllable top-level keys": even though
 // these are nested rather than top-level, surfacing them on every
 // readCurrentState call (as `{}` placeholder when AWS reports nothing)

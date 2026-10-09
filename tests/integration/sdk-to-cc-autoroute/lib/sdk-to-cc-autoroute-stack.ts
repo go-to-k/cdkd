@@ -8,7 +8,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * provider would silently drop -- issue
  * [2744](https://github.com/go-to-k/cdkd/issues/2744).
  *
- * `docs/cli-deploy-safety.md` answered that question twice, oppositely, about
+ * `docs/_contents/cli-deploy-safety.md` answered that question twice, oppositely, about
  * seventy lines apart: the `--allow-unsupported-properties` section said the
  * next deploy AUTO-ROUTES the resource through Cloud Control (and that the
  * flag exists to prevent that), while `--recreate-via-cc-api` said the

@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
-import { MARK_PATHS } from '../../../docs-site/brand/mark.js';
+import { MARK_PATHS } from '../../../docs/brand/mark.js';
 import {
   DERIVED_ROLES,
   SYNTAX_ROLES,
   themeColor,
   tokens,
   tokensToCss,
-} from '../../../docs-site/brand/tokens.js';
+} from '../../../docs/brand/tokens.js';
 
 // The docs site's design tokens have one source, cdkd.tokens.json; the CSS
 // custom properties are generated from it, and the logo files and the syntax
@@ -90,7 +90,7 @@ describe('syntax theme (cdkd Night)', () => {
     for (const [role, token] of Object.entries(SYNTAX_ROLES)) {
       expect(root).toContain(`--cdkd-syntax-${role}: ${themeColor('dark', token)};`);
     }
-    const sheet = readFileSync(join(ROOT, 'docs-site/theme/syntax.css'), 'utf8');
+    const sheet = readFileSync(join(ROOT, 'docs/theme/syntax.css'), 'utf8');
     for (const token of [
       'function',
       'constant',
@@ -118,7 +118,7 @@ describe('logo files', () => {
     ['logo-light.svg', tokens.brand.navy],
     ['logo-dark.svg', tokens.brand.cloud],
   ])('%s draws the symbol geometry in its colorway', (file, cloudColor) => {
-    const svg = readFileSync(join(ROOT, 'docs-site/public/brand', file), 'utf8');
+    const svg = readFileSync(join(ROOT, 'docs/public/brand', file), 'utf8');
     expect(svg).toContain(`<path fill="${cloudColor}" d="${cloud}"/>`);
     expect(svg).toContain(`<path fill="${tokens.brand.orange}" d="${MARK_PATHS.route}"/>`);
   });

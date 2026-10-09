@@ -78,7 +78,7 @@ disagrees with a passing synthetic fixture, the FIXTURE is usually wrong.
 
 `tests/integration/**`, real AWS account. Env: `STATE_BUCKET`, `AWS_REGION`. Every
 convention below is written up in full, with examples, in
-[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
+[docs/_contents/integ-fixture-conventions.md](../../docs/_contents/integ-fixture-conventions.md).
 
 ### `verify.sh` signal traps (mandatory)
 
@@ -240,7 +240,7 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
   FIRED, by changing a companion property in the same deploy. Enumerate the
   fixtures with `grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts
   tests/integration/*/verify.sh`; `tests/integration/route53/` is the reference.
-  Full writeup: [docs/testing.md](../../docs/testing.md).
+  Full writeup: [docs/_contents/testing.md](../../docs/_contents/testing.md).
 - `CDKD_TEST_FAIL=true` injects a deliberately-failing resource (an
   `AWS::SQS::Queue` with an out-of-range `MessageRetentionPeriod`) into the
   `basic` stack, verifying against real AWS that already-completed siblings roll

@@ -134,7 +134,7 @@ describe('KMSProvider read-update round-trip', () => {
     // out of the round-trip diff. Either way EnableKeyRotation /
     // DisableKeyRotation must NEVER fire on an asymmetric snapshot.
     //
-    // See docs/provider-rules.md#readcurrentstate-for-drift-detection for the Class 1 rationale.
+    // See docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection for the Class 1 rationale.
     const observed = {
       Description: 'asymmetric signing key',
       KeySpec: 'RSA_2048',

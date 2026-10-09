@@ -1841,7 +1841,7 @@ export async function computeStackDiff(
     // The PREVIEWABLE half, not the writers' full predicate: a row whose
     // `properties` map is torn stays, because `computeStackDiff` repairs and
     // names THAT below (only `properties` — the later pass does not touch
-    // `attributes`). Dropping it here would retire a report `docs/cli-diff.md`
+    // `attributes`). Dropping it here would retire a report `docs/_contents/cli-diff.md`
     // and `.claude/rules/state-malformed-properties.md` both describe.
     // Pushed one at a time, never spread: `push(...ids)` passes each element as an
     // ARGUMENT, so a record holding ~130k unusable rows aborts `cdkd diff` with a
@@ -3741,7 +3741,7 @@ export function collectCcApiRoutes(
       // Inert today (an admitted `'sdk-coverage'` type has an empty silentDrop
       // map, so the allow set cannot change the answer) and it would diverge
       // from the deploy only for a future exempt type with a real drop — which
-      // the admission bar in docs/provider-rules.md already discourages.
+      // the admission bar in docs/_contents/provider-rules.md already discourages.
       const leaving = wouldReturnToSdkProvider({
         resourceType: resource.Type,
         // `?? {}` matches the engine's `change.desiredProperties || {}`

@@ -132,7 +132,7 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      `Cdkd` (`EventBridgeStack`, `CognitoStack`, ...), and copying `Cdkd?*` into
      one of those makes the guard refuse PERMANENTLY and silently, so the sweep
      never runs, the orphans leak and the run still exits 0. See
-     [docs/integ-fixture-conventions.md](../../../docs/integ-fixture-conventions.md).
+     [docs/_contents/integ-fixture-conventions.md](../../../docs/_contents/integ-fixture-conventions.md).
      Convention only — nothing checks it yet.
    - **Phase 1 — deploy**, then a **functional assertion that the feature
      actually works and reached AWS** (curl the endpoint / put an object and
@@ -182,7 +182,7 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    ```bash
    vp run gen:all-matrices && vp run format
    ```
-   Commit the regenerated `docs/_generated/*.json` alongside the fixture.
+   Commit the regenerated `docs/_contents/_generated/*.json` alongside the fixture.
 
 8. **Install deps + verify synthesis**:
    ```bash

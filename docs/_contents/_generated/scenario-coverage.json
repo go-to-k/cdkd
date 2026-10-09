@@ -1,0 +1,3361 @@
+{
+  "knownScenarios": [
+    {
+      "tag": "apigateway-cors-preflight",
+      "description": "API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays."
+    },
+    {
+      "tag": "auto-import-cfn-generated-name",
+      "description": "`cdkd import` AUTO mode (no `--resource`, no `--migrate-from-cloudformation`) adopting a resource whose physical name CloudFormation GENERATED, after an upstream `cdk deploy`. Pins issue #1128: auto mode resolves ids by the template name property, then an `aws:cdk:path` tag walk that CANNOT match on real AWS (AWS rejects `aws:`-prefixed tag writes; CloudFormation keeps the value in template `Metadata` without promoting it to a tag), so a CFn-generated name returned `not found` until auto mode learned to consult `DescribeStackResources`. The fixture deliberately sets NO explicit physical name and passes NO override flag — both pre-existing import integs pass one of those and therefore never exercised this path, which is why the defect survived four rounds of #1091 tag-walk work."
+    },
+    {
+      "tag": "auto-import-composite-physical-id",
+      "description": "`cdkd import` AUTO mode adopting a resource whose cdkd physicalId is a COMPOSITE (`<databaseName>|<tableName>`) while CloudFormation's is a single bare segment (the table name). Pins issue #1651, the sibling of #1128 one layer down: #1128 fixed the RESOLUTION of a CFn-generated id, this is the provider REJECTING an id auto mode had already resolved — `importTable` split the bare form on `|`, found no second segment, and returned `not found` without calling AWS, so every `cdk deploy`-managed `AWS::Glue::Table` was unadoptable while the error told the user to pass the id it had just refused. The fixture renders `DatabaseName` as a `Ref` to the sibling database (what CDK emits, and the reason a bare table name can be paired with a database at all — `AWS::Glue::Database`'s CFn physicalId IS the database name, so the overrides map resolves the Ref to a literal before `provider.import()` runs), asserts CloudFormation's reported id carries no `|` before relying on it, and asserts the ADOPTED id is the COMPOSITE — recording CFn's bare name would look like success while leaving a state row that update / delete / getAttribute / readCurrentState cannot split."
+    },
+    {
+      "tag": "cc-api-getatt-enrichment-elasticache-replicationgroup",
+      "description": "CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id)."
+    },
+    {
+      "tag": "cc-api-getatt-enrichment-opensearch-domain",
+      "description": "CC-API attribute enrichment for `AWS::OpenSearchService::Domain` (no SDK provider): `Fn::GetAtt(<Domain>, DomainEndpoint / Arn)` must resolve to the real `*.es.amazonaws.com` endpoint / `arn:aws:es:...:domain/...` ARN via DescribeDomain, not fall through to the physicalId (the domain name)."
+    },
+    {
+      "tag": "cc-api-getatt-enrichment-redshift-cluster",
+      "description": "CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id)."
+    },
+    {
+      "tag": "cdk-defensive-vpc-deps-relax",
+      "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization."
+    },
+    {
+      "tag": "cdkd-asset-storage",
+      "description": "cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011)."
+    },
+    {
+      "tag": "cdkd-asset-storage-import",
+      "description": "Import-driven adoption into a cdkd-assets region against real AWS (issue #1652): a stack deployed by the UPSTREAM `cdk deploy` (so AWS holds `cdk-<qualifier>-assets-*` everywhere, including the `AWS::IAM::Policy` that `s3deploy.BucketDeployment` grants on the asset bucket) is adopted with `cdkd import --migrate-from-cloudformation`; state must record the PRE-rewrite `cdk-*` values, `cdkd diff` must report a real UPDATE on that policy (pre-fix it classified NO_CHANGE because the rewrite reached `state.properties`), and the post-import `cdkd deploy` must leave the LIVE policy document naming the cdkd asset bucket."
+    },
+    {
+      "tag": "cdkd-gc",
+      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object plus an unreferenced seeded ECR image are the only deletion candidates, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012). Since issues #1792 / #1793 the ECR half is DISCRIMINATING rather than a re-run of the plain path: two live images are referenced only through WIDENED host forms — an UPPER-cased host carrying an UPPER-cased digest (collected yet unmatchable against ECR lower-case digests before the insert-time fold, so the live image was deleted) and the dual-stack FIPS `<acct>.dkr-ecr-fips.<region>.on.aws` form the grammar had missed entirely — and both must SURVIVE the run, since a missed reference deletes irreversibly."
+    },
+    {
+      "tag": "cfn-fallback-cross-stack",
+      "description": "CloudFormation fallback for cross-stack references (issue #1697): a cdkd-deployed consumer references a producer stack managed by CloudFormation ONLY (no cdkd state record) — `Fn::ImportValue` via the `ListExports` fallback AND `Fn::GetStackOutput` via the `DescribeStacks` outputs fallback — plus the weak-reference contract (no imports[]/outputReads[] recorded) and the `--no-cfn-fallback` opt-out failing at resolve time."
+    },
+    {
+      "tag": "cfn-macro-expansion",
+      "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/_contents/design/463-cfn-macros.md`."
+    },
+    {
+      "tag": "cloudfront-oai-attribute-enrichment",
+      "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly)."
+    },
+    {
+      "tag": "conditions-and-if",
+      "description": "CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property."
+    },
+    {
+      "tag": "conditions-update-semantics",
+      "description": "Harder CloudFormation-Conditions-on-UPDATE semantics beyond the simple flip in `conditions-and-if` (which surfaced #840). A CDK-context phase flip (-c phase=a|b) redeploys the SAME stack in place and asserts: a resource that MOVES gating conditions (IsPhaseA-gated -> condition-false -> DELETED) and its reverse (IsPhaseB-gated absent -> CREATED); `Fn::If` -> `AWS::NoValue` REMOVING a nested property block (SQS RedrivePolicy) on an in-place UPDATE (same physical id, not a replacement); a condition-gated OUTPUT present vs absent in cdkd state outputs; a `DependsOn` to a condition-EXCLUDED resource being dropped (the depender still deploys); and a `Ref` to a condition-excluded resource living inside another condition-excluded resource (both pruned together, no dangling-ref crash)."
+    },
+    {
+      "tag": "cross-cutting-deploy-destroy",
+      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). The run to make when a change is cross-cutting rather than feature-local."
+    },
+    {
+      "tag": "custom-resource-async-poll",
+      "description": "Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling."
+    },
+    {
+      "tag": "custom-resource-getatt-data",
+      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. A second custom resource carries the `NoEcho: true` arm (issue #2274) through the SIMPLE-HANDLER response shape, asserting both directions at once: the dependent's live SSM value is the real token, while the CR's `attributes`, the dependent's `properties`, `state.outputs` and the whole state blob hold none of it -- with the non-`NoEcho` resource above as the in-fixture negative control. An embedded arm (issue #2453) adds a parameter and an output that build a longer string around the token, asserted `***` WHOLE in state and the full string on AWS, and a second deploy with a rotated token (`CDKD_TEST_NOECHO_SEED`) that must reach AWS through both dependents while neither token reaches state."
+    },
+    {
+      "tag": "deep-getatt-chain-resolution",
+      "description": "Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture)."
+    },
+    {
+      "tag": "deletion-policy-retain",
+      "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template)."
+    },
+    {
+      "tag": "deletion-policy-snapshot",
+      "description": "DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354 / #1357): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, on the REPLACEMENT delete site (an immutable AvailabilityZone change under --force-stateful-recreation, unblocked by the #1356 EC2 Volume classification), and on the destroy-runner path; --skip-final-snapshot opt-out."
+    },
+    {
+      "tag": "deletion-policy-snapshot-heavy",
+      "description": "DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete."
+    },
+    {
+      "tag": "deployment-events",
+      "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
+    },
+    {
+      "tag": "destroy-data-guard",
+      "description": "CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans."
+    },
+    {
+      "tag": "destroy-interrupt",
+      "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly)."
+    },
+    {
+      "tag": "docker-image-asset-ecr-publish",
+      "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy."
+    },
+    {
+      "tag": "drift-revert-array-canonicalization",
+      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) and on an unordered OBJECT array at a provider-declared path (issue #1620 — ELBv2 `TargetGroup.Targets`, asserted by TWO consecutive clean drift runs, since one run cannot detect a reorder disagreement), while still detecting real value / Action / SG-rule / added-target drift."
+    },
+    {
+      "tag": "drift-revert-roundtrip",
+      "description": "cdkd drift detection + `--revert` round-trip via each provider.update()."
+    },
+    {
+      "tag": "dynamic-reference-resolution",
+      "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` / `{{resolve:ssm-secure:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. `ssm-secure:` is secret by SPELLING (issue #2482): its whole, embedded and `<name>:<version>` forms decrypt to the SecureString value and persist as the expression, with the parameter seeded out of band because CloudFormation cannot create a SecureString."
+    },
+    {
+      "tag": "elbv2-listener-tg-lb-deletion-order",
+      "description": "ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation)."
+    },
+    {
+      "tag": "eventsourcemapping-fresh-source-race",
+      "description": "`AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy."
+    },
+    {
+      "tag": "export-to-cfn-handover",
+      "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE."
+    },
+    {
+      "tag": "exports-index-region-resolve",
+      "description": "Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819)."
+    },
+    {
+      "tag": "failed-only-journal-retention-cycle",
+      "description": "Failed-only rollback-journal retention after a CLEAN automatic rollback (issue #1208): the journal survives as a SINGLE popped-and-re-recorded segment (reason=auto-rollback-clean / operations=[] / failedOperations=[<bad resource>], raw S3 read), the next deploy prints the --revert-failed note and its own clean auto-rollback PRESERVES the older failed-only segment (PR #1216, exactly 2 segments), `cdkd rollback --force --revert-failed` consumes it via the #1198 skip-with-warning for a physical-id-less failed CREATE (exit 2 accepted), and a NO-CHANGE fix-forward deploy (bad resource removed) clears the journal + note (the PR #1212 no-change gap)."
+    },
+    {
+      "tag": "fresh-principal-consumer-race",
+      "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts."
+    },
+    {
+      "tag": "getstackoutput-cross-region",
+      "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped)."
+    },
+    {
+      "tag": "globaltable-billing-flip-with-gsi",
+      "description": "DynamoDB GlobalTable `PAY_PER_REQUEST` -> `PROVISIONED` billing flip on a table that HAS GSIs (issue #1421). AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call that changes `BillingMode`, and an index the deploy REMOVES is still live at flip time (its Delete is issued later), so it must carry throughput in that call too — both claims were previously asserted only against a mocked DynamoDB client. Also pins the surviving index + table onto their `SeedCapacity` rather than `MinCapacity`, the one context AWS documents the seed for (issue #1435)."
+    },
+    {
+      "tag": "globaltable-cross-region-replica",
+      "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call)."
+    },
+    {
+      "tag": "iam-fresh-role-immediate-assume",
+      "description": "Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers)."
+    },
+    {
+      "tag": "iam-policy-propagation-retry",
+      "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race."
+    },
+    {
+      "tag": "import-adopt-live-resource-roundtrip",
+      "description": "End-to-end `cdkd import` adoption of a LIVE AWS resource: drop the resource from cdkd state with `cdkd orphan` (AWS untouched), re-adopt it with `cdkd import --resource <logicalId>=<physicalId>`, then destroy THROUGH the re-adopted record. Exercises the provider `import()` + `readCurrentState()` pair (the `observedProperties` baseline seeded post-import) and the selective-mode merge that must preserve unlisted sibling rows. Distinct from `nested-stack-migrate-from-cfn`, which covers the `--migrate-from-cloudformation` path; NO fixture covered the plain adopt mode before (issue #1090)."
+    },
+    {
+      "tag": "intrinsic-hard-arg-shapes",
+      "description": "Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838)."
+    },
+    {
+      "tag": "intrinsics-torture",
+      "description": "Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and the string pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub)."
+    },
+    {
+      "tag": "lambda-vpc-subnet-sg-deletion-order",
+      "description": "Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation."
+    },
+    {
+      "tag": "legacy-bucket-name-fallback",
+      "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution."
+    },
+    {
+      "tag": "local-agentcore-from-state",
+      "description": "`cdkd local invoke-agentcore --from-state` end-to-end against a real-AWS deployed AgentCore Runtime — verifies the cdkd-port-specific 3-arg `createLocalStateProvider` shim resolves intrinsic-valued env vars (e.g. `Ref: <S3 bucket>`) against cdkd state after a real `cdkd deploy`."
+    },
+    {
+      "tag": "local-agentcore-runtime",
+      "description": "`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build."
+    },
+    {
+      "tag": "local-apigateway-server",
+      "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool."
+    },
+    {
+      "tag": "local-ecs-awsvpc",
+      "description": "`cdkd local run-task` ECS TaskDefinition declaring `NetworkMode: awsvpc` — accepted and mapped to a docker bridge network with a startup warn (#461; docker cannot emulate ENI-per-task)."
+    },
+    {
+      "tag": "local-ecs-service",
+      "description": "`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown."
+    },
+    {
+      "tag": "local-ecs-service-connect",
+      "description": "`cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460)."
+    },
+    {
+      "tag": "local-ecs-task",
+      "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar."
+    },
+    {
+      "tag": "local-from-cfn-stack-substitution",
+      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via ListStackResources + DescribeStacks + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`)."
+    },
+    {
+      "tag": "local-from-state-substitution",
+      "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters."
+    },
+    {
+      "tag": "local-lambda-rie-container",
+      "description": "`cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution."
+    },
+    {
+      "tag": "local-lambda-rie-zip",
+      "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container."
+    },
+    {
+      "tag": "local-region-case-fold",
+      "description": "Region CASE folding on the `cdkd local` path (issues #1795 / #1814 / #1836): an upper-cased region is structurally valid and nothing rejects it, while AWS SDK endpoint resolution, the partition table and cdkd's own state-record / marker-key comparisons are all case-SENSITIVE. Covers the two ends a Docker / real-AWS run can observe — the CONTAINER's own `AWS_REGION` (every SDK client the handler builds) must arrive canonical from an upper-cased shell, and an upper-cased `--stack-region` must still read the canonically-keyed `cdkd/{stack}/{region}/state.json` record instead of silently falling back to no state at all."
+    },
+    {
+      "tag": "local-websocket-api",
+      "description": "`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane."
+    },
+    {
+      "tag": "migrate-from-cfn-handover",
+      "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack)."
+    },
+    {
+      "tag": "multi-asset",
+      "description": "Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design."
+    },
+    {
+      "tag": "multi-region-state-key",
+      "description": "Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout)."
+    },
+    {
+      "tag": "multi-stack-getstackoutput",
+      "description": "Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export)."
+    },
+    {
+      "tag": "multi-stack-importvalue-strong-ref",
+      "description": "Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[])."
+    },
+    {
+      "tag": "multi-stack-outputs-only-export",
+      "description": "Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue. Also covers the PREVIEW half (issue #1921): `cdkd diff` must report the Outputs-only change — human Outputs section naming the `[export]` row, `--fail` exiting 1, and the entry in `--json` `outputChanges` — where it previously printed \"No changes detected\" and exited 0, steering the user away from the deploy that publishes the export; paired with a negative arm requiring the freshly-deployed producer to still diff clean."
+    },
+    {
+      "tag": "nat-gateway-cleanup",
+      "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy)."
+    },
+    {
+      "tag": "nested-stack-deep-deploy-cascade",
+      "description": "Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level's resources + state files."
+    },
+    {
+      "tag": "nested-stack-migrate-from-cfn",
+      "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A."
+    },
+    {
+      "tag": "ordinary-create-name-cooldown",
+      "description": "An ORDINARY `cdkd deploy` (no --replace, no rollback, a fresh process that never deleted anything itself) creating a resource whose NAME is still held by a prior `cdkd destroy`'s asynchronous delete, and riding the cooldown out instead of failing the deploy (issue #2116). Distinct from `rollback-reverse-replacement-name-cooldown`, which covers the sites where cdkd ITSELF just deleted the name holder and therefore consults `isRecreateRetryableError`: this one covers the reachable destroy-then-redeploy dev loop, where the only thing that can absorb the window is the generic transient classifier plus the name-cooldown backoff grid. Pass condition = the redeploy exits 0 and prints `Deployment completed successfully`; coverage is confirmed separately from a --verbose retry line quoting the AWS cooldown message, since a fully-closed window produces the same exit code. CAVEAT on reading this row as coverage: the tag is claimed unconditionally by the fixture, but the arm is OPPORTUNISTIC -- the window is a ~23s real-AWS timing property that the fixture's preceding 200s bucket poll can outlast, so a given run reports either `OK: COVERED` or `INCONCLUSIVE`, and the latter is likely the common one. Nothing forces a re-run on INCONCLUSIVE. The standing backstop for the classifier and the 64s backoff grid is the unit suite (tests/unit/deployment/retryable-errors.test.ts + retry.test.ts), which runs every time; this row records that a real-AWS arm EXISTS, not that the last run exercised it."
+    },
+    {
+      "tag": "raw-cfn-template-diff-parity",
+      "description": "Raw CloudFormation template (CfnInclude) carrying Parameters w/ defaults + Mappings + Conditions on resources AND outputs: deploy resolves them, a no-op `cdkd diff --fail` must exit 0 (no phantom replacement / phantom create — #1027), an inlined-parameter change updates in place, and a condition-false Output is skipped without a `Failed to resolve output` warn (#1028)."
+    },
+    {
+      "tag": "rds-aurora-cluster-instance",
+      "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family."
+    },
+    {
+      "tag": "rds-full-stack",
+      "description": "Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint). A second SSM Parameter consumes `Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn)` (issue 1824) and must equal the live `describe-db-subnet-groups` ARN byte for byte — that ARN is read off the `CreateDBSubnetGroup` RESPONSE, a wire assumption every unit test hand-feeds to a mock, and pre-fix the reference HARD-FAILED the deploy on the resolver `*Arn` shape guard rather than resolving wrongly."
+    },
+    {
+      "tag": "remove-protection-bypass",
+      "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types."
+    },
+    {
+      "tag": "replacement-fanout-propagation",
+      "description": "Replacement propagation (#807) at FAN-OUT scale: ONE base resource (SNS Topic, TopicName change -> new ARN) referenced by MANY (10) dependents via Fn::Sub of its Ref (10 SSM Parameters + an SNS TopicPolicy). A second deploy with `-c phase=b` replaces the base; `promoteReplacementDependents` (src/analyzer/diff-calculator.ts) must propagate the new ARN to EVERY dependent so none keeps the stale phase-a ARN. Catches fan-out gaps the narrow ECS-only #807 case cannot."
+    },
+    {
+      "tag": "resource-type-change-replacement",
+      "description": "A resource `Type` change on an EXISTING logical id is a replacement whose two halves route on two types: the old resource is deleted through the STATE record's type and the new one created through the template's (issues #2668, #3036). Covers a stateful old type refused without --force-stateful-recreation, two types sharing one bare-name physical id, two types declaring an identical property bag (which a properties-only no-op check swallows), and both rollbacks (automatic, and `cdkd rollback` from a --no-rollback journal) re-creating each old type through its own provider. Pass condition = every old physical name confirmed gone and every new one read back from AWS, in both directions."
+    },
+    {
+      "tag": "rollback-create-deletion-policy-snapshot",
+      "description": "DeletionPolicy: Snapshot on a ROLLED-BACK CREATE (issue #1358): a deploy whose second resource fails must snapshot the first one and DELETE it, not orphan it. verify.sh asserts the deploy fails, the old orphan log line is absent, a completed cdkd:final-snapshot-of EBS snapshot of the rolled-back volume exists, the volume is gone from AWS, and state.json is gone."
+    },
+    {
+      "tag": "rollback-failure-injection",
+      "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
+    },
+    {
+      "tag": "rollback-replacement-updatereplacepolicy-retain",
+      "description": "Replacement rollback under `UpdateReplacePolicy: Retain` keeps the replacement's NEW physical copy (issue #2598). A live CloudFormation A/B (us-east-1, 2026-09-05) settled which attribute governs that delete: `UpdateReplacePolicy` does (DELETE_SKIPPED, new copy orphaned OUT of the stack) and `DeletionPolicy` does not (DELETE_COMPLETE) — so the fixture carries THREE `AWS::SSM::Parameter` subjects, one per row: RetainParam (UpdateReplacePolicy Retain, no DeletionPolicy — new copy must SURVIVE), ControlParam (no policies — new copy must be DELETED), DeletionPolicyParam (DeletionPolicy Retain only — new copy must be DELETED too, the row that refutes 'DeletionPolicy governs it'). All three rename their create-only `Name` in one deploy whose failing SQS queue DependsOn all of them, so every replacement COMPLETES and the rollback classifies each as a replacement; `--force-stateful-recreation` is required because AWS::SSM::Parameter is in STATEFUL_TYPES (the Retain arm is exempt from that guard and unaffected by the flag). verify.sh asserts the deploy engine ORPHANED the old retain copy, the rollback took reverse-replacement-readopt, the new retain copy is ALIVE in SSM while both control copies are GONE, and state names every OLD copy and the survivor NOWHERE. The load-bearing assertion is on the DURABLE channel rather than the log: a rollback runs during an already-failing deploy, usually non-TTY with the log discarded, so `cdkd events --run <failed> --format json` must show the retained subject's ROLLBACK_RESOURCE_SUCCEEDED carrying the survivor's `physicalId`, a `reason` naming both ids, and `provisionedBy` — while BOTH control rows carry neither field (an unconditional physicalId would point a cleanup pass at the resource the rollback just deleted). The warn grep is kept as the interactive-user channel, with a sentinel so a reworded message fails loudly instead of going blind. Finally, `cdkd destroy` must remove the tracked copies while leaving the untracked survivor standing — which the fixture then deletes itself, since Retain means cdkd will not clean up after it. Distinct from `rollback-replay-effective-properties`, which reaches the same reverse-replacement branch but only ever in its DELETE polarity: no other rollback fixture declares UpdateReplacePolicy: Retain on a replaced resource."
+    },
+    {
+      "tag": "rollback-replay-effective-properties",
+      "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans."
+    },
+    {
+      "tag": "rollback-reverse-replacement-explicit-name-rewrite",
+      "description": "`cdkd rollback` reverse-replacement of an EXPLICITLY named resource whose provider rewrites even a user-supplied name (IAM Role via `generateResourceNameWithFallback`), under the user-supplied-name prefix flag the failed deploy recorded in its journal segment (issue #4018). The re-create must ask AWS for exactly the name the deploy sent (the bare name by default, `<stack>-<name>` for a deploy with --prefix-user-supplied-names, whatever the rollback's own environment says), and a squatter already holding that name must be REFUSED by the rewritten-name holder proof with nothing deleted (issue #4010), then succeed once the squatter is gone; an in-place UPDATE revert of the same role must stay in place (same RoleId, no prefixed role). Pass condition = the journal segment's recorded flag read raw from S3, the refusal naming the sent name, and every restored/deleted role name read back from IAM."
+    },
+    {
+      "tag": "rollback-reverse-replacement-name-cooldown",
+      "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0."
+    },
+    {
+      "tag": "s3-asset-deploy",
+      "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy."
+    },
+    {
+      "tag": "sdk-ccapi-crossref-boundary",
+      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack with `Ref` / `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — an SDK-routed consumer reads a CC-routed producer, AND a CC-routed consumer reads an SDK-routed producer — against two kinds of CC-provisioned resource: a type with no SDK provider (pure Cloud Control fallback, read-only attribute via the CC read-back) and an SDK-registered type moved onto Cloud Control with `--recreate-via-cc-api`. Neither depends on a property the SDK provider leaves unhandled. Also covers the CC delete path bypassing the SDK provider delete()."
+    },
+    {
+      "tag": "selective-import-attribute-persistence",
+      "description": "Selective `cdkd import --resource <LogicalId>=<physical>` adoption of an already-deployed resource whose provider `import()` returns a NON-EMPTY `attributes` map, asserting the map is persisted into the state row (issue #1098: `buildStackState` hardcoded `attributes: {}` and dropped it, leaving an adopted resource with no `Fn::GetAtt` backing while a deployed one had it). Uses `AWS::IAM::ManagedPolicy` (`import()` -> `{ PolicyArn }`) after a `cdkd state orphan` drops state while leaving the AWS resource live. Distinct from `migrate-from-cfn-handover`, which covers the CFn retirement path rather than the state-row shape."
+    },
+    {
+      "tag": "sg-circular-dependency",
+      "description": "Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation."
+    },
+    {
+      "tag": "stack-level-tag-propagation-multitype",
+      "description": "STACK-LEVEL tags (`cdk.Tags.of(app/stack).add(k, v)`) propagate to ALL taggable resources across MANY types on BOTH the SDK-provider path (S3 / SNS / SQS / SSM Parameter / IAM Role / Logs LogGroup / Lambda / DynamoDB) AND the Cloud Control API path (Athena WorkGroup, no SDK provider). Each AWS type accepts tags in a DIFFERENT wire shape ({Key,Value}[] list vs { k: v } map vs the CC-API forwarder) — notably `AWS::SSM::Parameter.Tags` is a CFn MAP (the historical `Tags.map()` deploy-crash type per feedback_ssm_parameter_tags_is_a_map). verify.sh reads live AWS tags per type via that type-specific list/describe API and asserts ALL stack-level tags landed with the right value; a dropped tag FAILs naming the type. Also asserts post-deploy `cdkd drift` is clean (no #802 tag-list-reorder false positive)."
+    },
+    {
+      "tag": "state-bucket-region-resolve",
+      "description": "State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region."
+    },
+    {
+      "tag": "state-schema-migration",
+      "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema."
+    },
+    {
+      "tag": "undeletable-pending-resource-skip",
+      "description": "Destroy of a resource AWS itself refuses to delete until it expires server-side — the canonical case is an SNS subscription in PendingConfirmation, which rejects Unsubscribe from EVERY caller and only disappears via ~3-day auto-expiry or topic deletion. The provider must treat the rejection as delete-success (CloudFormation parity: the resource is removed from the stack without unsubscribing) instead of failing the resource and wedging destroy/state-destroy permanently (issue #1301)."
+    },
+    {
+      "tag": "update-policy-mutations",
+      "description": "Second-deploy mutation of CloudFormation template-level ATTRIBUTES (not properties) across a CDK context flip (`-c phase=a|b`): (1) `UpdateReplacePolicy: Retain` orphan-on-replace — an S3 `BucketName` change forces replacement, the OLD physical bucket must be RETAINED on AWS (not deleted) while the new one is created; (2) `DeletionPolicy` flip DESTROY->RETAIN on an SSM Parameter — the final destroy must honor the CURRENT (Retain) policy and leave it on AWS; (3) `DependsOn` add/remove between SNS topics — a metadata-only change that must update successfully without replacing either topic; (4) metadata-only / no-op identical redeploy reporting `No changes detected`. Intentional orphans (Retain bucket + Retain param) are cleaned by captured physical id in the verify.sh trap. Regression net for `diff-calculator.ts` attribute diff + `deploy-engine.ts` Retain-on-replace / DeletionPolicy destroy-skip paths."
+    },
+    {
+      "tag": "update-replace-breadth",
+      "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types."
+    },
+    {
+      "tag": "vpc-lambda-cr-race",
+      "description": "Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window)."
+    },
+    {
+      "tag": "vpc-lambda-eni-release",
+      "description": "Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent)."
+    },
+    {
+      "tag": "warn-arm-effective-properties",
+      "description": "A provider warn arm that SKIPS or SUBSTITUTES a malformed DECLARED value must record what it actually SENT (`effectiveProperties`), not the declared value. The deploy SUCCEEDS, so recording the declared bag makes state describe something AWS does not hold: `readCurrentState` can never match it, every later `cdkd drift` re-reports the same difference, and `drift --revert` re-issues the same skipped call (issues #1591 / #1612 / #1653 / #1654). Only a real deploy can produce the record and only a real read-side run can prove it converges, so a mocked client agrees with whatever wire assumption the author had. Covered arms: the DynamoDB GlobalTable `StreamSpecification` warn-and-SKIP (retains the PREVIOUS value; drops it when the previous side is malformed too) and the Lambda URL `AuthType` warn-and-SUBSTITUTE (records the previous value on the substituted arm, drops the key on the OMITTED arm) — each asserting the recorded value, the untouched LIVE resource, and that the corrected template then diffs clean against that record (a `cdkd drift` assertion would be vacuous here: drift prefers the `observedProperties` baseline, which is a live read and therefore matches AWS either way). The Lambda arm additionally asserts the security consequence directly (the URL is still IAM-guarded) and that a reverse-replacement replay of a record with no `AuthType` ANNOUNCES the PUBLIC default it falls back to."
+    },
+    {
+      "tag": "wide-dag-throttle-retry",
+      "description": "Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans."
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "acm-certificate",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "agentcore-tools",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "alb",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "alb-advanced",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "api-cognito",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "apigateway",
+      "annotated": true,
+      "scenarios": [
+        "apigateway-cors-preflight"
+      ]
+    },
+    {
+      "name": "apigatewayv2-update-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "apigw-gateway-response",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "apigw-stage-props",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "apigw-stage-throttling",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "apigw-usage-plan-key",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "app-autoscaling-recreate",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "appconfig",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "appsync",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "asset-auto-create",
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage"
+      ]
+    },
+    {
+      "name": "asset-bootstrap",
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage"
+      ]
+    },
+    {
+      "name": "asset-migration",
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage",
+        "cdkd-asset-storage-import"
+      ]
+    },
+    {
+      "name": "aws-custom-resource",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "backup",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "basic",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "batch",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "bedrock-agentcore",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "bench-ccapi",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "bench-cdk-sample",
+      "annotated": true,
+      "scenarios": [
+        "cdk-defensive-vpc-deps-relax",
+        "cross-cutting-deploy-destroy",
+        "lambda-vpc-subnet-sg-deletion-order",
+        "nat-gateway-cleanup",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "bench-sdk",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "bootstrap-free-region",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "bucket-deployment",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "budgets",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cache-streaming",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cc-api-fallback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cc-api-fallback-transitions",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cc-final-snapshot-handlers",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cc-getatt-readback",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cc-protection-flip",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cc-protection-flip-eks",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cc-to-sdk-reroute",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cc-write-only-create-only",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ci-cd",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cloudfront-function-url",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll"
+      ]
+    },
+    {
+      "name": "cloudtrail-trail",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cloudwatch",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cloudwatch-anomaly-detector",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "codebuild-project",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "codecommit",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "codedeploy-lambda-deployment-group",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cognito",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cognito-custom-attribute-add",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cognito-identity-pool",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cognito-lambda-triggers",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cognito-resource-server",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cognito-userpool-user-ref",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "composite-stack",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "conditions",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "conditions-and-if",
+      "annotated": true,
+      "scenarios": [
+        "conditions-and-if"
+      ]
+    },
+    {
+      "name": "conditions-update-2",
+      "annotated": true,
+      "scenarios": [
+        "conditions-update-semantics"
+      ]
+    },
+    {
+      "name": "context-test",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "created-before-failure-revert",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cross-region-concurrent-stacks",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cross-region-state-bucket",
+      "annotated": true,
+      "scenarios": [
+        "exports-index-region-resolve",
+        "state-bucket-region-resolve"
+      ]
+    },
+    {
+      "name": "cross-stack-cfn-fallback",
+      "annotated": true,
+      "scenarios": [
+        "cfn-fallback-cross-stack"
+      ]
+    },
+    {
+      "name": "cross-stack-references",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "cross-stack-secret-import",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "custom-resource-getatt-data",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-getatt-data"
+      ]
+    },
+    {
+      "name": "custom-resource-masked-service-token",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-getatt-data"
+      ]
+    },
+    {
+      "name": "custom-resource-noecho-nested",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "custom-resource-provider",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll",
+        "ordinary-create-name-cooldown"
+      ]
+    },
+    {
+      "name": "custom-resource-resolved-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "custom-resource-service-token-change",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "data-analytics",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "data-pipeline",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "deep-getatt-chains",
+      "annotated": true,
+      "scenarios": [
+        "deep-getatt-chain-resolution"
+      ]
+    },
+    {
+      "name": "deletion-ordering-complex",
+      "annotated": true,
+      "scenarios": [
+        "elbv2-listener-tg-lb-deletion-order"
+      ]
+    },
+    {
+      "name": "deletion-policy-retain",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-retain"
+      ]
+    },
+    {
+      "name": "deletion-policy-snapshot",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-snapshot"
+      ]
+    },
+    {
+      "name": "deletion-policy-snapshot-heavy",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-snapshot-heavy"
+      ]
+    },
+    {
+      "name": "deployment-events",
+      "annotated": true,
+      "scenarios": [
+        "deployment-events"
+      ]
+    },
+    {
+      "name": "destroy-data-guard",
+      "annotated": true,
+      "scenarios": [
+        "destroy-data-guard"
+      ]
+    },
+    {
+      "name": "destroy-interrupt",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll",
+        "destroy-interrupt",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "diff-fail-on-destructive",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "diff-intrinsic-target-change",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "dlm-lifecycle-policy",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "docdb-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "docdb-neptune",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "docker-image-asset",
+      "annotated": true,
+      "scenarios": [
+        "docker-image-asset-ecr-publish"
+      ]
+    },
+    {
+      "name": "drift-revert",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-roundtrip"
+      ]
+    },
+    {
+      "name": "drift-revert-arrays",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-array-canonicalization",
+        "drift-revert-roundtrip"
+      ]
+    },
+    {
+      "name": "drift-revert-vpc",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-roundtrip"
+      ]
+    },
+    {
+      "name": "dsql",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "dynamic-ref-cross-region",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "dynamodb-autoscaling",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-globaltable",
+      "annotated": true,
+      "scenarios": [
+        "globaltable-billing-flip-with-gsi",
+        "globaltable-cross-region-replica",
+        "warn-arm-effective-properties"
+      ]
+    },
+    {
+      "name": "dynamodb-globaltable-implied-stream",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-gsi-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-ondemand",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-sse",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-stream-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-streams",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-tableclass-switch",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-ttl-attr-change",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ec2-instance",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ec2-instance-fanout",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ec2-route-targets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ec2-vpc",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecr",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecr-scanning",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-bluegreen",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-fargate",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-schedule-targets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-service-update-props",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "efs-immutable-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "efs-lambda",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "efs-standalone",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "elasticache-replicationgroup-getatt",
+      "annotated": true,
+      "scenarios": [
+        "cc-api-getatt-enrichment-elasticache-replicationgroup"
+      ]
+    },
+    {
+      "name": "elbv2-same-name-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "emr-cluster",
+      "annotated": true,
+      "scenarios": [
+        "import-adopt-live-resource-roundtrip"
+      ]
+    },
+    {
+      "name": "emr-instance-configs",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "emr-instance-fleets",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "event-driven",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-api-destination",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-archive",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-input-transformer",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-pipes",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-scheduler",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "eventbus-policy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "eventsourcemapping-race",
+      "annotated": true,
+      "scenarios": [
+        "eventsourcemapping-fresh-source-race"
+      ]
+    },
+    {
+      "name": "export",
+      "annotated": true,
+      "scenarios": [
+        "export-to-cfn-handover"
+      ]
+    },
+    {
+      "name": "export-nested-stack",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "fallback-recreate-children",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "fifo-sqs-event-source",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "fsx-lustre",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "fsx-ontap",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "fsx-openzfs",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "fsx-windows",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "full-stack-demo",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "gc-custom-asset-names",
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage",
+        "cdkd-gc"
+      ]
+    },
+    {
+      "name": "getatt-fallback-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "getstackoutput-crossregion",
+      "annotated": true,
+      "scenarios": [
+        "getstackoutput-cross-region",
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "glue-securityconfig-replace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "glue-update-hardening",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "healthimaging-stateful-update-fallback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "iam-access-key",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "iam-managed-policy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "iam-oidc-provider",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "iam-propagation-stress",
+      "annotated": true,
+      "scenarios": [
+        "iam-fresh-role-immediate-assume"
+      ]
+    },
+    {
+      "name": "iam-recreate-reattach",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "iam-role-policies-drift-clean",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "iam-role-prefixed-name-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "iam-secret-derived-principals",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "import-attribute-readback",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-attribute-readback-final",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-attribute-readback-misc",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-attribute-readback-network",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-attributes",
+      "annotated": true,
+      "scenarios": [
+        "selective-import-attribute-persistence"
+      ]
+    },
+    {
+      "name": "import-auto-mode",
+      "annotated": true,
+      "scenarios": [
+        "auto-import-cfn-generated-name",
+        "auto-import-composite-physical-id"
+      ]
+    },
+    {
+      "name": "import-deployed-parameter-secret",
+      "annotated": true,
+      "scenarios": [
+        "nested-stack-migrate-from-cfn"
+      ]
+    },
+    {
+      "name": "import-heal-prefix-record",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-lambda-url-attributes",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-migrate-vpc",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-nested-stack",
+      "annotated": true,
+      "scenarios": [
+        "nested-stack-migrate-from-cfn"
+      ]
+    },
+    {
+      "name": "import-noecho-parameter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "import-reimport-masked-attrs",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "import-retain-destroy",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "import-secret-observed",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "import-value-strong-ref",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-importvalue-strong-ref"
+      ]
+    },
+    {
+      "name": "importvalue-chain",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-importvalue-strong-ref"
+      ]
+    },
+    {
+      "name": "infra-security",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "inplace-attr-propagation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "intrinsic-functions",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "intrinsics-torture",
+      "annotated": true,
+      "scenarios": [
+        "intrinsics-torture"
+      ]
+    },
+    {
+      "name": "intrinsics-torture-2",
+      "annotated": true,
+      "scenarios": [
+        "intrinsic-hard-arg-shapes"
+      ]
+    },
+    {
+      "name": "kinesis-esm-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "kinesis-stream-mode-switch",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "kms-encryption",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "lambda",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy",
+        "iam-policy-propagation-retry",
+        "lambda-vpc-subnet-sg-deletion-order",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "lambda-alias-provisioned-concurrency",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-arch-switch",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-capacity-provider-default-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-config-field-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-destinations",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-durable-replacement",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-env-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-esm-self-managed-kafka",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-event-invoke-config-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-layer-version-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-log-retention",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-microvm-image",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-reserved-concurrency",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-snapstart",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-url-authtype-replay",
+      "annotated": true,
+      "scenarios": [
+        "warn-arm-effective-properties"
+      ]
+    },
+    {
+      "name": "lambda-versioning",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "launchtemplate-asg-inplace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "legacy-bucket-name-fallback",
+      "annotated": true,
+      "scenarios": [
+        "legacy-bucket-name-fallback"
+      ]
+    },
+    {
+      "name": "legacy-state-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "list-parameters",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-ecs-service-connect",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-service",
+        "local-ecs-service-connect"
+      ]
+    },
+    {
+      "name": "local-invoke",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip",
+        "local-region-case-fold"
+      ]
+    },
+    {
+      "name": "local-invoke-agentcore",
+      "annotated": true,
+      "scenarios": [
+        "local-agentcore-runtime"
+      ]
+    },
+    {
+      "name": "local-invoke-agentcore-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-agentcore-from-state",
+        "local-agentcore-runtime"
+      ]
+    },
+    {
+      "name": "local-invoke-buildkit",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-container"
+      ]
+    },
+    {
+      "name": "local-invoke-container",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-container"
+      ]
+    },
+    {
+      "name": "local-invoke-dotnet",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-from-cfn-stack",
+      "annotated": true,
+      "scenarios": [
+        "local-from-cfn-stack-substitution",
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-from-cfn-stack-multi-stack",
+      "annotated": true,
+      "scenarios": [
+        "local-from-cfn-stack-substitution",
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-from-state-substitution",
+        "local-lambda-rie-zip",
+        "local-region-case-fold"
+      ]
+    },
+    {
+      "name": "local-invoke-java",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-layers",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-provided",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-python",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-ruby",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-stage",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-run-task",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-task"
+      ]
+    },
+    {
+      "name": "local-run-task-awsvpc",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-awsvpc"
+      ]
+    },
+    {
+      "name": "local-run-task-cdkd-assets",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "local-run-task-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-task",
+        "local-from-state-substitution"
+      ]
+    },
+    {
+      "name": "local-run-task-multi-container",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-task"
+      ]
+    },
+    {
+      "name": "local-start-agentcore",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-alb",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-alb-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-api",
+      "annotated": true,
+      "scenarios": [
+        "local-apigateway-server"
+      ]
+    },
+    {
+      "name": "local-start-api-container",
+      "annotated": true,
+      "scenarios": [
+        "local-apigateway-server",
+        "local-lambda-rie-container"
+      ]
+    },
+    {
+      "name": "local-start-api-rest-v1-non-proxy",
+      "annotated": true,
+      "scenarios": [
+        "local-apigateway-server"
+      ]
+    },
+    {
+      "name": "local-start-api-websocket",
+      "annotated": true,
+      "scenarios": [
+        "local-websocket-api"
+      ]
+    },
+    {
+      "name": "local-start-cloudfront",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-service",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-service"
+      ]
+    },
+    {
+      "name": "local-start-service-watch-fast",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "log-pipeline",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "loggroup-class-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "loggroup-kms-associate",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "loggroup-never-expire-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lost-child-after-failed-deploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "macro-expansion",
+      "annotated": true,
+      "scenarios": [
+        "cfn-macro-expansion"
+      ]
+    },
+    {
+      "name": "microservices",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy",
+        "iam-policy-propagation-retry"
+      ]
+    },
+    {
+      "name": "migrate-from-cfn",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "monitoring",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "multi-asset",
+      "annotated": true,
+      "scenarios": [
+        "multi-asset"
+      ]
+    },
+    {
+      "name": "multi-region-same-stack",
+      "annotated": true,
+      "scenarios": [
+        "multi-region-state-key"
+      ]
+    },
+    {
+      "name": "multi-resource",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "multi-stack-deps",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "neptune-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "nested-required-preflight",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "nested-stack",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "nested-stack-3level",
+      "annotated": true,
+      "scenarios": [
+        "nested-stack-deep-deploy-cascade"
+      ]
+    },
+    {
+      "name": "nested-stack-deep",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "nested-stack-replace-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "nested-stack-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "nested-stack-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "nlb-source-nat",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "nodejs-function",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "noecho-parameter-masking",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "opensearch-domain-getatt",
+      "annotated": true,
+      "scenarios": [
+        "cc-api-getatt-enrichment-opensearch-domain"
+      ]
+    },
+    {
+      "name": "orphan-getatt-takeover",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "orphan-resource",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "output-never-resolved-diff",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "outputs-only-export",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-outputs-only-export"
+      ]
+    },
+    {
+      "name": "parameters",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "partial-create-handback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "propagation-races-2",
+      "annotated": true,
+      "scenarios": [
+        "fresh-principal-consumer-race",
+        "iam-policy-propagation-retry"
+      ]
+    },
+    {
+      "name": "raw-cfn-conditions-params",
+      "annotated": true,
+      "scenarios": [
+        "raw-cfn-template-diff-parity"
+      ]
+    },
+    {
+      "name": "rds-aurora",
+      "annotated": true,
+      "scenarios": [
+        "rds-aurora-cluster-instance"
+      ]
+    },
+    {
+      "name": "rds-dbinstance-backfill",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "rds-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "rds-full-stack",
+      "annotated": true,
+      "scenarios": [
+        "rds-full-stack"
+      ]
+    },
+    {
+      "name": "recreate-mixed-direction",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "recreate-nested-logical-id-collision",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "recreate-parent-child-permission",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "recreate-target-readers",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "recreate-via-cc-api",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "recreate-via-sdk-provider",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "redacted-delete-address",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-getatt-data"
+      ]
+    },
+    {
+      "name": "redshift-cluster-getatt",
+      "annotated": true,
+      "scenarios": [
+        "cc-api-getatt-enrichment-redshift-cluster"
+      ]
+    },
+    {
+      "name": "remove-protection",
+      "annotated": true,
+      "scenarios": [
+        "remove-protection-bypass"
+      ]
+    },
+    {
+      "name": "remove-protection-compensation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "remove-protection-journaled-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "rename-refactor",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "replace-squatter-refusal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "replacement-fanout",
+      "annotated": true,
+      "scenarios": [
+        "replacement-fanout-propagation"
+      ]
+    },
+    {
+      "name": "replacement-immutable-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "replacement-rename-onto-holder",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "retain-orphan-redeploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "retain-orphan-secret",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "rollback-command",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "rollback-cross-region-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution",
+        "getstackoutput-cross-region"
+      ]
+    },
+    {
+      "name": "rollback-deletion-policy-snapshot",
+      "annotated": true,
+      "scenarios": [
+        "rollback-create-deletion-policy-snapshot"
+      ]
+    },
+    {
+      "name": "rollback-explicit-name-rewrite",
+      "annotated": true,
+      "scenarios": [
+        "rollback-reverse-replacement-explicit-name-rewrite"
+      ]
+    },
+    {
+      "name": "rollback-failure-injection",
+      "annotated": true,
+      "scenarios": [
+        "rollback-failure-injection"
+      ]
+    },
+    {
+      "name": "rollback-nested-cross-region-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution",
+        "getstackoutput-cross-region"
+      ]
+    },
+    {
+      "name": "rollback-replacement-retain",
+      "annotated": true,
+      "scenarios": [
+        "rollback-replacement-updatereplacepolicy-retain"
+      ]
+    },
+    {
+      "name": "rollback-replay-cc-generated-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "rollback-replay-effective-props",
+      "annotated": true,
+      "scenarios": [
+        "rollback-replay-effective-properties"
+      ]
+    },
+    {
+      "name": "rollback-sqs-cooldown",
+      "annotated": true,
+      "scenarios": [
+        "failed-only-journal-retention-cycle",
+        "rollback-reverse-replacement-name-cooldown"
+      ]
+    },
+    {
+      "name": "route53",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-analytics-inventory",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-asset-deploy",
+      "annotated": true,
+      "scenarios": [
+        "s3-asset-deploy"
+      ]
+    },
+    {
+      "name": "s3-cloudfront",
+      "annotated": true,
+      "scenarios": [
+        "cloudfront-oai-attribute-enrichment"
+      ]
+    },
+    {
+      "name": "s3-directory-bucket",
+      "annotated": true,
+      "scenarios": [
+        "destroy-data-guard"
+      ]
+    },
+    {
+      "name": "s3-event-notification",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-lifecycle",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-object-lock",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-replication-and-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-retry-own-bucket",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "s3-subconfig-removal",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-tables",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-vectors",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "scheduled-task",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "scheduler-custom-group",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "schema-v10-to-v11-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "schema-v5-to-v6-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "schema-v6-to-v7-migration",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "schema-v7-to-v8-migration",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "schema-v8-to-v9-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "schema-v9-to-v10-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "scrub-nested-child",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "sdk-ccapi-crossref",
+      "annotated": true,
+      "scenarios": [
+        "sdk-ccapi-crossref-boundary"
+      ]
+    },
+    {
+      "name": "sdk-to-cc-autoroute",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "secret-derived-immutable-names",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "secrets-array-nested",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-roundtrip",
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "secrets-dynamic-ref",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "secrets-rotation-schedule",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "secretsmanager-update-value-source",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "serverless-api",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "servicediscovery",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "servicediscovery-namespaces",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ses-identity",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "sg-circular-dependency",
+      "annotated": true,
+      "scenarios": [
+        "sg-circular-dependency"
+      ]
+    },
+    {
+      "name": "sns-event-source",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "sns-inline-subscription",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "sns-pending-subscription",
+      "annotated": true,
+      "scenarios": [
+        "undeletable-pending-resource-skip"
+      ]
+    },
+    {
+      "name": "sns-sqs-event",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "sns-subscription-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "sns-subscription-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "sqs-cloudwatch",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "sqs-esm-max-concurrency",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ssm-secure-dynamic-ref",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
+      "name": "stack-copy-create-tokens",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "stack-lock-renewal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "stage-assets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "stale-attribute-heal",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "state-destroy",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "state-info-command",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "stepfunctions",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "stepfunctions-logging",
+      "annotated": true,
+      "scenarios": [
+        "iam-policy-propagation-retry"
+      ]
+    },
+    {
+      "name": "stepfunctions-s3-definition",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "stream-delete-redeploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "synthetics-canary",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "tags-propagation",
+      "annotated": true,
+      "scenarios": [
+        "stack-level-tag-propagation-multitype"
+      ]
+    },
+    {
+      "name": "throttle-wide-dag",
+      "annotated": true,
+      "scenarios": [
+        "wide-dag-throttle-retry"
+      ]
+    },
+    {
+      "name": "type-change-replacement",
+      "annotated": true,
+      "scenarios": [
+        "resource-type-change-replacement"
+      ]
+    },
+    {
+      "name": "unrecognized-key-autoroute",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "update-policy-mutations",
+      "annotated": true,
+      "scenarios": [
+        "update-policy-mutations"
+      ]
+    },
+    {
+      "name": "update-replace",
+      "annotated": true,
+      "scenarios": [
+        "update-replace-breadth"
+      ]
+    },
+    {
+      "name": "vpc-lambda",
+      "annotated": true,
+      "scenarios": [
+        "lambda-vpc-subnet-sg-deletion-order",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "vpc-lambda-cr-race",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll",
+        "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "name": "vpc-lookup",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "vpc-nat-gateway",
+      "annotated": true,
+      "scenarios": [
+        "nat-gateway-cleanup"
+      ]
+    },
+    {
+      "name": "wafv2",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "wait-condition-handle",
+      "annotated": true,
+      "scenarios": []
+    }
+  ],
+  "perScenarioCoverage": [
+    {
+      "scenario": "apigateway-cors-preflight",
+      "description": "API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays.",
+      "fixtures": [
+        "apigateway"
+      ]
+    },
+    {
+      "scenario": "auto-import-cfn-generated-name",
+      "description": "`cdkd import` AUTO mode (no `--resource`, no `--migrate-from-cloudformation`) adopting a resource whose physical name CloudFormation GENERATED, after an upstream `cdk deploy`. Pins issue #1128: auto mode resolves ids by the template name property, then an `aws:cdk:path` tag walk that CANNOT match on real AWS (AWS rejects `aws:`-prefixed tag writes; CloudFormation keeps the value in template `Metadata` without promoting it to a tag), so a CFn-generated name returned `not found` until auto mode learned to consult `DescribeStackResources`. The fixture deliberately sets NO explicit physical name and passes NO override flag — both pre-existing import integs pass one of those and therefore never exercised this path, which is why the defect survived four rounds of #1091 tag-walk work.",
+      "fixtures": [
+        "import-auto-mode"
+      ]
+    },
+    {
+      "scenario": "auto-import-composite-physical-id",
+      "description": "`cdkd import` AUTO mode adopting a resource whose cdkd physicalId is a COMPOSITE (`<databaseName>|<tableName>`) while CloudFormation's is a single bare segment (the table name). Pins issue #1651, the sibling of #1128 one layer down: #1128 fixed the RESOLUTION of a CFn-generated id, this is the provider REJECTING an id auto mode had already resolved — `importTable` split the bare form on `|`, found no second segment, and returned `not found` without calling AWS, so every `cdk deploy`-managed `AWS::Glue::Table` was unadoptable while the error told the user to pass the id it had just refused. The fixture renders `DatabaseName` as a `Ref` to the sibling database (what CDK emits, and the reason a bare table name can be paired with a database at all — `AWS::Glue::Database`'s CFn physicalId IS the database name, so the overrides map resolves the Ref to a literal before `provider.import()` runs), asserts CloudFormation's reported id carries no `|` before relying on it, and asserts the ADOPTED id is the COMPOSITE — recording CFn's bare name would look like success while leaving a state row that update / delete / getAttribute / readCurrentState cannot split.",
+      "fixtures": [
+        "import-auto-mode"
+      ]
+    },
+    {
+      "scenario": "cc-api-getatt-enrichment-elasticache-replicationgroup",
+      "description": "CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id).",
+      "fixtures": [
+        "elasticache-replicationgroup-getatt"
+      ]
+    },
+    {
+      "scenario": "cc-api-getatt-enrichment-opensearch-domain",
+      "description": "CC-API attribute enrichment for `AWS::OpenSearchService::Domain` (no SDK provider): `Fn::GetAtt(<Domain>, DomainEndpoint / Arn)` must resolve to the real `*.es.amazonaws.com` endpoint / `arn:aws:es:...:domain/...` ARN via DescribeDomain, not fall through to the physicalId (the domain name).",
+      "fixtures": [
+        "opensearch-domain-getatt"
+      ]
+    },
+    {
+      "scenario": "cc-api-getatt-enrichment-redshift-cluster",
+      "description": "CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id).",
+      "fixtures": [
+        "redshift-cluster-getatt"
+      ]
+    },
+    {
+      "scenario": "cdk-defensive-vpc-deps-relax",
+      "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization.",
+      "fixtures": [
+        "bench-cdk-sample"
+      ]
+    },
+    {
+      "scenario": "cdkd-asset-storage",
+      "description": "cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011).",
+      "fixtures": [
+        "asset-auto-create",
+        "asset-bootstrap",
+        "asset-migration",
+        "gc-custom-asset-names"
+      ]
+    },
+    {
+      "scenario": "cdkd-asset-storage-import",
+      "description": "Import-driven adoption into a cdkd-assets region against real AWS (issue #1652): a stack deployed by the UPSTREAM `cdk deploy` (so AWS holds `cdk-<qualifier>-assets-*` everywhere, including the `AWS::IAM::Policy` that `s3deploy.BucketDeployment` grants on the asset bucket) is adopted with `cdkd import --migrate-from-cloudformation`; state must record the PRE-rewrite `cdk-*` values, `cdkd diff` must report a real UPDATE on that policy (pre-fix it classified NO_CHANGE because the rewrite reached `state.properties`), and the post-import `cdkd deploy` must leave the LIVE policy document naming the cdkd asset bucket.",
+      "fixtures": [
+        "asset-migration"
+      ]
+    },
+    {
+      "scenario": "cdkd-gc",
+      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object plus an unreferenced seeded ECR image are the only deletion candidates, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012). Since issues #1792 / #1793 the ECR half is DISCRIMINATING rather than a re-run of the plain path: two live images are referenced only through WIDENED host forms — an UPPER-cased host carrying an UPPER-cased digest (collected yet unmatchable against ECR lower-case digests before the insert-time fold, so the live image was deleted) and the dual-stack FIPS `<acct>.dkr-ecr-fips.<region>.on.aws` form the grammar had missed entirely — and both must SURVIVE the run, since a missed reference deletes irreversibly.",
+      "fixtures": [
+        "gc-custom-asset-names"
+      ]
+    },
+    {
+      "scenario": "cfn-fallback-cross-stack",
+      "description": "CloudFormation fallback for cross-stack references (issue #1697): a cdkd-deployed consumer references a producer stack managed by CloudFormation ONLY (no cdkd state record) — `Fn::ImportValue` via the `ListExports` fallback AND `Fn::GetStackOutput` via the `DescribeStacks` outputs fallback — plus the weak-reference contract (no imports[]/outputReads[] recorded) and the `--no-cfn-fallback` opt-out failing at resolve time.",
+      "fixtures": [
+        "cross-stack-cfn-fallback"
+      ]
+    },
+    {
+      "scenario": "cfn-macro-expansion",
+      "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/_contents/design/463-cfn-macros.md`.",
+      "fixtures": [
+        "macro-expansion"
+      ]
+    },
+    {
+      "scenario": "cloudfront-oai-attribute-enrichment",
+      "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly).",
+      "fixtures": [
+        "s3-cloudfront"
+      ]
+    },
+    {
+      "scenario": "conditions-and-if",
+      "description": "CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property.",
+      "fixtures": [
+        "conditions-and-if"
+      ]
+    },
+    {
+      "scenario": "conditions-update-semantics",
+      "description": "Harder CloudFormation-Conditions-on-UPDATE semantics beyond the simple flip in `conditions-and-if` (which surfaced #840). A CDK-context phase flip (-c phase=a|b) redeploys the SAME stack in place and asserts: a resource that MOVES gating conditions (IsPhaseA-gated -> condition-false -> DELETED) and its reverse (IsPhaseB-gated absent -> CREATED); `Fn::If` -> `AWS::NoValue` REMOVING a nested property block (SQS RedrivePolicy) on an in-place UPDATE (same physical id, not a replacement); a condition-gated OUTPUT present vs absent in cdkd state outputs; a `DependsOn` to a condition-EXCLUDED resource being dropped (the depender still deploys); and a `Ref` to a condition-excluded resource living inside another condition-excluded resource (both pruned together, no dangling-ref crash).",
+      "fixtures": [
+        "conditions-update-2"
+      ]
+    },
+    {
+      "scenario": "cross-cutting-deploy-destroy",
+      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). The run to make when a change is cross-cutting rather than feature-local.",
+      "fixtures": [
+        "bench-ccapi",
+        "bench-cdk-sample",
+        "bench-sdk",
+        "full-stack-demo",
+        "lambda",
+        "microservices",
+        "multi-resource"
+      ]
+    },
+    {
+      "scenario": "custom-resource-async-poll",
+      "description": "Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling.",
+      "fixtures": [
+        "cloudfront-function-url",
+        "custom-resource-provider",
+        "destroy-interrupt",
+        "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "scenario": "custom-resource-getatt-data",
+      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. A second custom resource carries the `NoEcho: true` arm (issue #2274) through the SIMPLE-HANDLER response shape, asserting both directions at once: the dependent's live SSM value is the real token, while the CR's `attributes`, the dependent's `properties`, `state.outputs` and the whole state blob hold none of it -- with the non-`NoEcho` resource above as the in-fixture negative control. An embedded arm (issue #2453) adds a parameter and an output that build a longer string around the token, asserted `***` WHOLE in state and the full string on AWS, and a second deploy with a rotated token (`CDKD_TEST_NOECHO_SEED`) that must reach AWS through both dependents while neither token reaches state.",
+      "fixtures": [
+        "custom-resource-getatt-data",
+        "custom-resource-masked-service-token",
+        "redacted-delete-address"
+      ]
+    },
+    {
+      "scenario": "deep-getatt-chain-resolution",
+      "description": "Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture).",
+      "fixtures": [
+        "deep-getatt-chains"
+      ]
+    },
+    {
+      "scenario": "deletion-policy-retain",
+      "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
+      "fixtures": [
+        "deletion-policy-retain"
+      ]
+    },
+    {
+      "scenario": "deletion-policy-snapshot",
+      "description": "DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354 / #1357): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, on the REPLACEMENT delete site (an immutable AvailabilityZone change under --force-stateful-recreation, unblocked by the #1356 EC2 Volume classification), and on the destroy-runner path; --skip-final-snapshot opt-out.",
+      "fixtures": [
+        "deletion-policy-snapshot"
+      ]
+    },
+    {
+      "scenario": "deletion-policy-snapshot-heavy",
+      "description": "DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete.",
+      "fixtures": [
+        "deletion-policy-snapshot-heavy"
+      ]
+    },
+    {
+      "scenario": "deployment-events",
+      "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).",
+      "fixtures": [
+        "deployment-events"
+      ]
+    },
+    {
+      "scenario": "destroy-data-guard",
+      "description": "CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans.",
+      "fixtures": [
+        "destroy-data-guard",
+        "s3-directory-bucket"
+      ]
+    },
+    {
+      "scenario": "destroy-interrupt",
+      "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly).",
+      "fixtures": [
+        "destroy-interrupt"
+      ]
+    },
+    {
+      "scenario": "docker-image-asset-ecr-publish",
+      "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy.",
+      "fixtures": [
+        "docker-image-asset"
+      ]
+    },
+    {
+      "scenario": "drift-revert-array-canonicalization",
+      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) and on an unordered OBJECT array at a provider-declared path (issue #1620 — ELBv2 `TargetGroup.Targets`, asserted by TWO consecutive clean drift runs, since one run cannot detect a reorder disagreement), while still detecting real value / Action / SG-rule / added-target drift.",
+      "fixtures": [
+        "drift-revert-arrays"
+      ]
+    },
+    {
+      "scenario": "drift-revert-roundtrip",
+      "description": "cdkd drift detection + `--revert` round-trip via each provider.update().",
+      "fixtures": [
+        "drift-revert",
+        "drift-revert-arrays",
+        "drift-revert-vpc",
+        "secrets-array-nested"
+      ]
+    },
+    {
+      "scenario": "dynamic-reference-resolution",
+      "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` / `{{resolve:ssm-secure:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. `ssm-secure:` is secret by SPELLING (issue #2482): its whole, embedded and `<name>:<version>` forms decrypt to the SecureString value and persist as the expression, with the parameter seeded out of band because CloudFormation cannot create a SecureString.",
+      "fixtures": [
+        "cross-stack-secret-import",
+        "custom-resource-resolved-secret",
+        "dynamic-ref-cross-region",
+        "nested-stack-secret",
+        "rollback-cross-region-secret",
+        "rollback-nested-cross-region-secret",
+        "scrub-nested-child",
+        "secrets-array-nested",
+        "secrets-dynamic-ref",
+        "ssm-secure-dynamic-ref"
+      ]
+    },
+    {
+      "scenario": "elbv2-listener-tg-lb-deletion-order",
+      "description": "ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation).",
+      "fixtures": [
+        "deletion-ordering-complex"
+      ]
+    },
+    {
+      "scenario": "eventsourcemapping-fresh-source-race",
+      "description": "`AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy.",
+      "fixtures": [
+        "eventsourcemapping-race"
+      ]
+    },
+    {
+      "scenario": "export-to-cfn-handover",
+      "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE.",
+      "fixtures": [
+        "export"
+      ]
+    },
+    {
+      "scenario": "exports-index-region-resolve",
+      "description": "Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819).",
+      "fixtures": [
+        "cross-region-state-bucket"
+      ]
+    },
+    {
+      "scenario": "failed-only-journal-retention-cycle",
+      "description": "Failed-only rollback-journal retention after a CLEAN automatic rollback (issue #1208): the journal survives as a SINGLE popped-and-re-recorded segment (reason=auto-rollback-clean / operations=[] / failedOperations=[<bad resource>], raw S3 read), the next deploy prints the --revert-failed note and its own clean auto-rollback PRESERVES the older failed-only segment (PR #1216, exactly 2 segments), `cdkd rollback --force --revert-failed` consumes it via the #1198 skip-with-warning for a physical-id-less failed CREATE (exit 2 accepted), and a NO-CHANGE fix-forward deploy (bad resource removed) clears the journal + note (the PR #1212 no-change gap).",
+      "fixtures": [
+        "rollback-sqs-cooldown"
+      ]
+    },
+    {
+      "scenario": "fresh-principal-consumer-race",
+      "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts.",
+      "fixtures": [
+        "propagation-races-2"
+      ]
+    },
+    {
+      "scenario": "getstackoutput-cross-region",
+      "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).",
+      "fixtures": [
+        "getstackoutput-crossregion",
+        "rollback-cross-region-secret",
+        "rollback-nested-cross-region-secret"
+      ]
+    },
+    {
+      "scenario": "globaltable-billing-flip-with-gsi",
+      "description": "DynamoDB GlobalTable `PAY_PER_REQUEST` -> `PROVISIONED` billing flip on a table that HAS GSIs (issue #1421). AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call that changes `BillingMode`, and an index the deploy REMOVES is still live at flip time (its Delete is issued later), so it must carry throughput in that call too — both claims were previously asserted only against a mocked DynamoDB client. Also pins the surviving index + table onto their `SeedCapacity` rather than `MinCapacity`, the one context AWS documents the seed for (issue #1435).",
+      "fixtures": [
+        "dynamodb-globaltable"
+      ]
+    },
+    {
+      "scenario": "globaltable-cross-region-replica",
+      "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).",
+      "fixtures": [
+        "dynamodb-globaltable"
+      ]
+    },
+    {
+      "scenario": "iam-fresh-role-immediate-assume",
+      "description": "Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers).",
+      "fixtures": [
+        "iam-propagation-stress"
+      ]
+    },
+    {
+      "scenario": "iam-policy-propagation-retry",
+      "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race.",
+      "fixtures": [
+        "lambda",
+        "microservices",
+        "propagation-races-2",
+        "stepfunctions-logging"
+      ]
+    },
+    {
+      "scenario": "import-adopt-live-resource-roundtrip",
+      "description": "End-to-end `cdkd import` adoption of a LIVE AWS resource: drop the resource from cdkd state with `cdkd orphan` (AWS untouched), re-adopt it with `cdkd import --resource <logicalId>=<physicalId>`, then destroy THROUGH the re-adopted record. Exercises the provider `import()` + `readCurrentState()` pair (the `observedProperties` baseline seeded post-import) and the selective-mode merge that must preserve unlisted sibling rows. Distinct from `nested-stack-migrate-from-cfn`, which covers the `--migrate-from-cloudformation` path; NO fixture covered the plain adopt mode before (issue #1090).",
+      "fixtures": [
+        "emr-cluster"
+      ]
+    },
+    {
+      "scenario": "intrinsic-hard-arg-shapes",
+      "description": "Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838).",
+      "fixtures": [
+        "intrinsics-torture-2"
+      ]
+    },
+    {
+      "scenario": "intrinsics-torture",
+      "description": "Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and the string pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub).",
+      "fixtures": [
+        "intrinsics-torture"
+      ]
+    },
+    {
+      "scenario": "lambda-vpc-subnet-sg-deletion-order",
+      "description": "Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation.",
+      "fixtures": [
+        "bench-cdk-sample",
+        "lambda",
+        "vpc-lambda"
+      ]
+    },
+    {
+      "scenario": "legacy-bucket-name-fallback",
+      "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution.",
+      "fixtures": [
+        "legacy-bucket-name-fallback"
+      ]
+    },
+    {
+      "scenario": "local-agentcore-from-state",
+      "description": "`cdkd local invoke-agentcore --from-state` end-to-end against a real-AWS deployed AgentCore Runtime — verifies the cdkd-port-specific 3-arg `createLocalStateProvider` shim resolves intrinsic-valued env vars (e.g. `Ref: <S3 bucket>`) against cdkd state after a real `cdkd deploy`.",
+      "fixtures": [
+        "local-invoke-agentcore-from-state"
+      ]
+    },
+    {
+      "scenario": "local-agentcore-runtime",
+      "description": "`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build.",
+      "fixtures": [
+        "local-invoke-agentcore",
+        "local-invoke-agentcore-from-state"
+      ]
+    },
+    {
+      "scenario": "local-apigateway-server",
+      "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool.",
+      "fixtures": [
+        "local-start-api",
+        "local-start-api-container",
+        "local-start-api-rest-v1-non-proxy"
+      ]
+    },
+    {
+      "scenario": "local-ecs-awsvpc",
+      "description": "`cdkd local run-task` ECS TaskDefinition declaring `NetworkMode: awsvpc` — accepted and mapped to a docker bridge network with a startup warn (#461; docker cannot emulate ENI-per-task).",
+      "fixtures": [
+        "local-run-task-awsvpc"
+      ]
+    },
+    {
+      "scenario": "local-ecs-service",
+      "description": "`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.",
+      "fixtures": [
+        "local-ecs-service-connect",
+        "local-start-service"
+      ]
+    },
+    {
+      "scenario": "local-ecs-service-connect",
+      "description": "`cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460).",
+      "fixtures": [
+        "local-ecs-service-connect"
+      ]
+    },
+    {
+      "scenario": "local-ecs-task",
+      "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar.",
+      "fixtures": [
+        "local-run-task",
+        "local-run-task-from-state",
+        "local-run-task-multi-container"
+      ]
+    },
+    {
+      "scenario": "local-from-cfn-stack-substitution",
+      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via ListStackResources + DescribeStacks + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).",
+      "fixtures": [
+        "local-invoke-from-cfn-stack",
+        "local-invoke-from-cfn-stack-multi-stack"
+      ]
+    },
+    {
+      "scenario": "local-from-state-substitution",
+      "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.",
+      "fixtures": [
+        "local-invoke-from-state",
+        "local-run-task-from-state"
+      ]
+    },
+    {
+      "scenario": "local-lambda-rie-container",
+      "description": "`cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution.",
+      "fixtures": [
+        "local-invoke-buildkit",
+        "local-invoke-container",
+        "local-start-api-container"
+      ]
+    },
+    {
+      "scenario": "local-lambda-rie-zip",
+      "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container.",
+      "fixtures": [
+        "local-invoke",
+        "local-invoke-dotnet",
+        "local-invoke-from-cfn-stack",
+        "local-invoke-from-cfn-stack-multi-stack",
+        "local-invoke-from-state",
+        "local-invoke-java",
+        "local-invoke-layers",
+        "local-invoke-provided",
+        "local-invoke-python",
+        "local-invoke-ruby",
+        "local-invoke-stage"
+      ]
+    },
+    {
+      "scenario": "local-region-case-fold",
+      "description": "Region CASE folding on the `cdkd local` path (issues #1795 / #1814 / #1836): an upper-cased region is structurally valid and nothing rejects it, while AWS SDK endpoint resolution, the partition table and cdkd's own state-record / marker-key comparisons are all case-SENSITIVE. Covers the two ends a Docker / real-AWS run can observe — the CONTAINER's own `AWS_REGION` (every SDK client the handler builds) must arrive canonical from an upper-cased shell, and an upper-cased `--stack-region` must still read the canonically-keyed `cdkd/{stack}/{region}/state.json` record instead of silently falling back to no state at all.",
+      "fixtures": [
+        "local-invoke",
+        "local-invoke-from-state"
+      ]
+    },
+    {
+      "scenario": "local-websocket-api",
+      "description": "`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane.",
+      "fixtures": [
+        "local-start-api-websocket"
+      ]
+    },
+    {
+      "scenario": "migrate-from-cfn-handover",
+      "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).",
+      "fixtures": [
+        "import-attribute-readback",
+        "import-attribute-readback-final",
+        "import-attribute-readback-misc",
+        "import-attribute-readback-network",
+        "import-heal-prefix-record",
+        "import-lambda-url-attributes",
+        "import-migrate-vpc",
+        "import-retain-destroy",
+        "migrate-from-cfn"
+      ]
+    },
+    {
+      "scenario": "multi-asset",
+      "description": "Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design.",
+      "fixtures": [
+        "multi-asset"
+      ]
+    },
+    {
+      "scenario": "multi-region-state-key",
+      "description": "Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout).",
+      "fixtures": [
+        "multi-region-same-stack"
+      ]
+    },
+    {
+      "scenario": "multi-stack-getstackoutput",
+      "description": "Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export).",
+      "fixtures": [
+        "composite-stack",
+        "cross-stack-references",
+        "getstackoutput-crossregion",
+        "multi-stack-deps"
+      ]
+    },
+    {
+      "scenario": "multi-stack-importvalue-strong-ref",
+      "description": "Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).",
+      "fixtures": [
+        "import-value-strong-ref",
+        "importvalue-chain"
+      ]
+    },
+    {
+      "scenario": "multi-stack-outputs-only-export",
+      "description": "Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue. Also covers the PREVIEW half (issue #1921): `cdkd diff` must report the Outputs-only change — human Outputs section naming the `[export]` row, `--fail` exiting 1, and the entry in `--json` `outputChanges` — where it previously printed \"No changes detected\" and exited 0, steering the user away from the deploy that publishes the export; paired with a negative arm requiring the freshly-deployed producer to still diff clean.",
+      "fixtures": [
+        "outputs-only-export"
+      ]
+    },
+    {
+      "scenario": "nat-gateway-cleanup",
+      "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy).",
+      "fixtures": [
+        "bench-cdk-sample",
+        "vpc-nat-gateway"
+      ]
+    },
+    {
+      "scenario": "nested-stack-deep-deploy-cascade",
+      "description": "Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level's resources + state files.",
+      "fixtures": [
+        "nested-stack-3level"
+      ]
+    },
+    {
+      "scenario": "nested-stack-migrate-from-cfn",
+      "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A.",
+      "fixtures": [
+        "import-deployed-parameter-secret",
+        "import-nested-stack"
+      ]
+    },
+    {
+      "scenario": "ordinary-create-name-cooldown",
+      "description": "An ORDINARY `cdkd deploy` (no --replace, no rollback, a fresh process that never deleted anything itself) creating a resource whose NAME is still held by a prior `cdkd destroy`'s asynchronous delete, and riding the cooldown out instead of failing the deploy (issue #2116). Distinct from `rollback-reverse-replacement-name-cooldown`, which covers the sites where cdkd ITSELF just deleted the name holder and therefore consults `isRecreateRetryableError`: this one covers the reachable destroy-then-redeploy dev loop, where the only thing that can absorb the window is the generic transient classifier plus the name-cooldown backoff grid. Pass condition = the redeploy exits 0 and prints `Deployment completed successfully`; coverage is confirmed separately from a --verbose retry line quoting the AWS cooldown message, since a fully-closed window produces the same exit code. CAVEAT on reading this row as coverage: the tag is claimed unconditionally by the fixture, but the arm is OPPORTUNISTIC -- the window is a ~23s real-AWS timing property that the fixture's preceding 200s bucket poll can outlast, so a given run reports either `OK: COVERED` or `INCONCLUSIVE`, and the latter is likely the common one. Nothing forces a re-run on INCONCLUSIVE. The standing backstop for the classifier and the 64s backoff grid is the unit suite (tests/unit/deployment/retryable-errors.test.ts + retry.test.ts), which runs every time; this row records that a real-AWS arm EXISTS, not that the last run exercised it.",
+      "fixtures": [
+        "custom-resource-provider"
+      ]
+    },
+    {
+      "scenario": "raw-cfn-template-diff-parity",
+      "description": "Raw CloudFormation template (CfnInclude) carrying Parameters w/ defaults + Mappings + Conditions on resources AND outputs: deploy resolves them, a no-op `cdkd diff --fail` must exit 0 (no phantom replacement / phantom create — #1027), an inlined-parameter change updates in place, and a condition-false Output is skipped without a `Failed to resolve output` warn (#1028).",
+      "fixtures": [
+        "raw-cfn-conditions-params"
+      ]
+    },
+    {
+      "scenario": "rds-aurora-cluster-instance",
+      "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family.",
+      "fixtures": [
+        "rds-aurora"
+      ]
+    },
+    {
+      "scenario": "rds-full-stack",
+      "description": "Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint). A second SSM Parameter consumes `Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn)` (issue 1824) and must equal the live `describe-db-subnet-groups` ARN byte for byte — that ARN is read off the `CreateDBSubnetGroup` RESPONSE, a wire assumption every unit test hand-feeds to a mock, and pre-fix the reference HARD-FAILED the deploy on the resolver `*Arn` shape guard rather than resolving wrongly.",
+      "fixtures": [
+        "rds-full-stack"
+      ]
+    },
+    {
+      "scenario": "remove-protection-bypass",
+      "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types.",
+      "fixtures": [
+        "remove-protection"
+      ]
+    },
+    {
+      "scenario": "replacement-fanout-propagation",
+      "description": "Replacement propagation (#807) at FAN-OUT scale: ONE base resource (SNS Topic, TopicName change -> new ARN) referenced by MANY (10) dependents via Fn::Sub of its Ref (10 SSM Parameters + an SNS TopicPolicy). A second deploy with `-c phase=b` replaces the base; `promoteReplacementDependents` (src/analyzer/diff-calculator.ts) must propagate the new ARN to EVERY dependent so none keeps the stale phase-a ARN. Catches fan-out gaps the narrow ECS-only #807 case cannot.",
+      "fixtures": [
+        "replacement-fanout"
+      ]
+    },
+    {
+      "scenario": "resource-type-change-replacement",
+      "description": "A resource `Type` change on an EXISTING logical id is a replacement whose two halves route on two types: the old resource is deleted through the STATE record's type and the new one created through the template's (issues #2668, #3036). Covers a stateful old type refused without --force-stateful-recreation, two types sharing one bare-name physical id, two types declaring an identical property bag (which a properties-only no-op check swallows), and both rollbacks (automatic, and `cdkd rollback` from a --no-rollback journal) re-creating each old type through its own provider. Pass condition = every old physical name confirmed gone and every new one read back from AWS, in both directions.",
+      "fixtures": [
+        "type-change-replacement"
+      ]
+    },
+    {
+      "scenario": "rollback-create-deletion-policy-snapshot",
+      "description": "DeletionPolicy: Snapshot on a ROLLED-BACK CREATE (issue #1358): a deploy whose second resource fails must snapshot the first one and DELETE it, not orphan it. verify.sh asserts the deploy fails, the old orphan log line is absent, a completed cdkd:final-snapshot-of EBS snapshot of the rolled-back volume exists, the volume is gone from AWS, and state.json is gone.",
+      "fixtures": [
+        "rollback-deletion-policy-snapshot"
+      ]
+    },
+    {
+      "scenario": "rollback-failure-injection",
+      "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
+      "fixtures": [
+        "rollback-failure-injection"
+      ]
+    },
+    {
+      "scenario": "rollback-replacement-updatereplacepolicy-retain",
+      "description": "Replacement rollback under `UpdateReplacePolicy: Retain` keeps the replacement's NEW physical copy (issue #2598). A live CloudFormation A/B (us-east-1, 2026-09-05) settled which attribute governs that delete: `UpdateReplacePolicy` does (DELETE_SKIPPED, new copy orphaned OUT of the stack) and `DeletionPolicy` does not (DELETE_COMPLETE) — so the fixture carries THREE `AWS::SSM::Parameter` subjects, one per row: RetainParam (UpdateReplacePolicy Retain, no DeletionPolicy — new copy must SURVIVE), ControlParam (no policies — new copy must be DELETED), DeletionPolicyParam (DeletionPolicy Retain only — new copy must be DELETED too, the row that refutes 'DeletionPolicy governs it'). All three rename their create-only `Name` in one deploy whose failing SQS queue DependsOn all of them, so every replacement COMPLETES and the rollback classifies each as a replacement; `--force-stateful-recreation` is required because AWS::SSM::Parameter is in STATEFUL_TYPES (the Retain arm is exempt from that guard and unaffected by the flag). verify.sh asserts the deploy engine ORPHANED the old retain copy, the rollback took reverse-replacement-readopt, the new retain copy is ALIVE in SSM while both control copies are GONE, and state names every OLD copy and the survivor NOWHERE. The load-bearing assertion is on the DURABLE channel rather than the log: a rollback runs during an already-failing deploy, usually non-TTY with the log discarded, so `cdkd events --run <failed> --format json` must show the retained subject's ROLLBACK_RESOURCE_SUCCEEDED carrying the survivor's `physicalId`, a `reason` naming both ids, and `provisionedBy` — while BOTH control rows carry neither field (an unconditional physicalId would point a cleanup pass at the resource the rollback just deleted). The warn grep is kept as the interactive-user channel, with a sentinel so a reworded message fails loudly instead of going blind. Finally, `cdkd destroy` must remove the tracked copies while leaving the untracked survivor standing — which the fixture then deletes itself, since Retain means cdkd will not clean up after it. Distinct from `rollback-replay-effective-properties`, which reaches the same reverse-replacement branch but only ever in its DELETE polarity: no other rollback fixture declares UpdateReplacePolicy: Retain on a replaced resource.",
+      "fixtures": [
+        "rollback-replacement-retain"
+      ]
+    },
+    {
+      "scenario": "rollback-replay-effective-properties",
+      "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans.",
+      "fixtures": [
+        "rollback-replay-effective-props"
+      ]
+    },
+    {
+      "scenario": "rollback-reverse-replacement-explicit-name-rewrite",
+      "description": "`cdkd rollback` reverse-replacement of an EXPLICITLY named resource whose provider rewrites even a user-supplied name (IAM Role via `generateResourceNameWithFallback`), under the user-supplied-name prefix flag the failed deploy recorded in its journal segment (issue #4018). The re-create must ask AWS for exactly the name the deploy sent (the bare name by default, `<stack>-<name>` for a deploy with --prefix-user-supplied-names, whatever the rollback's own environment says), and a squatter already holding that name must be REFUSED by the rewritten-name holder proof with nothing deleted (issue #4010), then succeed once the squatter is gone; an in-place UPDATE revert of the same role must stay in place (same RoleId, no prefixed role). Pass condition = the journal segment's recorded flag read raw from S3, the refusal naming the sent name, and every restored/deleted role name read back from IAM.",
+      "fixtures": [
+        "rollback-explicit-name-rewrite"
+      ]
+    },
+    {
+      "scenario": "rollback-reverse-replacement-name-cooldown",
+      "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0.",
+      "fixtures": [
+        "rollback-sqs-cooldown"
+      ]
+    },
+    {
+      "scenario": "s3-asset-deploy",
+      "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy.",
+      "fixtures": [
+        "s3-asset-deploy"
+      ]
+    },
+    {
+      "scenario": "sdk-ccapi-crossref-boundary",
+      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack with `Ref` / `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — an SDK-routed consumer reads a CC-routed producer, AND a CC-routed consumer reads an SDK-routed producer — against two kinds of CC-provisioned resource: a type with no SDK provider (pure Cloud Control fallback, read-only attribute via the CC read-back) and an SDK-registered type moved onto Cloud Control with `--recreate-via-cc-api`. Neither depends on a property the SDK provider leaves unhandled. Also covers the CC delete path bypassing the SDK provider delete().",
+      "fixtures": [
+        "sdk-ccapi-crossref"
+      ]
+    },
+    {
+      "scenario": "selective-import-attribute-persistence",
+      "description": "Selective `cdkd import --resource <LogicalId>=<physical>` adoption of an already-deployed resource whose provider `import()` returns a NON-EMPTY `attributes` map, asserting the map is persisted into the state row (issue #1098: `buildStackState` hardcoded `attributes: {}` and dropped it, leaving an adopted resource with no `Fn::GetAtt` backing while a deployed one had it). Uses `AWS::IAM::ManagedPolicy` (`import()` -> `{ PolicyArn }`) after a `cdkd state orphan` drops state while leaving the AWS resource live. Distinct from `migrate-from-cfn-handover`, which covers the CFn retirement path rather than the state-row shape.",
+      "fixtures": [
+        "import-attributes"
+      ]
+    },
+    {
+      "scenario": "sg-circular-dependency",
+      "description": "Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation.",
+      "fixtures": [
+        "sg-circular-dependency"
+      ]
+    },
+    {
+      "scenario": "stack-level-tag-propagation-multitype",
+      "description": "STACK-LEVEL tags (`cdk.Tags.of(app/stack).add(k, v)`) propagate to ALL taggable resources across MANY types on BOTH the SDK-provider path (S3 / SNS / SQS / SSM Parameter / IAM Role / Logs LogGroup / Lambda / DynamoDB) AND the Cloud Control API path (Athena WorkGroup, no SDK provider). Each AWS type accepts tags in a DIFFERENT wire shape ({Key,Value}[] list vs { k: v } map vs the CC-API forwarder) — notably `AWS::SSM::Parameter.Tags` is a CFn MAP (the historical `Tags.map()` deploy-crash type per feedback_ssm_parameter_tags_is_a_map). verify.sh reads live AWS tags per type via that type-specific list/describe API and asserts ALL stack-level tags landed with the right value; a dropped tag FAILs naming the type. Also asserts post-deploy `cdkd drift` is clean (no #802 tag-list-reorder false positive).",
+      "fixtures": [
+        "tags-propagation"
+      ]
+    },
+    {
+      "scenario": "state-bucket-region-resolve",
+      "description": "State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region.",
+      "fixtures": [
+        "cross-region-state-bucket"
+      ]
+    },
+    {
+      "scenario": "state-schema-migration",
+      "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
+      "fixtures": [
+        "legacy-state-migration",
+        "schema-v10-to-v11-migration",
+        "schema-v5-to-v6-migration",
+        "schema-v8-to-v9-migration",
+        "schema-v9-to-v10-migration"
+      ]
+    },
+    {
+      "scenario": "undeletable-pending-resource-skip",
+      "description": "Destroy of a resource AWS itself refuses to delete until it expires server-side — the canonical case is an SNS subscription in PendingConfirmation, which rejects Unsubscribe from EVERY caller and only disappears via ~3-day auto-expiry or topic deletion. The provider must treat the rejection as delete-success (CloudFormation parity: the resource is removed from the stack without unsubscribing) instead of failing the resource and wedging destroy/state-destroy permanently (issue #1301).",
+      "fixtures": [
+        "sns-pending-subscription"
+      ]
+    },
+    {
+      "scenario": "update-policy-mutations",
+      "description": "Second-deploy mutation of CloudFormation template-level ATTRIBUTES (not properties) across a CDK context flip (`-c phase=a|b`): (1) `UpdateReplacePolicy: Retain` orphan-on-replace — an S3 `BucketName` change forces replacement, the OLD physical bucket must be RETAINED on AWS (not deleted) while the new one is created; (2) `DeletionPolicy` flip DESTROY->RETAIN on an SSM Parameter — the final destroy must honor the CURRENT (Retain) policy and leave it on AWS; (3) `DependsOn` add/remove between SNS topics — a metadata-only change that must update successfully without replacing either topic; (4) metadata-only / no-op identical redeploy reporting `No changes detected`. Intentional orphans (Retain bucket + Retain param) are cleaned by captured physical id in the verify.sh trap. Regression net for `diff-calculator.ts` attribute diff + `deploy-engine.ts` Retain-on-replace / DeletionPolicy destroy-skip paths.",
+      "fixtures": [
+        "update-policy-mutations"
+      ]
+    },
+    {
+      "scenario": "update-replace-breadth",
+      "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types.",
+      "fixtures": [
+        "update-replace"
+      ]
+    },
+    {
+      "scenario": "vpc-lambda-cr-race",
+      "description": "Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window).",
+      "fixtures": [
+        "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "scenario": "vpc-lambda-eni-release",
+      "description": "Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent).",
+      "fixtures": [
+        "bench-cdk-sample",
+        "destroy-interrupt",
+        "lambda",
+        "vpc-lambda"
+      ]
+    },
+    {
+      "scenario": "warn-arm-effective-properties",
+      "description": "A provider warn arm that SKIPS or SUBSTITUTES a malformed DECLARED value must record what it actually SENT (`effectiveProperties`), not the declared value. The deploy SUCCEEDS, so recording the declared bag makes state describe something AWS does not hold: `readCurrentState` can never match it, every later `cdkd drift` re-reports the same difference, and `drift --revert` re-issues the same skipped call (issues #1591 / #1612 / #1653 / #1654). Only a real deploy can produce the record and only a real read-side run can prove it converges, so a mocked client agrees with whatever wire assumption the author had. Covered arms: the DynamoDB GlobalTable `StreamSpecification` warn-and-SKIP (retains the PREVIOUS value; drops it when the previous side is malformed too) and the Lambda URL `AuthType` warn-and-SUBSTITUTE (records the previous value on the substituted arm, drops the key on the OMITTED arm) — each asserting the recorded value, the untouched LIVE resource, and that the corrected template then diffs clean against that record (a `cdkd drift` assertion would be vacuous here: drift prefers the `observedProperties` baseline, which is a live read and therefore matches AWS either way). The Lambda arm additionally asserts the security consequence directly (the URL is still IAM-guarded) and that a reverse-replacement replay of a record with no `AuthType` ANNOUNCES the PUBLIC default it falls back to.",
+      "fixtures": [
+        "dynamodb-globaltable",
+        "lambda-url-authtype-replay"
+      ]
+    },
+    {
+      "scenario": "wide-dag-throttle-retry",
+      "description": "Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans.",
+      "fixtures": [
+        "throttle-wide-dag"
+      ]
+    }
+  ],
+  "orphanScenarios": [],
+  "unannotatedFixtures": [
+    "acm-certificate",
+    "apigatewayv2-update-removal",
+    "apigw-stage-props",
+    "apigw-stage-throttling",
+    "apigw-usage-plan-key",
+    "app-autoscaling-recreate",
+    "appconfig",
+    "aws-custom-resource",
+    "backup",
+    "bootstrap-free-region",
+    "bucket-deployment",
+    "cc-api-fallback",
+    "cc-api-fallback-transitions",
+    "cc-final-snapshot-handlers",
+    "cc-to-sdk-reroute",
+    "cc-write-only-create-only",
+    "cloudtrail-trail",
+    "codebuild-project",
+    "codedeploy-lambda-deployment-group",
+    "cognito-custom-attribute-add",
+    "cognito-identity-pool",
+    "cognito-lambda-triggers",
+    "cognito-userpool-user-ref",
+    "created-before-failure-revert",
+    "cross-region-concurrent-stacks",
+    "custom-resource-noecho-nested",
+    "custom-resource-service-token-change",
+    "diff-fail-on-destructive",
+    "docdb-fix-forward-orphan",
+    "dynamodb-autoscaling",
+    "dynamodb-globaltable-implied-stream",
+    "dynamodb-gsi-update",
+    "dynamodb-ondemand",
+    "dynamodb-sse",
+    "dynamodb-stream-filter",
+    "dynamodb-tableclass-switch",
+    "dynamodb-ttl-attr-change",
+    "ec2-instance-fanout",
+    "ec2-route-targets",
+    "ecr-scanning",
+    "ecs-schedule-targets",
+    "efs-immutable-replacement",
+    "elbv2-same-name-replacement",
+    "eventbridge-api-destination",
+    "eventbridge-input-transformer",
+    "eventbridge-pipes",
+    "eventbridge-scheduler",
+    "eventbus-policy",
+    "export-nested-stack",
+    "fallback-recreate-children",
+    "fifo-sqs-event-source",
+    "getatt-fallback-guard",
+    "glue-securityconfig-replace",
+    "healthimaging-stateful-update-fallback",
+    "iam-managed-policy",
+    "iam-recreate-reattach",
+    "iam-role-policies-drift-clean",
+    "iam-role-prefixed-name-update",
+    "iam-secret-derived-principals",
+    "import-noecho-parameter",
+    "import-reimport-masked-attrs",
+    "import-secret-observed",
+    "inplace-attr-propagation",
+    "kinesis-esm-filter",
+    "kinesis-stream-mode-switch",
+    "lambda-alias-provisioned-concurrency",
+    "lambda-arch-switch",
+    "lambda-capacity-provider-default-name",
+    "lambda-config-field-removal",
+    "lambda-destinations",
+    "lambda-env-removal",
+    "lambda-esm-self-managed-kafka",
+    "lambda-event-invoke-config-update",
+    "lambda-layer-version-update",
+    "lambda-log-retention",
+    "lambda-microvm-image",
+    "lambda-reserved-concurrency",
+    "launchtemplate-asg-inplace",
+    "list-parameters",
+    "local-start-agentcore",
+    "local-start-alb",
+    "local-start-alb-from-state",
+    "local-start-cloudfront",
+    "local-start-service-watch-fast",
+    "loggroup-class-guard",
+    "loggroup-kms-associate",
+    "loggroup-never-expire-guard",
+    "lost-child-after-failed-deploy",
+    "neptune-fix-forward-orphan",
+    "nested-required-preflight",
+    "nested-stack",
+    "nested-stack-deep",
+    "nested-stack-replace-guard",
+    "nested-stack-rollback",
+    "nodejs-function",
+    "noecho-parameter-masking",
+    "orphan-getatt-takeover",
+    "partial-create-handback",
+    "rds-dbinstance-backfill",
+    "rds-fix-forward-orphan",
+    "recreate-mixed-direction",
+    "recreate-nested-logical-id-collision",
+    "recreate-parent-child-permission",
+    "recreate-target-readers",
+    "recreate-via-cc-api",
+    "recreate-via-sdk-provider",
+    "remove-protection-compensation",
+    "remove-protection-journaled-orphan",
+    "rename-refactor",
+    "replace-squatter-refusal",
+    "replacement-immutable-name",
+    "replacement-rename-onto-holder",
+    "retain-orphan-redeploy",
+    "retain-orphan-secret",
+    "rollback-command",
+    "rollback-replay-cc-generated-name",
+    "s3-analytics-inventory",
+    "s3-event-notification",
+    "s3-fix-forward-orphan",
+    "s3-lifecycle",
+    "s3-object-lock",
+    "s3-replication-and-filter",
+    "s3-retry-own-bucket",
+    "scheduler-custom-group",
+    "schema-v6-to-v7-migration",
+    "schema-v7-to-v8-migration",
+    "sdk-to-cc-autoroute",
+    "secret-derived-immutable-names",
+    "secrets-rotation-schedule",
+    "secretsmanager-update-value-source",
+    "servicediscovery",
+    "sns-event-source",
+    "sns-inline-subscription",
+    "sns-subscription-filter",
+    "sns-subscription-update",
+    "sqs-esm-max-concurrency",
+    "stack-lock-renewal",
+    "stage-assets",
+    "stepfunctions-s3-definition",
+    "stream-delete-redeploy",
+    "synthetics-canary",
+    "unrecognized-key-autoroute"
+  ]
+}

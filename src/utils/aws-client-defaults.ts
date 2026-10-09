@@ -167,7 +167,7 @@ export interface AssumedRoleCredentials {
    * presenting the same credentials until the process ends.
    *
    * The consequence is a real bound, and it is stated in
-   * `docs/cli-reference.md` ("When the `--role-arn` session expires") rather
+   * `docs/_contents/cli-reference.md` ("When the `--role-arn` session expires") rather
    * than handled: a deploy that outlives the 1-hour session fails with
    * `ExpiredTokenException`, and the remedy is to re-run the command. Kept on
    * the interface anyway because `applyRoleArnIfSet` has the value in hand and

@@ -82,7 +82,7 @@ cleanup() {
   # above has disabled the only thing that would have caught the empty value.
   # `case` and not `exit`: this runs inside `cleanup`, not a subshell, so a
   # refusal must skip the sweep and let the rest of the teardown run. The
-  # convention is in `docs/integ-fixture-conventions.md`.
+  # convention is in `docs/_contents/integ-fixture-conventions.md`.
   case "${STACK}" in
     Cdkd?*)
       for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, \`${STACK}\`)].RoleName" --output text 2>/dev/null); do

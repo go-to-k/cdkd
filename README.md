@@ -1,8 +1,8 @@
 <div align="center">
   <p>
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs-site/public/brand/logo-dark.svg">
-      <img alt="cdkd logo" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs-site/public/brand/logo-light.svg" width="96" height="96">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs/public/brand/logo-dark.svg">
+      <img alt="cdkd logo" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs/public/brand/logo-light.svg" width="96" height="96">
     </picture>
   </p>
   <h1>cdkd (CDK Direct)</h1>

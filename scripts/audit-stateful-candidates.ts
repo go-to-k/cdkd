@@ -53,8 +53,8 @@
  *
  * Outputs (atomic write via `.tmp` + rename, mirroring
  * `scripts/audit-provider-coverage.ts`):
- *   docs/_generated/stateful-candidates.json — machine-readable cache.
- *   docs/_generated/stateful-candidates.md   — human-readable review queue.
+ *   docs/_contents/_generated/stateful-candidates.json — machine-readable cache.
+ *   docs/_contents/_generated/stateful-candidates.md   — human-readable review queue.
  *
  * Usage:
  *   node scripts/audit-stateful-candidates.ts              # offline: summary from cache
@@ -93,10 +93,10 @@ const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 16000, 16000] as
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '..');
-const COVERAGE_JSON = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.json');
+const COVERAGE_JSON = resolve(REPO_ROOT, 'docs/_contents/_generated/provider-coverage.json');
 const SCHEMA_CACHE_DIR = resolve(REPO_ROOT, '.cache/cfn-tier2-schemas');
-const OUTPUT_JSON = resolve(REPO_ROOT, 'docs/_generated/stateful-candidates.json');
-const OUTPUT_MARKDOWN = resolve(REPO_ROOT, 'docs/_generated/stateful-candidates.md');
+const OUTPUT_JSON = resolve(REPO_ROOT, 'docs/_contents/_generated/stateful-candidates.json');
+const OUTPUT_MARKDOWN = resolve(REPO_ROOT, 'docs/_contents/_generated/stateful-candidates.md');
 
 /**
  * A data-bearing signal: a rule over either the resource type's TOP-LEVEL
@@ -140,7 +140,7 @@ export interface StatefulSignal {
 
 /**
  * The signal set, calibrated against the real tier-2 corpus (see the
- * per-signal counts in `docs/_generated/stateful-candidates.md`).
+ * per-signal counts in `docs/_contents/_generated/stateful-candidates.md`).
  *
  * Every pattern is anchored on a WHOLE property name rather than a substring,
  * because the substring spellings all over-fire: an unanchored `/Backup/`

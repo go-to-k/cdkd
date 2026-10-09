@@ -13,7 +13,7 @@
  *
  * That digging is entirely mechanical, so it is done here. What is NOT done
  * here is the decision — see {@link renderDiagnosis}'s note and
- * `docs/schema-refresh-runbook.md`.
+ * `docs/_contents/schema-refresh-runbook.md`.
  *
  * Two facts are contributed that neither checker has.
  *
@@ -94,7 +94,7 @@
  *   - `--umbrella-checklist` renders every remaining property as a flat Markdown
  *     checklist. NO workflow consumes it: it survives as the offline,
  *     network-free answer to "what remains", which
- *     `docs/schema-refresh-runbook.md` names.
+ *     `docs/_contents/schema-refresh-runbook.md` names.
  *   - `--umbrella-types` renders the same content grouped BY TYPE, as the JSON
  *     plan `scripts/sync-backfill-umbrella.ts` renders the umbrella issue's
  *     generated checklist block from — one row per type with properties left,
@@ -881,7 +881,7 @@ export const CHECK_GUIDANCE = {
     'consult the field at all. It names the CLOUD CONTROL identifier, while',
     'every type the critic classifies is Tier 1 and mints its own physical id —',
     'a different value or a `|`-joined composite for many of the types it',
-    'applied to — the live figures are in docs/_generated/sdk-attr-coverage.json.',
+    'applied to — the live figures are in docs/_contents/_generated/sdk-attr-coverage.json.',
   ],
   'fixture-consumer-tests': [
     'A unit test that reads the schema fixtures directly and asserts something',
@@ -1842,7 +1842,7 @@ export function renderDiagnosis(input) {
     'INPUT in this type’s own client, the provider READS it off the template, and no',
     'name on the type pairs with it as a possible rename. Absent evidence is never',
     'read as absence — “no wiring found” escalates rather than concluding. See the_',
-    '_[CFn schema refresh runbook](https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md)._'
+    '_[CFn schema refresh runbook](https://github.com/go-to-k/cdkd/blob/main/docs/_contents/schema-refresh-runbook.md)._'
   );
   return lines.join('\n');
 }

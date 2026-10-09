@@ -301,7 +301,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // `create-only-properties.ts` resolves the schema at diff time and its
   // createOnly set classifies the change as a replacement. The per-type
   // createOnly properties are recorded in
-  // `docs/_generated/stateful-candidates.json`, which is where that claim is
+  // `docs/_contents/_generated/stateful-candidates.json`, which is where that claim is
   // checkable rather than assumed.
   //
   // The 27 candidates deliberately left OFF carry their reason in that

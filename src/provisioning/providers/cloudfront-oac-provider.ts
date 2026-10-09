@@ -79,7 +79,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
    * attempt as a name somebody else holds. Refused here, the 5xx reaches the
    * deploy engine's retry, which marks the create as possibly replayed
    * (`withRetry`, #3978). Nothing is adopted on that collision: a name is not
-   * attribution (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
+   * attribution (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): Promise<CloudFrontClient> {
     const shared = this.cloudFrontClient;
@@ -316,7 +316,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
    * identical, so the reverse mapping is a straight per-field copy.
    *
    * Every field is emitted unconditionally, with `?? ''` standing in for an
-   * AWS response that omits it (docs/provider-rules.md#readcurrentstate-for-drift-detection): the
+   * AWS response that omits it (docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection): the
    * optional `Description` is user-controllable and mutable, so dropping the
    * key when AWS returns nothing would leave it out of `observedProperties`
    * on a stack that never templated it — and the drift comparator's

@@ -243,7 +243,7 @@ guards. **What a collision COSTS is per site, not a property of the key**: at th
 that can end a run at `No plaintext secrets found` over surviving plaintext.
 So is whether a SEPARATOR was ever injective — it depends on where each half
 comes from, and an S3 key segment cannot carry a NUL while an exports-index
-string can (go-to-k/cdkd#3323, `docs/design/3323-composite-record-keys.md`).
+string can (go-to-k/cdkd#3323, `docs/_contents/design/3323-composite-record-keys.md`).
 Derive the call sites with `grep -rn "producerRecordKey(\|producerCoordinateKey(" src/`.
 
 ## `isReadableBag` is defined in `src/types/state.ts`, not here
@@ -279,7 +279,7 @@ would then persist.
 
 A command that can WRITE the record refuses; a read-only one repairs and warns.
 Two `outputs` sites take neither (calls recorded in
-`docs/design/3192-outputs-consumers.md`):
+`docs/_contents/design/3192-outputs-consumers.md`):
 
 - `importableOutputKeys` / `importableOutputs` FAIL CLOSED silently — a pure
   predicate with no stack identity to put in a message, and throwing there would

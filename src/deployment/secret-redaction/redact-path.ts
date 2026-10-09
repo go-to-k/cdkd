@@ -247,7 +247,7 @@ export function redactByPath(
     // the plaintext-keyed value scan and handed BOTH members of a coinciding
     // pair the survivor's expression. That is issue #2291's collapse arriving
     // through the one door its string-only arms left open, and
-    // `docs/cli-reference.md` names `CommaDelimitedList` as an ALLOWED spelling
+    // `docs/_contents/cli-reference.md` names `CommaDelimitedList` as an ALLOWED spelling
     // for a secret-bearing nested-stack parameter, so it is reachable rather
     // than theoretical.
     //
