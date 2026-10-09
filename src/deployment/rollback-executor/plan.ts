@@ -1073,7 +1073,8 @@ export function markDeleteFirstBlocked(operations: readonly CompletedOperation[]
         g.logicalId !== op.logicalId &&
         someStringLeaf(
           props,
-          (leaf) => leaf === g.physicalId || (g.physicalId.length >= 16 && leaf.includes(g.physicalId))
+          (leaf) =>
+            leaf === g.physicalId || (g.physicalId.length >= 16 && leaf.includes(g.physicalId))
         )
     );
     if (hit) deleteFirstBlockedBy.set(op, hit);
