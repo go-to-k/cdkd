@@ -639,9 +639,12 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       // template, so only the root's own derived names can mask its output.
       const parent = state(recorded);
       parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
-      const child = empty('S~Child');
+      // And a deleted stack below it: the names pass from deleted to deleted.
+      const child = empty('S~Child', { GC: stackRecord('S-Child-GC', { QueueUrl: URL }) });
       child.outputs = { COut: URL };
-      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const gc = empty('S~Child~GC');
+      gc.outputs = { GOut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child, 'S~Child~GC': gc };
       const tree = await buildDiffTree({
         stackName: 'S',
         displayName: 'S',
@@ -657,10 +660,15 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         isNestedChild: false,
       });
       const node = tree.children.find((c) => c.stackName === 'S~Child');
-      const out = JSON.stringify(node?.outputChanges.find((c) => c.name === 'COut'));
-      expect(out).toContain('"changeType":"REMOVE"');
-      expect(out).toContain('"oldValue"');
-      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+      const deletedGc = node?.children.find((c) => c.stackName === 'S~Child~GC');
+      for (const out of [
+        JSON.stringify(node?.outputChanges.find((c) => c.name === 'COut')),
+        JSON.stringify(deletedGc?.outputChanges.find((c) => c.name === 'GOut')),
+      ]) {
+        expect(out).toContain('"changeType":"REMOVE"');
+        expect(out).toContain('"oldValue"');
+        expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+      }
     });
   });
 });
