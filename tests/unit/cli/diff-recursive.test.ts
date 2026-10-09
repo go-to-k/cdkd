@@ -5150,7 +5150,7 @@ describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4
 
   beforeEach(() => vi.mocked(getLogger().warn).mockClear());
 
-  it('blocks a literal token change, naming both tokens and the remedy', async () => {
+  it('blocks a literal token change, naming the new token and the remedy', async () => {
     const node = await tree(crTemplate(NEW), { Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }) });
     expect(node.blocking).toEqual([
       `Cr: ServiceToken changes to ${NEW}, away from the handler its record names. cdkd deploy refuses a changed ` +

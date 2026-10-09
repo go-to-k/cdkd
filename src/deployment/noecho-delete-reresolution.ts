@@ -178,10 +178,12 @@ async function fingerprintsUnchanged(
  * The deploy's twin (a replacement deleting the resource it replaced): the
  * resource is still in the template, so the values are today's RESOLVED bag
  * at each coordinate the template still serves from a `NoEcho` parameter.
- * `secrets` is the resolution pass's bag; it is copied, never written. No CLI
- * route replaces a custom resource still in its template today (a custom
- * resource has no create-only list, #1016; `--recreate-via-*` refuses one;
- * a `ServiceToken` change is #4749), so this fails closed where one occurs.
+ * `secrets` is the resolution pass's bag; it is copied, never written. The one
+ * CLI route that replaces a custom resource still in its template is
+ * `cdkd deploy --recreate-via-cc-api <id>`: validation does not refuse a custom
+ * type and `getProviderFor` rule 1 sends both halves to the custom-resource
+ * provider. Nothing else does (no create-only list, #1016; a `ServiceToken`
+ * change is refused, #4749), and this fails closed where it cannot re-resolve.
  */
 export async function noEchoDeleteValuesFromResolved(options: {
   record: ResourceState;

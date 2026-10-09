@@ -95,11 +95,17 @@ describe('findServiceTokenRefusals (plan time)', () => {
   });
 
   it('ignores a logical id that only the prototype chain holds', () => {
-    const change = { ...row({}), logicalId: 'constructor' } as ResourceChange;
-    expect(
-      findServiceTokenRefusals({ changes: new Map([['constructor', change]]), stateResources: {} })
-        .refused
-    ).toEqual([]);
+    // A matching record planted on Object.prototype: a bare index would read
+    // it and refuse; only an own record counts.
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+    proto['Cr'] = record(OLD);
+    try {
+      expect(
+        findServiceTokenRefusals({ changes: new Map([['Cr', row({})]]), stateResources: {} }).refused
+      ).toEqual([]);
+    } finally {
+      delete proto['Cr'];
+    }
   });
 
   it.each([
@@ -163,11 +169,17 @@ describe('findServiceTokenRefusals (plan time)', () => {
     });
   });
 
-  it('neither refuses nor warns about an in-place-propagated token (a backing Lambda code change)', () => {
+  it('warns, without refusing, about an in-place-propagated token (a nested output or another custom resource Data)', () => {
     expect(find(row({ inPlacePropagated: true, newValue: OLD }), record(OLD))).toEqual({
       refused: [],
-      deferred: [],
+      deferred: [{ logicalId: 'Cr', resourceType: 'Custom::Thing' }],
     });
+  });
+
+  it('neither refuses nor warns about a NoEcho promotion, which fires on every deploy', () => {
+    expect(
+      find(row({ inPlacePropagated: true, noEchoPromoted: true, newValue: '***' }), record(OLD))
+    ).toEqual({ refused: [], deferred: [] });
   });
 
   it('never reads a SYNTHETIC change value as the verdict: the deploy resolves it', () => {

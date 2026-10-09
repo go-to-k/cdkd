@@ -101,6 +101,40 @@ sweep_markers() {
   )
 }
 
+# The handlers' auto-named service roles (`<stack>-<logicalId>...`) and their
+# policies, left behind when a failed run's `state destroy` did not finish.
+# Best-effort and scope-guarded (testing.md, "A destructive prefix sweep must
+# refuse a widened scope"): never fails its caller.
+sweep_stack_roles() {
+  (
+    set +eu
+    case "${STACK}" in
+      CdkdCrServiceTokenChange) ;;
+      *)
+        echo "    WARN: teardown sweep refused a stack scope outside this fixture: '${STACK:-<empty>}'" >&2
+        exit 0
+        ;;
+    esac
+    roles=$(aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, '${STACK}-')].RoleName" --output text 2>/dev/null) || exit 0
+    for role in ${roles}; do
+      case "${role}" in
+        "${STACK}-"?*) ;;
+        *) continue ;;
+      esac
+      for arn in $(aws iam list-attached-role-policies --role-name "${role}" \
+        --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+        aws iam detach-role-policy --role-name "${role}" --policy-arn "${arn}" >/dev/null 2>&1
+      done
+      for name in $(aws iam list-role-policies --role-name "${role}" \
+        --query 'PolicyNames[]' --output text 2>/dev/null); do
+        aws iam delete-role-policy --role-name "${role}" --policy-name "${name}" >/dev/null 2>&1
+      done
+      aws iam delete-role --role-name "${role}" >/dev/null 2>&1
+    done
+  )
+}
+
 # Safe to run pre-run: every line targets something a phase re-creates.
 cleanup() {
   echo "==> Cleanup: dropping any leftover stack resources, markers and state"
@@ -116,6 +150,7 @@ cleanup() {
     aws lambda delete-function --function-name "${fn}" --region "${REGION}" >/dev/null 2>&1
   done
   sweep_markers
+  sweep_stack_roles
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
@@ -181,6 +216,13 @@ recorded_token() {
   printf '%s' "${state}" | jq -r --arg id "${CR_ID}" '.resources[$id].properties.ServiceToken // "<absent>"'
 }
 
+# HandlerA's RevisionId: a new one means the function was re-created (or
+# updated), the same one that nothing touched it.
+revision_a() {
+  aws lambda get-function-configuration --function-name "${FN_A}" --region "${REGION}" \
+    --query RevisionId --output text
+}
+
 state_etag() {
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --query ETag --output text
 }
@@ -213,6 +255,7 @@ case "${TOKEN_A}" in
     exit 1
     ;;
 esac
+REVISION_A1=$(revision_a)
 
 # --- Phase 2: the diff previews the refusal ----------------------------------
 echo "==> Phase 2: cdkd diff with Cr switched to HandlerB"
@@ -268,6 +311,7 @@ assert_no_handler_traffic "phase 3"
 
 # --- Phase 4: a replaced backing Lambda --------------------------------------
 echo "==> Phase 4: cdkd deploy with HandlerA renamed (replaced) — refused, rolled back"
+ETAG_BEFORE4=$(state_etag)
 set +e
 RENAME_OUT=$(CDKD_TEST_UPDATE=rename-a node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -301,6 +345,20 @@ if [ "${TOKEN_AFTER_RENAME}" != "${TOKEN_A}" ]; then
   exit 1
 fi
 echo "    OK: HandlerA restored, the renamed function gone, Cr still records HandlerA"
+# The two facts only the PROVISIONING-time refusal produces: a plan-time one
+# touches nothing (phase 3), while this one replaced HandlerA and rolled it back.
+REVISION_A4=$(revision_a)
+if [ "${REVISION_A4}" = "${REVISION_A1}" ]; then
+  echo "FAIL: HandlerA's RevisionId did not change (${REVISION_A1}): the replacement never ran," >&2
+  echo "    so this refusal was not the provisioning-time one" >&2
+  exit 1
+fi
+ETAG_AFTER4=$(state_etag)
+if [ "${ETAG_BEFORE4}" = "${ETAG_AFTER4}" ]; then
+  echo "FAIL: state was not rewritten by the replacement and its rollback (ETag ${ETAG_AFTER4})" >&2
+  exit 1
+fi
+echo "    OK: HandlerA was re-created (RevisionId moved) and state was rewritten"
 assert_no_handler_traffic "phase 4"
 
 # --- Phase 5: the baseline again ---------------------------------------------
@@ -309,6 +367,12 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+REVISION_A5=$(revision_a)
+if [ "${REVISION_A5}" != "${REVISION_A4}" ]; then
+  echo "FAIL: the baseline deploy after the rollback touched HandlerA (RevisionId ${REVISION_A4} -> ${REVISION_A5})" >&2
+  exit 1
+fi
+echo "    OK: nothing to change — HandlerA untouched"
 assert_no_handler_traffic "phase 5"
 
 # --- Phase 6: the CLEAN destroy ----------------------------------------------
@@ -359,6 +423,8 @@ for fn in "${FN_A}" "${FN_B}"; do
     assert_gone "marker ${MARKER_ROOT}/${fn}/${rt} survived the sweep" \
       aws ssm get-parameter --name "${MARKER_ROOT}/${fn}/${rt}" --region "${REGION}"
   done
+  assert_gone "log group /aws/lambda/${fn} survived the sweep" \
+    aws logs describe-log-streams --log-group-name "/aws/lambda/${fn}" --region "${REGION}"
 done
 
 echo ""

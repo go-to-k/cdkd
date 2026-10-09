@@ -98,7 +98,7 @@ function provider(): Provider {
   return {
     create: vi.fn((id: string, _type: string, props: Record<string, unknown>) =>
       Promise.resolve(
-        id === 'Fn'
+        id.startsWith('Fn')
           ? {
               physicalId: String(props['FunctionName']),
               attributes: {
@@ -208,6 +208,7 @@ describe('DeployEngine - a literal ServiceToken change (go-to-k/cdkd#4749)', () 
       template(NEW_TOKEN)
     );
     expect(error.code).toBe(SERVICE_TOKEN_CHANGE_REFUSED);
+    for (const fn of [p.create, p.update, p.delete]) expect(fn).not.toHaveBeenCalled();
   });
 
   it('updates in place when only another property changed (the control)', async () => {
@@ -296,6 +297,56 @@ describe('DeployEngine - a ServiceToken that reads the backing Lambda (go-to-k/c
     const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.resources['Fn']?.physicalId).toBe('old-handler');
     expect(saved.resources['Cr']?.properties['ServiceToken']).toBe(OLD_TOKEN);
+  });
+});
+
+describe('DeployEngine - a ServiceToken moved to a Lambda the same deploy creates (go-to-k/cdkd#4749)', () => {
+  it('refuses at provisioning, invokes no handler, and the rollback deletes the new Lambda', async () => {
+    const p = provider();
+    const stateBackend = backend({ Fn: lambda('old-handler'), Cr: cr(OLD_TOKEN) });
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { FunctionName: 'old-handler', Role: 'arn:aws:iam::123456789012:role/r' },
+        },
+        Fn2: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { FunctionName: 'new-handler', Role: 'arn:aws:iam::123456789012:role/r' },
+        },
+        Cr: {
+          Type: 'Custom::Thing',
+          Properties: { ServiceToken: { 'Fn::GetAtt': ['Fn2', 'Arn'] }, Seed: 'a' },
+        },
+      },
+    };
+    const error = await deployError(makeEngine(p, stateBackend), template);
+    // PREMISE: Fn2 was created, so the refusal is the provisioning-time one.
+    expect(callsFor(p.create, 'Fn2')).toHaveLength(1);
+    const refusal = chain(error).find((e) => e.code === SERVICE_TOKEN_CHANGE_REFUSED);
+    expect(refusal?.message).toContain(`Cr: ServiceToken changes to ${NEW_TOKEN}`);
+    for (const fn of [p.create, p.update, p.delete]) expect(callsFor(fn, 'Cr')).toHaveLength(0);
+    expect(callsFor(p.delete, 'Fn2').map((c) => c[1])).toEqual(['new-handler']);
+    expect(callsFor(p.delete, 'Fn')).toHaveLength(0);
+  });
+});
+
+describe('DeployEngine - the provisioning refusal masks a NoEcho-fed token (go-to-k/cdkd#4749)', () => {
+  it('refuses without printing the NoEcho value anywhere in the error chain', async () => {
+    const p = provider();
+    // A plain recorded token (a pre-v11 record, or a literal since replaced by
+    // the parameter); the template now feeds the token from a NoEcho parameter.
+    const error = await deployError(makeEngine(p, backend({ Cr: cr(OLD_TOKEN) })), {
+      Parameters: { Tok: { Type: 'String', NoEcho: true, Default: NEW_TOKEN } },
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: { Ref: 'Tok' }, Seed: 'a' } },
+      },
+    });
+    const errors = chain(error);
+    // PREMISE: the refusal fired, so its message is what is checked.
+    expect(errors.some((e) => e.code === SERVICE_TOKEN_CHANGE_REFUSED)).toBe(true);
+    for (const e of errors) expect(e.message).not.toContain(NEW_TOKEN);
+    expect(callsFor(p.update, 'Cr')).toHaveLength(0);
   });
 });
 

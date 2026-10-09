@@ -704,8 +704,10 @@ cdkd cannot tell whether it changed. See
   new construct id, or `overrideLogicalId`): the deploy creates it through the
   new handler and deletes the old one through its old handler.
 - To keep the existing resource, deploy its previous `ServiceToken`.
-- For an unreadable recorded token whose handler did not change, put the
-  handler's ARN back as `ServiceToken` in `state.json` and re-deploy.
+- For an unreadable recorded token whose handler did not change, put back as
+  `ServiceToken` in `state.json` the ARN of the handler that created this
+  resource (the one it was last deployed with, not the one the template names
+  now) and re-deploy.
 
 ### "Backing Lambda for custom resource X no longer exists" on destroy
 

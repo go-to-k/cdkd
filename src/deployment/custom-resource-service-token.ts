@@ -22,7 +22,11 @@
  *   exists only once that resource is provisioned. No handler has been invoked
  *   for this resource at either point; the provisioning-time refusal fails the
  *   deploy like any resource failure, and its rollback reverts what earlier
- *   rows did, as CloudFormation's own rollback does after the same refusal.
+ *   rows did. Unlike CloudFormation, which keeps a replaced resource until
+ *   cleanup, cdkd has already deleted a replaced backing Lambda inline, and
+ *   the rollback RE-CREATES it from its record; if that re-creation fails or
+ *   lands under another name, the custom resource's record still names a
+ *   function that no longer exists.
  *
  * ## When equality cannot be judged
  *
@@ -177,12 +181,15 @@ export function findServiceTokenRefusals(input: {
       }
       continue;
     }
-    // Only what can MOVE the token is reported: a replaced referent, or a
-    // value the preview could not resolve. An in-place-updated referent
-    // (a backing Lambda's code change) keeps its ARN, and warning on every
-    // such deploy would bury the one that matters.
+    // Only what can MOVE the token is reported: a replaced referent, an
+    // attribute an in-place update may move (`inPlacePropagated`: a nested
+    // stack's output, another custom resource's `Data`; a Lambda's `Arn` is
+    // never promoted that way, so a backing Lambda's code change stays quiet),
+    // or a value the preview could not resolve. Not a `NoEcho` promotion,
+    // which fires on every deploy.
     if (
       pc.replacementPropagated === true ||
+      (pc.inPlacePropagated === true && pc.noEchoPromoted !== true) ||
       (desired !== null && typeof desired === 'object' && !isSynthetic(pc))
     ) {
       deferred.push({ logicalId, resourceType: change.resourceType });
@@ -263,8 +270,9 @@ const REMEDY =
   `the existing resource, deploy its previous ServiceToken.`;
 
 const UNJUDGEABLE_REMEDY =
-  `Where the recorded ServiceToken is unreadable and the handler did not change, put the ` +
-  `handler's Lambda function or SNS topic ARN back as ServiceToken in state.json (a ServiceToken ` +
+  `Where the recorded ServiceToken is unreadable and the handler did not change, put the ARN of ` +
+  `the handler that created this resource (the one it was last deployed with, not the one the ` +
+  `template names now) back as ServiceToken in state.json (a ServiceToken ` +
   `fed by a NoEcho parameter is recorded only as '${SECRET_MASK}': feed it from a plain value) ` +
   `and re-deploy.`;
 
@@ -303,9 +311,10 @@ export function serviceTokenBlockingReason(refusal: ServiceTokenRefusal, mask: M
 /** One `cdkd diff` warning per deferred row. */
 export function deferredServiceTokenWarning(row: DeferredServiceToken): string {
   return (
-    `${displayIdent(row.logicalId)}: its ServiceToken reads a resource this deploy replaces or ` +
-    `creates, or a value this preview cannot resolve. If it resolves to a different ARN than ` +
+    `${displayIdent(row.logicalId)}: its ServiceToken reads a resource this deploy replaces, ` +
+    `creates or updates, or a value this preview cannot resolve. If it resolves to a different ARN than ` +
     `the one recorded, cdkd deploy refuses the update before invoking any handler and rolls ` +
-    `back, as CloudFormation does (issue #4749).`
+    `back (issue #4749). A replaced backing function is already deleted by then and the ` +
+    `rollback re-creates it; if that fails, the record names a function that no longer exists.`
   );
 }

@@ -1204,9 +1204,13 @@ token; where the recorded token is missing, the redaction mask `***` or a
 deploy refuses too. Give the custom resource a new logical id (in CDK, a new construct
 id, or `overrideLogicalId`), which creates a new resource through the new
 handler and deletes the old one through its old handler. A token that reads a
-resource this deploy replaces or creates (a renamed backing Lambda) is known
+resource this deploy replaces or creates (a renamed backing Lambda), or an
+attribute an update may move (a nested stack's output, another custom
+resource's `Data`), is known
 only once that resource exists, so the preview WARNS instead: the deploy
-refuses it then, before invoking any handler, and rolls back.
+refuses it then, before invoking any handler, and rolls back (a replaced
+backing Lambda is re-created by that rollback, see
+[a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken)).
 
 The first, fourth and fifth conditions are raised at every node the preview diffs.
 Only the TOP-LEVEL stack raises the second and third, as a

@@ -544,14 +544,20 @@ handler, and the old handler would never get a `Delete` for what it created.
 - A token that reads a resource the same deploy replaces or creates (a renamed
   backing Lambda, or a switch to a new provider) is known only once that
   resource exists. The update is refused then, before the handler is invoked,
-  and the deploy fails and rolls back like any other resource failure, as
-  CloudFormation's own rollback does. A `Ref` / `Fn::GetAtt` whose ARN did not
-  change is not a change.
+  and the deploy fails and rolls back like any other resource failure. Unlike
+  CloudFormation, which keeps a replaced resource until cleanup, cdkd has
+  already deleted a replaced backing Lambda by then, and the rollback
+  re-creates it from its record; if that re-creation fails or lands under
+  another name, the custom resource's record names a function that no longer
+  exists. A `Ref` / `Fn::GetAtt` whose ARN did not change is not a change.
 - Where the recorded token is missing, the redaction mask `***` or a
   `{{resolve:...}}` reference, cdkd cannot compare it, so a deploy whose
   template changes it (or the expression behind a masked one) is refused too.
-  If the handler did not change, put its Lambda function or SNS topic ARN back
-  as `ServiceToken` in `state.json` and re-deploy.
+  If the handler did not change, put back as `ServiceToken` in `state.json` the
+  ARN of the handler that created this resource (the one it was last deployed
+  with, not the one the template names now) and re-deploy. Restoring the
+  template's new ARN would send the next update to the new handler, which is
+  the problem this refusal prevents.
 - A `ServiceToken` fed by a `NoEcho` parameter is recorded only as `***`, so a
   new VALUE of that parameter is not detected: the deploy updates the custom
   resource as before, through whichever handler the value names. Feed
