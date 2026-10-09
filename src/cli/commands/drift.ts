@@ -131,6 +131,8 @@ import {
   isUncertifiedBaselineMaskPosition,
   isMarkedCoordinate,
   liveMatchesUnresolvedTokenFrame,
+  maskAtCoordinates,
+  maskReadbackAtCoordinates,
   maskWholeValue,
   noEchoLeavesOf,
   pathCrossesDottedKey,
@@ -4862,9 +4864,13 @@ async function runAccept(
           );
         }
         if (recordedChanges > 0) acceptedResourceCount++;
+        // go-to-k/cdkd#4043 Phase C: AFTER the recorded check, which compares
+        // what the user accepted: a marked coordinate is `***` in what is
+        // written, whatever a changed parent path carried there.
+        const writtenBaseline = maskMarkedNoEchoBaseline(redactedBaseline, existing, hasObserved);
         resources[outcome.logicalId] = hasObserved
-          ? { ...existing, observedProperties: redactedBaseline }
-          : { ...existing, properties: redactedBaseline };
+          ? { ...existing, observedProperties: writtenBaseline }
+          : { ...existing, properties: writtenBaseline };
       }
 
       // `skippedOutputs` (issue #2740) is dropped rather than spread through,
@@ -7604,9 +7610,13 @@ async function runRevert(
             }
             if (!changed) continue;
             recordedCount++;
+            // go-to-k/cdkd#4043 Phase C: the delta carries the value the revert
+            // SENT at a marked coordinate (the live value kept there), which
+            // the value arm misses for a number or a value under 4 characters.
+            const writtenBaseline = maskMarkedNoEchoBaseline(newBaseline, existing, hasObserved);
             resources[logicalId] = hasObserved
-              ? { ...existing, observedProperties: newBaseline }
-              : { ...existing, properties: newBaseline };
+              ? { ...existing, observedProperties: writtenBaseline }
+              : { ...existing, properties: writtenBaseline };
           }
           let reRecordedCount = 0;
           for (const [logicalId, identity] of reRecordedByLogicalId) {
@@ -9099,4 +9109,26 @@ export function createDriftCommand(): Command {
   cmd.addOption(deprecatedRegionOption);
 
   return cmd;
+}
+
+/**
+ * A drift baseline about to be written, masked at every coordinate the record
+ * marks as served by a `NoEcho` source (go-to-k/cdkd#4043, Phase C, design
+ * section 4.3): the `--accept` and `--revert` writers carry a LIVE value, and
+ * a changed parent path, or a provider's echo of what the revert sent, can put
+ * the plaintext at a marked leaf. An `observedProperties` baseline is a
+ * readback, so a list is paired by its identity field and masked whole where
+ * nothing pairs; a `properties` baseline is masked by index, as the deploy
+ * writes it.
+ */
+function maskMarkedNoEchoBaseline(
+  baseline: Record<string, unknown>,
+  record: ResourceState,
+  observed: boolean
+): Record<string, unknown> {
+  const marked = noEchoLeavesOf(record) ?? [];
+  if (marked.length === 0) return baseline;
+  return observed
+    ? maskReadbackAtCoordinates(baseline, record.properties ?? {}, marked)
+    : maskAtCoordinates(baseline, marked);
 }

@@ -343,6 +343,70 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     }
   });
 
+  // go-to-k/cdkd#4043 Phase C: the --accept and --revert baseline writers mask
+  // every marked coordinate of what they write, so a live value accepted under
+  // a CHANGED PARENT path (a list that gained an element) never enters state,
+  // even one the value arm cannot see (3 characters, a number).
+  it.each([
+    ['a 3-character value', 'q7z'],
+    ['a number', 7741],
+  ])('--accept of another path never re-persists %s a stored baseline still holds at a marked coordinate', async (_label, stored) => {
+    // A baseline that still holds the value in the clear at a marked
+    // coordinate (written before the mask reached it, or by hand): the
+    // accept clones it, and the value arm cannot see a short or numeric value.
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'a' },
+          observedProperties: { Name: '/app/token', Value: stored, Description: 'a' },
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Value: stored, Description: 'edited' });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
+    expect(saved.observedProperties).toEqual({
+      Name: '/app/token',
+      Value: SECRET_MASK,
+      Description: 'edited',
+    });
+  });
+
+  it('--revert never re-records a value the stored baseline or the provider echo holds at a marked coordinate', async () => {
+    const update = vi.fn(async () => ({
+      physicalId: '/app/token',
+      // What the provider applied: the live value kept at the marked leaf,
+      // and the reverted Description, normalized.
+      effectiveProperties: { Name: '/app/token', Value: 'q7z', Description: 'From-Template' },
+    }));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'from-template' },
+          // Still holds the value in the clear at the marked leaf.
+          observedProperties: { Name: '/app/token', Value: 'q7z', Description: 'from-template' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Value: 'q7z', Description: 'edited' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(update.mock.calls)).not.toContain(`"${SECRET_MASK}"`);
+    expect(mockSaveState).toHaveBeenCalled();
+    for (const call of mockSaveState.mock.calls) {
+      const saved = (call[2] as StackState).resources['Token']!;
+      expect(saved.observedProperties?.['Value']).toBe(SECRET_MASK);
+    }
+  });
+
   it('names the position, never a value, in the human report', async () => {
     mockGetState.mockResolvedValueOnce(makeState({ Token: param() }));
     readsBack({ Name: '/app/token', Type: 'String', Value: LIVE_SECRET });
