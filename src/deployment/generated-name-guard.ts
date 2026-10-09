@@ -59,11 +59,16 @@ import {
 import { explicitNamePropertyFor, withSkipPrefix } from '../provisioning/resource-name.js';
 import { isAccessDeniedError, lookupEachName } from '../provisioning/name-lookup.js';
 import {
-  dropAdoptingCreates,
   ledgerAbandonedAt,
+  noteAbandonedRun,
   recordAdoptingCreates,
   recordedAdoptingCreates,
+  settleAdoptingCreates,
+  type RecordedAdoptingCreate,
 } from '../provisioning/providers/create-token-ledger.js';
+import { displaySafe, safeMsg } from '../utils/display-safe.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { startInterruptWatch, type InterruptWatch } from '../provisioning/interrupt-watch.js';
 import { createdBeforeFailure } from '../provisioning/auxiliary-failure.js';
 import { isAmbiguousOutcomeError } from './retryable-errors/transient.js';
 import { isThrottlingError } from './retryable-errors/marks.js';
@@ -246,6 +251,8 @@ export class GeneratedNameGuard {
   private readonly sent = new Set<string>();
   private readonly returned = new Set<string>();
   private readonly rejected = new Set<string>();
+  /** When each create whose outcome is unknown came back failed (review S-6). */
+  private readonly failedAt = new Map<string, number>();
   /** Each candidate's verdict before any deletion cooldown (what the one planned write records). */
   private readonly firstVerdicts = new Map<string, Promise<GeneratedNameVerdict>>();
   /** The planned intent writes after approval, one per type, and the creates each covers. */
@@ -387,18 +394,20 @@ export class GeneratedNameGuard {
     if (stale.length === 0) return;
     const previous = new Map(stale.map((c) => [c.logicalId, this.verdicts.get(c.logicalId)!]));
     const { verdicts, first } = this.resolve(stale);
-    const keepEarlier = (id: string, fresh: Promise<GeneratedNameVerdict>) =>
+    const keepEarlier = (id: string, fresh: Promise<GeneratedNameVerdict>, warn: boolean) =>
       fresh.then(async (v) => {
         if (v.kind !== 'failed' && v.kind !== 'unchecked') return v;
         const earlier = await previous.get(id)!;
         if (earlier.kind !== 'free' && earlier.kind !== 'licensed') return v;
-        this.input.warn?.(
-          `${id}: could not re-read whether a resource holds its generated name after the approval prompt; acting on the earlier lookup.`
-        );
+        // Once per create: the pre-cooldown copy below decides the same.
+        if (warn)
+          this.input.warn?.(
+            `${displaySafe(id)}: could not re-read whether a resource holds its generated name after the approval prompt; acting on the earlier lookup.`
+          );
         return earlier;
       });
-    for (const [id, fresh] of verdicts) this.verdicts.set(id, keepEarlier(id, fresh));
-    for (const [id, fresh] of first) this.firstVerdicts.set(id, keepEarlier(id, fresh));
+    for (const [id, fresh] of verdicts) this.verdicts.set(id, keepEarlier(id, fresh, true));
+    for (const [id, fresh] of first) this.firstVerdicts.set(id, keepEarlier(id, fresh, false));
   }
 
   /**
@@ -509,22 +518,51 @@ export class GeneratedNameGuard {
    */
   noteFailed(logicalId: string, error: unknown): void {
     const c = this.candidates.get(logicalId);
-    if (c !== undefined && provenNothingCreated(error, logicalId, c.resourceType)) {
+    if (c === undefined) return;
+    if (provenNothingCreated(error, logicalId, c.resourceType)) {
       this.rejected.add(logicalId);
+    } else if (!this.failedAt.has(logicalId)) {
+      // Review S-6: whatever it made, it made by now.
+      this.failedAt.set(logicalId, this.timing.now());
     }
   }
 
   /**
-   * The deploy is over (any outcome; called under its lock): drop the
-   * intents this deploy wrote whose create was not sent, returned, or was
-   * rejected outright. Never throws.
+   * The deploy is over (any outcome; called under its lock), in one ledger
+   * write: drop the intents this deploy wrote whose create was not sent,
+   * returned, or was rejected outright, and stamp when each create of unknown
+   * outcome came back failed (review S-6). A failed write is retried once;
+   * if it still fails, the run is recorded as abandoned NOW (review S-1), so
+   * an intent left for a create never sent bounds what it licenses as G-1's
+   * does. Never throws.
    */
   async settle(): Promise<void> {
     await Promise.all([...this.writes].map((w) => w.catch(() => undefined)));
     const drop = [...this.recorded].filter(
       (id) => !this.sent.has(id) || this.returned.has(id) || this.rejected.has(id)
     );
-    if (drop.length > 0) await dropAdoptingCreates(drop);
+    const failedAt = new Map(
+      [...this.failedAt].filter(([id]) => this.recorded.has(id) && !drop.includes(id))
+    );
+    if (drop.length === 0 && failedAt.size === 0) return;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await settleAdoptingCreates(drop, failedAt);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    const bounded = await noteAbandonedRun(this.timing.now());
+    this.input.warn?.(
+      safeMsg`Could not clear this deploy's unsent name-adopting creates from the stack's create-token ledger (${
+        describeAwsFailure(lastError).summary
+      }). ` +
+        (bounded
+          ? 'They license only what existed by now; a later deploy may refuse a resource of those names, which `cdkd import` adopts.'
+          : 'Nor could the ledger record when this deploy ended: a later deploy may take back a resource of those names that another deployment creates. They are cleared by the next successful deploy.')
+    );
   }
 
   /**
@@ -631,7 +669,7 @@ export class GeneratedNameGuard {
         const byIntent = await this.licenseIfCreatedAfterIntent(
           c,
           holder,
-          intent.firstSentAt,
+          intent,
           abandonedAt !== undefined && intent.firstSentAt <= abandonedAt ? abandonedAt : undefined
         );
         // An intent older than the holder licenses nothing; the other evidence
@@ -727,7 +765,11 @@ export class GeneratedNameGuard {
         c.provider.holderCreatedAt!(c.resourceType, holder)
       );
     } catch (error) {
-      return isAccessDeniedError(error) ? { kind: 'unchecked', error } : { kind: 'failed', error };
+      if (!isAccessDeniedError(error)) return { kind: 'failed', error };
+      // Review S-2: the creation time is not granted -- licensed by name, as
+      // for a type without one (the documented residual).
+      this.creationTimeDenied(c, holder, error);
+      return licensed;
     }
     if (createdAt === undefined || createdAt <= named.keptAt + KEPT_AT_SKEW_MS) return licensed;
     return { kind: 'held', holder };
@@ -745,30 +787,45 @@ export class GeneratedNameGuard {
   private async licenseIfCreatedAfterIntent(
     c: Candidate,
     holder: string,
-    firstSentAt: number,
+    intent: Pick<RecordedAdoptingCreate, 'firstSentAt' | 'failedAt'>,
     abandonedAt: number | undefined
   ): Promise<GeneratedNameVerdict> {
     const licensed: GeneratedNameVerdict = { kind: 'licensed', holder, via: 'ledger' };
     const held: GeneratedNameVerdict = { kind: 'held', holder };
-    if (c.provider.holderCreatedAt === undefined) {
-      // No creation time: an intent the abandoned run left (sent or not, the
-      // ledger cannot tell) licenses nothing -- the `cdkd import` remedy is
-      // the safe direction (review G-1). Otherwise, as before.
-      return abandonedAt !== undefined ? held : licensed;
-    }
+    // No creation time: an intent the abandoned run left (sent or not, the
+    // ledger cannot tell) licenses nothing -- the `cdkd import` remedy is the
+    // safe direction (review G-1). Otherwise, as before.
+    const byName = abandonedAt !== undefined ? held : licensed;
+    if (c.provider.holderCreatedAt === undefined) return byName;
     let createdAt: number | undefined;
     try {
       createdAt = await withSkipPrefix(true, () =>
         c.provider.holderCreatedAt!(c.resourceType, holder)
       );
     } catch (error) {
-      return isAccessDeniedError(error) ? { kind: 'unchecked', error } : { kind: 'failed', error };
+      if (!isAccessDeniedError(error)) return { kind: 'failed', error };
+      // Review S-2: not granted reads as a type without a creation time.
+      this.creationTimeDenied(c, holder, error);
+      return byName;
     }
-    if (createdAt === undefined) return abandonedAt !== undefined ? held : licensed;
+    if (createdAt === undefined) return byName;
+    const { firstSentAt, failedAt } = intent;
     if (Number.isFinite(firstSentAt) && createdAt < firstSentAt - KEPT_AT_SKEW_MS) return held;
-    // G-1: the abandoned run made nothing after its last renewal.
-    if (abandonedAt !== undefined && createdAt > abandonedAt + KEPT_AT_SKEW_MS) return held;
+    // G-1: the abandoned run made nothing after its last renewal; S-6: a
+    // create that came back failed made nothing after it did.
+    for (const until of [abandonedAt, failedAt]) {
+      if (until !== undefined && createdAt > until + KEPT_AT_SKEW_MS) return held;
+    }
     return licensed;
+  }
+
+  /** Review S-2: a holder's creation time was refused (403); noted once per create. */
+  private creationTimeDenied(c: Candidate, holder: string, error: unknown): void {
+    this.input.warn?.(
+      safeMsg`${c.logicalId}: could not read when ${holder} was created (${describeAwsFailure(error).summary}); ` +
+        `deciding by its name alone, as for a type that reports no creation time. Grant the type's ` +
+        `Describe permission to narrow that.`
+    );
   }
 
   /** The abandoned run's last renewal: this deploy's takeover, or the ledger's record. */
@@ -791,17 +848,43 @@ export class GeneratedNameGuard {
     const out = new Map<string, GeneratedNameVerdict>();
     let pending = [...candidates];
     const until = this.timing.now() + this.timing.cooldownMs;
-    while (pending.length > 0 && this.timing.now() < until) {
-      await this.timing.sleep(this.timing.cooldownStepMs);
-      const { found, typeFailures } = await lookupAll(this.input, pending);
-      pending = pending.filter((c) => {
-        if (typeFailures.has(c.resourceType)) return true;
-        if (found.has(c.logicalId)) return true;
-        out.set(c.logicalId, { kind: 'free' });
-        return false;
-      });
+    // Review H-4: a Ctrl-C ends the wait at once; the creates still waiting
+    // fail with the interrupt (the engine treats it as one, not a failure).
+    const watch = startInterruptWatch('generated-name deletion cooldown');
+    try {
+      while (pending.length > 0 && this.timing.now() < until) {
+        await this.sleepUnlessInterrupted(this.timing.cooldownStepMs, watch);
+        if (watch.isInterrupted()) {
+          for (const c of pending) {
+            out.set(c.logicalId, { kind: 'failed', error: watch.onInterrupted() });
+          }
+          return out;
+        }
+        const { found, typeFailures } = await lookupAll(this.input, pending);
+        pending = pending.filter((c) => {
+          if (typeFailures.has(c.resourceType)) return true;
+          if (found.has(c.logicalId)) return true;
+          out.set(c.logicalId, { kind: 'free' });
+          return false;
+        });
+      }
+      return out;
+    } finally {
+      watch.dispose();
     }
-    return out;
+  }
+
+  /** `ms` of the cooldown, cut short by a Ctrl-C (polled every 200 ms). */
+  private sleepUnlessInterrupted(ms: number, watch: InterruptWatch): Promise<void> {
+    if (watch.isInterrupted()) return Promise.resolve();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const interrupted = new Promise<void>((resolve) => {
+      timer = setInterval(() => {
+        if (watch.isInterrupted()) resolve();
+      }, 200);
+      timer.unref?.();
+    });
+    return Promise.race([this.timing.sleep(ms), interrupted]).finally(() => clearInterval(timer));
   }
 }
 

@@ -16,12 +16,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 import {
   ADOPTING_CREATE_BASE,
   CreateTokenLedger,
-  dropAdoptingCreates,
   ledgerAbandonedAt,
   noteAbandonedRun,
   noteRetainedResource,
   recordAdoptingCreates,
   recordedAdoptingCreates,
+  settleAdoptingCreates,
   withCreateTokenLedger,
 } from '../../../src/provisioning/providers/create-token-ledger.js';
 import type { CreateTokenLedgerDoc } from '../../../src/state/create-token-ledger.js';
@@ -125,18 +125,33 @@ describe('dropping the intents of a finished deploy', () => {
         { logicalId: 'B', resourceType: QUEUE, name: 'App-B' },
       ]);
       store.save.mockClear();
-      await dropAdoptingCreates(['A', 'Efs', 'Missing']);
+      await settleAdoptingCreates(['A', 'Efs', 'Missing']);
     });
     expect(store.save).toHaveBeenCalledTimes(1);
     expect(Object.keys(store.current()!.sent).sort()).toEqual(['B', 'Efs']);
   });
 
-  it('a failure is warned, never thrown', async () => {
+  it('S-6: stamps failedAt on a kept adopting intent in the same write, and reads it back', async () => {
+    const store = storeOf();
+    await withCreateTokenLedger(new CreateTokenLedger(store), async () => {
+      await recordAdoptingCreates([
+        { logicalId: 'A', resourceType: QUEUE, name: 'App-A' },
+        { logicalId: 'B', resourceType: QUEUE, name: 'App-B' },
+      ]);
+      store.save.mockClear();
+      await settleAdoptingCreates(['B'], new Map([['A', 4242]]));
+      expect(store.save).toHaveBeenCalledTimes(1);
+      expect((await recordedAdoptingCreates())!.get('A')).toMatchObject({ failedAt: 4242 });
+    });
+    expect(Object.keys(store.current()!.sent)).toEqual(['A']);
+  });
+
+  it('S-1: a failure rejects (the guard retries, then bounds what is left)', async () => {
     const store = storeOf();
     store.load.mockRejectedValue(new Error('S3 down'));
     await expect(
-      withCreateTokenLedger(new CreateTokenLedger(store), () => dropAdoptingCreates(['A']))
-    ).resolves.toBeUndefined();
+      withCreateTokenLedger(new CreateTokenLedger(store), () => settleAdoptingCreates(['A']))
+    ).rejects.toThrow('S3 down');
   });
 });
 
@@ -178,11 +193,11 @@ describe('recording an abandoned run (review G-1)', () => {
     await expect(new CreateTokenLedger(store).noteAbandoned(5000)).rejects.toThrow('S3 down');
   });
 
-  it('the deploy-path wrapper swallows a failure, never throws', async () => {
+  it('the deploy-path wrapper swallows a failure, never throws, and says it did not record', async () => {
     const store = storeOf();
     store.load.mockRejectedValue(new Error('S3 down'));
     await expect(
       withCreateTokenLedger(new CreateTokenLedger(store), () => noteAbandonedRun(5000))
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 });

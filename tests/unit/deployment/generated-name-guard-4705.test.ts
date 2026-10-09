@@ -6,7 +6,7 @@
  * only when a create is admitted (never at plan time), one write per wave,
  * and settled at the deploy's end (review CB-1).
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const ledger = vi.hoisted(() => ({
   recorded: new Map<string, { resourceType: string; name: string }>() as
@@ -16,6 +16,10 @@ const ledger = vi.hoisted(() => ({
   writeError: undefined as Error | undefined,
   writes: [] as Array<Array<{ logicalId: string; resourceType: string; name: string }>>,
   drops: [] as string[][],
+  failedStamps: [] as Array<Map<string, number>>,
+  settleFailures: 0,
+  abandonedNotes: [] as number[],
+  abandonedNoteOk: true,
   abandonedAt: undefined as number | undefined,
 }));
 vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
@@ -27,8 +31,17 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
     if (ledger.writeError) throw ledger.writeError;
     ledger.writes.push(creates);
   }),
-  dropAdoptingCreates: vi.fn(async (ids: string[]) => {
+  settleAdoptingCreates: vi.fn(async (ids: string[], failedAt: Map<string, number> = new Map()) => {
+    if (ledger.settleFailures > 0) {
+      ledger.settleFailures--;
+      throw Object.assign(new Error('internal'), { $metadata: { httpStatusCode: 500 } });
+    }
     ledger.drops.push([...ids]);
+    ledger.failedStamps.push(new Map(failedAt));
+  }),
+  noteAbandonedRun: vi.fn(async (at: number) => {
+    ledger.abandonedNotes.push(at);
+    return ledger.abandonedNoteOk;
   }),
   ledgerAbandonedAt: vi.fn(async () => ledger.abandonedAt),
 }));
@@ -39,6 +52,11 @@ import {
   type GeneratedNameGuardInput,
 } from '../../../src/deployment/generated-name-guard.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
 const accessDenied = (): Error =>
@@ -117,6 +135,10 @@ beforeEach(() => {
   ledger.writeError = undefined;
   ledger.writes = [];
   ledger.drops = [];
+  ledger.failedStamps = [];
+  ledger.settleFailures = 0;
+  ledger.abandonedNotes = [];
+  ledger.abandonedNoteOk = true;
   ledger.abandonedAt = undefined;
 });
 
@@ -597,10 +619,10 @@ describe('review round CB2', () => {
       expect(read).not.toHaveBeenCalled();
     });
 
-    it('a creation time that cannot be read refuses (fail closed); a 403 is unchecked', async () => {
+    it('a creation time that cannot be read refuses (fail closed); a 403 licenses by name (S-2)', async () => {
       for (const [error, kind] of [
         [new Error('503'), 'failed'],
-        [accessDenied(), 'unchecked'],
+        [accessDenied(), 'licensed'],
       ] as const) {
         const provider = providerOf({ 'gen-A': URL });
         (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => {
@@ -636,7 +658,9 @@ describe('review round CB2', () => {
       guard.noteSent('A');
       guard.noteFailed('A', error);
       await guard.settle();
-      expect(ledger.drops).toEqual(proven ? [['A']] : []);
+      // Unknown outcome: kept, and stamped with when it came back failed (S-6).
+      expect(ledger.drops).toEqual(proven ? [['A']] : [[]]);
+      expect([...(ledger.failedStamps[0]?.keys() ?? [])]).toEqual(proven ? [] : ['A']);
     });
   });
 
@@ -961,5 +985,153 @@ describe('review round G', () => {
     const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
     guard.recordPlannedIntents();
     await expect(guard.admit('A', {})).resolves.toEqual({ kind: 'failed', error: boom });
+  });
+});
+
+describe('review rounds H and S', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+  const SENT = Date.parse('2026-10-01T00:00:00Z');
+  const withCreatedAt = (createdAt: number | (() => Promise<number>)) => {
+    const provider = providerOf({ 'gen-A': URL });
+    (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(
+      typeof createdAt === 'number' ? async () => createdAt : createdAt
+    );
+    return provider;
+  };
+
+  describe('S-6: an intent whose create came back failed licenses only what existed by then', () => {
+    beforeEach(() => {
+      ledger.recorded = new Map([
+        ['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: SENT, failedAt: SENT + 5_000 }],
+      ]) as never;
+    });
+    it('a holder created long after the failure: held', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(SENT + 3_600_000) });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    });
+    it('a holder created between the send and the failure: licensed', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(SENT + 2_000) });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed', via: 'ledger' });
+    });
+    it('noteFailed stamps the time of an unknown outcome, never of a proven rejection', async () => {
+      ledger.recorded = new Map();
+      let clock = 1_000;
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: providerOf() }, {
+          timing: { cooldownMs: 0, now: () => clock },
+        })
+      )!;
+      guard.recordPlannedIntents();
+      await admitAll(guard, ['A', 'B']);
+      guard.noteSent('A');
+      guard.noteSent('B');
+      clock = 7_000;
+      guard.noteFailed('A', Object.assign(new Error('t'), { name: 'TimeoutError' }));
+      guard.noteFailed('B', Object.assign(new Error('v'), { name: 'ValidationError', $metadata: { httpStatusCode: 400 } }));
+      await guard.settle();
+      expect(ledger.drops).toEqual([['B']]);
+      expect([...ledger.failedStamps[0]!]).toEqual([['A', 7_000]]);
+    });
+  });
+
+  describe('S-2: a 403 on the creation-time read is "no creation time", never unchecked', () => {
+    const denied = () => withCreatedAt(async () => {
+      throw accessDenied();
+    });
+    beforeEach(() => {
+      ledger.recorded = new Map([['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: SENT }]]) as never;
+    });
+    it('intent path, no abandoned run: licensed by name, with a warning', async () => {
+      const warn = vi.fn();
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: denied() }, { warn });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('deciding by its name alone'));
+    });
+    it('intent path, an abandoned run: held (the G-1 bound is not bypassed)', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: denied() }, { abandonedRunAt: SENT + 60_000 });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    });
+  });
+
+  describe('S-1: settle retries the intent drop, then bounds what is left', () => {
+    const settled = async () => {
+      const warn = vi.fn();
+      const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }, { warn }))!;
+      guard.recordPlannedIntents();
+      await guard.admit('A', {});
+      await guard.settle();
+      return warn;
+    };
+    it('one failure: the retry drops it; no abandonment, no warning', async () => {
+      ledger.settleFailures = 1;
+      const warn = await settled();
+      expect(ledger.drops).toEqual([['A']]);
+      expect(ledger.abandonedNotes).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+    it('two failures: the run is recorded as abandoned now, with a warning', async () => {
+      ledger.settleFailures = 2;
+      const warn = await settled();
+      expect(ledger.drops).toEqual([]);
+      expect(ledger.abandonedNotes).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('license only what existed by now'));
+    });
+    it('and when that cannot be recorded either, the warning names the residual', async () => {
+      ledger.settleFailures = 2;
+      ledger.abandonedNoteOk = false;
+      const warn = await settled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Nor could the ledger record'));
+    });
+  });
+
+  it('S-3: the re-read warning renders the logical id display-safe', async () => {
+    const q = providerOf();
+    let reads = 0;
+    q.lookupNames.mockImplementation(async () => {
+      reads++;
+      if (reads > 1) throw new Error('503');
+      return new Map();
+    });
+    const warn = vi.fn();
+    const id = 'A\u001b[31mX';
+    const guard = GeneratedNameGuard.start(inputOf([create(id, QUEUE)], { [QUEUE]: q }, { warn }))!;
+    await guard.verdict(id);
+    guard.noteApprovalPrompted();
+    await expect(guard.verdict(id)).resolves.toEqual({ kind: 'free' });
+    const reread = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('could not re-read'));
+    expect(reread).toHaveLength(1);
+    expect(reread[0]).not.toContain('\u001b');
+  });
+
+  describe('H-4: a Ctrl-C ends the deletion cooldown at once', () => {
+    let baseline: readonly unknown[] = [];
+    beforeEach(() => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+      baseline = process.listeners('SIGINT');
+    });
+    afterEach(() => {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+    });
+    it('the waiting create fails with the interrupt, without waiting out the step', async () => {
+      // A sleep that never ends: only the interrupt can end the wait.
+      let clock = 0;
+      // The clock moves only so that a wait that ignores the interrupt still ends.
+      const t = { now: () => (clock += 1_000), sleep: () => new Promise<void>(() => undefined), cooldownMs: 65_000, cooldownStepMs: 10_000 };
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, { timing: t })
+      )!;
+      const verdict = guard.verdict('A')!;
+      for (let i = 0; i < 50 && process.listeners('SIGINT').length === baseline.length; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
+      for (const listener of process.listeners('SIGINT').filter((l) => !baseline.includes(l))) {
+        (listener as unknown as () => void)();
+      }
+      const v = await verdict;
+      expect(v.kind).toBe('failed');
+      expect(isInterruptedWaitError((v as { error: unknown }).error)).toBe(true);
+    });
   });
 });

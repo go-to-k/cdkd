@@ -366,30 +366,40 @@ export class CreateTokenLedger {
   }
 
   /**
-   * go-to-k/cdkd#4705: drop, in one write, the `sent` entries of
-   * `logicalIds` that record a name-adopting create's intent (`base`
-   * starting with {@link ADOPTING_CREATE_BASE}): the deploy that wrote them is
-   * over and their create was not sent, or came back (the record or the
-   * rollback has the resource now). Best-effort; never throws.
+   * go-to-k/cdkd#4705: settle, in one write, the name-adopting creates' intents
+   * (`base` starting with {@link ADOPTING_CREATE_BASE}) the deploy that wrote
+   * them leaves: `drop` -- not sent, or came back (the record or the
+   * rollback has the resource now) -- are removed; `failedAt` stamps an
+   * intent whose create came back failed with an unknown outcome (review
+   * S-6). Rejects when the ledger cannot be read or written (the caller
+   * retries, then bounds what is left).
    */
-  dropAdoptingCreates(logicalIds: readonly string[]): Promise<void> {
+  settleAdoptingCreates(
+    drop: readonly string[],
+    failedAt: ReadonlyMap<string, number>
+  ): Promise<void> {
     return this.serialized(async () => {
       try {
         const doc = await this.current();
         if (doc === null) return;
-        const present = logicalIds.filter(
-          (id) => doc.sent[id]?.base.startsWith(ADOPTING_CREATE_BASE) === true
-        );
-        if (present.length === 0) return;
-        for (const id of present) delete doc.sent[id];
-        await this.persist(doc);
+        const adopting = (id: string): boolean =>
+          doc.sent[id]?.base.startsWith(ADOPTING_CREATE_BASE) === true;
+        let changed = false;
+        for (const id of drop) {
+          if (!adopting(id)) continue;
+          delete doc.sent[id];
+          changed = true;
+        }
+        for (const [id, at] of failedAt) {
+          const entry = adopting(id) ? doc.sent[id] : undefined;
+          if (entry === undefined || entry.failedAt !== undefined) continue;
+          entry.failedAt = at;
+          changed = true;
+        }
+        if (changed) await this.persist(doc);
       } catch (error) {
         this.stale = true;
-        this.logger.warn(
-          safeMsg`Could not clear this deploy's unsent name-adopting creates from the stack's create-token ledger (${
-            describeAwsFailure(error).summary
-          }); a later deploy may take a resource of those names back. They are cleared by the next successful deploy.`
-        );
+        throw error;
       }
     });
   }
@@ -505,21 +515,31 @@ export const ADOPTING_CREATE_BASE = 'adopt-by-name:';
  * Throws when the ledger cannot be read.
  */
 export async function recordedAdoptingCreates(): Promise<
-  ReadonlyMap<string, { resourceType: string; name: string; firstSentAt: number }> | undefined
+  ReadonlyMap<string, RecordedAdoptingCreate> | undefined
 > {
   const ledger = ledgerStore.getStore();
   if (ledger === undefined) return undefined;
-  const out = new Map<string, { resourceType: string; name: string; firstSentAt: number }>();
+  const out = new Map<string, RecordedAdoptingCreate>();
   for (const [logicalId, entry] of Object.entries(await ledger.sentEntries())) {
     if (entry.base.startsWith(ADOPTING_CREATE_BASE)) {
       out.set(logicalId, {
         resourceType: entry.base.slice(ADOPTING_CREATE_BASE.length),
         name: entry.token,
         firstSentAt: entry.firstSentAt,
+        ...(entry.failedAt !== undefined && { failedAt: entry.failedAt }),
       });
     }
   }
   return out;
+}
+
+/** A name-adopting create's recorded intent (go-to-k/cdkd#4705). */
+export interface RecordedAdoptingCreate {
+  resourceType: string;
+  name: string;
+  firstSentAt: number;
+  /** When its create came back failed with an unknown outcome (review S-6). */
+  failedAt?: number;
 }
 
 /**
@@ -544,15 +564,17 @@ export async function recordAdoptingCreates(
 
 /**
  * go-to-k/cdkd#4705 review G-1: record, in the bound ledger, that the run
- * whose expired lock this deploy took over stopped by `at`. Never throws:
- * this deploy's guard takes the bound in-process, so a failed write only
- * leaves a later run without it.
+ * whose expired lock this deploy took over stopped by `at`. Never throws;
+ * resolves whether it was recorded (this deploy's guard takes the bound
+ * in-process, so a failed write only leaves a later run without it).
  */
-export async function noteAbandonedRun(at: number): Promise<void> {
-  await ledgerStore
-    .getStore()
-    ?.noteAbandoned(at)
-    .catch(() => undefined);
+export async function noteAbandonedRun(at: number): Promise<boolean> {
+  const ledger = ledgerStore.getStore();
+  if (ledger === undefined) return true;
+  return ledger.noteAbandoned(at).then(
+    () => true,
+    () => false
+  );
 }
 
 /**
@@ -569,8 +591,11 @@ export async function ledgerAbandonedAt(): Promise<number | undefined> {
  * `logicalIds` (see {@link CreateTokenLedger.dropAdoptingCreates}). Outside a
  * bound ledger, a no-op.
  */
-export async function dropAdoptingCreates(logicalIds: readonly string[]): Promise<void> {
-  await ledgerStore.getStore()?.dropAdoptingCreates(logicalIds);
+export async function settleAdoptingCreates(
+  drop: readonly string[],
+  failedAt: ReadonlyMap<string, number> = new Map()
+): Promise<void> {
+  await ledgerStore.getStore()?.settleAdoptingCreates(drop, failedAt);
 }
 
 /**

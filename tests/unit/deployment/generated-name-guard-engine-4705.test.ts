@@ -9,7 +9,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { DEFAULT_TIMING } from '../../../src/deployment/generated-name-guard.js';
+import { DEFAULT_TIMING, GeneratedNameGuard } from '../../../src/deployment/generated-name-guard.js';
+import {
+  InterruptedWaitError,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -434,6 +438,24 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       for (let e: unknown = error; e instanceof Error && chain.length < 6; e = (e as { cause?: unknown }).cause) chain.push(e);
       expect(chain.some((e) => (e as { code?: unknown }).code === 'GENERATED_NAME_HELD')).toBe(true);
       expect(stateBackend.saveCreateTokenLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it('H-4: a Ctrl-C during the deletion cooldown is an interrupt, never a GENERATED_NAME_HELD refusal', async () => {
+      const levels = [['Q1']];
+      const { engine, provider } = buildEngine({ levels });
+      const admit = vi
+        .spyOn(GeneratedNameGuard.prototype, 'admit')
+        .mockResolvedValue({ kind: 'failed', error: new InterruptedWaitError('generated-name deletion cooldown') });
+      try {
+        const error = await engine.deploy(STACK, templateOf(levels)).catch((e: unknown) => e);
+        expect(provider.create).not.toHaveBeenCalled();
+        expect(isInterruptedWaitError(error)).toBe(true);
+        const chain: unknown[] = [];
+        for (let e: unknown = error; e instanceof Error && chain.length < 6; e = (e as { cause?: unknown }).cause) chain.push(e);
+        expect(chain.some((e) => (e as { code?: unknown }).code === 'GENERATED_NAME_HELD')).toBe(false);
+      } finally {
+        admit.mockRestore();
+      }
     });
 
     it('G-6: when the overlap window fails too, the overlapped gate\'s refusal is the error reported', async () => {

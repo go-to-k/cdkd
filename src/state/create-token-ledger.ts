@@ -49,6 +49,12 @@ export interface SentCreateToken {
   token: string;
   /** Local epoch ms of the create's first send. */
   firstSentAt: number;
+  /**
+   * go-to-k/cdkd#4705 review S-6: local epoch ms at which a name-adopting
+   * create whose outcome is unknown (a timeout, a 5xx) came back failed. A
+   * resource it made was made by then.
+   */
+  failedAt?: number;
 }
 
 /** A ledger with a fresh nonce and nothing pending. */
@@ -125,6 +131,10 @@ export function parseCreateTokenLedger(body: string): CreateTokenLedgerDoc | nul
           base: entry.base,
           token: entry.token,
           firstSentAt: entry.firstSentAt,
+          ...(typeof (entry as { failedAt?: unknown }).failedAt === 'number' &&
+            Number.isFinite((entry as { failedAt: number }).failedAt) && {
+              failedAt: (entry as { failedAt: number }).failedAt,
+            }),
         };
       }
     }

@@ -1,4 +1,5 @@
 import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
@@ -382,6 +383,9 @@ async function refuseUnlicensedGeneratedName(
       );
       return;
     case 'failed':
+      // go-to-k/cdkd#4705 review H-4: a Ctrl-C ended the deletion cooldown --
+      // an interrupt, never a refusal (and never a rollback trigger).
+      if (isInterruptedWaitError(verdict.error)) throw verdict.error;
       return refuse(
         `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
           `whether another resource already holds it (${describeAwsFailure(verdict.error).summary}). ` +
