@@ -216,7 +216,9 @@ BASE_ID="$(table_id "${BASE_TABLE}")"
 
 echo "[verify] step 2: a role that may create a table but neither set its TTL nor delete it"
 TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
-# Scoped to what this deploy calls, never `*`. The S3 verbs on the state
+# Scoped to what this deploy calls: only read-only CloudFormation verbs and
+# sts:GetCallerIdentity (which takes no resource) are `*`; SSM is the CDK
+# bootstrap parameters, KMS only through S3 (the state bucket's encryption). The S3 verbs on the state
 # bucket are the state path's (src/state/{s3-state-backend,lock-manager,
 # s3-noncurrent-version-purge,s3-replication-purge-gap}.ts,
 # src/utils/aws-region-resolver.ts). On this run's tables the role may:
@@ -226,7 +228,7 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # UpdateTimeToLive (the first post-ACTIVE configuration call) is denied, so
 # each CREATE fails after DynamoDB made the table; DeleteTable is denied, so
 # the provider's own cleanup cannot remove it.
-DENY_POLICY="$(node -e 'const [bucket,stack,acct,region]=process.argv.slice(1);const tables=`arn:aws:dynamodb:${region}:${acct}:table/cdkd-ddbffo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["dynamodb:CreateTable","dynamodb:TagResource","dynamodb:DescribeTable","dynamodb:ListTagsOfResource","dynamodb:DescribeTimeToLive","dynamodb:DescribeContinuousBackups"],Resource:tables},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["dynamodb:UpdateTimeToLive","dynamodb:DeleteTable"],Resource:tables}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "${REGION}")"
+DENY_POLICY="$(node -e 'const [bucket,stack,acct,region]=process.argv.slice(1);const tables=`arn:aws:dynamodb:${region}:${acct}:table/cdkd-ddbffo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["dynamodb:CreateTable","dynamodb:TagResource","dynamodb:DescribeTable","dynamodb:ListTagsOfResource","dynamodb:DescribeTimeToLive","dynamodb:DescribeContinuousBackups"],Resource:tables},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["dynamodb:UpdateTimeToLive","dynamodb:DeleteTable"],Resource:tables}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "${REGION}")"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=dynamodb-fix-forward-orphan >/dev/null
 DENY_ROLE_CREATED=1

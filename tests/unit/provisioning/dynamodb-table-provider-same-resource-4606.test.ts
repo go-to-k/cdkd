@@ -52,6 +52,9 @@ import { withRetry } from '../../../src/deployment/retry.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { settleJournaledOrphansOnSuccess } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import type { RollbackExecutorContext } from '../../../src/deployment/rollback-executor.js';
+import { withPrintingSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { recordLogOnlyValue, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 
 const TYPE = 'AWS::DynamoDB::Table';
 const CTX = { expectedRegion: 'us-east-1' };
@@ -155,6 +158,26 @@ describe('DynamoDBTableProvider.isSameResource (go-to-k/cdkd#4606)', () => {
     await expect(
       provider.isSameResource('orders-a', { physicalId: 'orders-b' }, TYPE, CTX)
     ).rejects.toThrow('not authorized');
+  });
+
+  it("the record's read failing other than with ResourceNotFoundException throws, before the journaled one is read", async () => {
+    live({ 'orders-a': 'tid-A', 'orders-b': denied('DescribeTable') });
+    await expect(
+      provider.isSameResource('orders-a', { physicalId: 'orders-b' }, TYPE, CTX)
+    ).rejects.toThrow('not authorized');
+    expect(askedNames()).toEqual(['orders-b']);
+  });
+
+  // Order pinned on purpose: equal names answer before the region check. A
+  // 'same' deletes nothing (the settle tracks the entry), and whatever table
+  // holds the name is the record's, so no client region changes the answer.
+  it('equal names are the same even from a client in another region, with no read', async () => {
+    clientRegion.value = 'us-west-2';
+    live({});
+    await expect(
+      provider.isSameResource('orders-a', { physicalId: 'orders-a' }, TYPE, CTX)
+    ).resolves.toBe('same');
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('"not found" in the message of another error class never reads as gone', async () => {
@@ -450,6 +473,36 @@ describe('DynamoDBTableProvider.delete of a journaled table already gone (go-to-
       expect(providerLogger.info).not.toHaveBeenCalled();
       expect(skipDebugLines()).toBe(1);
     }
+  });
+
+  // go-to-k/cdkd#3869: the settle, `cdkd rollback` and `cdkd destroy` bind a
+  // printing bag holding a secret-derived name around this delete; the line
+  // must carry the name verbatim (no reshaping the bag's needle could miss),
+  // so the logger's line masker removes it.
+  it('the info line names a secret-derived table only where the bound printing bag masks it', async () => {
+    const DERIVED = 'orders-from-secret-x9';
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof DescribeTableCommand || cmd instanceof DeleteTableCommand) {
+        throw notFound(DERIVED);
+      }
+      throw new Error('unexpected command');
+    });
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, DERIVED);
+    let masked = '<not masked>';
+    await withPrintingSecrets(bag, async () => {
+      await new DynamoDBTableProvider().delete('Orphan', DERIVED, TYPE, {}, {
+        expectedRegion: 'us-east-1',
+        failedCreateOrphan: true,
+      });
+      const mask = currentLogLineMasker();
+      const line = String(providerLogger.info.mock.calls[0]?.[0]);
+      expect(line).toContain(DERIVED);
+      masked = mask === undefined ? '<no masker bound>' : mask(line);
+    });
+    expect(masked).not.toContain(DERIVED);
+    expect(masked).toContain(SECRET_MASK);
+    expect(masked).toContain('already gone');
   });
 });
 
