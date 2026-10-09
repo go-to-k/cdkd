@@ -110,7 +110,9 @@ export interface ResourceProvider {
    * logical id holds (issue #4606: the fix-forward).
    *
    * Optional. A successful deploy deletes the journaled resource only on
-   * `'different'`; absent, `'unknown'` or a throw keeps today's warning.
+   * `'different'`, and so do `cdkd rollback` and `cdkd destroy` replaying
+   * an entry that deploy kept (issue #4754); absent, `'unknown'` or a throw
+   * keeps today's warning.
    * A `'different'` must rest on AWS evidence, not on two id strings
    * differing: at the least a live read confirming the record's resource
    * exists, in an id namespace where two distinct ids cannot name one

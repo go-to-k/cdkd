@@ -24,9 +24,13 @@ import {
   effectiveProvisionedBy,
   rollbackRetainsNewResource,
   rollbackCannotAddress,
+  shownLogicalId,
 } from './messages.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { RESOURCE_IDENTITY_TIMEOUT_MS } from './orphan-identity.js';
+import type { ResourceIdentityVerdict } from '../../types/resource.js';
 
 /** The two places a journal can name the old resource's type, each `undefined` when unusable. */
 function journaledOldTypes(op: OldTypeSources): {
@@ -743,6 +747,161 @@ export function planFailedOps(
       op.provisionedBy
     ),
   }));
+}
+
+/**
+ * Ops whose {@link recheckMismatchedFailedCreate} at the `cdkd rollback`
+ * preview did not prove them distinct. Never journaled, like the proof.
+ */
+const undecidedAtPreview = new WeakSet<FailedOperation>();
+
+/**
+ * go-to-k/cdkd#4754: re-check a `skip-failed-mismatch` verdict on a journaled
+ * failed-CREATE orphan, the way a successful deploy's settle does. That settle
+ * proves a fix-forward's orphan distinct from the record now under its logical
+ * id (`isSameResource`), but keeps the proof only in memory
+ * ({@link markProvenDistinctFromRecord}); an entry the settle could not finish
+ * (a delete that failed, an S3 bucket it never empties) reaches a later
+ * `cdkd destroy` / `cdkd rollback` with no proof, and {@link classifyFailedOp}
+ * skips it unchecked: "manual attention" for an orphan that may be gone, and
+ * one still there left untracked once the journal goes.
+ *
+ * Asks the provider the orphan's delete would take whether the record holds
+ * the same resource; on `'different'` records the proof and classifies again,
+ * so the op takes the delete arm, whose `journaledOrphanKeepReason` still
+ * checks the orphan's identity and whether it is gone. Every other answer,
+ * a provider without the method, a throw and a read that has not answered
+ * within {@link RESOURCE_IDENTITY_TIMEOUT_MS} keep `action`. Any other
+ * action, op or record shape is returned as is, with no read.
+ *
+ * `preview` is the `cdkd rollback` plan the user confirms: an op it could not
+ * prove is remembered, and the replay of that same op keeps the skip without
+ * asking again, so a skip the user confirmed is never turned into a delete.
+ * A proof the preview reached carries to the replay the same way.
+ */
+export async function recheckMismatchedFailedCreate(
+  op: FailedOperation,
+  action: FailedOpActionKind,
+  stateResources: Record<string, ResourceState>,
+  siblings: readonly FailedOperation[],
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'> &
+    Partial<Pick<RollbackExecutorContext, 'logger'>>,
+  timeoutMs: number = RESOURCE_IDENTITY_TIMEOUT_MS,
+  preview = false
+): Promise<FailedOpActionKind> {
+  if (preview && action === 'skip-failed-mismatch') {
+    // Every skip the preview shows is remembered unless proven, gated or not:
+    // the replay's record may pass a gate the preview's copy did not.
+    const rechecked = await recheckMismatchedFailedCreate(
+      op,
+      action,
+      stateResources,
+      siblings,
+      ctx,
+      timeoutMs
+    );
+    if (rechecked === action) undecidedAtPreview.add(op);
+    return rechecked;
+  }
+  if (
+    action !== 'skip-failed-mismatch' ||
+    op.changeType !== 'CREATE' ||
+    op.physicalIdRecoveredFromError !== true ||
+    typeof op.physicalId !== 'string' ||
+    op.physicalId === ''
+  ) {
+    return action;
+  }
+  const record = Object.hasOwn(stateResources, op.logicalId)
+    ? stateResources[op.logicalId]
+    : undefined;
+  if (
+    record === undefined ||
+    record.resourceType !== op.resourceType ||
+    typeof record.physicalId !== 'string' ||
+    record.physicalId === ''
+  ) {
+    return action;
+  }
+  if (undecidedAtPreview.has(op)) return action;
+  const journaledId = op.physicalId;
+  const ask = async (): Promise<ResourceIdentityVerdict> => {
+    try {
+      const { provider } = ctx.providerRegistry.getProviderFor({
+        resourceType: op.resourceType,
+        provisionedBy: op.provisionedBy,
+      });
+      if (typeof provider.isSameResource !== 'function') return 'unknown';
+      return await provider.isSameResource(
+        journaledId,
+        {
+          physicalId: record.physicalId,
+          ...(record.provisionedBy !== undefined && { provisionedBy: record.provisionedBy }),
+        },
+        op.resourceType,
+        { expectedRegion: ctx.region }
+      );
+    } catch (error) {
+      ctx.logger?.debug(
+        safeMsg`Re-check of the kept orphan ${shownLogicalId(op.logicalId)} failed (${error instanceof Error ? error.name : typeof error}); keeping the skip`
+      );
+      return 'unknown';
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<ResourceIdentityVerdict>((resolve) => {
+    timer = setTimeout(() => resolve('unknown'), timeoutMs);
+  });
+  let verdict: ResourceIdentityVerdict;
+  try {
+    verdict = await Promise.race([ask(), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (verdict !== 'different') {
+    return action;
+  }
+  markProvenDistinctFromRecord(op, record);
+  return classifyFailedOp(op, stateResources, siblings);
+}
+
+/**
+ * {@link planFailedOps}, with {@link recheckMismatchedFailedCreate} applied to
+ * each item as the `cdkd rollback` preview.
+ */
+export async function recheckFailedPlan(
+  plan: FailedOpPlanItem[],
+  stateResources: Record<string, ResourceState>,
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'> &
+    Partial<Pick<RollbackExecutorContext, 'logger'>>,
+  timeoutMs: number = RESOURCE_IDENTITY_TIMEOUT_MS
+): Promise<FailedOpPlanItem[]> {
+  const failedOps = plan.map((item) => item.op);
+  const out: FailedOpPlanItem[] = [];
+  for (const item of plan) {
+    const action = await recheckMismatchedFailedCreate(
+      item.op,
+      item.action,
+      stateResources,
+      failedOps,
+      ctx,
+      timeoutMs,
+      true
+    );
+    out.push(
+      action === item.action
+        ? item
+        : {
+            ...item,
+            action,
+            effectiveProvisionedBy: effectiveProvisionedBy(
+              failedOpOwnRecord(item.op, stateResources),
+              item.op.provisionedBy
+            ),
+          }
+    );
+  }
+  return out;
 }
 
 /**

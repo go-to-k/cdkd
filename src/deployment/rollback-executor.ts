@@ -81,6 +81,7 @@ import {
   classifyFailedOp,
   failedOpOwnRecord,
   recordUnderIdIsNotOwn,
+  recheckMismatchedFailedCreate,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -158,6 +159,8 @@ export {
   markProvenDistinctFromRecord,
   replacementNeverSwapped,
   planFailedOps,
+  recheckFailedPlan,
+  recordUnderIdIsNotOwn,
   planRollback,
   sortRollbackCreates,
 } from './rollback-executor/plan.js';
@@ -697,7 +700,25 @@ async function replayFailedOperationsUnbound(
       break;
     }
     const op = failedOps[i]!;
-    const action = classifyFailedOp(op, stateResources, failedOps);
+    // go-to-k/cdkd#4754: a replay with the holder scan (`foreignHolder`:
+    // `cdkd rollback`, `cdkd destroy`, and a successful deploy's settle,
+    // whose ops are already proven or demoted and so never reach this skip)
+    // re-asks a kept fix-forward orphan the settle's question before skipping
+    // it unchecked; the delete arm then runs the holder and identity checks.
+    // No read for any other op, nor in the automatic rollback, which runs
+    // neither check.
+    const classified = classifyFailedOp(op, stateResources, failedOps);
+    const action =
+      ctx.foreignHolder === undefined
+        ? classified
+        : await recheckMismatchedFailedCreate(op, classified, stateResources, failedOps, ctx);
+    // The re-check can wait on AWS: an interrupt that arrived meanwhile keeps
+    // this op and the rest pending, as one seen before it would.
+    if (classified === 'skip-failed-mismatch' && options.isInterrupted?.()) {
+      result.interrupted = true;
+      for (let j = i; j >= 0; j--) pending.add(failedOps[j]!);
+      break;
+    }
     /**
      * This op's re-resolved secret bag — the twin of `replaySingle`'s, and
      * hoisted above this iteration's `try` for the same reason (issues #2038 /
