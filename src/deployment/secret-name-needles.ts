@@ -413,17 +413,21 @@ export const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
 /**
  * `message` with every run of consecutive lines other than a `To orphan it:`
  * command line masked as ONE text, so a needle spanning lines (a PEM, a
- * multi-line `SecretString`) still matches inside a run, after each line that
- * a per-line pass masks WHOLE.
+ * multi-line `SecretString`) still matches inside a run; then each line that a
+ * per-line pass masks WHOLE.
  */
 function maskOutsideCommandLines(message: string, mask: (text: string) => string): string {
   const out: string[] = [];
   let run: string[] = [];
   const flush = (): void => {
-    // A line that IS a needle first: the whole-text arm is the only one a
-    // needle under the substring floor takes, and the joined run hides it.
-    const lines = run.map((line) => (mask(line) === SECRET_MASK ? SECRET_MASK : line));
-    if (lines.length > 0) out.push(mask(lines.join('\n')));
+    if (run.length === 0) return;
+    // The joined run first, so a needle spanning lines masks all of them; then
+    // each line that IS a needle, the only arm a needle under the substring
+    // floor takes, which the joined run hides.
+    const masked = mask(run.join('\n'))
+      .split('\n')
+      .map((line) => (mask(line) === SECRET_MASK ? SECRET_MASK : line));
+    out.push(masked.join('\n'));
     run = [];
   };
   for (const line of message.split('\n')) {

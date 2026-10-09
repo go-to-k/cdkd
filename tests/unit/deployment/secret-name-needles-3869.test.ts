@@ -472,5 +472,31 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
         "Cannot reverse 'Q', it read:\n***\nTo orphan it: cdkd rollback S --orphan Q"
       );
     });
+
+    it('masks every line of a multi-line needle whose middle line is a needle on its own', async () => {
+      const multi = 'BEGIN-KEY\nkey-body\nEND-KEY';
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, multi);
+      recordLogOnlyValue(own, 'key-body');
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message: `Cannot reverse 'Q':\n${multi}\nTo orphan it: cdkd rollback S --orphan Q`,
+            ownLines: true,
+          },
+        } as never)
+      );
+      expect((events[0] as { error: { message: string } }).error.message).toBe(
+        "Cannot reverse 'Q':\n***\nTo orphan it: cdkd rollback S --orphan Q"
+      );
+    });
   });
 });
