@@ -70,8 +70,8 @@ Out of scope:
   `Fn::GetAtt` can read it (an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a
   Cognito user pool client's `ClientSecret`), nor a `NoEcho` parameter's value,
   nor a custom resource's `NoEcho` `Data`; reports of those remain welcome.
-- **A physical name derived from a secret, and other resources' resolved
-  references to it, recorded in state.** A `{{resolve:...}}` reference or a
+- **A physical name derived from a secret, recorded in state and in what
+  carries it.** A `{{resolve:...}}` reference or a
   `NoEcho` parameter used in a name or other identifier property becomes the
   resource's identity. This covers that name in the resource's `physicalId`,
   and the name, or an identifier embedding it, wherever a resolved `Ref`,
@@ -83,5 +83,5 @@ Out of scope:
   see [Security and Best Practices](docs/state-management.md#security-and-best-practices).
   This does not cover the resource's own `properties`, `attributes` or
   `observedProperties`, a different secret read through the same resource, or
-  the name unmasked in logs, deployment events or `cdkd diff` output; reports
-  of those remain welcome.
+  the name unmasked in any other CLI output, logs or deployment events;
+  reports of those remain welcome.
