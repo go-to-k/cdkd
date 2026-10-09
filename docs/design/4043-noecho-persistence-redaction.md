@@ -489,8 +489,9 @@ its parent's row fills from a `NoEcho` source (decision 8), read against the
 parent's final declared attributes. A row value whose every `NoEcho` read sits
 inside an `Fn::If` (or reads only a parameter its own parent passed as
 conditional, so the mark carries to a grandchild) counts on either branch and
-is passed as conditional; the child's export-name verdict does not refuse a
-name reading it, which stays a possible live alias: the child positions it but takes
+is passed as conditional; a child `Export.Name` is not refused for reading
+it (only a value the parent's default-bound branch resolved can still refuse
+it by containment), so it stays a possible live alias: the child positions it but takes
 no migration or containment needle from the plaintext it stored there, which
 may be the other branch's literal. An over-marked position stores `***` until
 the next deploy, never a phantom diff elsewhere in the record.

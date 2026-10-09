@@ -9224,15 +9224,6 @@ function applyScrubNoEcho(
   return next;
 }
 
-/**
- * The child parameters a nested-stack row fills from a `NoEcho` source
- * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8: `recordPassedNoEchoParameters`):
- * each `Parameters` entry whose template value reads a `NoEcho` parameter or a
- * declared `NoEcho` attribute. One read through an `Fn::If` is counted on
- * either branch (the deploy's branch may have read the source) and is also
- * listed in `conditional`: scrub's default-bound verdicts may not reproduce
- * that branch, so the child positions it but takes no needle from it.
- */
 /** `value` with every `Fn::If` node replaced by `null`. */
 function withoutFnIf(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutFnIf);
@@ -9245,6 +9236,16 @@ function withoutFnIf(value: unknown): unknown {
   return out;
 }
 
+/**
+ * The child parameters a nested-stack row fills from a `NoEcho` source
+ * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8: `recordPassedNoEchoParameters`):
+ * each `Parameters` entry whose template value reads a `NoEcho` parameter or a
+ * declared `NoEcho` attribute, on either branch of an `Fn::If`. One is also
+ * listed in `conditional` when no needle source (`needleSources`: no
+ * conditional parameter, only attributes declared without one) is read
+ * outside every `Fn::If`: scrub's default-bound verdicts may not reproduce the
+ * deploy's branch, so the child positions it but takes no needle from it.
+ */
 function noEchoFilledRowParameters(
   rowProperties: unknown,
   sources: NoEchoPositionSources,
