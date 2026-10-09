@@ -670,5 +670,103 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
       }
     });
+
+    it.each([
+      ['a secret-named record', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted child's stored output when no live row reads the record: %s", async (_l, recorded, shown) => {
+      // The removed row was the ONLY reader: the root template keeps the queue
+      // under a literal name and nothing reads it, so the root's own reads hold
+      // no needle; only its state record still spells the name from a secret.
+      const parent = state(recorded);
+      delete parent.resources['Policy'];
+      parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+      const child = empty('S~Child');
+      child.outputs = { COut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: { Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'plain-queue-name' } } },
+        },
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const node = tree.children.find((c) => c.stackName === 'S~Child');
+      const out = JSON.stringify(node?.outputChanges.find((c) => c.name === 'COut'));
+      expect(out).toContain('"changeType":"REMOVE"');
+      expect(out).toContain('"oldValue"');
+      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+
+    it("never hands the row's reads to the child as inheritedSecrets: its export alias still previews", async () => {
+      // A child export NAMED from the parent-passed URL. An inherited needle
+      // there would seed the child's NoEcho export-name verdict, which then
+      // withholds the alias the deploy publishes: the derived names are
+      // mask-only, so the alias row stays (its name display masked).
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-alias-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: { Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+            Outputs: {
+              QName: {
+                Value: 'v',
+                Export: { Name: { 'Fn::Select': [4, { 'Fn::Split': ['/', { Ref: 'QueueUrl' }] }] } },
+              },
+            },
+          })
+        );
+        const parent = state(SECRET_NAME);
+        parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+        const tpl = template(SECRET_NAME);
+        tpl.Resources['Child'] = nestedRow('child.json', { QueueUrl: { Ref: 'Queue' } });
+        const states: Record<string, StackState> = {
+          S: parent,
+          'S~Child': empty('S~Child', {
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: 'x' },
+              attributes: {},
+              dependencies: [],
+            },
+          }),
+        };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const child = tree.children.find((c) => c.stackName === 'S~Child');
+        // Premise: the output itself previews.
+        expect(child?.outputChanges.some((c) => c.name === 'QName')).toBe(true);
+        const alias = child?.outputChanges.find((c) => c.isExport === true);
+        expect(alias?.changeType).toBe('ADD');
+        expect(JSON.stringify(alias?.nameDisplay)).not.toContain('sdin-diff-secret-queue');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

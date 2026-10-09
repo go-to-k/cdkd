@@ -45,6 +45,9 @@ const { hasMaskableValues, maskSecretsInText, recordLogOnlyValue } = await impor
   '../../../src/deployment/secret-redaction.js'
 );
 const { withPrintingSecrets } = await import('../../../src/deployment/resource-secrets-scope.js');
+// Loaded once at module level: the engine module is large, and a first case
+// importing it under load spends its own timeout on the import.
+const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
 
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER_ID = 'team-secret-user';
@@ -299,7 +302,6 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
   const engineRecording = async (events: Array<Record<string, unknown>>): Promise<{
     recordEvent: (event: Record<string, unknown>) => void;
   }> => {
-    const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
     return new DeployEngine(
       {} as never,
       {} as never,
@@ -337,5 +339,64 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
     } else {
       expect(recorded).toEqual(failed());
     }
+  });
+
+  describe('one pass over the engine bag and the bound bags', () => {
+    // The engine's own bag holds a NoEcho value the derived name embeds.
+    const ENGINE = 'teamsecret';
+    const DERIVED = 'q-teamsecret-queue';
+    const engineWith = async (events: Array<Record<string, unknown>>) => {
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, ENGINE);
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      return engine;
+    };
+    const boundBag = () => {
+      const bag = new Map<string, string>();
+      recordLogOnlyValue(bag, DERIVED);
+      recordLogOnlyValue(bag, 'boundonly');
+      return bag;
+    };
+
+    it('masks a derived needle that embeds an engine needle whole, leaving no fragment', async () => {
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineWith(events);
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          reason: `create failed for ${DERIVED}`,
+          error: { message: `queue ${DERIVED} rejected ${ENGINE}` },
+        })
+      );
+      const [recorded] = events as Array<{ reason: string; error: { message: string } }>;
+      expect(recorded!.reason).toBe('create failed for ***');
+      expect(recorded!.error.message).toBe('queue *** rejected ***');
+    });
+
+    it("keeps an own-remedy command line masked by the engine bag, and only by it", async () => {
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineWith(events);
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message:
+              `Cannot reverse 'Q' (it read ${DERIVED}, boundonly)\n` +
+              `To orphan it: cdkd rollback S --orphan Q -c k=${ENGINE} -c b=boundonly`,
+            ownLines: true,
+          },
+        } as never)
+      );
+      const [recorded] = events as Array<{ error: { message: string } }>;
+      expect(recorded!.error.message).toBe(
+        "Cannot reverse 'Q' (it read ***, ***)\nTo orphan it: cdkd rollback S --orphan Q -c k=*** -c b=boundonly"
+      );
+    });
   });
 });

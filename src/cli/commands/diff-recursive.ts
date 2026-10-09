@@ -3571,7 +3571,9 @@ export async function buildDiffTree(args: {
         secretBearingAbove,
         printingSecrets,
         refusalRecovery,
-        nodeDerivedNames
+        // A deleted child's stored values can hold a name this node's records
+        // spell from a secret even when no live row reads it any more.
+        diffPrintingSecrets([nodeDerivedNames, stateDerivedNames(state.resources ?? {})])
       )
     );
   }
@@ -3607,6 +3609,11 @@ async function buildDeletedSubtree(
     stateBackend,
     refusalRecovery
   );
+  // Its own secret-named records too: a nested stack it held may store them.
+  const derivedNames = diffPrintingSecrets([
+    inheritedDerivedNames,
+    stateDerivedNames(state.resources ?? {}),
+  ]);
   const { changes, outputChanges } = await computeStackDiff(
     state,
     EMPTY_TEMPLATE,
@@ -3617,7 +3624,7 @@ async function buildDeletedSubtree(
     {
       inheritSecretBearingTemplate: parentHasSecretReference,
       inheritedSecrets,
-      ...(hasMaskableValues(inheritedDerivedNames) && { inheritedDerivedNames }),
+      ...(hasMaskableValues(derivedNames) && { inheritedDerivedNames: derivedNames }),
       ...(refusalRecovery && { refusalRecovery }),
     }
   );
@@ -3674,11 +3681,26 @@ async function buildDeletedSubtree(
         parentHasSecretReference,
         inheritedSecrets,
         refusalRecovery,
-        inheritedDerivedNames
+        derivedNames
       )
     );
   }
   return node;
+}
+
+/**
+ * The name needles of every record in `resources` named from a secret
+ * (go-to-k/cdkd#3869), as one MASK-ONLY bag of log-only needles, for a
+ * deleted subtree's rows: judged from the records alone, since no live row
+ * reads them. Over-masking costs nothing here; `cdkd diff` writes nothing.
+ */
+function stateDerivedNames(resources: Record<string, ResourceState>): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  const needlesOf = stateSecretNameNeedles(resources);
+  for (const logicalId of Object.keys(resources)) {
+    for (const needle of needlesOf(logicalId) ?? []) recordLogOnlyValue(bag, needle);
+  }
+  return bag;
 }
 
 const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();

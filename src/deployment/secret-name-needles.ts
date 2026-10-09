@@ -407,7 +407,7 @@ export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedS
  * sink.
  */
 /** The label of `orphanRemedy`'s pasteable command line. */
-const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
+export const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
 
 export function maskEventTextWithBoundBags<
   T extends { error?: { message?: string; ownLines?: boolean }; reason?: string },
