@@ -571,7 +571,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // the resource absent, and the error below says so.
     logger.info(
       `  Rollback: the replacement deleted the old resource before creating the new one — ` +
-        `deleting the new resource (${displaySafe(mask(current.physicalId))}) first...`
+        safeMsg`deleting the new resource (${mask(current.physicalId)}) first...`
     );
     await deleteNewResourceFirst(
       'while clearing the new resource before re-creating the old one (the replacement deleted the old one first)'
