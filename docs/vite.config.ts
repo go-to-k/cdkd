@@ -232,9 +232,20 @@ const theme = (command: 'build' | 'serve') =>
       '    button.append(fallback);',
       '  });',
       '})();',
-      // Package-manager tabs open on npm, as the hero does, until the reader
-      // picks one; core's deferred tab runtime then restores a stored pick.
+      // Package-manager tabs, as in the hero: npm, pnpm, yarn, bun, vp, in
+      // that order (the elements move, so keyboard order follows), opening
+      // on npm until the reader picks; core's deferred tab runtime then
+      // restores a stored pick.
       '(function () {',
+      "  var order = ['npm', 'pnpm', 'yarn', 'bun', 'vp'];",
+      '  document.querySelectorAll(\'.ox-tabs[data-ox-tab-group="pkg-manager"] .ox-tabs-header\').forEach(function (header) {',
+      "    Array.prototype.map.call(header.querySelectorAll('label'), function (label) {",
+      '      return { label: label, input: document.getElementById(label.htmlFor), rank: order.indexOf(label.textContent.trim()) };',
+      '    }).sort(function (a, b) { return a.rank - b.rank; }).forEach(function (tab) {',
+      '      if (tab.input) header.append(tab.input);',
+      '      header.append(tab.label);',
+      '    });',
+      '  });',
       '  var stored = null;',
       "  try { stored = localStorage.getItem('ox-tab-group:pkg-manager'); } catch (e) {}",
       '  if (stored) return;',
