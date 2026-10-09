@@ -187,8 +187,11 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'a cleverer regex.',
   },
   'src/cli/commands/scrub.ts': {
-    sites: 1,
+    sites: 2,
     why:
+      '`applyScrubNoEcho` (go-to-k/cdkd#4043 Phase C) masks the `NoEcho` positions of ' +
+      'a bag `scrubResourceRecord` already redacted, as the deploy\'s ' +
+      '`applyNoEchoPersist` does. And, ' +
       'NOT a write: the READ that feeds a rollback-orphan record\'s third bag into ' +
       "the needle-learning resolve (issue go-to-k/cdkd#2943). `scrubResourceRecord` " +
       'scrubs `observedProperties` as well as `properties` and `attributes`, so a ' +
@@ -298,9 +301,9 @@ describe('observedProperties write population (issue #2828)', () => {
     // header; go-to-k/cdkd#2943 added one READ in `scrub.ts` — the orphan
     // record's `observedProperties` reaching the needle-learning resolve — for
     // 12 across 8; go-to-k/cdkd#4043 added the NoEcho mask over the scrubbed
-    // record, for 13 across 9.
+    // record, for 13 across 9; its Phase C added scrub's twin of it, for 14.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(13);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(14);
     expect(Object.keys(EXPECTED)).toHaveLength(9);
   });
 

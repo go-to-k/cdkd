@@ -46,16 +46,90 @@ const template = {
 };
 
 describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
-  it('blocks it with the NoEcho parameter reason, not the three record remedies', async () => {
+  // Phase C (design section 4.8): the exported template reads the parameter
+  // and CloudFormation receives its value as a parameter, so a record whose
+  // only masks sit at marked coordinates is exported; its identifier (the
+  // SSM name) reads no marked position.
+  it('lets it through when every mask sits at a marked coordinate', async () => {
     const result = await buildImportPlan(
       stateWith({ Name: '/app/token', Value: '***' }, [['Value']]),
       template,
       cfnClientStub,
       'Root'
     );
+    expect(result.blocked).toEqual([]);
+    expect(JSON.stringify(result)).toContain('/app/token');
+    expect(JSON.stringify(result)).not.toContain('"Value":"***"');
+  });
+
+  it('blocks it, with the NoEcho reason, when the identifier is built from a marked position', async () => {
+    const state = stateWith({}, [['FunctionName']]);
+    state.resources['Param'] = {
+      physicalId: 'fn|stmt-1',
+      resourceType: 'AWS::Lambda::Permission',
+      properties: { FunctionName: '***', Action: 'lambda:InvokeFunction', Principal: 's3.amazonaws.com' },
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: [['FunctionName']],
+    };
+    const result = await buildImportPlan(
+      state,
+      {
+        Parameters: { Token: { Type: 'String', NoEcho: true } },
+        Resources: {
+          Param: {
+            Type: 'AWS::Lambda::Permission',
+            Properties: {
+              FunctionName: { Ref: 'Token' },
+              Action: 'lambda:InvokeFunction',
+              Principal: 's3.amazonaws.com',
+            },
+          },
+        },
+      },
+      {
+        send: () =>
+          Promise.resolve({
+            ProvisioningType: 'FULLY_MUTABLE',
+            Schema: JSON.stringify({
+              primaryIdentifier: ['/properties/FunctionName', '/properties/Id'],
+              handlers: { read: { permissions: [] } },
+            }),
+          }),
+      } as unknown as AwsClients['cloudFormation'],
+      'Root'
+    );
     expect(result.blocked).toHaveLength(1);
-    expect(result.blocked[0]!.reason).toMatch(/a NoEcho template parameter feeds/);
-    expect(result.blocked[0]!.reason).not.toMatch(/three ways/);
+    expect(result.blocked[0]!.reason).toMatch(/import identifier of this resource is built from a property a NoEcho/);
+  });
+
+  it("blocks an IAM policy whose pre-delete would read a marked principal, with the NoEcho reason", async () => {
+    const state = stateWith({}, [['Roles', 0]]);
+    state.resources['Param'] = {
+      physicalId: 'Root-Pol',
+      resourceType: 'AWS::IAM::Policy',
+      properties: { PolicyName: 'pol', Roles: ['***'], PolicyDocument: { Statement: [] } },
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: [['Roles', 0]],
+    };
+    const result = await buildImportPlan(
+      state,
+      {
+        Parameters: { Token: { Type: 'String', NoEcho: true } },
+        Resources: {
+          Param: {
+            Type: 'AWS::IAM::Policy',
+            Properties: { PolicyName: 'pol', Roles: [{ Ref: 'Token' }], PolicyDocument: { Statement: [] } },
+          },
+        },
+      },
+      cfnClientStub,
+      'Root',
+      { recreateImportUnsupported: true }
+    );
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0]!.reason).toMatch(/pre-delete reads \(its principals or its name\)/);
   });
 
   it('keeps the general reason when a mask sits OUTSIDE the marked coordinates', async () => {

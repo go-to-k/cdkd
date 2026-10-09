@@ -85,6 +85,7 @@
         "lambda",
         "loggroup-never-expire-guard",
         "nested-stack-deep",
+        "noecho-parameter-masking",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "route53",

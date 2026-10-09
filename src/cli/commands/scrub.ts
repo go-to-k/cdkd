@@ -79,8 +79,23 @@ import {
   MIN_NEEDLE_LENGTH,
   inheritNestedStackParameterAssociations,
   recordNestedStackParameterExpressions,
+  canonicalCoordinates,
+  carriesSecretMask,
+  maskAtCoordinates,
+  maskReadbackAtCoordinates,
+  maskWholeValue,
+  noEchoCoordinatesOf,
+  noEchoLeavesOf,
+  readsNoEchoSource,
+  recordNoEchoParameterFreshValue,
+  valueAtCoordinate,
+  type NoEchoCoordinate,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
+import {
+  noEchoAttributeNamesOf,
+  noEchoParameterNamesOf,
+} from '../../deployment/deploy-engine/noecho.js';
 // Issue #2109: the region split is #2057's, imported rather than re-spelled —
 // one answer to "which region must answer for this `{{resolve:...}}`
 // expression", shared by the rollback replay and by `cdkd scrub`.
@@ -115,6 +130,8 @@ import {
   templateUsesSub,
 } from '../../analyzer/outputs-diff.js';
 import {
+  carriedExportAliasExposure,
+  noEchoParameterValueSeed,
   collectDeclaredOutputNames,
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
@@ -7174,6 +7191,14 @@ export async function scrubStack(
     // alias is accounted, which `planUnnamedOutputDrop` needs before it drops
     // an unaccounted key that may be an alias.
     let everyExportAliasReproduced = true;
+    // Every `NoEcho` value this run binds, the seed of the deploy's
+    // export-name verdict (go-to-k/cdkd#4043): a name it refuses is never
+    // published, so its absence accounts for nothing.
+    const noEchoNameSeed = noEchoParameterValueSeed(
+      stack.template.Parameters,
+      parameters,
+      inheritedSecrets
+    );
     // Declared above the wrap because the block below it reads some of them.
 
     // ONE drain budget for the resolve LOOPS between here and the
@@ -7814,9 +7839,24 @@ export async function scrubStack(
         const literalCollision =
           typeof declaredExportName === 'string' &&
           isExportAliasCollision(declaredExportName, name, declaredOutputNames);
+        // go-to-k/cdkd#4043 Phase C: a name the deploy's export-name verdict
+        // REFUSES (it holds or reads a `NoEcho` value) is never published, so
+        // its alias key is absent by design and does not make the stored
+        // aliases unaccountable. A key an older binary published under it is
+        // then an unnamed key: reported by its secret-bearing check, and
+        // dropped, not kept as a possible live alias.
+        const refusedForNoEcho =
+          declaredExportName !== undefined &&
+          ((typeof exportName === 'string' &&
+            !exportNameUnresolved &&
+            carriedExportAliasExposure(exportName, outputSecrets, noEchoNameSeed) !== undefined) ||
+            readsNoEchoSource(declaredExportName, {
+              parameters: noEchoParameterNamesOf(stack.template),
+            }));
         if (
           declaredExportName !== undefined &&
           !literalCollision &&
+          !refusedForNoEcho &&
           !(
             typeof exportName === 'string' &&
             !exportNameUnresolved &&
@@ -8122,6 +8162,22 @@ export async function scrubStack(
       return JSON.stringify(redactSecretsForState(value, needles)) !== JSON.stringify(value);
     };
 
+    // go-to-k/cdkd#4043 Phase C: the POSITIONAL arm and its MIGRATION rule.
+    // A leaf today's template serves from a `NoEcho` parameter (or a declared
+    // `NoEcho` `Fn::GetAtt`) is persisted as `***`, named in `noEchoLeaves`,
+    // as a v11 deploy writes it. Where the record still holds the plaintext
+    // there (a stack deployed before v11, or under an older `Default`), that
+    // stored value becomes the record's own value-arm needle, so the copies
+    // of it in `observedProperties` and `attributes` are masked too.
+    const noEchoPlans = planScrubNoEcho(
+      state,
+      stack.template,
+      perResourceTemplateProps,
+      conditions,
+      perResourceSecrets,
+      new Set([region, stack.stackName])
+    );
+
     const totalSecrets =
       outputSecrets.size +
       [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0) +
@@ -8130,7 +8186,7 @@ export async function scrubStack(
       // zero-needle branch below, returns `recordsChanged: 0`, and prints
       // "No plaintext secrets found" over the record it never examined.
       [...orphanSecrets.values()].reduce((n, m) => n + m.size, 0);
-    if (totalSecrets === 0) {
+    if (totalSecrets === 0 && !noEchoPlans.changesAny) {
       // NOT a blanket "nothing found": `unverifiableReads` is carried out even
       // here, because a stack whose only cross-stack read cdkd declined by
       // design has exactly this shape — zero needles — and reporting it clean
@@ -8237,8 +8293,9 @@ export async function scrubStack(
               STATE_SOURCED_CROSS_GENERATION_RULES
             )
           : record;
-      if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
-      newResources[logicalId] = scrubbed;
+      const written = applyScrubNoEcho(scrubbed, record, noEchoPlans.byLogicalId.get(logicalId));
+      if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
+      newResources[logicalId] = written;
     }
 
     // Rollback-orphan records (issue go-to-k/cdkd#2943).
@@ -8774,4 +8831,130 @@ export function createScrubCommand(): Command {
 
   cmd.action(withErrorHandling(scrubCommand));
   return cmd;
+}
+
+/** One record's `NoEcho` positions in scrub (go-to-k/cdkd#4043 Phase C). */
+interface ScrubNoEchoPlan {
+  /** The coordinates the record is written with. */
+  readonly leaves: NoEchoCoordinate[];
+  /** The plaintext the record still held at a coordinate (the migration witness). */
+  readonly stored: ReadonlyArray<{ coordinate: NoEchoCoordinate; value: unknown }>;
+}
+
+/**
+ * Plan the `NoEcho` arms over every record today's template still declares
+ * under the same type (go-to-k/cdkd#4043 Phase C, design section 4.6).
+ *
+ * - The coordinates are today's template positions that read a `NoEcho`
+ *   parameter (`noEchoCoordinatesOf` over the STORED record), plus each
+ *   coordinate the record already names whose leaf still holds the mask.
+ * - A plaintext the record still holds there is registered as a FRESH
+ *   mask-only and containment needle of THAT record's bag only (the deploy's
+ *   value arm), never the union: one record's value must not rewrite
+ *   another's literal.
+ *
+ * `changesAny` lets a stack with no other recorded secret still be scrubbed.
+ * A nested child is positioned by its own template's `NoEcho` parameters
+ * only: a value its parent's row passes in is not known here (residual).
+ */
+function planScrubNoEcho(
+  state: StackState,
+  template: CloudFormationTemplate,
+  templateProps: ReadonlyMap<string, Record<string, unknown>>,
+  conditions: Record<string, boolean>,
+  perResourceSecrets: Map<string, Map<string, string>>,
+  publicTokens: ReadonlySet<string>
+): { byLogicalId: Map<string, ScrubNoEchoPlan>; changesAny: boolean } {
+  const byLogicalId = new Map<string, ScrubNoEchoPlan>();
+  const parameters = noEchoParameterNamesOf(template);
+  const resources = state.resources ?? {};
+  const sources = {
+    parameters,
+    attributeIsNoEcho: (id: string, attribute: string): boolean =>
+      Object.hasOwn(resources, id) &&
+      noEchoAttributeNamesOf(resources[id])?.includes(attribute) === true,
+    ...(Object.keys(conditions).length > 0 && { conditions }),
+  };
+  let changesAny = false;
+  const templateResources = template.Resources ?? {};
+  for (const [logicalId, record] of Object.entries(resources)) {
+    const source = templateProps.get(logicalId);
+    if (source === undefined) continue;
+    if (!Object.hasOwn(templateResources, logicalId)) continue;
+    if (templateResources[logicalId]?.Type !== record.resourceType) continue;
+    const positioned = noEchoCoordinatesOf(source, record.properties, sources);
+    const kept = (noEchoLeavesOf(record) ?? []).filter((coordinate) =>
+      carriesSecretMask(valueAtCoordinate(record.properties, coordinate))
+    );
+    const leaves = canonicalCoordinates([...positioned, ...kept]);
+    if (leaves.length === 0) continue;
+    const stored: Array<{ coordinate: NoEchoCoordinate; value: unknown }> = [];
+    for (const coordinate of leaves) {
+      const value = valueAtCoordinate(record.properties, coordinate);
+      if (value === undefined || value === null || carriesSecretMask(value)) continue;
+      stored.push({ coordinate, value });
+      let bag = perResourceSecrets.get(logicalId);
+      if (bag === undefined) {
+        bag = new Map();
+        perResourceSecrets.set(logicalId, bag);
+      }
+      recordNoEchoParameterFreshValue(value, bag, publicTokens);
+    }
+    byLogicalId.set(logicalId, { leaves, stored });
+    if (stored.length > 0 || JSON.stringify(record.noEchoLeaves) !== JSON.stringify(leaves)) {
+      changesAny = true;
+    }
+  }
+  return { byLogicalId, changesAny };
+}
+
+/**
+ * Apply a record's {@link ScrubNoEchoPlan} to what the dynamic-reference
+ * scrub produced: `properties` by index, `observedProperties` through each
+ * list's identity field (the whole list where nothing pairs), and an
+ * attribute of the SAME NAME as a coordinate's property that equals the
+ * stored value (an SSM parameter's `Value`) masked and declared, whatever
+ * its type or length; one equal to the physical id stays.
+ */
+function applyScrubNoEcho(
+  scrubbed: StackState['resources'][string],
+  record: StackState['resources'][string],
+  plan: ScrubNoEchoPlan | undefined
+): StackState['resources'][string] {
+  if (plan === undefined) return scrubbed;
+  const { leaves, stored } = plan;
+  // `observedProperties` was redacted by `scrubResourceRecord` already; this
+  // only adds the `NoEcho` positions on top.
+  const next: StackState['resources'][string] = {
+    ...scrubbed,
+    properties: maskAtCoordinates(scrubbed.properties, leaves),
+    noEchoLeaves: leaves.map((coordinate) => [...coordinate]),
+    ...(scrubbed.observedProperties !== undefined && {
+      observedProperties: maskReadbackAtCoordinates(
+        scrubbed.observedProperties,
+        record.properties,
+        leaves
+      ),
+    }),
+  };
+  const attributes = next.attributes;
+  if (attributes !== undefined && attributes !== null && stored.length > 0) {
+    const echoed = Object.keys(attributes).filter((name) => {
+      const attribute = (record.attributes ?? {})[name];
+      if (attribute === record.physicalId) return false;
+      return stored.some(
+        ({ coordinate, value }) =>
+          coordinate[0] === name && JSON.stringify(value) === JSON.stringify(attribute)
+      );
+    });
+    if (echoed.length > 0) {
+      const masked = { ...attributes };
+      for (const name of echoed) masked[name] = maskWholeValue(masked[name]);
+      next.attributes = masked;
+      next.noEchoAttributeNames = [
+        ...new Set([...(noEchoAttributeNamesOf(record) ?? []), ...echoed]),
+      ].sort();
+    }
+  }
+  return next;
 }

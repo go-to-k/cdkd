@@ -948,12 +948,22 @@ the last step is `cdkd scrub <stack> --purge-history`.
 The same scope leaves two other kinds of value out of scrub's check. A
 credential a provider records in `attributes` so that `Fn::GetAtt` can read
 it — an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a Cognito user pool
-client's `ClientSecret` — is stored as returned. A `NoEcho` parameter's value
-is found only as the template's `Default` binds it today, where a resource that
-reads the parameter holds it whole or embedded in a value of 4 or more
-characters; an older value, a shorter one or a number is not found. A
-`cdkd deploy` masks every position the parameter fills (see
-[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
+client's `ClientSecret` — is stored as returned.
+
+A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
+[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)):
+
+- **By position.** Every property today's template fills from a `NoEcho`
+  parameter holds `***`, whatever the value's type or length, and the record
+  names the position in `noEchoLeaves`. So does the observed baseline there.
+- **By the stored value.** Where the record still holds a plaintext at such a
+  position (a stack deployed before state `version: 11`, or under an older
+  `Default`), that value is masked wherever else the same record holds it, a
+  leaf embedding it included (4 characters or more), and in an attribute of
+  the same name (an SSM parameter's `Value`) at any length.
+- **Not found:** a value a position no longer reads, in a record whose
+  template stopped reading the parameter, and a value a nested child received
+  from its parent's row. A `cdkd deploy` of the stack masks those.
 
 ## Stack outputs
 
@@ -996,6 +1006,11 @@ Dropped 1 output key(s) from MyStack that its template no longer declares: OldDb
 name that holds a secret, or the key's own stored value, is masked or withheld;
 a name that may be an export alias and carries a character an output's logical
 id cannot is withheld outright, as `cdkd diff` withholds it.
+An `Export.Name` a deploy now refuses because it holds or reads a `NoEcho`
+parameter's value is never published, so its missing key does not make every
+other key a possible alias. An alias key an older cdkd published under such a
+value is reported as a key that renders a secret (scrub cannot rewrite a key;
+a deploy drops it).
 A dropped export alias leaves the record's export set too; its entry in the
 [exports index](#the-exports-index) is reported as a name `state.outputs` no
 longer holds, and a redeploy rewrites the index.

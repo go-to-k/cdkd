@@ -47,6 +47,8 @@
 #      held another 3-character value. `cdkd diff` and `cdkd diff --json`
 #      still report its REMOVE row, but with the name withheld: the old value
 #      prints in neither. The original state is restored before Phase 2.
+#   1d. `cdkd scrub --dry-run --fail` exits 0 on the stack the v11 deploy
+#      wrote: scrub's NoEcho arm reproduces the deploy's (#4043 Phase C).
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
@@ -916,6 +918,29 @@ if [ "${DRIFT_RC_P1B}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd drift exits 0 and reports NoEchoConsumer's marked leaf under noEchoParameter"
+
+# --- Phase 1d: cdkd scrub finds nothing to do on a v11 stack (#4043 C) ----
+# Scrub's positional arm reproduces what the deploy wrote: every NoEcho
+# position already holds `***` and is named in `noEchoLeaves`, so a dry run
+# with --fail exits 0 and prints no value. A scrub that disagreed with the
+# deploy would report the stack (exit 1) on every run.
+echo "==> Phase 1d: cdkd scrub --dry-run --fail on the v11 stack"
+set +e
+SCRUB_OUT_P1D=$(env -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail 2>&1)
+P1D_RC=$?
+set -e
+if [[ "${SCRUB_OUT_P1D}" == *"${TOKEN}"* ]] || [[ "${SCRUB_OUT_P1D}" == *"${ALIAS_TOKEN}"* ]]; then
+  echo "FAIL: the Phase 1d 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
+assert_no_split_piece "the Phase 1d 'cdkd scrub' output" "${SCRUB_OUT_P1D}"
+if [ "${P1D_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd scrub --dry-run --fail' exited ${P1D_RC} on a stack a v11 deploy just wrote -- scrub's NoEcho arm disagrees with the deploy's (issue #4043 Phase C)" >&2
+  diag_output "${SCRUB_OUT_P1D}"
+  exit 1
+fi
+echo "    OK: cdkd scrub --dry-run --fail exits 0 on the v11 stack"
 
 # --- Phase 2: the provider rejection quotes the value ------------------------
 echo "==> Phase 2: probe deploy whose SSM Tier is the NoEcho value, which SSM rejects quoting it"
