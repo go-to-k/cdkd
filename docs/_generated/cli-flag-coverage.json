@@ -1893,6 +1893,7 @@
     "--active",
     "--activity-arn",
     "--add-host",
+    "--alarm-name-prefix",
     "--alarm-names",
     "--alarm-types",
     "--all",

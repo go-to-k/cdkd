@@ -3,12 +3,13 @@ import { Construct } from 'constructs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 
 /**
  * A deliberately WIDE stack that stresses the concurrency limiter, the
  * throttle/retry classifier, and the event-driven DAG executor at scale.
  *
- * The point is breadth, not feature coverage: ~100 cheap, fast, quota-friendly
+ * The point is breadth, not feature coverage: ~400 cheap, fast, quota-friendly
  * resources created in a single deploy burst maximise the chance of hitting an
  * AWS throttle (`TooManyRequestsException` / `Rate exceeded`, surfaced as HTTP
  * 429). cdkd must RETRY a throttle (the `withRetry` 429 path) rather than treat
@@ -19,6 +20,10 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  *   - ~80 `AWS::SSM::Parameter`  (highest create rate -> most likely to throttle)
  *   - ~10 `AWS::IAM::Role`
  *   - ~10 `AWS::SNS::Topic`
+ *   - 300 `AWS::CloudWatch::Alarm` (cdkd sends one `PutMetricAlarm` per
+ *     alarm on deploy, go-to-k/cdkd#4781, and one `DeleteAlarms` per alarm on
+ *     destroy, #4774, so both bursts meet CloudWatch's `Rate exceeded`; every
+ *     alarm must still be created and deleted)
  *
  * DAG shape:
  *   - The bulk of the parameters are INDEPENDENT (one big ready-set the
@@ -39,6 +44,7 @@ export class ThrottleWideDagStack extends cdk.Stack {
     const CHAIN_DEPTH = 10; // how many of the params form a serial chain
     const ROLE_COUNT = 10; // independent IAM roles
     const TOPIC_COUNT = 10; // independent SNS topics
+    const ALARM_COUNT = 300; // independent CloudWatch alarms (#4774)
 
     // --- Chained SSM parameters: DAG depth ---------------------------------
     // Chain0 has no dependency; ChainK (K>=1) references Chain(K-1) by name via
@@ -93,6 +99,24 @@ export class ThrottleWideDagStack extends cdk.Stack {
     for (let i = 0; i < TOPIC_COUNT; i++) {
       new sns.CfnTopic(this, `WideTopic${i}`, {
         topicName: `${this.stackName}-topic-${i}`,
+      });
+    }
+
+    // --- Independent CloudWatch alarms (go-to-k/cdkd#4774, #4781) ------------
+    // One PutMetricAlarm / DeleteAlarms per alarm at deploy / destroy
+    // concurrency met CloudWatch's request quota (#4781 / #4774). Each alarm watches a metric
+    // nothing publishes, so it costs nothing beyond the alarm itself.
+    for (let i = 0; i < ALARM_COUNT; i++) {
+      new cloudwatch.CfnAlarm(this, `WideAlarm${i}`, {
+        alarmName: `${this.stackName}-alarm-${i}`,
+        namespace: 'CdkdThrottleWideDag',
+        metricName: 'Unpublished',
+        statistic: 'Average',
+        period: 300,
+        evaluationPeriods: 1,
+        threshold: 1,
+        comparisonOperator: 'GreaterThanThreshold',
+        treatMissingData: 'notBreaching',
       });
     }
   }

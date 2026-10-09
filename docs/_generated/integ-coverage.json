@@ -817,7 +817,8 @@
         "log-pipeline",
         "replacement-immutable-name",
         "scheduled-task",
-        "sdk-to-cc-autoroute"
+        "sdk-to-cc-autoroute",
+        "throttle-wide-dag"
       ],
       "signals": {
         "cloudwatch": [
@@ -845,6 +846,10 @@
           "l2"
         ],
         "sdk-to-cc-autoroute": [
+          "l1",
+          "literal"
+        ],
+        "throttle-wide-dag": [
           "l1",
           "literal"
         ]
