@@ -189,6 +189,13 @@ function legacyProbeBelongsTo(probe: LegacyStateProbe, region: string): boolean 
 }
 
 /**
+ * go-to-k/cdkd#4705 review H-1: how far this machine's clock may be from S3's
+ * before a kept resource's time is re-written with S3's (LastModified has
+ * one-second resolution).
+ */
+const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
+
+/**
  * S3-based state backend using conditional writes for optimistic locking.
  *
  * State keys are region-scoped (`{prefix}/{stackName}/{region}/state.json`)
@@ -204,13 +211,6 @@ function legacyProbeBelongsTo(probe: LegacyStateProbe, region: string): boolean 
  * for that region. Provisioning clients are unaffected — only the
  * state-bucket S3 client is region-corrected.
  */
-/**
- * go-to-k/cdkd#4705 review H-1: how far this machine's clock may be from S3's
- * before a kept resource's time is re-written with S3's (LastModified has
- * one-second resolution).
- */
-const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
-
 export class S3StateBackend {
   private logger = getLogger().child('S3StateBackend');
   private s3Client: S3Client;
@@ -2656,7 +2656,6 @@ export function registryMarkerPrefix(body: string | undefined): string | undefin
   return prefix;
 }
 
-/** A conditional write that lost: 412, or the 409 S3 answers for a concurrent one. */
 /** S3's 409 ConditionalRequestConflict: a conflicting write is in flight. */
 function isConditionalConflict(error: unknown): boolean {
   const name = (error as { name?: string } | null)?.name;
@@ -2665,6 +2664,7 @@ function isConditionalConflict(error: unknown): boolean {
   return name === 'ConditionalRequestConflict' || (status === 409 && name !== 'PreconditionFailed');
 }
 
+/** A conditional write that lost: 412, or the 409 S3 answers for a concurrent one. */
 function isConditionFailure(error: unknown): boolean {
   const name = (error as { name?: string } | null)?.name;
   const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
