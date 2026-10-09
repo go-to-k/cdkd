@@ -1972,10 +1972,58 @@ function holdCreateBucketWindow(logicalId: string, window: AmbiguousCreateWindow
   });
 }
 
+/**
+ * go-to-k/cdkd#4758: the bucket an attempt of THIS create made and could not
+ * clean up (its wiring failed, then its `DeleteBucket` too), recorded so the
+ * engine's retry of the same create can tell that bucket from any other
+ * holder of the explicit name. Without it the retry's `CreateBucket` answers
+ * `BucketAlreadyOwnedByYou` and the explicit-name refusal (go-to-k/cdkd#4684)
+ * fails a deploy the retry would have finished.
+ *
+ * `identity` is {@link S3BucketProvider.resourceIdentity}'s token, read when
+ * the attempt failed: after its last write, so the `CreationDate` S3 moves on
+ * a configuration write outside us-east-1 is the one the retry reads again,
+ * since nothing writes to the bucket in between. Taken once, by the next
+ * attempt; keyed and aged like {@link heldCreateBucketWindows}. Never
+ * journaled: the deploy engine journals the same bucket from the
+ * created-before-failure mark.
+ */
+const ownLeftoverBuckets = new Map<string, { identity: string; heldAtMs: number }>();
+
+function holdOwnLeftoverBucket(logicalId: string, identity: string): void {
+  setBounded(ownLeftoverBuckets, createAttemptKey('CreateBucket', logicalId), {
+    identity,
+    heldAtMs: Date.now(),
+  });
+}
+
+/**
+ * go-to-k/cdkd#4758: the bound on each identity read for the own-leftover
+ * record, as the deploy engine bounds its orphan identity read
+ * (`RESOURCE_IDENTITY_TIMEOUT_MS`).
+ */
+const OWN_LEFTOVER_IDENTITY_TIMEOUT_MS = 10_000;
+
+/** The `CreationDate` part of a {@link S3BucketProvider.resourceIdentity} token. */
+function tokenDate(token: string): string {
+  return token.slice(token.lastIndexOf('|') + 1);
+}
+
+/** The record an earlier attempt of this create held, cleared either way. */
+function takeOwnLeftoverBucket(logicalId: string): string | undefined {
+  const key = createAttemptKey('CreateBucket', logicalId);
+  const held = ownLeftoverBuckets.get(key);
+  ownLeftoverBuckets.delete(key);
+  return held !== undefined && Date.now() - held.heldAtMs <= AMBIGUOUS_LATCH_TTL_MS
+    ? held.identity
+    : undefined;
+}
+
 /** Reset the module-scoped `CreateBucket` retry state. TEST-ONLY. */
 export function resetS3BucketCreateRetryStateForTests(): void {
   createBucketLatch.resetForTests();
   heldCreateBucketWindows.clear();
+  ownLeftoverBuckets.clear();
 }
 
 export class S3BucketProvider implements ResourceProvider {
@@ -2235,6 +2283,91 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<{ owned: boolean } | { unknown: string }> {
     const listed = await this.listOwnedBucket(bucketName);
     return 'unknown' in listed ? listed : { owned: listed.bucket !== undefined };
+  }
+
+  /**
+   * go-to-k/cdkd#4758: {@link resourceIdentity} within
+   * {@link OWN_LEFTOVER_IDENTITY_TIMEOUT_MS}, `undefined` past it: the read
+   * sits in front of the error that carries the created-before-failure mark,
+   * the orphan's only record, and of the retry's create.
+   */
+  private async boundedIdentity(
+    bucketName: string,
+    resourceType: string,
+    region: string
+  ): Promise<string | ResourceNotFound | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.resourceIdentity(bucketName, resourceType, { expectedRegion: region }),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), OWN_LEFTOVER_IDENTITY_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#4758: record the bucket this failed attempt leaves behind,
+   * by its identity token. Best-effort: no token, no record, and the retry
+   * refuses as before. Never throws.
+   */
+  private async holdOwnLeftover(
+    logicalId: string,
+    resourceType: string,
+    bucketName: string
+  ): Promise<void> {
+    try {
+      const region = canonicalizeRegion(await this.getRegion());
+      const identity = await this.boundedIdentity(bucketName, resourceType, region);
+      if (typeof identity === 'string') {
+        holdOwnLeftoverBucket(logicalId, identity);
+        this.logger.debug(
+          safeMsg`Recorded the bucket ${this.shown(bucketName)} this failed create of ${displaySafe(logicalId)} leaves (created ${tokenDate(identity)}), for its retry`
+        );
+      } else {
+        this.logger.debug(
+          safeMsg`No identity for the bucket ${this.shown(bucketName)} this failed create of ${displaySafe(logicalId)} leaves; a retry will refuse it`
+        );
+      }
+    } catch {
+      // No record: the retry refuses, as without one.
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#4758: is the bucket holding `bucketName` the one an earlier
+   * attempt of this create left behind? Only when its identity now (name,
+   * region, `CreationDate`) is the token that attempt recorded: another name,
+   * a bucket deleted and re-created under the name, or one in another region
+   * is not. Any read that cannot answer is "no".
+   */
+  private async isOwnLeftoverBucket(
+    leftover: string | undefined,
+    bucketName: string,
+    resourceType: string,
+    region: string
+  ): Promise<boolean> {
+    if (leftover === undefined) {
+      this.logger.debug(
+        safeMsg`Not this create's own bucket: no earlier attempt recorded ${this.shown(bucketName)}`
+      );
+      return false;
+    }
+    try {
+      const identity = await this.boundedIdentity(bucketName, resourceType, region);
+      if (typeof identity === 'string' && identity === leftover) return true;
+      this.logger.debug(
+        safeMsg`Not this create's own bucket: ${this.shown(bucketName)} reads ` +
+          safeMsg`${typeof identity === 'string' ? `created ${tokenDate(identity)}` : 'no identity'}, ` +
+          safeMsg`the earlier attempt recorded created ${tokenDate(leftover)}`
+      );
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -6973,6 +7106,27 @@ export class S3BucketProvider implements ResourceProvider {
       // pre-flight (which never throws).
       const createClient = await this.getCreateClient();
       ambiguousWindow = takeCreateBucketWindow(logicalId);
+      // go-to-k/cdkd#4758: taken by every attempt, used only for an explicit
+      // name the holder of which is proven to be that attempt's bucket.
+      const ownLeftover = takeOwnLeftoverBucket(logicalId);
+      // Decided BEFORE any send, in every region: outside us-east-1 a
+      // `CreateBucket` answering `BucketAlreadyOwnedByYou` moves the
+      // bucket's ListBuckets `CreationDate` to its own second (measured for
+      // go-to-k/cdkd#4758), so the identity could not be compared after it.
+      // No attempt holds both a record and an ambiguous window (issue #4639):
+      // the attempt that records got a 200, which spends the window.
+      // Never on a rollback's re-create (`replayingState`): there the bucket
+      // under the name is the forward create's orphan, which the journal
+      // still lists, not the old bucket being restored.
+      const adoptedOwnLeftover =
+        explicitBucketName &&
+        ownLeftover !== undefined &&
+        context?.replayingState !== true &&
+        (await this.isOwnLeftoverBucket(ownLeftover, bucketName, resourceType, canonicalRegion));
+      if (adoptedOwnLeftover) {
+        createdNewBucket = true;
+        bucketLeftBehind = true;
+      }
       if (
         ambiguousWindow !== undefined &&
         (preflight.kind === 'indeterminate' ||
@@ -7003,9 +7157,11 @@ export class S3BucketProvider implements ResourceProvider {
         // pre-flight that could not answer still sends (nothing proves the
         // name is taken), and one placing the bucket in another region keeps
         // the foreign-region refusal.
-        this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, {
-          preflightRegion: preflight.region,
-        });
+        if (!adoptedOwnLeftover) {
+          this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, {
+            preflightRegion: preflight.region,
+          });
+        }
       }
       // go-to-k/cdkd#4684: a pre-flight that could not answer cannot rule the
       // explicit name free, and a legacy 200 would adopt a bucket this account
@@ -7020,7 +7176,7 @@ export class S3BucketProvider implements ResourceProvider {
       // of the cleanup and the created-before-failure mark -- an empty orphan
       // with the warning below at worst, never another's bucket deleted
       // (#4684 review). Only a pre-flight answering `absent` claims it.
-      if (explicitBucketName && preflight.kind === 'indeterminate') {
+      if (explicitBucketName && preflight.kind === 'indeterminate' && !adoptedOwnLeftover) {
         const owned = await this.ownsBucketNamed(bucketName);
         if ('owned' in owned && owned.owned) {
           this.refuseExplicitNameHeld(logicalId, resourceType, bucketName, { listed: true });
@@ -7029,13 +7185,18 @@ export class S3BucketProvider implements ResourceProvider {
       }
       try {
         const attemptStartMs = Date.now();
-        try {
-          await createClient.send(new CreateBucketCommand(createParams));
-        } catch (sendError) {
-          createBucketLatch.noteFailure(logicalId, sendError, attemptStartMs, ambiguousWindow);
-          throw sendError;
+        // go-to-k/cdkd#4758: not for this create's own leftover, already
+        // proven above: the 409 would move its CreationDate, and in us-east-1
+        // the legacy 200 would only reset its ACLs.
+        if (!adoptedOwnLeftover) {
+          try {
+            await createClient.send(new CreateBucketCommand(createParams));
+          } catch (sendError) {
+            createBucketLatch.noteFailure(logicalId, sendError, attemptStartMs, ambiguousWindow);
+            throw sendError;
+          }
         }
-        createdNewBucket = preflight.kind === 'absent';
+        createdNewBucket = adoptedOwnLeftover || preflight.kind === 'absent';
         bucketLeftBehind = createdNewBucket;
         // A fresh create answers the question: the earlier attempt made nothing.
         if (createdNewBucket) windowSpent = true;
@@ -7063,7 +7224,7 @@ export class S3BucketProvider implements ResourceProvider {
             preflight.region
           );
         }
-        if (preflight.kind === 'region') {
+        if (preflight.kind === 'region' && !adoptedOwnLeftover) {
           // The legacy 200 already happened by the time we get here, and it
           // reset the bucket's ACLs (SDK doc quoted above) — a real, if
           // smaller, effect of the same adopt, and one the user cannot see
@@ -7284,7 +7445,12 @@ export class S3BucketProvider implements ResourceProvider {
         holdCreateBucketWindow(logicalId, ambiguousWindow);
       }
       const thrown = this.wrapOperationError('create', logicalId, resourceType, bucketName, error);
-      if (bucketLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, bucketName);
+      if (bucketLeftBehind) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, bucketName);
+        // go-to-k/cdkd#4758: what a retry of this create needs to know the
+        // bucket again. Only an explicit name is refused on retry.
+        if (explicitBucketName) await this.holdOwnLeftover(logicalId, resourceType, bucketName);
+      }
       throw thrown;
     }
   }

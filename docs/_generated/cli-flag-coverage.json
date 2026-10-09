@@ -327,6 +327,7 @@
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
+        "s3-retry-own-bucket",
         "s3-tables",
         "s3-vectors",
         "scheduler-custom-group",
@@ -454,6 +455,7 @@
         "s3-analytics-inventory",
         "s3-fix-forward-orphan",
         "s3-lifecycle",
+        "s3-retry-own-bucket",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
         "sns-sqs-event",
@@ -714,6 +716,7 @@
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
+        "s3-retry-own-bucket",
         "s3-subconfig-removal",
         "s3-tables",
         "s3-vectors",
@@ -1063,6 +1066,7 @@
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
+        "s3-retry-own-bucket",
         "s3-subconfig-removal",
         "s3-tables",
         "s3-vectors",
@@ -1170,7 +1174,8 @@
         "rds-fix-forward-orphan",
         "remove-protection-compensation",
         "rollback-command",
-        "s3-fix-forward-orphan"
+        "s3-fix-forward-orphan",
+        "s3-retry-own-bucket"
       ]
     },
     {
@@ -1451,6 +1456,7 @@
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
+        "s3-retry-own-bucket",
         "s3-subconfig-removal",
         "s3-tables",
         "s3-vectors",
@@ -1575,6 +1581,7 @@
         "rollback-sqs-cooldown",
         "route53",
         "s3-lifecycle",
+        "s3-retry-own-bucket",
         "secret-derived-immutable-names",
         "secrets-array-nested",
         "secrets-dynamic-ref",
