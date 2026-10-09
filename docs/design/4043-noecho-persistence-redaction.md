@@ -486,8 +486,11 @@ has none. Positioning iterates to a fixed point over echoed attributes, and a
 declared attribute (the record's own `noEchoAttributeNames` or a found echo)
 is masked whole and counted. A nested child's scrub receives the parameters
 its parent's row fills from a `NoEcho` source (decision 8), read against the
-parent's final declared attributes. A row value through an `Fn::If` counts on
-either branch and is passed as conditional: the child positions it but takes
+parent's final declared attributes. A row value whose every `NoEcho` read sits
+inside an `Fn::If` (or reads only a parameter its own parent passed as
+conditional, so the mark carries to a grandchild) counts on either branch and
+is passed as conditional; the child's export-name verdict does not refuse a
+name reading it, which stays a possible live alias: the child positions it but takes
 no migration or containment needle from the plaintext it stored there, which
 may be the other branch's literal. An over-marked position stores `***` until
 the next deploy, never a phantom diff elsewhere in the record.

@@ -570,6 +570,142 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     expect(record.properties['Description']).toBe('***');
   });
 
+  // Round 6 (#4764), m6: a conditional row parameter stays a possible live
+  // alias in the child, so the alias key its Export.Name publishes is kept.
+  it("m6: a child Export.Name reading a conditional row parameter keeps its stored alias key", async () => {
+    // The child's own NoEcho parameter makes this run record a secret, so the
+    // unnamed-key drop runs at all.
+    const info = stackInfo(ALIAS_TOKEN);
+    const childTemplate = {
+      ...info.template,
+      Parameters: { ...info.template.Parameters, ListIn: { Type: 'String' } },
+      Outputs: { Out: { Value: 'out-value', Export: { Name: { 'Fn::Sub': 'exp-${ListIn}' } } } },
+    } as unknown as CloudFormationTemplate;
+    const state = legacyState('***');
+    state.resources['Param']!.noEchoLeaves = [['Value']];
+    state.resources['Param']!.attributes = { Value: '***', Type: 'String' };
+    state.resources['Param']!.noEchoAttributeNames = ['Value'];
+    // The deploy bound the row's other branch, so its live alias is not the
+    // name scrub computes (`exp-abcd`): only an unrefused name keeps it.
+    state.outputs = { Out: 'out-value', 'exp-live': 'out-value' };
+    state.exportNames = ['exp-live'];
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    const res = await scrubStack(
+      { stackName: 'NoEchoScrubStack~Child', template: childTemplate } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: true,
+        logger: logger as never,
+        nestedChild: {
+          logicalId: 'Child',
+          stackName: 'NoEchoScrubStack~Child',
+          input: {
+            parameters: { ListIn: 'abcd', Token: ALIAS_TOKEN },
+            inheritedSecrets: new Map(),
+            noEchoParameters: ['ListIn'],
+            noEchoConditionalParameters: ['ListIn'],
+          },
+        },
+      } as never
+    );
+    expect(res.droppedOutputKeys).toBe(0);
+    expect(res.keptAliasOutputKeys).toBe(1);
+  });
+
+  // Round 6, security nit / spec nit / test (a): the conditional rule.
+  it.each([
+    ['a read outside the Fn::If too', { 'Fn::Join': ['-', [{ Ref: 'Token' }, { 'Fn::If': ['Always', 'a', 'b'] }]] }, []],
+    ['the read on the NON-selected branch', { 'Fn::If': ['Always', 'other', { Ref: 'Token' }] }, ['Row']],
+    ['a conditional parameter passed on with no Fn::If (grandchild)', { Ref: 'Cond' }, ['Row']],
+  ])('a row parameter with %s', async (_l, value, conditional) => {
+    const info = stackInfo('q7z');
+    info.template.Parameters = { ...info.template.Parameters, Cond: { Type: 'String' } } as never;
+    info.template.Conditions = { Always: { 'Fn::Equals': ['a', 'a'] } } as never;
+    info.template.Resources['Child'] = {
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { TemplateURL: 'https://example.com/child.json', Parameters: { Row: value } },
+    } as never;
+    const state = legacyState('q7z');
+    state.resources['Child'] = {
+      physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/child/1',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+      attributes: {},
+    };
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    const res = await scrubStack(info as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: true,
+      logger: logger as never,
+      nestedChild: {
+        logicalId: 'Mid',
+        stackName: 'NoEchoScrubStack',
+        input: {
+          parameters: { Cond: 'cond-value' },
+          inheritedSecrets: new Map(),
+          noEchoParameters: ['Cond'],
+          noEchoConditionalParameters: ['Cond'],
+        },
+      },
+    } as never);
+    const child = res.nestedChildren.find((c) => c.logicalId === 'Child');
+    expect(child?.input?.noEchoParameters).toEqual(['Row']);
+    expect(child?.input?.noEchoConditionalParameters ?? []).toEqual(conditional);
+  });
+
+  // Round 6, test (b): an echo reached only through a conditional row
+  // parameter makes no needle in its Fn::GetAtt consumer either.
+  it('an echo chain from a conditional row parameter makes no needle in the consumer', async () => {
+    const literal = 'other-branch-literal';
+    const childTemplate = {
+      Parameters: { ListIn: { Type: 'String' } },
+      Resources: {
+        Param: { Type: SSM, Properties: { Name: '/app/p', Type: 'String', Value: { Ref: 'ListIn' } } },
+        Consumer: {
+          Type: SSM,
+          Properties: {
+            Name: '/app/c',
+            Type: 'String',
+            Value: { 'Fn::GetAtt': ['Param', 'Value'] },
+            Description: literal,
+          },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    const state = legacyState(literal);
+    state.resources['Consumer'] = {
+      physicalId: '/app/c',
+      resourceType: SSM,
+      properties: { Name: '/app/c', Type: 'String', Value: literal, Description: literal },
+      attributes: {},
+    };
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    await scrubStack(
+      { stackName: 'NoEchoScrubStack~Child', template: childTemplate } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: false,
+        logger: logger as never,
+        nestedChild: {
+          logicalId: 'Child',
+          stackName: 'NoEchoScrubStack~Child',
+          input: {
+            parameters: { ListIn: literal },
+            inheritedSecrets: new Map(),
+            noEchoParameters: ['ListIn'],
+            noEchoConditionalParameters: ['ListIn'],
+          },
+        },
+      } as never
+    );
+    const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Consumer']!.properties['Value']).toBe('***');
+    expect(saved.resources['Consumer']!.properties['Description']).toBe(literal);
+  });
+
   it('G9: an attribute equal to the physical id is not taken as an echo', async () => {
     const state = legacyState('q7z');
     state.resources['Param']!.physicalId = 'q7z';

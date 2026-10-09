@@ -7224,9 +7224,14 @@ export async function scrubStack(
     // Every `NoEcho` value this run binds, the seed of the deploy's
     // export-name verdict (go-to-k/cdkd#4043): a name it refuses is never
     // published, so its absence accounts for nothing.
+    // A conditional row parameter stays a possible live alias: the deploy's
+    // branch may not have read the `NoEcho` source.
+    const conditionalNameParameters = new Set(nestedInput?.noEchoConditionalParameters ?? []);
     const noEchoNameParameters = new Set([
       ...noEchoParameterNamesOf(stack.template),
-      ...(nestedInput?.noEchoParameters ?? []),
+      ...(nestedInput?.noEchoParameters ?? []).filter(
+        (name) => !conditionalNameParameters.has(name)
+      ),
     ]);
     const declaredAliasOf = new Map<string, string>();
     const noEchoNameSeed = noEchoParameterValueSeed(
@@ -8158,7 +8163,8 @@ export async function scrubStack(
           > => {
             const filled = noEchoFilledRowParameters(
               templateResources[logicalId]?.Properties,
-              noEchoPlans.sources
+              noEchoPlans.sources,
+              noEchoPlans.needleSources
             );
             return {
               noEchoParameters: filled.names,
@@ -8974,6 +8980,12 @@ function planScrubNoEcho(
   parameters: ReadonlySet<string>;
   /** The positioning sources over the FINAL declared attribute names. */
   sources: NoEchoPositionSources;
+  /**
+   * The sources a NEEDLE comes from: no conditional parameter, and only the
+   * attributes declared without one. A nested row reading none of them
+   * outside an `Fn::If` is conditional for its child too.
+   */
+  needleSources: NoEchoPositionSources;
 } {
   const byLogicalId = new Map<string, ScrubNoEchoPlan>();
   const parameters = new Set([...noEchoParameterNamesOf(template), ...passedParameters]);
@@ -9040,18 +9052,18 @@ function planScrubNoEcho(
   // The coordinates whose stored plaintext is a migration NEEDLE: those a
   // source other than a conditional row parameter positions.
   const conditional = new Set(conditionalParameters);
-  const needleLeavesOf =
+  const needleParameters = new Set([...parameters].filter((name) => !conditional.has(name)));
+  const needleDeclared =
     conditional.size === 0
-      ? leavesOf
-      : positionFrom(
-          new Set([...parameters].filter((name) => !conditional.has(name))),
-          new Map(
-            Object.entries(resources).map(([id, record]) => [
-              id,
-              new Set(noEchoAttributeNamesOf(record) ?? []),
-            ])
-          )
+      ? declared
+      : new Map(
+          Object.entries(resources).map(([id, record]) => [
+            id,
+            new Set(noEchoAttributeNamesOf(record) ?? []),
+          ])
         );
+  const needleLeavesOf =
+    conditional.size === 0 ? leavesOf : positionFrom(needleParameters, needleDeclared);
   let changesAny = false;
   for (const [logicalId, record] of eligible) {
     const leaves = leavesOf.get(logicalId) ?? [];
@@ -9096,7 +9108,18 @@ function planScrubNoEcho(
     }
   }
   if (outputKeys.length > 0) changesAny = true;
-  return { byLogicalId, outputKeys, changesAny, parameters, sources: outputSources };
+  return {
+    byLogicalId,
+    outputKeys,
+    changesAny,
+    parameters,
+    sources: outputSources,
+    needleSources: {
+      parameters: needleParameters,
+      attributeIsNoEcho: (id: string, attribute: string): boolean =>
+        needleDeclared.get(id)?.has(attribute) === true,
+    },
+  };
 }
 
 /**
@@ -9210,9 +9233,22 @@ function applyScrubNoEcho(
  * listed in `conditional`: scrub's default-bound verdicts may not reproduce
  * that branch, so the child positions it but takes no needle from it.
  */
+/** `value` with every `Fn::If` node replaced by `null`. */
+function withoutFnIf(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutFnIf);
+  if (value === null || typeof value !== 'object') return value;
+  if (Object.hasOwn(value, 'Fn::If')) return null;
+  const out: Record<string, unknown> = nullPrototypeRecord();
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = withoutFnIf(inner);
+  }
+  return out;
+}
+
 function noEchoFilledRowParameters(
   rowProperties: unknown,
-  sources: NoEchoPositionSources
+  sources: NoEchoPositionSources,
+  needleSources: NoEchoPositionSources
 ): { names: string[]; conditional: string[] } {
   const names: string[] = [];
   const conditional: string[] = [];
@@ -9231,7 +9267,8 @@ function noEchoFilledRowParameters(
   for (const [name, value] of Object.entries(passed as Record<string, unknown>)) {
     if (!readsNoEchoSource(value, unconditioned)) continue;
     names.push(name);
-    if (JSON.stringify(value).includes('"Fn::If"')) conditional.push(name);
+    // Conditional unless a needle source is read OUTSIDE every `Fn::If`.
+    if (!readsNoEchoSource(withoutFnIf(value), needleSources)) conditional.push(name);
   }
   return { names, conditional };
 }

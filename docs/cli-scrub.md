@@ -958,9 +958,10 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
   names the position in `noEchoLeaves`. So does the observed baseline there.
   A record that already names its positions keeps them, as a deploy does. A
   nested child's parameter its parent's row fills from a `NoEcho` source
-  counts as one too. One the row fills through an `Fn::If` counts whichever
-  branch reads the source, because scrub cannot tell which branch the deploy
-  took: the child stores `***` there, but a plaintext it held there is not
+  counts as one too. One whose every `NoEcho` read sits inside an `Fn::If`
+  counts whichever branch reads the source, because scrub cannot tell which
+  branch the deploy took (and so does a grandchild's parameter filled from
+  it): the child stores `***` there, but a plaintext it held there is not
   masked elsewhere in the record (it may be the other branch's literal). A
   position marked this way when the deploy took the plain branch reads back
   from AWS until the next deploy rewrites it.

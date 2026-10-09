@@ -3032,8 +3032,8 @@ function topLevelNoEchoProperties(
 /**
  * The template's `NoEcho` parameter names, or EVERY parameter when they
  * cannot be read: fail-closed, a parameter that might be `NoEcho` is
- * positioned as one. Defensive: no reachable input throws today (the
- * resolver reads the same flags first), so only a mocked reader exercises it.
+ * positioned as one. Defensive: no parsed template throws today; the guard
+ * and its test keep the fallback fail-closed if that changes.
  */
 function noEchoParametersOrAll(template: CloudFormationTemplate): Set<string> {
   try {
