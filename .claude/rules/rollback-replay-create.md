@@ -9,10 +9,11 @@ paths:
 
 Both arms live in the `reverse-replacement` branch
 (`deployment/rollback-executor/replay-reverse-replacement.ts`): create-first,
-and the delete-new-first fallback the name-collision catch routes to.
+and delete-new-first, routed to by the name-collision catch or, up front, by a
+journaled `oldDeletedBeforeCreate` (#4690).
 **`effectiveProperties` is honoured** (#1682): `create()` gets
 `previousState.properties`; a RETURNED bag replaces the record's `properties`
-wholesale, reporting none keeps it. Do not re-narrow that result type. Its
+wholesale, reporting none keeps it. Its
 `attributes` are recorded too, after its `NoEcho` is registered
 (`recordNoEchoAttributeValues`, #4434), as `recordAfterRollbackUpdate` does
 for an update's.
@@ -26,8 +27,7 @@ random one. The arm is picked by a CHANGED PHYSICAL ID not journaled
 `wasReplaced: false` (#4615) or a changed `Type` (fill keyed on the OLD
 type), so a create-only edit
 on a type whose id is NOT its name lands here nameless; a handler REJECTING a
-nameless create then fails the replay, and the delete-new-first arm has already
-dropped it.
+nameless create then fails the replay after delete-new-first dropped it.
 
 Decisions:
 
