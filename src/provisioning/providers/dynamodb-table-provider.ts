@@ -133,8 +133,20 @@ import type {
   SecretMasker,
   ReadCurrentStateContext,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+
+/**
+ * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
+ * provider records. The identity answers (`isSameResource`,
+ * `resourceIdentity`) refuse anything else: `DescribeTable` also takes a
+ * table ARN, which this provider never records and would only be guessing
+ * about.
+ */
+function isTableName(id: string): boolean {
+  return /^[A-Za-z0-9_.-]{3,255}$/.test(id);
+}
 
 /**
  * AWS DynamoDB Table Provider
@@ -1753,6 +1765,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // marks every failure after it: each is an auxiliary call's or an ACTIVE
     // wait's, never this table's name collision (#3826, #3877).
     let tableCreated = false;
+    // go-to-k/cdkd#4606: the `TableId` CreateTable answered with, carried on
+    // the created-before-failure mark so the journal needs no read of a table
+    // whose failure (a describe that cannot run, say) may fail that read too.
+    let createdTableId: string | undefined;
 
     try {
       // BillingMode (default: PROVISIONED). Guarded per issue #1545 — the
@@ -1985,8 +2001,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         createParams.ResourcePolicy = createResourcePolicyDoc;
       }
 
-      await (await this.getCreateClient()).send(new CreateTableCommand(createParams));
+      const createOut = await (await this.getCreateClient()).send(
+        new CreateTableCommand(createParams)
+      );
       tableCreated = true;
+      const returnedTableId = createOut?.TableDescription?.TableId;
+      if (typeof returnedTableId === 'string' && returnedTableId !== '') {
+        createdTableId = returnedTableId;
+      }
 
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 
@@ -2085,7 +2107,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
             );
       // go-to-k/cdkd#4583: the rollback DeleteTable failed, so the table this
       // call created is left behind — let `rollback --revert-failed` delete it.
-      if (tableLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, tableName);
+      // With its `TableId` (go-to-k/cdkd#4606), the identity a later settle
+      // compares before deleting it by name.
+      if (tableLeftBehind) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, tableName, createdTableId);
+      }
       throw thrown;
     }
   }
@@ -3978,7 +4004,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DynamoDB table ${physicalId} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
+          // exit 0, so say so once. Masked by the caller's printing bag.
+          this.logger.info(
+            safeMsg`  DynamoDB table ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          this.logger.debug(`DynamoDB table ${physicalId} does not exist, skipping deletion`);
+        }
         this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
         // The table is GONE, so there is no guard to restore, and reaching this
         // line means `delete()` RETURNS rather than throwing — so the
@@ -6530,6 +6564,90 @@ export class DynamoDBTableProvider implements ResourceProvider {
       if (err instanceof ResourceNotFoundException) return undefined;
       throw err;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the table a failed CREATE journaled is the one
+   * the record under the same logical id holds (a fix-forward that created a
+   * new table there under another name).
+   *
+   * Both ids must be table NAMES (the physical id this provider records); an
+   * ARN or anything else is `'unknown'`. A table name is unique per account
+   * and region and a table cannot be renamed, and equal names are `'same'`
+   * without a read: whatever table holds the name now is the record's, and
+   * deleting by that name would delete it. After the region check the
+   * record's table must read back (else `'unknown'`); the journaled one is
+   * `'same'` when it reads back under the record's `TableId` (immutable,
+   * AWS-generated, never given to a later table), `'different'` under
+   * another, and `'different'` when AWS reports it gone: the record's table
+   * answers to its own, other, name. Any other read failure throws, which the
+   * caller reads as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::DynamoDB::Table') return 'unknown';
+    if (!isTableName(journaledPhysicalId) || !isTableName(record.physicalId)) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const clientRegion = await this.dynamoDBClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordTableId = await this.readTableIdIfExists(record.physicalId);
+    if (recordTableId === undefined) return 'unknown';
+    const journaledTableId = await this.readTableIdIfExists(journaledPhysicalId);
+    if (journaledTableId === undefined) return 'different';
+    return journaledTableId === recordTableId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the table's `TableId`, which AWS generates,
+   * never changes and never gives a later table. A table re-created under the
+   * name answers with another id, so the settle keeps it rather than deleting
+   * it as the failed CREATE's orphan. A failed CREATE's own token comes from
+   * its CreateTable response, on the failure's mark
+   * (`markCreatedBeforeFailure`); this is the live read.
+   *
+   * `undefined` for another type, an id that is not a table name, or a client
+   * in another region than `expectedRegion`. `RESOURCE_NOT_FOUND` only on
+   * `ResourceNotFoundException`; any other failure, and a response naming
+   * another table or no `TableId`, throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::DynamoDB::Table' || !isTableName(physicalId)) return undefined;
+    const clientRegion = await this.dynamoDBClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const live = await this.readTableIdIfExists(physicalId);
+    return live === undefined ? RESOURCE_NOT_FOUND : live;
+  }
+
+  /**
+   * The table's `TableId`, or `undefined` when `DescribeTable` answers
+   * `ResourceNotFoundException`. Any other failure, a response naming another
+   * table, and one naming no `TableId` throw: "could not read" never reads as
+   * "gone".
+   */
+  private async readTableIdIfExists(tableName: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
+    }
+    if (response.Table?.TableName !== tableName) {
+      throw new Error('DescribeTable answered for another table than the one asked for');
+    }
+    const tableId = response.Table.TableId;
+    if (typeof tableId !== 'string' || tableId === '') {
+      throw new Error('DescribeTable returned no TableId');
+    }
+    return tableId;
   }
 
   /**
