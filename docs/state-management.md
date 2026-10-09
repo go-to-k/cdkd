@@ -1064,7 +1064,8 @@ count as a change for `--fail`.
   `--revert` leave such a position alone: the baseline either one rebuilds
   holds `***` there, and `--revert` keeps AWS's value rather than sending the
   mask (see [Redacted (`NoEcho`) baselines](cli-drift.md#redacted-noecho-baselines)).
-  A custom-resource mask is still refused. `cdkd export` exports a record whose only masks sit at `NoEcho`
+  A custom-resource mask is still refused by `--accept`; `--revert` refuses it only when it cannot
+  tell which live value belongs there. `cdkd export` exports a record whose only masks sit at `NoEcho`
   positions: the exported template reads the parameter.
 - A rollback revert reads a masked position back from AWS and sends the value
   AWS holds there, and refuses when it cannot read it (see
