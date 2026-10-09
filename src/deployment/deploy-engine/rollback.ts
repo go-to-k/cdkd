@@ -436,6 +436,7 @@ export async function performRollback(
         () =>
           replayRollback(completedOperations, stateResources, stackName, ctx, {
             inlinePolicyWriters,
+            failedOperations,
           })
       ),
       run: scope,

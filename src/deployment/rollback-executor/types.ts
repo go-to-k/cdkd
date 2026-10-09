@@ -197,6 +197,13 @@ export interface FailedOperation {
    */
   replacementOrphaned?: 'create-first' | 'delete-first' | undefined;
   /**
+   * go-to-k/cdkd#4690, on a failed UPDATE: the deploy deleted the old resource
+   * before the create that failed, so the record it names is gone. The
+   * rollback's delete-first guard counts it among the resources the segment
+   * took away. Absent on an older binary's journal; ADDITIVE, no bump.
+   */
+  oldDeletedBeforeCreate?: boolean | undefined;
+  /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
    * Cloud-Control-routed revert patches previous-vs-attempted, so without

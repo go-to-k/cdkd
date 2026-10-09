@@ -1487,6 +1487,7 @@ export async function rollbackCommand(
                         // — and a crash there loses it for good (issue #2934).
                         onOrphan: (record) => mintedOrphans.push(record),
                         inlinePolicyWriters,
+                        failedOperations: segment.failedOperations,
                       })
                   );
                   return {

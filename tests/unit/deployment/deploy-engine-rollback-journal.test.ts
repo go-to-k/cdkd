@@ -1807,7 +1807,31 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       });
       expect(ops.find((o) => o['changeType'] === 'UPDATE')).toMatchObject({
         replacementOrphaned: 'delete-first',
+        // go-to-k/cdkd#4690: the delete-first guard reads it.
+        oldDeletedBeforeCreate: true,
       });
+    });
+
+    // go-to-k/cdkd#4690: a delete-first replacement whose create made nothing
+    // still deleted the old resource, which only this flag records.
+    it('stamps a delete-first UPDATE whose create made nothing', async () => {
+      const { engine, provider } = replacingEngine(new Error('create rejected'), { inPlace: true });
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-old']);
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops).toHaveLength(1);
+      expect(ops[0]).toMatchObject({ changeType: 'UPDATE', oldDeletedBeforeCreate: true });
+      expect(ops[0]).not.toHaveProperty('replacementOrphaned');
+    });
+
+    it('stamps no failed create-first UPDATE', async () => {
+      const ops = await failedOpsOf(new Error('create rejected'));
+      expect(ops.find((o) => o['changeType'] === 'UPDATE')).not.toHaveProperty('oldDeletedBeforeCreate');
     });
 
     // The automatic rollback warns about the delete-first UPDATE itself and

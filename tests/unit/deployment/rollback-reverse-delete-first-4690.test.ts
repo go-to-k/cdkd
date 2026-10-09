@@ -18,6 +18,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import type { FailedOperation } from '../../../src/deployment/rollback-executor/types.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { withRetry } from '../../../src/deployment/retry.js';
 import { markDeleteFirstBlocked, deleteFirstBlocker } from '../../../src/deployment/rollback-executor/plan.js';
@@ -406,7 +407,7 @@ describe('a delete-first reversal whose old properties name a resource the deplo
     expect(s['Listener']!.physicalId).toBe('listener-new');
     expect(result.failures).toBeGreaterThanOrEqual(1);
     expect(m.warns.join('\n')).toContain('not deleting the new Listener first');
-    expect(m.warns.join('\n')).toContain('which Tg replaced or deleted in the same deploy');
+    expect(m.warns.join('\n')).toContain('name the resource Tg had before the same deploy');
   });
 
   it('control: an old target group the deploy left alone keeps delete-first', async () => {
@@ -618,5 +619,215 @@ describe('the collision route through the shared helpers (go-to-k/cdkd#4690)', (
     expect(onInterrupted().message).toBe(
       'Rollback interrupted while waiting for the new resource to release its name or slot'
     );
+  });
+});
+
+describe('what the delete-first guard counts as naming a gone resource (go-to-k/cdkd#4690)', () => {
+  /** A delete-first op `X` whose old properties are `props`. */
+  const dependent = (props: Record<string, unknown>): CompletedOperation => {
+    const o = listenerOp('ignored');
+    o.logicalId = 'X';
+    o.previousState!.properties = props;
+    return o;
+  };
+  /** A replacement of `logicalId` that took away `physicalId` (with `attributes`). */
+  const goneBy = (
+    logicalId: string,
+    physicalId: string,
+    attributes: Record<string, unknown> = {},
+    over: Partial<CompletedOperation> = {}
+  ): CompletedOperation => ({
+    ...targetGroupOp(),
+    logicalId,
+    physicalId: `${physicalId}-replacement`,
+    previousState: { physicalId, resourceType: 'AWS::Test::Thing', properties: {}, attributes, dependencies: [] },
+    ...over,
+  });
+  const blocker = (ops: CompletedOperation[], failed: FailedOperation[] = []) => {
+    markDeleteFirstBlocked(ops, failed);
+    return deleteFirstBlocker(ops.at(-1)!);
+  };
+
+  it('an exact match of a short id blocks', () => {
+    expect(blocker([goneBy('Q', 'q-old'), dependent({ Name: 'q-old' })])).toEqual({
+      logicalId: 'Q',
+      physicalId: 'q-old',
+    });
+  });
+
+  it('a short-named function referenced by its ARN blocks', () => {
+    expect(
+      blocker([goneBy('Fn', 'my-func'), dependent({ Target: 'arn:aws:lambda:us-east-1:123456789012:function:my-func' })])
+    ).toMatchObject({ logicalId: 'Fn' });
+    expect(
+      blocker([goneBy('Fn', 'my-func'), dependent({ Target: 'arn:aws:lambda:us-east-1:123456789012:function:my-func:live' })])
+    ).toMatchObject({ logicalId: 'Fn' });
+  });
+
+  it('an IAM role referenced by its ARN blocks', () => {
+    expect(blocker([goneBy('Role', 'AppRole'), dependent({ Role: 'arn:aws:iam::123:role/AppRole' })])).toMatchObject({
+      logicalId: 'Role',
+    });
+  });
+
+  it('an SQS queue (URL id) referenced by its ARN attribute blocks', () => {
+    const url = 'https://sqs.us-east-1.amazonaws.com/123456789012/jobs';
+    const arn = 'arn:aws:sqs:us-east-1:123456789012:jobs';
+    expect(
+      blocker([goneBy('Queue', url, { Arn: arn }), dependent({ RedrivePolicy: { deadLetterTargetArn: arn } })])
+    ).toEqual({ logicalId: 'Queue', physicalId: url });
+  });
+
+  it('a non-id attribute (a load balancer DNS name) blocks', () => {
+    expect(
+      blocker([
+        goneBy('Lb', TG_OLD, { DNSName: 'my-lb-123.us-east-1.elb.amazonaws.com', CanonicalHostedZoneID: 'Z35SXDOTRQ7X7K' }),
+        dependent({ AliasTarget: { DNSName: 'my-lb-123.us-east-1.elb.amazonaws.com' } }),
+      ])
+    ).toMatchObject({ logicalId: 'Lb' });
+  });
+
+  it('a name that is only a prefix of a segment does not block', () => {
+    expect(blocker([goneBy('Role', 'App'), dependent({ Role: 'arn:aws:iam::123:role/AppRole' })])).toBeUndefined();
+  });
+
+  it('an UPDATE that kept its physical id, or that was not a replacement, does not block', () => {
+    expect(
+      blocker([goneBy('Q', 'q-old', {}, { physicalId: 'q-old' }), dependent({ Name: 'q-old' })])
+    ).toBeUndefined();
+    expect(
+      blocker([goneBy('Q', 'q-old', {}, { wasReplaced: false }), dependent({ Name: 'q-old' })])
+    ).toBeUndefined();
+  });
+
+  it('a FAILED replacement that deleted its old resource first blocks', () => {
+    const failed = (over: Partial<FailedOperation>): FailedOperation => ({
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::Test::Thing',
+      physicalId: 'q-old',
+      previousState: { physicalId: 'q-old', resourceType: 'AWS::Test::Thing', properties: {}, attributes: {}, dependencies: [] },
+      ...over,
+    });
+    expect(blocker([dependent({ Name: 'q-old' })], [failed({ oldDeletedBeforeCreate: true })])).toMatchObject({
+      logicalId: 'Q',
+    });
+    expect(blocker([dependent({ Name: 'q-old' })], [failed({ replacementOrphaned: 'delete-first' })])).toMatchObject({
+      logicalId: 'Q',
+    });
+    expect(
+      blocker(
+        [dependent({ Name: 'q-old' })],
+        [
+          {
+            logicalId: 'Q',
+            changeType: 'CREATE',
+            resourceType: 'AWS::Test::Thing',
+            physicalId: 'q-new',
+            replacedPhysicalId: 'q-old',
+            replacedResourceDeleted: true,
+          },
+        ]
+      )
+    ).toMatchObject({ logicalId: 'Q' });
+    // A create-first failure left the old resource alone.
+    expect(blocker([dependent({ Name: 'q-old' })], [failed({ replacementOrphaned: 'create-first' })])).toBeUndefined();
+    expect(blocker([dependent({ Name: 'q-old' })], [failed({})])).toBeUndefined();
+  });
+});
+
+describe('a blocked delete-first op, end to end (go-to-k/cdkd#4690)', () => {
+  it('a failed delete-first sibling seeds the block through replayRollback', async () => {
+    const m = portModel();
+    const warns: string[] = [];
+    (m.ctx.logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn.mockImplementation((w: string) =>
+      warns.push(w)
+    );
+    const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };
+    const failedTg: FailedOperation = {
+      logicalId: 'Tg',
+      changeType: 'UPDATE',
+      resourceType: TG_TYPE,
+      physicalId: TG_OLD,
+      previousState: { physicalId: TG_OLD, resourceType: TG_TYPE, properties: {}, attributes: {}, dependencies: [] },
+      oldDeletedBeforeCreate: true,
+    };
+    await replayRollback([listenerOp(TG_OLD)], state, 'S', m.ctx, { failedOperations: [failedTg] });
+    expect(m.calls).toEqual(['create']);
+    expect(state['Listener']!.physicalId).toBe('listener-new');
+    expect(warns.join('\n')).toContain('not deleting the new Listener first');
+  });
+
+  it("never prints the blocker's physical id, which may spell a secret-derived name", async () => {
+    const m = portModel();
+    const warns: string[] = [];
+    (m.ctx.logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn.mockImplementation((w: string) =>
+      warns.push(w)
+    );
+    const secretName = 'prod-db-hunter2-credentials-arn-tail';
+    const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };
+    await replayRollback(
+      [
+        { ...targetGroupOp(), logicalId: 'Secret', physicalId: 'other', previousState: { ...targetGroupOp().previousState!, physicalId: secretName } },
+        listenerOp(secretName),
+      ],
+      state,
+      'S',
+      m.ctx
+    );
+    const text = warns.join('\n');
+    expect(text).toContain('name the resource Secret had before');
+    expect(text).not.toContain(secretName);
+  });
+
+  it('the collision route keeps the new resource when the holder is proven', async () => {
+    const queue = (physicalId: string, dlq: string): ResourceState => ({
+      physicalId,
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'q', RedrivePolicy: { deadLetterTargetArn: dlq } },
+      attributes: {},
+      dependencies: [],
+    });
+    const DLQ_OLD = 'arn:aws:sqs:us-east-1:123456789012:dlq-old';
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists', 'QueueNameExists'));
+    const del = vi.fn(async () => undefined);
+    const ctx: RollbackExecutorContext = {
+      region: 'us-east-1',
+      logger: portModel().ctx.logger,
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { create, delete: del } }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+    };
+    const state: Record<string, ResourceState> = {
+      Q: queue('q-new', 'arn:aws:sqs:us-east-1:123456789012:dlq-new'),
+    };
+    const dlqOp: CompletedOperation = {
+      logicalId: 'Dlq',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/dlq-new',
+      previousState: {
+        physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/dlq-old',
+        resourceType: 'AWS::SQS::Queue',
+        properties: { QueueName: 'dlq-old' },
+        attributes: { Arn: DLQ_OLD },
+        dependencies: [],
+      },
+      oldResourceRetained: false,
+    };
+    const qOp: CompletedOperation = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'q-new',
+      previousState: queue('q-old', DLQ_OLD),
+      oldResourceRetained: false,
+      oldDeletedBeforeCreate: true,
+    };
+    // Reversed newest first: Q only (Dlq's own create fails too, but Q runs first).
+    const result = await replayRollback([dlqOp, qOp], state, 'S', ctx);
+    expect(del.mock.calls.map((c) => (c as unknown[])[0])).not.toContain('Q');
+    expect(state['Q']!.physicalId).toBe('q-new');
+    expect(result.failures).toBeGreaterThanOrEqual(1);
   });
 });

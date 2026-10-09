@@ -1027,11 +1027,12 @@ export function sortRollbackCreates(
  * re-creating the old one from `previousState.properties`. When those
  * properties name a resource that another op of the SAME segment took away
  * (a replacement that did not keep its old copy, or a DELETE), the rollback
- * cannot bring that resource back under the id they name: the re-create then
- * fails after the new resource is gone, and the resource is lost (a target
- * group replaced create-first while its listener was recreated delete-first).
- * Such an op keeps the create-first order instead, whose failure keeps the new
- * resource. Keyed by the op object, like {@link markProvenDistinctFromRecord}:
+ * may not be able to bring that resource back under the id they name: the
+ * re-create then fails after the new resource is gone, and the resource is
+ * lost (a target group replaced create-first while its listener was recreated
+ * delete-first). Such an op keeps the create-first order, and its collision
+ * route refuses to delete the new resource too, so a failed re-create keeps
+ * it. Keyed by the op object, like {@link markProvenDistinctFromRecord}:
  * computed per replay, never journaled.
  */
 const deleteFirstBlockedBy = new WeakMap<
@@ -1040,18 +1041,62 @@ const deleteFirstBlockedBy = new WeakMap<
 >();
 
 /**
- * Mark each delete-first op of one segment whose old properties reference an
- * id {@link deleteFirstBlockedBy} describes. Only the PROPERTIES are scanned:
- * the re-create sends `previousState.properties`, and its attributes never
- * reach `create()`.
+ * Mark each delete-first op of one segment whose old properties reference a
+ * resource {@link deleteFirstBlockedBy} describes. Only the PROPERTIES are
+ * scanned: the re-create sends `previousState.properties`, and its attributes
+ * never reach `create()`.
  *
- * The match errs toward blocking: an exact string leaf, or, for an id of 16+
- * characters (an ARN, a URL), a leaf containing it, so an id embedded in a
- * document counts. A false block only restores the create-first order the
- * rollback used before #4690; a missed one loses a resource.
+ * A gone resource is named by its old physical id AND by every string value of
+ * its old record's attributes (`Arn`, `QueueArn`, ...): a dependent names an
+ * SQS queue by its ARN, never by its URL id. A leaf matches a needle exactly,
+ * at an ARN or path boundary (`...:name`, `.../name`, `.../name/...`,
+ * `...:name:...`, `...:name/...`, or any whole `:`/`/`-separated segment)
+ * whatever its length, so a short
+ * user-chosen name inside an ARN counts, or, for a needle of 16+ characters,
+ * anywhere inside it (an ARN embedded in a document).
+ *
+ * The match errs toward blocking: a false block only restores the
+ * create-first order the rollback used before #4690; a missed one loses a
+ * resource.
+ *
+ * The segment's FAILED ops count too (`failedOperations`): a replacement that
+ * deleted its old resource before a create that failed.
+ *
+ * KNOWN BOUND: the scan reads this segment's ops only. A parent op whose old
+ * properties name a nested child stack's output is not checked against the
+ * CHILD's journal.
  */
-export function markDeleteFirstBlocked(operations: readonly CompletedOperation[]): void {
-  const gone: Array<{ logicalId: string; physicalId: string }> = [];
+export function markDeleteFirstBlocked(
+  operations: readonly CompletedOperation[],
+  failedOperations: readonly FailedOperation[] = []
+): void {
+  const gone: Array<{ logicalId: string; physicalId: string; needles: string[] }> = [];
+  const add = (
+    logicalId: string,
+    physicalId: unknown,
+    attributes: Record<string, unknown> | undefined
+  ): void => {
+    if (typeof physicalId !== 'string' || physicalId === '') return;
+    const needles = [
+      physicalId,
+      ...(attributes !== null && typeof attributes === 'object'
+        ? Object.values(attributes).filter((v): v is string => typeof v === 'string' && v !== '')
+        : []),
+    ];
+    gone.push({ logicalId, physicalId, needles });
+  };
+  // A FAILED replacement that deleted its old resource first took it away
+  // too, whether or not its create made anything.
+  for (const f of failedOperations) {
+    if (
+      f.changeType === 'UPDATE' &&
+      (f.oldDeletedBeforeCreate === true || f.replacementOrphaned === 'delete-first')
+    ) {
+      add(f.logicalId, f.previousState?.physicalId, f.previousState?.attributes);
+    } else if (f.changeType === 'CREATE' && f.replacedResourceDeleted === true) {
+      add(f.logicalId, f.replacedPhysicalId, undefined);
+    }
+  }
   for (const op of operations) {
     const prev = op.previousState?.physicalId;
     if (typeof prev !== 'string' || prev === '') continue;
@@ -1061,7 +1106,7 @@ export function markDeleteFirstBlocked(operations: readonly CompletedOperation[]
         op.physicalId !== prev &&
         op.wasReplaced !== false &&
         op.oldResourceRetained !== true);
-    if (replacedAway) gone.push({ logicalId: op.logicalId, physicalId: prev });
+    if (replacedAway) add(op.logicalId, prev, op.previousState?.attributes);
   }
   if (gone.length === 0) return;
   for (const op of operations) {
@@ -1071,14 +1116,24 @@ export function markDeleteFirstBlocked(operations: readonly CompletedOperation[]
     const hit = gone.find(
       (g) =>
         g.logicalId !== op.logicalId &&
-        someStringLeaf(
-          props,
-          (leaf) =>
-            leaf === g.physicalId || (g.physicalId.length >= 16 && leaf.includes(g.physicalId))
-        )
+        someStringLeaf(props, (leaf) => g.needles.some((n) => namesResource(leaf, n)))
     );
-    if (hit) deleteFirstBlockedBy.set(op, hit);
+    if (hit) deleteFirstBlockedBy.set(op, { logicalId: hit.logicalId, physicalId: hit.physicalId });
   }
+}
+
+/** Whether `leaf` names `needle` (see {@link markDeleteFirstBlocked}). */
+function namesResource(leaf: string, needle: string): boolean {
+  return (
+    leaf === needle ||
+    leaf.endsWith(`:${needle}`) ||
+    leaf.endsWith(`/${needle}`) ||
+    leaf.includes(`/${needle}/`) ||
+    leaf.includes(`:${needle}:`) ||
+    leaf.includes(`:${needle}/`) ||
+    leaf.split(/[:/]/).includes(needle) ||
+    (needle.length >= 16 && leaf.includes(needle))
+  );
 }
 
 /** The op and id that keep `op` off the delete-first reversal, if any. */

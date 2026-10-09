@@ -401,6 +401,10 @@ export async function executeDeployment(
             // The UPDATE says so itself, so it never reads as a revert of
             // the old resource even once its orphan's entry is gone (an
             // interrupted rollback can settle one and not the other).
+            // go-to-k/cdkd#4690: the old resource is gone even when the create
+            // made nothing, which `replacementOrphaned` cannot say.
+            ...(change.changeType === 'UPDATE' &&
+              this.oldDeletedBeforeCreate.has(logicalId) && { oldDeletedBeforeCreate: true }),
             ...(orphanedBy !== undefined && {
               replacementOrphaned: this.oldDeletedBeforeCreate.has(logicalId)
                 ? ('delete-first' as const)

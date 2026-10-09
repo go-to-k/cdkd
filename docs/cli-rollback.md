@@ -376,11 +376,12 @@ new resource and the journal is kept. If the re-create then fails, the resource
 is absent and the message says so; re-deploy to fix it forward. A journal
 written by an older cdkd, and a new resource kept by `UpdateReplacePolicy:
 Retain`, use the create-first order. So does a resource whose old properties
-name another resource the same deploy replaced or deleted (a listener's old
-target group, replaced by a create-only change): the rollback cannot bring
-that resource back under the id they name, so deleting the new copy first
-would lose it. The rollback says so in a warning, and if the re-create fails,
-the new resource is kept.
+name another resource the same deploy replaced or deleted, including one whose
+replacement failed after deleting it (a listener's old target group, replaced
+by a create-only change): the rollback may not be able to bring that resource
+back under the id they name, so deleting the new copy first could lose it. The
+rollback says so in a warning and does not delete the new resource to free a
+name either, so if the re-create fails, the new resource is kept.
 
 What counts as a replacement is what the provider reported. An update applied
 in place is reverted in place even when it changed the physical id, as an SQS

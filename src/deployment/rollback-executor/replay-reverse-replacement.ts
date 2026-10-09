@@ -231,8 +231,11 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // name collision, the create's own error otherwise).
   //
   // Nor when the old properties name a resource another op of this segment
-  // took away (`markDeleteFirstBlocked`): the re-create would then fail after
-  // the new resource is gone, losing it, where create-first fails and keeps it.
+  // took away (`markDeleteFirstBlocked`): the re-create could then fail after
+  // the new resource is gone, losing it, where create-first fails and keeps it
+  // (its collision route refuses the delete for such an op too, below).
+  // The warning names the blocker by LOGICAL id only: its physical id can spell
+  // a secret-derived name this op's masker never learned (#3869's class).
   const deleteFirstBlocked =
     op.oldDeletedBeforeCreate === true && !rollbackRetainsNewResource(current)
       ? deleteFirstBlocker(op)
@@ -241,8 +244,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     logger.warn(
       mask(
         safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} first: its old properties ` +
-          safeMsg`name ${deleteFirstBlocked.physicalId}, which ${shownLogicalId(deleteFirstBlocked.logicalId)} ` +
-          `replaced or deleted in the same deploy and this rollback cannot restore under that id — ` +
+          safeMsg`name the resource ${shownLogicalId(deleteFirstBlocked.logicalId)} had before the same deploy ` +
+          `replaced or deleted it, which this rollback may not be able to restore under that id — ` +
           `re-creating the old resource first, which keeps the new one if that fails`
       )
     );
@@ -834,6 +837,44 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
               // The CHAIN is masked too: downstream masking only reaches a
               // top-level message, and the cause is what carries the AWS
               // rejection text a reader re-opens.
+              maskSecretsInError(createError instanceof Error ? createError : undefined, secrets)
+            )
+          )
+        );
+      }
+      if (deleteFirstBlocked !== undefined) {
+        // go-to-k/cdkd#4690: the old properties name a resource the same deploy
+        // took away, so the re-create after this delete could fail and lose
+        // the resource. Keep the new one, as the delete-first route does. The
+        // blocker is named by logical id only (see its warning above).
+        const remedy = orphanRemedy(op.logicalId, ctx);
+        const oldShown = refusalPhysicalId(mask(prev.physicalId));
+        const newShown = refusalPhysicalId(mask(current.physicalId));
+        throw ownRemedyError(
+          markNonRetryable(
+            new CdkdError(
+              mask(
+                `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+                  `(${refusalResourceType(op.resourceType)}): ` +
+                  `the re-create of the old resource (${oldShown}) collided with the ` +
+                  `name still held by the new one (${newShown}), and the old resource's ` +
+                  `properties name what ${refusalLogicalId(deleteFirstBlocked.logicalId)} was ` +
+                  `before the same deploy replaced or deleted it, which this rollback may not ` +
+                  `be able to restore, so cdkd will not delete the new resource to free the ` +
+                  `name. Nothing was deleted. Re-deploy to fix forward, or re-run `
+              ) +
+                rerunRollbackPhrase(ctx, 'cdkd rollback') +
+                mask(
+                  ` once the old resource can be re-created — the journal is kept.` +
+                    (remedy.offered
+                      ? ` To leave THIS resource alone and let the rest of the rollback ` +
+                        `proceed, re-run with the command below.`
+                      : '') +
+                    `${remedy.clause}${describedPhysicalIdPointer(oldShown, newShown)}` +
+                    `\nUnderlying collision: ${collisionLine(mask(msg))}`
+                ) +
+                remedy.line,
+              'NAMED_REPLACEMENT_COLLISION',
               maskSecretsInError(createError instanceof Error ? createError : undefined, secrets)
             )
           )
