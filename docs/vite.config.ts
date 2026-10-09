@@ -208,6 +208,30 @@ const theme = (command: 'build' | 'serve') =>
       '  new IntersectionObserver(function (entries) { set(entries[0].isIntersecting); },',
       "    { rootMargin: '-64px 0px 0px 0px' }).observe(hero);",
       '})();',
+      // Two gaps in core's markup for assistive technology: the home page's
+      // feature cards are h3s straight under the hero's h1, so their section
+      // gets the h2 it lacks; and the search button's shortcut hint is shown,
+      // not spoken -- the shortcut itself is declared instead.
+      '(function () {',
+      "  var features = document.querySelector('.entry-page .features');",
+      "  if (features && !features.querySelector('h2')) {",
+      "    var heading = document.createElement('h2');",
+      "    heading.className = 'cdkd-visually-hidden';",
+      "    heading.textContent = 'Features';",
+      '    features.prepend(heading);',
+      '  }',
+      "  document.querySelectorAll('.search-button').forEach(function (button) {",
+      "    button.setAttribute('aria-keyshortcuts', 'Meta+K Control+K');",
+      "    button.querySelectorAll('kbd').forEach(function (kbd) { kbd.setAttribute('aria-hidden', 'true'); });",
+      '    // Named by its visible word; core hides that word on a phone, where',
+      '    // the fallback below takes over (theme/cdkd.css).',
+      "    button.removeAttribute('aria-label');",
+      "    var fallback = document.createElement('span');",
+      "    fallback.className = 'cdkd-search-name';",
+      "    fallback.textContent = 'Search';",
+      '    button.append(fallback);',
+      '  });',
+      '})();',
       // Package-manager tabs open on npm, as the hero does, until the reader
       // picks one; core's deferred tab runtime then restores a stored pick.
       '(function () {',

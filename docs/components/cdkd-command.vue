@@ -208,6 +208,19 @@ onBeforeUnmount(() => clearTimeout(reset));
       outline-offset: -4px;
       border-radius: var(--cdkd-radius-sm);
     }
+
+    /* Forced colors would draw every underline alike: only the chosen tool
+       keeps one. */
+    @media (forced-colors: active) {
+      forced-color-adjust: none;
+      color: CanvasText;
+      border-block-end-color: Canvas;
+
+      &[aria-selected='true'] {
+        color: Highlight;
+        border-block-end-color: Highlight;
+      }
+    }
   }
 
   & .body {

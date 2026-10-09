@@ -87,6 +87,31 @@ body {
   white-space: nowrap;
 }
 
+/* Icons are masks painted with a background color, which forced colors
+   would clear: they take the text color instead. */
+@media (forced-colors: active) {
+  .iconify-icon {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+}
+
+/* The search button's name where core hides its visible word (640px and
+   below); elsewhere the visible word names it and this stays out of it. */
+.search-button .cdkd-search-name {
+  display: none;
+
+  @media (max-width: 640px) {
+    display: block;
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 /* Page to page, the content crossfades while the chrome stays put. */
 @view-transition {
   navigation: auto;
@@ -490,6 +515,19 @@ body {
       outline-offset: -4px;
       border-radius: var(--cdkd-radius-sm);
     }
+
+    @media (forced-colors: active) {
+      & label {
+        forced-color-adjust: none;
+        color: CanvasText;
+        border-block-end-color: Canvas;
+      }
+
+      & input[type='radio']:checked + label {
+        color: Highlight;
+        border-block-end-color: Highlight;
+      }
+    }
   }
 
   /* Diagrams (docs/diagrams) are drawn in the page's own colors, so they
@@ -560,6 +598,30 @@ body {
 
     & .d-head {
       fill: var(--cdkd-color-text-muted);
+    }
+
+    /* In the reader's high-contrast palette, the route in its highlight. */
+    @media (forced-colors: active) {
+      & svg {
+        forced-color-adjust: none;
+      }
+
+      & .d-node rect {
+        fill: Canvas;
+        stroke: CanvasText;
+      }
+
+      & .d-node--route rect {
+        stroke: Highlight;
+      }
+
+      & :is(.d-title, .d-detail, .d-mono, .d-note, .d-label, .d-head) {
+        fill: CanvasText;
+      }
+
+      & .d-edge {
+        stroke: CanvasText;
+      }
     }
 
     @media (max-width: 40rem) {

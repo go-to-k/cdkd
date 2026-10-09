@@ -350,6 +350,23 @@ onBeforeUnmount(() => {
     }
   }
 
+  /* Forced colors drop backgrounds, which are what the runs are drawn
+     with: in system colors instead, the race still reads. */
+  @media (forced-colors: active) {
+    & .track {
+      border: 1px solid CanvasText;
+    }
+
+    & .run {
+      forced-color-adjust: none;
+      background: Highlight;
+    }
+
+    & .baseline .run {
+      background: GrayText;
+    }
+  }
+
   @media (max-width: 48rem) {
     padding: var(--cdkd-space-5);
 
