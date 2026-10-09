@@ -398,5 +398,53 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
         "Cannot reverse 'Q' (it read ***, ***)\nTo orphan it: cdkd rollback S --orphan Q -c k=*** -c b=boundonly"
       );
     });
+
+    it('masks an engine needle and a bound needle that overlap as one span, leaving neither tail', async () => {
+      // B (bound) starts before A (engine); neither contains the other.
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, 'cdefgh-tail');
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      const bag = new Map<string, string>();
+      recordLogOnlyValue(bag, 'xxab-cdefgh');
+      withPrintingSecrets(bag, () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          reason: 'got xxab-cdefgh-tail back',
+        })
+      );
+      expect((events[0] as { reason: string }).reason).toBe('got *** back');
+    });
+
+    it('masks a MULTI-LINE engine needle inside an own-remedy message, as one span', async () => {
+      // A PEM-shaped value: the needle spans lines, so a per-line pass misses it.
+      const pem = 'BEGIN-KEY\nsecret-body-line\nEND-KEY';
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, pem);
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message: `Cannot reverse 'Q': value ${pem} rejected\nTo orphan it: cdkd rollback S --orphan Q`,
+            ownLines: true,
+          },
+        } as never)
+      );
+      expect((events[0] as { error: { message: string } }).error.message).toBe(
+        "Cannot reverse 'Q': value *** rejected\nTo orphan it: cdkd rollback S --orphan Q"
+      );
+    });
   });
 });

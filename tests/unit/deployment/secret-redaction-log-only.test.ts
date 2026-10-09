@@ -204,4 +204,23 @@ describe('createUnionSecretMasker / unionOfSecretBags (go-to-k/cdkd#4049)', () =
     expect(union).not.toBe(bag);
     expect(bag.size).toBe(0);
   });
+  it.each([
+    ['across two bags', true],
+    ['within one bag', false],
+  ])(
+    'masks the union of two OVERLAPPING needles neither contains, leaving no tail (go-to-k/cdkd#3869): %s',
+    (_label, split) => {
+      // B starts first; a single alternation consumed B and printed A's tail.
+      const A = 'cdefgh-tail';
+      const B = 'xxab-cdefgh';
+      const a: RecordedSecretValues = new Map();
+      const b: RecordedSecretValues = split ? new Map() : a;
+      recordLogOnlyValue(a, A);
+      recordLogOnlyValue(b, B);
+      const mask = createUnionSecretMasker(split ? [a, b] : [a]);
+      expect(mask('v=xxab-cdefgh-tail end')).toBe(`v=${SECRET_MASK} end`);
+      // Adjacent and disjoint matches stay separate masks.
+      expect(mask(`${A}${B} ${A}`)).toBe(`${SECRET_MASK}${SECRET_MASK} ${SECRET_MASK}`);
+    }
+  );
 });
