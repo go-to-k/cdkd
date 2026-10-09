@@ -18,23 +18,24 @@ than treated as fatal — and to surface DAG-scheduling or partial-failure bugs
 that only appear at scale.
 
 The resources are deliberately CHEAP, fast, and quota-friendly so the fixture
-can run at ~100 resources without cost or quota blow-ups. No VPC — every
+can run at ~400 resources without cost or quota blow-ups. No VPC — every
 resource is a control-plane-only create.
 
 ## Fixture
 
-`CdkdThrottleWideDagExample` (`lib/throttle-wide-dag-stack.ts`) — ~100 resources:
+`CdkdThrottleWideDagExample` (`lib/throttle-wide-dag-stack.ts`) — ~400 resources:
 
 | Type | Count | Role |
 | --- | --- | --- |
 | `AWS::SSM::Parameter` | 80 | Fast, high create rate -> most likely to throttle |
 | `AWS::IAM::Role` | 10 | Broadens the throttle surface to a second service |
 | `AWS::SNS::Topic` | 10 | Third service in the burst |
+| `AWS::CloudWatch::Alarm` | 300 | One `PutMetricAlarm` per alarm on deploy (#4781) and one `DeleteAlarms` per alarm on destroy (#4774) meet CloudWatch's `Rate exceeded` |
 
 ### DAG shape
 
 - **Independent set (throttle pressure):** 70 of the 80 parameters + all 10
-  roles + all 10 topics have NO dependencies, so they form one large ready-set
+  roles + all 10 topics + all 300 alarms have NO dependencies, so they form one large ready-set
   the executor sheds across the `--concurrency` budget at once.
 - **Chained subset (DAG depth):** 10 parameters form a serial chain
   `ChainParam0 -> ChainParam1 -> ... -> ChainParam9`. Each `ChainParam(K)` (K>=1)
@@ -50,7 +51,7 @@ Env: `AWS_REGION` (default `us-east-1`), `STATE_BUCKET` (required),
 maximise throttle pressure).
 
 1. Install fixture deps (`pnpm install --ignore-workspace`).
-2. **Deploy** all ~100 resources with `--concurrency 40 --verbose`.
+2. **Deploy** all ~400 resources with `--concurrency 40 --verbose`.
    - Prints any `⏳ Retrying ... / TooManyRequests / Rate exceeded / 429`
      activity observed (documents that the retry path was exercised when AWS
      throttled — throttling is probabilistic, so a clean run is also valid).
@@ -58,15 +59,15 @@ maximise throttle pressure).
      classifier did NOT retry it -> a **real finding**; the throttle error is
      printed.
 3. Asserts all resources reached AWS:
-   - cdkd state records exactly 100 resources.
+   - cdkd state records exactly 400 resources.
    - 80 SSM parameters under `/CdkdThrottleWideDagExample/` (paginated count).
    - The deepest chain parameter (`/.../chain/9`) holds a `child-of-...`
      `Fn::Sub` value -> the executor serialized the chain in DAG order.
-   - 10 IAM roles + 10 SNS topics exist.
-4. **Destroy** all ~100 resources with the same high `--concurrency` and assert
-   the delete burst also exits 0 (the destroy path must absorb ~100 deletes
-   without throttle-failing).
-5. Asserts **0 orphans**: 0 SSM parameters / 0 IAM roles / 0 SNS topics remain,
+   - 10 IAM roles + 10 SNS topics + 300 CloudWatch alarms exist.
+4. **Destroy** all ~400 resources and assert the delete burst also exits 0
+   (the destroy path must absorb ~400 deletes without throttle-failing).
+5. Asserts **0 orphans**: 0 SSM parameters / 0 IAM roles / 0 SNS topics /
+   0 CloudWatch alarms remain,
    and the cdkd state file is gone.
 
 `verify.sh` is BSD-portable (no `grep -P`, no `date -d`), captures the real

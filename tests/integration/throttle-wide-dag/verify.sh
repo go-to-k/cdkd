@@ -2,18 +2,20 @@
 # verify.sh — cdkd WIDE-DAG throttle / retry-classifier / concurrency-limiter
 # stress integ.
 #
-# Deploys a ~100-resource stack (80 SSM Parameters + 10 IAM Roles + 10 SNS
-# Topics, a 10-deep SSM chain for DAG depth) with a HIGH `--concurrency` to
+# Deploys a ~400-resource stack (80 SSM Parameters + 10 IAM Roles + 10 SNS
+# Topics + 300 CloudWatch Alarms, a 10-deep SSM chain for DAG depth) with a
+# HIGH `--concurrency` to
 # maximise throttle pressure, then asserts:
 #   1. deploy SUCCEEDS (exit 0). A throttle (TooManyRequests / Rate exceeded /
 #      HTTP 429) that is NOT retried by cdkd's `withRetry` classifier would
 #      fail the deploy here -> that is a REAL finding and the throttle error is
 #      printed.
-#   2. all ~100 resources actually reached AWS (counted via the AWS APIs).
+#   2. all ~400 resources actually reached AWS (counted via the AWS APIs).
 #   3. the chained parameters were created in DAG order (Chain9 exists with the
 #      Fn::Sub-derived value -> the executor serialized the chain correctly).
-#   4. destroy is clean: all ~100 resources gone, state gone, 0 orphans (the
-#      destroy path must also absorb ~100 deletes without throttle-failing).
+#   4. destroy is clean: all ~400 resources gone, state gone, 0 orphans (the
+#      destroy path must also absorb ~400 deletes without throttle-failing;
+#      the 300 alarms are go-to-k/cdkd#4774's one-DeleteAlarms-per-alarm burst).
 #
 # BSD-portable (no grep -P, no date -d). Real rc captured, explicit PASS line.
 #
@@ -70,6 +72,10 @@ cd "$(dirname "$0")"
 # layer — no `sleep` in the script, and it covers the cleanup path too.
 export AWS_RETRY_MODE=adaptive
 export AWS_MAX_ATTEMPTS=10
+# ...but cdkd's own SDK clients read the same two variables, which would give
+# every cdkd call 10 adaptive attempts and hide the very throttle handling this
+# fixture tests (go-to-k/cdkd#4774's DeleteAlarms burst). Every cdkd run below
+# drops them (`env -u ...`) and keeps the SDK defaults.
 
 STACK="CdkdThrottleWideDagExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -82,11 +88,36 @@ PARAM_COUNT=80
 CHAIN_DEPTH=10
 ROLE_COUNT=10
 TOPIC_COUNT=10
-TOTAL=$((PARAM_COUNT + ROLE_COUNT + TOPIC_COUNT))
+ALARM_COUNT=300
+TOTAL=$((PARAM_COUNT + ROLE_COUNT + TOPIC_COUNT + ALARM_COUNT))
 
 # Name prefixes used by the fixture.
 ROLE_PREFIX="${STACK}-role-"
 TOPIC_PREFIX="${STACK}-topic-"
+ALARM_PREFIX="${STACK}-alarm-"
+
+# Keep, from tab- or newline-separated alarm names on stdin, only the
+# fixture's own: the prefix plus an index below ALARM_COUNT, written without
+# leading zeros. The prefix alone would also match another alarm (a name such
+# as `...-alarm-x Prod-DB`, which xargs would split in two).
+fixture_alarm_names() {
+  tr '\t' '\n' | awk -v p="${ALARM_PREFIX}" -v n="${ALARM_COUNT}" \
+    'index($0, p) == 1 { i = substr($0, length(p) + 1); if (i ~ /^(0|[1-9][0-9]*)$/ && i + 0 < n) print }'
+}
+
+# How many of the fixture's alarms exist on AWS (paginated by the CLI; never
+# `--query 'length(...)'`, which counts per page). A failed probe exits the
+# script instead of reading as zero.
+count_alarms() {
+  local names
+  if ! names=$(aws cloudwatch describe-alarms --region "${REGION}" \
+    --alarm-name-prefix "${ALARM_PREFIX}" --alarm-types MetricAlarm \
+    --query 'MetricAlarms[].AlarmName' --output text); then
+    echo "FAIL: describe-alarms failed; alarm count undetermined" >&2
+    exit 1
+  fi
+  printf '%s\n' "${names}" | fixture_alarm_names | awk 'END { print NR }'
+}
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -100,7 +131,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u AWS_RETRY_MODE -u AWS_MAX_ATTEMPTS node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # Best-effort sweep of any fixture-named resources left behind.
   for i in $(seq 0 $((ROLE_COUNT - 1))); do
@@ -113,6 +144,16 @@ cleanup() {
         --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT}:${TOPIC_PREFIX}${i}" \
         --region "${REGION}" >/dev/null 2>&1 || true
     done
+  fi
+  # Only the fixture's alarms that still exist (fixture_alarm_names), in
+  # batches of 100 (DeleteAlarms' maximum): a batch naming an alarm that is
+  # already gone may fail as a whole.
+  LEFT_ALARMS=$(aws cloudwatch describe-alarms --region "${REGION}" \
+    --alarm-name-prefix "${ALARM_PREFIX}" --alarm-types MetricAlarm \
+    --query 'MetricAlarms[].AlarmName' --output text 2>/dev/null | fixture_alarm_names)
+  if [ -n "${LEFT_ALARMS}" ]; then
+    printf '%s\n' "${LEFT_ALARMS}" | xargs -n 100 \
+      aws cloudwatch delete-alarms --region "${REGION}" --alarm-names >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -148,7 +189,7 @@ cleanup
 # High --concurrency to maximise the burst against SSM/IAM/SNS create limits.
 echo "==> Phase 1: deploy ${TOTAL} resources with --concurrency ${CONCURRENCY}"
 set +e
-node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u AWS_RETRY_MODE -u AWS_MAX_ATTEMPTS node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --concurrency "${CONCURRENCY}" \
@@ -179,6 +220,10 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   echo "FAIL: deploy exited ${DEPLOY_RC} — a wide burst failed the deploy." >&2
   echo "      If this is a throttle (TooManyRequests / Rate exceeded / 429)," >&2
   echo "      cdkd did NOT retry it -> REAL FINDING in the retry classifier." >&2
+  if grep "Failed to create CloudWatch alarm" "${DEPLOY_LOG}" | grep "Rate exceeded" >/dev/null; then
+    echo "      A CloudWatch alarm create was throttled out: go-to-k/cdkd#4781's PutMetricAlarm" >&2
+    echo "      retry in src/provisioning/providers/cloudwatch-alarm-provider.ts did not absorb it." >&2
+  fi
   echo "----- deploy log tail -----" >&2
   tail -60 "${DEPLOY_LOG}" >&2
   exit 1
@@ -273,6 +318,14 @@ if [ "${TOPIC_SEEN}" -ne "${TOPIC_COUNT}" ]; then
 fi
 echo "    OK: all ${TOPIC_COUNT} SNS topics reached AWS"
 
+# --- Assertion: CloudWatch alarms reached AWS (#4774) ----------------------
+ALARM_SEEN=$(count_alarms) || exit 1
+if [ "${ALARM_SEEN}" -ne "${ALARM_COUNT}" ]; then
+  echo "FAIL: AWS has ${ALARM_SEEN} CloudWatch alarms named ${ALARM_PREFIX}*, expected ${ALARM_COUNT}" >&2
+  exit 1
+fi
+echo "    OK: all ${ALARM_COUNT} CloudWatch alarms reached AWS"
+
 # --- Phase 2: destroy -------------------------------------------------------
 # NOTE: `cdkd destroy` does NOT accept `--concurrency` (only `cdkd deploy`
 # does); the destroy delete loop uses its own default concurrency. The delete
@@ -282,7 +335,7 @@ echo "    OK: all ${TOPIC_COUNT} SNS topics reached AWS"
 # is preserved without the flag.
 echo "==> Phase 2: destroy ${TOTAL} resources"
 set +e
-node "${LOCAL_DIST}" destroy "${STACK}" \
+env -u AWS_RETRY_MODE -u AWS_MAX_ATTEMPTS node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --verbose \
@@ -303,6 +356,10 @@ fi
 if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "FAIL: destroy exited ${DESTROY_RC} — wide delete burst failed." >&2
   echo "      If this is a throttle, the destroy path did NOT retry it -> REAL FINDING." >&2
+  if grep -q "Failed to delete CloudWatch alarm" "${DESTROY_LOG}"; then
+    echo "      A CloudWatch alarm delete failed: go-to-k/cdkd#4774's throttled DeleteAlarms" >&2
+    echo "      retry in src/provisioning/providers/cloudwatch-alarm-provider.ts did not absorb it." >&2
+  fi
   echo "----- destroy log tail -----" >&2
   tail -60 "${DESTROY_LOG}" >&2
   exit 1
@@ -345,6 +402,14 @@ if [ "${TOPIC_LEFT}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: 0 SNS topic orphans"
+
+# go-to-k/cdkd#4774: every alarm deleted, not just the destroy's exit code.
+ALARM_LEFT=$(count_alarms) || exit 1
+if [ "${ALARM_LEFT}" -ne 0 ]; then
+  echo "FAIL: ${ALARM_LEFT} CloudWatch alarms named ${ALARM_PREFIX}* still exist after destroy (orphans, #4774)" >&2
+  exit 1
+fi
+echo "    OK: 0 CloudWatch alarm orphans"
 
 # --- Assertion: state file gone --------------------------------------------
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

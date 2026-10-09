@@ -31,6 +31,21 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { isThrottlingError } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+
+/**
+ * A throttled alarm write (go-to-k/cdkd#4774, #4781): the SDK error by name or
+ * status, or by CloudWatch's `Rate exceeded` text, which the destroy's own
+ * classifier also reads. Only the SDK's own error is read here, never cdkd's
+ * prose; an AWS message quoting an alarm whose NAME holds that text costs at
+ * most the bounded retry budget before it fails as it would have.
+ */
+function isAlarmWriteThrottle(error: unknown): boolean {
+  return (
+    isThrottlingError(error) || (error instanceof Error && error.message.includes('Rate exceeded'))
+  );
+}
 
 /**
  * AWS CloudWatch Alarm Provider
@@ -133,7 +148,9 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         createParams.Tags = desiredTags.map(({ Key, Value }) => ({ Key, Value }));
       }
 
-      await this.cloudWatchClient.send(new PutMetricAlarmCommand(createParams));
+      await this.sendWithThrottleRetry('PutMetricAlarm', logicalId, () =>
+        this.cloudWatchClient.send(new PutMetricAlarmCommand(createParams))
+      );
 
       this.logger.debug(`Successfully created CloudWatch alarm ${logicalId}: ${alarmName}`);
 
@@ -175,8 +192,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
-      await this.cloudWatchClient.send(
-        new PutMetricAlarmCommand(this.buildAlarmParams(physicalId, properties))
+      await this.sendWithThrottleRetry('PutMetricAlarm', logicalId, () =>
+        this.cloudWatchClient.send(
+          new PutMetricAlarmCommand(this.buildAlarmParams(physicalId, properties))
+        )
       );
 
       this.logger.debug(`Successfully updated CloudWatch alarm ${logicalId}`);
@@ -214,7 +233,62 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   }
 
   /**
+   * The throttle backoff ceilings of {@link sendWithThrottleRetry}, one per
+   * retry (go-to-k/cdkd#4774, #4781). Each wait is drawn from
+   * `[ceiling/2, ceiling)`, so the retries hold back at least ~45s and at most
+   * ~91s in total — longer than the destroy's whole per-resource retry
+   * (5s + 10s + 20s), which a stack of a few hundred alarms exhausts against
+   * CloudWatch's request quota. Tests shorten them.
+   */
+  throttleDelaysMs: readonly number[] = [
+    1_000, 2_000, 4_000, 8_000, 16_000, 20_000, 20_000, 20_000,
+  ];
+
+  /** The jitter source for {@link throttleDelaysMs}, in `[0, 1)`; tests pin it. */
+  throttleJitter: () => number = () => Math.random();
+
+  /** The one wait {@link sendWithThrottleRetry} makes; tests replace it. */
+  throttleSleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * Send one alarm write (`PutMetricAlarm` / `DeleteAlarms`), retrying a
+   * throttle with jittered backoff ({@link throttleDelaysMs}).
+   *
+   * Each alarm is written by its own call and a deploy or destroy runs them in
+   * parallel, so a stack with many alarms meets CloudWatch's `Throttling`
+   * (`Rate exceeded`). Retrying here, with jitter, comes before the engine's
+   * retry, whose schedule re-sends every throttled alarm at the same moments.
+   * Both calls are safe to resend: `PutMetricAlarm` overwrites the alarm of
+   * that name, and `DeleteAlarms` of a gone alarm reads as already deleted.
+   * Any other failure, and a throttle past the budget, is thrown unchanged.
+   */
+  private async sendWithThrottleRetry(
+    label: 'PutMetricAlarm' | 'DeleteAlarms',
+    logicalId: string,
+    send: () => Promise<unknown>
+  ): Promise<void> {
+    for (let retry = 0; ; retry++) {
+      try {
+        await send();
+        return;
+      } catch (error) {
+        const ceiling = this.throttleDelaysMs[retry];
+        if (ceiling === undefined || !isAlarmWriteThrottle(error)) throw error;
+        const delay = Math.round(ceiling / 2 + (this.throttleJitter() * ceiling) / 2);
+        this.logger.debug(
+          safeMsg`${label} for ${logicalId} was throttled; retrying in ${delay}ms (retry ${retry + 1}/${this.throttleDelaysMs.length})`
+        );
+        await this.throttleSleep(delay);
+      }
+    }
+  }
+
+  /**
    * Delete a CloudWatch alarm
+   *
+   * A throttled `DeleteAlarms` is retried by {@link sendWithThrottleRetry}
+   * (go-to-k/cdkd#4774).
    */
   async delete(
     logicalId: string,
@@ -226,10 +300,12 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     this.logger.debug(`Deleting CloudWatch alarm ${logicalId}: ${physicalId}`);
 
     try {
-      await this.cloudWatchClient.send(
-        new DeleteAlarmsCommand({
-          AlarmNames: [physicalId],
-        })
+      await this.sendWithThrottleRetry('DeleteAlarms', logicalId, () =>
+        this.cloudWatchClient.send(
+          new DeleteAlarmsCommand({
+            AlarmNames: [physicalId],
+          })
+        )
       );
 
       this.logger.debug(`Successfully deleted CloudWatch alarm ${logicalId}`);
