@@ -200,6 +200,51 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     expect(exitSpy).not.toHaveBeenCalledWith(2);
   });
 
+  // A wholly masked list may hold neutral leaves: `maskWholeValue` keeps a
+  // `null` and an empty container as they are.
+  it('buckets a wholly masked list holding null and empty leaves when the live value changed shape', async () => {
+    const masked = [{ Key: SECRET_MASK, Value: null, N: SECRET_MASK, Extra: [] }];
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Tags: masked },
+          observedProperties: { Name: '/app/token', Tags: masked },
+          noEchoLeaves: [['Tags']],
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Tags: 7741 });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      expect.objectContaining({ logicalId: 'Token', cause: 'noEchoParameter' }),
+    ]);
+  });
+
+  it('still compares a marked element that holds no mask at all', async () => {
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Tags: [{ K: SECRET_MASK, V: 'plain' }, [null]] },
+          observedProperties: {
+            Name: '/app/token',
+            Tags: [{ K: SECRET_MASK, V: 'plain' }, [null]],
+          },
+          noEchoLeaves: [['Tags']],
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Tags: [{ K: 'k', V: 'plain' }, 7741] });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([expect.objectContaining({ logicalId: 'Token' })]);
+  });
+
   it('buckets a list live value at a marked coordinate', async () => {
     mockGetState.mockResolvedValueOnce(
       makeState({

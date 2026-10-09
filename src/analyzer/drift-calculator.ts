@@ -394,15 +394,25 @@ export function equalModuloMarkedMask(
   );
 }
 
-/** Is `value` the mask, or a non-empty container whose every leaf is? */
+/**
+ * Is `value` the mask, or a container holding at least one masked leaf whose
+ * every other leaf is NEUTRAL (`null`, or an empty container)? `maskWholeValue`
+ * keeps `null` and empty containers as they are, so a wholly masked list such
+ * as `[{Key: '***', Value: null}]` is still the mask of the whole value.
+ */
 function isWhollyMask(value: unknown, mask: string): boolean {
-  if (value === mask) return true;
-  if (Array.isArray(value)) return value.length > 0 && value.every((v) => isWhollyMask(v, mask));
-  if (isPlainObject(value)) {
-    const values = Object.values(value);
-    return values.length > 0 && values.every((v) => isWhollyMask(v, mask));
-  }
-  return false;
+  let sawMask = false;
+  const walk = (node: unknown): boolean => {
+    if (node === mask) {
+      sawMask = true;
+      return true;
+    }
+    if (node === null) return true;
+    if (Array.isArray(node)) return node.every(walk);
+    if (isPlainObject(node)) return Object.values(node).every(walk);
+    return false;
+  };
+  return walk(value) && sawMask;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
