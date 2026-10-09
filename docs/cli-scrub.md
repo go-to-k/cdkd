@@ -30,7 +30,7 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 | `[stacks...]` | — | Stack name(s) to scrub. Physical name or CDK display path. The [nested stacks](#nested-stacks) under each are scrubbed too. |
 | `--all` | off | Scrub every stack in the synthesized app, Stage stacks included. |
 | `--dry-run` | off | Report what would be scrubbed without writing state. |
-| `--fail` | off | Exit non-zero when plaintext of a value the template names through a `{{resolve:...}}` reference is found. With `--dry-run`, any such plaintext; on a real run, a leak scrub cannot rewrite. |
+| `--fail` | off | Exit non-zero when plaintext of a value the template names through a `{{resolve:...}}` reference is found (a [physical name derived from one](#how-secrets-stay-out-of-state) aside). With `--dry-run`, any such plaintext; on a real run, a leak scrub cannot rewrite. |
 | `--purge-history` | off | Also purge the earlier S3 versions of every `state.json` the run examined, not only the ones it rewrites. Drops those records' state-recovery history; a record scrub refuses is never purged; cannot be combined with `--dry-run`. See [What a real run removes](#what-a-real-run-removes-and-what-it-cannot). |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory. |
@@ -137,8 +137,10 @@ Nor do they cover a physical name derived from a secret — a
 `{{resolve:...}}` reference or a `NoEcho` parameter in a name or other
 identifier property. The name is the resource's identity, so its `physicalId`
 holds it, and other resources' resolved `Ref`, `Fn::GetAtt` and `Fn::Sub`
-copies of it are stored as resolved; `cdkd scrub` reports those records clean
-and rewrites none of them. The resource's own properties keep the reference.
+copies of it, and the outputs and exports index entries that carry it, are
+stored as resolved; `cdkd scrub` reports those records clean and rewrites none
+of them. The resource's own properties keep the reference (`***` for a
+`NoEcho` parameter).
 CloudFormation does the same; keep secrets out of identifier properties, as
 [its documentation advises](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html).
 
@@ -420,7 +422,7 @@ No plaintext secrets found in any target stack state (scrub checks only values t
 | Code | Meaning |
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
-| `1` | `--fail` found plaintext of a value the template names through a `{{resolve:...}}` reference: under `--dry-run`, any such plaintext, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, an undeclared key another stack still reads or one that may be a live export alias, or an exports index entry that has no key left in `state.outputs` and still holds a secret this run recorded. |
+| `1` | `--fail` found plaintext of a value the template names through a `{{resolve:...}}` reference (a physical name derived from one aside): under `--dry-run`, any such plaintext, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, an undeclared key another stack still reads or one that may be a live export alias, or an exports index entry that has no key left in `state.outputs` and still holds a secret this run recorded. |
 | `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, the exports index was left incomplete, or the other stacks' state could not be read before a drop (`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`). |
 
 The full cross-command table is in the

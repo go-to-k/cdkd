@@ -73,11 +73,15 @@ Out of scope:
 - **A physical name derived from a secret, and other resources' resolved
   references to it, recorded in state.** A `{{resolve:...}}` reference or a
   `NoEcho` parameter used in a name or other identifier property becomes the
-  resource's identity: its `physicalId`, and the value every resolved `Ref`,
-  `Fn::GetAtt` or `Fn::Sub` of it carries into another resource's record.
-  CloudFormation uses the plaintext value in the primary identifier the same
-  way and
+  resource's identity. This covers that name in the resource's `physicalId`,
+  and the name, or an identifier embedding it, wherever a resolved `Ref`,
+  `Fn::GetAtt` or `Fn::Sub` carries it into another resource's record, a stack
+  output or the exports index — and commands that print a stored record as it
+  is, such as `cdkd state show`. CloudFormation uses the plaintext value in the
+  primary identifier the same way and
   [advises against it](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html);
   see [Security and Best Practices](docs/state-management.md#security-and-best-practices).
-  Such a name reaching logs, deployment events or CLI output unmasked remains
-  in scope.
+  This does not cover the resource's own `properties`, `attributes` or
+  `observedProperties`, a different secret read through the same resource, or
+  the name unmasked in logs, deployment events or `cdkd diff` output; reports
+  of those remain welcome.
