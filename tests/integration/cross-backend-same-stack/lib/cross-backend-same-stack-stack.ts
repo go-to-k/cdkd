@@ -31,10 +31,10 @@ import type { Construct } from 'constructs';
  * collides with the first deployment's names.
  *
  * `CDKD_4705_B_AUTOROLLBACK=1` synthesizes the Queue exactly as above (so its
- * CreateQueue hands back the first deployment's queue) and `FailLater`, an
- * SSM parameter whose value does not match its own `AllowedPattern`, created
- * after the Queue: the deploy fails and its AUTOMATIC rollback must not
- * delete the queue it was handed.
+ * CreateQueue would hand back the first deployment's queue) and `FailLater`,
+ * an SSM parameter whose value does not match its own `AllowedPattern`,
+ * created after the Queue: the Queue's create must be refused before it is
+ * sent, so nothing is adopted.
  *
  * covers: AWS::IAM::Role
  * covers: AWS::SQS::Queue

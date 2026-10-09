@@ -25,6 +25,15 @@
 #          -- must be refused (the destructive-plan check), and the log group
 #          and the queue survive;
 #       9. `state orphan` of B, then a normal destroy of A.
+#   The stack registry (`_cdkd-registry/<region>/<stack>.json`): the old release
+#   writes no marker; this build's first GUARDED command of each stack (a
+#   destructive plan, a destroy, a rollback) pays the prefix scan once and then
+#   claims it -- (a)2b -- while a scan that finds the pair refuses and claims
+#   nothing -- (b)7, (b)8, (b)8b. An ordinary redeploy reads nothing.
+#
+# The registry marker is per stack name, not per prefix, and the one-time scan
+# reads every prefix of the bucket: run this fixture with its own STATE_BUCKET
+# (`/run-integ` does), never two runs in one bucket.
 #
 # Run via: /run-integ cross-backend-same-stack-migration
 #         or: bash tests/integration/cross-backend-same-stack-migration/verify.sh
@@ -90,6 +99,9 @@ REFUSAL_NEEDLE="Refusing to"
 DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
 DESTRUCTIVE_REFUSAL_NEEDLE="this deploy deletes or replaces resources, and the stack is also recorded under another state prefix of bucket"
+# The stack registry markers, at the bucket root (src/state/s3-state-backend.ts).
+MARKER_S="_cdkd-registry/${REGION}/${SINGLE}.json"
+MARKER_P="_cdkd-registry/${REGION}/${PAIR}.json"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -116,6 +128,16 @@ state_physical_id() { # usage: state_physical_id <key> <type>
   body="$(aws s3 cp "s3://${STATE_BUCKET}/$1" -)" || return 1
   printf '%s' "${body}" | jq -r --arg t "$2" \
     '[(.resources // {})[] | select(.resourceType == $t) | .physicalId] | first // ""'
+}
+
+# The prefix a registry marker names, or "" when there is none.
+marker_prefix() { # usage: marker_prefix <marker key>
+  local body
+  body="$(aws s3 cp "s3://${STATE_BUCKET}/$1" - 2>/dev/null)" || {
+    echo ""
+    return 0
+  }
+  printf '%s' "${body}" | jq -r '.prefix // ""'
 }
 
 queue_exists() { # usage: queue_exists <url>; 0 when it exists
@@ -241,6 +263,12 @@ cleanup() {
   if [ -n "${DEPLOYED_S:-}${DEPLOYED_A:-}" ]; then
     sweep_named
   fi
+  # A registry marker, only when it names one of THIS run's prefixes.
+  for marker in "${MARKER_S}" "${MARKER_P}"; do
+    case "$(marker_prefix "${marker}")" in
+      "${PREFIX_S}" | "${PREFIX_A}" | "${PREFIX_B}") aws s3 rm "s3://${STATE_BUCKET}/${marker}" >/dev/null 2>&1 ;;
+    esac
+  done
   sweep_prefix "${PREFIX_S}" "${STATE_KEY_S}" "${JOURNAL_KEY_S}"
   sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
   sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
@@ -277,7 +305,7 @@ case "${OLD_REPORTED}" in
 esac
 
 echo "==> Pre-flight"
-for key in "${STATE_KEY_S}" "${STATE_KEY_A}" "${STATE_KEY_B}" "${JOURNAL_KEY_S}" "${JOURNAL_KEY_A}" "${JOURNAL_KEY_B}"; do
+for key in "${STATE_KEY_S}" "${STATE_KEY_A}" "${STATE_KEY_B}" "${JOURNAL_KEY_S}" "${JOURNAL_KEY_A}" "${JOURNAL_KEY_B}" "${MARKER_S}" "${MARKER_P}"; do
   if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"; then
     echo "FAIL: s3://${STATE_BUCKET}/${key} already exists -- clean up a previous run first" >&2
     exit 1
@@ -322,6 +350,10 @@ case "${QUEUE_URL_S}" in
   https://*/"${SINGLE}"-?*) ;;
   *) echo "FAIL: the old release's record does not name a ${SINGLE}-* queue (got '${QUEUE_URL_S}')" >&2; exit 1 ;;
 esac
+if [ -n "$(marker_prefix "${MARKER_S}")" ]; then
+  echo "FAIL: premise: the old release wrote a stack registry marker for ${SINGLE}" >&2
+  exit 1
+fi
 
 run_logged "(a)2 this build redeploys ${SINGLE} under ${PREFIX_S}" "${LOCAL_DIST}" deploy "${SINGLE}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_S}" --yes
@@ -330,6 +362,26 @@ if [ "${CMD_RC}" -ne 0 ] || refused; then
   exit 1
 fi
 queue_exists "${QUEUE_URL_S}" || { echo "FAIL: ${SINGLE}'s queue is gone after the redeploy" >&2; exit 1; }
+# An ordinary redeploy reads no registry and claims nothing.
+if [ -n "$(marker_prefix "${MARKER_S}")" ]; then
+  echo "FAIL: an ordinary redeploy wrote the registry marker (it must make no registry request) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+
+# The first GUARDED command of a record that predates the registry (a plan
+# that deletes the LogGroup) pays the prefix scan once and claims the marker.
+export CDKD_4705_DROP_LOGGROUP=1
+run_logged "(a)2b this build redeploys ${SINGLE} without the LogGroup (a destructive plan)" "${LOCAL_DIST}" deploy "${SINGLE}" \
+  --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_S}" --yes
+unset CDKD_4705_DROP_LOGGROUP
+if [ "${CMD_RC}" -ne 0 ] || refused; then
+  echo "FAIL: this build refused or failed a destructive redeploy of a single-prefix stack (rc=${CMD_RC}; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if [ "$(marker_prefix "${MARKER_S}")" != "${PREFIX_S}" ]; then
+  echo "FAIL: this build's first guarded command did not claim the registry marker for ${PREFIX_S} (names '$(marker_prefix "${MARKER_S}")') (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
 
 run_logged "(a)3 this build destroys ${SINGLE} under ${PREFIX_S}" "${LOCAL_DIST}" destroy "${SINGLE}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_S}" --force
@@ -339,7 +391,9 @@ if [ "${CMD_RC}" -ne 0 ] || refused; then
 fi
 assert_gone "state ${STATE_KEY_S} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_S}"
-echo "    OK: (a) the previous release's single-prefix stack redeploys and destroys under this build"
+assert_gone "the registry marker ${MARKER_S} still exists after the destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_S}"
+echo "    OK: (a) the previous release's single-prefix stack redeploys, claims its marker on its first guarded command, and destroys under this build"
 
 # --- (b) a pre-fix pair --------------------------------------------------------
 DEPLOYED_A=1
@@ -427,7 +481,13 @@ if [ "${LG_STILL}" != "1" ]; then
   exit 1
 fi
 queue_exists "${QUEUE_URL_A}" || { echo "FAIL: A's queue is gone after a refused destructive redeploy (go-to-k/cdkd#4705)" >&2; exit 1; }
-echo "    OK: (b)8b the destructive redeploy was refused; the LogGroup and the queue survive"
+# Every refusal above came from the one-time scan finding the pair: none of
+# them claimed the marker.
+if [ -n "$(marker_prefix "${MARKER_P}")" ]; then
+  echo "FAIL: a refused command claimed the registry marker over a known pair (names '$(marker_prefix "${MARKER_P}")') (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+echo "    OK: (b)8b the destructive redeploy was refused; the LogGroup and the queue survive; no marker was claimed over the pair"
 
 run_logged "(b)9a this build orphans B's record" "${LOCAL_DIST}" state orphan "${PAIR}" --stack-region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --force
@@ -448,6 +508,8 @@ if [ "${LG_LEFT}" != "0" ]; then
   exit 1
 fi
 queue_exists "${QUEUE_URL_A}" && { echo "WARN: A's queue still lists after the destroy (SQS deletion can take 60s)" >&2; } || true
+assert_gone "the registry marker ${MARKER_P} still exists after the destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_P}"
 
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM

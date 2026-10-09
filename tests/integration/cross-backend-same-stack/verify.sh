@@ -11,33 +11,49 @@
 #   2. Deploy deployment B of the SAME stack under PREFIX_B with retention 3,
 #      rollback ON (the default). Every name is cdkd-generated from the stack
 #      name and logical id, so B asks AWS for A's names: the Role collides, the
-#      Queue and the LogGroup may be handed back.
+#      Queue and the LogGroup may be handed back. The stack registry marker A's
+#      first deploy claimed (`_cdkd-registry/<region>/<stack>.json`) names
+#      PREFIX_A, so B is refused before any create.
+#   2b. CROSS-BUCKET: deploy B of the SAME stack into a per-run SECOND bucket.
+#      No marker or record of A is there, so B's creates run, and each create
+#      that would adopt A's queue or log group by its generated name is refused
+#      before it is sent (nothing of B's names them): the log group keeps A's
+#      retention and A's queue survives. The second bucket is deleted exactly.
 #   3. OBSERVE (unique `OBSERVE:` lines): B's exit code, which resources failed
 #      with which awsErrorCode and what B's rollback did (B's deployments/*.jsonl),
 #      whether A's queue still exists, the log group's retention, and what B's
 #      state and state.orphans hold. Then ASSERT: B is refused with the
 #      cross-prefix refusal before any create, A's queue still exists, the log
 #      group keeps A's retention, and B has no state record or journal.
-#   4. Seed a pre-fix pair (A's state.json copied to B's key): `cdkd destroy`
-#      under PREFIX_A must be refused and leave A's queue, and `cdkd rollback`
-#      under PREFIX_A (over a seeded, empty journal) must be refused and keep
-#      the journal. Remove the journal seed.
+#   4. Seed a pre-fix pair (A's state.json copied to B's key) that PREDATES the
+#      registry (A's marker is removed first): `cdkd destroy` under PREFIX_A
+#      must be refused by the one-time scan and leave A's queue, and
+#      `cdkd rollback` under PREFIX_A (over a seeded, empty journal) must be
+#      refused and keep the journal. Remove the journal seed.
 #   5. Negative control: redeploy A under PREFIX_A while the seeded B record
 #      still exists; it must succeed. Then remove that seed.
 #   5b. A successful deploy under PREFIX_B (a minimal template) whose journal
 #      holds a proven failed-CREATE orphan naming A's KMS key: the settle must
 #      KEEP the key (warn, exit 2), since PREFIX_A's record may hold it.
 #   5c. A pre-fix pair whose redeploy under PREFIX_B (an empty record, so not a
-#      first deploy, and a plan that only creates) ADDS the Queue -- handed A's
-#      queue -- and a resource that fails after it: the AUTOMATIC rollback must
-#      KEEP A's queue, warn naming PREFIX_A, and the deploy exits non-zero.
-#   6. Destroy A, delete the retained log group.
-#   7. Seed an EMPTY record plus a failed first deploy's journal under PREFIX_B:
-#      a fresh deploy and a destroy under PREFIX_A must succeed, and each
-#      must print the note naming PREFIX_B.
+#      first deploy, and a plan that only creates) ADDS the Queue A holds: the
+#      create is refused before it is sent, so nothing is adopted and A's queue
+#      survives.
+#   6. Destroy A: its RETAIN log group is kept and recorded as kept under
+#      PREFIX_A (`retained.json`).
+#   6b. RETAIN-REDEPLOY: redeploy A under PREFIX_A: the log group create takes
+#      the kept log group back (licensed by that record), and the record then
+#      forgets it. Destroy A again and delete the retained log group.
+#   7. Seed an EMPTY record, a failed first deploy's journal and a registry
+#      marker naming PREFIX_B (what a failed first deploy there leaves): a fresh
+#      deploy under PREFIX_A must re-claim the stale marker, print the note
+#      naming PREFIX_B, and succeed; its destroy too.
 #
 # Each run uses its OWN two state prefixes (unique per run): nothing under
-# `cdkd/` is read or written, and the trap deletes only these two prefixes.
+# `cdkd/` is read or written, and the trap deletes only these two prefixes, the
+# registry marker when it names one of them, and the second bucket it made.
+# The registry marker is per stack name, not per prefix: run this fixture with
+# its own STATE_BUCKET (`/run-integ` does), never two runs in one bucket.
 #
 # Run via: /run-integ cross-backend-same-stack
 #         or: bash tests/integration/cross-backend-same-stack/verify.sh
@@ -98,8 +114,10 @@ DESTROY_REFUSAL_NEEDLE="is also recorded under another state prefix of bucket"
 ROLLBACK_REFUSAL_NEEDLE="Refusing to roll back stack"
 STALE_NOTICE_NEEDLE="that owns no resource"
 SETTLE_KEEP_NEEDLE="also records this stack under another state prefix"
-# Copied from `keptForAnotherHolder` in src/deployment/rollback-executor/messages.ts.
-AUTO_ROLLBACK_KEEP_NEEDLE="Rollback: Keeping created resource"
+# Copied from `refuseUnlicensedGeneratedName` in src/deployment/deploy-engine/create.ts.
+ADOPT_REFUSAL_NEEDLE="nothing this stack records names that resource"
+# The stack registry marker, at the bucket root (src/state/s3-state-backend.ts).
+MARKER_KEY="_cdkd-registry/${REGION}/${STACK}.json"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET must be set" >&2
@@ -128,6 +146,8 @@ DEPLOYED_B=""
 EMPTY_RECORD=""
 # Set while Phase 4's seeded journal under PREFIX_A exists.
 SEEDED_JOURNAL_A=""
+# Phase 2b's per-run second bucket, set only once THIS run created it.
+BUCKET_X=""
 
 # A KMS key's state (Enabled, PendingDeletion, ...).
 key_state() { # usage: key_state <key id>
@@ -248,6 +268,16 @@ rescan() {
   done
 }
 
+# The prefix the registry marker names, or "" when there is none.
+marker_prefix() {
+  local body
+  body="$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null)" || {
+    echo ""
+    return 0
+  }
+  printf '%s' "${body}" | jq -r '.prefix // ""'
+}
+
 cleanup() {
   local rc=$?
   set +eu
@@ -288,6 +318,14 @@ cleanup() {
   if [ "${DEPLOYED_A:-}" = "1" ]; then
     sweep_named
   fi
+  # The registry marker, only when it names one of THIS run's prefixes.
+  case "$(marker_prefix)" in
+    "${PREFIX_A}" | "${PREFIX_B}") aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 ;;
+  esac
+  # Phase 2b's second bucket, only by the per-run name THIS run created.
+  case "${BUCKET_X:-}" in
+    cdkd-4705x-[0-9]*-[0-9]*) aws s3 rb "s3://${BUCKET_X}" --force >/dev/null 2>&1 ;;
+  esac
   sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
   sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
   rescan
@@ -301,9 +339,9 @@ echo "==> Installing fixture deps"
 [ -d node_modules ] || vp install --prefer-offline
 
 echo "==> Pre-flight"
-for key in "${STATE_KEY_A}" "${STATE_KEY_B}" "${JOURNAL_KEY_A}" "${JOURNAL_KEY_B}"; do
+for key in "${STATE_KEY_A}" "${STATE_KEY_B}" "${JOURNAL_KEY_A}" "${JOURNAL_KEY_B}" "${MARKER_KEY}"; do
   if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"; then
-    echo "FAIL: s3://${STATE_BUCKET}/${key} already exists -- clean up a previous run first" >&2
+    echo "FAIL: s3://${STATE_BUCKET}/${key} already exists -- clean up a previous run first (or run with this fixture's own STATE_BUCKET)" >&2
     exit 1
   fi
 done
@@ -360,7 +398,13 @@ if [ "${RETENTION_AFTER_A}" != "${RETENTION_A}" ]; then
   echo "FAIL: the log group's retention is '${RETENTION_AFTER_A}' after A's deploy (expected ${RETENTION_A})" >&2
   exit 1
 fi
-echo "    OK: queue ${QUEUE_URL_A}, log group ${LOG_GROUP_NAME} (retention ${RETENTION_A}), role ${ROLE_NAME_A}"
+MARKER_AFTER_A="$(marker_prefix)"
+echo "OBSERVE: registry-marker-after-a=${MARKER_AFTER_A:-<none>}"
+if [ "${MARKER_AFTER_A}" != "${PREFIX_A}" ]; then
+  echo "FAIL: A's first deploy did not claim the stack registry marker for ${PREFIX_A} (s3://${STATE_BUCKET}/${MARKER_KEY} names '${MARKER_AFTER_A}') (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+echo "    OK: queue ${QUEUE_URL_A}, log group ${LOG_GROUP_NAME} (retention ${RETENTION_A}), role ${ROLE_NAME_A}; the registry marker names ${PREFIX_A}"
 
 echo ""
 echo "==> Phase 2: deploy B of the SAME stack under ${PREFIX_B} (retention ${RETENTION_B}, rollback on)"
@@ -440,6 +484,69 @@ fi
 echo "    OK: B was refused before any create; A's queue exists and its log group keeps retention ${RETENTION_A}"
 
 echo ""
+echo "==> Phase 2b: CROSS-BUCKET -- deploy B of the SAME stack into a second, per-run bucket"
+# Nothing in the second bucket knows A: no marker, no record. B's creates run,
+# and each that would adopt A's queue or log group by its generated name must
+# be refused BEFORE it is sent (go-to-k/cdkd#4705 C): the log group keeps A's
+# retention and A's queue survives. The Role collides natively; B's KMS key
+# is B's own, and its rollback deletes it.
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+case "${ACCOUNT_ID}" in
+  [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+  *) echo "FAIL: STS did not report a 12-digit account (got '${ACCOUNT_ID}')" >&2; exit 1 ;;
+esac
+BUCKET_X_NAME="cdkd-4705x-${ACCOUNT_ID}-$(date +%s)"
+if [ "${REGION}" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "${BUCKET_X_NAME}" --region "${REGION}" >/dev/null
+else
+  aws s3api create-bucket --bucket "${BUCKET_X_NAME}" --region "${REGION}" \
+    --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
+fi
+BUCKET_X="${BUCKET_X_NAME}"
+set +e
+CDKD_4705_RETENTION_DAYS="${RETENTION_B}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${BUCKET_X}" --state-prefix "${PREFIX_B}" --yes >"${RUN_LOG}" 2>&1
+XB_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+XB_STATE="$( (aws s3 cp "s3://${BUCKET_X}/${STATE_KEY_B}" - 2>/dev/null || true) | jq -c '[(.resources // {})[] | .physicalId]' 2>/dev/null || true)"
+RETENTION_AFTER_XB="$(log_group_retention)"
+echo "OBSERVE: cross-bucket-deploy-rc=${XB_RC} b-records=${XB_STATE:-<none>} log-group-retention=${RETENTION_AFTER_XB}"
+# B's own KMS key, if its record or events name one, for the trap.
+for k in $( (aws s3 ls "s3://${BUCKET_X}/${PREFIX_B}/" --recursive 2>/dev/null || true) | awk '{print $4}' | grep 'deployments/.*\.jsonl$' || true); do
+  for id in $( (aws s3 cp "s3://${BUCKET_X}/${k}" - 2>/dev/null || true) | jq -r 'select(.eventType == "RESOURCE_SUCCEEDED" and .resourceType == "AWS::KMS::Key") | .physicalId // empty' 2>/dev/null || true); do
+    KEY_IDS="${KEY_IDS} ${id}"
+  done
+done
+if [ "${XB_RC}" -eq 0 ]; then
+  echo "FAIL: deployment B of ${STACK} in a second bucket SUCCEEDED; its adopting creates must be refused (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if ! grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: deployment B in a second bucket was not refused at an adopting create ('${ADOPT_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+case "${XB_STATE}" in
+  *"${QUEUE_URL_A}"* | *"${LOG_GROUP_NAME}"*)
+    echo "FAIL: B's record in the second bucket names A's queue or log group: it adopted it (${XB_STATE}) (go-to-k/cdkd#4705)" >&2
+    exit 1
+    ;;
+esac
+if [ "${RETENTION_AFTER_XB}" != "${RETENTION_A}" ]; then
+  echo "FAIL: A's log group ${LOG_GROUP_NAME} has retention '${RETENTION_AFTER_XB}' after B's cross-bucket deploy (expected A's ${RETENTION_A}): B's create adopted and rewrote it (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
+  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's cross-bucket deploy (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+aws s3 rb "s3://${BUCKET_X}" --force >/dev/null
+assert_gone "the second bucket ${BUCKET_X} still exists after its removal" \
+  aws s3api head-bucket --bucket "${BUCKET_X}"
+BUCKET_X=""
+echo "    OK: B in a second bucket was refused at its adopting creates; A's queue and log group retention are untouched; the bucket is deleted"
+
+echo ""
 echo "==> Phase 4: a pre-fix pair (A's record copied to ${PREFIX_B}) makes cdkd destroy under ${PREFIX_A} refuse"
 # Phase 7's empty record: A's record with nothing left in it.
 EMPTY_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" - | jq -c '.resources = {} | .outputs = {} | del(.orphans)')"
@@ -447,6 +554,9 @@ case "${EMPTY_RECORD}" in
   '{'*'"resources":{}'*) ;;
   *) echo "FAIL: could not build an empty record from A's (got '${EMPTY_RECORD}')" >&2; exit 1 ;;
 esac
+# A pair that PREDATES the registry: remove the marker A's first deploy claimed
+# (an older cdkd wrote none), so the destroy falls back to its one-time scan.
+aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 set +e
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
@@ -472,7 +582,12 @@ if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KE
   echo "FAIL: A's state record is gone after a refused destroy (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-echo "    OK: the destroy was refused; A's queue and record are intact"
+# The scan found the pair, so nothing claimed the marker.
+if [ -n "$(marker_prefix)" ]; then
+  echo "FAIL: the refused destroy claimed the registry marker over a known pair (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+echo "    OK: the destroy was refused; A's queue and record are intact; no marker was claimed"
 
 # The same pair makes `cdkd rollback` under PREFIX_A refuse. Its journal is a
 # seeded, EMPTY segment, so a rollback that wrongly ran would replay nothing.
@@ -567,53 +682,40 @@ assert_gone "${JOURNAL_KEY_B} still exists after the Phase 5b cleanup" \
 echo "    OK: the settle kept A's key (exit 2, warned); B's parameter and record are removed"
 
 echo ""
-echo "==> Phase 5c: the AUTOMATIC rollback of a failed deploy under ${PREFIX_B} keeps the queue ${PREFIX_A}'s record holds"
+echo "==> Phase 5c: a deploy under ${PREFIX_B} whose plan would CREATE the queue ${PREFIX_A} holds is refused before that create"
 # B's record is empty, so B's deploy is not a first deploy, and its plan only
-# CREATEs (the Queue, then FailLater): neither check before the deploy runs.
-# The Queue's CreateQueue hands back A's queue; FailLater fails; the automatic
-# rollback would delete the "created" queue unless the cross-prefix consult
-# keeps it.
+# CREATEs (the Queue, then FailLater). The Queue's CreateQueue would hand back
+# A's queue (identical attributes); nothing of B's names that queue, so the
+# create is refused before it is sent (go-to-k/cdkd#4705 C) and nothing is
+# adopted.
 printf '%s' "${EMPTY_RECORD}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 set +e
 CDKD_4705_B_AUTOROLLBACK=1 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_B}" --yes >"${RUN_LOG}" 2>&1
-AUTO_RC=$?
+REFUSED_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
 B_QUEUE="$( (state_physical_id "${STATE_KEY_B}" 'AWS::SQS::Queue') || true)"
 MINIMAL_PARAM_B="$( (state_physical_id "${STATE_KEY_B}" 'AWS::SSM::Parameter') || true)"
-echo "OBSERVE: auto-rollback-deploy-rc=${AUTO_RC} b-queue=${B_QUEUE:-<none>} fail-later-param=${MINIMAL_PARAM_B:-<none>}"
-if [ "${AUTO_RC}" -eq 0 ]; then
-  echo "FAIL: the deploy under ${PREFIX_B} with a failing FailLater exited 0 (output above)" >&2
+# Rollback-independent evidence that no create was sent for the Queue: B's
+# events record no RESOURCE_SUCCEEDED for it.
+QUEUE_SUCCEEDED="$( (events_b || true) | jq -r \
+  'select(.eventType == "RESOURCE_SUCCEEDED" and .logicalId == "Queue4A7E3555") | .physicalId' 2>/dev/null || true)"
+echo "OBSERVE: refused-deploy-rc=${REFUSED_RC} b-queue=${B_QUEUE:-<none>} queue-succeeded=${QUEUE_SUCCEEDED:-<none>} fail-later-param=${MINIMAL_PARAM_B:-<none>}"
+if [ "${REFUSED_RC}" -eq 0 ]; then
+  echo "FAIL: the deploy under ${PREFIX_B} that creates A's queue exited 0 (output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-# The PREMISE, from evidence the rollback does not write: B's create was
-# handed A's queue. B's events record the Queue's RESOURCE_SUCCEEDED with A's
-# URL, or B's journal its completed CREATE. Without it nothing below is tested.
-PREMISE_EVENT="$( (events_b || true) | jq -r --arg q "${QUEUE_URL_A}" \
-  'select(.eventType == "RESOURCE_SUCCEEDED" and .logicalId == "Queue4A7E3555" and .physicalId == $q) | .physicalId' 2>/dev/null || true)"
-PREMISE_JOURNAL="$( (aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" - || true) | jq -r --arg q "${QUEUE_URL_A}" \
-  '[(.segments // [])[] | (.operations // [])[] | select(.logicalId == "Queue4A7E3555" and .physicalId == $q)] | length' 2>/dev/null || true)"
-echo "OBSERVE: premise-event=${PREMISE_EVENT:-<none>} premise-journal-ops=${PREMISE_JOURNAL:-<none>}"
-if [ -z "${PREMISE_EVENT}" ] && { [ -z "${PREMISE_JOURNAL}" ] || [ "${PREMISE_JOURNAL}" = "0" ]; }; then
-  echo "FAIL: premise not met: neither B's events nor B's journal show its Queue CREATE handed A's queue ${QUEUE_URL_A}, so the automatic rollback's keep is untested (output above)" >&2
+if ! grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}" || ! grep -qF "Queue4A7E3555" "${RUN_LOG}"; then
+  echo "FAIL: the Queue create under ${PREFIX_B} was not refused as adopting A's queue ('${ADOPT_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-# The KEEP. An SQS read can still answer for up to 60s after DeleteQueue, so
-# the queue's survival is not judged by that probe alone: the rollback's own
-# keep line naming ${PREFIX_A}, and B's record still naming the queue (a
-# deleted CREATE drops it), must agree with it.
-if ! grep -qF "${AUTO_ROLLBACK_KEEP_NEEDLE}" "${RUN_LOG}" || ! grep -qF "${SETTLE_KEEP_NEEDLE}" "${RUN_LOG}" ||
-  ! grep -qF "(${PREFIX_A})" "${RUN_LOG}"; then
-  echo "FAIL: the automatic rollback did not say it kept the queue for ${PREFIX_A}'s record ('${AUTO_ROLLBACK_KEEP_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
-  exit 1
-fi
-if [ "${B_QUEUE}" != "${QUEUE_URL_A}" ]; then
-  echo "FAIL: B's record names queue '${B_QUEUE}' after the rollback, not the kept ${QUEUE_URL_A} (go-to-k/cdkd#4705)" >&2
+if [ -n "${QUEUE_SUCCEEDED}" ] || [ -n "${B_QUEUE}" ]; then
+  echo "FAIL: B's Queue create was sent and recorded (${QUEUE_SUCCEEDED:-} ${B_QUEUE:-}): it adopted A's queue (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
 if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
-  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's automatic rollback (go-to-k/cdkd#4705)" >&2
+  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's refused deploy (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
 case "${MINIMAL_PARAM_B}" in
@@ -622,21 +724,16 @@ case "${MINIMAL_PARAM_B}" in
   *) echo "FAIL: B's record names an unexpected SSM parameter '${MINIMAL_PARAM_B}'" >&2; exit 1 ;;
 esac
 MINIMAL_PARAM_B=""
-# Only B's record and journal: the queue they name is A's.
 node "${LOCAL_DIST}" state orphan "${STACK}" --stack-region "${REGION}" --state-bucket "${STATE_BUCKET:-}" \
   --state-prefix "${PREFIX_B}" --force
 assert_gone "${STATE_KEY_B} still exists after the Phase 5c cleanup" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
 assert_gone "${JOURNAL_KEY_B} still exists after the Phase 5c cleanup" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}"
-if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
-  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after the Phase 5c cleanup" >&2
-  exit 1
-fi
-echo "    OK: the automatic rollback kept A's queue (warned, rc ${AUTO_RC}); B's record and journal are removed"
+echo "    OK: B's Queue create was refused before it was sent (rc ${REFUSED_RC}); nothing adopted; B's record and journal are removed"
 
 echo ""
-echo "==> Phase 6: destroy A; delete the retained log group"
+echo "==> Phase 6: destroy A: its RETAIN log group is kept, and recorded as kept under ${PREFIX_A}"
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
 assert_gone "state ${STATE_KEY_A} still exists after the destroy" \
@@ -645,17 +742,70 @@ assert_gone "state ${STATE_KEY_B} exists at the end of the run" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
 assert_gone "role ${ROLE_NAME_A} still exists after the destroy" \
   aws iam get-role --role-name "${ROLE_NAME_A}"
+# The destroy deleted the record FIRST, then released the marker naming it.
+if [ -n "$(marker_prefix)" ]; then
+  echo "FAIL: the registry marker survived A's destroy (names '$(marker_prefix)') (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+RETAINED_KEY_A="${PREFIX_A}/${STACK}/${REGION}/retained.json"
+KEPT="$( (aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_A}" - 2>/dev/null || true) | jq -r '[.resources[]? | .physicalId] | join(",")' 2>/dev/null || true)"
+echo "OBSERVE: kept-after-destroy=${KEPT:-<none>}"
+if [ "${KEPT}" != "${LOG_GROUP_NAME}" ]; then
+  echo "FAIL: A's destroy did not record its kept log group ${LOG_GROUP_NAME} as kept (got '${KEPT}') (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+echo "    OK: both records are gone, the marker is released, and the kept log group is recorded under ${PREFIX_A}"
+
+echo ""
+echo "==> Phase 6b: RETAIN-REDEPLOY -- redeploy A under ${PREFIX_A}: its create takes the kept log group back"
+set +e
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes >"${RUN_LOG}" 2>&1
+READOPT_RC=$?
+set -e
+sed 's/^/  /' "${RUN_LOG}"
+KEY_ID_6B="$( (state_physical_id "${STATE_KEY_A}" 'AWS::KMS::Key') || true)"
+[ -z "${KEY_ID_6B}" ] || KEY_IDS="${KEY_IDS} ${KEY_ID_6B}"
+READOPTED="$( (state_physical_id "${STATE_KEY_A}" 'AWS::Logs::LogGroup') || true)"
+KEPT_AFTER="$( (aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_A}" - 2>/dev/null || true) | jq -r '[.resources[]? | .physicalId] | join(",")' 2>/dev/null || true)"
+echo "OBSERVE: readopt-rc=${READOPT_RC} record-log-group=${READOPTED:-<none>} kept-after-redeploy=${KEPT_AFTER:-<none>} marker=$(marker_prefix)"
+if [ "${READOPT_RC}" -ne 0 ] || grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: redeploying A under ${PREFIX_A} did not take its own kept log group back (rc=${READOPT_RC}; output above) (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+if [ "${READOPTED}" != "${LOG_GROUP_NAME}" ]; then
+  echo "FAIL: A's record names log group '${READOPTED}', not the kept ${LOG_GROUP_NAME} (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+case "${KEPT_AFTER}" in
+  *"${LOG_GROUP_NAME}"*)
+    echo "FAIL: the kept-resource record still lists ${LOG_GROUP_NAME} after the redeploy took it back (go-to-k/cdkd#4705)" >&2
+    exit 1
+    ;;
+esac
+if [ "$(marker_prefix)" != "${PREFIX_A}" ]; then
+  echo "FAIL: A's redeploy did not claim the registry marker again (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
+CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
+assert_gone "state ${STATE_KEY_A} still exists after the Phase 6b destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
 aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"
-echo "    OK: both records are gone and the retained log group is deleted"
+aws s3 rm "s3://${STATE_BUCKET}/${RETAINED_KEY_A}" >/dev/null
+echo "    OK: the redeploy took the kept log group back and the record forgot it; destroyed again, the log group is deleted"
 
 echo ""
 echo "==> Phase 7: an EMPTY leftover record under ${PREFIX_B} (a failed first deploy's) does not block ${PREFIX_A}"
-# The shape a failed FIRST deploy leaves: no resources, and a journal whose only
+# The shape a failed FIRST deploy leaves: no resources, a journal whose only
 # segment is an auto-rollback-clean initial deploy with no completed operation
-# (observed in an integ bucket, written by cdkd 0.294.2).
+# (observed in an integ bucket, written by cdkd 0.294.2), and the registry
+# marker that first deploy claimed. Nothing there can own a resource and no
+# lock is held, so the marker is stale: A's first deploy re-claims it.
 printf '%s' "${EMPTY_RECORD}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 printf '%s' "{\"journalVersion\":1,\"stackName\":\"${STACK}\",\"region\":\"${REGION}\",\"segments\":[{\"timestamp\":1,\"reason\":\"auto-rollback-clean\",\"initialDeploy\":true,\"operations\":[],\"failedOperations\":[{\"logicalId\":\"Role\",\"changeType\":\"CREATE\",\"resourceType\":\"AWS::IAM::Role\"}]}]}" |
   aws s3 cp - "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" >/dev/null
+printf '%s' "{\"prefix\":\"${PREFIX_B}\"}" | aws s3 cp - "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null
 set +e
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes >"${RUN_LOG}" 2>&1
@@ -674,6 +824,10 @@ if ! grep -qF "${STALE_NOTICE_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_B})
   echo "FAIL: the deploy did not name the empty leftover record under ${PREFIX_B} ('${STALE_NOTICE_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
+if [ "$(marker_prefix)" != "${PREFIX_A}" ]; then
+  echo "FAIL: A's deploy did not re-claim the stale registry marker from ${PREFIX_B} (names '$(marker_prefix)') (go-to-k/cdkd#4705)" >&2
+  exit 1
+fi
 set +e
 CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force >"${RUN_LOG}" 2>&1
@@ -684,24 +838,23 @@ if [ "${STALE_DESTROY_RC}" -ne 0 ] || grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RU
   echo "FAIL: the destroy under ${PREFIX_A} was refused or failed beside an EMPTY leftover record under ${PREFIX_B} (rc=${STALE_DESTROY_RC}; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-if ! grep -qF "${STALE_NOTICE_NEEDLE}" "${RUN_LOG}" || ! grep -qF "(${PREFIX_B})" "${RUN_LOG}"; then
-  echo "FAIL: the destroy did not name the empty leftover record under ${PREFIX_B} ('${STALE_NOTICE_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
-  exit 1
-fi
 assert_gone "state ${STATE_KEY_A} still exists after the Phase 7 destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
 aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"
+aws s3 rm "s3://${STATE_BUCKET}/${PREFIX_A}/${STACK}/${REGION}/retained.json" >/dev/null
 aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" >/dev/null
 assert_gone "the seeded empty record ${STATE_KEY_B} still exists after its removal" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_B}"
 assert_gone "the seeded journal ${JOURNAL_KEY_B} still exists after its removal" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY_B}"
-echo "    OK: the empty leftover blocked nothing and was named; deploy and destroy under ${PREFIX_A} succeeded"
+assert_gone "the registry marker still exists after the Phase 7 destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
+echo "    OK: the empty leftover blocked nothing and was named; the stale marker was re-claimed; deploy and destroy under ${PREFIX_A} succeeded"
 
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 rescan
-echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, a destroy and a rollback of a paired record were refused, a failed deploy's automatic rollback kept the queue it was handed, an empty leftover record blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"
+echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, one in another bucket was refused at its adopting creates, a destroy and a rollback of a paired record were refused, a create of A's queue under B was refused before it was sent, a redeploy took its own kept log group back, an empty leftover and a stale marker blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"

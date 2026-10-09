@@ -263,16 +263,16 @@ async function claimRegistryMarkerAfterImport(
     const marker = await backend.getRegistryMarker(stackName, region);
     if (marker === null || marker.prefix === backend.prefix) return;
     logger.warn(
-      `The state bucket's stack registry assigns ${displayStackName(stackName)} ` +
-        `(${displaySafe(region, { asciiOnly: true })}) to another state prefix ` +
-        `(${displayIdent(marker.prefix)}). One stack name per account and region is supported: ` +
+      safeMsg`The state bucket's stack registry assigns ${displayStackName(stackName)} ` +
+        safeMsg`(${displaySafe(region, { asciiOnly: true })}) to another state prefix ` +
+        safeMsg`(${displayIdent(marker.prefix)}). One stack name per account and region is supported: ` +
         `drop one of the two records with 'cdkd state orphan' before deploying or destroying ` +
         `either.`
     );
   } catch (error) {
     logger.warn(
-      `Could not record ${displayStackName(stackName)} in the state bucket's stack registry ` +
-        `(${describeAwsFailure(error).summary}). Its next guarded command records it.`
+      safeMsg`Could not record ${displayStackName(stackName)} in the state bucket's stack registry ` +
+        safeMsg`(${describeAwsFailure(error).summary}). Its next guarded command records it.`
     );
   }
 }

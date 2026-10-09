@@ -1361,7 +1361,7 @@ export async function doDeployWithPrefetch(
         );
       } catch (error) {
         this.logger.debug(
-          `Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
+          safeMsg`Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
         );
       }
     }

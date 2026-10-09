@@ -593,8 +593,8 @@ async function recordRetainedForReadoption(
     ]);
   } catch (error) {
     logger.warn(
-      `Could not record the ${kept.length} kept resource(s) of ${displayStackName(stackName)} ` +
-        `a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +
+      safeMsg`Could not record the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
+        safeMsg`a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +
         `refuses to create them over the kept ones; adopt them with 'cdkd import' then.`
     );
   }
@@ -617,11 +617,11 @@ async function releaseRegistryMarkerAfterDestroy(
   if (ctx.crossPrefixCheck === undefined) return;
   try {
     const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region);
-    logger.debug(`Stack registry marker: ${released}`);
+    logger.debug(safeMsg`Stack registry marker: ${released}`);
   } catch (error) {
     logger.warn(
-      `Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
-        `(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
+      safeMsg`Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
         `records the stack, so a deploy under another prefix treats it as stale.`
     );
   }

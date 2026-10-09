@@ -2276,13 +2276,12 @@ async function releaseRegistryMarkerQuietly(
 ): Promise<void> {
   if (stackName.includes('~')) return;
   try {
-    logger.debug(
-      `Stack registry marker: ${await backend.releaseRegistryMarker(stackName, region)}`
-    );
+    const released = await backend.releaseRegistryMarker(stackName, region);
+    logger.debug(safeMsg`Stack registry marker: ${released}`);
   } catch (error) {
     logger.warn(
-      `Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
-        `(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
+      safeMsg`Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
         `records the stack, so a deploy under another prefix treats it as stale.`
     );
   }
@@ -2303,8 +2302,8 @@ async function clearRetainedQuietly(
     await backend.saveRetainedResources(stackName, region, []);
   } catch (error) {
     logger.warn(
-      `Could not clear the kept-resource record of ${displayStackName(stackName)} ` +
-        `(${describeAwsFailure(error).summary}).`
+      safeMsg`Could not clear the kept-resource record of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}).`
     );
   }
 }

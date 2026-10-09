@@ -5,7 +5,7 @@ import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
 import { acceptedCreateOnlyDropsField } from './record-shape.js';
-import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
+import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
@@ -358,8 +358,8 @@ async function refuseUnlicensedGeneratedName(
       return;
     case 'unchecked':
       this.logger.warn(
-        `${subject} is created with ${named} without checking whether another resource already ` +
-          `holds it: the lookup was refused (${describeAwsFailure(verdict.error).summary}). ` +
+        safeMsg`${subject} is created with ${named} without checking whether another resource already ` +
+          safeMsg`holds it: the lookup was refused (${describeAwsFailure(verdict.error).summary}). ` +
           `Grant this identity the type's Describe / List permission to have cdkd refuse ` +
           `taking over another deployment's resource.`
       );
