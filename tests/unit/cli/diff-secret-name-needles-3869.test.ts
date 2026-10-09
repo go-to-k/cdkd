@@ -10,11 +10,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const debugLines: string[] = [];
-vi.mock('../../../src/utils/logger.js', () => {
+const debugLines = vi.hoisted(() => [] as string[]);
+// Each line through the sink masker `ConsoleLogger` applies, so a line masked
+// only by a bag bound around it (`withPrintingSecrets`) reads as printed.
+vi.mock('../../../src/utils/logger.js', async () => {
+  const { currentLogLineMasker: sink } = await import('../../../src/utils/log-line-masker.js');
   const fns = {
     setLevel: vi.fn(),
-    debug: (...args: unknown[]) => void debugLines.push(args.map(String).join(' ')),
+    debug: (...args: unknown[]) => {
+      const line = args.map(String).join(' ');
+      debugLines.push(sink()?.(line) ?? line);
+    },
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -40,7 +46,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasMaskableValues,
+  maskSecretsInText,
+  recordLogOnlyValue,
+} from '../../../src/deployment/secret-redaction.js';
 import {
   maskedInputFingerprint,
   maskedPropertyFingerprint,
@@ -361,63 +371,126 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     });
   });
 
-  it("masks a parent row's Ref passed to a nested child, on the child-parameter resolution too", async () => {
-    // The parent row's `Parameters` resolve twice: in the parent's own diff,
-    // and again to bind the child's inputs (`resolveChildStackParameters`).
-    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
-    try {
-      const childPath = join(dir, 'child.json');
-      writeFileSync(
-        childPath,
-        JSON.stringify({ Parameters: { QueueUrl: { Type: 'String' } }, Resources: {} })
-      );
-      const parent = state('{{resolve:secretsmanager:sdin:SecretString:queue::}}');
-      parent.resources['Child'] = {
-        physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
-        resourceType: 'AWS::CloudFormation::Stack',
-        properties: { Parameters: { QueueUrl: URL } },
-        attributes: {},
-        dependencies: ['Queue'],
-      };
-      const tpl = template('{{resolve:secretsmanager:sdin:SecretString:queue::}}');
-      tpl.Resources['Child'] = {
-        Type: 'AWS::CloudFormation::Stack',
-        Metadata: { 'aws:asset:path': 'child.json' },
-        Properties: { Parameters: { QueueUrl: { Ref: 'Queue' } } },
-      };
-      const child: StackState = {
-        stackName: 'S~Child',
-        region: 'us-east-1',
-        version: 9,
-        resources: {},
-        outputs: {},
-        lastModified: 0,
-      };
-      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
-      debugLines.length = 0;
-      await buildDiffTree({
-        stackName: 'S',
-        displayName: 'S',
-        region: 'us-east-1',
-        template: tpl,
-        nestedTemplates: { Child: childPath },
-        recursive: true,
-        stateBackend: {
-          getState: async (name: string) =>
-            states[name] ? { state: states[name], etag: 'e' } : null,
-        } as unknown as S3StateBackend,
-        diffCalculator: new DiffCalculator(),
-        isNestedChild: false,
-      });
-      const lines = debugLines.join('\n');
-      const refLines = lines.split('\n').filter((l) => l.includes('Ref to resource: Queue resolved to'));
-      // Premise: the parent pass AND the child-parameter pass both printed it.
-      expect(refLines.length).toBeGreaterThanOrEqual(2);
-      for (const line of refLines) expect(line).not.toContain('sdin-diff-secret-queue');
-      // The CHILD's own lines over the value it received still print it: the
-      // nested-child item, which stays open on go-to-k/cdkd#3869.
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+  it.each([
+    ['a secret-named target', '{{resolve:secretsmanager:sdin:SecretString:queue::}}', false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])(
+    "masks a parent row's Ref passed to a nested child, on the child's own walk too: %s",
+    async (_l, queueName, shown) => {
+      // The parent row's `Parameters` resolve twice: in the parent's own diff,
+      // and again to bind the child's inputs (`resolveChildStackParameters`).
+      // The child then binds the value as its OWN parameter and prints it on
+      // its parameter and `Ref` lines and in its rendered rows.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+            },
+          })
+        );
+        const parent = state(queueName);
+        parent.resources['Child'] = {
+          physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { Parameters: { QueueUrl: URL } },
+          attributes: {},
+          dependencies: ['Queue'],
+        };
+        const tpl = template(queueName);
+        tpl.Resources['Child'] = {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': 'child.json' },
+          Properties: { Parameters: { QueueUrl: { Ref: 'Queue' } } },
+        };
+        const child: StackState = {
+          stackName: 'S~Child',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            // A recorded value that differs, so the child's row renders the
+            // value it now reads.
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: 'https://sqs.us-east-1.amazonaws.com/123456789012/older' },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        };
+        const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+        debugLines.length = 0;
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const lines = debugLines.join('\n').split('\n');
+        const refLines = lines.filter((l) => l.includes('Ref to resource: Queue resolved to'));
+        // Premise: the parent pass AND the child-parameter pass both printed it.
+        expect(refLines.length).toBeGreaterThanOrEqual(2);
+        // The child's own lines over the value it received.
+        const childLines = lines.filter(
+          (l) =>
+            l.includes('Parameter QueueUrl: using user-provided value') ||
+            l.includes('Resolved Ref to parameter: QueueUrl')
+        );
+        // Premise: both child lines printed.
+        expect(childLines.some((l) => l.startsWith('Parameter QueueUrl'))).toBe(true);
+        expect(childLines.some((l) => l.includes('Resolved Ref to parameter'))).toBe(true);
+        for (const line of [...refLines, ...childLines]) {
+          expect(line.includes('sdin-diff-secret-queue')).toBe(shown);
+        }
+        // The child's rendered row.
+        const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+        const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+        // Premise: the row is rendered.
+        expect(row).toContain('"path":"Value"');
+        expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
+  );
+
+  it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
+    // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
+    // `inheritedSecrets`, whose needles its export-alias preview reads.
+    const inheritedDerivedNames = new Map<string, string>();
+    recordLogOnlyValue(inheritedDerivedNames, 'sdin-diff-secret-queue');
+    const tpl: CloudFormationTemplate = {
+      Parameters: { QueueUrl: { Type: 'String' } },
+      Resources: {
+        Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+      },
+    };
+    const result = await computeStackDiff(
+      { stackName: 'S~Child', region: 'us-east-1', version: 9, resources: {}, outputs: {}, lastModified: 0 },
+      tpl,
+      'us-east-1',
+      'S~Child',
+      backend,
+      new DiffCalculator(),
+      { parameters: { QueueUrl: URL }, inheritedDerivedNames }
+    );
+    // Premise: the row is masked with it.
+    expect(JSON.stringify(result.changes.get('Reader'))).not.toContain('sdin-diff-secret-queue');
+    expect(hasMaskableValues(result.printingSecrets)).toBe(false);
   });
 });

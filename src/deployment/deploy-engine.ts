@@ -52,6 +52,7 @@ import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { withRetry, type RetryLogger } from './retry.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
+import { maskEventTextWithBoundBags } from './secret-name-needles.js';
 import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -1392,6 +1393,11 @@ export class DeployEngine {
    * recorder. No-op when no recorder was supplied. `record()` is
    * contractually synchronous and never-throwing, but we still guard
    * with a try/catch so an event emission can NEVER abort a deploy.
+   *
+   * Masked by the printing bags bound where it is recorded too
+   * (go-to-k/cdkd#3869), as its log lines beside it are: a nested child's
+   * engine runs under its parent row's derived-name registry, whose needles
+   * (a parent-passed secret-named value) its own `printingSecretsFor` lacks.
    */
   /** @internal */
   recordEvent(
@@ -1399,7 +1405,7 @@ export class DeployEngine {
   ): void {
     if (!this.options.eventRecorder) return;
     try {
-      this.options.eventRecorder.record(this.maskSecretsInEvent(event));
+      this.options.eventRecorder.record(maskEventTextWithBoundBags(this.maskSecretsInEvent(event)));
     } catch {
       // best-effort: never let event recording surface into the deploy path
     }

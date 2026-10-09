@@ -290,3 +290,52 @@ describe('maskEventTextWithBoundBags (go-to-k/cdkd#3869)', () => {
     );
   });
 });
+
+describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869)', () => {
+  // A nested child's engine records its events under the parent row's
+  // derived-name registry (`withPrintingSecrets`); its own
+  // `printingSecretsFor` holds none of those needles, so `deployments/*.jsonl`
+  // kept a child AWS error quoting a parent-passed secret-named value.
+  const engineRecording = async (events: Array<Record<string, unknown>>): Promise<{
+    recordEvent: (event: Record<string, unknown>) => void;
+  }> => {
+    const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+    return new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { getProvider: vi.fn(), getProviderFor: vi.fn() } as never,
+      { dryRun: false, eventRecorder: { record: (e: Record<string, unknown>) => void events.push(e) } } as never,
+      'us-east-1'
+    ) as never;
+  };
+  const failed = () => ({
+    eventType: 'RESOURCE_FAILED',
+    logicalId: 'ChildParam',
+    physicalId: USER_ID,
+    reason: `create failed for ${USER_ID}`,
+    error: { message: `Value '${USER_ID}' at 'value' failed to satisfy constraint` },
+  });
+
+  it.each([
+    ['a bound needle masks the persisted text, never the physicalId field', true],
+    ['negative control: nothing bound leaves it as written', false],
+  ])('%s', async (_label, bind) => {
+    const events: Array<Record<string, unknown>> = [];
+    const engine = await engineRecording(events);
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, USER_ID);
+    if (bind) withPrintingSecrets(bag, () => engine.recordEvent(failed()));
+    else engine.recordEvent(failed());
+    expect(events).toHaveLength(1);
+    const [recorded] = events as Array<ReturnType<typeof failed>>;
+    expect(recorded!.physicalId).toBe(USER_ID);
+    if (bind) {
+      expect(recorded!.error.message).toBe("Value '***' at 'value' failed to satisfy constraint");
+      expect(recorded!.reason).toBe('create failed for ***');
+    } else {
+      expect(recorded).toEqual(failed());
+    }
+  });
+});
