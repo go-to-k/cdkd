@@ -524,7 +524,11 @@ describe('EMRInstanceFleetConfigProvider update', () => {
       BASE_PROPS,
       BASE_PROPS
     );
-    expect(result).toEqual({ physicalId: FLEET_ID, wasReplaced: false });
+    expect(result).toEqual({
+      physicalId: FLEET_ID,
+      wasReplaced: false,
+      attributes: { Id: FLEET_ID, InstanceFleetId: FLEET_ID },
+    });
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

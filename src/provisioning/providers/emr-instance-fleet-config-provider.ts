@@ -510,7 +510,11 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     if (!anyMutableChanged) {
       this.logger.debug(`No mutable diff for EMR instance fleet ${logicalId}, skipping update`);
       warnLeftInPlace();
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: { Id: physicalId, InstanceFleetId: physicalId },
+      };
     }
 
     const clusterId = properties['ClusterId'] as string | undefined;
