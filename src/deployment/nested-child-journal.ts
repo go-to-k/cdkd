@@ -58,6 +58,7 @@ import {
 } from '../types/rollback-journal.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  importableOutputKeys,
   importableOutputs,
   orphansAfterRollback,
 } from '../types/state.js';
@@ -115,12 +116,30 @@ export function nestedChildStackName(parentStackName: string, logicalId: string)
  * the reads of the deploy being undone. Copied, never aliased.
  */
 export function nestedPendingSnapshot(
-  state: Pick<StackState, 'outputs' | 'exportNames' | 'imports' | 'outputReads'>
+  state: Pick<StackState, 'outputs' | 'exportNames' | 'imports' | 'outputReads'>,
+  /**
+   * This deploy's export-name verdict over a name the previous record
+   * exported (go-to-k/cdkd#4043 Phase C): `true` refuses it. A refused name is left out of the
+   * snapshot, key and export alike, so a revert of the child cannot
+   * re-persist or republish an alias an older binary wrote that spells a
+   * `NoEcho` value. The cost, fail-closed: a refused name that is also an
+   * output NAME loses its value on that revert until the next deploy.
+   */
+  refusesExportName: (name: string) => boolean
 ): Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'> {
+  const outputs: Record<string, unknown> = {
+    ...(isPlainRecord(state.outputs) ? state.outputs : {}),
+  };
+  let exportNames = Array.isArray(state.exportNames) ? [...state.exportNames] : undefined;
+  const refused = new Set(importableOutputKeys(state).filter((name) => refusesExportName(name)));
+  if (refused.size > 0) {
+    for (const name of refused) Reflect.deleteProperty(outputs, name);
+    if (exportNames !== undefined) exportNames = exportNames.filter((name) => !refused.has(name));
+  }
   return {
     previousOutputs: {
-      outputs: { ...(isPlainRecord(state.outputs) ? state.outputs : {}) },
-      ...(Array.isArray(state.exportNames) && { exportNames: [...state.exportNames] }),
+      outputs,
+      ...(exportNames !== undefined && { exportNames }),
     },
     previousCrossStackReads: {
       ...(Array.isArray(state.imports) && { imports: [...state.imports] }),

@@ -159,6 +159,7 @@ export {
   maskAtCoordinates,
   replaceAtCoordinates,
   maskReadbackAtCoordinates,
+  readbackPathFor,
   maskedLeafCoordinatesOf,
   recordPassedNoEchoParameters,
   passedNoEchoParametersOf,

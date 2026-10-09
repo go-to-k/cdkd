@@ -1061,8 +1061,11 @@ count as a change for `--fail`.
   never written to state.
 - `cdkd drift` reports a masked position in its own group, without printing
   either side and without affecting the exit code. `cdkd drift --accept` /
-  `--revert`, `cdkd rollback` and `cdkd export` still refuse a masked value, as
-  they do for a custom-resource one.
+  `--revert` and `cdkd export` still refuse a masked value, as they do for a
+  custom-resource one.
+- A rollback revert reads a masked position back from AWS and sends the value
+  AWS holds there, and refuses when it cannot read it (see
+  [`cdkd rollback`](cli-rollback.md#known-limitations)).
 - The observed baseline (captured at the start of a `cdkd deploy`, or by
   `cdkd state refresh-observed`) is masked at every position where the
   record holds `***`, named in `noEchoLeaves` or not. A leaf that is `***`

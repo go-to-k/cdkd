@@ -393,7 +393,14 @@ export function maskReadbackAtCoordinates(
   return result;
 }
 
-function readbackPathFor(
+/**
+ * The readback path `coordinate` of `properties` maps to (see
+ * {@link maskReadbackAtCoordinates}). A path SHORTER than `coordinate` names
+ * the whole list that no identity field paired; `undefined`, a key the
+ * readback lacks. The rollback replay reads AWS's value through it
+ * (go-to-k/cdkd#4043 Phase C) and accepts only a full-length path.
+ */
+export function readbackPathFor(
   readback: unknown,
   properties: unknown,
   coordinate: NoEchoCoordinate

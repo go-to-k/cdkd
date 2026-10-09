@@ -241,6 +241,17 @@ export async function resolveOutputs(
   this.resolvedExportNames = [];
   this.carriedExportAliasRefusal = undefined;
   if (!template.Outputs) {
+    // go-to-k/cdkd#4043 Phase C: a nested child's journal snapshot re-runs
+    // the verdict over the PREVIOUS record's export names, which today's
+    // template may no longer declare: the seed of every `NoEcho` value alone.
+    this.carriedExportAliasRefusal = seedOnlyAliasRefusal(
+      noEchoParameterValueSeed(
+        template.Parameters,
+        parameterValues,
+        this.options.inheritedSecrets,
+        this.options.parameters
+      )
+    );
     return {};
   }
 
@@ -813,4 +824,25 @@ export function buildDisplayOutputs(
     if (v !== undefined) display[key] = v;
   }
   return display;
+}
+
+/**
+ * The carried-alias verdict of a pass with no `Outputs` (go-to-k/cdkd#4043
+ * Phase C): nothing was resolved, so only the seed of every `NoEcho` value
+ * decides, by the pass-3 containment arms.
+ */
+function seedOnlyAliasRefusal(
+  seed: RecordedSecretValues
+): (outputKey: string, exportName: string) => string | undefined {
+  return (outputKey, exportName) => {
+    const verdict = carriedExportAliasExposure(exportName, new Map(), seed);
+    if (verdict === undefined) return undefined;
+    return secretBearingExportNameWarning(
+      outputKey,
+      exportName,
+      verdict.exposure,
+      EMPTY_SECRETS,
+      verdict.noEchoOnly
+    );
+  };
 }
