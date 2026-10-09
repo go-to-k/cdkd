@@ -516,7 +516,7 @@ export function collisionLine(maskedMsg: string): string {
 const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 
 /**
- * How the three reverse-replacement refusals NAME the op in their prose: the
+ * How the reverse-replacement refusals NAME the op in their prose: the
  * logical id when {@link PASTEABLE_LOGICAL_ID} admits it, a description
  * otherwise. Their block also carries {@link orphanRemedy}'s command (and
  * prose naming `cdkd deploy` / `cdkd rollback`), and a block that displays an
@@ -552,7 +552,7 @@ export function shownChangeType(changeType: unknown): string {
 }
 
 /**
- * How the three reverse-replacement refusals, and the unroutable `reason`
+ * How the reverse-replacement refusals, and the unroutable `reason`
  * their first line quotes, name a resource TYPE: itself when it is a plain
  * CloudFormation type name (`composite-id.ts`'s `resourceTypeShown` rule), a
  * description otherwise. The type is journal text, and the line it sits on
@@ -627,7 +627,7 @@ export function describedPhysicalIdPointer(...shown: readonly string[]): string 
 }
 
 /**
- * The `cdkd rollback --orphan` remedy the three reverse-replacement refusals
+ * The `cdkd rollback --orphan` remedy the reverse-replacement refusals
  * end on: a labelled LAST line of its own (`line`), and the sentence the prose
  * carries when the id on it is a hole (`clause`, empty otherwise).
  *

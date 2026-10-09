@@ -330,7 +330,7 @@ export interface RollbackExecutorContext {
    * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
    * replay of the stack it is run on, and a direct rollback of the child is
    * refused while the parent's run is unsettled, so no command reaches this
-   * replay's ops: the three refusals print no `--orphan` line here
+   * replay's ops: the reverse-replacement refusals print no `--orphan` line here
    * (go-to-k/cdkd#3845).
    */
   nestedChildRevert?: boolean | undefined;
