@@ -127,6 +127,11 @@ Full documentation lives at **[cdkd.dev](https://cdkd.dev)**:
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/benchmark-race-dark.gif">
+  <img alt="Deploy race on a VPC + CloudFront + Lambda stack: AWS CDK (CloudFormation) 599 s, cdkd 96 s (~6x faster), cdkd --no-wait 40 s (15.0x faster). Deploy phase only." src="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/benchmark-race-light.gif">
+</picture>
+
 ### vs CloudFormation Express mode: up to 9x faster
 
 CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/06/aws-cloudformation-cdk/) is a fast-deploy option that skips resource stabilization waits, similar in spirit to cdkd's `--no-wait`. Even so, cdkd is faster than Express on nearly every stack, and with `--no-wait` it pulls dramatically ahead on stacks dominated by async resources.
