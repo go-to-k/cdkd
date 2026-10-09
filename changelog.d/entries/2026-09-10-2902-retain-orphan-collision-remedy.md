@@ -4,6 +4,6 @@
 
   **It stays silent for a name cdkd did not derive**, and withholds the command — saying why — for a nested-stack child, a type with no import, or a name or logical id whose characters would make it name something else. The command is shell-quoted. A derived name is predictable rather than proof of ownership (a globally-unique one can belong to another account; the same stack in another region derives it too), so the message asks you to confirm it is yours first.
 
-  `docs/_contents/troubleshooting.md` gains this case, and corrects its physical-name description: `<StackName>-<LogicalId>` holds only when it fits the type's length limit, otherwise cdkd truncates and appends 8 hex chars.
+  `docs/troubleshooting.md` gains this case, and corrects its physical-name description: `<StackName>-<LogicalId>` holds only when it fits the type's length limit, otherwise cdkd truncates and appends 8 hex chars.
 
-  Changed: `src/deployment/deploy-engine.ts`, `docs/_contents/troubleshooting.md`. Fences: `deploy-engine-orphaned-name-collision.test.ts` (most cases are refusals). Live: `tests/integration/retain-orphan-redeploy`, which runs the command the message emitted and asserts the redeploy then succeeds.
+  Changed: `src/deployment/deploy-engine.ts`, `docs/troubleshooting.md`. Fences: `deploy-engine-orphaned-name-collision.test.ts` (most cases are refusals). Live: `tests/integration/retain-orphan-redeploy`, which runs the command the message emitted and asserts the redeploy then succeeds.

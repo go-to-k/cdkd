@@ -92,17 +92,30 @@ body {
   navigation: auto;
 }
 
-.header {
-  view-transition-name: cdkd-header;
-}
+/* Named only for navigation. During a theme toggle the whole page has to be
+   one snapshot: a named element is captured on its own, cross-fades above
+   the circle and switches theme ahead of it. */
+:root:not([data-ox-theme-transition]) {
+  & .header {
+    view-transition-name: cdkd-header;
+  }
 
-.sidebar {
-  view-transition-name: cdkd-sidebar;
+  & .sidebar {
+    view-transition-name: cdkd-sidebar;
+  }
 }
 
 ::view-transition-group(*) {
   animation-duration: var(--cdkd-motion-slow);
   animation-timing-function: var(--cdkd-motion-ease);
+}
+
+/* Going light, Ox Content shrinks the outgoing snapshot with a clip-path
+   animation that does not fill forwards: on its last frame the dark
+   snapshot is shown whole again before the transition ends. Its resting
+   clip is already the end of the shrink, so that frame shows nothing. */
+:root[data-ox-theme-transition='shrink']::view-transition-old(root) {
+  clip-path: circle(0);
 }
 
 /* -- Header ------------------------------------------------------------------- */
