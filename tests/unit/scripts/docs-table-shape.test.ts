@@ -151,7 +151,11 @@ describe('published docs tables', () => {
     // had already happened once (2026-09-05: 78 files / 2901 rows total against
     // 60 / 2066 for the top level alone, so the previous 2000-row floor no
     // longer caught the collapse and the file floor caught it by one file).
-    const subdirs = readdirSync(DOCS).filter((e) => statSync(join(DOCS, e)).isDirectory());
+    // docs/_site/ is the site's code (theme, components, assets) and holds no
+    // pages, so the walk has nothing there to reach.
+    const subdirs = readdirSync(DOCS).filter(
+      (e) => e !== '_site' && statSync(join(DOCS, e)).isDirectory()
+    );
     // `> 1`, not `> 0`: with a single subdirectory "recursed into the first one
     // only" is indistinguishable from a full walk, so the check below would
     // pass on the very collapse it exists to refuse.

@@ -403,7 +403,7 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
         throw new Error(
           `AssumeRole into ${displayRoleArn} failed: ${message}. ` +
             `If this is a trust-policy issue, the producer's role must allow sts:AssumeRole ` +
-            `from the consumer's principal. See https://github.com/go-to-k/cdkd/blob/main/docs/cross-stack-references.md for the trust-policy template.`,
+            `from the consumer's principal. See https://cdkd.dev/cross-stack-internals/#iam-permissions for the trust-policy setup.`,
           { cause: err instanceof Error ? err : undefined }
         );
       }
@@ -701,7 +701,7 @@ export async function applyRoleArnIfSet(opts: {
           'it is what your CDK app resolves during synthesis, and — when you passed ' +
           '`--profile` rather than exporting it — it is the identity a `cdkd local` ' +
           'emulated function or task is given. See ' +
-          'https://github.com/go-to-k/cdkd/blob/main/docs/cli-reference.md'
+          'https://cdkd.dev/cli-reference/#profile-vs-role-arn'
       );
     }
   } finally {

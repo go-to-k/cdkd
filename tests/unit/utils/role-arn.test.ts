@@ -262,6 +262,7 @@ describe('applyRoleArnIfSet', () => {
       // would leave the other surprise silent.
       expect(warned[0]).toMatch(/cdkd makes to\s+deploy and read state run as the role/);
       expect(warned[0]).toMatch(/emulated function or task is given/);
+      expect(warned[0]).toMatch(/See https:\/\/cdkd\.dev\/cli-reference\/#profile-vs-role-arn$/);
       // The ROLE is not named either: it may have come from CDKD_ROLE_ARN, so
       // naming the flag would be wrong half the time.
       expect(warned[0]).not.toMatch(/--role-arn/);

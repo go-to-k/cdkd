@@ -1634,9 +1634,9 @@ template shape you used; there is no flag that works around it.
 
 If it **is** in the table, the installed cdkd predates its support. Upgrade:
 
-```bash
+<pm>
 npm i -g @go-to-k/cdkd
-```
+</pm>
 
 ### STS cannot report the account
 

@@ -11,7 +11,7 @@ description: "cdkd's layered architecture — CDK synthesis, asset publishing, a
 
 ## Architecture Diagram
 
-```
+```text diagram=layers
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLI Layer                               │
 │  (src/cli/)                                                     │
@@ -122,7 +122,7 @@ Reads the cloud assembly output directly from the `cdk.out/` directory:
 
 Orchestrates the context provider loop:
 
-```
+```text diagram=synthesizer-loop
 1. Execute CDK app (AppExecutor)
    ↓
 2. Read cloud assembly (AssemblyReader)
@@ -162,7 +162,7 @@ All CDK context provider types are supported. See `src/synthesis/context-provide
 
 **Synthesis Flow**:
 
-```
+```text diagram=synthesis-flow
 1. User CDK App (--app option, CDKD_APP env var, or cdk.json "app" field)
    ↓
 2. AppExecutor.execute() via child_process.spawn()
@@ -278,7 +278,11 @@ buildDAG(resources: ParsedResource[]): ResourceDAG
 - **Implicit edges for Custom Resources**: `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` resources attached to a Custom Resource's ServiceToken Lambda execution role get an automatic edge to the Custom Resource itself, so the handler can't be invoked before the inline policy attachment has returned (avoids AccessDenied during deploy)
 - **Implicit edges for Lambda VpcConfig**: every `AWS::EC2::Subnet` / `AWS::EC2::SecurityGroup` referenced by an `AWS::Lambda::Function` `VpcConfig.SubnetIds` / `SecurityGroupIds` gets an explicit edge to the Lambda. For DELETE-time reverse traversal this guarantees the Lambda is removed before its Subnets/SGs so the asynchronous ENI detach has time to complete before EC2 rejects the subnet/SG delete with `DependencyViolation`. Implemented via `extractLambdaVpcDeleteDeps` in `src/analyzer/lambda-vpc-deps.ts`.
 
-**Determining Parallel Execution Levels**:
+**Execution levels are reported, not used as barriers**: `getExecutionLevels`
+groups the DAG by topological depth, and the deploy engine prints only the
+count (`DAG: <n> levels`). Dispatch is event-driven: a resource starts as soon
+as all of its own dependencies complete, without waiting for the rest of its
+level.
 
 ```
 Level 0: Resources without dependencies (S3 Bucket, DynamoDB Table)
@@ -785,7 +789,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 1. Initial Deployment (CREATE)
 
-```
+```text diagram=deploy-create
 ┌─────────────┐
 │ User        │
 │ $ cdkd      │
@@ -833,7 +837,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
          ┌─────────────────────────┐
          │ Deployment Layer        │
          │ - Deploy Engine         │
-         │ - Execute by Levels     │
+         │ - Event-driven dispatch │
          └────────┬────────────────┘
                   │
          ┌────────┴─────────┐
@@ -859,7 +863,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 2. Update Deployment (UPDATE)
 
-```
+```text diagram=deploy-update
 ... (Same until Synthesis)
          │
          ▼
@@ -883,7 +887,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 3. Deletion (DESTROY)
 
-```
+```text diagram=deploy-destroy
 ┌─────────────┐
 │ User        │
 │ $ cdkd      │
@@ -926,7 +930,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 4. Context Provider Resolution Loop
 
-```
+```text diagram=context-loop
 ┌───────────────────────┐
 │ Synthesizer           │
 │ synthesize()          │

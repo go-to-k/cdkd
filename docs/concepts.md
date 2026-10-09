@@ -9,7 +9,7 @@ cdkd deploys AWS CDK applications directly via the AWS SDK and Cloud Control API
 
 ## How it works
 
-```
+```text diagram=how-it-works
 ┌─────────────────┐
 │  Your CDK App   │  (aws-cdk-lib)
 └────────┬────────┘

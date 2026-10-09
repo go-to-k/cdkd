@@ -100,7 +100,7 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     Widening to subcommands is a separate change.
  */
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
-const DOCS_CONFIG = join(repoRoot, 'vite.docs.config.ts');
+const DOCS_CONFIG = join(repoRoot, 'docs', '_site', 'vite.config.ts');
 
 /** The hub. Refused as a topic-page target regardless of its wording. */
 const HUB_PAGE = '/cli-reference';
@@ -164,7 +164,7 @@ const NON_DOCUMENTING_PAGES: readonly string[] = [
 /**
  * Command -> the navigation path of ITS OWN reference page.
  *
- * The path is the site path as written in `vite.docs.config.ts` (`/cli-gc`),
+ * The path is the site path as written in `docs/_site/vite.config.ts` (`/cli-gc`),
  * which maps to `docs/<path>.md`. Each page's H1 must be `# cdkd <command>`.
  */
 const COMMAND_REFERENCE_PAGES: Readonly<Record<string, string>> = {
@@ -558,7 +558,7 @@ describe('docs command/nav coverage', () => {
     expect(
       missing,
       `These pages are claimed as a command's documentation but have no entry in the ` +
-        `navigation array in vite.docs.config.ts, so a reader browsing the site cannot ` +
+        `navigation array in docs/_site/vite.config.ts, so a reader browsing the site cannot ` +
         `reach them.`
     ).toEqual([]);
   });

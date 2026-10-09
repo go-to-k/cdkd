@@ -3,7 +3,7 @@ import { join, dirname, resolve, relative } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import { oxSlug, stripFences } from '../../ox-slug.js';
 
-// The docs/ tree is published as the cdkd.dev site (vite.docs.config.ts, Ox
+// The docs/ tree is published as the cdkd.dev site (docs/_site/vite.config.ts, Ox
 // Content SSG). Two link classes broke silently before this fence existed:
 //
 //  1. Cross-doc anchor links (`other.md#fragment`) whose fragment does not
@@ -11,7 +11,7 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
 //     Found live on the first build: `why-cdkd.md` linked
 //     `cli-reference.md#cdkd-rollback` while the real heading slug is
 //     `cdkd-rollback-revert-a-failed-deploy`.
-//  2. Sidebar `navigation` entries in vite.docs.config.ts pointing at pages
+//  2. Sidebar `navigation` entries in docs/_site/vite.config.ts pointing at pages
 //     that do not exist — whether the alpha SSG plugin hard-fails on that is
 //     unverified, so CI's docs build cannot be trusted to catch a typo.
 //
@@ -180,9 +180,9 @@ describe('published docs cross-links', () => {
   });
 });
 
-// Nav groups parsed from vite.docs.config.ts: [group title, page paths].
+// Nav groups parsed from docs/_site/vite.config.ts: [group title, page paths].
 const navGroups = (): Array<[string, string[]]> => {
-  const config = readFileSync(join(ROOT, 'vite.docs.config.ts'), 'utf8');
+  const config = readFileSync(join(ROOT, 'docs', '_site', 'vite.config.ts'), 'utf8');
   const groups: Array<[string, string[]]> = [];
   for (const g of config.matchAll(/title: '([^']+)',\s*\n\s*items: \[([\s\S]*?)\],\s*\n\s*\}/g)) {
     const paths = [...g[2].matchAll(/path: '\/([^']+)'/g)].map((m) => m[1]);

@@ -1,8 +1,8 @@
 <div align="center">
   <p>
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs-site/public/brand/logo-dark.svg">
-      <img alt="cdkd logo" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs-site/public/brand/logo-light.svg" width="96" height="96">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs/_site/public/brand/logo-dark.svg">
+      <img alt="cdkd logo" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs/_site/public/brand/logo-light.svg" width="96" height="96">
     </picture>
   </p>
   <h1>cdkd (CDK Direct)</h1>
@@ -126,6 +126,11 @@ Full documentation lives at **[cdkd.dev](https://cdkd.dev)**:
 ## Benchmark
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/benchmark-race-dark.gif">
+  <img alt="Deploy race on a VPC + CloudFront + Lambda stack: AWS CDK (CloudFormation) 599 s, cdkd 96 s (~6x faster), cdkd --no-wait 40 s (15.0x faster). Deploy phase only." src="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/benchmark-race-light.gif">
+</picture>
 
 ### vs CloudFormation Express mode: up to 9x faster
 

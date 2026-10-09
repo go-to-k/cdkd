@@ -13,7 +13,7 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
  * (measured in the built `ox-content-core-*.css`). Below that width — every
  * phone, and a 1280 or 1366 laptop — the page shipped with NO navigation of
  * its own, which on a guide this many headings deep means scrolling to find out
- * whether your symptom is covered at all. `vite.docs.config.ts` lowers the
+ * whether your symptom is covered at all. `docs/_site/vite.config.ts` lowers the
  * breakpoint to 1280px, and this in-page index covers what is still below it.
  * (No heading COUNT is quoted: it drifts with every entry added, and the
  * anti-vacuity floor below is what actually holds the claim up.)
