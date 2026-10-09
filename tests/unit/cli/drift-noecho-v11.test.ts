@@ -96,7 +96,11 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   })),
 }));
 
-import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import {
+  createDriftCommand,
+  maskMarkedNoEchoBaseline,
+  maskMarkedNoEchoBaselineWithLeaves,
+} from '../../../src/cli/commands/drift.js';
 
 async function runDrift(args: string[]): Promise<{ output: string; error: unknown }> {
   const output: string[] = [];
@@ -198,6 +202,51 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     // Exit 0: not drift, and not a clearable incomplete comparison.
     expect(exitSpy).not.toHaveBeenCalledWith(1);
     expect(exitSpy).not.toHaveBeenCalledWith(2);
+  });
+
+  // A wholly masked list may hold neutral leaves: `maskWholeValue` keeps a
+  // `null` and an empty container as they are.
+  it('buckets a wholly masked list holding null and empty leaves when the live value changed shape', async () => {
+    const masked = [{ Key: SECRET_MASK, Value: null, N: SECRET_MASK, Extra: [] }];
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Tags: masked },
+          observedProperties: { Name: '/app/token', Tags: masked },
+          noEchoLeaves: [['Tags']],
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Tags: 7741 });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      expect.objectContaining({ logicalId: 'Token', cause: 'noEchoParameter' }),
+    ]);
+  });
+
+  it('still compares a marked element that holds no mask at all', async () => {
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Tags: [{ K: SECRET_MASK, V: 'plain' }, [null]] },
+          observedProperties: {
+            Name: '/app/token',
+            Tags: [{ K: SECRET_MASK, V: 'plain' }, [null]],
+          },
+          noEchoLeaves: [['Tags']],
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Tags: [{ K: 'k', V: 'plain' }, 7741] });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([expect.objectContaining({ logicalId: 'Token' })]);
   });
 
   it('buckets a list live value at a marked coordinate', async () => {
@@ -343,6 +392,171 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     }
   });
 
+  // go-to-k/cdkd#4043 Phase C: the --accept and --revert baseline writers mask
+  // every marked coordinate of what they save. Accepting ANOTHER path re-saves
+  // a clone of the baseline, which may still hold the value in the clear at a
+  // marked coordinate; the value arm cannot see one of 3 characters or a
+  // number.
+  it.each([
+    ['a 3-character value', 'q7z'],
+    ['a number', 7741],
+  ])('--accept of another path never re-persists %s a stored baseline still holds at a marked coordinate', async (_label, stored) => {
+    // A baseline that still holds the value in the clear at a marked
+    // coordinate (written before the mask reached it, or by hand): the
+    // accept clones it, and the value arm cannot see a short or numeric value.
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'a' },
+          observedProperties: { Name: '/app/token', Value: stored, Description: 'a' },
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Value: stored, Description: 'edited' });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
+    expect(saved.observedProperties).toEqual({
+      Name: '/app/token',
+      Value: SECRET_MASK,
+      Description: 'edited',
+    });
+  });
+
+  it('--accept into a record with NO observed baseline masks its properties at the marked coordinate', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: {
+          physicalId: '/app/token',
+          resourceType: SSM_TYPE,
+          properties: { Name: '/app/token', Value: 'q7z', Description: 'a' },
+          noEchoLeaves: [['Value']],
+        },
+      })
+    );
+    readsBack({ Name: '/app/token', Value: 'q7z', Description: 'edited' });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
+    expect(saved.properties).toEqual({ Name: '/app/token', Value: SECRET_MASK, Description: 'edited' });
+  });
+
+  it('--accept of another path masks an unchanged plain-string list in properties by index, not whole', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: {
+          physicalId: '/app/token',
+          resourceType: SSM_TYPE,
+          properties: { Name: '/app/token', L: ['a', 'q7z'], Description: 'a' },
+          noEchoLeaves: [['L', 1]],
+        },
+      })
+    );
+    readsBack({ Name: '/app/token', L: ['a', 'q7z'], Description: 'edited' });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
+    expect(saved.properties['L']).toEqual(['a', SECRET_MASK]);
+  });
+
+  // Review B1 (#4763): a v11 list holding `***` at a marked element is never
+  // accepted as a whole (its old side carries the mask), so the replaced-list
+  // pairing cannot reach it and mask it whole; the record keeps it as it was.
+  it('--accept of a v11 list holding the mask at a marked element is refused, and the list is saved as it was', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: {
+          physicalId: '/app/token',
+          resourceType: SSM_TYPE,
+          properties: { Name: '/app/token', L: ['a', SECRET_MASK] },
+          noEchoLeaves: [['L', 1]],
+        },
+      })
+    );
+    readsBack({ Name: '/app/token', L: ['b', 'secret-live-value'] });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("not accepting 'L'"))).toBe(true);
+    for (const call of mockSaveState.mock.calls) {
+      expect((call[2] as StackState).resources['Token']!.properties['L']).toEqual(['a', SECRET_MASK]);
+    }
+    expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain('secret-live-value');
+  });
+
+  it('--accept of a list AWS returned reordered masks the marked element by its identity, not its old index', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: {
+          physicalId: '/app/token',
+          resourceType: SSM_TYPE,
+          properties: {
+            Name: '/app/token',
+            Tags: [
+              { Key: 's', Value: 'q7z' },
+              { Key: 'a', Value: 'x' },
+            ],
+          },
+          noEchoLeaves: [['Tags', 0, 'Value']],
+        },
+      })
+    );
+    readsBack({
+      Name: '/app/token',
+      Tags: [
+        { Key: 'a', Value: 'y' },
+        { Key: 's', Value: 'q7z' },
+      ],
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = (mockSaveState.mock.calls[0]![2] as StackState).resources['Token']!;
+    expect(saved.properties['Tags']).toEqual([
+      { Key: 'a', Value: 'y' },
+      { Key: 's', Value: SECRET_MASK },
+    ]);
+    expect(JSON.stringify(saved)).not.toContain('q7z');
+  });
+
+  it('--revert never re-records a value the stored baseline or the provider echo holds at a marked coordinate', async () => {
+    const update = vi.fn(async () => ({
+      physicalId: '/app/token',
+      // What the provider applied: the live value kept at the marked leaf,
+      // and the reverted Description, normalized.
+      effectiveProperties: { Name: '/app/token', Value: 'q7z', Description: 'From-Template' },
+    }));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'from-template' },
+          // Still holds the value in the clear at the marked leaf.
+          observedProperties: { Name: '/app/token', Value: 'q7z', Description: 'from-template' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Value: 'q7z', Description: 'edited' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(update.mock.calls)).not.toContain(`"${SECRET_MASK}"`);
+    expect(mockSaveState).toHaveBeenCalled();
+    for (const call of mockSaveState.mock.calls) {
+      const saved = (call[2] as StackState).resources['Token']!;
+      expect(saved.observedProperties?.['Value']).toBe(SECRET_MASK);
+    }
+  });
+
   it('names the position, never a value, in the human report', async () => {
     mockGetState.mockResolvedValueOnce(makeState({ Token: param() }));
     readsBack({ Name: '/app/token', Type: 'String', Value: LIVE_SECRET });
@@ -396,5 +610,55 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
         changes: [{ path: 'Value', stateValue: '***' }],
       }),
     ]);
+  });
+});
+
+describe('maskMarkedNoEchoBaseline (go-to-k/cdkd#4043 Phase C, review of #4763)', () => {
+  const record = (properties: Record<string, unknown>, noEchoLeaves?: (string | number)[][]): ResourceState => ({
+    physicalId: 'p',
+    resourceType: SSM_TYPE,
+    properties,
+    ...(noEchoLeaves !== undefined && { noEchoLeaves }),
+  });
+
+  it('n1: an observed baseline is also masked at every *** leaf of properties, named or not (a pre-v11 record)', () => {
+    const out = maskMarkedNoEchoBaseline(
+      { Value: 'q7z', Other: 'zz9', Description: 'a' },
+      record({ Value: SECRET_MASK, Other: SECRET_MASK, Description: 'a' }),
+      true
+    );
+    expect(out).toEqual({ Value: SECRET_MASK, Other: SECRET_MASK, Description: 'a' });
+  });
+
+  it('N3: a replaced list masked WHOLE is named in noEchoLeaves, as the rollback replay names it', () => {
+    const out = maskMarkedNoEchoBaselineWithLeaves(
+      { L: ['live-a', 'live-b'] },
+      record({ L: ['secretA', 'x'] }, [['L', 0]]),
+      false
+    );
+    expect(out.baseline).toEqual({ L: [SECRET_MASK, SECRET_MASK] });
+    expect(out.noEchoLeaves).toEqual([['L']]);
+  });
+
+  it('N3: an unreplaced list keeps the record\'s noEchoLeaves (nothing widened)', () => {
+    const out = maskMarkedNoEchoBaselineWithLeaves(
+      { L: ['secretA', 'x'] },
+      record({ L: ['secretA', 'x'] }, [['L', 0]]),
+      false
+    );
+    expect(out.baseline).toEqual({ L: [SECRET_MASK, 'x'] });
+    expect(out.noEchoLeaves).toBeUndefined();
+  });
+
+  it('N1: two marked elements of one list do not read as a replaced list (no public element masked)', () => {
+    const out = maskMarkedNoEchoBaseline(
+      { L: [SECRET_MASK, 'ab', 'x'] },
+      record({ L: ['secretA', 'ab', 'x'] }, [
+        ['L', 0],
+        ['L', 1],
+      ]),
+      false
+    );
+    expect(out).toEqual({ L: [SECRET_MASK, SECRET_MASK, 'x'] });
   });
 });
