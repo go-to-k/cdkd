@@ -367,7 +367,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(h.ensureRetainedTombstone).toHaveBeenCalledTimes(1);
   });
 
-  it('G-5: the MAIN destroy path (resources, none Retain) also starts the tombstone and the release together', async () => {
+  it('G-5 / perf: the MAIN destroy path starts the tombstone, the release AND the exports-index update together', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     const provider = { delete: vi.fn(async () => undefined) };
     (h.ctx as unknown as { providerRegistry: unknown }).providerRegistry = {
@@ -386,6 +386,11 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       await gate;
       return 'released' as const;
     });
+    const removeStack = vi.fn(async () => {
+      started++;
+      await gate;
+    });
+    (h.ctx as unknown as { exportIndexStore: unknown }).exportIndexStore = { removeStack };
     const deleted: StackState = {
       ...emptyState(),
       resources: {
@@ -393,12 +398,19 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       } as unknown as StackState['resources'],
     };
     const run = runDestroyForStack('App', deleted, h.ctx);
-    for (let i = 0; i < 200 && started < 2; i++) await new Promise((r) => setImmediate(r));
-    expect(started).toBe(2);
+    for (let i = 0; i < 200 && started < 3; i++) await new Promise((r) => setImmediate(r));
+    // All three in flight before any of them settles: the tail adds no round
+    // trip beyond the exports-index update the destroy already waited for.
+    expect(started).toBe(3);
+    expect(h.deleteState).toHaveBeenCalledTimes(1);
+    expect(h.deleteState.mock.invocationCallOrder[0]).toBeLessThan(
+      h.releaseRegistryMarker.mock.invocationCallOrder[0]!
+    );
     release();
     const result = await run;
     expect(result.errorCount).toBe(0);
     expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(removeStack).toHaveBeenCalledWith('App', REGION);
   });
 
   it('G5: a destroy that keeps the record (a delete failed) keeps the marker', async () => {

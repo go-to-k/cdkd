@@ -2340,20 +2340,24 @@ export async function runDestroyForStack(
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
       // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
-      // marker's release -- one round trip, concurrently (review P3).
+      // marker's release, run beside the exports-index update that always
+      // followed the record's delete, so they add no round trip of their own
+      // (review P3, perf round). All three are after `deleteState` -- the
+      // marker must not be released while the record exists -- and under
+      // this stack's lock, so a same-prefix deploy cannot slip in before the
+      // release.
+      //
+      // The exports index: drop this stack's entries so the next resolver
+      // lookup doesn't return stale values. Best-effort — failures don't fail
+      // the destroy (state.json is the canonical record, and the index
+      // self-heals on next deploy / fallback).
       await Promise.all([
         retainedForReadoption.length === 0
           ? recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger)
           : Promise.resolve(),
         releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
+        ctx.exportIndexStore?.removeStack(stackName, regionForState),
       ]);
-      // Drop this stack's entries from the exports index so the next
-      // resolver lookup doesn't return stale values. Best-effort —
-      // failures don't fail the destroy (state.json is the canonical
-      // record, and the index self-heals on next deploy / fallback).
-      if (ctx.exportIndexStore) {
-        await ctx.exportIndexStore.removeStack(stackName, regionForState);
-      }
     } else {
       // Final authoritative write of the remaining state (not-yet-deleted +
       // failed + retained resources). The incremental persists above are

@@ -28,6 +28,17 @@
 #      PERF_LOG_GROUPS log groups (default 50), 3 queues and 3 topics: first
 #      deploy and destroy; PERF_CW_RUNS runs per build (default 3).
 # PERF_ARMS selects the arms (default "1 2 3 4 5"; e.g. PERF_ARMS="4 5").
+# Diagnostics: PERF_KEEP_LOGS=1 keeps every cdkd command's full output, one
+# numbered file per command, under PERF_LOG_DIR (default a fresh directory
+# under TMPDIR, printed at the start and the end, never removed by the
+# cleanup). PERF_VERBOSE=1 adds --verbose to every cdkd command, OLD and NEW
+# alike, so each line carries an ISO timestamp with milliseconds; the timings
+# then include the extra logging on both sides. Arm 5 always runs --verbose,
+# counts each command's throttled-call lines ("Rate exceeded" / Throttling)
+# beside its timing, and waits PERF_CW_COOLDOWN seconds (default 120; 0 skips)
+# before every cw run after the first: CloudWatch throttles per account, so
+# the build that follows another's burst would otherwise time the throttle.
+# A phase with any throttled call reads THROTTLED (not comparable).
 #
 # Output: per arm, phase and build, median / min / max seconds, a final table,
 # and a verdict: "no difference" only where the OLD and NEW ranges overlap or
@@ -91,6 +102,12 @@ PREFIX_RUNS="${PERF_PREFIX_RUNS:-3}"
 ADOPT_RUNS="${PERF_ADOPT_RUNS:-5}"
 CW_RUNS="${PERF_CW_RUNS:-3}"
 ARMS="${PERF_ARMS:-1 2 3 4 5}"
+CW_COOLDOWN="${PERF_CW_COOLDOWN:-120}"
+THROTTLES=0
+KEEP_LOGS="${PERF_KEEP_LOGS:-0}"
+VERBOSE="${PERF_VERBOSE:-0}"
+LOG_DIR=""
+LOG_SEQ=0
 arm_on() { case " ${ARMS} " in *" $1 "*) return 0 ;; esac; return 1; }
 # Digits only: every name and prefix below is built from it, and the sweeps'
 # guards match that shape.
@@ -386,6 +403,11 @@ SCRATCH="$(mktemp -d)"
 RESULTS="$(mktemp)"
 RUN_LOG="$(mktemp)"
 DEPLOYED_LIST="$(mktemp)"
+if [ "${KEEP_LOGS}" = 1 ]; then
+  LOG_DIR="${PERF_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/perf-cross-backend-logs.XXXXXX")}"
+  mkdir -p "${LOG_DIR}"
+  echo "==> Keeping every cdkd command's output in ${LOG_DIR}"
+fi
 
 echo "==> Building the two cdkd builds"
 if [ -n "${OLD_CDKD_VERSION:-}" ]; then
@@ -429,24 +451,55 @@ echo "    NEW: $(node "${NEW_BIN}" --version) -- ${NEW_DESC}"
 
 # Time one cdkd command; a failure FAILs the run. Sets ELAPSED.
 timed() { # usage: timed <label> <cli.js> <args...>
-  local label="$1" start end rc
+  local label="$1" start end rc arg wall add_verbose=0 kept
   shift
+  if [ "${VERBOSE}" = 1 ]; then
+    add_verbose=1
+    for arg in "$@"; do
+      if [ "${arg}" = --verbose ]; then add_verbose=0; fi
+    done
+  fi
+  wall="$(perl -MTime::HiRes=time -MPOSIX=strftime -e '$t = time; printf "%s.%03dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), ($t - int($t)) * 1000')"
   start="$(now)"
   set +e
-  node "$@" >"${RUN_LOG}" 2>&1
+  if [ "${add_verbose}" = 1 ]; then
+    node "$@" --verbose >"${RUN_LOG}" 2>&1
+  else
+    node "$@" >"${RUN_LOG}" 2>&1
+  fi
   rc=$?
   set -e
   end="$(now)"
   ELAPSED="$(perl -e "printf '%.3f', ${end} - ${start}")"
+  # Throttled API calls the run retried (visible only with --verbose: the
+  # retry lines are debug). Account-level CloudWatch throttling outlasts a
+  # run, so a count here means the timing measured the throttle, not cdkd.
+  THROTTLES="$(grep -ciE 'rate exceeded|throttl' "${RUN_LOG}" || true)"
+  if [ "${KEEP_LOGS}" = 1 ]; then
+    LOG_SEQ=$((LOG_SEQ + 1))
+    kept="${LOG_DIR}/$(printf '%03d' "${LOG_SEQ}")-$(printf '%s' "${label}" | tr -c 'A-Za-z0-9.-' '_').log"
+    {
+      printf '# %s\n# started %s, elapsed %ss, exit %s\n# node' "${label}" "${wall}" "${ELAPSED}" "${rc}"
+      printf ' %q' "$@"
+      if [ "${add_verbose}" = 1 ]; then printf ' --verbose'; fi
+      printf '\n'
+      cat "${RUN_LOG}"
+    } >"${kept}"
+  fi
   if [ "${rc}" -ne 0 ]; then
     sed 's/^/  /' "${RUN_LOG}"
     echo "FAIL: ${label} exited ${rc} (output above)" >&2
     exit 1
   fi
-  echo "    ${label}: ${ELAPSED}s"
+  if [ "${THROTTLES}" -gt 0 ]; then
+    echo "    ${label}: ${ELAPSED}s (${THROTTLES} throttled-call lines)"
+  else
+    echo "    ${label}: ${ELAPSED}s"
+  fi
 }
 
-record() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"${RESULTS}"; }
+# usage: record <arm> <phase> <build> <seconds> [throttled-call lines]
+record() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" >>"${RESULTS}"; }
 
 # One single-stack run: first deploy, NO_CHANGE redeploy, destroy.
 single_run() { # usage: single_run <OLD|NEW> <run#>
@@ -508,16 +561,19 @@ prefix_run() { # usage: prefix_run <with|without> <run#>
 # One run of arm 4 (adopt) or 5 (cw): first deploy, (arm 4) NO_CHANGE
 # redeploy, destroy of one stack of that variant.
 variant_run() { # usage: variant_run <adopt|cw> <OLD|NEW> <run#>
-  local arm="$1" which="$2" n="$3" bin stack prefix
+  local arm="$1" which="$2" n="$3" bin stack prefix vflag=""
   [ "${which}" = OLD ] && bin="${OLD_BIN}" || bin="${NEW_BIN}"
+  # Arm 5 always runs --verbose (both builds), so its throttle retries are
+  # counted beside its timings.
+  if [ "${arm}" = cw ]; then vflag="--verbose"; fi
   stack="${STACK_BASE}${arm}${which}${n}"
   prefix="${RUN_PREFIX_BASE}-${arm}-${which}${n}"
   printf '%s\t%s\n' "${stack}" "${prefix}" >>"${DEPLOYED_LIST}"
   [ "${arm}" = adopt ] && export PERF_VARIANT=adopting || export PERF_VARIANT=cloudwatch
   export PERF_STACK_BASE="${stack}" PERF_STACK_COUNT=1
   timed "${arm} ${which} #${n} deploy" "${bin}" deploy "${stack}" --region "${REGION}" \
-    --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --yes
-  record "${arm}" deploy "${which}" "${ELAPSED}"
+    --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --yes ${vflag:+"${vflag}"}
+  record "${arm}" deploy "${which}" "${ELAPSED}" "${THROTTLES}"
   if [ "${arm}" = adopt ]; then
     timed "${arm} ${which} #${n} redeploy" "${bin}" deploy "${stack}" --region "${REGION}" \
       --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --yes
@@ -558,8 +614,8 @@ variant_run() { # usage: variant_run <adopt|cw> <OLD|NEW> <run#>
     export PERF_STACK_BASE="${stack}"
   fi
   timed "${arm} ${which} #${n} destroy" "${bin}" destroy "${stack}" --region "${REGION}" \
-    --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --force
-  record "${arm}" teardown "${which}" "${ELAPSED}"
+    --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --force ${vflag:+"${vflag}"}
+  record "${arm}" teardown "${which}" "${ELAPSED}" "${THROTTLES}"
   assert_gone "state of ${stack} still exists after its destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${prefix}/${stack}/${REGION}/state.json"
 }
@@ -615,8 +671,20 @@ fi
 if arm_on 5; then
   echo ""
   echo "==> Arm 5: one stack of ${PERF_ALARMS:-200} alarms + ${PERF_LOG_GROUPS:-50} log groups + 3 queues + 3 topics, ${CW_RUNS} runs per build"
+  # CloudWatch's throttling is account-level and outlasts a run: the build
+  # that runs right after another's 200-alarm deploy and destroy inherits the
+  # throttle. So every cw run after the first waits PERF_CW_COOLDOWN seconds
+  # (default 120), and each timing carries its throttled-call count.
+  cw_run() { # usage: cw_run <OLD|NEW> <run#>
+    if [ -n "${CW_STARTED:-}" ] && [ "${CW_COOLDOWN}" -gt 0 ]; then
+      echo "    (cooldown ${CW_COOLDOWN}s before cw ${1} #${2})"
+      sleep "${CW_COOLDOWN}"
+    fi
+    CW_STARTED=1
+    variant_run cw "$1" "$2"
+  }
   for n in $(seq 1 "${CW_RUNS}"); do
-    if [ $((n % 2)) -eq 1 ]; then variant_run cw OLD "${n}"; variant_run cw NEW "${n}"; else variant_run cw NEW "${n}"; variant_run cw OLD "${n}"; fi
+    if [ $((n % 2)) -eq 1 ]; then cw_run OLD "${n}"; cw_run NEW "${n}"; else cw_run NEW "${n}"; cw_run OLD "${n}"; fi
   done
 fi
 
@@ -627,8 +695,12 @@ import sys, statistics
 from collections import defaultdict
 rows = [l.rstrip('\n').split('\t') for l in open(sys.argv[1]) if l.strip()]
 data = defaultdict(list)
-for arm, phase, which, secs in rows:
+throttled = defaultdict(int)
+for row in rows:
+    arm, phase, which, secs = row[:4]
     data[(arm, phase, which)].append(float(secs))
+    if len(row) > 4 and row[4].strip().isdigit():
+        throttled[(arm, phase, which)] += int(row[4])
 print(f"{'arm':<9} {'phase':<9} {'build':<8} {'n':>2} {'median':>8} {'min':>8} {'max':>8}")
 for key in sorted(data):
     v = data[key]
@@ -648,7 +720,13 @@ for (arm, phase), (a, b) in pairs.items():
     overlap = min(va) <= max(vb) and min(vb) <= max(va)
     delta = mb - ma
     verdict = 'no difference' if overlap or abs(delta) < 0.3 else 'DIFFERENT'
-    print(f"VERDICT {arm} {phase}: {verdict} (median {b} - {a} = {delta:+.2f}s; {a} {ma:.2f}s, {b} {mb:.2f}s)")
+    ta, tb = throttled[(arm, phase, a)], throttled[(arm, phase, b)]
+    note = ''
+    if ta or tb:
+        # A throttled run measured the account's throttle: not a comparison.
+        verdict = 'THROTTLED (not comparable)'
+        note = f"; throttled-call lines {a} {ta}, {b} {tb}"
+    print(f"VERDICT {arm} {phase}: {verdict} (median {b} - {a} = {delta:+.2f}s; {a} {ma:.2f}s, {b} {mb:.2f}s{note})")
 PY
 
 rm -f "${RUN_LOG}"

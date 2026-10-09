@@ -247,9 +247,10 @@ belongs to. A nested stack is covered by its top-level stack's marker.
 - `cdkd destroy` removes the marker after removing the record, with a delete
   conditional on the version it read, so another prefix's re-claim in between
   is left alone (an endpoint without conditional deletes re-reads it right
-  before an unconditional delete). The marker's delete and the retained-list
-write run together, one round trip, by the version this run already read;
-when this run claimed the marker itself it re-reads it first, two round trips.
+  before an unconditional delete). The marker's delete (by the version this run
+already read) and the retained-list write run beside the exports-index
+update every destroy already makes, so they add no round trip of their own;
+when this run claimed the marker itself, it re-reads it first.
 `cdkd state orphan` of a whole stack
   removes it, `cdkd import` claims it (after the one-time scan below when no
   marker exists), and `cdkd state migrate` copies it with the records.
