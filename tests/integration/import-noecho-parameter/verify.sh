@@ -187,8 +187,8 @@ fi
 # The import compares each parameter with what CloudFormation was deployed
 # with, and a NoEcho one comes back as `****`: never provably the bound
 # Default, so a resource reading it gets NO observed baseline (the #2854
-# refusal, design section 4.5). Either way the baseline never holds a value:
-# absent, or `***` at the position.
+# refusal, design section 4.5), so the baseline is absent here; Phase 6b
+# covers the captured baseline, `***` at the position.
 P3_OBSERVED=$(jq -c '[.resources.NoEchoConsumer.observedProperties, .resources.NoEchoShortConsumer.observedProperties]' <<< "${STATE_P3}")
 if [ "${P3_OBSERVED}" != '[null,null]' ]; then
   echo "FAIL: premise: a NoEcho-fed record took an observed baseline under the CloudFormation source (expected the #2854 refusal)" >&2
@@ -271,7 +271,12 @@ node "${LOCAL_DIST}" state orphan "${STACK}" --state-bucket "${STATE_BUCKET}" --
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} survived 'cdkd state orphan'" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 set +e
+# Explicit physical ids: the template's Name is an Fn::Join over the account
+# id, which the auto lookup need not resolve without a CloudFormation stack.
 REIMPORT_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
+  --resource "NoEchoConsumer=${CONSUMER_NAME}" \
+  --resource "NoEchoShortConsumer=${SHORT_NAME}" \
+  --resource "PlainConsumer=${PLAIN_NAME}" \
   --state-bucket "${STATE_BUCKET}" --yes 2>&1)
 REIMPORT_RC=$?
 set -e

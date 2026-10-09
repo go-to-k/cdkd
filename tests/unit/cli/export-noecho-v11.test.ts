@@ -66,7 +66,7 @@ describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
   });
 
   it.each([
-    ['a whole marked leaf', '***', /redaction mask/],
+    ['a whole marked leaf', '***', /import identifier cdkd resolved for this resource is the redaction mask/],
     // Not a whole mask, so no property check blocks it: another record's
     // masked attribute substituted into a string through Fn::Sub (review B1).
     ['an embedded one', 'fn-***', /embeds the redaction mask/],
@@ -143,7 +143,7 @@ describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
   it('lets an IAM policy through whose marked leaf is in its PolicyDocument, which the pre-delete never reads', async () => {
     const state = stateWith({}, [['PolicyDocument', 'Statement', 0, 'Resource']]);
     state.resources['Param'] = {
-      physicalId: 'Root-Pol',
+      physicalId: 'pol',
       resourceType: 'AWS::IAM::Policy',
       properties: {
         PolicyName: 'pol',
@@ -175,8 +175,7 @@ describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
       'Root',
       { recreateImportUnsupported: true }
     );
-    expect(result.blocked.filter((b) => /pre-delete reads/.test(b.reason))).toEqual([]);
-    expect(result.blocked.filter((b) => /three ways/.test(b.reason))).toEqual([]);
+    expect(result.blocked).toEqual([]);
   });
 
   it('keeps the general reason when a mask sits OUTSIDE the marked coordinates', async () => {

@@ -480,6 +480,14 @@ the stack-wide passes. This covers a stack deployed under an
 older `Default`. Scrub is also the migration path for a stack that is never
 redeployed. `--dry-run --fail` reports an unmasked `NoEcho` leaf as a finding.
 
+**As built (Phase C, #4764):** a record's own `noEchoLeaves` is authoritative
+and replaces the template's positions; the template positions a record that
+has none. Positioning iterates to a fixed point over echoed attributes, and a
+declared attribute (the record's own `noEchoAttributeNames` or a found echo)
+is masked whole and counted. A nested child's scrub receives the parameters
+its parent's row fills from a `NoEcho` source (decision 8), read against the
+parent's final declared attributes and never through an `Fn::If`.
+
 ### 4.7 Cross-stack reads and exports
 
 An output served by a `NoEcho` parameter persists `***`, and the exports index

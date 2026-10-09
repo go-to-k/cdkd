@@ -1179,8 +1179,10 @@ after the `state.json` write for each stack. For every entry the index already
 holds whose `producerStack` / `producerRegion` name a stack this run scrubbed:
 
 - when `state.outputs` holds a value under the same name, that value contains
-  `{{resolve:`, and the entry's value differs from it, the entry is rewritten
-  to the state value;
+  `{{resolve:` or carries the redaction mask `***` (any masked output, such as
+  one a `NoEcho` parameter serves), and the entry's value differs from it, the
+  entry is rewritten to the state value. Until it is written, the entry is a
+  finding: `--dry-run --fail` exits 1 over it;
 - when it does not differ, nothing is written.
 
 The rule is a comparison against the state record, not against the plaintext

@@ -49,6 +49,8 @@ import {
   maskSecretsInText,
   maskWholeValue,
   noEchoCoordinatesOf,
+  readsNoEchoSource,
+  type NoEchoPositionSources,
   noEchoLeavesOf,
   redactSecretsForState,
   valueAtCoordinate,
@@ -2934,27 +2936,30 @@ function positionImportedNoEcho(
     if (names !== undefined) declared.set(id, new Set(names));
   }
   const sources = {
-    parameters: noEchoParameterNamesOf(template),
+    parameters: noEchoParametersOrAll(template),
     attributeIsNoEcho: (id: string, attribute: string): boolean =>
       declared.get(id)?.has(attribute) === true,
     ...(Object.keys(conditions).length > 0 && { conditions }),
   };
   const leavesOf = new Map<string, NoEchoCoordinate[]>();
-  const failed = new Set<string>();
+  const failed = new Map<string, NoEchoCoordinate[]>();
   for (let round = 0; round <= inputs.size; round++) {
     let grew = false;
     for (const [id, input] of inputs) {
-      if (failed.has(id)) continue;
-      let leaves: NoEchoCoordinate[];
-      try {
-        leaves = canonicalCoordinates(noEchoCoordinatesOf(input.template, input.resolved, sources));
-      } catch (err) {
-        logger.debug(
-          safeMsg`NoEcho position walk failed for imported ${id}: ${err instanceof Error ? err.name : typeof err} — refusing its baseline fail-closed.`
-        );
-        failed.add(id);
-        refusals.add(id);
-        continue;
+      let leaves = failed.get(id);
+      if (leaves === undefined) {
+        try {
+          leaves = canonicalCoordinates(
+            noEchoCoordinatesOf(input.template, input.resolved, sources)
+          );
+        } catch (err) {
+          logger.debug(
+            safeMsg`NoEcho position walk failed for imported ${id}: ${err instanceof Error ? err.name : typeof err} — masking each property that reads a NoEcho source whole and refusing its baseline, fail-closed.`
+          );
+          leaves = topLevelNoEchoProperties(input.template, sources);
+          failed.set(id, leaves);
+          refusals.add(id);
+        }
       }
       leavesOf.set(id, leaves);
       const physicalId = Object.hasOwn(resources, id) ? resources[id]!.physicalId : undefined;
@@ -2998,6 +3003,45 @@ function positionImportedNoEcho(
       resource.noEchoAttributeNames = [
         ...new Set([...(noEchoAttributeNamesOf(resource) ?? []), ...echoed]),
       ].sort();
+    }
+  }
+}
+
+/**
+ * The fail-closed positions of a record whose position walk threw: every
+ * top-level property whose template value reads a `NoEcho` source, as a
+ * whole. A property too deep to read is taken as reading one.
+ */
+function topLevelNoEchoProperties(
+  template: Record<string, unknown>,
+  sources: NoEchoPositionSources
+): NoEchoCoordinate[] {
+  const leaves: NoEchoCoordinate[] = [];
+  for (const [key, value] of Object.entries(template)) {
+    let reads: boolean;
+    try {
+      reads = readsNoEchoSource(value, sources);
+    } catch {
+      reads = true;
+    }
+    if (reads) leaves.push([key]);
+  }
+  return canonicalCoordinates(leaves);
+}
+
+/**
+ * The template's `NoEcho` parameter names, or EVERY parameter when they
+ * cannot be read: fail-closed, a parameter that might be `NoEcho` is
+ * positioned as one.
+ */
+function noEchoParametersOrAll(template: CloudFormationTemplate): Set<string> {
+  try {
+    return noEchoParameterNamesOf(template);
+  } catch {
+    try {
+      return new Set(Object.keys((template.Parameters ?? {}) as object));
+    } catch {
+      return new Set();
     }
   }
 }

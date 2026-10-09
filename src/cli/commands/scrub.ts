@@ -87,6 +87,7 @@ import {
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   readsNoEchoSource,
+  type NoEchoPositionSources,
   isSingleDynamicReferenceToken,
   recordNoEchoParameterFreshValue,
   valueAtCoordinate,
@@ -346,7 +347,7 @@ function scrubStacksFailedError(failures: ReadonlyArray<{ stackName: string }>):
  * the entry is reported and left holding whatever it holds.
  */
 export type ExportIndexFinding =
-  | { kind: 'converge'; exportName: string; stateValue: unknown }
+  | { kind: 'converge'; exportName: string; stateValue: unknown; entryValue: unknown }
   | { kind: 'absent'; exportName: string; entryValue: unknown };
 
 /** What one stack's pass over one region's exports index examined and found. */
@@ -423,7 +424,7 @@ export function planExportIndexRepair(
     // an Output value is `unknown` and a list-valued `Fn::GetAtt` persists an
     // array, so `!==` alone reports every array as divergent.
     if (JSON.stringify(entry.value) === JSON.stringify(stateValue)) continue;
-    findings.push({ kind: 'converge', exportName, stateValue });
+    findings.push({ kind: 'converge', exportName, stateValue, entryValue: entry.value });
   }
   return { examined, findings };
 }
@@ -1706,8 +1707,17 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           'it may carry a secret'
         );
       const unwrittenNames = new Set(repair.unwritten);
+      // A converge entry's name may embed the value the entry still holds
+      // (an export named after a masked output's plaintext), so every line
+      // naming it masks that value too (go-to-k/cdkd#4043 Phase C).
+      const entryValueOf = new Map(
+        repair.findings.map((finding) => [finding.exportName, finding.entryValue] as const)
+      );
       for (const exportName of repair.unwritten) {
-        indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
+        indexUnwritten.push({
+          region: stackRegion,
+          shown: named(exportName, entryValueOf.get(exportName)),
+        });
       }
       for (const finding of repair.findings) {
         if (finding.kind === 'converge') {
@@ -1726,7 +1736,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           // conditional-tense for every finding.
           if (!options.dryRun && unwrittenNames.has(finding.exportName)) {
             logger.warn(
-              `Exports index entry ${named(finding.exportName)} (${displayIdent(stackRegion)}) differs from ` +
+              `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) differs from ` +
                 `${shownStack}'s state.outputs and could NOT be written — it keeps the ` +
                 `value it holds.`
             );
@@ -1751,7 +1761,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             totalIndexEntriesConverged++;
             logger.info(
               `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
-                `${named(finding.exportName)} (${displayIdent(stackRegion)}) to ${shownStack}'s ` +
+                `${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) to ${shownStack}'s ` +
                 `state.outputs value.`
             );
           }
@@ -8056,6 +8066,21 @@ export async function scrubStack(
       logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
     }
 
+    // go-to-k/cdkd#4043 Phase C: the POSITIONAL arm and its MIGRATION rule.
+    // A leaf today's template serves from a `NoEcho` parameter (or a declared
+    // `NoEcho` `Fn::GetAtt`) is persisted as `***`, named in `noEchoLeaves`,
+    // as a v11 deploy writes it. Where the record still holds the plaintext
+    // there (a stack deployed before v11, or under an older `Default`), that
+    // stored value becomes a value-arm needle of a second scrub of that record
+    // alone, so its other copies in the record are masked too.
+    const noEchoPlans = planScrubNoEcho(
+      state,
+      stack.template,
+      perResourceTemplateProps,
+      conditions,
+      nestedInput?.noEchoParameters ?? []
+    );
+
     // The nested children this stack deploys (go-to-k/cdkd#2252): every
     // `AWS::CloudFormation::Stack` row the template declares OR the record
     // holds. Each becomes a target carrying the parameters and bag above, or a
@@ -8117,9 +8142,11 @@ export async function scrubStack(
           // child with no secret-fed parameter: its own template still names
           // its own references.
           inheritedSecrets: perResourceSecrets.get(logicalId) ?? new Map<string, string>(),
+          // Read against the plan's FINAL declared attributes (its fixed
+          // point), so a row fed by an echoed `NoEcho` attribute counts.
           noEchoParameters: noEchoFilledRowParameters(
             templateResources[logicalId]?.Properties,
-            noEchoNameParameters
+            noEchoPlans.sources
           ),
         },
       });
@@ -8192,20 +8219,6 @@ export async function scrubStack(
       return JSON.stringify(redactSecretsForState(value, needles)) !== JSON.stringify(value);
     };
 
-    // go-to-k/cdkd#4043 Phase C: the POSITIONAL arm and its MIGRATION rule.
-    // A leaf today's template serves from a `NoEcho` parameter (or a declared
-    // `NoEcho` `Fn::GetAtt`) is persisted as `***`, named in `noEchoLeaves`,
-    // as a v11 deploy writes it. Where the record still holds the plaintext
-    // there (a stack deployed before v11, or under an older `Default`), that
-    // stored value becomes a value-arm needle of a second scrub of that record
-    // alone, so its other copies in the record are masked too.
-    const noEchoPlans = planScrubNoEcho(
-      state,
-      stack.template,
-      perResourceTemplateProps,
-      conditions,
-      nestedInput?.noEchoParameters ?? []
-    );
     const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
 
     const totalSecrets =
@@ -8933,6 +8946,8 @@ function planScrubNoEcho(
   outputKeys: string[];
   changesAny: boolean;
   parameters: ReadonlySet<string>;
+  /** The positioning sources over the FINAL declared attribute names. */
+  sources: NoEchoPositionSources;
 } {
   const byLogicalId = new Map<string, ScrubNoEchoPlan>();
   const parameters = new Set([...noEchoParameterNamesOf(template), ...passedParameters]);
@@ -9023,7 +9038,7 @@ function planScrubNoEcho(
     }
   }
   if (outputKeys.length > 0) changesAny = true;
-  return { byLogicalId, outputKeys, changesAny, parameters };
+  return { byLogicalId, outputKeys, changesAny, parameters, sources: outputSources };
 }
 
 /**
@@ -9130,16 +9145,22 @@ function applyScrubNoEcho(
 /**
  * The child parameters a nested-stack row fills from a `NoEcho` source
  * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8: `recordPassedNoEchoParameters`):
- * each `Parameters` entry whose template value reads one of `parameters`.
+ * each `Parameters` entry whose template value reads a `NoEcho` parameter or a
+ * declared `NoEcho` attribute. Not through an `Fn::If`: the deploy reads only
+ * the branch its condition selects, which scrub's default-bound verdicts may
+ * not reproduce.
  */
 function noEchoFilledRowParameters(
   rowProperties: unknown,
-  parameters: ReadonlySet<string>
+  sources: NoEchoPositionSources
 ): string[] {
   if (rowProperties === null || typeof rowProperties !== 'object') return [];
   const passed = (rowProperties as Record<string, unknown>)['Parameters'];
   if (passed === null || typeof passed !== 'object' || Array.isArray(passed)) return [];
   return Object.entries(passed as Record<string, unknown>)
-    .filter(([, value]) => readsNoEchoSource(value, { parameters }))
+    .filter(
+      ([, value]) =>
+        !JSON.stringify(value).includes('"Fn::If"') && readsNoEchoSource(value, sources)
+    )
     .map(([name]) => name);
 }

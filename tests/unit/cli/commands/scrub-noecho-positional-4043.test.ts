@@ -158,6 +158,7 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     exportName: unknown = { Ref: 'Token' }
   ) {
     const info = stackInfo(ALIAS_TOKEN);
+    info.template.Conditions = { Always: { 'Fn::Equals': ['a', 'a'] } } as never;
     (info.template as unknown as { Outputs: unknown }).Outputs = {
       Probe: { Value: 'probe-value', Export: { Name: exportName } },
     };
@@ -230,6 +231,14 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
   it('an Fn::If Export.Name reading a NoEcho parameter in one branch stays a possible live alias', async () => {
     const res = await aliasScrub({ Probe: 'probe-value', Unnamed: 'x' }, undefined, {
       'Fn::If': ['NeverTrue', { Ref: 'Token' }, 'public-export-name'],
+    });
+    expect(res.keptAliasOutputKeys).toBe(1);
+  });
+
+  it('R6: an Fn::If Export.Name spelling the NoEcho value literally in one branch stays a possible live alias', async () => {
+    const res = await aliasScrub({ Probe: 'probe-value', Unnamed: 'x' }, undefined, {
+      // The SELECTED branch spells it, so only the Fn::If exclusion keeps it.
+      'Fn::If': ['Always', `pre-${ALIAS_TOKEN}`, 'public-export-name'],
     });
     expect(res.keptAliasOutputKeys).toBe(1);
   });
@@ -314,6 +323,47 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     expect(saved!.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
   });
 
+  it("R5a: an attribute the record's own noEchoAttributeNames declares is masked whole, and counted", async () => {
+    const state = legacyState('***');
+    const record = state.resources['Param']!;
+    record.noEchoLeaves = [['Value']];
+    record.attributes = { Value: '***', Type: 'String', Extra: 'plain-declared-attr' };
+    record.noEchoAttributeNames = ['Extra', 'Value'];
+    const { saved, changed } = await scrub(state, stackInfo('q7z'));
+    expect(changed).toBeGreaterThan(0);
+    expect(saved!.resources['Param']!.attributes).toEqual({
+      Value: '***',
+      Type: 'String',
+      Extra: '***',
+    });
+    expect(saved!.resources['Param']!.noEchoAttributeNames).toEqual(['Extra', 'Value']);
+  });
+
+  it.each([
+    ['keeps an entry the record still marks', [['Value'], ['Gone']], [['Value']]],
+    ['drops the field when no entry is still marked', [['Gone']], undefined],
+  ])('R5b: noEchoExactEchoLeaves %s', async (_l, exact, expected) => {
+    const state = legacyState('q7z');
+    state.resources['Param']!.noEchoExactEchoLeaves = exact;
+    const { saved } = await scrub(state, stackInfo('q7z'));
+    expect(saved!.resources['Param']!.noEchoExactEchoLeaves).toEqual(expected);
+  });
+
+  it("R5c: a record's own noEchoLeaves REPLACES the template's positions, never unions with them", async () => {
+    const state = legacyState('q7z');
+    const record = state.resources['Param']!;
+    record.noEchoLeaves = [['Value']];
+    record.properties = { ...record.properties, Description: 'other-description' };
+    const info = stackInfo('q7z');
+    (info.template.Resources['Param']!.Properties as Record<string, unknown>)['Description'] = {
+      Ref: 'Token',
+    };
+    const { saved } = await scrub(state, info);
+    expect(saved!.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
+    expect(saved!.resources['Param']!.properties['Description']).toBe('other-description');
+    expect(saved!.resources['Param']!.properties['Value']).toBe('***');
+  });
+
   it.each([
     ['its type changed in the template', (info: ReturnType<typeof stackInfo>) => {
       info.template.Resources['Param']!.Type = 'AWS::SNS::Topic';
@@ -355,6 +405,21 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
       Served: '***',
       'served-alias': '***',
     });
+  });
+
+  // R3: the OWN-alias arm alone. The alias holds an older value, so the
+  // by-value arm cannot reach it.
+  it("the served output's own alias is masked by name even when it holds an older value", async () => {
+    const info = stackInfo('yes');
+    const tpl = info.template as unknown as { Resources: Record<string, unknown>; Outputs: unknown };
+    tpl.Resources = {};
+    tpl.Outputs = { Served: { Value: { Ref: 'Token' }, Export: { Name: 'served-alias' } } };
+    const state = legacyState('x');
+    state.resources = {};
+    state.outputs = { Served: 'yes', 'served-alias': 'old-default' };
+    state.exportNames = ['served-alias'];
+    const { saved } = await scrub(state, info);
+    expect({ ...saved!.outputs }).toEqual({ Served: '***', 'served-alias': '***' });
   });
 
   it('m4: a Fn::GetAtt consumer of an echoing producer is positioned whatever the record order', async () => {
@@ -407,6 +472,40 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
     expect(saved.resources['Param']!.properties['Value']).toBe('***');
     expect(saved.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
+  });
+
+  // Round 4 (#4764), R4 / security M2: the PARENT side of decision 8. A row
+  // parameter fed by an echoed NoEcho attribute counts once the plan's fixed
+  // point declared it; a plaintext or an Fn::If row parameter does not.
+  it("decision 8, parent side: the nested child's NoEcho-filled parameters, read off the row", async () => {
+    const info = stackInfo('q7z');
+    info.template.Conditions = { Always: { 'Fn::Equals': ['a', 'a'] } } as never;
+    info.template.Resources['Child'] = {
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: {
+        TemplateURL: 'https://example.com/child.json',
+        Parameters: {
+          ListIn: { Ref: 'Token' },
+          FromAttr: { 'Fn::GetAtt': ['Param', 'Value'] },
+          Plain: 'plain-row-value',
+          Chosen: { 'Fn::If': ['Always', { Ref: 'Token' }, 'other'] },
+        },
+      },
+    } as never;
+    const state = legacyState('q7z');
+    state.resources['Child'] = {
+      physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/child/1',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+      attributes: {},
+    };
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    const res = await scrubStack(info as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: true,
+      logger: logger as never,
+    });
+    const child = res.nestedChildren.find((c) => c.logicalId === 'Child');
+    expect(child?.input?.noEchoParameters).toEqual(['ListIn', 'FromAttr']);
   });
 
   it('G9: an attribute equal to the physical id is not taken as an echo', async () => {

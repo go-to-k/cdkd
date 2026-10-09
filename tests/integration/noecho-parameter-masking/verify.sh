@@ -870,12 +870,23 @@ if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | j
   exit 1
 fi
 P1C_ORIGINAL=""
-if grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" || [[ "${SCRUB_OUT_P1C}" == *"${TOKEN}"* ]]; then
+# The planted alias spells OLD_SHORT, so it is a needle here too.
+if grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" \
+  || grep -qE "(^|[^A-Za-z0-9])${OLD_SHORT}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" \
+  || [[ "${SCRUB_OUT_P1C}" == *"${TOKEN}"* ]]; then
   echo "FAIL: the Phase 1c 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
 if [ "${SCRUB_RC_P1C}" -ne 1 ]; then
   echo "FAIL: 'cdkd scrub --dry-run --fail' exited ${SCRUB_RC_P1C} over the planted legacy alias (expected 1: a key the deploy would not publish) (issue #4043 Phase C)" >&2
+  diag_output "${SCRUB_OUT_P1C}"
+  exit 1
+fi
+# Exit 1 is also what a crash returns: the finding line itself (its wording is
+# pinned by scrub-export-index.test.ts) is the positive sentinel.
+if ! grep -qE "the template no longer declares would be dropped|may be a live export alias" <<< "${SCRUB_OUT_P1C}"; then
+  echo "FAIL: 'cdkd scrub --dry-run --fail' exited 1 over the planted legacy alias without reporting it as a key to drop (issue #4043 Phase C)" >&2
+  diag_output "${SCRUB_OUT_P1C}"
   exit 1
 fi
 echo "    OK: cdkd scrub --dry-run --fail reports the planted alias (exit 1), printing no value"

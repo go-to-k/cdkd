@@ -305,7 +305,7 @@ describe('planExportIndexRepair — the convergence rule, both directions', () =
 
     expect(plan.examined).toEqual([OWNED]);
     expect(plan.findings).toEqual([
-      { kind: 'converge', exportName: OWNED, stateValue: SECRET_EXPR },
+      { kind: 'converge', exportName: OWNED, stateValue: SECRET_EXPR, entryValue: SECRET_PLAINTEXT },
     ]);
   });
 
@@ -320,7 +320,12 @@ describe('planExportIndexRepair — the convergence rule, both directions', () =
     });
 
     expect(plan.findings).toEqual([
-      { kind: 'converge', exportName: OWNED, stateValue: SECRET_EXPR },
+      {
+        kind: 'converge',
+        exportName: OWNED,
+        stateValue: SECRET_EXPR,
+        entryValue: ROTATED_AWAY_PLAINTEXT,
+      },
     ]);
   });
 
@@ -331,7 +336,9 @@ describe('planExportIndexRepair — the convergence rule, both directions', () =
 
     const plan = planExportIndexRepair(entries, 'MyStack', 'us-east-1', { [OWNED]: '***' });
 
-    expect(plan.findings).toEqual([{ kind: 'converge', exportName: OWNED, stateValue: '***' }]);
+    expect(plan.findings).toEqual([
+      { kind: 'converge', exportName: OWNED, stateValue: '***', entryValue: 'noecho-plaintext-4043' },
+    ]);
   });
 
   it('THE OTHER DIRECTION: leaves an entry whose state value carries no {{resolve:', () => {
@@ -372,7 +379,14 @@ describe('planExportIndexRepair — the convergence rule, both directions', () =
     expect(
       planExportIndexRepair(differing, 'MyStack', 'us-east-1', { [OWNED]: [SECRET_EXPR, 'b'] })
         .findings
-    ).toEqual([{ kind: 'converge', exportName: OWNED, stateValue: [SECRET_EXPR, 'b'] }]);
+    ).toEqual([
+      {
+        kind: 'converge',
+        exportName: OWNED,
+        stateValue: [SECRET_EXPR, 'b'],
+        entryValue: [SECRET_PLAINTEXT, 'b'],
+      },
+    ]);
   });
 });
 
@@ -415,7 +429,7 @@ describe('planExportIndexRepair — ownership is read off the entry', () => {
 
     expect(plan.examined).toEqual(['Mine']);
     expect(plan.findings).toEqual([
-      { kind: 'converge', exportName: 'Mine', stateValue: SECRET_EXPR },
+      { kind: 'converge', exportName: 'Mine', stateValue: SECRET_EXPR, entryValue: SECRET_PLAINTEXT },
     ]);
   });
 });
@@ -1110,6 +1124,44 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     const out = logLines();
     expect(out).not.toContain(SECRET_PLAINTEXT);
     expect(out).toContain('Converged exports index entry (masked:');
+  });
+
+  // go-to-k/cdkd#4043 Phase C: a converge onto the mask records no needle
+  // for the value the entry still holds, so the name is masked by the entry's
+  // own value.
+  it('masks a converge line whose export name embeds the value the entry still holds', async () => {
+    const held = 'noecho-held-4043-value';
+    const leakyName = `alias-${held}-suffix`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: leakyName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [leakyName]: '***' },
+        exportNames: [leakyName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    const region = slot({ entries: new Map([[leakyName, entry(held, 'MyStack', 'us-east-1')]]) });
+    indexFake.regions.set('us-east-1', region);
+
+    await scrubCommand([], commandOptions());
+
+    expect(region.patches.map((p) => p.exportName)).toEqual([leakyName]);
+    const out = logLines();
+    expect(out).toContain('Converged exports index entry (masked:');
+    expect(out).not.toContain(held);
   });
 
   it('a NON-ASCII export name is withheld in index messages, not blanked after the verdict', async () => {

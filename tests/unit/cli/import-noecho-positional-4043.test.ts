@@ -23,6 +23,29 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
+// n5: a position walk that throws, toggled per test.
+const walk = vi.hoisted(() => ({ throws: false, namesThrow: false }));
+vi.mock('../../../src/deployment/deploy-engine/noecho.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../src/deployment/deploy-engine/noecho.js')>();
+  return {
+    ...real,
+    noEchoParameterNamesOf: (...args: Parameters<typeof real.noEchoParameterNamesOf>) => {
+      if (walk.namesThrow) throw new TypeError('unreadable Parameters');
+      return real.noEchoParameterNamesOf(...args);
+    },
+  };
+});
+vi.mock('../../../src/deployment/secret-redaction/noecho-leaves.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../src/deployment/secret-redaction/noecho-leaves.js')>();
+  return {
+    ...real,
+    noEchoCoordinatesOf: (...args: Parameters<typeof real.noEchoCoordinatesOf>) => {
+      if (walk.throws) throw new RangeError('Maximum call stack size exceeded');
+      return real.noEchoCoordinatesOf(...args);
+    },
+  };
+});
+
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   CloudControlProvider: { isSupportedResourceType: vi.fn(() => true) },
 }));
@@ -173,5 +196,43 @@ describe('cdkd import positions a NoEcho parameter (go-to-k/cdkd#4043 Phase C)',
     await resolveImportedProperties(state, tpl, 'us-east-1', {} as never, getLogger());
     expect(state.resources['Param']!.attributes).toEqual({ Value: 'q7z' });
     expect(state.resources['Param']!.noEchoAttributeNames).toBeUndefined();
+  });
+
+  // Review round 4 (#4764), n5 / R7: fail-closed where positioning cannot run.
+  it('n5: a record whose position walk throws has each NoEcho-reading property masked whole and its baseline refused', async () => {
+    const tpl = template('q7z');
+    const state = stateFrom(tpl, { Value: 'q7z', Type: 'String' });
+    walk.throws = true;
+    let refusals: unknown;
+    try {
+      refusals = await resolveImportedProperties(state, tpl, 'us-east-1', {} as never, getLogger());
+    } finally {
+      walk.throws = false;
+    }
+    const record = state.resources['Param']!;
+    expect(record.properties).toEqual({
+      Name: '/app/p',
+      Type: 'String',
+      Value: '***',
+      Description: 'plain-value',
+    });
+    expect(record.noEchoLeaves).toEqual([['Value']]);
+    expect(record.attributes).toEqual({ Value: '***', Type: 'String' });
+    expect(refusals instanceof ObservedBaselineRefusals && refusals.has('Param')).toBe(true);
+  });
+
+  it('R7: a template whose NoEcho flags cannot be read positions every parameter', async () => {
+    const tpl = template('q7z');
+    const state = stateFrom(tpl, {});
+    walk.namesThrow = true;
+    try {
+      await resolveImportedProperties(state, tpl, 'us-east-1', {} as never, getLogger());
+    } finally {
+      walk.namesThrow = false;
+    }
+    const record = state.resources['Param']!;
+    expect(record.properties['Value']).toBe('***');
+    expect(record.properties['Description']).toBe('***');
+    expect(record.noEchoLeaves).toEqual([['Description'], ['Value']]);
   });
 });
