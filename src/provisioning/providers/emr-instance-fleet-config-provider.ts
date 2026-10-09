@@ -396,7 +396,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully added EMR instance fleet ${logicalId}: ${fleetId}`);
-      return { physicalId: fleetId, attributes: { Id: fleetId } };
+      return { physicalId: fleetId, attributes: { Id: fleetId, InstanceFleetId: fleetId } };
     } catch (error) {
       const thrown =
         error instanceof ProvisioningError
@@ -584,7 +584,11 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated EMR instance fleet ${logicalId}`);
       warnLeftInPlace();
-      return { physicalId, wasReplaced: false, attributes: { Id: physicalId } };
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: { Id: physicalId, InstanceFleetId: physicalId },
+      };
     } catch (error) {
       if (error instanceof ProvisioningError || error instanceof ResourceUpdateNotSupportedError) {
         throw error;
@@ -687,9 +691,11 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    // The only readOnly / GetAtt-served attribute is `Id`, which equals the
-    // physical id (the instance fleet id). `Ref` resolves to the same value.
-    if (attributeName === 'Id') return physicalId;
+    // The only readOnly / GetAtt-served attribute is the instance fleet id,
+    // which equals the physical id. `Ref` resolves to the same value. The CFn
+    // schema renamed it `Id` -> `InstanceFleetId`; templates from an older
+    // aws-cdk-lib still read `Id` (`attrId`), so both names are served.
+    if (attributeName === 'Id' || attributeName === 'InstanceFleetId') return physicalId;
     return undefined;
   }
 
