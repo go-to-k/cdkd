@@ -53,6 +53,15 @@ describe('tokensToCss', () => {
   it('applies the dark theme to an explicit choice and to the system choice', () => {
     expect(css).toContain(`[data-theme='dark'] {`);
     expect(css).toContain(`@media (prefers-color-scheme: dark) {\n  :root:not([data-theme='light']) {`);
+    // The system choice carries the same dark values, not just the selector:
+    // a reader whose OS is dark never picks a theme on the site.
+    const system = blockOf(css, ":root:not([data-theme='light'])");
+    for (const [name, value] of Object.entries(tokens.themes.dark.color)) {
+      expect(system).toContain(`--cdkd-color-${name}: ${value};`);
+    }
+    for (const [name, values] of Object.entries(DERIVED_ROLES)) {
+      expect(system).toContain(`--cdkd-${name}: ${values.dark};`);
+    }
   });
 
   it('emits the scale, spacing, radii and motion tokens, and the derived roles per theme', () => {

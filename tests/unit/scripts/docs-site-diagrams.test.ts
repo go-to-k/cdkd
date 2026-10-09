@@ -48,13 +48,14 @@ describe.each(Object.values(DIAGRAMS).flatMap((d) => VARIANTS.map((v) => [d.id, 
     const { m, boxes, height } = layout(diagram, variant);
     const all = [...boxes.values()];
 
-    it('places every node, inside the drawing', () => {
+    it('places every node it defines, once, inside the drawing', () => {
+      // Against the definitions, not the rows: a node left out of every row
+      // would otherwise just not be drawn.
       expect(all.map((box) => box.node.id).sort()).toEqual(
-        diagram.rows
-          .flat()
-          .filter((id): id is string => id !== null)
-          .sort()
+        diagram.nodes.map((node) => node.id).sort()
       );
+      const placed = diagram.rows.flat().filter((id): id is string => id !== null);
+      expect(new Set(placed).size).toBe(placed.length);
       for (const box of all) {
         expect(box.x).toBeGreaterThanOrEqual(0);
         expect(box.x + box.w).toBeLessThanOrEqual(m.width);

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
-  OMEGA,
   REACH,
   createBands,
   scatter,
@@ -79,7 +78,6 @@ describe('step', () => {
       step(bands, now, 16);
       expect(bands.offset[0]).toBeLessThanOrEqual(0);
     }
-    expect(OMEGA).toBeGreaterThan(0);
   });
 });
 
@@ -95,10 +93,17 @@ describe('strike', () => {
     expect(bands.velocity[6]).toBe(0);
   });
 
-  it('ignores bands past either end, and caps how far a band slides forward', () => {
+  it('reaches only the bands that exist at either end, with the same step-down', () => {
     const bands = createBands(3);
-    strike(bands, 0, 50, 5);
-    settle(bands);
+    strike(bands, 0, 60, 5);
+    expect([...bands.velocity]).toEqual([60, 50, 40].map(Math.fround));
+    const end = createBands(3);
+    strike(end, 2, 60, 5);
+    expect([...end.velocity]).toEqual([40, 50, 60].map(Math.fround));
+  });
+
+  it('caps how far a band slides forward', () => {
+    const bands = createBands(3);
     strike(bands, 1, 500, 0);
     let peak = 0;
     for (let now = 0; now < 2000; now += 16) {

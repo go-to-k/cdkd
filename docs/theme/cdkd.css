@@ -87,6 +87,14 @@ body {
   white-space: nowrap;
 }
 
+/* Without scripting, core hides every island. One the build rendered is
+   finished markup, so it stays (theme/home.css keeps the hero's in place). */
+@media (scripting: none) {
+  [data-ox-island][data-ox-ssr] {
+    display: contents !important;
+  }
+}
+
 /* Icons are masks painted with a background color, which forced colors
    would clear: they take the text color instead. */
 @media (forced-colors: active) {
@@ -420,9 +428,10 @@ body {
        too long for that is marked long by plugins/code-spans.ts. */
     white-space: nowrap;
 
+    /* Between words first, inside one only when a single word would not fit. */
     &.cdkd-code-long {
       white-space: normal;
-      overflow-wrap: anywhere;
+      overflow-wrap: break-word;
     }
   }
 

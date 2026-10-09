@@ -55,7 +55,11 @@ export function islandSsrPlugin(options: IslandSsrOptions): Plugin {
       });
       try {
         const { renderIsland } = (await server.ssrLoadModule(options.entry)) as {
-          renderIsland: (name: string, props: Record<string, unknown>) => Promise<string | null>;
+          renderIsland: (
+            name: string,
+            props: Record<string, unknown>,
+            index: number,
+          ) => Promise<string | null>;
         };
         for (const page of pages) {
           const rendered = relocateIslands(await renderIslands(page.html, renderIsland));

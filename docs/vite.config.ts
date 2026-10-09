@@ -166,6 +166,14 @@ const sidebar = navigation.map((group) => ({
 const islandsEntry = (command: 'build' | 'serve'): string =>
   command === 'serve' ? '/islands/client.ts' : '/assets/islands.js';
 
+// The components' styles, as one stylesheet every built page links: the
+// build renders the islands into the page, so their styles have to be there
+// at first paint, not arrive with the hydration code (the dev server
+// injects them itself).
+const ISLANDS_CSS = 'assets/islands.css';
+const islandsStyles = (command: 'build' | 'serve'): string[] =>
+  command === 'serve' ? [] : [`<link rel="stylesheet" href="/${ISLANDS_CSS}">`];
+
 const theme = (command: 'build' | 'serve') =>
   defineTheme({
     aside: true,
@@ -299,6 +307,7 @@ const theme = (command: 'build' | 'serve') =>
         `<meta name="theme-color" content="${tokens.brand.night}" media="(prefers-color-scheme: dark)">`,
         '<link rel="preload" href="/fonts/geist-400.woff2" as="font" type="font/woff2" crossorigin>',
         '<link rel="preload" href="/fonts/geist-600.woff2" as="font" type="font/woff2" crossorigin>',
+        ...islandsStyles(command),
         `<script type="module" src="${islandsEntry(command)}"></script>`,
       ].join('\n'),
     },
@@ -353,14 +362,19 @@ export default defineConfig(({ command }) => ({
     // only on the home page, only with WebGL2, and after the poster shows.
     chunkSizeWarningLimit: 600,
     // The pages are static; Ox Content emits every one during this build's
-    // closeBundle. The one client entry is the islands loader, under a fixed
-    // name because the theme's head tag above has to name it.
+    // closeBundle. The one client entry is the islands loader, and the one
+    // stylesheet the components', both under fixed names because the
+    // theme's head tags above have to name them.
+    cssCodeSplit: false,
     rollupOptions: {
       input: { islands: 'islands/client.ts' },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash][extname]',
+        assetFileNames: (asset) =>
+          asset.names.some((name) => name.endsWith('.css'))
+            ? ISLANDS_CSS
+            : 'assets/[name]-[hash][extname]',
       },
     },
   },

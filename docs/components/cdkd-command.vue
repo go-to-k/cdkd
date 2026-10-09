@@ -290,6 +290,14 @@ onBeforeUnmount(() => clearTimeout(reset));
     background-color: currentColor;
   }
 
+  /* Choosing a tool and copying need scripting; without it the block is
+     the command alone. */
+  @media (scripting: none) {
+    & :is(.tabs, .copy) {
+      display: none;
+    }
+  }
+
   & .status {
     position: absolute;
     inline-size: 1px;

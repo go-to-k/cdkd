@@ -337,6 +337,14 @@
   display: block;
 }
 
+/* Without scripting, the hero's rendered islands keep their place (core
+   would hide them; theme/cdkd.css keeps the rest). */
+@media (scripting: none) {
+  .entry-page .hero .hero-content > [data-ox-island][data-ox-ssr] {
+    display: block !important;
+  }
+}
+
 /* With scripting on, the poster waits for the scene, which opens from the
    line screen rather than the solid symbol; it shows after a beat if the
    scene never comes. */

@@ -24,7 +24,11 @@ function poster(): HTMLElement | null {
 
 function supportsWebGL(): boolean {
   try {
-    return Boolean(document.createElement('canvas').getContext('webgl2'));
+    const gl = document.createElement('canvas').getContext('webgl2');
+    // A probe only: hand the context back rather than hold one of the
+    // browser's few until it is collected.
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    return gl !== null;
   } catch {
     return false;
   }

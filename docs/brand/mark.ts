@@ -3,8 +3,9 @@
 // Redrawn from the approved raster (brand option 02) on a fixed construction:
 // three circles for the cloud, a route band at 34 degrees, and one gap width
 // (24 units) everywhere the faces and the route part. The same paths are the
-// logo files in docs/public/brand, the key visual and the OG card, so
-// none of them can drift from the others.
+// logo files (docs/public/brand/logo-*.svg), the key visual and the OG card,
+// so none of them can drift from the others. The favicon is its own drawing
+// of the symbol, simplified for 16 to 32 px, where these gaps would close.
 //
 // Coordinates are SVG user units, y pointing down, origin at the top-left of
 // the visible symbol.

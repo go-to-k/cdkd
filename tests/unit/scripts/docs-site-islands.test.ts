@@ -3,6 +3,7 @@ import {
   decodeEntities,
   findIslands,
   findMatchingClose,
+  islandIdPrefix,
   parseAttributes,
   registryName,
   relocateIslands,
@@ -77,14 +78,30 @@ describe('renderIslands', () => {
       name === 'server' ? `<b>${String(props['who'])}</b>` : null
     );
     expect(out).toBe(
-      `<div data-ox-island="server" data-ox-props='{"who":"x"}' data-ox-ssr="true"><b>x</b></div><div data-ox-island="client"></div>`
+      `<div data-ox-island="server" data-ox-props='{"who":"x"}' data-ox-ssr="true" data-cdkd-island="0"><b>x</b></div><div data-ox-island="client"></div>`
     );
   });
 
+  it('numbers islands in document order, and hands the number to the renderer', async () => {
+    const html = `<div data-ox-island="a"></div><p></p><div data-ox-island="b"></div>`;
+    const seen: [string, number][] = [];
+    const out = await renderIslands(html, async (name, _props, index) => {
+      seen.push([name, index]);
+      return '<i></i>';
+    });
+    expect(seen.sort()).toEqual([
+      ['a', 0],
+      ['b', 1],
+    ]);
+    expect(out).toContain('<div data-ox-island="a" data-ox-ssr="true" data-cdkd-island="0">');
+    expect(out).toContain('<div data-ox-island="b" data-ox-ssr="true" data-cdkd-island="1">');
+    expect(islandIdPrefix(1)).not.toBe(islandIdPrefix(0));
+  });
+
   it('is idempotent on an island already marked', async () => {
-    const html = `<div data-ox-island="s" data-ox-ssr="true"><i>old</i></div>`;
+    const html = `<div data-ox-island="s" data-ox-ssr="true" data-cdkd-island="0"><i>old</i></div>`;
     const out = await renderIslands(html, async () => '<i>new</i>');
-    expect(out).toBe(`<div data-ox-island="s" data-ox-ssr="true"><i>new</i></div>`);
+    expect(out).toBe(`<div data-ox-island="s" data-ox-ssr="true" data-cdkd-island="0"><i>new</i></div>`);
   });
 });
 
@@ -115,6 +132,23 @@ describe('relocateIslands', () => {
 
   it('leaves an island where it was written when its slot is not on the page', () => {
     const html = `<main><div data-ox-island="visual" data-cdkd-slot="hero-image"></div></main>`;
+    expect(relocateIslands(html)).toBe(html);
+  });
+
+  it('finds the slot by one of its classes', () => {
+    const html = [
+      '<div class="hero-content entry"><h1>cdkd</h1></div>',
+      '<div data-ox-island="first" data-cdkd-slot="hero-content"></div>',
+    ].join('');
+    expect(relocateIslands(html)).toBe(
+      '<div class="hero-content entry"><h1>cdkd</h1><div data-ox-island="first" data-cdkd-slot="hero-content"></div></div>'
+    );
+  });
+
+  it('keeps an island where it was written when its slot never closes', () => {
+    const html =
+      '<div class="hero-content"><h1>cdkd</h1>' +
+      '<div data-ox-island="first" data-cdkd-slot="hero-content"></div>';
     expect(relocateIslands(html)).toBe(html);
   });
 

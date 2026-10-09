@@ -125,6 +125,9 @@ interface Bucket {
   replication?: unknown;
 }
 
+// Where both legacy-key refusals send the reader to purge earlier versions.
+const PURGE_DOC = 'https://cdkd.dev/cli-scrub/#what-a-real-run-removes-and-what-it-cannot';
+
 describe('cdkd scrub purges the superseded state.json versions (go-to-k/cdkd#2624)', () => {
   let sent: Sent[];
   let bucket: Bucket;
@@ -563,6 +566,7 @@ describe('a LEGACY pre-region-layout record is migrated and both keys purged (go
     expect(err!.message).toContain(LEGACY_KEY);
     expect(err!.message).toContain('could not be verified');
     expect(err!.message).toContain('Service Unavailable');
+    expect(err!.message).toContain(` as ${PURGE_DOC} describes.`);
     expect(putRequests).toEqual([{ Key: STATE_KEY, IfMatch: undefined }]);
     expect(deleted().sort()).toEqual([`${LEGACY_KEY}@legacy-plaintext`, `${STATE_KEY}@new-old`]);
   });
@@ -592,6 +596,7 @@ describe('a LEGACY pre-region-layout record is migrated and both keys purged (go
 
     await expect(scrub(record(SECRET_PLAINTEXT))).rejects.toMatchObject({
       code: 'SCRUB_LEGACY_STATE_KEY_SURVIVES',
+      message: expect.stringContaining(` as ${PURGE_DOC} describes.`),
     });
     const getLegacy = sent.find((x) => x.name === 'GetObjectCommand');
     expect(getLegacy?.input.Key).toBe(LEGACY_KEY);

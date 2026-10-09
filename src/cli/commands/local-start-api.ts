@@ -1662,7 +1662,7 @@ function warnVpcConfigLambdas(
       const vpcConfig = props['VpcConfig'];
       if (vpcConfig && typeof vpcConfig === 'object' && Object.keys(vpcConfig).length > 0) {
         logger.warn(
-          `Lambda ${logicalId} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See https://cdkd.dev/local-start-api/#limitations for details.`
+          `Lambda ${logicalId} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See https://cdkd.dev/local-start-api/#vpc-config-lambdas for details.`
         );
       }
       break;

@@ -136,24 +136,34 @@ export function findIslands(html: string): IslandMatch[] {
   return islands;
 }
 
+/** The id prefix an island's Vue app uses, the same on the server and the client. */
+export function islandIdPrefix(index: number): string {
+  return `cdkd-island-${index}`;
+}
+
 /**
  * Renders islands in place. `render` returns the island's inner HTML, or
  * `null` for a client-only island, which is left as written. Rendered
  * islands are marked `data-ox-ssr="true"` so the client hydrates them
- * instead of mounting over them.
+ * instead of mounting over them, and numbered (`data-cdkd-island`) in
+ * document order: each island is its own app, and the number keeps the
+ * ids two of them generate apart.
  */
 export async function renderIslands(
   html: string,
-  render: (name: string, props: Record<string, unknown>) => Promise<string | null>,
+  render: (name: string, props: Record<string, unknown>, index: number) => Promise<string | null>,
 ): Promise<string> {
   let output = html;
-  for (const island of findIslands(html).toReversed()) {
-    const inner = await render(island.name, island.props);
+  const islands = findIslands(html);
+  for (const [index, island] of [...islands.entries()].toReversed()) {
+    const inner = await render(island.name, island.props, index);
     if (inner === null) continue;
     const openTag = output.slice(island.start, island.openEnd);
-    const marked = /\sdata-ox-ssr\b/i.test(openTag)
-      ? openTag
-      : `${openTag.slice(0, -1)} data-ox-ssr="true">`;
+    const marks = [
+      /\sdata-ox-ssr\b/i.test(openTag) ? '' : ' data-ox-ssr="true"',
+      /\sdata-cdkd-island\b/i.test(openTag) ? '' : ` data-cdkd-island="${index}"`,
+    ].join('');
+    const marked = `${openTag.slice(0, -1)}${marks}>`;
     output = output.slice(0, island.start) + marked + inner + output.slice(island.closeStart);
   }
   return output;
@@ -161,15 +171,20 @@ export async function renderIslands(
 
 /**
  * Moves every island carrying `data-cdkd-slot` to the end of the slot's
- * element, in document order. An island whose slot is not on the page stays
- * where it was written.
+ * element, in document order. The slot is the first `div` with that class
+ * among its classes. An island whose slot is not on the page, or never
+ * closes, stays where it was written.
  */
 export function relocateIslands(html: string): string {
   const slotOpen = (slot: IslandSlot): RegExp =>
-    new RegExp(`<div\\b[^>]*\\bclass="${ISLAND_SLOTS[slot]}"[^>]*>`);
+    new RegExp(`<div\\b[^>]*\\bclass="(?:[^"]*\\s)?${ISLAND_SLOTS[slot]}(?:\\s[^"]*)?"[^>]*>`);
+  const placeable = (slot: IslandSlot): boolean => {
+    const open = slotOpen(slot).exec(html);
+    return open !== null && findMatchingClose(html, open.index + open[0].length) !== -1;
+  };
   const moving = findIslands(html).filter((island) => {
     const slot = island.attrs['data-cdkd-slot'];
-    return isIslandSlot(slot) && slotOpen(slot).test(html);
+    return isIslandSlot(slot) && placeable(slot);
   });
   let output = html;
   for (const island of moving.toReversed()) {

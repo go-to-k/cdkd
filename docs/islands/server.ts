@@ -4,7 +4,7 @@
 import { createSSRApp, h, type Component } from 'vue';
 import { renderToString } from 'vue/server-renderer';
 import { components } from 'virtual:ox-content-vue/components';
-import { registryName } from './html.js';
+import { islandIdPrefix, registryName } from './html.js';
 
 const registry = components as Record<string, Component & { clientOnly?: boolean }>;
 
@@ -12,11 +12,14 @@ const registry = components as Record<string, Component & { clientOnly?: boolean
 export async function renderIsland(
   name: string,
   props: Record<string, unknown>,
+  index: number,
 ): Promise<string | null> {
   const component = registry[registryName(name)];
   if (!component) {
     throw new Error(`[islands] no component ${name}.vue in docs/components`);
   }
   if (component.clientOnly) return null;
-  return renderToString(createSSRApp({ render: () => h(component, props) }));
+  const app = createSSRApp({ render: () => h(component, props) });
+  app.config.idPrefix = islandIdPrefix(index);
+  return renderToString(app);
 }

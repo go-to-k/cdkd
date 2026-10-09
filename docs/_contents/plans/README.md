@@ -9,7 +9,8 @@ This directory holds deferred / future implementation plans. Each file is a
 self-contained plan for one PR.
 
 The 2025 Region & State refactor (PRs 1–7) shipped and the plan files were
-removed; see `git log -- docs/_contents/plans/` for the historical plans, and
+removed; see `git log -- docs/plans/` for the historical plans (they predate
+the move to `docs/_contents/`), and
 [../changelog-cdkd.md](../changelog-cdkd.md) for the per-PR landing record
 (default bucket name flip, region-prefixed state keys, dynamic region
 resolution, `--region` flag cleanup, `cdkd state destroy`, etc.).
