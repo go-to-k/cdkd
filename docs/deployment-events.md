@@ -147,8 +147,8 @@ journal, a failed deploy's automatic rollback, and `cdkd rollback`. Both rollbac
 also revert the deploy's completed operations under such needles.
 
 `cdkd deploy` masks every event with those needles too, in the same pass as the
-resource's own secrets and longest match first, so a short needle cannot split a
-longer one and leave part of it behind. A nested stack deploys under its parent
+resource's own secrets. Every match of any needle is masked, and overlapping
+matches are masked as one, so no needle leaves part of another behind. A nested stack deploys under its parent
 row's needles. When the parent passes the child a value read from a resource
 named from a secret, such as that queue's ARN, an AWS error in the child that
 quotes the value is masked as well.
