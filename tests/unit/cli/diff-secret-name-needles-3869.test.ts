@@ -768,5 +768,49 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it.each([
+      ['a secret-named record', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted grandchild's output with its deleted parent's own records: %s", async (_l, recorded, shown) => {
+      // The secret-named queue lives in the DELETED child's state, never in
+      // the root's: only the deleted child's own records can name it.
+      const parent = state('plain-root-queue');
+      parent.resources['Child'] = stackRecord('S-Child', {});
+      const child = empty('S~Child', {
+        Queue: {
+          physicalId: URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: recorded },
+          attributes: {},
+          dependencies: [],
+        },
+        GC: stackRecord('S-Child-GC', { QueueUrl: URL }),
+      });
+      const gc = empty('S~Child~GC');
+      gc.outputs = { GOut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child, 'S~Child~GC': gc };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: template('plain-root-queue'),
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const deletedGc = tree.children
+        .find((c) => c.stackName === 'S~Child')
+        ?.children.find((c) => c.stackName === 'S~Child~GC');
+      const out = JSON.stringify(deletedGc?.outputChanges.find((c) => c.name === 'GOut'));
+      expect(out).toContain('"changeType":"REMOVE"');
+      expect(out).toContain('"oldValue"');
+      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
   });
 });
