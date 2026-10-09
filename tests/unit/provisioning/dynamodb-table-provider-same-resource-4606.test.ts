@@ -177,6 +177,12 @@ describe('DynamoDBTableProvider.isSameResource (go-to-k/cdkd#4606)', () => {
     await expect(
       provider.isSameResource('orders-a', { physicalId: 'orders-b' }, TYPE, CTX)
     ).rejects.toThrow('no TableId');
+    // An empty TableId is no TableId: two empty ids must never compare equal.
+    mockSend.mockReset();
+    live({ 'orders-a': '', 'orders-b': '' });
+    await expect(
+      provider.isSameResource('orders-a', { physicalId: 'orders-b' }, TYPE, CTX)
+    ).rejects.toThrow('no TableId');
   });
 
   it('a client in another region is unknown, with no read', async () => {
@@ -387,12 +393,15 @@ describe("the created-before-failure mark carries CreateTable's TableId (go-to-k
     expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe('tid-CREATED');
   });
 
-  it('a CreateTable response with no TableId marks the name alone', async () => {
-    aws({ tableId: undefined });
-    const error = await failureOf(new DynamoDBTableProvider().create('Orphan', TYPE, PROPS));
-    expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('orders-a');
-    expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
-  });
+  it.each([undefined, ''])(
+    'a CreateTable response with no TableId (%j) marks the name alone',
+    async (tableId) => {
+      aws({ tableId });
+      const error = await failureOf(new DynamoDBTableProvider().create('Orphan', TYPE, PROPS));
+      expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('orders-a');
+      expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
+    }
+  );
 
   it('a rollback DeleteTable that succeeded marks nothing, identity included', async () => {
     aws({ tableId: 'tid-CREATED', deleteSucceeds: true });
@@ -548,6 +557,7 @@ describe('the success settle with DynamoDBTableProvider (go-to-k/cdkd#4606)', ()
     const r = await settle('tid-ORPHAN', { recordTableId: 'tid-ORPHAN' });
     expect(r.del).not.toHaveBeenCalled();
     expect(r.out.unaddressed).toBe(0);
+    expect(r.warned).toBe('');
   });
 
   it('the fix-forward: keeps it when `orders-a` was re-created (another TableId) before the settle', async () => {
@@ -561,6 +571,9 @@ describe('the success settle with DynamoDBTableProvider (go-to-k/cdkd#4606)', ()
     const r = await settle('gone', { recordTableId: 'tid-NEW' });
     expect(r.del).not.toHaveBeenCalled();
     expect(r.out.unaddressed).toBe(0);
+    expect(r.infos).toContain('Orphan (AWS::DynamoDB::Table)');
+    expect(r.infos).toContain('is already gone: nothing to delete');
+    expect(r.warned).toBe('');
   });
 
   it('with no record under the id: deletes it when the name still reads back under the journaled TableId (control)', async () => {

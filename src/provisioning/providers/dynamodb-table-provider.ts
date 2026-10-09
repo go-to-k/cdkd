@@ -2005,10 +2005,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         await this.getCreateClient()
       ).send(new CreateTableCommand(createParams));
       tableCreated = true;
-      const returnedTableId = createOut?.TableDescription?.TableId;
-      if (typeof returnedTableId === 'string' && returnedTableId !== '') {
-        createdTableId = returnedTableId;
-      }
+      // An absent or empty id is dropped by `markCreatedBeforeFailure`.
+      createdTableId = createOut?.TableDescription?.TableId;
 
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 

@@ -338,7 +338,7 @@ if [ "${INJECT_RC}" -eq 0 ]; then
   exit 1
 fi
 for t in "${TABLE_A}" "${TABLE_C}"; do
-  if ! aws dynamodb describe-table --table-name "${t}" --region "${REGION}" >/dev/null 2>&1; then
+  if gone_probe aws dynamodb describe-table --table-name "${t}" --region "${REGION}"; then
     echo "[verify] FAIL: table ${t} does not exist after step 2 -- its CREATE failed before CreateTable returned (output above)" >&2
     exit 1
   fi
@@ -365,12 +365,12 @@ JOURNAL_2="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
 # DescribeTable reports.
 assert_journaled() { # usage: assert_journaled <logicalId> <table>
   local op want
-  want="$(table_id "$2")" || return 1
+  want="$(table_id "$2")" || { echo "[verify] FAIL: DescribeTable $2 failed after step 2 (output above)" >&2; exit 1; }
   if [ -z "${want}" ] || [ "${want}" = "None" ]; then
     echo "[verify] FAIL: DescribeTable reports no TableId for $2 after step 2" >&2
     exit 1
   fi
-  op="$(printf '%s' "${JOURNAL_2}" | jq -c --arg l "$1" '[.segments[-1].failedOperations[]? | select(.logicalId == $l)] | first // empty')" || return 1
+  op="$(printf '%s' "${JOURNAL_2}" | jq -c --arg l "$1" '[.segments[-1].failedOperations[]? | select(.logicalId == $l)] | first // empty')" || { echo "[verify] FAIL: could not read $1 from the rollback journal after step 2" >&2; exit 1; }
   if [ -z "${op}" ] \
     || [ "$(printf '%s' "${op}" | jq -r '.physicalId // "<absent>"')" != "$2" ] \
     || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ] \
@@ -433,7 +433,7 @@ fi
 assert_gone "the fix-forward kept the rollback journal (expected it removed: OrphanA deleted, OrphanC warned about)" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 for t in "${TABLE_A_B}" "${TABLE_C_B}" "${BASE_TABLE}"; do
-  if ! aws dynamodb describe-table --table-name "${t}" --region "${REGION}" >/dev/null 2>&1; then
+  if gone_probe aws dynamodb describe-table --table-name "${t}" --region "${REGION}"; then
     echo "[verify] FAIL: the record's table ${t} is missing after the fix-forward (the settle must not delete the records' tables)" >&2
     exit 1
   fi
@@ -445,8 +445,8 @@ fi
 STATE_3="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 assert_record() { # usage: assert_record <logicalId> <table>
   local pid by
-  pid="$(printf '%s' "${STATE_3}" | jq -r --arg l "$1" '.resources[$l].physicalId // "<absent>"')" || return 1
-  by="$(printf '%s' "${STATE_3}" | jq -r --arg l "$1" '.resources[$l].provisionedBy // "<absent>"')" || return 1
+  pid="$(printf '%s' "${STATE_3}" | jq -r --arg l "$1" '.resources[$l].physicalId // "<absent>"')" || { echo "[verify] FAIL: could not read $1 from the state record after step 3" >&2; exit 1; }
+  by="$(printf '%s' "${STATE_3}" | jq -r --arg l "$1" '.resources[$l].provisionedBy // "<absent>"')" || { echo "[verify] FAIL: could not read $1 from the state record after step 3" >&2; exit 1; }
   if [ "${pid}" != "$2" ] || [ "${by}" != "sdk" ]; then
     echo "[verify] FAIL: state records $1 as ${pid} via ${by} (expected $2 via sdk, where isSameResource lives)" >&2
     exit 1
