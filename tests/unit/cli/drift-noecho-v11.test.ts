@@ -96,7 +96,11 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   })),
 }));
 
-import { createDriftCommand, maskMarkedNoEchoBaseline } from '../../../src/cli/commands/drift.js';
+import {
+  createDriftCommand,
+  maskMarkedNoEchoBaseline,
+  maskMarkedNoEchoBaselineWithLeaves,
+} from '../../../src/cli/commands/drift.js';
 
 async function runDrift(args: string[]): Promise<{ output: string; error: unknown }> {
   const output: string[] = [];
@@ -624,6 +628,26 @@ describe('maskMarkedNoEchoBaseline (go-to-k/cdkd#4043 Phase C, review of #4763)'
       true
     );
     expect(out).toEqual({ Value: SECRET_MASK, Other: SECRET_MASK, Description: 'a' });
+  });
+
+  it('N3: a replaced list masked WHOLE is named in noEchoLeaves, as the rollback replay names it', () => {
+    const out = maskMarkedNoEchoBaselineWithLeaves(
+      { L: ['live-a', 'live-b'] },
+      record({ L: ['secretA', 'x'] }, [['L', 0]]),
+      false
+    );
+    expect(out.baseline).toEqual({ L: [SECRET_MASK, SECRET_MASK] });
+    expect(out.noEchoLeaves).toEqual([['L']]);
+  });
+
+  it('N3: an unreplaced list keeps the record\'s noEchoLeaves (nothing widened)', () => {
+    const out = maskMarkedNoEchoBaselineWithLeaves(
+      { L: ['secretA', 'x'] },
+      record({ L: ['secretA', 'x'] }, [['L', 0]]),
+      false
+    );
+    expect(out.baseline).toEqual({ L: [SECRET_MASK, 'x'] });
+    expect(out.noEchoLeaves).toBeUndefined();
   });
 
   it('N1: two marked elements of one list do not read as a replaced list (no public element masked)', () => {

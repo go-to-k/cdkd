@@ -370,18 +370,30 @@ export function equalModuloMarkedMask(
   aws: unknown,
   mask: string,
   coordinate: readonly (string | number)[],
-  isMarked: (coordinate: readonly (string | number)[]) => boolean
+  isMarked: (coordinate: readonly (string | number)[]) => boolean,
+  isWithinMarked: (coordinate: readonly (string | number)[]) => boolean = isMarked
 ): boolean {
   const a = jsonForm(state);
   const b = jsonForm(aws);
-  if (isMarked(coordinate) && isWhollyMask(a, mask)) return b !== undefined && b !== null;
+  if (isMarked(coordinate) && b !== undefined && b !== null) {
+    if (a === mask) return true;
+    // AT or INSIDE a marked coordinate the whole value is the NoEcho value,
+    // whatever shape it now has. At a strict ANCESTOR (a list masked whole
+    // because no identity field paired it) only the masked leaves are
+    // opaque: the live value must still have the shape the state recorded.
+    if (isWithinMarked(coordinate) ? isWhollyMask(a, mask) : sameJson(a, wholeMaskOf(b, mask))) {
+      return holdsMask(a, mask);
+    }
+  }
   if (a === mask && typeof b === 'string') return true;
   if (a === b) return true;
   if (a === null || b === null || a === undefined || b === undefined) return a === b;
   if (typeof a !== typeof b || typeof a !== 'object') return false;
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((v, i) => equalModuloMarkedMask(v, b[i], mask, [...coordinate, i], isMarked));
+    return a.every((v, i) =>
+      equalModuloMarkedMask(v, b[i], mask, [...coordinate, i], isMarked, isWithinMarked)
+    );
   }
   const aObj = a as Record<string, unknown>;
   const bObj = b as Record<string, unknown>;
@@ -390,8 +402,32 @@ export function equalModuloMarkedMask(
   return aKeys.every(
     (key) =>
       Object.prototype.hasOwnProperty.call(bObj, key) &&
-      equalModuloMarkedMask(aObj[key], bObj[key], mask, [...coordinate, key], isMarked)
+      equalModuloMarkedMask(
+        aObj[key],
+        bObj[key],
+        mask,
+        [...coordinate, key],
+        isMarked,
+        isWithinMarked
+      )
   );
+}
+
+/**
+ * The live value masked whole, the way the writer masks it (`maskWholeValue`):
+ * every scalar becomes `mask`, while `null` and the containers' shape stay.
+ * A marked container in state matches the live value only when it equals this
+ * — so a wholly masked `[{Key: '***', Value: null}]` matches any live
+ * `[{Key: <x>, Value: null}]`, but a `null` that became a value, an element
+ * added to a list, or a public sibling that changed is still drift.
+ */
+function wholeMaskOf(value: unknown, mask: string): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map((v) => wholeMaskOf(v, mask));
+  if (isPlainObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, wholeMaskOf(v, mask)]));
+  }
+  return mask;
 }
 
 /**
@@ -401,18 +437,36 @@ export function equalModuloMarkedMask(
  * as `[{Key: '***', Value: null}]` is still the mask of the whole value.
  */
 function isWhollyMask(value: unknown, mask: string): boolean {
-  let sawMask = false;
   const walk = (node: unknown): boolean => {
-    if (node === mask) {
-      sawMask = true;
-      return true;
-    }
-    if (node === null) return true;
+    if (node === mask || node === null) return true;
     if (Array.isArray(node)) return node.every(walk);
     if (isPlainObject(node)) return Object.values(node).every(walk);
     return false;
   };
-  return walk(value) && sawMask;
+  return walk(value) && holdsMask(value, mask);
+}
+
+function holdsMask(value: unknown, mask: string): boolean {
+  if (value === mask) return true;
+  if (Array.isArray(value)) return value.some((v) => holdsMask(v, mask));
+  if (isPlainObject(value)) return Object.values(value).some((v) => holdsMask(v, mask));
+  return false;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => sameJson(v, b[i]));
+  }
+  const aObj = a as Record<string, unknown>;
+  const bObj = b as Record<string, unknown>;
+  const keys = Object.keys(aObj);
+  return (
+    keys.length === Object.keys(bObj).length &&
+    keys.every((k) => Object.prototype.hasOwnProperty.call(bObj, k) && sameJson(aObj[k], bObj[k]))
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

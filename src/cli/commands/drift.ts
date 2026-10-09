@@ -133,6 +133,9 @@ import {
   liveMatchesUnresolvedTokenFrame,
   maskAtCoordinates,
   maskReadbackAtCoordinates,
+  readbackPathFor,
+  type NoEchoCoordinate,
+  canonicalCoordinates,
   maskedLeafCoordinatesOf,
   maskWholeValue,
   valueAtCoordinate,
@@ -2794,6 +2797,13 @@ function partitionNoEchoParameterChanges(
         leaf.length > coordinate.length &&
         coordinate.every((segment, i) => String(segment) === String(leaf[i]))
     );
+  // AT or inside a marked coordinate: the whole value there is the NoEcho one.
+  const isWithinMarked = (coordinate: readonly (string | number)[]): boolean =>
+    marked.some(
+      (leaf) =>
+        leaf.length <= coordinate.length &&
+        leaf.every((segment, i) => String(segment) === String(coordinate[i]))
+    );
   const kept: PropertyDrift[] = [];
   const noEchoParameterPaths: string[] = [];
   for (const change of changes) {
@@ -2808,7 +2818,14 @@ function partitionNoEchoParameterChanges(
       carriesSecretMask(change.stateValue) &&
       !pathCrossesDottedKey(properties, change.path) &&
       !pathCrossesDottedKey(baseline, change.path) &&
-      equalModuloMarkedMask(change.stateValue, change.awsValue, SECRET_MASK, coordinate, isMarked)
+      equalModuloMarkedMask(
+        change.stateValue,
+        change.awsValue,
+        SECRET_MASK,
+        coordinate,
+        isMarked,
+        isWithinMarked
+      )
     ) {
       noEchoParameterPaths.push(change.path);
       continue;
@@ -4869,10 +4886,14 @@ async function runAccept(
         // go-to-k/cdkd#4043 Phase C: AFTER the recorded check, which compares
         // what the user accepted: a marked coordinate is `***` in what is
         // written, whatever a changed parent path carried there.
-        const writtenBaseline = maskMarkedNoEchoBaseline(redactedBaseline, existing, hasObserved);
+        const written = maskMarkedNoEchoBaselineWithLeaves(redactedBaseline, existing, hasObserved);
         resources[outcome.logicalId] = hasObserved
-          ? { ...existing, observedProperties: writtenBaseline }
-          : { ...existing, properties: writtenBaseline };
+          ? { ...existing, observedProperties: written.baseline }
+          : {
+              ...existing,
+              properties: written.baseline,
+              ...(written.noEchoLeaves !== undefined && { noEchoLeaves: written.noEchoLeaves }),
+            };
       }
 
       // `skippedOutputs` (issue #2740) is dropped rather than spread through,
@@ -9129,17 +9150,34 @@ export function maskMarkedNoEchoBaseline(
   record: ResourceState,
   observed: boolean
 ): Record<string, unknown> {
+  return maskMarkedNoEchoBaselineWithLeaves(baseline, record, observed).baseline;
+}
+
+/**
+ * {@link maskMarkedNoEchoBaseline}, plus the record's `noEchoLeaves` widened by
+ * every list the `properties` arm masked whole (absent when none was).
+ *
+ * @internal Exported for its unit tests.
+ */
+export function maskMarkedNoEchoBaselineWithLeaves(
+  baseline: Record<string, unknown>,
+  record: ResourceState,
+  observed: boolean
+): { baseline: Record<string, unknown>; noEchoLeaves?: (string | number)[][] } {
   const marked = noEchoLeavesOf(record) ?? [];
   // An observed baseline also at every `***` leaf of `properties`, named or
   // not: a pre-v11 record names no coordinate for a value it holds only as
   // the mask (as the deploy's capture masks it).
   if (observed) {
     const coordinates = [...marked, ...maskedLeafCoordinatesOf(record.properties ?? {})];
-    return coordinates.length === 0
-      ? baseline
-      : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
+    return {
+      baseline:
+        coordinates.length === 0
+          ? baseline
+          : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates),
+    };
   }
-  if (marked.length === 0) return baseline;
+  if (marked.length === 0) return { baseline };
   // By index, except where an accepted value REPLACED the list a coordinate
   // runs through (AWS's order, not the record's): that coordinate is paired
   // through the list's identity field against the record instead, which masks
@@ -9168,5 +9206,18 @@ export function maskMarkedNoEchoBaseline(
     baseline,
     marked.filter((coordinate) => !replaced.includes(coordinate))
   );
-  return replaced.length === 0 ? byIndex : maskReadbackAtCoordinates(byIndex, recorded, replaced);
+  if (replaced.length === 0) return { baseline: byIndex };
+  // A list masked WHOLE (nothing paired an element) is named by its own path,
+  // as the rollback replay names it, so every `***` the record holds stays a
+  // coordinate it lists: drift and export read an unlisted mask as another
+  // population's.
+  const widened = replaced
+    .map((coordinate) => readbackPathFor(byIndex, recorded, coordinate))
+    .filter(
+      (path, i): path is NoEchoCoordinate => path !== undefined && path.length < replaced[i]!.length
+    );
+  return {
+    baseline: maskReadbackAtCoordinates(byIndex, recorded, replaced),
+    ...(widened.length > 0 && { noEchoLeaves: canonicalCoordinates([...marked, ...widened]) }),
+  };
 }
