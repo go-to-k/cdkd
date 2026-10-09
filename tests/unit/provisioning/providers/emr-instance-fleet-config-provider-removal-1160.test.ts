@@ -122,7 +122,11 @@ describe('EMRInstanceFleetConfigProvider update: removal (#1160)', () => {
         PREV
       );
 
-      expect(result).toEqual({ physicalId: FLEET_ID, wasReplaced: false });
+      expect(result).toEqual({
+        physicalId: FLEET_ID,
+        wasReplaced: false,
+        attributes: { Id: FLEET_ID, InstanceFleetId: FLEET_ID },
+      });
       expect(mockSend).not.toHaveBeenCalled();
       expect(warnings()).toHaveLength(1);
       const line = warnings()[0]!;
