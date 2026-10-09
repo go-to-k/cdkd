@@ -95,6 +95,7 @@ import {
 } from '../../deployment/secret-redaction.js';
 import {
   noEchoAttributeNamesOf,
+  noEchoExactEchoLeavesOf,
   noEchoParameterNamesOf,
 } from '../../deployment/deploy-engine/noecho.js';
 // Issue #2109: the region split is #2057's, imported rather than re-spelled —
@@ -412,7 +413,12 @@ export function planExportIndexRepair(
     // has just rewritten, or one this run recorded no needle for, and
     // converging an entry onto a plaintext would move a plaintext INTO the
     // shared object rather than out of it.
-    if (!carriesDynamicReference(stateValue)) continue;
+    //
+    // The redaction MASK is canonical the same way (go-to-k/cdkd#4043 Phase
+    // C): a `NoEcho`-served output scrub masked, which a deploy also publishes
+    // to the index as `***` (`redactOutputs`), so an entry still holding the
+    // value converges onto the mask.
+    if (!carriesDynamicReference(stateValue) && !carriesSecretMask(stateValue)) continue;
     // `JSON.stringify` for the same reason `mapsEqual` uses it in the store:
     // an Output value is `unknown` and a list-valued `Fn::GetAtt` persists an
     // array, so `!==` alone reports every array as divergent.
@@ -740,6 +746,12 @@ export interface NestedChildScrubInput {
    * plaintext: passed on, never enumerated or logged.
    */
   inheritedSecrets: RecordedSecretValues;
+  /**
+   * The child parameters the parent's row fills from a `NoEcho` source
+   * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8), which the child's
+   * own template does not declare `NoEcho`.
+   */
+  noEchoParameters?: readonly string[];
 }
 
 /** One nested child a parent's scrub found, for `scrubCommand` to visit next. */
@@ -7195,6 +7207,11 @@ export async function scrubStack(
     // Every `NoEcho` value this run binds, the seed of the deploy's
     // export-name verdict (go-to-k/cdkd#4043): a name it refuses is never
     // published, so its absence accounts for nothing.
+    const noEchoNameParameters = new Set([
+      ...noEchoParameterNamesOf(stack.template),
+      ...(nestedInput?.noEchoParameters ?? []),
+    ]);
+    const declaredAliasOf = new Map<string, string>();
     const noEchoNameSeed = noEchoParameterValueSeed(
       stack.template.Parameters,
       parameters,
@@ -7844,20 +7861,24 @@ export async function scrubStack(
         // REFUSES (it holds or reads a `NoEcho` value) is never published, so
         // its alias key is absent by design and does not make the stored
         // aliases unaccountable. A key an older binary published under it is
-        // then an unnamed key: reported by its secret-bearing check, and
-        // dropped, not kept as a possible live alias.
+        // then an unnamed key the drop plan decides like any other: reported
+        // when its name renders a secret (and then kept, since a key cannot
+        // be rewritten), dropped otherwise.
+        // Not through an `Fn::If`, on either arm: the deploy reads only the
+        // branch its condition selects, which scrub's default-bound verdicts
+        // may not reproduce, so a conditional name stays a possible live alias.
         const refusedForNoEcho =
           declaredExportName !== undefined &&
+          !JSON.stringify(declaredExportName).includes('"Fn::If"') &&
           ((typeof exportName === 'string' &&
             !exportNameUnresolved &&
             carriedExportAliasExposure(exportName, outputSecrets, noEchoNameSeed) !== undefined) ||
-            // Not through an `Fn::If`: the deploy reads only the branch its
-            // condition selects, which scrub's default-bound verdicts may not
-            // reproduce, so a conditional name stays a possible live alias.
-            (!JSON.stringify(declaredExportName).includes('"Fn::If"') &&
-              readsNoEchoSource(declaredExportName, {
-                parameters: noEchoParameterNamesOf(stack.template),
-              })));
+            readsNoEchoSource(declaredExportName, { parameters: noEchoNameParameters }));
+        // The alias key a declared output publishes, for the NoEcho output
+        // mask: only a served output's OWN alias is masked by name.
+        if (typeof exportName === 'string' && !exportNameUnresolved) {
+          declaredAliasOf.set(name, exportName);
+        }
         if (
           declaredExportName !== undefined &&
           !literalCollision &&
@@ -8096,6 +8117,10 @@ export async function scrubStack(
           // child with no secret-fed parameter: its own template still names
           // its own references.
           inheritedSecrets: perResourceSecrets.get(logicalId) ?? new Map<string, string>(),
+          noEchoParameters: noEchoFilledRowParameters(
+            templateResources[logicalId]?.Properties,
+            noEchoNameParameters
+          ),
         },
       });
     }
@@ -8178,7 +8203,8 @@ export async function scrubStack(
       state,
       stack.template,
       perResourceTemplateProps,
-      conditions
+      conditions,
+      nestedInput?.noEchoParameters ?? []
     );
     const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
 
@@ -8539,7 +8565,8 @@ export async function scrubStack(
     const noEchoMaskedOutputs = maskScrubNoEchoOutputs(
       redactedOutputs,
       noEchoPlans.outputKeys,
-      new Set(Object.keys(stack.template.Outputs ?? {}))
+      new Set(Object.keys(stack.template.Outputs ?? {})),
+      declaredAliasOf
     );
     emitAbandonedScanNotes();
     // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name
@@ -8871,86 +8898,132 @@ interface ScrubNoEchoPlan {
   readonly leaves: NoEchoCoordinate[];
   /** The plaintext the record still held at a coordinate (the migration witness). */
   readonly stored: ReadonlyArray<{ coordinate: NoEchoCoordinate; value: unknown }>;
+  /** Attribute names declared `NoEcho`: the record's own, plus echoes found now. */
+  readonly attributeNames: readonly string[];
 }
 
 /**
  * Plan the `NoEcho` arms over every record today's template still declares
  * under the same type (go-to-k/cdkd#4043 Phase C, design section 4.6).
  *
- * - The coordinates are today's template positions that read a `NoEcho`
- *   parameter (`noEchoCoordinatesOf` over the STORED record), plus each
- *   coordinate the record already names whose leaf still holds the mask.
+ * - The coordinates are the record's own `noEchoLeaves` when it has the field
+ *   (as a deploy keeps it for a record it does not write), else today's
+ *   template positions that read a `NoEcho` parameter, over the STORED record.
  * - A plaintext the record still holds there is kept as the record's
  *   migration witness: {@link scrubMigrationNeedles} makes it a FRESH mask-only
  *   and containment needle of a second scrub of THAT record alone, never the
  *   stack-wide union: one record's value must not rewrite another's literal.
+ * - An attribute of the same name as a coordinate's property that equals the
+ *   stored value (an SSM parameter's `Value`) is declared `NoEcho`, and the
+ *   positions are recomputed until no declaration is added, so a
+ *   `Fn::GetAtt` consumer is positioned whatever the record order.
  *
  * `changesAny` lets a stack with no other recorded secret still be scrubbed.
- * A nested child is positioned by its own template's `NoEcho` parameters
- * only: a value its parent's row passes in is not known here (residual).
+ * `passedParameters` are the child parameters a parent's row fills from a
+ * `NoEcho` source, for a nested child (the deploy's decision 8).
  */
 function planScrubNoEcho(
   state: StackState,
   template: CloudFormationTemplate,
   templateProps: ReadonlyMap<string, Record<string, unknown>>,
-  conditions: Record<string, boolean>
-): { byLogicalId: Map<string, ScrubNoEchoPlan>; outputKeys: string[]; changesAny: boolean } {
+  conditions: Record<string, boolean>,
+  passedParameters: readonly string[] = []
+): {
+  byLogicalId: Map<string, ScrubNoEchoPlan>;
+  outputKeys: string[];
+  changesAny: boolean;
+  parameters: ReadonlySet<string>;
+} {
   const byLogicalId = new Map<string, ScrubNoEchoPlan>();
-  const parameters = noEchoParameterNamesOf(template);
+  const parameters = new Set([...noEchoParameterNamesOf(template), ...passedParameters]);
   const resources = state.resources ?? {};
+  const declared = new Map<string, Set<string>>();
+  for (const [id, record] of Object.entries(resources)) {
+    declared.set(id, new Set(noEchoAttributeNamesOf(record) ?? []));
+  }
   const sources = {
     parameters,
     attributeIsNoEcho: (id: string, attribute: string): boolean =>
-      Object.hasOwn(resources, id) &&
-      noEchoAttributeNamesOf(resources[id])?.includes(attribute) === true,
+      declared.get(id)?.has(attribute) === true,
     ...(Object.keys(conditions).length > 0 && { conditions }),
   };
-  let changesAny = false;
+  const persisted = (value: unknown): boolean =>
+    carriesSecretMask(value) || (typeof value === 'string' && isSingleDynamicReferenceToken(value));
   const templateResources = template.Resources ?? {};
-  for (const [logicalId, record] of Object.entries(resources)) {
-    const source = templateProps.get(logicalId);
-    if (source === undefined) continue;
-    if (!Object.hasOwn(templateResources, logicalId)) continue;
-    if (templateResources[logicalId]?.Type !== record.resourceType) continue;
-    const positioned = noEchoCoordinatesOf(source, record.properties, sources);
-    // An existing coordinate stays while its leaf is still persisted: the
-    // mask, or a whole `{{resolve:...}}` token (`maskWholeValue` keeps one).
-    const persisted = (value: unknown): boolean =>
-      carriesSecretMask(value) ||
-      (typeof value === 'string' && isSingleDynamicReferenceToken(value));
-    const kept = (noEchoLeavesOf(record) ?? []).filter((coordinate) =>
-      persisted(valueAtCoordinate(record.properties, coordinate))
-    );
-    const leaves = canonicalCoordinates([...positioned, ...kept]);
-    if (leaves.length === 0) continue;
+  const eligible = Object.entries(resources).filter(
+    ([logicalId, record]) =>
+      templateProps.has(logicalId) &&
+      Object.hasOwn(templateResources, logicalId) &&
+      templateResources[logicalId]?.Type === record.resourceType
+  );
+  const leavesOf = new Map<string, NoEchoCoordinate[]>();
+  for (let round = 0; round <= eligible.length; round++) {
+    let grew = false;
+    for (const [logicalId, record] of eligible) {
+      const own = noEchoLeavesOf(record);
+      const leaves = canonicalCoordinates(
+        own ?? noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, sources)
+      );
+      leavesOf.set(logicalId, leaves);
+      for (const [name, attribute] of Object.entries(record.attributes ?? {})) {
+        if (attribute === record.physicalId || persisted(attribute)) continue;
+        const echoes = leaves.some(
+          (coordinate) =>
+            coordinate[0] === name &&
+            JSON.stringify(valueAtCoordinate(record.properties, coordinate)) ===
+              JSON.stringify(attribute)
+        );
+        const names = declared.get(logicalId)!;
+        if (echoes && !names.has(name)) {
+          names.add(name);
+          grew = true;
+        }
+      }
+    }
+    if (!grew) break;
+  }
+  let changesAny = false;
+  for (const [logicalId, record] of eligible) {
+    const leaves = leavesOf.get(logicalId) ?? [];
+    const attributeNames = [...(declared.get(logicalId) ?? [])].sort();
+    if (leaves.length === 0 && attributeNames.length === 0) continue;
     const stored: Array<{ coordinate: NoEchoCoordinate; value: unknown }> = [];
     for (const coordinate of leaves) {
       const value = valueAtCoordinate(record.properties, coordinate);
       if (value === undefined || value === null || persisted(value)) continue;
       stored.push({ coordinate, value });
     }
-    byLogicalId.set(logicalId, { leaves, stored });
-    if (stored.length > 0 || JSON.stringify(record.noEchoLeaves) !== JSON.stringify(leaves)) {
+    byLogicalId.set(logicalId, { leaves, stored, attributeNames });
+    const unmaskedAttribute = attributeNames.some(
+      (name) => Object.hasOwn(record.attributes ?? {}, name) && !persisted(record.attributes![name])
+    );
+    if (
+      stored.length > 0 ||
+      unmaskedAttribute ||
+      (leaves.length > 0 && JSON.stringify(record.noEchoLeaves) !== JSON.stringify(leaves))
+    ) {
       changesAny = true;
     }
   }
-  // Declared outputs whose value reads a `NoEcho` parameter and whose stored
-  // value is not persisted as the mask yet (scrub ignores conditions, as its
-  // output passes do: masking more is the safe direction for a value).
+  // Declared outputs whose value reads a `NoEcho` parameter on EVERY branch
+  // (no conditions: scrub cannot know the deploy's verdicts, so a value is
+  // masked if any branch could read one), not yet persisted as the mask.
+  const outputSources = { parameters, attributeIsNoEcho: sources.attributeIsNoEcho };
   const outputKeys: string[] = [];
   const stored = state.outputs as unknown;
   if (stored !== null && typeof stored === 'object' && !Array.isArray(stored)) {
     for (const [key, output] of Object.entries(template.Outputs ?? {})) {
       if (!Object.hasOwn(stored, key)) continue;
       const value = (stored as Record<string, unknown>)[key];
-      if (value === undefined || value === null || carriesSecretMask(value)) continue;
-      if (typeof value === 'string' && isSingleDynamicReferenceToken(value)) continue;
-      if (!readsNoEchoSource((output as { Value?: unknown } | undefined)?.Value, sources)) continue;
+      if (value === undefined || value === null || persisted(value)) continue;
+      if (!readsNoEchoSource((output as { Value?: unknown } | undefined)?.Value, outputSources)) {
+        continue;
+      }
       outputKeys.push(key);
     }
   }
   if (outputKeys.length > 0) changesAny = true;
-  return { byLogicalId, outputKeys, changesAny };
+  return { byLogicalId, outputKeys, changesAny, parameters };
 }
 
 /**
@@ -8972,25 +9045,32 @@ function scrubMigrationNeedles(
 
 /**
  * Mask every declared output a `NoEcho` parameter serves (go-to-k/cdkd#4043
- * Phase C), as the deploy's `maskOutputsByPosition` does, and every key the
- * template does NOT declare (an export alias) whose stored value equals one
- * of theirs. A declared output of another value is never matched by value.
+ * Phase C), as the deploy's `maskOutputsByPosition` does, and its OWN export
+ * alias key (`aliasOf`, resolved by this run). A key that is neither a declared
+ * output nor ANOTHER output's alias, holding the same stored value, is an alias
+ * this run cannot name (an older binary's), and is masked by value. Another
+ * declared output, or another output's alias, is never matched by value.
  */
 function maskScrubNoEchoOutputs(
   outputs: Record<string, unknown> | undefined,
   keys: readonly string[],
-  declared: ReadonlySet<string>
+  declared: ReadonlySet<string>,
+  aliasOf: ReadonlyMap<string, string>
 ): Record<string, unknown> | undefined {
   if (outputs === undefined || keys.length === 0) return outputs;
+  const ownAliases = new Set(keys.flatMap((key) => (aliasOf.has(key) ? [aliasOf.get(key)!] : [])));
+  const otherAliases = new Set(
+    [...aliasOf].filter(([key]) => !keys.includes(key)).map(([, alias]) => alias)
+  );
   const spelled = new Set(
     keys.filter((key) => Object.hasOwn(outputs, key)).map((key) => JSON.stringify(outputs[key]))
   );
   const masked: Record<string, unknown> = nullPrototypeRecord();
   for (const [key, value] of Object.entries(outputs)) {
+    const byValue =
+      !declared.has(key) && !otherAliases.has(key) && spelled.has(JSON.stringify(value));
     masked[key] =
-      keys.includes(key) || (!declared.has(key) && spelled.has(JSON.stringify(value)))
-        ? maskWholeValue(value)
-        : value;
+      keys.includes(key) || ownAliases.has(key) || byValue ? maskWholeValue(value) : value;
   }
   return masked;
 }
@@ -9009,13 +9089,13 @@ function applyScrubNoEcho(
   plan: ScrubNoEchoPlan | undefined
 ): StackState['resources'][string] {
   if (plan === undefined) return scrubbed;
-  const { leaves, stored } = plan;
+  const { leaves, attributeNames } = plan;
   // `observedProperties` was redacted by `scrubResourceRecord` already; this
   // only adds the `NoEcho` positions on top.
   const next: StackState['resources'][string] = {
     ...scrubbed,
     properties: maskAtCoordinates(scrubbed.properties, leaves),
-    noEchoLeaves: leaves.map((coordinate) => [...coordinate]),
+    ...(leaves.length > 0 && { noEchoLeaves: leaves.map((coordinate) => [...coordinate]) }),
     ...(scrubbed.observedProperties !== undefined && {
       observedProperties: maskReadbackAtCoordinates(
         scrubbed.observedProperties,
@@ -9024,24 +9104,42 @@ function applyScrubNoEcho(
       ),
     }),
   };
+  // An echo-fidelity entry describes a coordinate the record still marks,
+  // or nothing (as the deploy's `applyNoEchoPersist` prunes it).
+  const marked = new Set(leaves.map((coordinate) => JSON.stringify(coordinate)));
+  const exact = noEchoExactEchoLeavesOf(scrubbed);
+  if (exact !== undefined) {
+    const kept = exact.filter((coordinate) => marked.has(JSON.stringify(coordinate)));
+    if (kept.length > 0) next.noEchoExactEchoLeaves = kept;
+    else delete next.noEchoExactEchoLeaves;
+  }
+  // Every attribute declared `NoEcho` (the record's own names, and an echo
+  // the plan found) is masked whole, whatever its type or length.
   const attributes = next.attributes;
-  if (attributes !== undefined && attributes !== null && stored.length > 0) {
-    const echoed = Object.keys(attributes).filter((name) => {
-      const attribute = (record.attributes ?? {})[name];
-      if (attribute === record.physicalId) return false;
-      return stored.some(
-        ({ coordinate, value }) =>
-          coordinate[0] === name && JSON.stringify(value) === JSON.stringify(attribute)
-      );
-    });
-    if (echoed.length > 0) {
-      const masked = { ...attributes };
-      for (const name of echoed) masked[name] = maskWholeValue(masked[name]);
-      next.attributes = masked;
-      next.noEchoAttributeNames = [
-        ...new Set([...(noEchoAttributeNamesOf(record) ?? []), ...echoed]),
-      ].sort();
+  if (attributes !== undefined && attributes !== null && attributeNames.length > 0) {
+    const masked = { ...attributes };
+    for (const name of attributeNames) {
+      if (Object.hasOwn(masked, name)) masked[name] = maskWholeValue(masked[name]);
     }
+    next.attributes = masked;
+    next.noEchoAttributeNames = [...attributeNames];
   }
   return next;
+}
+
+/**
+ * The child parameters a nested-stack row fills from a `NoEcho` source
+ * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8: `recordPassedNoEchoParameters`):
+ * each `Parameters` entry whose template value reads one of `parameters`.
+ */
+function noEchoFilledRowParameters(
+  rowProperties: unknown,
+  parameters: ReadonlySet<string>
+): string[] {
+  if (rowProperties === null || typeof rowProperties !== 'object') return [];
+  const passed = (rowProperties as Record<string, unknown>)['Parameters'];
+  if (passed === null || typeof passed !== 'object' || Array.isArray(passed)) return [];
+  return Object.entries(passed as Record<string, unknown>)
+    .filter(([, value]) => readsNoEchoSource(value, { parameters }))
+    .map(([name]) => name);
 }

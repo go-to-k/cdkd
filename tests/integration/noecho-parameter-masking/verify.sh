@@ -855,6 +855,12 @@ env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" d
   --region "${REGION}" \
   --json >"${P1C_JSON}" 2>"${P1C_JSON_ERR}"
 DIFF_JSON_RC_P1C=$?
+# go-to-k/cdkd#4043 Phase C: scrub reports the planted alias (a key the deploy
+# would never publish) as a finding, and prints no value. Asserted after the
+# restore below.
+SCRUB_OUT_P1C=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail 2>&1)
+SCRUB_RC_P1C=$?
 set -e
 # Restore FIRST, so a failing assertion below leaves no planted alias behind
 # (the cleanup trap restores too).
@@ -864,6 +870,15 @@ if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | j
   exit 1
 fi
 P1C_ORIGINAL=""
+if grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" || [[ "${SCRUB_OUT_P1C}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 1c 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
+if [ "${SCRUB_RC_P1C}" -ne 1 ]; then
+  echo "FAIL: 'cdkd scrub --dry-run --fail' exited ${SCRUB_RC_P1C} over the planted legacy alias (expected 1: a key the deploy would not publish) (issue #4043 Phase C)" >&2
+  exit 1
+fi
+echo "    OK: cdkd scrub --dry-run --fail reports the planted alias (exit 1), printing no value"
 if [ "${DIFF_RC_P1C}" -ne 0 ] || [ "${DIFF_JSON_RC_P1C}" -ne 0 ]; then
   echo "FAIL: 'cdkd diff' over the planted alias exited ${DIFF_RC_P1C} (human) / ${DIFF_JSON_RC_P1C} (--json)" >&2
   diag_output "${DIFF_OUT_P1C}"
@@ -930,7 +945,8 @@ SCRUB_OUT_P1D=$(env -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" scrub "${STA
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail 2>&1)
 P1D_RC=$?
 set -e
-if [[ "${SCRUB_OUT_P1D}" == *"${TOKEN}"* ]] || [[ "${SCRUB_OUT_P1D}" == *"${ALIAS_TOKEN}"* ]]; then
+if [[ "${SCRUB_OUT_P1D}" == *"${TOKEN}"* ]] || [[ "${SCRUB_OUT_P1D}" == *"${ALIAS_TOKEN}"* ]] \
+  || grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1D}"; then
   echo "FAIL: the Phase 1d 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi

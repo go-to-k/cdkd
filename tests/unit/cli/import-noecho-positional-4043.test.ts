@@ -137,4 +137,41 @@ describe('cdkd import positions a NoEcho parameter (go-to-k/cdkd#4043 Phase C)',
     expect(state.resources['Param']!.noEchoLeaves).toBeUndefined();
     expect(state.resources['Param']!.properties['Value']).toBe('literal');
   });
+
+  // Review round 4 (#4764), m4: a Fn::GetAtt consumer resolved BEFORE its
+  // producer is still positioned, once the producer's echo is declared.
+  it('positions a Fn::GetAtt consumer of an echoing producer whatever the record order', async () => {
+    const tpl = template('q7z');
+    tpl.Resources = {
+      Consumer: {
+        Type: SSM,
+        Properties: { Name: '/app/c', Type: 'String', Value: { 'Fn::GetAtt': ['Param', 'Value'] } },
+      },
+      ...tpl.Resources,
+    } as never;
+    const state = stateFrom(tpl, { Value: 'q7z', Type: 'String' });
+    state.resources = {
+      Consumer: {
+        physicalId: '/app/c',
+        resourceType: SSM,
+        properties: structuredClone(tpl.Resources['Consumer']!.Properties as Record<string, unknown>),
+        attributes: {},
+      } as ResourceState,
+      ...state.resources,
+    };
+    await resolveImportedProperties(state, tpl, 'us-east-1', {} as never, getLogger());
+    expect(state.resources['Param']!.noEchoAttributeNames).toEqual(['Value']);
+    expect(state.resources['Consumer']!.properties['Value']).toBe('***');
+    expect(state.resources['Consumer']!.noEchoLeaves).toEqual([['Value']]);
+  });
+
+  it('G9: an attribute equal to the physical id is not taken as an echo', async () => {
+    // Under the value arm's floor, so only the echo rule could mask it.
+    const tpl = template('q7z');
+    const state = stateFrom(tpl, { Value: 'q7z' });
+    state.resources['Param']!.physicalId = 'q7z';
+    await resolveImportedProperties(state, tpl, 'us-east-1', {} as never, getLogger());
+    expect(state.resources['Param']!.attributes).toEqual({ Value: 'q7z' });
+    expect(state.resources['Param']!.noEchoAttributeNames).toBeUndefined();
+  });
 });

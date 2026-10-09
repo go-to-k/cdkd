@@ -129,7 +129,8 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     // The containment arm flattens a leaf that EMBEDS the stored value.
     expect(record.observedProperties?.['Description']).toBe('***');
     expect(JSON.stringify(saved)).not.toContain(stored);
-    expect(JSON.stringify(saved)).not.toContain('new-noecho-default-4043');
+    // An unrelated leaf of the record is untouched by the needle.
+    expect(record.properties['Name']).toBe('/app/p');
   });
 
   it('--dry-run counts the record as a finding and writes nothing', async () => {
@@ -280,5 +281,139 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     expect(res.droppedOutputKeys).toBe(1);
     const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
     expect({ ...saved.outputs }).toEqual({ DbPort: '***', ReplicaPort: '5432' });
+  });
+
+  // Review round 4 (#4764).
+  it('G3: the migration needle is THIS record\'s: another record holding the same literal is untouched', async () => {
+    const stored = 'shared-literal-noecho-4043';
+    const state = legacyState(stored);
+    state.resources['Other'] = {
+      physicalId: '/app/o',
+      resourceType: SSM,
+      properties: { Name: '/app/o', Type: 'String', Value: stored },
+      attributes: { Value: stored },
+    };
+    const info = stackInfo('new-default-4043');
+    info.template.Resources['Other'] = {
+      Type: SSM,
+      Properties: { Name: '/app/o', Type: 'String', Value: stored },
+    } as never;
+    const { saved } = await scrub(state, info);
+    expect(saved!.resources['Param']!.properties['Value']).toBe('***');
+    expect(saved!.resources['Other']).toEqual(state.resources['Other']);
+  });
+
+  it("G4: a record's own noEchoLeaves is authoritative: a coordinate today's template no longer feeds is still masked, and counted", async () => {
+    const state = legacyState('q7z');
+    state.resources['Param']!.noEchoLeaves = [['Value']];
+    const info = stackInfo('q7z');
+    (info.template.Resources['Param']!.Properties as Record<string, unknown>)['Value'] = 'literal';
+    const { saved, changed } = await scrub(state, info);
+    expect(changed).toBeGreaterThan(0);
+    expect(saved!.resources['Param']!.properties['Value']).toBe('***');
+    expect(saved!.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
+  });
+
+  it.each([
+    ['its type changed in the template', (info: ReturnType<typeof stackInfo>) => {
+      info.template.Resources['Param']!.Type = 'AWS::SNS::Topic';
+    }],
+    ['the template no longer declares it', (info: ReturnType<typeof stackInfo>) => {
+      delete info.template.Resources['Param'];
+    }],
+  ])('G9: a record whose %s is not positioned', async (_l, edit) => {
+    const info = stackInfo('q7z');
+    edit(info);
+    const { changed } = await scrub(legacyState('q7z'), info, true);
+    expect(changed).toBe(0);
+  });
+
+  // A value under the needle floor, so only the positional arm (by name) and
+  // the by-value alias arm can mask it: the by-value arm must not reach
+  // another declared output's alias.
+  it("m2: another output's alias holding the same short value is not masked; the served output's own alias is", async () => {
+    const info = stackInfo('yes');
+    const tpl = info.template as unknown as { Resources: Record<string, unknown>; Outputs: unknown };
+    tpl.Resources = {};
+    tpl.Outputs = {
+      Enabled: { Value: 'yes', Export: { Name: 'MyStack-Enabled' } },
+      Served: { Value: { Ref: 'Token' }, Export: { Name: 'served-alias' } },
+    };
+    const state = legacyState('x');
+    state.resources = {};
+    state.outputs = {
+      Enabled: 'yes',
+      'MyStack-Enabled': 'yes',
+      Served: 'yes',
+      'served-alias': 'yes',
+    };
+    state.exportNames = ['MyStack-Enabled', 'served-alias'];
+    const { saved } = await scrub(state, info);
+    expect({ ...saved!.outputs }).toEqual({
+      Enabled: 'yes',
+      'MyStack-Enabled': 'yes',
+      Served: '***',
+      'served-alias': '***',
+    });
+  });
+
+  it('m4: a Fn::GetAtt consumer of an echoing producer is positioned whatever the record order', async () => {
+    const state = legacyState('q7z');
+    // The consumer first: its position depends on the producer's echo.
+    const consumer = {
+      physicalId: '/app/c',
+      resourceType: SSM,
+      properties: { Name: '/app/c', Type: 'String', Value: 'q7z' },
+      attributes: {},
+    };
+    state.resources = { Consumer: consumer, ...state.resources };
+    const info = stackInfo('q7z');
+    info.template.Resources = {
+      Consumer: {
+        Type: SSM,
+        Properties: { Name: '/app/c', Type: 'String', Value: { 'Fn::GetAtt': ['Param', 'Value'] } },
+      },
+      ...info.template.Resources,
+    } as never;
+    const { saved } = await scrub(state, info);
+    expect(saved!.resources['Consumer']!.properties['Value']).toBe('***');
+    expect(saved!.resources['Consumer']!.noEchoLeaves).toEqual([['Value']]);
+  });
+
+  it("decision 8: a nested child's parameter its parent's row fills from a NoEcho source is positioned", async () => {
+    const childTemplate = {
+      Parameters: { ListIn: { Type: 'String' } },
+      Resources: {
+        Param: { Type: SSM, Properties: { Name: '/app/p', Type: 'String', Value: { Ref: 'ListIn' } } },
+      },
+    } as unknown as CloudFormationTemplate;
+    stateBackend['getState']!.mockResolvedValue({ state: legacyState('q7z'), etag: 'etag-1' });
+    const res = await scrubStack(
+      { stackName: 'NoEchoScrubStack~Child', template: childTemplate } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: false,
+        logger: logger as never,
+        nestedChild: {
+          logicalId: 'Child',
+          stackName: 'NoEchoScrubStack~Child',
+          input: { parameters: { ListIn: 'q7z' }, inheritedSecrets: new Map(), noEchoParameters: ['ListIn'] },
+        },
+      } as never
+    );
+    expect(res.recordsChanged).toBeGreaterThan(0);
+    const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Param']!.properties['Value']).toBe('***');
+    expect(saved.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
+  });
+
+  it('G9: an attribute equal to the physical id is not taken as an echo', async () => {
+    const state = legacyState('q7z');
+    state.resources['Param']!.physicalId = 'q7z';
+    const { saved } = await scrub(state, stackInfo('q7z'));
+    expect(saved!.resources['Param']!.properties['Value']).toBe('***');
+    expect(saved!.resources['Param']!.attributes).toEqual({ Value: 'q7z', Type: 'String' });
   });
 });

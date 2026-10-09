@@ -8,15 +8,17 @@
 #      their per-run `Default`s. PREMISE: AWS holds both values.
 #   2. `cdkd import --migrate-from-cloudformation --yes`.
 #   3. state.json holds `***` at both NoEcho-fed `Value`s (the 3-character one
-#      only by POSITION), `noEchoLeaves` names each, an observed baseline holds
-#      `***` there or is absent (the import refuses a baseline a NoEcho
-#      parameter feeds, since CloudFormation reports its deployed value as
-#      `****`), the plain control is in the clear, and no state blob carries
-#      either value.
+#      only by POSITION), `noEchoLeaves` names each, neither NoEcho-fed record
+#      has an observed baseline (CloudFormation reports a NoEcho deployed
+#      value as `****`, so the import refuses it, #2854), the plain control is
+#      in the clear, and no state blob carries either value.
 #   4. The next `cdkd deploy` is a no-op: neither SSM parameter is updated
 #      (LastModifiedDate unchanged) and nothing is replaced.
 #   5. `cdkd scrub --dry-run --fail` exits 0: scrub agrees with what import wrote.
 #   6. No object VERSION under the stack's prefix carries either value.
+#   6b. `cdkd state orphan`, then a plain `cdkd import` (no CloudFormation
+#      source left): the observed baselines are captured, `***` at both
+#      positions, and still no object version carries a value.
 #   7. `cdkd destroy`, gone-probes, and the S3 version sweep.
 #
 # The values are generated per run and never printed.
@@ -129,10 +131,8 @@ assert_no_value() { # assert_no_value <label> <text>
 }
 
 echo "==> Pre-flight: no leftovers from an earlier run"
-if aws cloudformation describe-stacks --region "${REGION}" --stack-name "${STACK}" >/dev/null 2>&1; then
-  echo "FAIL: CloudFormation stack ${STACK} already exists — clean it up first" >&2
-  exit 1
-fi
+assert_gone "premise: CloudFormation stack ${STACK} already exists — clean it up first" \
+  aws cloudformation describe-stacks --region "${REGION}" --stack-name "${STACK}"
 assert_gone "premise: ${CONSUMER_NAME} already exists" \
   aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}"
 
@@ -163,7 +163,10 @@ if [ "${IMPORT_RC}" -ne 0 ]; then
   printf '%s\n' "${IMPORT_OUT}" >&2
   exit 1
 fi
-echo "    OK: imported"
+# The migration retired the CloudFormation stack (its resources retained).
+assert_gone "the CloudFormation stack ${STACK} survived --migrate-from-cloudformation" \
+  aws cloudformation describe-stacks --region "${REGION}" --stack-name "${STACK}"
+echo "    OK: imported; the CloudFormation stack is retired"
 
 # --- Phase 3 ------------------------------------------------------------------
 echo "==> Phase 3: state.json holds *** at every NoEcho position, named in noEchoLeaves"
@@ -186,9 +189,9 @@ fi
 # Default, so a resource reading it gets NO observed baseline (the #2854
 # refusal, design section 4.5). Either way the baseline never holds a value:
 # absent, or `***` at the position.
-P3_OBSERVED=$(jq -c '[.resources.NoEchoConsumer.observedProperties.Value, .resources.NoEchoShortConsumer.observedProperties.Value] | map(. == null or . == "***") | all' <<< "${STATE_P3}")
-if [ "${P3_OBSERVED}" != 'true' ]; then
-  echo "FAIL: an observed baseline holds something other than *** (or nothing) at a NoEcho position" >&2
+P3_OBSERVED=$(jq -c '[.resources.NoEchoConsumer.observedProperties, .resources.NoEchoShortConsumer.observedProperties]' <<< "${STATE_P3}")
+if [ "${P3_OBSERVED}" != '[null,null]' ]; then
+  echo "FAIL: premise: a NoEcho-fed record took an observed baseline under the CloudFormation source (expected the #2854 refusal)" >&2
   exit 1
 fi
 echo "    OK: *** at both positions (the 3-character one by position), named in noEchoLeaves"
@@ -258,6 +261,57 @@ if [ "${VERSIONS_SCANNED}" -lt 2 ]; then
   exit 1
 fi
 echo "    OK: ${VERSIONS_SCANNED} versions scanned, none carries a value"
+
+# --- Phase 6b -----------------------------------------------------------------
+# With no CloudFormation stack left, a plain `cdkd import` has no
+# deployed-parameter source, so it captures the observed baselines: the
+# NoEcho positions must hold `***` there (the import's observed mask).
+echo "==> Phase 6b: drop the record, re-import without a CloudFormation source"
+node "${LOCAL_DIST}" state orphan "${STACK}" --state-bucket "${STATE_BUCKET}" --yes >/dev/null
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} survived 'cdkd state orphan'" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+set +e
+REIMPORT_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --yes 2>&1)
+REIMPORT_RC=$?
+set -e
+assert_no_value "the re-import output" "${REIMPORT_OUT}"
+if [ "${REIMPORT_RC}" -ne 0 ]; then
+  echo "FAIL: the re-import exited ${REIMPORT_RC}" >&2
+  printf '%s\n' "${REIMPORT_OUT}" >&2
+  exit 1
+fi
+STATE_P6B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")
+assert_no_value "state.json after the re-import" "${STATE_P6B}"
+P6B_SHAPE=$(jq -c '[
+  .resources.NoEchoConsumer.properties.Value,
+  .resources.NoEchoConsumer.observedProperties.Value,
+  .resources.NoEchoShortConsumer.properties.Value,
+  .resources.NoEchoShortConsumer.observedProperties.Value,
+  .resources.PlainConsumer.observedProperties.Value
+]' <<< "${STATE_P6B}")
+if [ "${P6B_SHAPE}" != '["***","***","***","***","plain-control-value"]' ]; then
+  echo "FAIL: the re-import did not hold *** at both NoEcho positions in properties AND the observed baseline (got ${P6B_SHAPE})" >&2
+  exit 1
+fi
+P6B_ROWS=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}" --output json \
+  | jq -r '.Versions // [] | .[] | "\(.Key)\t\(.VersionId)"')
+P6B_SCANNED=0
+while IFS=$'\t' read -r version_key version_id || [ -n "${version_key}" ]; do
+  [ -n "${version_key}" ] || continue
+  VERSION_FILE=$(mktemp)
+  SCRATCH_FILES+=("${VERSION_FILE}")
+  aws s3api get-object --bucket "${STATE_BUCKET}" --key "${version_key}" \
+    --version-id "${version_id}" "${VERSION_FILE}" >/dev/null
+  P6B_SCANNED=$((P6B_SCANNED + 1))
+  assert_no_value "an object version of ${version_key}" "$(cat "${VERSION_FILE}")"
+done < <(printf '%s\n' "${P6B_ROWS}")
+if [ "${P6B_SCANNED}" -le "${VERSIONS_SCANNED}" ]; then
+  echo "FAIL: the second version scan read no version the re-import wrote (${P6B_SCANNED} <= ${VERSIONS_SCANNED})" >&2
+  exit 1
+fi
+echo "    OK: the observed baselines hold *** at both positions; ${P6B_SCANNED} versions scanned"
 
 # --- Phase 7 ------------------------------------------------------------------
 echo "==> Phase 7: destroy"

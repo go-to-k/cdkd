@@ -458,6 +458,8 @@ child's journal and sends no property).
 
 ### 4.5 `cdkd import`
 
+**As built (Phase C, #4764):** the positional arm runs after every record resolved, iterated to a fixed point over echoed attributes, so a `Fn::GetAtt` consumer is positioned whatever the record order.
+
 `cdkd import` binds `Default`s (`import.ts:2230`) through the same resolver, so
 it records the fresh needle and the persist walk positions it. The imported
 `properties` hold `***` and the marker. The observed capture
@@ -520,6 +522,8 @@ inherits it through `redactOutputs`.
   names it: the floor residual of section 3.3.
 
 ### 4.8 Other readers of `***`
+
+**As built (Phase C, #4764):** `cdkd export` lets a record masked only at its `noEchoLeaves` through, blocks one whose import identifier embeds the mask or whose IAM policy pre-delete reads a marked principal or name, and refuses a nested child parameter resolving to the mask.
 
 - **`cdkd export`** blocks every record whose `properties` carry `***`
   (`src/cli/commands/export.ts:5100`). CloudFormation receives a `NoEcho`
@@ -815,6 +819,8 @@ Files: `rollback-executor.ts`, `src/deployment/nested-child-journal.ts`,
 `src/cli/commands/rollback.ts`, `drift.ts`, `state.ts` (CLI), `import.ts`,
 `scrub.ts`, `export.ts`, `docs/cli-drift.md`, `docs/cli-rollback.md`, and
 `docs/cli-scrub.md`.
+
+**As built:** Phase C landed as #4752 (rollback), #4763 (drift) and #4764 (import, scrub, export).
 
 **Phase B also flips every map reader the log-only doc kept blind**
 (`secret-redaction.ts:986-1000`). Each is re-audited in B:

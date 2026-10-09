@@ -324,6 +324,16 @@ describe('planExportIndexRepair — the convergence rule, both directions', () =
     ]);
   });
 
+  // go-to-k/cdkd#4043 Phase C: a NoEcho-served output scrub masked converges
+  // its index entry onto the mask, as a deploy publishes it.
+  it('converges an entry whose state value is the redaction mask', () => {
+    const entries = new Map([[OWNED, entry('noecho-plaintext-4043', 'MyStack', 'us-east-1')]]);
+
+    const plan = planExportIndexRepair(entries, 'MyStack', 'us-east-1', { [OWNED]: '***' });
+
+    expect(plan.findings).toEqual([{ kind: 'converge', exportName: OWNED, stateValue: '***' }]);
+  });
+
   it('THE OTHER DIRECTION: leaves an entry whose state value carries no {{resolve:', () => {
     // A plain, non-secret export. Converging it onto a plaintext would move a
     // plaintext INTO the shared object; the entry is left alone and nothing is

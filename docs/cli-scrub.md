@@ -956,16 +956,23 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
 - **By position.** Every property today's template fills from a `NoEcho`
   parameter holds `***`, whatever the value's type or length, and the record
   names the position in `noEchoLeaves`. So does the observed baseline there.
+  A record that already names its positions keeps them, as a deploy does. A
+  nested child's parameter its parent's row fills from a `NoEcho` source
+  counts as one too.
 - **By the stored value.** Where the record still holds a plaintext at such a
   position (a stack deployed before state `version: 11`, or under an older
   `Default`), that value is masked wherever else the same record holds it, a
-  leaf embedding it included (4 characters or more), and in an attribute of
-  the same name (an SSM parameter's `Value`) at any length.
-- **Outputs.** A declared output the parameter serves holds `***`, and so
-  does every other output key (an export alias) holding the same stored value.
-- **Not found:** a value a position no longer reads, in a record whose
-  template stopped reading the parameter, and a value a nested child received
-  from its parent's row. A `cdkd deploy` of the stack masks those.
+  leaf embedding it included (4 characters or more). Another record holding
+  the same literal is left alone.
+- **Attributes.** An attribute of the same name as such a property that
+  equals its value (an SSM parameter's `Value`) is masked at any length and
+  declared `NoEcho`, so a resource reading it through `Fn::GetAtt` is
+  positioned too, whatever order the records are in.
+- **Outputs.** A declared output the parameter serves holds `***`, and so do
+  its own export alias and any key no other output publishes that holds the
+  same stored value. The exports index entry is converged onto `***`.
+- **Not found:** a value at a position a record that names no positions no
+  longer reads. A `cdkd deploy` of the stack masks it.
 
 ## Stack outputs
 
