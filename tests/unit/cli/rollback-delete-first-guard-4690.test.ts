@@ -127,7 +127,10 @@ const Y_ORPHAN = {
 let backend: Record<string, ReturnType<typeof vi.fn>>;
 let calls: string[];
 
-function install(failedOperations: Record<string, unknown>[]): void {
+function install(
+  failedOperations: Record<string, unknown>[],
+  segmentOver: Record<string, unknown> = {}
+): void {
   const record: StackState = {
     version: 9,
     stackName: STACK,
@@ -144,7 +147,13 @@ function install(failedOperations: Record<string, unknown>[]): void {
       journalVersion: 1,
       stackName: STACK,
       region: REGION,
-      segments: [{ operations: [structuredClone(X_OP)], failedOperations: structuredClone(failedOperations) }],
+      segments: [
+        {
+          operations: [structuredClone(X_OP)],
+          failedOperations: structuredClone(failedOperations),
+          ...segmentOver,
+        },
+      ],
     }),
     saveState: vi.fn().mockResolvedValue('etag-2'),
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
@@ -219,6 +228,45 @@ describe('cdkd rollback feeds the delete-first guard the failed ops it strips (g
     install(persisted ?? []);
     calls = [];
     await rollbackCommand(STACK, opts(true)).catch(() => undefined);
+    expect(firstOnX()).toBe('create X');
+    expect(calls).not.toContain('delete X x-new');
+    // The kept UPDATE re-classifies as the same skip: nothing touches Y.
+    expect(calls.filter((c) => / Y( |$)/.test(c))).toEqual([]);
+  });
+
+  // A bare delete-first UPDATE (its create made nothing) that --revert-failed
+  // handled is kept by the same rule, so a re-run still blocks.
+  it('keeps a handled bare delete-first UPDATE too', async () => {
+    const bare = { ...Y_UPDATE, replacementOrphaned: undefined };
+    install([bare]);
+    await rollbackCommand(STACK, opts(true)).catch(() => undefined);
+    const persisted = backend['setRollbackJournalFailedOperations']!.mock.calls.at(-1)?.[2] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    // Either nothing was stripped (still journaled as is) or the strip kept it.
+    const after = persisted ?? [bare];
+    expect(after.some((o) => o['logicalId'] === 'Y' && o['changeType'] === 'UPDATE')).toBe(true);
+    install(after);
+    calls = [];
+    await rollbackCommand(STACK, opts(true)).catch(() => undefined);
+    expect(firstOnX()).toBe('create X');
+  });
+
+  it('a segment with NO completed ops strips the handled delete-first UPDATE', async () => {
+    install([Y_UPDATE, Y_ORPHAN], { operations: [] });
+    await rollbackCommand(STACK, opts(true)).catch(() => undefined);
+    const persisted = backend['setRollbackJournalFailedOperations']!.mock.calls.at(-1)?.[2] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    expect(persisted).toBeDefined();
+    expect(persisted!.some((o) => o['logicalId'] === 'Y' && o['changeType'] === 'UPDATE')).toBe(false);
+  });
+
+  // What an automatic rollback that failed leaves: its `auto-rollback-started`
+  // segment, written BEFORE the replay with every failed op.
+  it('a re-run over a failed automatic rollback still blocks', async () => {
+    install([{ ...Y_UPDATE, replacementOrphaned: undefined }], { reason: 'auto-rollback-started' });
+    await rollbackCommand(STACK, opts()).catch(() => undefined);
     expect(firstOnX()).toBe('create X');
     expect(calls).not.toContain('delete X x-new');
   });

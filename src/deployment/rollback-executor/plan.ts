@@ -1059,8 +1059,9 @@ const deleteFirstBlockedBy = new WeakMap<
  *
  * Both errors cost something, so the needles are identities only: a missed
  * match can lose a resource, and a false block keeps the create-first order
- * AND refuses that op's collision route, where main deletes the new resource
- * on a proven name holder and completes the reversal.
+ * AND refuses that op's collision route, where the create-first order alone
+ * deletes the new resource on a proven name holder and completes the
+ * reversal.
  *
  * The segment's FAILED ops count too (`failedOperations`): a replacement that
  * deleted its old resource before a create that failed.
@@ -1089,10 +1090,7 @@ export function markDeleteFirstBlocked(
   // A FAILED replacement that deleted its old resource first took it away
   // too, whether or not its create made anything.
   for (const f of failedOperations) {
-    if (
-      f.changeType === 'UPDATE' &&
-      (f.oldDeletedBeforeCreate === true || f.replacementOrphaned === 'delete-first')
-    ) {
+    if (seedsDeleteFirstGuard(f)) {
       add(f.logicalId, f.previousState?.physicalId, f.previousState?.attributes);
     } else if (f.changeType === 'CREATE' && f.replacedResourceDeleted === true) {
       add(f.logicalId, f.replacedPhysicalId, undefined);
@@ -1160,7 +1158,23 @@ function namesResource(leaf: string, needle: string): boolean {
     leaf === needle ||
     // Any ARN or path boundary: `...:name`, `.../name`, `.../name/...`, `...:name:...`.
     leaf.split(/[:/]/).includes(needle) ||
+    // A needle that itself holds a `/` (a log group `/a/b`) is no single
+    // segment: match it between ARN colons (`...:log-group:/a/b:*`).
+    (needle.includes('/') && (leaf.includes(`:${needle}:`) || leaf.endsWith(`:${needle}`))) ||
     (needle.length >= 16 && leaf.includes(needle))
+  );
+}
+
+/**
+ * A FAILED op that deleted its old resource before a create that failed: the
+ * delete-first guard counts that resource as gone, and `cdkd rollback` keeps
+ * such an op in the journal after handling it while the segment's completed
+ * ops remain (see its keep rule), so a re-run's guard still sees it.
+ */
+export function seedsDeleteFirstGuard(op: FailedOperation): boolean {
+  return (
+    op.changeType === 'UPDATE' &&
+    (op.oldDeletedBeforeCreate === true || op.replacementOrphaned === 'delete-first')
   );
 }
 

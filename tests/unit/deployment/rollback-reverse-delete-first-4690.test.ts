@@ -983,6 +983,18 @@ describe('the delete-first guard ignores what a gone record shares with others (
     });
   });
 
+  it('a log group whose id holds a slash, referenced by its ARN, blocks', () => {
+    const logs = gone('Logs', '/a/b', {});
+    expect(blocker([logs, dependent({ Arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/a/b:*' })])).toMatchObject({
+      logicalId: 'Logs',
+    });
+    expect(blocker([logs, dependent({ Arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/a/b' })])).toMatchObject({
+      logicalId: 'Logs',
+    });
+    // Control: a longer group sharing the prefix does not.
+    expect(blocker([logs, dependent({ Arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/a/bc:*' })])).toBeUndefined();
+  });
+
   it('a short physical id is never matched inside an attribute value', () => {
     const short = gone('S', 'abc', { Description: 'xabcx-value' });
     expect(blocker([short, dependent({ Note: 'xabcx-value' })])).toBeUndefined();

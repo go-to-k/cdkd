@@ -2182,6 +2182,74 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const rollbackCalls = calls.slice(calls.indexOf('create B') + 1).filter((c) => / A( |$)/.test(c));
       expect(rollbackCalls[0]).toBe('create A');
     });
+
+    // The reviewers' question: does a FAILED automatic rollback keep B's failed
+    // UPDATE in the journal for the user's `cdkd rollback` re-run? It does: the
+    // `auto-rollback-started` segment is written BEFORE the replay with every
+    // failed op (`execute.ts`), and only a CLEAN replay settles it.
+    it('a failed automatic rollback keeps the failed delete-first UPDATE journaled', async () => {
+      const change = (id: string, oldValue: string, newValue: string): ResourceChange =>
+        ({
+          logicalId: id,
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: { ref: newValue },
+          propertyChanges: [{ path: 'ref', oldValue, newValue, requiresReplacement: false }],
+        }) as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['A', change('A', 'b-old', 'b-next')],
+          ['B', change('B', 'x', 'y')],
+        ]),
+        deps: { A: [], B: ['A'] },
+        failOn: new Set(['B']),
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: {
+          A: { physicalId: 'a-old', resourceType: 'AWS::SQS::Queue', properties: { ref: 'b-old' }, attributes: {}, dependencies: [] },
+          B: { physicalId: 'b-old', resourceType: 'AWS::SQS::Queue', properties: { ref: 'x' }, attributes: {}, dependencies: [] },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      let aCreates = 0;
+      provider.create.mockImplementation((logicalId: string) => {
+        if (logicalId === 'B') return Promise.reject(new Error('create failed: B'));
+        aCreates++;
+        // The rollback's re-create of the old A fails: the auto-rollback fails.
+        return aCreates === 1
+          ? Promise.resolve({ physicalId: 'a-new', attributes: {} })
+          : Promise.reject(new Error('re-create of A rejected'));
+      });
+      await expect(
+        engine.deploy(stackName, {
+          Resources: {
+            A: { Type: 'AWS::SQS::Queue', Properties: { ref: 'b-next' } },
+            B: { Type: 'AWS::SQS::Queue', Properties: { ref: 'y' } },
+          },
+        })
+      ).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      expect(seg.reason).toBe('auto-rollback-started');
+      expect(
+        (seg.failedOperations as Array<Record<string, unknown>>).find((o) => o['logicalId'] === 'B')
+      ).toMatchObject({ changeType: 'UPDATE', oldDeletedBeforeCreate: true });
+      // Not settled: the segment stays whole for the re-run.
+      expect(journal.reduceRollbackJournalToFailedOperations).not.toHaveBeenCalled();
+      expect(journal.dropRollbackJournalFailedOperations).not.toHaveBeenCalled();
+      expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+    });
   });
 
   // go-to-k/cdkd#4615: the rollback reverts an in-place update in place even

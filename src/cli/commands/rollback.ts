@@ -74,6 +74,7 @@ import {
   dropFailedHint,
   makeForeignHolderScan,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
+import { seedsDeleteFirstGuard } from '../../deployment/rollback-executor/plan.js';
 import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -1440,12 +1441,12 @@ export async function rollbackCommand(
                       // stays while this segment's completed ops remain, so a
                       // re-run's delete-first guard still sees the resource it
                       // removed. Its re-classification is the same skip, and it
-                      // leaves with the segment once it pops.
+                      // leaves with the segment once it pops. Accepted cost: a
+                      // `--revert-failed` re-run repeats that skip's warning.
                       ...(completedOps.length > 0
                         ? failedToReplay.filter(
                             (op) =>
-                              op.changeType === 'UPDATE' &&
-                              op.replacementOrphaned === 'delete-first' &&
+                              seedsDeleteFirstGuard(op) &&
                               !failedResult.remainingFailedOps.includes(op)
                           )
                         : []),
