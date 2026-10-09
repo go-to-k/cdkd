@@ -587,9 +587,9 @@ export async function ledgerAbandonedAt(): Promise<number | undefined> {
 }
 
 /**
- * go-to-k/cdkd#4705: drop the bound ledger's name-adopting intents of
- * `logicalIds` (see {@link CreateTokenLedger.dropAdoptingCreates}). Outside a
- * bound ledger, a no-op.
+ * go-to-k/cdkd#4705: settle the bound ledger's name-adopting intents (see
+ * {@link CreateTokenLedger.settleAdoptingCreates}). Outside a bound ledger, a
+ * no-op. Rejects when the ledger cannot be written.
  */
 export async function settleAdoptingCreates(
   drop: readonly string[],

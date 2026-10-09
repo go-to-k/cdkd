@@ -289,9 +289,9 @@ naming its prefix and the `cdkd state orphan` command that removes it.
 **What it costs.** One read of one small object, once per command run, only on
 the commands above (a destroy starts it beside its own state read); a first
 deploy adds one conditional write, overlapped with its diff. A destroy ends
-with two writes run together, one round trip: the empty `retained.json`
-(written only when there is none) and the marker's release, conditional on the
-version read earlier. Records written
+with two writes run beside the exports-index update it always made, so no
+round trip of their own: the empty `retained.json` (written only when there is
+none) and the marker's release, conditional on the version read earlier. Records written
 before the registry existed have no marker: the first command that needs the
 answer for such a stack lists the bucket's top-level prefixes once (50
 listings in parallel, a single pass), then claims the marker, so every later

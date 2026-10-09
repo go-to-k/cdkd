@@ -450,7 +450,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       await engine.deploy(STACK, templateOf(levels));
       expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveRetainedResources).toHaveBeenCalledTimes(1);
-      const written = stateBackend.saveRetainedResources.mock.calls[0]![2] as Array<{ logicalId: string }>;
+      const written = (stateBackend.saveRetainedResources.mock.calls[0] as unknown as [string, string, Array<{ logicalId: string }>])[2];
       expect(written.map((e) => e.logicalId).sort()).toEqual(['K1', 'K2']);
       const finalSave = Math.max(...stateBackend.saveState.mock.invocationCallOrder);
       expect(stateBackend.saveRetainedResources.mock.invocationCallOrder[0]).toBeLessThan(finalSave);
