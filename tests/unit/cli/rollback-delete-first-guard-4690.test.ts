@@ -129,13 +129,17 @@ let calls: string[];
 
 function install(
   failedOperations: Record<string, unknown>[],
-  segmentOver: Record<string, unknown> = {}
+  segmentOver: Record<string, unknown> = {},
+  withY = true
 ): void {
   const record: StackState = {
     version: 9,
     stackName: STACK,
     region: REGION,
-    resources: { X: rec('x-new', { Ref: 'y-new' }), Y: rec('y-old', { V: 1 }) },
+    resources: {
+      X: rec('x-new', { Ref: 'y-new' }),
+      ...(withY && { Y: rec('y-old', { V: 1 }) }),
+    },
     outputs: {},
     lastModified: 1,
   };
@@ -236,20 +240,34 @@ describe('cdkd rollback feeds the delete-first guard the failed ops it strips (g
 
   // A bare delete-first UPDATE (its create made nothing) that --revert-failed
   // handled is kept by the same rule, so a re-run still blocks.
+  // The real path: the deploy's partial save dropped Y's record with its
+  // deleted resource, so `--revert-failed` settles the bare UPDATE as
+  // skip-failed-absent (handled). A proven orphan of another resource, Z, is
+  // handled too, so the strip is persisted and shows what it kept.
   it('keeps a handled bare delete-first UPDATE too', async () => {
     const bare = { ...Y_UPDATE, replacementOrphaned: undefined };
-    install([bare]);
+    const zOrphan = {
+      logicalId: 'Z',
+      changeType: 'CREATE',
+      resourceType: TYPE,
+      provisionedBy: 'sdk',
+      physicalId: 'z-made',
+      physicalIdRecoveredFromError: true,
+      deletionPolicy: 'Delete',
+    };
+    install([bare, zOrphan], {}, false);
     await rollbackCommand(STACK, opts(true)).catch(() => undefined);
     const persisted = backend['setRollbackJournalFailedOperations']!.mock.calls.at(-1)?.[2] as
       | Array<Record<string, unknown>>
       | undefined;
-    // Either nothing was stripped (still journaled as is) or the strip kept it.
-    const after = persisted ?? [bare];
-    expect(after.some((o) => o['logicalId'] === 'Y' && o['changeType'] === 'UPDATE')).toBe(true);
-    install(after);
+    expect(persisted).toBeDefined();
+    expect(persisted!.map((o) => `${String(o['logicalId'])} ${String(o['changeType'])}`)).toEqual(['Y UPDATE']);
+    install(persisted!, {}, false);
     calls = [];
     await rollbackCommand(STACK, opts(true)).catch(() => undefined);
     expect(firstOnX()).toBe('create X');
+    expect(calls).not.toContain('delete X x-new');
+    expect(calls.filter((c) => / Y( |$)/.test(c))).toEqual([]);
   });
 
   it('a segment with NO completed ops strips the handled delete-first UPDATE', async () => {

@@ -1440,9 +1440,12 @@ export async function rollbackCommand(
                       // go-to-k/cdkd#4690: a handled delete-first replacement
                       // stays while this segment's completed ops remain, so a
                       // re-run's delete-first guard still sees the resource it
-                      // removed. Its re-classification is the same skip, and it
-                      // leaves with the segment once it pops. Accepted cost: a
-                      // `--revert-failed` re-run repeats that skip's warning.
+                      // removed; it leaves with the segment once it pops. On a
+                      // `--revert-failed` re-run, the `replacementOrphaned` shape
+                      // re-classifies as the same skip and repeats its warning;
+                      // the bare shape (no orphan) re-attempts its forced revert
+                      // against the deleted old id, which normally fails
+                      // not-found and keeps it pending.
                       ...(completedOps.length > 0
                         ? failedToReplay.filter(
                             (op) =>

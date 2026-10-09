@@ -995,6 +995,17 @@ describe('the delete-first guard ignores what a gone record shares with others (
     expect(blocker([logs, dependent({ Arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/a/bc:*' })])).toBeUndefined();
   });
 
+  // A slash id of 16+ characters is also matched anywhere inside a leaf, so a
+  // sibling log group whose name EXTENDS it blocks too. Over-blocking is the
+  // accepted direction: it keeps the create-first order and refuses a
+  // collision, where a miss could lose the resource.
+  it('a 16+ character slash id over-blocks a log group whose name extends it', () => {
+    const logs = gone('Logs', '/aws/lambda/my-fn', {});
+    expect(
+      blocker([logs, dependent({ Arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn-2:*' })])
+    ).toMatchObject({ logicalId: 'Logs' });
+  });
+
   it('a short physical id is never matched inside an attribute value', () => {
     const short = gone('S', 'abc', { Description: 'xabcx-value' });
     expect(blocker([short, dependent({ Note: 'xabcx-value' })])).toBeUndefined();
