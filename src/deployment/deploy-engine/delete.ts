@@ -90,7 +90,7 @@ export async function provisionDelete(
           this.stateBackend,
           stackName,
           this.stackRegion,
-          [{ logicalId, resourceType, physicalId: currentResource.physicalId }],
+          [{ logicalId, resourceType, physicalId: currentResource.physicalId, keptAt: Date.now() }],
           this.logger
         )
       );

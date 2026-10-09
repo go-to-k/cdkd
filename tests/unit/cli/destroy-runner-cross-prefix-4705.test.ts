@@ -94,6 +94,7 @@ function makeCtx(opts: {
     listTopLevelPrefixes,
     recordUnderPrefix,
     loadRetainedResources: vi.fn(async () => opts.retained ?? []),
+    loadRetainedRecord: vi.fn(async () => opts.retained ?? null),
     saveRetainedResources,
     releaseRegistryMarker,
   };
@@ -249,8 +250,8 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     // named bucket (its create probes by name already), nor a Role (whose
     // create fails natively with EntityAlreadyExists).
     expect(entries).toEqual([
-      { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x' },
-      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs' },
+      { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x', keptAt: expect.any(Number) },
+      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs', keptAt: expect.any(Number) },
     ]);
     expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
       h.deleteState.mock.invocationCallOrder[0]!
@@ -289,6 +290,8 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     const result = await runDestroyForStack('App', emptyState(), h.ctx);
     expect(result.skippedEmpty).toBe(true);
     expect(h.deleteState).toHaveBeenCalledTimes(1);
+    // D-1: kept nothing and no record yet: the empty tombstone is written.
+    expect(h.saveRetainedResources).toHaveBeenCalledWith('App', REGION, []);
     expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION);
     expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
       h.deleteState.mock.invocationCallOrder[0]!

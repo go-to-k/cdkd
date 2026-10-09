@@ -608,9 +608,10 @@ resources become untracked rather than deleted. With `--resource`, it removes
 only the named resources' entries and keeps the rest of the stack's record
 ([Removing one resource from the record](#removing-one-resource-from-the-record)).
 Orphaning a whole stack also removes its stack registry marker (when it names
-this prefix) and its `retained.json`, so another prefix can then deploy the
-stack and the resources it leaves running are no longer taken back by a deploy
-here ([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)).
+this prefix) and empties its `retained.json` -- also when no record is left,
+in each region that still holds anything of the stack (an older cdkd's event
+history included) -- so another prefix can then deploy the stack and the
+resources it leaves running are no longer taken back by a deploy here ([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)).
 
 | Flag | Default | Description |
 | --- | --- | --- |

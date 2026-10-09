@@ -1626,6 +1626,14 @@ export interface ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): boolean;
+
+  /**
+   * go-to-k/cdkd#4705: when the resource `physicalId` (a holder `lookupNames`
+   * or `import()` found) was created, epoch ms, or `undefined` when the type
+   * does not say. A kept resource licenses only a holder created no later
+   * than it was kept. Throws when it cannot read it (a 403 as one).
+   */
+  holderCreatedAt?(resourceType: string, physicalId: string): Promise<number | undefined>;
 }
 
 /**

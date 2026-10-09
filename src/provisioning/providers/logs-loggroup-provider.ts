@@ -323,6 +323,18 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#4705: the log group's `creationTime` (epoch ms), so a kept
+   * log group licenses only a holder created no later than it was kept.
+   */
+  async holderCreatedAt(_resourceType: string, physicalId: string): Promise<number | undefined> {
+    const resp = await this.logsClient.send(
+      new DescribeLogGroupsCommand({ logGroupNamePrefix: physicalId })
+    );
+    const group = resp.logGroups?.find((g) => g.logGroupName === physicalId);
+    return typeof group?.creationTime === 'number' ? group.creationTime : undefined;
+  }
+
+  /**
    * go-to-k/cdkd#4705: `DescribeLogGroups` by `logGroupIdentifiers` -- exact
    * names, up to 50 per call -- the chunks in parallel through one run-wide
    * limiter, so N log groups cost ceil(N/50) calls and about one round trip,

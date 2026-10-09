@@ -15,23 +15,25 @@ import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 
 const URL = 'https://sqs.us-east-1.amazonaws.com/1/App-Queue';
 const LG = '/cdkd/App-Logs';
+/** The retained row's timestamp: when the destroy kept the queue. */
+const KEPT_AT = Date.parse('2026-09-01T00:00:00.000Z');
 
 describe('earlier records', () => {
   it('names a Retain (or RetainExceptOnCreate) resource with a physical id, nothing else', () => {
     expect(
       keptInEarlierRecords([
-        {
+        { writtenAt: 1000, resources: {
           Queue: { resourceType: 'AWS::SQS::Queue', physicalId: URL, deletionPolicy: 'Retain' },
           Logs: { resourceType: 'AWS::Logs::LogGroup', physicalId: LG, deletionPolicy: 'RetainExceptOnCreate' },
           Gone: { resourceType: 'AWS::SQS::Queue', physicalId: 'x', deletionPolicy: 'Delete' },
           NoPolicy: { resourceType: 'AWS::SQS::Queue', physicalId: 'y' },
           NoId: { resourceType: 'AWS::SQS::Queue', deletionPolicy: 'Retain' },
           Junk: 'not a record',
-        },
+        } },
       ])
     ).toEqual([
-      { logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL },
-      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: LG },
+      { logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL, keptAt: 1000 },
+      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: LG, keptAt: 1000 },
     ]);
   });
 });
@@ -55,12 +57,27 @@ const destroyRun = [
 describe('event history', () => {
   it('a retained row licenses the physical id an earlier create of that logical id and type recorded', () => {
     expect(keptInEventHistory([deployRun, destroyRun], 'App')).toEqual([
-      { logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL },
+      { logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL, keptAt: KEPT_AT },
     ]);
   });
 
   it('a retained row alone (its create pruned from the history) proves nothing', () => {
     expect(keptInEventHistory([destroyRun], 'App')).toEqual([]);
+  });
+
+  it("D-13: a nested child's rows, in its top-level stack's runs under its own name, license the child", async () => {
+    const child = [...deployRun, ...destroyRun].map((e) => ({ ...e, stackName: 'App~Child' }));
+    const listRuns = vi.fn(async () => [{ runId: 'r2' }, { runId: 'r1' }]);
+    const readRunEvents = vi.fn(async (_s: string, _r: string, runId: string) =>
+      runId === 'r1' ? child.slice(0, deployRun.length) : child.slice(deployRun.length)
+    );
+    const kept = await loadKeptInHistory(
+      { earlierStateResources: async () => [], listRuns, readRunEvents },
+      'App~Child',
+      'us-east-1'
+    );
+    expect(listRuns).toHaveBeenCalledWith('App', 'us-east-1');
+    expect(kept).toEqual([{ logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL, keptAt: KEPT_AT }]);
   });
 
   it("another stack's rows (a nested child in the parent's stream) and another type prove nothing", () => {
@@ -90,7 +107,7 @@ describe('loadKeptInHistory', () => {
       'App',
       'us-east-1'
     );
-    expect(kept).toEqual([{ logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL }]);
+    expect(kept).toEqual([{ logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL, keptAt: KEPT_AT }]);
     expect(readRunEvents).toHaveBeenCalledTimes(20);
   });
 
@@ -98,7 +115,7 @@ describe('loadKeptInHistory', () => {
     const kept = await loadKeptInHistory(
       {
         earlierStateResources: async () => [
-          { Logs: { resourceType: 'AWS::Logs::LogGroup', physicalId: LG, deletionPolicy: 'Retain' } },
+          { resources: { Logs: { resourceType: 'AWS::Logs::LogGroup', physicalId: LG, deletionPolicy: 'Retain' } } },
         ],
         listRuns: async () => {
           throw new Error('no history');

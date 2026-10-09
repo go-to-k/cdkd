@@ -491,6 +491,17 @@ export class StepFunctionsProvider implements ResourceProvider {
     return generateResourceName(logicalId, { maxLength: 80 });
   }
 
+  /**
+   * go-to-k/cdkd#4705: the state machine's `creationDate` (epoch ms), so a
+   * kept one licenses only a holder created no later than it was kept.
+   */
+  async holderCreatedAt(_resourceType: string, physicalId: string): Promise<number | undefined> {
+    const resp = await this.getClient().send(
+      new DescribeStateMachineCommand({ stateMachineArn: physicalId })
+    );
+    return resp.creationDate instanceof Date ? resp.creationDate.getTime() : undefined;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {

@@ -21,7 +21,9 @@
 #      looks up before creating them (4 queues, 4 topics, 4 log groups, 3
 #      EventBridge rules, 2 alarms, 2 target groups, 1 ECS cluster): first
 #      deploy, NO_CHANGE redeploy (no lookup), destroy; PERF_ADOPT_RUNS runs
-#      per build (default 5);
+#      per build (default 5). NEW also runs, untimed, one verbose NO_CHANGE
+#      redeploy that must print no lookup and one verbose first deploy of its
+#      own stack that must (the positive control);
 #   5. CloudWatch-heavy: one stack of PERF_ALARMS alarms (default 200),
 #      PERF_LOG_GROUPS log groups (default 50), 3 queues and 3 topics: first
 #      deploy and destroy; PERF_CW_RUNS runs per build (default 3).
@@ -504,6 +506,25 @@ variant_run() { # usage: variant_run <adopt|cw> <OLD|NEW> <run#>
         exit 1
       fi
     fi
+  fi
+  if [ "${arm}" = adopt ] && [ "${which}" = NEW ] && [ "${n}" = 1 ]; then
+    # D-8, the positive control: on a verbose FIRST deploy (untimed, its own
+    # stack and prefix) the same line DOES appear, so its absence above means
+    # no lookup rather than a line that never prints.
+    local pstack="${STACK_BASE}adoptPos" pprefix="${RUN_PREFIX_BASE}-adopt-pos"
+    printf '%s\t%s\n' "${pstack}" "${pprefix}" >>"${DEPLOYED_LIST}"
+    export PERF_STACK_BASE="${pstack}"
+    timed "${arm} positive control: verbose first deploy (untimed)" "${bin}" deploy "${pstack}" \
+      --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${pprefix}" --yes --verbose
+    grep -q 'Generated-name check: looking up 20 planned create(s)' "${RUN_LOG}" || {
+      echo "FAIL: the verbose first deploy of ${pstack} printed no 'Generated-name check: looking up 20 planned create(s)'" >&2
+      exit 1
+    }
+    # Through the CLI name the integ fences read.
+    local CLI="${bin}"
+    timed "${arm} positive control: destroy (untimed)" "${CLI}" destroy "${pstack}" --region "${REGION}" \
+      --state-bucket "${STATE_BUCKET}" --state-prefix "${pprefix}" --force
+    export PERF_STACK_BASE="${stack}"
   fi
   timed "${arm} ${which} #${n} destroy" "${bin}" destroy "${stack}" --region "${REGION}" \
     --state-bucket "${STATE_BUCKET}" --state-prefix "${prefix}" --force

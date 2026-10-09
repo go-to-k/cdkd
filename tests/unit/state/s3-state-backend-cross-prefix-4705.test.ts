@@ -629,10 +629,29 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([entry]);
   });
 
-  it('saving none deletes it', async () => {
+  it('D-1: saving none writes the empty tombstone, which reads as present (not absent)', async () => {
+    await expect(backend.loadRetainedRecord('App', 'us-east-1')).resolves.toBeNull();
     bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));
     await backend.saveRetainedResources('App', 'us-east-1', []);
-    expect(bodies.has(KEY)).toBe(false);
+    expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [] });
+    await expect(backend.loadRetainedRecord('App', 'us-east-1')).resolves.toEqual([]);
+  });
+
+  it('D-2: keeps an entry\'s keptAt; drops a non-number one', async () => {
+    bodies.set(
+      KEY,
+      JSON.stringify({
+        retainedVersion: 1,
+        resources: [
+          { ...entry, keptAt: 1234 },
+          { ...entry, logicalId: 'C', keptAt: 'soon' },
+        ],
+      })
+    );
+    await expect(backend.loadRetainedRecord('App', 'us-east-1')).resolves.toEqual([
+      { ...entry, keptAt: 1234 },
+      { ...entry, logicalId: 'C' },
+    ]);
   });
 
   it('a body that is not such a record throws, naming the key; a malformed entry is dropped', async () => {
@@ -664,8 +683,8 @@ describe("a stack's earlier records (noncurrent state.json versions, review CB-1
       { Key: KEY, VersionId: 'v3', LastModified: new Date(0), body: 'not json' },
     ];
     await expect(backend.earlierStateResources('App', 'us-east-1')).resolves.toEqual([
-      { new: { physicalId: 'new' } },
-      { old: { physicalId: 'old' } },
+      { resources: { new: { physicalId: 'new' } }, writtenAt: 2 },
+      { resources: { old: { physicalId: 'old' } }, writtenAt: 1 },
     ]);
     const listing = commandsOf(ListObjectVersionsCommand)[0]!;
     expect(listing.input).toMatchObject({

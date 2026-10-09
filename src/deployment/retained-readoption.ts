@@ -30,22 +30,34 @@ export function keptForReadoption(resource: ResourceState): resource is Resource
 /**
  * go-to-k/cdkd#4705: merge `kept` into the stack's retained-resource record
  * under this prefix (`S3StateBackend.saveRetainedResources`), replacing an
- * earlier entry of the same logical id. Best-effort: a failure is warned, and
- * the next deploy's create of such a resource is then refused with the
- * `cdkd import` remedy instead of taking it back.
+ * earlier entry of the same logical id. With nothing kept and no record yet,
+ * the empty record is written: the tombstone that tells a later deploy this
+ * cdkd destroyed the stack here, so an older cdkd's history licenses nothing
+ * (review D-1). Best-effort: a failure to record a kept resource is warned
+ * (the next deploy's create of it is then refused with the `cdkd import`
+ * remedy); a tombstone that could not be written is silent.
  */
 export async function recordRetainedForReadoption(
-  backend: Pick<S3StateBackend, 'loadRetainedResources' | 'saveRetainedResources'>,
+  backend: Pick<S3StateBackend, 'loadRetainedRecord' | 'saveRetainedResources'>,
   stackName: string,
   region: string,
   kept: readonly RetainedResource[],
   logger: { warn(message: string): void }
 ): Promise<void> {
-  if (kept.length === 0) return;
+  if (kept.length === 0) {
+    try {
+      if ((await backend.loadRetainedRecord(stackName, region)) === null) {
+        await backend.saveRetainedResources(stackName, region, []);
+      }
+    } catch {
+      // The tombstone is a narrowing, never a reason to warn on a destroy.
+    }
+    return;
+  }
   try {
     const keptIds = new Set(kept.map((k) => k.logicalId));
     // An unreadable record is not overwritten: what it lists would be lost.
-    const earlier = await backend.loadRetainedResources(stackName, region);
+    const earlier = (await backend.loadRetainedRecord(stackName, region)) ?? [];
     await backend.saveRetainedResources(stackName, region, [
       ...earlier.filter((e) => !keptIds.has(e.logicalId)),
       ...kept,

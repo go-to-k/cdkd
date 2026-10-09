@@ -94,21 +94,33 @@ stack's own evidence names that resource:
   before its create is sent (after the approval prompt, under the deploy's
   lock), so a re-run after a crash between a create and its record takes the
   resource back. When the deploy ends, it drops the intents of creates that
-  were not sent, or that came back (their resource is then in the record, or
-  the rollback deleted it);
+  were not sent, that came back (their resource is then in the record, or
+  the rollback deleted it), or that AWS rejected outright (a 4xx such as a
+  validation error); an intent stays only for a create whose outcome is
+  unknown (a crash, a timeout, a 5xx);
 - `retained.json`, the resources this stack let go of under this prefix while
   they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
   deploy that removed them from the template. The next deploy under the same
   prefix that creates them again takes them back, and drops them from that
   list once its record names them. Another prefix or another bucket does not
-  see the list, so a redeploy there is refused. `cdkd state orphan` removes
-  it, with or without a record left;
-- for a resource an older cdkd kept before `retained.json` existed, this
-  prefix's own history: an earlier version of the stack's record (on a
-  versioned state bucket) that names the resource with a Retain policy, or an
-  event history whose `RESOURCE_RETAINED` row follows a create that recorded
-  its physical id (the history keeps the newest 20 runs). Read only for a held
-  name nothing else licenses.
+  see the list, so a redeploy there is refused. `cdkd state orphan` empties
+  it, with or without a record left, and so does a destroy that keeps nothing:
+  the empty list is a tombstone, never deleted;
+- only when this prefix has NO `retained.json` for the stack (it was last
+  destroyed by an older cdkd), this prefix's own history: one of the newest 10
+  earlier versions of the stack's record that names the resource with a
+  Retain policy (needs a versioned state bucket and `s3:ListBucketVersions` /
+  `s3:GetObjectVersion`; a custom bucket without versioning has none), or the
+  event history's newest 20 runs, where a `RESOURCE_RETAINED` row follows a
+  create that recorded the resource's physical id (no extra permission). A
+  nested stack's rows are read from its top-level stack's runs. Read only for
+  a held name nothing else licenses.
+
+A kept resource (`retained.json`, the history) licenses only a holder created
+no later than it was kept, for a type that reports a creation time (an SQS
+queue, a log group, a state machine, a load balancer): a resource of the same
+name re-created later, after the kept one was deleted out of band, is someone
+else's.
 
 Otherwise the deploy refuses before that create, as CloudFormation refuses a
 name that already exists; that resource is not created (resources the deploy
@@ -128,9 +140,12 @@ groups 50 per `DescribeLogGroups` call, ECS clusters 100 per
 (`GetTopicAttributes`), rules (`DescribeRule`, on the rule's own event bus),
 load balancers and target groups (`Describe...` by name), state machines
 (`DescribeStateMachine`) and S3 buckets (`HeadBucket`; S3 has no batch read)
-are read one name per call, in parallel. A resource being deleted (an
-`INACTIVE` ECS cluster, a `DELETING` state machine, a queue or bucket already
-gone) reads as absent, so its create waits out the deletion as before. A rule
+are read one name per call, in parallel (topics at most 4 at a time). A
+resource being deleted (an `INACTIVE` ECS cluster, a `DELETING` state
+machine, a queue or bucket already gone) reads as absent, so its create waits
+out the deletion as before. A queue or bucket can still read as present for
+up to a minute after its delete: a held, unlicensed one is read again every
+10 seconds for about 65 seconds before the create is refused. A rule
 whose `EventBusName` is an intrinsic is looked up at its create, on the
 resolved bus, never on the default one.
 
@@ -139,7 +154,11 @@ update, a no-change deploy and a destroy make no lookup. For the creates, every
 name is looked up once the plan is known, all at once, and each create waits
 only for its own answer, so a first deploy pays about one round trip whatever
 its size. Each API has one concurrency limit across the whole run,
-`deploy --all` included, so a burst queues instead of throttling.
+`deploy --all` included, so a burst queues instead of throttling. The
+intents cost one ledger write per wave of name-adopting creates the deploy
+starts together. A verdict older than 5 seconds when its create starts (a long
+`--require-approval` prompt, a late DAG level) is read again first, one exact
+read per such create, batched with the creates starting together.
 
 **Permissions.** The lookups need the read permission of each type a stack
 creates: `sqs:GetQueueUrl`, `sns:GetTopicAttributes`,
@@ -149,8 +168,9 @@ creates: `sqs:GetQueueUrl`, `sns:GetTopicAttributes`,
 and `s3:ListBucket` on the bucket for an S3 bucket. A lookup refused with 403
 (S3 also answers 403 for a bucket another account owns) warns and creates,
 as before the check existed; any other lookup failure refuses that create.
-Reading an earlier record version needs `s3:ListBucketVersions` and
-`s3:GetObjectVersion` on the state bucket; without them that source licenses
+Two more permissions are optional, beside the registry's below:
+`s3:ListBucketVersions` and `s3:GetObjectVersion` on the state bucket, for the
+earlier record versions after an upgrade; without them that source licenses
 nothing.
 
 **What it does not see.** A holder created between the lookup and the create:
@@ -160,7 +180,11 @@ a resource this stack let go of that no source above names any more -- for
 example kept by a deploy of an older cdkd that removed it from the template,
 once the history has rotated past it: re-adding it is refused, and
 `cdkd import <stack> --resource <logicalId>=<physicalId>` (the command the
-refusal prints) adopts it.
+refusal prints) adopts it. For a type that reports no creation time (an S3
+bucket, a topic, an alarm, a rule, an ECS cluster, a target group), a kept
+resource deleted out of band and re-created by another backend under the same
+name is licensed by its name. And a create that threw a 4xx after its
+provider had already made the resource without saying so loses its intent.
 
 ### The stack registry
 

@@ -897,6 +897,8 @@ export async function runDestroyForStack(
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.info(`${green('✓')} State deleted`);
+      // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1).
+      await recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger);
       await releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
     } finally {
       await emptyLock.release({
@@ -1753,6 +1755,7 @@ export async function runDestroyForStack(
                 logicalId,
                 resourceType: resource.resourceType,
                 physicalId: resource.physicalId,
+                keptAt: Date.now(),
               });
             }
             recordDestroyEvent(ctx.eventRecorder, {

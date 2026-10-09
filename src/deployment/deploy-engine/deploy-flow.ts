@@ -1248,7 +1248,7 @@ export async function doDeployWithPrefetch(
       records: currentState.resources,
       orphans: currentState.orphans,
       loadJournal: () => this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
-      loadRetained: () => this.stateBackend.loadRetainedResources(stackName, this.stackRegion),
+      loadRetained: () => this.stateBackend.loadRetainedRecord(stackName, this.stackRegion),
       loadKeptInHistory: () => {
         const reader = new DeploymentEventsReader(this.stateBackend);
         return loadKeptInHistory(

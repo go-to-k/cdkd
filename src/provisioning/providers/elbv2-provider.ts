@@ -3647,6 +3647,20 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#4705: a load balancer's `CreatedTime` (epoch ms), so a kept
+   * one licenses only a holder created no later than it was kept. A target
+   * group reports none.
+   */
+  async holderCreatedAt(resourceType: string, physicalId: string): Promise<number | undefined> {
+    if (resourceType !== 'AWS::ElasticLoadBalancingV2::LoadBalancer') return undefined;
+    const resp = await this.getClient().send(
+      new DescribeLoadBalancersCommand({ LoadBalancerArns: [physicalId] })
+    );
+    const created = resp.LoadBalancers?.[0]?.CreatedTime;
+    return created instanceof Date ? created.getTime() : undefined;
+  }
+
+  /**
    * go-to-k/cdkd#4705: one exact `Describe...` with `Names: [name]` per name
    * (a `Names` batch fails outright when any one name is missing, which on a
    * first deploy is every time), never a region listing, which can omit a

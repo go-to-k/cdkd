@@ -59,7 +59,7 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
       saveState: vi.fn().mockResolvedValue('etag'),
       loadCreateTokenLedger: vi.fn().mockResolvedValue(null),
       saveCreateTokenLedger: vi.fn().mockResolvedValue(undefined),
-      loadRetainedResources: vi.fn(async () => current),
+      loadRetainedRecord: vi.fn(async () => current),
       saveRetainedResources: vi.fn(async (_s: string, _r: string, entries: unknown[]) => {
         current = entries;
         saved.push(entries);
@@ -130,7 +130,7 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
     expect(provider.delete).not.toHaveBeenCalled();
     expect(saved.at(-1)).toEqual([
       { logicalId: 'Earlier', resourceType: 'AWS::SQS::Queue', physicalId: 'q' },
-      { logicalId: 'Kept', resourceType: type, physicalId },
+      { logicalId: 'Kept', resourceType: type, physicalId, keptAt: expect.any(Number) },
     ]);
   });
 
@@ -149,6 +149,6 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
       { id: 'Gone', type: 'AWS::S3::Bucket', physicalId: 'g', policy: 'Delete' },
     ]);
     expect(saved).toEqual([]);
-    expect(stateBackend.loadRetainedResources).not.toHaveBeenCalled();
+    expect(stateBackend.loadRetainedRecord).not.toHaveBeenCalled();
   });
 });

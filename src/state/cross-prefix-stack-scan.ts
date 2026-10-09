@@ -150,6 +150,11 @@ export class CrossPrefixReadError extends Error {
  */
 export const PROBE_CONCURRENCY = 50;
 
+/** The S3 error behind a `CrossPrefixReadError` (the error itself otherwise). */
+function unwrapCause(error: unknown): unknown {
+  return error instanceof CrossPrefixReadError ? error.cause : error;
+}
+
 /**
  * An S3-compatible endpoint that does not implement a request feature (a
  * conditional write or delete): 501 / `NotImplemented`.
@@ -627,6 +632,13 @@ export function crossPrefixDeniedWarning(
   error: unknown,
   stage: 'list' | 'probe' | 'registry' = 'probe'
 ): string {
+  if (stage === 'registry' && isNotImplemented(unwrapCause(error))) {
+    return (
+      `Could not use the stack registry for stack ${subjectText(s)}: the state bucket's endpoint ` +
+      `does not implement a conditional write${failedKeyText(error)} (${errorName(error, 'NotImplemented')}), ` +
+      `so the bucket's other state prefixes were scanned instead, which is slower. Continuing.`
+    );
+  }
   if (stage === 'registry') {
     return (
       `Could not use the stack registry for stack ${subjectText(s)}: S3 refused` +

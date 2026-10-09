@@ -6,9 +6,10 @@
  * before its provider `create()`; a name this stack's record licenses is
  * created as before; a dry run asks nothing.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { DEFAULT_TIMING } from '../../../src/deployment/generated-name-guard.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -49,8 +50,14 @@ const urlOf = (name: string) => `https://sqs.us-east-1.amazonaws.com/12345678901
 describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)', () => {
   let events: string[];
 
+  const cooldown = DEFAULT_TIMING.cooldownMs;
   beforeEach(() => {
     events = [];
+    // A held queue is otherwise re-read for 65 s while it may be deleting.
+    DEFAULT_TIMING.cooldownMs = 0;
+  });
+  afterEach(() => {
+    DEFAULT_TIMING.cooldownMs = cooldown;
   });
 
   // Q1 <- Q2 <- Q3: three DAG levels.
@@ -77,6 +84,10 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     /** Replaces the lookup's answer (after it is recorded in `events`). */
     lookup?: (names: readonly string[]) => Promise<Map<string, string>>;
     refusalRecovery?: Record<string, string>;
+    /** Per logical id: a create that throws this error instead. */
+    createFails?: Record<string, Error>;
+    /** The earlier record versions `loadKeptInHistory` reads. */
+    earlierRecords?: Array<{ resources: Record<string, unknown>; writtenAt?: number }>;
   }) {
     const provider = {
       generatedCreateName: vi.fn((_t: string, logicalId: string) => `${STACK}-${logicalId}`),
@@ -87,6 +98,8 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       }),
       create: vi.fn(async (logicalId: string) => {
         events.push(`create:${logicalId}`);
+        const fails = opts.createFails?.[logicalId];
+        if (fails) throw fails;
         return { physicalId: urlOf(`${STACK}-${logicalId}`), attributes: {} };
       }),
       update: vi.fn(),
@@ -107,6 +120,11 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       listStacks: vi.fn(async () => []),
       loadRollbackJournal: vi.fn(async () => null),
       loadRetainedResources: vi.fn(async () => opts.retained ?? []),
+      loadRetainedRecord: vi.fn(async () => opts.retained ?? null),
+      earlierStateResources: vi.fn(async () => opts.earlierRecords ?? []),
+      // The event history reader: no index, no runs.
+      getRawObject: vi.fn(async () => null),
+      listRawKeys: vi.fn(async () => []),
       saveRetainedResources: vi.fn(async () => undefined),
       deleteRollbackJournal: vi.fn(async () => undefined),
       loadCreateTokenLedger: vi.fn(async () => ledgerDoc),
@@ -151,7 +169,12 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       },
       'us-east-1'
     );
-    return { engine, provider, stateBackend };
+    const adoptIntents = (): string[] =>
+      Object.entries((ledgerDoc as { sent?: Record<string, { base: string }> } | null)?.sent ?? {})
+        .filter(([, e]) => e.base.startsWith('adopt-by-name:'))
+        .map(([id]) => id)
+        .sort();
+    return { engine, provider, stateBackend, adoptIntents };
   }
 
   it('looks every planned name up in ONE call before the first create, and records them before any create', async () => {
@@ -245,6 +268,41 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     vi.mocked(getLogger().debug).mockClear();
     await engine.deploy(STACK, template);
     expect(getLogger().debug).toHaveBeenCalledWith('Generated-name check: looking up 3 planned create(s)');
+  });
+
+  it('D-4: at the deploy end the SAVED ledger keeps neither a returned (rolled-back) create nor one AWS rejected', async () => {
+    // Q1 returns, Q2 is rejected outright (400), Q3 is never admitted.
+    const rejected = Object.assign(new Error('InvalidParameterValue'), {
+      name: 'InvalidParameterValue',
+      $metadata: { httpStatusCode: 400 },
+    });
+    const { engine, provider, adoptIntents } = buildEngine({ createFails: { Q2: rejected } });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow();
+    expect(provider.create.mock.calls.map((c) => c[0])).toEqual(['Q1', 'Q2']);
+    // The rollback deleted Q1's resource.
+    expect(provider.delete).toHaveBeenCalled();
+    expect(adoptIntents()).toEqual([]);
+  });
+
+  it('D-5: a create that was SENT and never came back (a timeout: unknown outcome) keeps its intent', async () => {
+    const timedOut = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    const { engine, adoptIntents } = buildEngine({ createFails: { Q1: timedOut } });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow();
+    expect(adoptIntents()).toEqual(['Q1']);
+  });
+
+  it("D-6: an older cdkd's kept queue (earlier record version, no retained.json) is taken back", async () => {
+    const { engine, provider } = buildEngine({
+      holders: { 'App-Q2': urlOf('App-Q2') },
+      earlierRecords: [
+        {
+          resources: { Q2: { resourceType: QUEUE, physicalId: urlOf('App-Q2'), deletionPolicy: 'Retain' } },
+          writtenAt: 1,
+        },
+      ],
+    });
+    await engine.deploy(STACK, template);
+    expect(provider.create.mock.calls.map((c) => c[0])).toEqual(['Q1', 'Q2', 'Q3']);
   });
 
   it('a dry run looks nothing up and writes nothing', async () => {

@@ -235,6 +235,18 @@ export class SQSQueueProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#4705: the queue's `CreatedTimestamp` (seconds, as epoch ms),
+   * so a kept queue licenses only a holder created no later than it was kept.
+   */
+  async holderCreatedAt(_resourceType: string, physicalId: string): Promise<number | undefined> {
+    const resp = await this.sqsClient.send(
+      new GetQueueAttributesCommand({ QueueUrl: physicalId, AttributeNames: ['CreatedTimestamp'] })
+    );
+    const seconds = Number(resp.Attributes?.['CreatedTimestamp']);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+  }
+
+  /**
    * go-to-k/cdkd#4705: one exact `GetQueueUrl` per name. Never `ListQueues`:
    * its listing is eventually consistent and omitted a queue another
    * deployment had created a minute earlier, so the create adopted it (and the

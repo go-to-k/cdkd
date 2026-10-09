@@ -563,10 +563,11 @@ case " ${KEPT_R} " in
   *" ${LOG_GROUP_R} "*) ;;
   *) echo "FAIL: ${RETAINED_KEY_R} does not list ${LOG_GROUP_R} (got '${KEPT_R}')" >&2; exit 1 ;;
 esac
-run_logged "(c)5 state orphan clears the kept-resource record (no record left)" "${LOCAL_DIST}" state orphan "${RETAIN}" \
+run_logged "(c)5 state orphan empties the kept-resource record (no record left)" "${LOCAL_DIST}" state orphan "${RETAIN}" \
   --stack-region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force
-assert_gone "${RETAINED_KEY_R} still exists after state orphan" \
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${RETAINED_KEY_R}"
+# The empty record stays as a tombstone: it ends the older history's license.
+KEPT_R="$(aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_R}" - | jq -c '.resources')"
+[ "${KEPT_R}" = "[]" ] || { echo "FAIL: ${RETAINED_KEY_R} is not the empty tombstone after state orphan (got '${KEPT_R}')" >&2; exit 1; }
 aws logs delete-log-group --log-group-name "${LOG_GROUP_R}" --region "${REGION}"
 
 rm -f "${RUN_LOG}"

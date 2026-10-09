@@ -7,10 +7,17 @@
 import { GetObjectCommand, ListObjectVersionsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 
+/** One earlier version of a stack record: its `resources` map, and when it was written. */
+export interface EarlierStateRecord {
+  resources: Record<string, unknown>;
+  /** The version's `LastModified` (epoch ms). */
+  writtenAt?: number;
+}
+
 /**
- * The `resources` maps of `key`'s newest `max` versions, newest first. A
- * version whose body will not parse as a record is skipped; any request error
- * throws.
+ * The `resources` maps of `key`'s newest `max` versions, newest first, read in
+ * parallel. A version whose body will not parse as a record is skipped; any
+ * request error throws.
  */
 export async function readEarlierStateResources(
   s3: S3Client,
@@ -18,7 +25,7 @@ export async function readEarlierStateResources(
   owner: { ExpectedBucketOwner?: string },
   key: string,
   max: number
-): Promise<Array<Record<string, unknown>>> {
+): Promise<EarlierStateRecord[]> {
   const listed = await s3.send(
     new ListObjectVersionsCommand({
       Bucket: bucket,
@@ -32,21 +39,27 @@ export async function readEarlierStateResources(
     .filter((v) => decodeListingKey(v.Key) === key && typeof v.VersionId === 'string')
     .sort((a, b) => (b.LastModified?.getTime() ?? 0) - (a.LastModified?.getTime() ?? 0))
     .slice(0, max);
-  const out: Array<Record<string, unknown>> = [];
-  for (const v of versions) {
-    const got = await s3.send(
-      new GetObjectCommand({ Bucket: bucket, ...owner, Key: key, VersionId: v.VersionId })
-    );
-    const body = await got.Body?.transformToString();
-    if (body === undefined) continue;
-    try {
-      const parsed = JSON.parse(body) as { resources?: unknown } | null;
-      if (parsed !== null && typeof parsed.resources === 'object' && parsed.resources !== null) {
-        out.push(parsed.resources as Record<string, unknown>);
+  const read = await Promise.all(
+    versions.map(async (v): Promise<EarlierStateRecord | undefined> => {
+      const got = await s3.send(
+        new GetObjectCommand({ Bucket: bucket, ...owner, Key: key, VersionId: v.VersionId })
+      );
+      const body = await got.Body?.transformToString();
+      if (body === undefined) return undefined;
+      try {
+        const parsed = JSON.parse(body) as { resources?: unknown } | null;
+        if (parsed === null || typeof parsed.resources !== 'object' || parsed.resources === null) {
+          return undefined;
+        }
+        return {
+          resources: parsed.resources as Record<string, unknown>,
+          ...(v.LastModified instanceof Date && { writtenAt: v.LastModified.getTime() }),
+        };
+      } catch {
+        // Not a record: proves nothing.
+        return undefined;
       }
-    } catch {
-      // Not a record: proves nothing.
-    }
-  }
-  return out;
+    })
+  );
+  return read.filter((r): r is EarlierStateRecord => r !== undefined);
 }

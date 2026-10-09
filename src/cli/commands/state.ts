@@ -2310,10 +2310,12 @@ async function clearRetainedQuietly(
 }
 
 /**
- * go-to-k/cdkd#4705: for a stack with NO record under this prefix, delete its
- * `retained.json` in `stackRegion` (or every region that has one) and release
- * the registry marker there when it names this prefix. The regions cleared.
- * Best-effort: a failure is warned.
+ * go-to-k/cdkd#4705: for a stack with NO record under this prefix, write the
+ * empty `retained.json` (the tombstone) in `stackRegion`, or in every region
+ * that still holds anything of the stack here (a kept-resource record, or the
+ * event history an older cdkd's destroy left, which would otherwise license
+ * taking a kept resource back), and release the registry marker there when it
+ * names this prefix. The regions cleared. Best-effort: a failure is warned.
  */
 async function clearRetainedWithoutRecord(
   backend: S3StateBackend,
@@ -2325,11 +2327,15 @@ async function clearRetainedWithoutRecord(
   const base = `${backend.prefix}/${stackName}/`;
   let regions: string[];
   try {
-    regions = (await backend.listRawKeys(base))
-      .map((key) => key.slice(base.length).split('/'))
-      .filter((parts) => parts.length === 2 && parts[1] === 'retained.json' && parts[0] !== '')
-      .map((parts) => parts[0]!)
-      .filter((region) => stackRegion === undefined || region === stackRegion);
+    regions = [
+      ...new Set(
+        (await backend.listRawKeys(base))
+          .map((key) => key.slice(base.length).split('/'))
+          .filter((parts) => parts.length >= 2 && parts[0] !== '')
+          .map((parts) => parts[0]!)
+          .filter((region) => stackRegion === undefined || region === stackRegion)
+      ),
+    ];
   } catch (error) {
     logger.warn(
       safeMsg`Could not look for a kept-resource record of ${displayStackName(stackName)} ` +
@@ -2383,7 +2389,7 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           logger.info(
             safeMsg`Cleared the kept-resource record of ${plainOrDescribed(stackName, 'stack name')} ` +
               safeMsg`(${cleared.map((r) => displaySafe(r, { asciiOnly: true })).join(', ')}): ` +
-              `a later deploy here no longer takes those resources back.`
+              `a later deploy here no longer takes a kept resource back.`
           );
           continue;
         }

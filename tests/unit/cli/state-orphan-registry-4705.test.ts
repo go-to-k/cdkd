@@ -110,6 +110,15 @@ describe('cdkd state orphan and the registry (go-to-k/cdkd#4705)', () => {
     expect(backend.saveRetainedResources.mock.calls).toEqual([['App', 'eu-west-1', []]]);
   });
 
+  it("D-1: no record and no retained.json, but an older cdkd's event history: the empty tombstone ends its license", async () => {
+    backend.listRawKeys.mockResolvedValue([
+      'cdkd/App/us-east-1/deployments/index.json',
+      'cdkd/App/us-east-1/deployments/20260901T000000Z-abc.jsonl',
+    ]);
+    await orphan(['App']);
+    expect(backend.saveRetainedResources.mock.calls).toEqual([['App', 'us-east-1', []]]);
+  });
+
   it('no record and nothing kept: the idempotent skip, no write', async () => {
     await orphan(['App']);
     expect(backend.saveRetainedResources).not.toHaveBeenCalled();

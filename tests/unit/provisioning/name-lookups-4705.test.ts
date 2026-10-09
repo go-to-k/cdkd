@@ -420,3 +420,32 @@ describe('review CB-18: an EventBridge rule on an intrinsic bus never reads the 
     expect(eventBridgeSend).not.toHaveBeenCalled();
   });
 });
+
+describe('review D-2: when a holder was created', () => {
+  it('SQS reads CreatedTimestamp (seconds) as epoch ms', async () => {
+    sqsSend.mockResolvedValue({ Attributes: { CreatedTimestamp: '1700000000' } });
+    await expect(new SQSQueueProvider().holderCreatedAt('AWS::SQS::Queue', 'https://q/App-Q')).resolves.toBe(
+      1_700_000_000_000
+    );
+    const sent = sqsSend.mock.calls[0]![0] as { input: Record<string, unknown> };
+    expect(sent.input).toEqual({ QueueUrl: 'https://q/App-Q', AttributeNames: ['CreatedTimestamp'] });
+  });
+
+  it('a log group reads its own creationTime (exact name, not a prefix sibling)', async () => {
+    logsSend.mockResolvedValue({
+      logGroups: [
+        { logGroupName: '/cdkd/App-L', creationTime: 111 },
+        { logGroupName: '/cdkd/App-L2', creationTime: 222 },
+      ],
+    });
+    await expect(new LogsLogGroupProvider().holderCreatedAt('AWS::Logs::LogGroup', '/cdkd/App-L')).resolves.toBe(111);
+    logsSend.mockResolvedValue({ logGroups: [] });
+    await expect(new LogsLogGroupProvider().holderCreatedAt('AWS::Logs::LogGroup', '/cdkd/App-L')).resolves.toBeUndefined();
+  });
+
+  it('a target group reports none; a read error throws', async () => {
+    await expect(new ELBv2Provider().holderCreatedAt('AWS::ElasticLoadBalancingV2::TargetGroup', 'arn')).resolves.toBeUndefined();
+    sqsSend.mockRejectedValue(new Error('503'));
+    await expect(new SQSQueueProvider().holderCreatedAt('AWS::SQS::Queue', 'u')).rejects.toThrow('503');
+  });
+});

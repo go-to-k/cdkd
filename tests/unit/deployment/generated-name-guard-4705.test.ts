@@ -31,7 +31,11 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
   }),
 }));
 
-import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../../../src/deployment/generated-name-guard.js';
+import {
+  GeneratedNameGuard,
+  provenNothingCreated,
+  type GeneratedNameGuardInput,
+} from '../../../src/deployment/generated-name-guard.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
@@ -88,8 +92,11 @@ function inputOf(
     records: {},
     orphans: undefined,
     loadJournal: vi.fn(async () => null),
-    loadRetained: vi.fn(async () => []),
+    // No retained.json: this cdkd never destroyed the stack here.
+    loadRetained: vi.fn(async () => null),
     accountInfo: vi.fn(async () => ({ partition: 'aws', region: 'us-east-1', accountId: '123456789012' })),
+    // No deletion-cooldown re-reads unless a case asks for them.
+    timing: { cooldownMs: 0 },
     ...extra,
   };
 }
@@ -511,5 +518,213 @@ describe("a license from this prefix's own history (review CB-14b: a destroy by 
     const held = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, { loadKeptInHistory });
     await expect(GeneratedNameGuard.start(held)!.verdict('A')).resolves.toMatchObject({ kind: 'held' });
     expect(loadKeptInHistory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('review round CB2', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+  const kept = [{ logicalId: 'A', resourceType: QUEUE, physicalId: URL }];
+
+  it('D-1: after this cdkd wrote retained.json (an orphan or destroy tombstone), the history licenses nothing', async () => {
+    const loadKeptInHistory = vi.fn(async () => kept);
+    const tombstoned = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+      loadRetained: async () => [],
+      loadKeptInHistory,
+    });
+    await expect(GeneratedNameGuard.start(tombstoned)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    expect(loadKeptInHistory).not.toHaveBeenCalled();
+  });
+
+  it('D-1: an older cdkd destroyed it (no retained.json at all): the history still licenses', async () => {
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+      loadRetained: async () => null,
+      loadKeptInHistory: async () => kept,
+    });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed', via: 'history' });
+  });
+
+  describe('D-2: a kept resource licenses only a holder created no later than it was kept', () => {
+    const KEPT_AT = Date.parse('2026-09-01T00:00:00Z');
+    const LOGS_NAME = '/cdkd/App-gen-L';
+    it.each([
+      [QUEUE, 'gen-A', URL],
+      [LOGS, 'gen-L', LOGS_NAME],
+    ])('%s: the original (created before) is taken back; a twin re-created after is refused', async (type, name, id) => {
+      for (const [createdAt, expected] of [
+        [KEPT_AT - 86_400_000, 'licensed'],
+        [KEPT_AT + 3_600_000, 'held'],
+      ] as const) {
+        const provider = providerOf({ [name]: id });
+        (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => createdAt);
+        const retained = inputOf([create(name.slice(4), type)], { [type]: provider }, {
+          loadRetained: async () => [{ logicalId: name.slice(4), resourceType: type, physicalId: id, keptAt: KEPT_AT }],
+        });
+        await expect(GeneratedNameGuard.start(retained)!.verdict(name.slice(4)), `${type} retained ${expected}`).resolves.toMatchObject({ kind: expected });
+        const history = inputOf([create(name.slice(4), type)], { [type]: provider }, {
+          loadKeptInHistory: async () => [{ logicalId: name.slice(4), resourceType: type, physicalId: id, keptAt: KEPT_AT }],
+        });
+        await expect(GeneratedNameGuard.start(history)!.verdict(name.slice(4)), `${type} history ${expected}`).resolves.toMatchObject({ kind: expected });
+      }
+    });
+
+    it('a type that reports no creation time, or an entry with no keptAt, licenses by name (the documented residual)', async () => {
+      const provider = providerOf({ 'gen-A': URL });
+      (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => undefined);
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: provider }, {
+        loadRetained: async () => [{ logicalId: 'A', resourceType: QUEUE, physicalId: URL, keptAt: KEPT_AT }],
+      });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed', via: 'retained' });
+      const noKeptAt = providerOf({ 'gen-A': URL });
+      const read = vi.fn(async () => KEPT_AT + 3_600_000);
+      (noKeptAt as unknown as { holderCreatedAt: unknown }).holderCreatedAt = read;
+      const legacy = inputOf([create('A', QUEUE)], { [QUEUE]: noKeptAt }, { loadRetained: async () => kept });
+      await expect(GeneratedNameGuard.start(legacy)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed' });
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('a creation time that cannot be read refuses (fail closed); a 403 is unchecked', async () => {
+      for (const [error, kind] of [
+        [new Error('503'), 'failed'],
+        [accessDenied(), 'unchecked'],
+      ] as const) {
+        const provider = providerOf({ 'gen-A': URL });
+        (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => {
+          throw error;
+        });
+        const input = inputOf([create('A', QUEUE)], { [QUEUE]: provider }, {
+          loadRetained: async () => [{ ...kept[0]!, keptAt: KEPT_AT }],
+        });
+        await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind });
+      }
+    });
+  });
+
+  describe('D-3: a create that threw keeps its intent only when its outcome is unknown', () => {
+    const status = (code: number, name = 'Err') =>
+      Object.assign(new Error(name), { name, $metadata: { httpStatusCode: code } });
+    it.each([
+      ['a validation 400', status(400, 'InvalidParameterValue'), true],
+      ['AlreadyExists 409', status(409, 'AlreadyExistsException'), true],
+      ['AccessDenied 403', status(403, 'AccessDenied'), true],
+      ['wrapped under a provider error', Object.assign(new Error('wrap'), { cause: status(400, 'ValidationError') }), true],
+      ['a throttle', status(400, 'ThrottlingException'), false],
+      ['a 429', status(429, 'TooManyRequestsException'), false],
+      ['a 503', status(503, 'ServiceUnavailable'), false],
+      ['a client timeout', Object.assign(new Error('t'), { name: 'TimeoutError' }), false],
+      ['a socket reset', Object.assign(new Error('r'), { code: 'ECONNRESET' }), false],
+      ['no status at all', new Error('boom'), false],
+    ])('%s: proven nothing created = %s', async (_what, error, proven) => {
+      expect(provenNothingCreated(error, 'A', QUEUE)).toBe(proven);
+      const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: providerOf() }))!;
+      await guard.admit('A', {});
+      guard.noteSent('A');
+      guard.noteFailed('A', error);
+      await guard.settle();
+      expect(ledger.drops).toEqual(proven ? [['A']] : []);
+    });
+  });
+
+  it('D-9: SNS topics are read at most 4 at a time', async () => {
+    const topic = providerOf({}, { batch: false });
+    let inFlight = 0;
+    let peak = 0;
+    topic.import.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return null;
+    });
+    const changes = Array.from({ length: 12 }, (_, i) => create(`T${i}`, TOPIC));
+    const guard = GeneratedNameGuard.start(inputOf(changes, { [TOPIC]: topic }))!;
+    await guard.verdict('T0');
+    expect(topic.import).toHaveBeenCalledTimes(12);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  describe('D-10: a held queue or bucket is read again across its deletion cooldown before it is refused', () => {
+    const timing = (): { sleeps: number[]; t: { now: () => number; sleep: (ms: number) => Promise<void>; cooldownMs: number; cooldownStepMs: number } } => {
+      let clock = 0;
+      const sleeps: number[] = [];
+      return {
+        sleeps,
+        t: {
+          now: () => clock,
+          sleep: async (ms: number) => {
+            sleeps.push(ms);
+            clock += ms;
+          },
+          cooldownMs: 65_000,
+          cooldownStepMs: 10_000,
+        },
+      };
+    };
+
+    it('a queue that disappears within the window (it was being deleted) is free', async () => {
+      const q = providerOf({ 'gen-A': URL });
+      let reads = 0;
+      q.lookupNames.mockImplementation(async (_t: string, names: readonly string[]) => {
+        reads++;
+        return reads <= 2 ? new Map(names.map((n) => [n, URL])) : new Map();
+      });
+      const { sleeps, t } = timing();
+      const guard = GeneratedNameGuard.start(inputOf([create('A', QUEUE)], { [QUEUE]: q }, { timing: t }))!;
+      await expect(guard.verdict('A')).resolves.toEqual({ kind: 'free' });
+      expect(sleeps).toEqual([10_000, 10_000]);
+    });
+
+    it('a queue still there after the window is refused; the waits are bounded', async () => {
+      const { sleeps, t } = timing();
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, { timing: t })
+      )!;
+      await expect(guard.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+      expect(sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(70_000);
+      expect(sleeps.length).toBe(7);
+    });
+
+    it('a log group (deleted at once) is refused without waiting', async () => {
+      const { sleeps, t } = timing();
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('L', LOGS)], { [LOGS]: providerOf({ 'gen-L': '/cdkd/x' }) }, { timing: t })
+      )!;
+      await expect(guard.verdict('L')).resolves.toMatchObject({ kind: 'held' });
+      expect(sleeps).toEqual([]);
+    });
+  });
+
+  it('D-12: a verdict older than staleAfterMs (a long approval prompt) is read again at admission, batched', async () => {
+    let clock = 0;
+    const q = providerOf();
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q }, {
+        timing: { now: () => clock, staleAfterMs: 5_000, cooldownMs: 0 },
+      })
+    )!;
+    await guard.verdict('A');
+    expect(q.lookupNames).toHaveBeenCalledTimes(1);
+    clock = 60_000; // the prompt was answered a minute later; meanwhile a twin took gen-B
+    q.lookupNames.mockImplementation(async (_t: string, names: readonly string[]) =>
+      new Map(names.filter((n) => n === 'gen-B').map((n) => [n, `https://q/${n}`]))
+    );
+    const [a, b] = await Promise.all([guard.admit('A', {}), guard.admit('B', {})]);
+    expect(a).toEqual({ kind: 'free' });
+    expect(b).toMatchObject({ kind: 'held' });
+    // One batched re-read for both; only A, still free, is recorded.
+    expect(q.lookupNames).toHaveBeenCalledTimes(2);
+    expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
+  });
+
+  it('D-14: settle waits for every intent write in flight, not only the last', async () => {
+    const guard = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: providerOf() })
+    )!;
+    const first = guard.admit('A', {});
+    await new Promise((r) => setImmediate(r));
+    const second = guard.admit('B', {});
+    await guard.settle();
+    await Promise.all([first, second]);
+    // Neither was sent: both intents dropped, i.e. both writes had landed.
+    expect(ledger.drops.flat().sort()).toEqual(['A', 'B']);
   });
 });

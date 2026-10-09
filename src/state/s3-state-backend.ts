@@ -53,7 +53,7 @@ import { UNRENDERABLE } from './lock-contention-message.js';
 // module that reaches `error-handler` / `retryable-errors` /
 // `lock-contention-message` for nothing.
 import { producerRecordKey } from './record-keys.js';
-import { readEarlierStateResources } from './earlier-state-versions.js';
+import { readEarlierStateResources, type EarlierStateRecord } from './earlier-state-versions.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
@@ -1080,7 +1080,7 @@ export class S3StateBackend {
     stackName: string,
     region: string,
     max = 10
-  ): Promise<Array<Record<string, unknown>>> {
+  ): Promise<EarlierStateRecord[]> {
     await this.ensureClientForBucket();
     return readEarlierStateResources(
       this.s3Client,
@@ -1104,6 +1104,17 @@ export class S3StateBackend {
    * as such a record throws, naming the key.
    */
   async loadRetainedResources(stackName: string, region: string): Promise<RetainedResource[]> {
+    return (await this.loadRetainedRecord(stackName, region)) ?? [];
+  }
+
+  /**
+   * As {@link loadRetainedResources}, but `null` when there is NO record at
+   * all -- a stack this cdkd never destroyed or orphaned here, the only case
+   * in which an older cdkd's history may still license a kept resource. An
+   * empty record (`[]`) is the tombstone `state orphan` and a destroy that
+   * kept nothing write (go-to-k/cdkd#4705 review D-1).
+   */
+  async loadRetainedRecord(stackName: string, region: string): Promise<RetainedResource[] | null> {
     const key = this.getRetainedKey(stackName, region);
     let body: string | null;
     try {
@@ -1111,7 +1122,7 @@ export class S3StateBackend {
     } catch (error) {
       throw new CrossPrefixReadError(key, error);
     }
-    if (body === null) return [];
+    if (body === null) return null;
     const entries = parseRetainedResources(body);
     if (entries === undefined) {
       throw new CrossPrefixReadError(
@@ -1123,8 +1134,9 @@ export class S3StateBackend {
   }
 
   /**
-   * Replace the stack's retained-resource record with `entries` (deleting it
-   * when empty). Errors throw.
+   * Replace the stack's retained-resource record with `entries`. An empty list
+   * is written, not deleted: it is the tombstone that ends the history license
+   * (go-to-k/cdkd#4705 review D-1). Errors throw.
    */
   async saveRetainedResources(
     stackName: string,
@@ -1133,16 +1145,6 @@ export class S3StateBackend {
   ): Promise<void> {
     await this.ensureClientForBucket();
     const key = this.getRetainedKey(stackName, region);
-    if (entries.length === 0) {
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
-      return;
-    }
     await this.s3Client.send(
       new PutObjectCommand({
         Bucket: this.config.bucket,
@@ -2505,6 +2507,11 @@ export interface RetainedResource {
   logicalId: string;
   resourceType: string;
   physicalId: string;
+  /**
+   * When this stack let the resource go (epoch ms). A holder created after it
+   * is not the resource that was kept (go-to-k/cdkd#4705 review D-2).
+   */
+  keptAt?: number;
 }
 
 /** The entries of a `retained.json` body, or `undefined` when it is not one. */
@@ -2527,7 +2534,12 @@ export function parseRetainedResources(body: string): RetainedResource[] | undef
       typeof e.physicalId === 'string' &&
       e.physicalId !== ''
     ) {
-      out.push({ logicalId: e.logicalId, resourceType: e.resourceType, physicalId: e.physicalId });
+      out.push({
+        logicalId: e.logicalId,
+        resourceType: e.resourceType,
+        physicalId: e.physicalId,
+        ...(typeof e.keptAt === 'number' && Number.isFinite(e.keptAt) && { keptAt: e.keptAt }),
+      });
     }
   }
   return out;

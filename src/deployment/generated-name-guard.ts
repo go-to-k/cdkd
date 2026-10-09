@@ -14,26 +14,34 @@
  * its rollback and destroy then deleted.
  *
  * As soon as a deploy's plan is known, {@link GeneratedNameGuard.start} looks
- * every planned generated name of those types up, BATCHED per type and all at
- * once (`ResourceProvider.lookupNames`), so the cost is about one round trip
- * whatever the resource count. Each create then awaits its own answer
- * ({@link GeneratedNameGuard.verdict}):
+ * every planned generated name of those types up -- an EXACT read by name
+ * (`ResourceProvider.lookupNames`, else `import()` per name), never an
+ * eventually consistent listing -- all at once, so the cost is about one
+ * round trip whatever the resource count. Each create then acts on its own
+ * answer ({@link GeneratedNameGuard.admit}, right before it is sent):
  *
  * - no holder: create;
  * - a holder this stack's own evidence names -- its state record (any logical
  *   id), its rollback orphans, its rollback journal (a completed op, or a
- *   failed op that recorded a physical id), the create this stack's
- *   create-token ledger recorded before sending it (a crash between the
- *   create and its record), or a resource a destroy of this stack under THIS
- *   prefix kept (`retained.json`) -- take it back, as before;
+ *   failed op that recorded a physical id), an intent its create-token ledger
+ *   recorded (a crash between that create and its record), what it let go of
+ *   under THIS prefix (`retained.json`), or, when this cdkd never wrote that
+ *   record here, what an older cdkd's history shows it kept -- take it back.
+ *   A kept resource is licensed only when its holder was created no later
+ *   than it was kept, for a type that reports a creation time;
  * - any other holder: refuse before the create, CloudFormation-style ("already
- *   exists"), naming `cdkd import` and the likely cause;
+ *   exists"), naming `cdkd import` and the likely cause. A queue or bucket
+ *   still listed while it is being deleted is re-read across the deletion's
+ *   cooldown first;
  * - the lookup refused with 403: warn and create, as before the check (the
  *   403 contract); any other lookup failure refuses.
  *
- * Before any create is sent, the names this deploy is about to take (free, or
- * licensed) are recorded in the create-token ledger in ONE write, so a re-run
- * after a crash finds them as its own.
+ * The plan-time reads write nothing. A name is recorded as this stack's
+ * intent only at admission (after approval, under the deploy's lock), one
+ * write per wave of creates; a verdict older than a few seconds (a long
+ * approval prompt) is read again first. {@link GeneratedNameGuard.settle}, in
+ * the deploy's `finally` before the lock is released, drops every intent whose
+ * create was not sent, came back, or was rejected outright.
  *
  * Between the lookup and the create a holder can still appear: the window of
  * two first deploys at the same moment. Within one bucket, the stack registry
@@ -52,6 +60,9 @@ import {
   recordAdoptingCreates,
   recordedAdoptingCreates,
 } from '../provisioning/providers/create-token-ledger.js';
+import { createdBeforeFailure } from '../provisioning/auxiliary-failure.js';
+import { isAmbiguousOutcomeError } from './retryable-errors/transient.js';
+import { isThrottlingError } from './retryable-errors/marks.js';
 import type { ResourceChange, ResourceState, StackOrphanRecord } from '../types/state.js';
 import type { ProvisionedBy } from '../provisioning/provider-registry.js';
 import type { ResourceProvider } from '../types/resource.js';
@@ -89,11 +100,13 @@ interface Candidate {
   deferred: boolean;
 }
 
-/** A resource this stack's own event history shows it created, then kept. */
+/** A resource this stack's own history shows it created, then kept. */
 export interface KeptInHistory {
   logicalId: string;
   resourceType: string;
   physicalId: string;
+  /** When it was kept (epoch ms), when the history says. */
+  keptAt?: number;
 }
 
 /** What the guard needs from the engine. */
@@ -112,20 +125,90 @@ export interface GeneratedNameGuardInput {
   orphans: readonly StackOrphanRecord[] | undefined;
   /** This stack's rollback journal, read on demand. */
   loadJournal(): Promise<RollbackJournal | null>;
-  /** What a destroy of this stack under this prefix kept, read on demand. */
-  loadRetained(): Promise<readonly RetainedResource[]>;
   /**
-   * What this prefix's own deployment event history shows this stack created
-   * and then kept (a destroy by a cdkd that wrote no `retained.json`), read
-   * only when a held name is licensed by nothing else.
+   * What this stack let go of under this prefix (`retained.json`), read on
+   * demand; `null` when there is no such record at all (this cdkd never
+   * destroyed or orphaned the stack here), the only case in which the history
+   * below is read.
+   */
+  loadRetained(): Promise<readonly RetainedResource[] | null>;
+  /**
+   * What this prefix's own history shows this stack created and then kept (an
+   * older cdkd that wrote no `retained.json`), read only when a held name is
+   * licensed by nothing else and there is no `retained.json`.
    */
   loadKeptInHistory?(): Promise<readonly KeptInHistory[]>;
   /** The account the ARNs of SNS / Step Functions names are built in. */
   accountInfo(): Promise<{ partition: string; region: string; accountId: string }>;
+  /** Timing, overridable for tests. */
+  timing?: Partial<GuardTiming>;
 }
 
-/** Look-ups by name above this many at once wait their turn, per type. */
-const PER_NAME_CONCURRENCY = 10;
+/** The guard's clocks and waits. */
+export interface GuardTiming {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  /** A plan-time verdict older than this is read again at admission. */
+  staleAfterMs: number;
+  /** How long a held queue or bucket is re-read while it may be deleting. */
+  cooldownMs: number;
+  /** The wait between those re-reads. */
+  cooldownStepMs: number;
+}
+
+/** The defaults (exported so an engine-level test can shorten the waits). */
+export const DEFAULT_TIMING: GuardTiming = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  staleAfterMs: 5_000,
+  // SQS keeps a deleted queue's name for 60 seconds; S3 answers for a
+  // just-deleted bucket for about as long.
+  cooldownMs: 65_000,
+  cooldownStepMs: 10_000,
+};
+
+/**
+ * Types whose exact read can still answer for a resource being deleted (a
+ * queue's 60-second cooldown, a bucket's delete propagating): a held name of
+ * these is read again across that window before it is refused.
+ */
+const STILL_LISTED_WHILE_DELETING: ReadonlySet<string> = new Set([
+  'AWS::SQS::Queue',
+  'AWS::S3::Bucket',
+]);
+
+/** Per-name reads through `import()` at once, per type (SNS's API is the strictest). */
+const PER_NAME_CONCURRENCY: Readonly<Record<string, number>> = { 'AWS::SNS::Topic': 4 };
+const DEFAULT_PER_NAME_CONCURRENCY = 10;
+
+/** Clock skew tolerated between cdkd's clock (when kept) and AWS's (when created). */
+const KEPT_AT_SKEW_MS = 60_000;
+
+/**
+ * Did the create call that threw `error` prove that it created nothing? A
+ * definite client rejection (a 4xx: validation, AlreadyExists, AccessDenied --
+ * not a throttle, 408 or 429) with no ambiguous link and no mark that the
+ * provider's create returned before the failure. Anything else -- a timeout,
+ * a socket error, a 5xx, an unknown -- may have made the resource.
+ */
+export function provenNothingCreated(
+  error: unknown,
+  logicalId: string,
+  resourceType: string
+): boolean {
+  if (createdBeforeFailure(error, logicalId, resourceType) !== undefined) return false;
+  if (isAmbiguousOutcomeError(error) || isThrottlingError(error)) return false;
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current !== null && typeof current === 'object'; depth++) {
+    const status = (current as { $metadata?: { httpStatusCode?: unknown } }).$metadata
+      ?.httpStatusCode;
+    if (typeof status === 'number') {
+      return status >= 400 && status < 500 && status !== 408 && status !== 429;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /**
  * One deploy's guard.
@@ -136,30 +219,42 @@ const PER_NAME_CONCURRENCY = 10;
  * before its create -- after the approval prompt and the destructive-plan
  * check, under the deploy's lock -- in one write per wave of creates. The
  * deploy's `finally` ({@link settle}, still under the lock) drops every
- * intent whose create was not sent, or whose create returned (its resource is
- * then in the record, or the rollback deleted it): only a create that was sent
- * and never came back -- a crash, a hang, a failure after AWS made it -- keeps
- * its intent, which licenses the re-run taking that resource back.
+ * intent whose create was not sent, came back (its resource is then in the
+ * record, or the rollback deleted it), or was rejected outright: only a create
+ * that was sent and whose outcome is unknown -- a crash, a hang, a timeout, a
+ * 5xx, a failure after AWS made it -- keeps its intent, which licenses the
+ * re-run taking that resource back.
  */
 export class GeneratedNameGuard {
   private readonly verdicts = new Map<string, Promise<GeneratedNameVerdict>>();
+  /** When each verdict was decided. */
+  private readonly decidedAt = new Map<string, number>();
   /** The candidates by logical id, for a create that asks. */
   private readonly candidates = new Map<string, Candidate>();
   /** Intents this deploy wrote, by logical id. */
   private readonly recorded = new Set<string>();
-  /** Creates sent, and creates that returned a resource. */
+  /** Creates sent; those that returned a resource; those rejected outright. */
   private readonly sent = new Set<string>();
   private readonly returned = new Set<string>();
+  private readonly rejected = new Set<string>();
+  /** Creates re-read at admission already. */
+  private readonly refreshed = new Set<string>();
   private queued: Candidate[] = [];
   private flushing: Promise<void> | undefined;
+  /** Every intent write started, so `settle` awaits them all. */
+  private readonly writes = new Set<Promise<void>>();
+  private staleQueue: Candidate[] = [];
+  private staleRun: Promise<Map<string, GeneratedNameVerdict>> | undefined;
   private recordedRead:
     | Promise<ReadonlyMap<string, { resourceType: string; name: string }> | undefined>
     | undefined;
 
   private readonly input: GeneratedNameGuardInput;
+  private readonly timing: GuardTiming;
 
   private constructor(input: GeneratedNameGuardInput) {
     this.input = input;
+    this.timing = { ...DEFAULT_TIMING, ...input.timing };
   }
 
   /**
@@ -213,18 +308,29 @@ export class GeneratedNameGuard {
   /** Look `candidates` up together and file each one's verdict. */
   private ask(candidates: readonly Candidate[]): void {
     if (candidates.length === 0) return;
-    const all = this.run(candidates).catch(
-      (error: unknown) =>
-        new Map<string, GeneratedNameVerdict>(
-          candidates.map((c) => [c.logicalId, { kind: 'failed', error }])
-        )
-    );
+    const all = this.decide(candidates);
     for (const c of candidates) {
       this.verdicts.set(
         c.logicalId,
         all.then((verdicts) => verdicts.get(c.logicalId) ?? { kind: 'free' })
       );
     }
+  }
+
+  /** {@link run}, never rejecting, stamping when each verdict was decided. */
+  private decide(candidates: readonly Candidate[]): Promise<Map<string, GeneratedNameVerdict>> {
+    return this.run(candidates)
+      .catch(
+        (error: unknown) =>
+          new Map<string, GeneratedNameVerdict>(
+            candidates.map((c) => [c.logicalId, { kind: 'failed', error }])
+          )
+      )
+      .then((verdicts) => {
+        const at = this.timing.now();
+        for (const c of candidates) this.decidedAt.set(c.logicalId, at);
+        return verdicts;
+      });
   }
 
   /** How many planned creates are checked. */
@@ -245,12 +351,13 @@ export class GeneratedNameGuard {
 
   /**
    * The verdict `logicalId`'s create acts on, called right before it is sent
-   * with its RESOLVED properties: a deferred lookup runs now; a name the
-   * create may take (free, or licensed) is then recorded as this stack's
-   * intent, in one write shared by the creates admitted together. A write
-   * that fails turns the verdict into `failed` (refuse: a create sent
-   * unrecorded could not be taken back after a crash). `undefined` when the
-   * create was not asked about.
+   * with its RESOLVED properties: a deferred lookup runs now, and a plan-time
+   * verdict older than a few seconds is read again (one exact read, batched
+   * with the creates admitted together); a name the create may take (free, or
+   * licensed) is then recorded as this stack's intent, in one write shared by
+   * the creates admitted together. A write that fails turns the verdict into
+   * `failed` (refuse: a create sent unrecorded could not be taken back after a
+   * crash). `undefined` when the create was not asked about.
    */
   async admit(
     logicalId: string,
@@ -261,7 +368,20 @@ export class GeneratedNameGuard {
     if (c.deferred && !this.verdicts.has(logicalId)) {
       this.ask([{ ...c, properties: resolvedProperties, deferred: false }]);
     }
-    const verdict = await this.verdicts.get(logicalId)!;
+    let verdict = await this.verdicts.get(logicalId)!;
+    const decidedAt = this.decidedAt.get(logicalId);
+    if (
+      !this.refreshed.has(logicalId) &&
+      decidedAt !== undefined &&
+      this.timing.now() - decidedAt > this.timing.staleAfterMs &&
+      (verdict.kind === 'free' || verdict.kind === 'licensed')
+    ) {
+      this.refreshed.add(logicalId);
+      verdict = (await this.reread({ ...c, properties: resolvedProperties, deferred: false })).get(
+        logicalId
+      ) ?? { kind: 'free' };
+      this.verdicts.set(logicalId, Promise.resolve(verdict));
+    }
     if (verdict.kind !== 'free' && verdict.kind !== 'licensed') return verdict;
     try {
       await this.recordIntent(c);
@@ -269,6 +389,23 @@ export class GeneratedNameGuard {
       return { kind: 'failed', error };
     }
     return verdict;
+  }
+
+  /** Read `c` again, together with the other stale creates admitted now. */
+  private reread(c: Candidate): Promise<Map<string, GeneratedNameVerdict>> {
+    this.staleQueue.push(c);
+    if (this.staleRun === undefined) {
+      const run: Promise<Map<string, GeneratedNameVerdict>> = new Promise<void>((resolve) =>
+        setImmediate(resolve)
+      ).then(() => {
+        const batch = this.staleQueue;
+        this.staleQueue = [];
+        if (this.staleRun === run) this.staleRun = undefined;
+        return this.decide(batch);
+      });
+      this.staleRun = run;
+    }
+    return this.staleRun;
   }
 
   /** `logicalId`'s create is being sent now. */
@@ -282,20 +419,34 @@ export class GeneratedNameGuard {
   }
 
   /**
+   * `logicalId`'s create threw. When the error proves the call created
+   * nothing ({@link provenNothingCreated}), its intent is dropped at
+   * {@link settle}; otherwise (an unknown outcome) it is kept.
+   */
+  noteFailed(logicalId: string, error: unknown): void {
+    const c = this.candidates.get(logicalId);
+    if (c !== undefined && provenNothingCreated(error, logicalId, c.resourceType)) {
+      this.rejected.add(logicalId);
+    }
+  }
+
+  /**
    * The deploy is over (any outcome; called under its lock): drop the
-   * intents this deploy wrote whose create was not sent, or returned. Never
-   * throws.
+   * intents this deploy wrote whose create was not sent, returned, or was
+   * rejected outright. Never throws.
    */
   async settle(): Promise<void> {
-    if (this.flushing !== undefined) await this.flushing.catch(() => undefined);
-    const drop = [...this.recorded].filter((id) => !this.sent.has(id) || this.returned.has(id));
+    await Promise.all([...this.writes].map((w) => w.catch(() => undefined)));
+    const drop = [...this.recorded].filter(
+      (id) => !this.sent.has(id) || this.returned.has(id) || this.rejected.has(id)
+    );
     if (drop.length > 0) await dropAdoptingCreates(drop);
   }
 
   /**
-   * The logical ids whose create took back a resource a destroy of this stack
-   * kept (`retained.json`): cleared from that record once the deploy saved
-   * its state.
+   * The logical ids whose create took back a resource this stack kept
+   * (`retained.json`, or an older cdkd's history): cleared from that record
+   * once the deploy saved its state.
    */
   async readoptedFromRetained(): Promise<string[]> {
     const out: string[] = [];
@@ -313,16 +464,23 @@ export class GeneratedNameGuard {
     if (this.recorded.has(c.logicalId)) return Promise.resolve();
     this.queued.push(c);
     if (this.flushing === undefined) {
-      const flush = new Promise<void>((resolve) => setImmediate(resolve)).then(async () => {
-        const batch = this.queued;
-        this.queued = [];
-        if (this.flushing === flush) this.flushing = undefined;
-        await recordAdoptingCreates(
-          batch.map((b) => ({ logicalId: b.logicalId, resourceType: b.resourceType, name: b.name }))
-        );
-        for (const b of batch) this.recorded.add(b.logicalId);
-      });
+      const flush: Promise<void> = new Promise<void>((resolve) => setImmediate(resolve)).then(
+        async () => {
+          const batch = this.queued;
+          this.queued = [];
+          if (this.flushing === flush) this.flushing = undefined;
+          await recordAdoptingCreates(
+            batch.map((b) => ({
+              logicalId: b.logicalId,
+              resourceType: b.resourceType,
+              name: b.name,
+            }))
+          );
+          for (const b of batch) this.recorded.add(b.logicalId);
+        }
+      );
       this.flushing = flush;
+      this.writes.add(flush);
     }
     return this.flushing;
   }
@@ -344,24 +502,7 @@ export class GeneratedNameGuard {
       (r) => ({ ok: true as const, value: r }),
       (error: unknown) => ({ ok: false as const, error })
     );
-    const byType = new Map<string, Candidate[]>();
-    for (const c of candidates)
-      byType.set(c.resourceType, [...(byType.get(c.resourceType) ?? []), c]);
-    const found = new Map<string, string>();
-    const typeFailures = new Map<string, unknown>();
-    await Promise.all(
-      [...byType].map(async ([resourceType, group]) => {
-        try {
-          const holders = await lookupType(input, resourceType, group);
-          for (const c of group) {
-            const holder = holders.get(c.name);
-            if (holder !== undefined) found.set(c.logicalId, holder);
-          }
-        } catch (error) {
-          typeFailures.set(resourceType, error);
-        }
-      })
-    );
+    const { found, typeFailures } = await lookupAll(input, candidates);
 
     // Evidence is read only when some name is held.
     let evidence: Evidence | { error: unknown } | undefined;
@@ -411,18 +552,26 @@ export class GeneratedNameGuard {
         });
         continue;
       }
-      const via = evidence.namedBy(c.resourceType, holder);
-      if (via !== undefined) {
-        out.set(c.logicalId, { kind: 'licensed', holder, via });
+      const named = evidence.namedBy(c.resourceType, holder);
+      if (named !== undefined) {
+        out.set(c.logicalId, await this.licenseIfKeptBefore(c, holder, named));
+        if (out.get(c.logicalId)!.kind === 'held') unlicensed.push(c);
         continue;
       }
       out.set(c.logicalId, { kind: 'held', holder });
       unlicensed.push(c);
     }
 
-    // A destroy by a cdkd that wrote no `retained.json` left only its event
-    // history: read it only now, for the names nothing else licenses.
-    if (unlicensed.length > 0 && input.loadKeptInHistory !== undefined) {
+    // An older cdkd's history: read only when this cdkd never wrote
+    // `retained.json` here (orphan and every destroy now write one, an empty
+    // one included), and only for the names nothing else licenses.
+    if (
+      unlicensed.length > 0 &&
+      input.loadKeptInHistory !== undefined &&
+      evidence !== undefined &&
+      !('error' in evidence) &&
+      evidence.retainedAbsent
+    ) {
       let kept: readonly KeptInHistory[];
       try {
         kept = await input.loadKeptInHistory();
@@ -430,58 +579,158 @@ export class GeneratedNameGuard {
         // Unreadable history licenses nothing: the held verdict stands.
         kept = [];
       }
-      for (const c of unlicensed) {
+      for (const c of [...unlicensed]) {
         const holder = found.get(c.logicalId)!;
-        if (
-          kept.some(
-            (k) =>
-              k.logicalId === c.logicalId &&
-              k.resourceType === c.resourceType &&
-              probeFoundSameId(c.resourceType, k.physicalId, holder)
-          )
-        ) {
-          out.set(c.logicalId, { kind: 'licensed', holder, via: 'history' });
-        }
+        const match = kept.find(
+          (k) =>
+            k.logicalId === c.logicalId &&
+            k.resourceType === c.resourceType &&
+            probeFoundSameId(c.resourceType, k.physicalId, holder)
+        );
+        if (match === undefined) continue;
+        const verdict = await this.licenseIfKeptBefore(c, holder, {
+          via: 'history',
+          ...(match.keptAt !== undefined && { keptAt: match.keptAt }),
+        });
+        out.set(c.logicalId, verdict);
+        if (verdict.kind !== 'held') unlicensed.splice(unlicensed.indexOf(c), 1);
       }
+    }
+
+    // A queue or bucket being deleted can still read as held: read the names
+    // nothing licenses again across that window before refusing them.
+    const deleting = unlicensed.filter((c) => STILL_LISTED_WHILE_DELETING.has(c.resourceType));
+    if (deleting.length > 0) {
+      for (const [logicalId, verdict] of await this.waitOutDeletion(deleting)) {
+        out.set(logicalId, verdict);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * A license by a KEPT resource (`retained.json`, the history) holds only for
+   * a holder created no later than it was kept, when the type reports a
+   * creation time: a twin re-created after the kept one was deleted out of
+   * band is someone else's. Types without one license by name (a documented
+   * residual).
+   */
+  private async licenseIfKeptBefore(
+    c: Candidate,
+    holder: string,
+    named: { via: LicenseSource; keptAt?: number }
+  ): Promise<GeneratedNameVerdict> {
+    const licensed: GeneratedNameVerdict = { kind: 'licensed', holder, via: named.via };
+    if ((named.via !== 'retained' && named.via !== 'history') || named.keptAt === undefined) {
+      return licensed;
+    }
+    if (c.provider.holderCreatedAt === undefined) return licensed;
+    let createdAt: number | undefined;
+    try {
+      createdAt = await withSkipPrefix(true, () =>
+        c.provider.holderCreatedAt!(c.resourceType, holder)
+      );
+    } catch (error) {
+      return isAccessDeniedError(error) ? { kind: 'unchecked', error } : { kind: 'failed', error };
+    }
+    if (createdAt === undefined || createdAt <= named.keptAt + KEPT_AT_SKEW_MS) return licensed;
+    return { kind: 'held', holder };
+  }
+
+  /** Re-read held queue / bucket names until they read free or the window ends. */
+  private async waitOutDeletion(
+    candidates: readonly Candidate[]
+  ): Promise<Map<string, GeneratedNameVerdict>> {
+    const out = new Map<string, GeneratedNameVerdict>();
+    let pending = [...candidates];
+    const until = this.timing.now() + this.timing.cooldownMs;
+    while (pending.length > 0 && this.timing.now() < until) {
+      await this.timing.sleep(this.timing.cooldownStepMs);
+      const { found, typeFailures } = await lookupAll(this.input, pending);
+      pending = pending.filter((c) => {
+        if (typeFailures.has(c.resourceType)) return true;
+        if (found.has(c.logicalId)) return true;
+        out.set(c.logicalId, { kind: 'free' });
+        return false;
+      });
     }
     return out;
   }
 }
 
+/** Every candidate's holder (by logical id), and the types whose lookup failed. */
+async function lookupAll(
+  input: GeneratedNameGuardInput,
+  candidates: readonly Candidate[]
+): Promise<{ found: Map<string, string>; typeFailures: Map<string, unknown> }> {
+  const byType = new Map<string, Candidate[]>();
+  for (const c of candidates)
+    byType.set(c.resourceType, [...(byType.get(c.resourceType) ?? []), c]);
+  const found = new Map<string, string>();
+  const typeFailures = new Map<string, unknown>();
+  await Promise.all(
+    [...byType].map(async ([resourceType, group]) => {
+      try {
+        const holders = await lookupType(input, resourceType, group);
+        for (const c of group) {
+          const holder = holders.get(c.name);
+          if (holder !== undefined) found.set(c.logicalId, holder);
+        }
+      } catch (error) {
+        typeFailures.set(resourceType, error);
+      }
+    })
+  );
+  return { found, typeFailures };
+}
+
 /** This stack's evidence of the resources it holds or made. */
 interface Evidence {
-  namedBy(resourceType: string, holder: string): LicenseSource | undefined;
+  namedBy(
+    resourceType: string,
+    holder: string
+  ): { via: LicenseSource; keptAt?: number } | undefined;
+  /** No `retained.json` at all: this cdkd never destroyed or orphaned the stack here. */
+  retainedAbsent: boolean;
 }
 
 async function loadEvidence(input: GeneratedNameGuardInput): Promise<Evidence> {
   const [journal, retained] = await Promise.all([input.loadJournal(), input.loadRetained()]);
-  const sources: Array<[LicenseSource, string, string]> = [];
+  const sources: Array<{ via: LicenseSource; type: string; id: string; keptAt?: number }> = [];
   for (const record of Object.values(input.records)) {
     if (typeof record?.physicalId === 'string')
-      sources.push(['record', record.resourceType, record.physicalId]);
+      sources.push({ via: 'record', type: record.resourceType, id: record.physicalId });
   }
   for (const orphan of input.orphans ?? []) {
     const s = orphan.state;
-    if (typeof s?.physicalId === 'string') sources.push(['orphan', s.resourceType, s.physicalId]);
+    if (typeof s?.physicalId === 'string')
+      sources.push({ via: 'orphan', type: s.resourceType, id: s.physicalId });
   }
   for (const segment of journal?.segments ?? []) {
-    for (const op of segment.operations ?? []) {
+    for (const op of [...(segment.operations ?? []), ...(segment.failedOperations ?? [])]) {
       if (typeof op.physicalId === 'string' && op.physicalId !== '') {
-        sources.push(['journal', op.resourceType, op.physicalId]);
-      }
-    }
-    for (const op of segment.failedOperations ?? []) {
-      if (typeof op.physicalId === 'string' && op.physicalId !== '') {
-        sources.push(['journal', op.resourceType, op.physicalId]);
+        sources.push({ via: 'journal', type: op.resourceType, id: op.physicalId });
       }
     }
   }
-  for (const r of retained) sources.push(['retained', r.resourceType, r.physicalId]);
+  for (const r of retained ?? []) {
+    sources.push({
+      via: 'retained',
+      type: r.resourceType,
+      id: r.physicalId,
+      ...(r.keptAt !== undefined && { keptAt: r.keptAt }),
+    });
+  }
   return {
-    namedBy: (resourceType, holder) =>
-      sources.find(
-        ([, type, id]) => type === resourceType && probeFoundSameId(resourceType, id, holder)
-      )?.[0],
+    retainedAbsent: retained === null,
+    namedBy: (resourceType, holder) => {
+      const hit = sources.find(
+        (s) => s.type === resourceType && probeFoundSameId(resourceType, s.id, holder)
+      );
+      return hit === undefined
+        ? undefined
+        : { via: hit.via, ...(hit.keptAt !== undefined && { keptAt: hit.keptAt }) };
+    },
   };
 }
 
@@ -514,7 +763,8 @@ async function lookupType(
     const account = ['AWS::SNS::Topic', 'AWS::StepFunctions::StateMachine'].includes(resourceType)
       ? await input.accountInfo()
       : undefined;
-    return lookupEachName(names, `${resourceType}:import`, PER_NAME_CONCURRENCY, async (name) => {
+    const concurrency = PER_NAME_CONCURRENCY[resourceType] ?? DEFAULT_PER_NAME_CONCURRENCY;
+    return lookupEachName(names, `${resourceType}:import`, concurrency, async (name) => {
       const c = byName.get(name)!;
       const arn = account !== undefined ? createLookupArn(resourceType, name, account) : undefined;
       if (arn !== undefined && 'unbuildable' in arn) {

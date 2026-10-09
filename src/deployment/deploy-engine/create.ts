@@ -221,30 +221,38 @@ export async function provisionCreate(
     stateResources,
   });
 
-  // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent and
-  // never returned) and drops (not sent, or returned).
+  // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent
+  // whose outcome is unknown) and drops (not sent, returned, or rejected).
   this.generatedNameGuard?.noteSent(logicalId);
-  const result = await this.withRetry(
-    () =>
-      // Issue #1903: the SAME bag, bound to this call's async chain so
-      // `NestedStackProvider` can seed it into the child engine it
-      // builds. Inside the retry arrow, so every attempt is scoped.
-      withCurrentResourceSecrets(createSecrets, () =>
-        createProvider.create(logicalId, resourceType, createProps, {
-          // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
-          // so a `{{resolve:secretsmanager:...}}` property is plaintext by
-          // now; a provider that echoes one into its own warn is outside
-          // both existing masking boundaries (this engine's error/reason
-          // text and the resolver's debug line). Give it the capability
-          // rather than the bag — see `SecretMaskingContext`.
-          maskSecrets: createSecretMasker(createSecrets),
-        })
-      ),
-    logicalId,
-    undefined,
-    undefined,
-    createProvider
-  );
+  let result: Awaited<ReturnType<typeof createProvider.create>>;
+  try {
+    result = await this.withRetry(
+      () =>
+        // Issue #1903: the SAME bag, bound to this call's async chain so
+        // `NestedStackProvider` can seed it into the child engine it
+        // builds. Inside the retry arrow, so every attempt is scoped.
+        withCurrentResourceSecrets(createSecrets, () =>
+          createProvider.create(logicalId, resourceType, createProps, {
+            // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+            // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+            // now; a provider that echoes one into its own warn is outside
+            // both existing masking boundaries (this engine's error/reason
+            // text and the resolver's debug line). Give it the capability
+            // rather than the bag — see `SecretMaskingContext`.
+            maskSecrets: createSecretMasker(createSecrets),
+          })
+        ),
+      logicalId,
+      undefined,
+      undefined,
+      createProvider
+    );
+  } catch (error) {
+    // go-to-k/cdkd#4705: a create rejected outright made nothing, so its
+    // intent is dropped at the deploy's end; an unknown outcome keeps it.
+    this.generatedNameGuard?.noteFailed(logicalId, error);
+    throw error;
+  }
 
   this.generatedNameGuard?.noteReturned(logicalId);
 
