@@ -451,6 +451,58 @@ body {
     }
   }
 
+  /* Package-manager tabs: one code frame, with the choice as its header.
+     The active manager takes the brand route as its underline. */
+  & .ox-tabs {
+    margin-block: var(--cdkd-space-6);
+    border: 1px solid var(--cdkd-code-frame);
+    border-radius: var(--cdkd-radius-md);
+    background: var(--cdkd-color-code-bg);
+  }
+
+  & .ox-tabs-header {
+    gap: var(--cdkd-space-1);
+    padding: 0 var(--cdkd-space-2);
+    border-block-end: 1px solid color-mix(in srgb, var(--cdkd-color-code-text) 14%, transparent);
+
+    & label {
+      min-block-size: var(--cdkd-size-control-height);
+      padding: 0 var(--cdkd-space-3);
+      font-family: var(--cdkd-font-mono);
+      font-size: var(--cdkd-type-small-size);
+      font-weight: var(--cdkd-weight-regular);
+      color: var(--cdkd-color-code-muted);
+      border-block-end-width: 2px;
+      margin-block-end: -1px;
+
+      &:hover {
+        color: var(--cdkd-color-code-text);
+      }
+    }
+
+    & input[type='radio']:checked + label {
+      color: var(--cdkd-color-code-text);
+      border-block-end-color: var(--cdkd-color-accent);
+    }
+
+    & input[type='radio']:focus-visible + label {
+      outline: var(--cdkd-border-focus-width) solid var(--cdkd-color-focus);
+      outline-offset: -4px;
+      border-radius: var(--cdkd-radius-sm);
+    }
+  }
+
+  & .ox-tab-panel {
+    padding: 0;
+    background: transparent;
+
+    & pre {
+      margin: 0;
+      border: 0;
+      border-radius: 0 0 var(--cdkd-radius-md) var(--cdkd-radius-md);
+    }
+  }
+
   /* Tables: the header row set apart by weight and one firmer rule, rows by
      hairlines, numbers on their digits. */
   & table {

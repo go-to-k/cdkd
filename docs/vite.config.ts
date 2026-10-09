@@ -207,6 +207,18 @@ const theme = (command: 'build' | 'serve') =>
       '  new IntersectionObserver(function (entries) { set(entries[0].isIntersecting); },',
       "    { rootMargin: '-64px 0px 0px 0px' }).observe(hero);",
       '})();',
+      // Package-manager tabs open on npm, as the hero does, until the reader
+      // picks one; core's deferred tab runtime then restores a stored pick.
+      '(function () {',
+      '  var stored = null;',
+      "  try { stored = localStorage.getItem('ox-tab-group:pkg-manager'); } catch (e) {}",
+      '  if (stored) return;',
+      '  document.querySelectorAll(\'.ox-tabs[data-ox-tab-group="pkg-manager"] label\').forEach(function (label) {',
+      "    if (label.textContent.trim() !== 'npm') return;",
+      '    var input = document.getElementById(label.htmlFor);',
+      '    if (input) input.checked = true;',
+      '  });',
+      '})();',
       // On a phone a table's rows are set one under another, each cell
       // labelled by its column (theme/cdkd.css). The explicit roles keep it a
       // table for assistive technology once its display is no longer one.
@@ -345,6 +357,9 @@ export default defineConfig(({ command }) => ({
       // and the home page's feature icons (read from its frontmatter, which
       // the scan does not reach) are named outright.
       transformers: [statusIcons(), codeSpans()],
+      // `<pm>npm i …</pm>` becomes one tab per package manager, and the
+      // reader's choice carries across every such block (and the hero's).
+      embeds: { pm: { sync: true } },
       icons: {
         include: ['components/*.vue'],
         safelist: [...STATUS_ICONS, ...FEATURE_ICONS],

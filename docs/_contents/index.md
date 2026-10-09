@@ -38,7 +38,7 @@ features:
 
 <div data-ox-island="cdkd-key-visual" data-cdkd-slot="hero-image"></div>
 
-<div data-ox-island="cdkd-command" data-cdkd-slot="hero-content" data-ox-props='{"lines":["npm i -g @go-to-k/cdkd"],"label":"Install cdkd"}'></div>
+<div data-ox-island="cdkd-command" data-cdkd-slot="hero-content" data-ox-props='{"label":"Install cdkd","group":"pkg-manager","initial":"npm","tabs":[{"label":"vp","lines":["vp install -g @go-to-k/cdkd"]},{"label":"pnpm","lines":["pnpm add -g @go-to-k/cdkd"]},{"label":"bun","lines":["bun add -g @go-to-k/cdkd"]},{"label":"npm","lines":["npm i -g @go-to-k/cdkd"]},{"label":"yarn","lines":["yarn global add @go-to-k/cdkd"]}]}'></div>
 
 ## Benchmarks
 
