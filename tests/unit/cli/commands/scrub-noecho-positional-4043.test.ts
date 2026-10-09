@@ -254,4 +254,31 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     const { changed } = await scrub(state, info, true);
     expect(changed).toBe(0);
   });
+
+  it('a dropped stale key does not undo the NoEcho output mask; a declared output of the same value is kept', async () => {
+    const info = stackInfo('unused');
+    const tpl = info.template as unknown as {
+      Parameters: Record<string, Record<string, unknown>>;
+      Resources: Record<string, unknown>;
+      Outputs: unknown;
+    };
+    delete tpl.Parameters['Token']!['Default'];
+    tpl.Resources = {};
+    tpl.Outputs = {
+      DbPort: { Value: { Ref: 'Token' } },
+      ReplicaPort: { Value: '5432' },
+    };
+    const state = legacyState('x');
+    state.resources = {};
+    state.outputs = { DbPort: '5432', ReplicaPort: '5432', Stale: 'from-a-deleted-output' };
+    delete state.exportNames;
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+    const res = await scrubStack(info as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: false,
+      logger: logger as never,
+    });
+    expect(res.droppedOutputKeys).toBe(1);
+    const saved = stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
+    expect({ ...saved.outputs }).toEqual({ DbPort: '***', ReplicaPort: '5432' });
+  });
 });

@@ -8,8 +8,10 @@
 #      their per-run `Default`s. PREMISE: AWS holds both values.
 #   2. `cdkd import --migrate-from-cloudformation --yes`.
 #   3. state.json holds `***` at both NoEcho-fed `Value`s (the 3-character one
-#      only by POSITION), `noEchoLeaves` names each, the observed baselines hold
-#      `***` there, the plain control is in the clear, and no state blob carries
+#      only by POSITION), `noEchoLeaves` names each, an observed baseline holds
+#      `***` there or is absent (the import refuses a baseline a NoEcho
+#      parameter feeds, since CloudFormation reports its deployed value as
+#      `****`), the plain control is in the clear, and no state blob carries
 #      either value.
 #   4. The next `cdkd deploy` is a no-op: neither SSM parameter is updated
 #      (LastModifiedDate unchanged) and nothing is replaced.
@@ -179,9 +181,14 @@ if [ "${P3_SHAPE}" != '["***",true,"***",true,"plain-control-value",true]' ]; th
   echo "FAIL: state.json after cdkd import does not hold *** at both NoEcho positions named in noEchoLeaves, with the plain control in the clear (got ${P3_SHAPE})" >&2
   exit 1
 fi
-P3_OBSERVED=$(jq -c '[.resources.NoEchoConsumer.observedProperties.Value, .resources.NoEchoShortConsumer.observedProperties.Value]' <<< "${STATE_P3}")
-if [ "${P3_OBSERVED}" != '["***","***"]' ]; then
-  echo "FAIL: the observed baselines do not hold *** at the NoEcho positions (got ${P3_OBSERVED})" >&2
+# The import compares each parameter with what CloudFormation was deployed
+# with, and a NoEcho one comes back as `****`: never provably the bound
+# Default, so a resource reading it gets NO observed baseline (the #2854
+# refusal, design section 4.5). Either way the baseline never holds a value:
+# absent, or `***` at the position.
+P3_OBSERVED=$(jq -c '[.resources.NoEchoConsumer.observedProperties.Value, .resources.NoEchoShortConsumer.observedProperties.Value] | map(. == null or . == "***") | all' <<< "${STATE_P3}")
+if [ "${P3_OBSERVED}" != 'true' ]; then
+  echo "FAIL: an observed baseline holds something other than *** (or nothing) at a NoEcho position" >&2
   exit 1
 fi
 echo "    OK: *** at both positions (the 3-character one by position), named in noEchoLeaves"

@@ -8536,7 +8536,11 @@ export async function scrubStack(
     // from a `NoEcho` parameter holds `***`, as the deploy's
     // `maskOutputsByPosition` writes it, and so does every other key (an
     // export alias) holding the same stored value.
-    const noEchoMaskedOutputs = maskScrubNoEchoOutputs(redactedOutputs, noEchoPlans.outputKeys);
+    const noEchoMaskedOutputs = maskScrubNoEchoOutputs(
+      redactedOutputs,
+      noEchoPlans.outputKeys,
+      new Set(Object.keys(stack.template.Outputs ?? {}))
+    );
     emitAbandonedScanNotes();
     // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name
     // and neither pass rewrote is REMOVED from the bag this run writes, never
@@ -8556,11 +8560,13 @@ export async function scrubStack(
     const droppedDisplayCorpus: RecordedSecretValues = new Map();
     // The alias-shaped names the lines below withhold, for the index lines too.
     const withheldOutputKeys = new Set<string>();
-    if (isReadableBag(state.outputs) && isReadableBag(redactedOutputs)) {
+    // Everything below reads the NoEcho-masked bag: a drop rebuilt from the
+    // unmasked one would write the plaintext back (review of #4764).
+    if (isReadableBag(state.outputs) && isReadableBag(noEchoMaskedOutputs)) {
       const stored = state.outputs as Record<string, unknown>;
       const plan = planUnnamedOutputDrop({
         stored,
-        rewritten: redactedOutputs as Record<string, unknown>,
+        rewritten: noEchoMaskedOutputs as Record<string, unknown>,
         accountedKeys: accountedOutputKeys,
         reportedKeys: new Set(secretBearingKeys),
         exportNames: state.exportNames,
@@ -8655,7 +8661,7 @@ export async function scrubStack(
         if (dropping.size > 0) {
           droppedOutputKeys = dropping.size;
           newOutputs = Object.fromEntries(
-            Object.entries(redactedOutputs as Record<string, unknown>).filter(
+            Object.entries(noEchoMaskedOutputs as Record<string, unknown>).filter(
               ([key]) => !dropping.has(key)
             )
           );
@@ -8966,12 +8972,14 @@ function scrubMigrationNeedles(
 
 /**
  * Mask every declared output a `NoEcho` parameter serves (go-to-k/cdkd#4043
- * Phase C), as the deploy's `maskOutputsByPosition` does, and every other key
- * of the bag (an export alias) whose STORED value equals one of theirs.
+ * Phase C), as the deploy's `maskOutputsByPosition` does, and every key the
+ * template does NOT declare (an export alias) whose stored value equals one
+ * of theirs. A declared output of another value is never matched by value.
  */
 function maskScrubNoEchoOutputs(
   outputs: Record<string, unknown> | undefined,
-  keys: readonly string[]
+  keys: readonly string[],
+  declared: ReadonlySet<string>
 ): Record<string, unknown> | undefined {
   if (outputs === undefined || keys.length === 0) return outputs;
   const spelled = new Set(
@@ -8980,7 +8988,9 @@ function maskScrubNoEchoOutputs(
   const masked: Record<string, unknown> = nullPrototypeRecord();
   for (const [key, value] of Object.entries(outputs)) {
     masked[key] =
-      keys.includes(key) || spelled.has(JSON.stringify(value)) ? maskWholeValue(value) : value;
+      keys.includes(key) || (!declared.has(key) && spelled.has(JSON.stringify(value)))
+        ? maskWholeValue(value)
+        : value;
   }
   return masked;
 }
