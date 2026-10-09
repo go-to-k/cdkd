@@ -350,10 +350,15 @@ if printf '%s' "${FLAT}" | grep -qF 'its BucketName is set explicitly'; then
   exit 1
 fi
 if [ "${DEPLOY_RC}" -ne 0 ]; then
-  # Only the deny this fixture lifts: any other AccessDenied also reads as
-  # IAM propagation, and is a gap in the role's policy, so it FAILs.
+  # Only the deny this fixture lifts, as the action the LAST create attempt
+  # was refused (the provider's --verbose failure line; the first attempt's
+  # tagging deny is in every log): any other AccessDenied also reads as IAM
+  # propagation, and is a gap in the role's policy, so it FAILs.
+  LAST_DENIED="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy.log" |
+    grep -F '[S3BucketProvider] Failed to create S3 bucket Bucket' | tail -1 |
+    grep -oE 'not authorized to perform: [A-Za-z0-9:]+' || true)"
   if printf '%s' "${FLAT}" | grep -qF 'IAM-propagation retr' &&
-    printf '%s' "${FLAT}" | grep -qF 's3:PutBucketTagging'; then
+    [ "${LAST_DENIED}" = "not authorized to perform: s3:PutBucketTagging" ]; then
     echo "[verify] INCONCLUSIVE: tagging allow did not propagate within the retry budget (exit ${DEPLOY_RC}, no refusal -- output above)" >&2
     exit 1
   fi

@@ -7113,8 +7113,8 @@ export class S3BucketProvider implements ResourceProvider {
       // `CreateBucket` answering `BucketAlreadyOwnedByYou` moves the
       // bucket's ListBuckets `CreationDate` to its own second (measured for
       // go-to-k/cdkd#4758), so the identity could not be compared after it.
-      // The record proves an attempt whose CreateBucket returned 200 made
-      // this very bucket, which an ambiguous window (issue #4639) cannot undo.
+      // No attempt holds both a record and an ambiguous window (issue #4639):
+      // the attempt that records got a 200, which spends the window.
       // Never on a rollback's re-create (`replayingState`): there the bucket
       // under the name is the forward create's orphan, which the journal
       // still lists, not the old bucket being restored.

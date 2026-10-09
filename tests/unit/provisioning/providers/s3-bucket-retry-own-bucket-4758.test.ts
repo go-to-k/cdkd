@@ -331,7 +331,7 @@ describe('a retried explicit-name create meeting its own first attempt’s bucke
     world({ exists: true, created: D1, wiring: 'ok' });
 
     const error = await failed(
-      provider.create('MyBucket', TYPE, EXPLICIT, { replayingState: true } as never)
+      provider.create('MyBucket', TYPE, EXPLICIT, { replayingState: true })
     );
 
     expect(error.message).toContain(REFUSED);
