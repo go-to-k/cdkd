@@ -415,6 +415,31 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     expect(saved.properties['L']).toEqual(['a', SECRET_MASK]);
   });
 
+  // Review B1 (#4763): a v11 list holding `***` at a marked element is never
+  // accepted as a whole (its old side carries the mask), so the replaced-list
+  // pairing cannot reach it and mask it whole; the record keeps it as it was.
+  it('--accept of a v11 list holding the mask at a marked element is refused, and the list is saved as it was', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: {
+          physicalId: '/app/token',
+          resourceType: SSM_TYPE,
+          properties: { Name: '/app/token', L: ['a', SECRET_MASK] },
+          noEchoLeaves: [['L', 1]],
+        },
+      })
+    );
+    readsBack({ Name: '/app/token', L: ['b', 'secret-live-value'] });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("not accepting 'L'"))).toBe(true);
+    for (const call of mockSaveState.mock.calls) {
+      expect((call[2] as StackState).resources['Token']!.properties['L']).toEqual(['a', SECRET_MASK]);
+    }
+    expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain('secret-live-value');
+  });
+
   it('--accept of a list AWS returned reordered masks the marked element by its identity, not its old index', async () => {
     mockGetState.mockResolvedValue(
       makeState({
