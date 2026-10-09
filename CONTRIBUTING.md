@@ -130,6 +130,26 @@ lists are the `integ-destroy` and `integ-schema-migration` scopes in
 When in doubt, open the PR and ask; the maintainer will pick and run the
 right tests.
 
+## Changing the Logo
+
+The cdkd symbol is defined once, as vector paths, in
+`docs/_site/brand/mark.ts`. What follows from an edit there:
+
+- **Updated automatically**: the home page's key visual and the per-page OG
+  images, which draw from `mark.ts` at build time.
+- **Copied by hand**: `docs/_site/public/brand/logo-light.svg` and
+  `logo-dark.svg` (the README and the site header load these). Paste the new
+  paths in; `tests/unit/scripts/docs-site-brand-tokens.test.ts` fails while
+  they differ from `mark.ts` or the brand colors.
+- **Redrawn separately**: `docs/_site/public/brand/favicon.svg` is a simplified
+  drawing for 16 to 32 px, not the `mark.ts` paths, and
+  `docs/_site/public/favicon.ico` (16, 32 and 48 px) and `apple-touch-icon.png`
+  (180 px) are raster versions of the symbol. Nothing checks these three, so
+  redraw them whenever the symbol changes.
+
+The brand colors live in `docs/_site/brand/cdkd.tokens.json`; the logo SVGs
+repeat them as fills, and the same test fails when the two disagree.
+
 ## Code Style
 
 - TypeScript with strict mode, checked by the native TypeScript 7 compiler (`tsc`)
