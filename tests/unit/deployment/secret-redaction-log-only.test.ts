@@ -223,4 +223,22 @@ describe('createUnionSecretMasker / unionOfSecretBags (go-to-k/cdkd#4049)', () =
       expect(mask(`${A}${B} ${A}`)).toBe(`${SECRET_MASK}${SECRET_MASK} ${SECRET_MASK}`);
     }
   );
+
+  it('maskSecretsInText masks two overlapping needles of ONE bag as one span (go-to-k/cdkd#3869)', () => {
+    const A = 'cdefgh-tail';
+    const B = 'xxab-cdefgh';
+    const recorded: RecordedSecretValues = new Map([
+      [A, '{{resolve:a}}'],
+      [B, '{{resolve:b}}'],
+    ]);
+    expect(maskSecretsInText('v=xxab-cdefgh-tail end', recorded)).toBe(`v=${SECRET_MASK} end`);
+    expect(maskRecordedSecretsInText('v=xxab-cdefgh-tail end', recorded)).toBe(`v=${SECRET_MASK} end`);
+    const logOnly: RecordedSecretValues = new Map();
+    recordLogOnlyValue(logOnly, A);
+    recordLogOnlyValue(logOnly, B);
+    expect(maskSecretsInText('v=xxab-cdefgh-tail end', logOnly)).toBe(`v=${SECRET_MASK} end`);
+    // The whole-value arm and the substring floor are unchanged.
+    expect(maskSecretsInText('ab1', new Map([['ab1', 'x']]))).toBe(SECRET_MASK);
+    expect(maskSecretsInText('x-ab1', new Map([['ab1', 'x']]))).toBe('x-ab1');
+  });
 });

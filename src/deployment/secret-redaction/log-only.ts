@@ -1,6 +1,6 @@
 import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
 import { sideSetOf, wholeStringLeavesOf, type WalkedContainers } from './mask-only.js';
-import { MIN_NEEDLE_LENGTH } from './rules.js';
+import { MIN_NEEDLE_LENGTH, maskMatchSpans } from './rules.js';
 import { type SecretMasker } from './mask-errors.js';
 
 /**
@@ -416,39 +416,11 @@ export function unionOfSecretBags(
 }
 
 /**
- * `text` with the union of every literal occurrence of `needles` replaced,
- * each run of OVERLAPPING occurrences by one {@link SECRET_MASK}.
- */
-function maskMatchSpans(text: string, needles: readonly string[]): string {
-  const spans: Array<[number, number]> = [];
-  for (const needle of needles) {
-    for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
-      spans.push([at, at + needle.length]);
-    }
-  }
-  if (spans.length === 0) return text;
-  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
-  let out = '';
-  let cursor = 0;
-  let [start, end] = spans[0]!;
-  for (const [nextStart, nextEnd] of spans.slice(1)) {
-    if (nextStart < end) {
-      end = Math.max(end, nextEnd);
-      continue;
-    }
-    out += text.slice(cursor, start) + SECRET_MASK;
-    cursor = end;
-    [start, end] = [nextStart, nextEnd];
-  }
-  return out + text.slice(cursor, start) + SECRET_MASK + text.slice(end);
-}
-
-/**
  * ONE printing masker over several bags (go-to-k/cdkd#4049): their map
- * entries and log-only needles as a single union, masked in one
- * {@link maskSecretsInText} call. Masking bag by bag lets one bag's shorter
- * needle cut a longer needle another bag holds, printing the rest of it,
- * since longest-first holds only within one call. The bags are read by
+ * entries and log-only needles as a single union, masked in one pass.
+ * Masking bag by bag lets one bag's needle cut a longer needle another bag
+ * holds, printing the rest of it, since overlaps resolve only within one
+ * pass. The bags are read by
  * reference; the needle set is rebuilt only when a bag's map or log-only set
  * changed size, which is sound because a pass's bags only GROW. Do not hand it
  * a bag that is cleared and refilled.
@@ -481,7 +453,7 @@ export function createUnionSecretMasker(
     // {@link maskSecretsInText}'s two arms over the union: a whole text equal
     // to a needle at any length, then the substring scan.
     if (text !== '' && needles.has(text)) return SECRET_MASK;
-    return maskMatchSpans(text, scanned);
+    return maskMatchSpans(text, scanned, SECRET_MASK);
   };
 }
 

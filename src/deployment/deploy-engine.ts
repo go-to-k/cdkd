@@ -1425,10 +1425,10 @@ export class DeployEngine {
    * value quoted inside an AWS error is exactly what this store must not keep,
    * and masking text in an event rewrites no value cdkd reads back.
    *
-   * ONE pass, longest needle first, over the event's own resource secrets AND
-   * the printing bags bound where it is recorded (go-to-k/cdkd#3869): two
-   * passes in either order let a shorter needle of one bag split a longer
-   * needle of the other and leave a fragment of it. A replay refusal's own
+   * ONE pass over the union of match spans of the event's own resource
+   * secrets AND the printing bags bound where it is recorded
+   * (go-to-k/cdkd#3869): two passes in either order let a needle of one bag
+   * split an overlapping needle of the other and leave a fragment of it. A replay refusal's own
    * `To orphan it:` command line (`ownLines`) is exempt from the BOUND bags
    * only, as `maskEventTextWithBoundBags` documents; the engine bag still
    * masks it, as it always has.

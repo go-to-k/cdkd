@@ -988,8 +988,8 @@ function tokenValueForComparison(token: unknown, declaredType: string | undefine
  * The PRINTING corpus of one `cdkd diff` node (go-to-k/cdkd#4049), as one bag
  * of log-only needles: every needle of the diff resolver's own bag, of the
  * node's `NoEcho` parameter values, and of the bag a nested child inherits
- * from its parent. ONE bag, so `maskSecretsInText` matches longest-first over
- * all of them in one pass.
+ * from its parent. ONE bag, so `maskSecretsInText` masks all of them in one
+ * pass.
  *
  * A needle that IS one whole `{{resolve:...}}` token is left out: this
  * command prints a dynamic reference as its expression (it never resolves a
