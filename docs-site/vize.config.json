@@ -1,0 +1,20 @@
+{
+  "$schema": "../node_modules/vize/schemas/vize.config.schema.json",
+  "linter": {
+    "preset": "opinionated"
+  },
+  "formatter": {
+    "printWidth": 100,
+    "tabWidth": 2,
+    "useTabs": false,
+    "semi": true,
+    "singleQuote": true,
+    "trailingComma": "es5",
+    "arrowParens": "always",
+    "endOfLine": "lf"
+  },
+  "typeChecker": {
+    "strict": true,
+    "tsconfig": "./tsconfig.json"
+  }
+}

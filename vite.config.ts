@@ -228,6 +228,25 @@ export default defineConfig({
         dependsOn: ['gen:changelog'],
         cache: false,
       },
+      // The docs site's Vue toolchain is vize (docs-site/vize.config.json:
+      // the opinionated lint preset, the repo's format settings, strict
+      // types). `vp lint` / `vp fmt` / `vp check` cover src/ only.
+      'docs:lint': {
+        command: 'vize lint -c docs-site/vize.config.json docs-site',
+        cache: false,
+      },
+      'docs:fmt': {
+        command: "vize fmt --write -c docs-site/vize.config.json 'docs-site/**/*.vue' 'docs-site/**/*.ts'",
+        cache: false,
+      },
+      'docs:fmt:check': {
+        command: "vize fmt --check -c docs-site/vize.config.json 'docs-site/**/*.vue' 'docs-site/**/*.ts'",
+        cache: false,
+      },
+      'docs:check': {
+        command: 'vize check -c docs-site/vize.config.json --tsconfig docs-site/tsconfig.json',
+        cache: false,
+      },
       // `vp run check` is CI's required step and `/check` step 1 calls it "the
       // EXACT command CI runs", so its verdict is evidence twice over. The task
       // cache did not invalidate on a `src/**` change for `typecheck` (verified,

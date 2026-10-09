@@ -1,8 +1,5 @@
-<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-  <rect x="0" y="0" width="64" height="64" rx="14" fill="#171b30"/>
-  <rect x="7" y="11" width="9" height="42" rx="3.5" fill="#818cf8"/>
-  <rect x="40" y="11" width="8" height="42" rx="3.5" fill="#3d4470"/>
-  <rect x="51" y="11" width="8" height="42" rx="3.5" fill="#818cf8"/>
-  <path d="M18 32 L26.5 32" stroke="#fbbf24" stroke-width="6.5" stroke-linecap="round"/>
-  <path d="M24.5 24 L34 32 L24.5 40" fill="none" stroke="#fbbf24" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-40 -90.5 906 906">
+  <style>.c{fill:#232F3E}@media (prefers-color-scheme:dark){.c{fill:#F2F4F6}}</style>
+  <path class="c" d="M243 218.1A215 215 0 0 1 600.5 54L682.5 126.6L408 311.8L366.7 275.8A248 248 0 0 0 243 218.1Z M337.8 309A204 204 0 1 0 75.2 621.2A176 176 0 0 1 152.6 484.1L370.3 337.2L337.8 309Z M163 725L648 725A162 162 0 0 0 722 418.9L722 331.6L176.8 699.3Q163 708.6 163 725Z"/>
+  <path fill="#FF8A1F" d="M119 704L119 630A132 132 0 0 1 177.2 520.5L717.6 156L826 199L766 302L766 248.8L152.2 662.9Q119 685.2 119 704Z"/>
 </svg>

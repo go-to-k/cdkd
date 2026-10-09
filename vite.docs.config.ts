@@ -1,10 +1,30 @@
-import { defineConfig } from 'vite-plus';
+import { readdirSync, readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type Plugin } from 'vite-plus';
 import { defineTheme, oxContent } from '@ox-content/vite-plugin';
 import type { SsgNavigationGroup } from '@ox-content/vite-plugin';
-import swiss from '@ox-content/theme-swiss';
+import { oxContentVue } from '@ox-content/vite-plugin-vue';
+import vize from '@vizejs/vite-plugin';
 import { homeTitlePlugin } from './docs-site/home-title.js';
+import { registryName } from './docs-site/islands/html.js';
+import { islandSsrPlugin } from './docs-site/islands/ssr-plugin.js';
+import { STATUS_ICONS, statusIcons } from './docs-site/markdown/status-icons.js';
+import { tokens, tokensToCss } from './docs-site/brand/tokens.js';
 
 const SITE_NAME = 'cdkd';
+const HOME_MARKDOWN = 'docs/index.md';
+
+/** Iconify names (`prefix:name`) the home page's `features` use. */
+const FEATURE_ICONS = (() => {
+  const source = readFileSync(new URL(`./${HOME_MARKDOWN}`, import.meta.url), 'utf8');
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(source)?.[1] ?? '';
+  const features = (parseYaml(frontmatter) as { features?: Array<{ icon?: unknown }> }).features;
+  return (features ?? [])
+    .map((feature) => feature.icon)
+    .filter((icon): icon is string => typeof icon === 'string' && /^[a-z0-9-]+:[a-z0-9-]+$/.test(icon));
+})();
 const SITE_OUT_DIR = 'dist/site';
 
 
@@ -108,192 +128,148 @@ const navigation: SsgNavigationGroup[] = [
   },
 ];
 
-// Brand layer for the "Bypass" concept: Swiss skin + indigo palette with the
-// amber direct-line accent from the logo.
-const theme = defineTheme({
-  colors: {
-    primary: '#4f46e5',
-    primaryHover: '#4338ca',
-  },
-  darkColors: {
-    primary: '#818cf8',
-    primaryHover: '#a5b0fb',
-  },
-  fonts: {
-    sans: '-apple-system, "system-ui", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-  },
-  aside: true,
-  headingPermalink: 'hover',
-  header: {
-    logoLight: '/brand/logo-light.svg',
-    logoDark: '/brand/logo-dark.svg',
-    showSiteNameText: true,
-  },
-  nav: [
-    { text: 'Guide', link: '/getting-started/' },
-    { text: 'Reference', link: '/cli-reference/' },
-    { text: 'GitHub', link: 'https://github.com/go-to-k/cdkd' },
-  ],
-  socialLinks: {
-    github: 'https://github.com/go-to-k/cdkd',
-  },
-  footer: {
-    message: 'Released under the Apache-2.0 License.',
-    copyright: 'Copyright © go-to-k',
-  },
-  // The SSG's active-state matching does not fire for hand-authored
-  // `navigation` items (no .active lands on the current page's link), so
-  // mark it client-side by comparing pathnames.
-  js: [
-    "document.querySelectorAll('.sidebar .nav-link').forEach(function (a) {",
-    "  var norm = function (p) { return p.replace(/index\\.html$/, '').replace(/\\/$/, ''); };",
-    "  if (norm(a.getAttribute('href') || '') === norm(location.pathname)) a.classList.add('active');",
-    "});",
-  ].join('\n'),
-  embed: {
-    head: '<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">',
-  },
-  // Local overrides on the Swiss skin, which leans hard on hairline rules and
-  // slide-on-hover motion:
-  // - header: breathing room after the site name; borderless controls
-  //   (GitHub / search / theme toggle read as boxed buttons otherwise)
-  // - sidebar: drop the per-item hairline separators and the section
-  //   top-rules, replace the hover SLIDE with a color/tint change on a
-  //   rounded pill, and restyle the active item to the same pill shape.
-  css: [
-    '.header-nav { margin-left: 1.5rem; }',
-    '.header-title { gap: 0.4rem; }',
-    '.header-logo { margin-right: 0; }',
-    '.header-actions .social-link,',
-    '.header-actions .search-button,',
-    '.header-actions .theme-toggle {',
-    '  border: none; background: transparent; box-shadow: none;',
-    '  border-radius: 8px !important;',
-    '}',
-    // The skin's hover paints these controls background=rule / text=page-bg,
-    // which in light mode is white-on-white — restate the hover as the same
-    // tint treatment the sidebar uses so it stays visible in both themes.
-    '.header-actions .social-link:hover,',
-    '.header-actions .search-button:hover,',
-    '.header-actions .theme-toggle:hover {',
-    '  background: color-mix(in srgb, var(--octc-color-primary) 12%, transparent);',
-    '  color: var(--octc-color-primary);',
-    '}',
-    // Entry-page hero, three tiers: (1) logo beside the title + headline,
-    // (2) the tagline full-width under them, (3) the action buttons. The
-    // theme's markup nests everything but the image inside .hero-content, so
-    // display:contents lifts its children into the hero grid.
-    // width:fit-content + auto margins center the whole block on the page
-    // while its interior stays left-aligned; rows 1fr/1fr stretch the title
-    // column to the logo's height so "cdkd" tops out level with the logo and
-    // the headline bottoms out level with it.
-    // min-height:unset kills the skin's min(100vh, 56rem) hero, which left a
-    // screenful of dead space between the actions and the feature cards.
-    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 1.1rem; align-content: center; width: fit-content; margin-inline: auto; min-height: unset; padding-block: calc(var(--octc-header-height) + 2.5rem) 3rem; }',
-    '.hero-content { display: contents; }',
-    '.hero-image { grid-column: 1; grid-row: 1 / span 2; margin: 0; align-self: center; }',
-    '.hero-image img { width: 9rem; height: 9rem; }',
-    // The entry layout's own `.hero-image img { display: block }` outranks
-    // the core `.theme-asset--dark { display: none }` toggle, so LIGHT mode
-    // showed both logo variants stacked. Restate the three theme states at
-    // higher specificity.
-    '.hero-image img.theme-asset--dark { display: none; }',
-    '[data-theme="dark"] .hero-image img.theme-asset--dark { display: block; }',
-    '[data-theme="dark"] .hero-image img.theme-asset--light { display: none; }',
-    '@media (prefers-color-scheme: dark) {',
-    '  :root:not([data-theme="light"]) .hero-image img.theme-asset--dark { display: block; }',
-    '  :root:not([data-theme="light"]) .hero-image img.theme-asset--light { display: none; }',
-    '}',
-    '.hero-name { grid-column: 2; grid-row: 1; align-self: start; margin: 0; line-height: 1; text-align: left; }',
-    '.hero-name::after { content: "CDK Direct"; display: inline-block; margin-left: 0.6rem; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--octc-color-text-muted); transform: translateY(-0.9rem); }',
-    '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; font-size: 1.35rem; }',
-    '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 36.5rem; }',
-    '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
-    // The skin flattens every control to sharp corners; round the hero CTAs.
-    '.hero-action { border-radius: 8px !important; }',
-    // One skin layer draws .hero{border-bottom:2px} while the first feature
-    // card draws its own border-top — a double rule between hero and cards.
-    // Its ::after paints a bottom fade sized for the full-height hero, which
-    // on the compact hero overlaps the action buttons and reads as the
-    // section going transparent — drop it. Feature cards keep no hover
-    // motion (the skin slides them 8px right) and no scroll-rise animation.
-    '.hero { border-bottom: 0; background: none; }',
-    '.hero::after { display: none; }',
-    // Three selling-point cards in one row (the skin stacks them in a tall
-    // single column); collapse back to one column on narrow viewports.
-    '.features-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; column-gap: 2.5rem; }',
-    '@media (max-width: 900px) { .features-grid { grid-template-columns: 1fr; } }',
-    '.feature-card { animation: none; }',
-    '.feature-card:hover { transform: none; }',
-    '@media (max-width: 768px) {',
-    '  .hero { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto auto; justify-items: center; text-align: center; }',
-    '  .hero-image { grid-column: 1; grid-row: 1; justify-self: center; }',
-    '  .hero-image img { width: 6.5rem; height: 6.5rem; }',
-    '  .hero-name { grid-column: 1; grid-row: 2; align-self: auto; margin-top: 1.25rem; text-align: center; }',
-    // The desktop beside-the-wordmark label overflowed at phone widths;
-    // instead of hiding it, stack it centered under the wordmark.
-    '  .hero-name::after { display: block; margin-left: 0; transform: none; font-size: 0.7rem; margin-top: 0.55rem; text-align: center; }',
-    '  .hero-text { grid-column: 1; grid-row: 3; align-self: auto; margin-top: 0.75rem; text-align: center; }',
-    // text-align must be restated: the skin left-aligns the tagline with
-    // higher specificity than the centered .hero container it sits in.
-    '  .hero-tagline { grid-column: 1; grid-row: 4; margin-top: 1rem; text-align: center; }',
-    '  .hero-actions { grid-column: 1; grid-row: 5; }',
-    '}',
-    // Content pages: the skin caps paragraphs at 68ch while lists run the
-    // full column — mixed measures that read as the source's line wrapping
-    // leaking through. Let paragraphs use the full column like GitHub does,
-    // and thin the heavy 2px heading rules to a hairline.
-    '.content p { max-width: none; }',
-    '.content h2 { border-bottom: 2px solid color-mix(in srgb, var(--octc-sw-rule) 45%, transparent); }',
-    '.nav-title, .toc-title { border-top: none; }',
-    // The sidebar/outline column rules run the full viewport height and cut
-    // across the header nav items above them — drop both.
-    '.sidebar { border-right: none; }',
-    '.toc { border-left: none; }',
-    '.nav-link {',
-    '  border-bottom: none;',
-    '  border-radius: 8px !important;',
-    '  padding: 0.32rem 0.6rem;',
-    '}',
-    '.nav-link:hover {',
-    '  padding-left: 0.6rem;',
-    '  background: color-mix(in srgb, var(--octc-color-primary) 10%, transparent);',
-    '  color: var(--octc-color-primary);',
-    '}',
-    '.nav-link.active {',
-    '  padding-left: 0.6rem;',
-    '  border-radius: 8px !important;',
-    '  background: color-mix(in srgb, var(--octc-color-primary) 14%, transparent);',
-    '  box-shadow: none;',
-    '}',
-    // The on-page outline (`aside.toc`) is `display: none` in the core
-    // stylesheet and re-enabled only inside `@media (min-width: 1440px)`, so a
-    // 1280 or 1366 laptop -- the common sizes -- got no outline at all, on
-    // pages like troubleshooting.md that carry 60 headings. Lower it to
-    // 1280px. The chrome then costs 244px of sidebar plus the 17rem the core
-    // block reserves on the right, leaving ~764px for an 860px-max column:
-    // the text narrows slightly rather than colliding. Restate BOTH
-    // declarations -- `display` alone would float the outline over the text,
-    // since the reserve lives in the same block being widened.
-    '@media (min-width: 1280px) {',
-    '  .toc { display: block; }',
-    '  .main--with-toc { padding-right: 17rem; }',
-    '}',
-  ].join('\n'),
-});
+// cdkd brand theme, laid directly on Ox Content's core stylesheet (no preset
+// skin). The `--cdkd-*` custom properties are generated from the token file
+// (docs-site/brand/cdkd.tokens.json); the sheets in docs-site/theme use only
+// those.
+const THEME_CSS = [
+  tokensToCss(),
+  ...['fonts.css', 'cdkd.css', 'syntax.css', 'home.css'].map((file) =>
+    readFileSync(new URL(`./docs-site/theme/${file}`, import.meta.url), 'utf8')
+  ),
+].join('\n');
 
-export default defineConfig({
+// The sidebar, built from `navigation` above as Ox Content's theme sidebar:
+// that form carries `collapsed` / `stickyCollapsed`, so every group folds,
+// opens by default, and remembers what the reader closed, and the SSG marks
+// the current page's link itself.
+const sidebar = navigation.map((group) => ({
+  text: group.title,
+  collapsed: false,
+  stickyCollapsed: true,
+  items: group.items.map((item) => ({ text: item.title, link: item.path ?? item.href ?? '' })),
+}));
+
+// Islands: one small module on every page, which loads Vue and the
+// components only where a page has an island (docs-site/islands/client.ts).
+// The dev server serves the source; the build emits it unhashed so this
+// static tag can name it.
+const islandsEntry = (command: 'build' | 'serve'): string =>
+  command === 'serve' ? '/docs-site/islands/client.ts' : '/assets/islands.js';
+
+const theme = (command: 'build' | 'serve') =>
+  defineTheme({
+    aside: true,
+    headingPermalink: 'hover',
+    // Ox Content's circular reveal on the theme toggle; reduced motion and
+    // browsers without View Transitions switch at once.
+    toggleTransition: 'circle',
+    header: {
+      logoLight: '/brand/logo-light.svg',
+      logoDark: '/brand/logo-dark.svg',
+      // The lockup's proportion: the symbol one em tall beside the wordmark
+      // (theme/cdkd.css sets the wordmark at 20px).
+      logoWidth: 23,
+      logoHeight: 20,
+      showSiteNameText: true,
+    },
+    sidebar,
+    nav: [
+      { text: 'Guide', link: '/getting-started/' },
+      { text: 'Reference', link: '/cli-reference/' },
+      { text: 'GitHub', link: 'https://github.com/go-to-k/cdkd' },
+    ],
+    socialLinks: {
+      github: 'https://github.com/go-to-k/cdkd',
+    },
+    footer: {
+      message: 'Released under the Apache-2.0 License.',
+      copyright: 'Copyright © go-to-k',
+    },
+    js: [
+      // The home page's first screen is the hero alone: the header steps
+      // aside while the hero is under it and returns once it has scrolled
+      // away. Set synchronously first, so the header never flashes in.
+      '(function () {',
+      "  var hero = document.querySelector('.entry-page .hero');",
+      '  if (!hero) return;',
+      "  var set = function (inView) { document.body.classList.toggle('cdkd-hero-in-view', inView); };",
+      '  set(hero.getBoundingClientRect().bottom > 64);',
+      "  if (!('IntersectionObserver' in window)) return;",
+      '  new IntersectionObserver(function (entries) { set(entries[0].isIntersecting); },',
+      "    { rootMargin: '-64px 0px 0px 0px' }).observe(hero);",
+      '})();',
+    ].join('\n'),
+    embed: {
+      head: [
+        '<link rel="icon" href="/favicon.ico" sizes="32x32">',
+        '<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">',
+        '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
+        `<meta name="theme-color" content="${tokens.brand.paper}" media="(prefers-color-scheme: light)">`,
+        `<meta name="theme-color" content="${tokens.brand.night}" media="(prefers-color-scheme: dark)">`,
+        '<link rel="preload" href="/fonts/geist-400.woff2" as="font" type="font/woff2" crossorigin>',
+        '<link rel="preload" href="/fonts/geist-600.woff2" as="font" type="font/woff2" crossorigin>',
+        `<script type="module" src="${islandsEntry(command)}"></script>`,
+      ].join('\n'),
+    },
+    css: THEME_CSS,
+  });
+
+// Vue components usable as islands from Markdown, named by their kebab-case
+// file names. Ox Content's Vue integration owns the registry and serves it as
+// `virtual:ox-content-vue/components`. The map is built here with absolute
+// paths: a `components` glob resolves to root-relative `./...` specifiers,
+// which a virtual module cannot import from. Pages stay with the SSG below,
+// so two of the integration's parts are left out: its copy of the core
+// environment plugin (oxContent() already registers it) and the `config`
+// hook that adds its own SSR/client environments, whose warm-up would run
+// every docs/*.md file through the JavaScript pipeline.
+const COMPONENTS_DIR = fileURLToPath(new URL('./docs-site/components/', import.meta.url));
+const components = Object.fromEntries(
+  readdirSync(COMPONENTS_DIR)
+    .filter((file) => file.endsWith('.vue'))
+    .map((file) => [registryName(file.slice(0, -'.vue'.length)), join(COMPONENTS_DIR, file)])
+);
+// Both parts are picked out by plugin name, so a release that renames either
+// stops the build here rather than quietly bringing them back.
+const VUE_PARTS_LEFT_OUT = ['ox-content:environment', 'ox-content:vue-environment'];
+const vueComponents = (): Plugin[] => {
+  const plugins = oxContentVue({ srcDir: 'docs', components }) as Plugin[];
+  const missing = VUE_PARTS_LEFT_OUT.filter((name) => !plugins.some((p) => p.name === name));
+  if (missing.length > 0) {
+    throw new Error(
+      `[docs] @ox-content/vite-plugin-vue no longer has ${missing.join(', ')}; revisit vueComponents()`
+    );
+  }
+  return plugins.flatMap((plugin) => {
+    if (plugin.name === 'ox-content:environment') return [];
+    if (plugin.name === 'ox-content:vue-environment') {
+      const { config: _environments, ...registry } = plugin;
+      return [registry];
+    }
+    return [plugin];
+  });
+};
+
+export default defineConfig(({ command }) => ({
   publicDir: 'docs-site/public',
   build: {
     outDir: SITE_OUT_DIR,
-    // The site is fully static; Ox Content emits every page during this
-    // build's closeBundle. Vite still demands a client entry, so feed it an
-    // empty module instead of an index.html.
+    // The pages are static; Ox Content emits every one during this build's
+    // closeBundle. The one client entry is the islands loader, under a fixed
+    // name because the theme's head tag above has to name it.
     rollupOptions: {
-      input: { noop: 'docs-site/noop-entry.ts' },
+      input: { islands: 'docs-site/islands/client.ts' },
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]',
+      },
     },
   },
   plugins: [
+    vize(),
+    ...vueComponents(),
     oxContent({
       srcDir: 'docs',
       outDir: SITE_OUT_DIR,
@@ -305,11 +281,24 @@ export default defineConfig({
       publishState: true,
       ogImage: true,
       ogImageOptions: {
-        template: './docs-site/og-template.ts',
+        // A Vue SFC, compiled with vize like the site's components.
+        template: './docs-site/og/og-image.vue',
+        vuePlugin: 'vizejs',
         width: 1200,
         height: 630,
         cache: true,
         concurrency: 4,
+      },
+      // Status emoji in the docs render as Lucide status marks; every icon is
+      // resolved at build time into one CSS-mask stylesheet, so the site
+      // requests nothing from the Iconify API. The components are scanned for
+      // the classes they use; the status marks (rendered by the transformer)
+      // and the home page's feature icons (read from its frontmatter, which
+      // the scan does not reach) are named outright.
+      transformers: [statusIcons()],
+      icons: {
+        include: ['docs-site/components/*.vue'],
+        safelist: [...STATUS_ICONS, ...FEATURE_ICONS],
       },
       // The JSDoc-derived API docs generator is off: cdkd's public surface is
       // its CLI, documented by hand in cli-reference.md.
@@ -329,9 +318,15 @@ export default defineConfig({
         // <link rel="alternate" type="text/markdown">) so AI agents can pull
         // clean source; pairs with the llms.txt emitted by `siteMaps`.
         markdownSource: true,
-        navigation,
-        theme: [swiss, theme],
+        theme: theme(command),
       },
+    }),
+    // After the SSG, render the Vue islands into the written pages and move
+    // the hero's into place (docs-site/islands/ssr-plugin.ts).
+    islandSsrPlugin({
+      outDir: SITE_OUT_DIR,
+      entry: '/docs-site/islands/server.ts',
+      plugins: () => [vize(), ...vueComponents()],
     }),
     // After the SSG: give the home page a search-result headline instead of
     // the bare site name (see docs-site/home-title.ts for why the SSG cannot
@@ -343,7 +338,7 @@ export default defineConfig({
     homeTitlePlugin({
       siteName: SITE_NAME,
       outDir: SITE_OUT_DIR,
-      indexMarkdownPath: 'docs/index.md',
+      indexMarkdownPath: HOME_MARKDOWN,
     }),
   ],
-});
+}));

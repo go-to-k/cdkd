@@ -1,0 +1,18 @@
+{
+  // The docs site's client and build code: Vue components (type-checked by
+  // `vize check`), the key visual, the island runtime and the build plugins.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "@vizejs/vite-plugin"],
+    "typeRoots": ["../node_modules/@types", "../node_modules"],
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": false
+  },
+  "include": ["./**/*.ts", "./**/*.vue"],
+  "exclude": ["./public/**"]
+}

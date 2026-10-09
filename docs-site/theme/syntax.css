@@ -1,0 +1,54 @@
+/*
+ * cdkd Night: the syntax theme for code on the Night surface (#0D141E), which
+ * the brand uses for code in both page themes.
+ *
+ * Four hues, each a role rather than a rainbow step:
+ *   route orange  commands and functions -- what runs (`cdkd`, `npm`, calls)
+ *   blue          flags, keys, types and numbers -- what is configured
+ *   green         strings
+ *   amber         keywords
+ * Structure (punctuation, comments) steps back to the cool grays, and plain
+ * text is Cloud White. The roles are token references (SYNTAX_ROLES in
+ * docs-site/brand/tokens.ts) and every one holds at least 7:1 against Night;
+ * tests/unit/scripts/docs-site-brand-tokens.test.ts recomputes the ratios.
+ *
+ * Ox Content's highlighter writes `color: var(--octc-syntax-token-*)` inline
+ * on each token, so this file and the role map are the whole theme.
+ */
+:root:root {
+  --octc-syntax-background: var(--cdkd-syntax-background);
+  --octc-syntax-foreground: var(--cdkd-syntax-foreground);
+  --octc-syntax-token-function: var(--cdkd-syntax-function);
+  --octc-syntax-token-constant: var(--cdkd-syntax-constant);
+  --octc-syntax-token-string: var(--cdkd-syntax-string);
+  --octc-syntax-token-string-expression: var(--cdkd-syntax-string-expression);
+  --octc-syntax-token-keyword: var(--cdkd-syntax-keyword);
+  --octc-syntax-token-parameter: var(--cdkd-syntax-parameter);
+  --octc-syntax-token-punctuation: var(--cdkd-syntax-punctuation);
+  --octc-syntax-token-comment: var(--cdkd-syntax-comment);
+  --octc-syntax-token-link: var(--cdkd-syntax-link);
+
+  /* Line annotations: the same roles as tints, with a solid edge mark. */
+  --octc-color-code-line-highlight: color-mix(in srgb, var(--cdkd-syntax-highlight) 12%, transparent);
+  --octc-color-code-line-focus: color-mix(in srgb, var(--cdkd-syntax-highlight) 8%, transparent);
+  --octc-color-code-line-add: color-mix(in srgb, var(--cdkd-syntax-added) 12%, transparent);
+  --octc-color-code-line-add-border: var(--cdkd-syntax-added);
+  --octc-color-code-line-remove: color-mix(in srgb, var(--cdkd-syntax-removed) 12%, transparent);
+  --octc-color-code-line-remove-border: var(--cdkd-syntax-removed);
+  --octc-color-code-line-warning: color-mix(in srgb, var(--cdkd-syntax-warned) 12%, transparent);
+  --octc-color-code-line-warning-border: var(--cdkd-syntax-warned);
+  --octc-color-code-line-error: color-mix(in srgb, var(--cdkd-syntax-removed) 14%, transparent);
+  --octc-color-code-line-error-border: var(--cdkd-syntax-removed);
+  --octc-color-code-line-dim: 0.5;
+  --octc-color-code-line-number: var(--cdkd-syntax-line-number);
+
+  /* File-name bar above a block: the next surface step up from Night. */
+  --octc-color-code-title-bg: var(--cdkd-syntax-title-bg);
+  --octc-color-code-title-text: var(--cdkd-syntax-title-text);
+  --octc-color-code-title-border: var(--cdkd-syntax-title-border);
+}
+
+.content pre ::selection {
+  background: color-mix(in srgb, var(--cdkd-color-code-accent) 28%, transparent);
+  color: var(--cdkd-syntax-foreground);
+}
