@@ -565,8 +565,8 @@ A position a `NoEcho` template PARAMETER fills is different: the record names
 it (state schema `version: 11`), so the report lists it under
 `notCompared: noEchoParameter` by path only, it does not affect the exit code,
 and `--accept` / `--revert` leave it alone as above. The baseline either one
-writes holds `***` at every such position, whatever it accepted or re-recorded
-around it, so the live value never reaches state. `--revert` keeps AWS's value
+rebuilds holds `***` at every such position, whatever it accepted or
+re-recorded around it, so neither writes the live value there. `--revert` keeps AWS's value
 there and never sends `***`. What follows applies to a custom-resource value.
 
 **Such a position drifts on every run, and that is expected.** cdkd's side is

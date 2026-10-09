@@ -134,6 +134,7 @@ import {
   maskAtCoordinates,
   maskReadbackAtCoordinates,
   maskWholeValue,
+  valueAtCoordinate,
   noEchoLeavesOf,
   pathCrossesDottedKey,
   maskSecretsInError,
@@ -9128,7 +9129,29 @@ function maskMarkedNoEchoBaseline(
 ): Record<string, unknown> {
   const marked = noEchoLeavesOf(record) ?? [];
   if (marked.length === 0) return baseline;
-  return observed
-    ? maskReadbackAtCoordinates(baseline, record.properties ?? {}, marked)
-    : maskAtCoordinates(baseline, marked);
+  if (observed) return maskReadbackAtCoordinates(baseline, record.properties ?? {}, marked);
+  // By index, except where an accepted value REPLACED the list a coordinate
+  // runs through (AWS's order, not the record's): that coordinate is paired
+  // through the list's identity field against the record instead, which masks
+  // the whole list where nothing pairs.
+  const recorded = record.properties ?? {};
+  const listPathOf = (
+    coordinate: readonly (string | number)[]
+  ): (string | number)[] | undefined => {
+    const list = coordinate.findIndex((segment) => typeof segment === 'number');
+    return list < 0 ? undefined : coordinate.slice(0, list);
+  };
+  const replaced = marked.filter((coordinate) => {
+    const path = listPathOf(coordinate);
+    if (path === undefined) return false;
+    return (
+      JSON.stringify(valueAtCoordinate(maskAtCoordinates(baseline, [coordinate]), path)) !==
+      JSON.stringify(valueAtCoordinate(maskAtCoordinates(recorded, [coordinate]), path))
+    );
+  });
+  const byIndex = maskAtCoordinates(
+    baseline,
+    marked.filter((coordinate) => !replaced.includes(coordinate))
+  );
+  return replaced.length === 0 ? byIndex : maskReadbackAtCoordinates(byIndex, recorded, replaced);
 }
