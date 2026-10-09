@@ -205,7 +205,15 @@ describe('a rollback keeps an inline policy name another revert of it has put ba
 
     expect(result.failures).toBe(0);
     // B: delete x, re-create y; A: delete y (claimed: B put it back), re-create x.
+    // Each op's delete runs BEFORE its create: create-first gives the same
+    // deletes and the same end state, so the order is what shows the route.
     expect(policyProvider.delete.mock.calls.map((c) => c[1])).toEqual(['x', 'y']);
+    expect(policyProvider.create.mock.calls.slice(0, 2).map((c) => c[2].PolicyName)).toEqual(['y', 'x']);
+    const [delX, delY] = policyProvider.delete.mock.invocationCallOrder;
+    const [createY, createX] = policyProvider.create.mock.invocationCallOrder;
+    expect(delX!).toBeLessThan(createY!);
+    expect(createY!).toBeLessThan(delY!);
+    expect(delY!).toBeLessThan(createX!);
     expect(holding()).toEqual({ x: 'docA', y: 'docB' });
   });
 

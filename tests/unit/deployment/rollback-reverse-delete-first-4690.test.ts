@@ -19,6 +19,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { withRetry } from '../../../src/deployment/retry.js';
 
 // Single-attempt pass-through so a retried create does not sleep.
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
@@ -130,20 +131,102 @@ describe('reversing a delete-first replacement (go-to-k/cdkd#4690)', () => {
     );
   });
 
-  it('routes the delete to the new layer and the create to the old one', async () => {
+  it('deletes through the new layer and re-creates through the old one', async () => {
     const m = portModel();
-    const routes: Array<{ resourceType: string; provisionedBy?: string }> = [];
-    (m.ctx.providerRegistry as unknown as { getProviderFor: unknown }).getProviderFor = (r: {
-      resourceType: string;
-      provisionedBy?: string;
-    }) => {
-      routes.push(r);
-      return { provider: m.provider, provisionedBy: r.provisionedBy };
+    const byLayer = {
+      sdk: { create: vi.fn(), delete: vi.fn(async () => undefined) },
+      'cc-api': { create: vi.fn(async () => ({ physicalId: 'listener-old-2', attributes: {} })), delete: vi.fn() },
     };
+    (m.ctx.providerRegistry as unknown as { getProviderFor: unknown }).getProviderFor = (r: {
+      provisionedBy: 'sdk' | 'cc-api';
+    }) => ({ provider: byLayer[r.provisionedBy], provisionedBy: r.provisionedBy });
+    const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };
+    const result = await replayRollback([op(true)], state, 'S', m.ctx);
+    expect(result.failures).toBe(0);
+    expect(byLayer.sdk.delete).toHaveBeenCalledTimes(1);
+    expect(byLayer.sdk.delete.mock.calls[0]![1]).toBe('listener-new');
+    expect(byLayer.sdk.create).not.toHaveBeenCalled();
+    expect(byLayer['cc-api'].create).toHaveBeenCalledTimes(1);
+    expect(byLayer['cc-api'].delete).not.toHaveBeenCalled();
+    expect(byLayer.sdk.delete.mock.invocationCallOrder[0]!).toBeLessThan(
+      byLayer['cc-api'].create.mock.invocationCallOrder[0]!
+    );
+  });
+
+  // The re-create waits out a late release: an async delete frees the slot
+  // late, and a named SQS queue's 60s same-name cooldown starts at the delete.
+  it('retries the re-create on a collision or a name cooldown', async () => {
+    vi.mocked(withRetry).mockClear();
+    const m = portModel();
     const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };
     await replayRollback([op(true)], state, 'S', m.ctx);
-    expect(routes.map((r) => r.provisionedBy)).toEqual(['cc-api', 'sdk']);
-    expect(m.calls).toEqual(['delete listener-new', 'create']);
+    const outer = vi
+      .mocked(withRetry)
+      .mock.calls.filter((c) => (c[2] as { isRetryable?: unknown } | undefined)?.isRetryable !== undefined);
+    // One outer loop: the delete-first route makes no create-first attempt.
+    expect(outer).toHaveLength(1);
+    const isRetryable = (outer[0]![2] as { isRetryable: (m: string) => boolean }).isRetryable;
+    expect(isRetryable('Queue already exists')).toBe(true);
+    expect(
+      isRetryable(
+        'You must wait 60 seconds after deleting a queue before you can create another with the same name.'
+      )
+    ).toBe(true);
+    expect(isRetryable('AccessDenied')).toBe(false);
+  });
+
+  // A re-create that returns the id the new resource had: after the new one
+  // was deleted that is the old name coming back, not a name-idempotent
+  // hand-back of a live resource, so it is neither adopted nor deleted again.
+  it("a re-create returning the deleted new resource's id is not adopted and not deleted again", async () => {
+    const del = vi.fn(async () => undefined);
+    const create = vi.fn(async () => ({ physicalId: 'q-new', attributes: {} }));
+    const warns: string[] = [];
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn((w: string) => warns.push(w)),
+      error: vi.fn(),
+      setLevel: vi.fn(),
+      child: () => logger,
+    } as unknown as RollbackExecutorContext['logger'];
+    const ctx: RollbackExecutorContext = {
+      region: 'us-east-1',
+      logger,
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { create, delete: del } }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+    };
+    const queue = (physicalId: string, props: Record<string, unknown>): ResourceState => ({
+      physicalId,
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'q', ...props },
+      attributes: {},
+      dependencies: [],
+    });
+    const state: Record<string, ResourceState> = { Q: queue('q-new', { a: 2 }) };
+    const result = await replayRollback(
+      [
+        {
+          logicalId: 'Q',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'q-new',
+          previousState: queue('q-old', { a: 1 }),
+          oldResourceRetained: false,
+          oldDeletedBeforeCreate: true,
+        },
+      ],
+      state,
+      'S',
+      ctx
+    );
+    expect(warns, warns.join('|')).toEqual([]);
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(0);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(state['Q']).toMatchObject({ physicalId: 'q-new', properties: { a: 1 } });
   });
 
   // Negative controls: the create-first reversal is unchanged without the flag.

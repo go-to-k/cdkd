@@ -223,7 +223,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // first would collide with the new resource on a uniqueness constraint the
   // name-holder proof cannot attribute (an ELBv2 listener's port), and the
   // reversal would refuse. Not when the new copy is retained: that arm never
-  // deletes it, so it keeps the create-first route and its refusal.
+  // deletes it, so it keeps the create-first route (the Retain refusal on a
+  // name collision, the create's own error otherwise).
   const reverseDeleteFirst =
     op.oldDeletedBeforeCreate === true && !rollbackRetainsNewResource(current);
   logger.info(
@@ -471,7 +472,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       // Issue #2032, same two-loop shape as the create-first attempt
       // below. The outer classifier widens to collision-or-cooldown here
       // because the new resource was just deleted (an async delete releases
-      // its name late), and the interrupt message mirrors the deploy
+      // its name or slot late), and the interrupt message mirrors the deploy
       // engine's delete-first fallback: honor SIGINT mid-sleep instead of
       // blocking up to ~64s.
       return await createWithRollbackRetry(
@@ -493,7 +494,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         mask,
         {
           isRetryable: isRecreateRetryableError,
-          interruptedMessage: 'Rollback interrupted while waiting for the old name to release',
+          interruptedMessage:
+            'Rollback interrupted while waiting for the new resource to release its name or slot',
         }
       );
     } catch (recreateError) {
