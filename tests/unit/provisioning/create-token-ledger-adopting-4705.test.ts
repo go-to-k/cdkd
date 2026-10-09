@@ -172,7 +172,13 @@ describe('recording an abandoned run (review G-1)', () => {
     expect(none.save).not.toHaveBeenCalled();
   });
 
-  it('a failure is swallowed, never thrown', async () => {
+  it('the ledger method itself rejects on a failure (force-unlock warns on it)', async () => {
+    const store = storeOf();
+    store.load.mockRejectedValue(new Error('S3 down'));
+    await expect(new CreateTokenLedger(store).noteAbandoned(5000)).rejects.toThrow('S3 down');
+  });
+
+  it('the deploy-path wrapper swallows a failure, never throws', async () => {
     const store = storeOf();
     store.load.mockRejectedValue(new Error('S3 down'));
     await expect(

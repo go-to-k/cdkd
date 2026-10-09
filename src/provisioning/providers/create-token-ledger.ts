@@ -343,7 +343,9 @@ export class CreateTokenLedger {
   /**
    * go-to-k/cdkd#4705 review G-1: record that a run of this stack was
    * abandoned at `at` (its lock's last renewal), when the ledger holds an
-   * adopting create's intent it may have left. Best-effort; never throws.
+   * adopting create's intent it may have left. A stack with no ledger, or
+   * none of those intents, is not written (nothing to bound). Rejects when
+   * the ledger cannot be read or written; the caller decides how loud.
    */
   noteAbandoned(at: number): Promise<void> {
     return this.serialized(async () => {
@@ -358,9 +360,7 @@ export class CreateTokenLedger {
         await this.persist(doc);
       } catch (error) {
         this.stale = true;
-        this.logger.debug(
-          safeMsg`Could not record the abandoned run in this stack's create-token ledger: ${describeAwsFailure(error).summary}`
-        );
+        throw error;
       }
     });
   }
@@ -544,10 +544,15 @@ export async function recordAdoptingCreates(
 
 /**
  * go-to-k/cdkd#4705 review G-1: record, in the bound ledger, that the run
- * whose expired lock this deploy took over stopped by `at`. Never throws.
+ * whose expired lock this deploy took over stopped by `at`. Never throws:
+ * this deploy's guard takes the bound in-process, so a failed write only
+ * leaves a later run without it.
  */
 export async function noteAbandonedRun(at: number): Promise<void> {
-  await ledgerStore.getStore()?.noteAbandoned(at);
+  await ledgerStore
+    .getStore()
+    ?.noteAbandoned(at)
+    .catch(() => undefined);
 }
 
 /**

@@ -16,13 +16,14 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -180,5 +181,20 @@ describe('cdkd force-unlock exit code', () => {
     await runForceUnlock(['MyStack', '--state-bucket', 'b']);
 
     expect(mockNoteAbandoned).not.toHaveBeenCalled();
+  });
+
+  it('a ledger write that fails after the release warns and still exits 0 (the lock IS released)', async () => {
+    mockForceReleaseLock.mockResolvedValue(5000);
+    mockNoteAbandoned.mockRejectedValueOnce(new Error('AccessDenied: create-tokens.json'));
+
+    const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(code).toBeUndefined();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('Lock released for stack'));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Lock released, but the create-token ledger')
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cdkd import'));
   });
 });

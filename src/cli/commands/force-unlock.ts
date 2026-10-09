@@ -15,6 +15,7 @@ import {
   displayIdent,
   displaySafe,
   displayStackName,
+  safeMsg,
 } from '../../utils/display-safe.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ledgerForStack } from '../../provisioning/providers/create-token-ledger.js';
@@ -125,8 +126,17 @@ async function forceUnlockCommand(
           // go-to-k/cdkd#4705 review G-1: the run that held it stopped by its
           // last renewal; an adopting create it recorded but never sent must
           // not license a resource created after that.
+          // Never fails the unlock: the lock IS released by now.
           if (abandonedAt !== undefined && r !== undefined) {
-            await ledgerForStack(stateBackend, stackName, r).noteAbandoned(abandonedAt);
+            try {
+              await ledgerForStack(stateBackend, stackName, r).noteAbandoned(abandonedAt);
+            } catch (ledgerError) {
+              logger.warn(
+                safeMsg`Lock released, but the create-token ledger of ${where} could not record when the ` +
+                  safeMsg`abandoned run stopped: ${describeAwsFailure(ledgerError).summary}. ` +
+                  `A later deploy may refuse a resource that run made; \`cdkd import\` adopts it.`
+              );
+            }
           }
         } catch (error) {
           const message = describeAwsFailure(error).detail;
