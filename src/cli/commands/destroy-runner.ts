@@ -606,6 +606,9 @@ export async function runDestroyForStack(
   };
   // go-to-k/cdkd#4705: the kept resources a later create takes back by name.
   const retainedForReadoption: RetainedResource[] = [];
+  // Review H-2: their record's read, started with the first one, off the
+  // critical path.
+  let retainedEarlier: Promise<readonly RetainedResource[] | null> | undefined;
   // Issue #2301: the logical ids whose delete proceeded with a guard that
   // could not answer. Named in the aggregate warning so the operator can go
   // straight to `cdkd events` for the reason rather than scrolling back.
@@ -1760,6 +1763,12 @@ export async function runDestroyForStack(
                 resourceType: resource.resourceType,
                 physicalId: resource.physicalId,
               });
+              if (retainedEarlier === undefined) {
+                retainedEarlier = Promise.resolve().then(() =>
+                  ctx.stateBackend.loadRetainedRecord(stackName, regionForState)
+                );
+                retainedEarlier.catch(() => undefined);
+              }
             }
             recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_RETAINED',
@@ -2304,23 +2313,27 @@ export async function runDestroyForStack(
     // arrived while the final level was draining is still observed.
     result.interrupted = lock.interrupted;
 
+    // go-to-k/cdkd#4705: before the record goes, note what this destroy kept
+    // that the stack's next create here may take back by name. (Kept nothing:
+    // the tombstone is written below, only once the record is gone.) Run
+    // beside the incremental persists' flush (review H-2): disjoint objects,
+    // both done before the final state decision.
+    const keptWrite =
+      retainedForReadoption.length > 0
+        ? recordRetainedForReadoption(
+            ctx.stateBackend,
+            stackName,
+            regionForState,
+            retainedForReadoption,
+            logger,
+            retainedEarlier
+          )
+        : undefined;
+
     // Flush pending incremental persists BEFORE the final state decision so
     // a chained write can never land after deleteState and re-create the
     // state file. The chain never rejects (each link catches internally).
-    await saveChain;
-
-    // go-to-k/cdkd#4705: before the record goes, note what this destroy kept
-    // that the stack's next create here may take back by name. (Kept nothing:
-    // the tombstone is written below, only once the record is gone.)
-    if (retainedForReadoption.length > 0) {
-      await recordRetainedForReadoption(
-        ctx.stateBackend,
-        stackName,
-        regionForState,
-        retainedForReadoption,
-        logger
-      );
-    }
+    await Promise.all([saveChain, keptWrite]);
 
     // Preserve state (rather than delete it) when there were delete errors OR
     // the destroy was gracefully interrupted (issue #816) OR a resource was

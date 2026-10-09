@@ -264,6 +264,42 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     );
   });
 
+  it('H-2: the kept-resource write runs beside the incremental persists, not after them', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const provider = { delete: vi.fn(async () => undefined) };
+    (h.ctx as unknown as { providerRegistry: unknown }).providerRegistry = {
+      getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
+      getProvider: vi.fn(() => provider),
+    };
+    let releasePersist!: () => void;
+    const persistGate = new Promise<void>((r) => (releasePersist = r));
+    const saveState = (h.ctx.stateBackend as unknown as { saveState: ReturnType<typeof vi.fn> }).saveState;
+    saveState.mockImplementation(async () => {
+      await persistGate;
+      return 'e';
+    });
+    const state: StackState = {
+      ...emptyState(),
+      resources: {
+        Bucket: retainedState().resources['Bucket']!,
+        Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
+      } as unknown as StackState['resources'],
+    };
+    const run = runDestroyForStack('App', state, h.ctx);
+    for (let i = 0; i < 200 && h.saveRetainedResources.mock.calls.length === 0; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    // Written while the incremental persist is still in flight.
+    expect(saveState).toHaveBeenCalled();
+    expect(h.saveRetainedResources).toHaveBeenCalledTimes(1);
+    expect(h.deleteState).not.toHaveBeenCalled();
+    releasePersist();
+    await run;
+    expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.deleteState.mock.invocationCallOrder[0]!
+    );
+  });
+
   it('F-1: a record written whose S3 time could not be confirmed warns that it was RECORDED, not that it failed', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     h.saveRetainedResources.mockRejectedValueOnce(new RetainedTimeUnconfirmedError(new Error('HEAD 503')));

@@ -664,6 +664,43 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     expect(client.send).toHaveBeenCalledTimes(1);
   });
 
+  it('S-4: a 409 ConditionalRequestConflict on the tombstone is asked once more, not read as "exists"', async () => {
+    const realSend = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
+    let conflicts = 1;
+    client.send.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof PutObjectCommand && cmd.input.Key === KEY && conflicts-- > 0) {
+        throw Object.assign(new Error('conflict'), {
+          name: 'ConditionalRequestConflict',
+          $metadata: { httpStatusCode: 409 },
+        });
+      }
+      return realSend(cmd);
+    });
+    client.send.mockClear();
+    await backend.ensureRetainedTombstone('App', 'us-east-1');
+    expect(commandsOf(PutObjectCommand)).toHaveLength(2);
+    expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [] });
+    // A second 409 is not swallowed as "exists": it fails (the caller warns).
+    bodies.delete(KEY);
+    conflicts = 2;
+    await expect(backend.ensureRetainedTombstone('App', 'us-east-1')).rejects.toThrow('conflict');
+  });
+
+  it("H-1: when this machine's clock agrees with S3's, a new entry costs ONE write and ONE HEAD", async () => {
+    const realSend = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
+    client.send.mockImplementation(async (cmd: unknown) =>
+      cmd instanceof HeadObjectCommand && cmd.input.Key === KEY
+        ? { LastModified: new Date(Date.now()) }
+        : realSend(cmd)
+    );
+    client.send.mockClear();
+    await backend.saveRetainedResources('App', 'us-east-1', [{ ...entry, logicalId: 'New' }]);
+    expect(client.send.mock.calls.map((c) => (c[0] as object).constructor.name)).toEqual([
+      'PutObjectCommand',
+      'HeadObjectCommand',
+    ]);
+  });
+
   it('D-1: saving none writes the empty tombstone, which reads as present (not absent)', async () => {
     await expect(backend.loadRetainedRecord('App', 'us-east-1')).resolves.toBeNull();
     bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));

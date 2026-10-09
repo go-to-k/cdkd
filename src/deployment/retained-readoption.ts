@@ -47,7 +47,9 @@ export async function recordRetainedForReadoption(
   stackName: string,
   region: string,
   kept: readonly RetainedResource[],
-  logger: { warn(message: string): void }
+  logger: { warn(message: string): void },
+  /** The record, read already (review H-1/H-2: the read is started early). */
+  earlier?: Promise<readonly RetainedResource[] | null>
 ): Promise<void> {
   if (kept.length === 0) {
     try {
@@ -64,9 +66,9 @@ export async function recordRetainedForReadoption(
   try {
     const keptIds = new Set(kept.map((k) => k.logicalId));
     // An unreadable record is not overwritten: what it lists would be lost.
-    const earlier = (await backend.loadRetainedRecord(stackName, region)) ?? [];
+    const before = (await (earlier ?? backend.loadRetainedRecord(stackName, region))) ?? [];
     await backend.saveRetainedResources(stackName, region, [
-      ...earlier.filter((e) => !keptIds.has(e.logicalId)),
+      ...before.filter((e) => !keptIds.has(e.logicalId)),
       ...kept,
     ]);
   } catch (error) {
@@ -82,6 +84,73 @@ export async function recordRetainedForReadoption(
       safeMsg`Could not record the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
         safeMsg`a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +
         `refuses to create them over the kept ones; adopt them with 'cdkd import' then.`
+    );
+  }
+}
+
+/**
+ * go-to-k/cdkd#4705 review H-1/H-2: the resources one deploy or destroy keeps,
+ * recorded in ONE write when it ends rather than a read-merge-write each.
+ * The record's read starts with the first entry (off the critical path), so
+ * the flush costs the write and S3's time stamp. A crash before the flush
+ * leaves those resources unrecorded: their later re-create is refused with
+ * the `cdkd import` remedy, the safe direction.
+ */
+export class KeptForReadoption {
+  private entries: RetainedResource[] = [];
+  private earlier: Promise<readonly RetainedResource[] | null> | undefined;
+
+  private readonly backend: Pick<
+    S3StateBackend,
+    'loadRetainedRecord' | 'saveRetainedResources' | 'ensureRetainedTombstone'
+  >;
+  private readonly stackName: string;
+  private readonly region: string;
+  private readonly logger: { warn(message: string): void };
+
+  constructor(
+    backend: Pick<
+      S3StateBackend,
+      'loadRetainedRecord' | 'saveRetainedResources' | 'ensureRetainedTombstone'
+    >,
+    stackName: string,
+    region: string,
+    logger: { warn(message: string): void }
+  ) {
+    this.backend = backend;
+    this.stackName = stackName;
+    this.region = region;
+    this.logger = logger;
+  }
+
+  get size(): number {
+    return this.entries.length;
+  }
+
+  add(entry: RetainedResource): void {
+    this.entries.push(entry);
+    if (this.earlier === undefined) {
+      this.earlier = Promise.resolve().then(() =>
+        this.backend.loadRetainedRecord(this.stackName, this.region)
+      );
+      this.earlier.catch(() => undefined);
+    }
+  }
+
+  /** Record what was added since the last flush, in one write. Never throws. */
+  async flush(): Promise<void> {
+    if (this.entries.length === 0) return;
+    const kept = this.entries;
+    const earlier = this.earlier;
+    this.entries = [];
+    this.earlier = undefined;
+    await recordRetainedForReadoption(
+      this.backend,
+      this.stackName,
+      this.region,
+      kept,
+      this.logger,
+      earlier
     );
   }
 }

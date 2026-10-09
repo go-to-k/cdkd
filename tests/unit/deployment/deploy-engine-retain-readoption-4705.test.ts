@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { flushKeptForReadoption } from '../../../src/deployment/deploy-engine/delete.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -117,6 +118,8 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
           )
         )
       );
+      // The deploy flow's end, which this stub replaces: one write (H-1).
+      await flushKeptForReadoption(e);
       return {};
     };
     await e.deploy('MyStack', { Resources: {} } as CloudFormationTemplate);
@@ -134,12 +137,14 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
     ]);
   });
 
-  it('two Retain removals in parallel both land (one read-merge-write at a time)', async () => {
+  it('two Retain removals in parallel both land, in ONE read and ONE write (review H-1)', async () => {
     await remove([
       { id: 'A', type: 'AWS::S3::Bucket', physicalId: 'a', policy: 'Retain' },
       { id: 'B', type: 'AWS::Logs::LogGroup', physicalId: '/cdkd/b', policy: 'Retain' },
     ]);
     expect((saved.at(-1) as Array<{ logicalId: string }>).map((x) => x.logicalId).sort()).toEqual(['A', 'B', 'Earlier']);
+    expect(saved).toHaveLength(1);
+    expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
   });
 
   it('records nothing for a declared name, a type whose create fails on a taken name, or a Delete removal', async () => {

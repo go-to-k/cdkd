@@ -399,6 +399,26 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(provider.lookupNames).toHaveBeenCalledTimes(1);
     });
 
+    it('H-1: two Retain removals cost ONE retained.json read and ONE write, before the final state save', async () => {
+      const levels = [['Q1']];
+      const kept = (id: string): ResourceState =>
+        ({ physicalId: urlOf(`App-${id}`), resourceType: QUEUE, properties: {}, deletionPolicy: 'Retain' }) as ResourceState;
+      const { engine, stateBackend } = buildEngine({
+        levels,
+        records: { K1: kept('K1'), K2: kept('K2') },
+        extraChanges: ['K1', 'K2'].map(
+          (id) => ({ logicalId: id, changeType: 'DELETE', resourceType: QUEUE, currentProperties: {} }) as ResourceChange
+        ),
+      });
+      await engine.deploy(STACK, templateOf(levels));
+      expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
+      expect(stateBackend.saveRetainedResources).toHaveBeenCalledTimes(1);
+      const written = stateBackend.saveRetainedResources.mock.calls[0]![2] as Array<{ logicalId: string }>;
+      expect(written.map((e) => e.logicalId).sort()).toEqual(['K1', 'K2']);
+      const finalSave = Math.max(...stateBackend.saveState.mock.invocationCallOrder);
+      expect(stateBackend.saveRetainedResources.mock.invocationCallOrder[0]).toBeLessThan(finalSave);
+    });
+
     it('P4: a first deploy\'s registry claim overlaps the diff, and a refusal still stops it before any lookup or create', async () => {
       let claimDone!: () => void;
       const claim = new Promise<void>((r) => (claimDone = r));

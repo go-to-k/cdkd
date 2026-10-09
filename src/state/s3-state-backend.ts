@@ -204,6 +204,13 @@ function legacyProbeBelongsTo(probe: LegacyStateProbe, region: string): boolean 
  * for that region. Provisioning clients are unaffected — only the
  * state-bucket S3 client is region-corrected.
  */
+/**
+ * go-to-k/cdkd#4705 review H-1: how far this machine's clock may be from S3's
+ * before a kept resource's time is re-written with S3's (LastModified has
+ * one-second resolution).
+ */
+const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
+
 export class S3StateBackend {
   private logger = getLogger().child('S3StateBackend');
   private s3Client: S3Client;
@@ -1144,8 +1151,8 @@ export class S3StateBackend {
   async ensureRetainedTombstone(stackName: string, region: string): Promise<void> {
     await this.ensureClientForBucket();
     const key = this.getRetainedKey(stackName, region);
-    try {
-      await this.s3Client.send(
+    const put = async (): Promise<unknown> =>
+      this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
@@ -1155,8 +1162,17 @@ export class S3StateBackend {
           IfNoneMatch: '*',
         })
       );
+    try {
+      try {
+        await put();
+      } catch (error) {
+        // Review S-4: 409 ConditionalRequestConflict is a concurrent write
+        // in flight, not "a record exists": asked once more, it answers.
+        if (!isConditionalConflict(error)) throw error;
+        await put();
+      }
     } catch (error) {
-      if (isConditionFailure(error)) return;
+      if (isConditionFailure(error) && !isConditionalConflict(error)) return;
       if (!isNotImplemented(error)) throw error;
       if ((await this.loadRetainedRecord(stackName, region)) === null) {
         await this.saveRetainedResources(stackName, region, []);
@@ -1189,15 +1205,17 @@ export class S3StateBackend {
         )
       );
     const fresh = new Set(entries.filter((e) => e.keptAt === undefined));
-    // A new entry is written with this machine's clock first (review F-1): a
-    // crash or a failure before the S3 stamp below then leaves a skewed
-    // bound, never no bound at all.
+    // A new entry is written with this machine's clock (review F-1): a crash
+    // or a failure before the S3 stamp below then leaves a skewed bound,
+    // never no bound at all.
     const provisional = Date.now();
     await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt: provisional } : e)));
     if (fresh.size === 0) return;
     // Then S3's own clock (review E-8): the time of the write that recorded
     // it, read back from the object. A holder created later is not the
-    // resource kept.
+    // resource kept. Re-written only when this machine's clock is off by more
+    // than S3's one-second resolution allows (review H-1): usually one write
+    // and one HEAD.
     try {
       const head = await this.s3Client.send(
         new HeadObjectCommand({
@@ -1208,6 +1226,7 @@ export class S3StateBackend {
       );
       const keptAt = head.LastModified instanceof Date ? head.LastModified.getTime() : undefined;
       if (keptAt === undefined) throw new Error('S3 reported no LastModified');
+      if (Math.abs(keptAt - provisional) <= KEPT_AT_CLOCK_TOLERANCE_MS) return;
       await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt } : e)));
     } catch (error) {
       throw new RetainedTimeUnconfirmedError(error);
@@ -2638,6 +2657,14 @@ export function registryMarkerPrefix(body: string | undefined): string | undefin
 }
 
 /** A conditional write that lost: 412, or the 409 S3 answers for a concurrent one. */
+/** S3's 409 ConditionalRequestConflict: a conflicting write is in flight. */
+function isConditionalConflict(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
+    ?.httpStatusCode;
+  return name === 'ConditionalRequestConflict' || (status === 409 && name !== 'PreconditionFailed');
+}
+
 function isConditionFailure(error: unknown): boolean {
   const name = (error as { name?: string } | null)?.name;
   const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata

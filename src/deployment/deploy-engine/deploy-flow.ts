@@ -2,6 +2,7 @@ import { freshNoEchoParametersWithDeclared } from './noecho.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard } from '../generated-name-guard.js';
+import { flushKeptForReadoption } from './delete.js';
 import { loadKeptInHistory } from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
@@ -1419,6 +1420,10 @@ export async function doDeployWithPrefetch(
     // the save's await reaches them, while the save had already taken its
     // copy.
 
+    // go-to-k/cdkd#4705 review H-1: what this deploy kept, in one write,
+    // before the record that no longer names it is saved.
+    await flushKeptForReadoption(this);
+
     // 7b. Save final state (ETag may have been updated by partial saves).
     // The legacy migration delete (when migrationPending) was already done by
     // the first per-resource save inside executeDeployment, so this final
@@ -1578,9 +1583,12 @@ export async function doDeployWithPrefetch(
     // create was not sent or came back. Guarded like every step before
     // `releaseLock`.
     try {
+      // A deploy that failed after keeping something still records it (a
+      // no-op once the success path flushed).
+      await flushKeptForReadoption(this);
       await this.generatedNameGuard?.settle();
     } catch {
-      // `settle` warns on its own failures.
+      // Both warn on their own failures.
     }
 
     // Always release lock
