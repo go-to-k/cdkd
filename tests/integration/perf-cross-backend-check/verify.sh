@@ -268,8 +268,12 @@ rescan() {
     left="$(printf '%s\n' ${left} | grep -F ":cluster/${STACK_BASE}" || true)"
     if [ -n "${left}" ]; then
       # A deleted cluster lists as INACTIVE for a while: only ACTIVE ones count.
-      left="$(aws ecs describe-clusters --clusters ${left} --region "${REGION}" --query "clusters[?status=='ACTIVE'].clusterName" --output text 2>&1)" || { echo "WARN: could not describe clusters: ${left}" >&2; found=1; left=""; }
-      [ -z "${left}" ] || [ "${left}" = "None" ] || { echo "WARN: ECS clusters left: ${left}" >&2; found=1; }
+      if left="$(aws ecs describe-clusters --clusters ${left} --region "${REGION}" --query "clusters[?status=='ACTIVE'].clusterName" --output text 2>&1)"; then
+        [ -z "${left}" ] || [ "${left}" = "None" ] || { echo "WARN: ECS clusters left: ${left}" >&2; found=1; }
+      else
+        echo "WARN: could not describe ECS clusters: ${left}" >&2
+        found=1
+      fi
     fi
   else
     echo "WARN: could not list ECS clusters: ${left}" >&2

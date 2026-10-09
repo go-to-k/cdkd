@@ -94,7 +94,7 @@ For a new cdkd-managed stack, bootstrap cdkd once per target AWS account after t
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd bootstrap
 ```
 
-This creates cdkd's S3 state storage and cdkd-owned asset storage. It does not replace or remove the normal CDK bootstrap resources. The current default state bucket is account-scoped; older region-suffixed buckets are handled as a legacy layout. Use a custom `--state-bucket` or `CDKD_STATE_BUCKET` only when the project has an intentional isolation or naming requirement. A different bucket or `--state-prefix` separates records, not deployments: a stack name is one deployment per account and region, as in CloudFormation, so never deploy the same stack name under two buckets or prefixes in one account and region (unsupported; cdkd refuses it within one bucket). To run two copies of an app, give their stacks different names.
+This creates cdkd's S3 state storage and cdkd-owned asset storage. It does not replace or remove the normal CDK bootstrap resources. The current default state bucket is account-scoped; older region-suffixed buckets are handled as a legacy layout. Use a custom `--state-bucket` or `CDKD_STATE_BUCKET` only when the project has an intentional isolation or naming requirement. A different bucket or `--state-prefix` separates records, not deployments: a stack name is one deployment per account and region, as in CloudFormation, so never deploy the same stack name under two buckets or prefixes in one account and region (unsupported; within one bucket cdkd refuses it, and in any bucket it refuses a create that would take over the other deployment's resource). To run two copies of an app, give their stacks different names.
 
 ## Preview before deployment
 

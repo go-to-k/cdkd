@@ -572,22 +572,35 @@ template, drop only its record with `--resource` as above.
 
 ## The same stack name under another state prefix refuses the deploy
 
-A stack's first deploy under a `--state-prefix` checks whether the state bucket
-already records the same stack name and region under another top-level prefix,
-and refuses before any resource is touched if it does. A stack name is one
-deployment per account and region, as in CloudFormation — see
-[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
-for why, what the check cannot see, and the remedies the refusal prints. A
-stack the prefix already records skips that check; it is checked again only
-when its plan deletes, replaces or may replace a resource, or adds or updates a
-nested stack, before the `--require-approval` prompt and before anything is changed;
-an ordinary redeploy lists nothing. A replacement the deploy finds only on
-reading a resource back is checked then, and a refusal keeps that resource and
-exits `2`. A failed deploy's automatic rollback, a nested stack's included,
-keeps, rather than deletes, a created resource when another prefix records the
-stack or the check fails. If S3 denies the listing or a read,
-the deploy warns and continues. The check's cost grows with the bucket's top-level
-prefixes, so prefer a dedicated state bucket.
+A stack name is one deployment per account and region, as in CloudFormation —
+see [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
+for why, what the checks cannot see, the permissions they use, and the remedies
+the refusals print. A deploy enforces it twice:
+
+- **A create never takes over a resource it cannot account for.** Before
+  creating a queue, topic, log group, alarm, EventBridge rule, S3 bucket, ECS
+  cluster, load balancer, target group or state machine under a name cdkd
+  generated, the deploy looks the name up. An existing holder that this
+  stack's state, rollback journal, create-token ledger or `retained.json` does
+  not name refuses that create (`GENERATED_NAME_HELD`), as CloudFormation
+  refuses a name that already exists; nothing is created for it. This holds
+  whatever backend the other deployment uses — another prefix, bucket or
+  account's bucket. The lookups all start once the plan is known and are
+  batched per type, so a first deploy pays about one round trip; a redeploy
+  that creates nothing looks nothing up. A lookup refused with 403 warns and
+  creates.
+- **The stack registry.** A first deploy claims the bucket's marker
+  `_cdkd-registry/<region>/<stack>.json` for this prefix before its first
+  provider call, and refuses when the marker names another prefix that holds
+  the stack. A stack the prefix already records reads the marker only when its
+  plan deletes, replaces or may replace a resource, or adds or updates a nested
+  stack, before the `--require-approval` prompt; an ordinary redeploy makes no
+  registry request. A replacement the deploy finds only on reading a resource
+  back is checked then, and a refusal keeps that resource and exits `2`. A
+  failed deploy's automatic rollback, a nested stack's included, keeps, rather
+  than deletes, a created resource when another prefix holds the stack or the
+  check fails. If S3 denies the marker, the deploy warns and falls back to
+  listing the bucket's prefixes.
 
 ## Exit codes
 

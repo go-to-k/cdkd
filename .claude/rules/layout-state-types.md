@@ -18,6 +18,13 @@ paths:
   [lock-contention-message.md](lock-contention-message.md).
   **malformed-resources-bag.ts**:
   [state-malformed-containers.md](state-malformed-containers.md).
+- **stack-registry.ts** — `_cdkd-registry/<region>/<stack>.json` names a
+  top-level stack's ONE prefix ([#4705](https://github.com/go-to-k/cdkd/issues/4705)).
+  Only a marker naming THIS prefix is released or overwritten unconditionally;
+  every other write is `If-None-Match` / `If-Match`. `listTopLevelPrefixes`
+  must skip `_cdkd-registry/`. `retained.json` (a destroy's kept resources) is
+  a `state.json` sibling that `deleteState` must NOT sweep: it exists to
+  outlive the record.
 - **types/assembly.ts** — Cloud Assembly types; **types/** also holds config,
   state and resource types.
 

@@ -256,7 +256,7 @@ describe('ECS clusters and ELBv2', () => {
   });
 
   it('ELBv2: one listing of the region, matched on the whole name, case-insensitively', async () => {
-    const send = vi.fn(async () => ({
+    const send = vi.fn(async (_cmd: unknown) => ({
       LoadBalancers: [
         { LoadBalancerName: 'app-lb1', LoadBalancerArn: 'arn:lb1' },
         { LoadBalancerName: 'App-LB10', LoadBalancerArn: 'arn:lb10' },

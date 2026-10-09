@@ -3192,6 +3192,13 @@ stays readable through `GetObject` with a `VersionId`.
   above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
   remove them.
 
+A policy that scopes an identity to its own state prefix
+(`arn:aws:s3:::cdkd-state-bucket/team-a/*`) must also grant `s3:GetObject`,
+`s3:PutObject` and `s3:DeleteObject` on
+`arn:aws:s3:::cdkd-state-bucket/_cdkd-registry/*`, the bucket's
+[stack registry](state-store.md#the-stack-registry); without it cdkd warns and
+falls back to a check that needs `s3:ListBucket` on the whole bucket.
+
 The third addition is DIAGNOSTIC rather than required, and the only entry in
 this policy that is:
 

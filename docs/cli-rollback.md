@@ -278,12 +278,13 @@ newer journal entry may own (neither blocks `cdkd deploy` or `cdkd destroy`), an
 
 `cdkd rollback` refuses, under the lock and before the plan, the prompt or any
 replay, when the state bucket also records the stack and region under another
-top-level `--state-prefix`. The replay deletes what the failed deploy created,
+`--state-prefix`. The replay deletes what the failed deploy created,
 and for such a pair a create can have been handed the other deployment's
 resource. Drop the record you are not keeping with the `cdkd state orphan ...
 --state-prefix <prefix>` command the refusal prints and re-run. See
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
-If S3 denies the listing or a read, the rollback warns and continues.
+The answer comes from the stack's registry marker in the state bucket; if S3
+denies it, the rollback warns and falls back to listing the bucket's prefixes.
 
 ## Known limitations
 

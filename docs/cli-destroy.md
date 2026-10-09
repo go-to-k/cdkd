@@ -999,17 +999,20 @@ is why `--purge-events` is skipped on an interrupted run.
 
 ## The same stack name under another state prefix refuses the destroy
 
-`cdkd destroy` (and `cdkd state destroy`) refuse, before any prompt or delete,
-when the state bucket also records the stack and region under another
-top-level `--state-prefix`: that record may name the same resources. Drop the
-record you are not keeping with the `cdkd state orphan ... --state-prefix
-<prefix>` command the refusal prints, which never deletes a resource, and
-re-run. See
+`cdkd destroy` (and `cdkd state destroy`) read the stack's registry marker
+(`_cdkd-registry/<region>/<stack>.json` in the state bucket) and refuse, before
+any prompt or delete, when it names another `--state-prefix` that holds the
+stack: that record may name the same resources. Drop the record you are not
+keeping with the `cdkd state orphan ... --state-prefix <prefix>` command the
+refusal prints, which never deletes a resource, and re-run. See
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
-If S3 denies the listing or a read, the destroy warns and continues. `--all`
-starts every stack's check at once, in the order it destroys them. Its cost grows with the bucket's top-level
-prefixes, so a large shared state bucket slows every destroy; prefer a
-dedicated one.
+A successful destroy removes the marker with the record. A resource the
+destroy keeps (`RemovalPolicy.RETAIN`) is listed in
+`<prefix>/<stack>/<region>/retained.json`, so the next deploy under the same
+prefix takes it back instead of refusing its name; `cdkd state orphan` removes
+that list. A stack recorded before the registry existed pays one listing of
+the bucket's top-level prefixes the first time, then claims its marker. If S3
+denies the marker, the destroy warns and falls back to that listing.
 
 ## A malformed `resources` map refuses the destroy
 

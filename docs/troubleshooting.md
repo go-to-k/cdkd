@@ -18,6 +18,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [State and Resources Don't Match](#state-and-resources-don-t-match)
   - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
   - ["Refusing to deploy stack X: it is already recorded under another state prefix"](#refusing-to-deploy-stack-x-it-is-already-recorded-under-another-state-prefix)
+  - ["X would be created with the cdkd-generated name N, which an existing resource already holds"](#x-would-be-created-with-the-cdkd-generated-name-n-which-an-existing-resource-already-holds)
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
   - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
@@ -553,8 +554,8 @@ control the SDK's default region for provisioning.
 
 ### "Refusing to deploy stack X: it is already recorded under another state prefix"
 
-**Symptoms:** `cdkd deploy` (on a stack's first deploy under this prefix),
-`cdkd destroy`, `cdkd state destroy` or `cdkd rollback` stops with
+**Symptoms:** `cdkd deploy` (on a stack's first deploy under this prefix, or a
+deploy that deletes or replaces resources), `cdkd destroy`, `cdkd state destroy` or `cdkd rollback` stops with
 `Refusing to deploy stack` / `Refusing to destroy stack` / `Refusing to roll
 back stack ... recorded under another state prefix of bucket`, and no resource
 of the stack is created, changed, reverted or deleted (assets may already have
@@ -581,6 +582,33 @@ the command prints a note naming it instead.
 - Destroying or rolling back: decide which record you are keeping, drop the other with the
   `cdkd state orphan ... --state-prefix <prefix>` command the message prints
   (it never deletes a resource), and re-run.
+
+---
+
+### "X would be created with the cdkd-generated name N, which an existing resource already holds"
+
+**Symptoms:** `cdkd deploy` stops with this message (error code
+`GENERATED_NAME_HELD`) before creating a queue, topic, log group, alarm,
+EventBridge rule, S3 bucket, ECS cluster, load balancer, target group or state
+machine. Nothing was created for that resource.
+
+**Cause:** the create API of those types hands back, or overwrites, an
+existing resource of the same name instead of failing, and a resource already
+holds the name cdkd generated, while nothing this stack records names it: not
+its state, rollback journal or create-token ledger, nor what a destroy of it
+under this state prefix kept. Most often the same stack name is also deployed
+under another state backend (another `--state-prefix`, `--state-bucket` or
+account's bucket), which generates the same names — see
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
+
+**Fix:**
+
+- Another deployment owns it: deploy this stack under that backend only, or
+  give this stack another name.
+- It is this stack's own (for example a resource a destroy kept before this
+  check existed, or one kept under another prefix): adopt it with the
+  `cdkd import <stack> --resource <logicalId>=<physicalId>` command the
+  message prints, then re-run the deploy.
 
 ---
 

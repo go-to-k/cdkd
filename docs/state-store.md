@@ -67,93 +67,134 @@ is therefore **unsupported**. To keep two copies of an app apart, give their
 stacks different names (a CDK `Stage`, or a name suffix), not different
 prefixes.
 
-cdkd refuses the case it can see, before touching any resource:
+cdkd enforces this with two checks. They are a safety net against an
+accident, not an access control: an identity that can write the state bucket
+can defeat both.
 
-- `cdkd deploy` of a stack that has no record under this prefix yet checks the
-  bucket's other prefixes, and refuses when one already records the same stack
-  name and region.
-- `cdkd deploy` of a stack this prefix already records checks the same, but
-  only when its plan may destroy something: a resource deleted, a resource
-  replaced, a resource that MAY be replaced (the deploy only learns once a
-  value resolves), or a nested stack added or updated (whose own plan is only
-  known once it runs, and whose creates can take over the other deployment's
-  resources; a nested stack deleted is a resource deleted). The check runs
-  before the `--require-approval` prompt, so a refused deploy never asks
-  first. A plan that only creates resources, updates in place, or removes a
-  retained resource is not checked, and lists nothing. A replacement the deploy
-  decides only on reading a resource back (a create-only value fed by a `NoEcho`
-  parameter) is checked then: a refusal (another prefix records the stack, or
-  the check could not run) keeps that resource, warns, lets the rest of the
-  deploy go on, and counts as unaddressed (exit 2 unless
-  `--allow-unaddressed`).
-- `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` make the same check
-  every time and refuse, since the other record may name the same resources —
-  a rollback deletes what the failed deploy created, which for such a pair can
-  be the other deployment's resource. Once you know which record you are
-  keeping, drop the other with `cdkd state orphan <stack> --stack-region
-  <region> --state-prefix <prefix>`, which removes only the record.
-- A successful deploy that is about to delete a resource a failed earlier
-  deploy left behind (recorded only in its rollback journal) asks the same
-  question first. When another prefix records the stack, or the check fails,
-  it keeps that resource, warns, and exits 2. When S3 refuses the check (403),
-  it warns and deletes the resource as it did before the check existed.
-- A failed deploy's automatic rollback, a nested stack's included (asking by
-  its own `Parent~Child` name), asks whether another prefix records the stack
-  before deleting a resource the deploy created, since a create can take over
-  a resource that already existed under its generated name. When one does, or
-  the check fails, the rollback keeps the resource, warns (naming the prefix
-  when one was found, or the `cdkd rollback` that finishes the job once the
-  check can run), and leaves it in the rollback journal. A 403 warns and
-  deletes, as above. A nested stack's failed deploy pays at most one scan for its
-  `Parent~Child` name.
+### A create never takes over a resource it cannot account for
 
-A record under another prefix blocks only when it can own a resource: it lists
-resources or rollback-orphaned resources, or its rollback journal holds a
-completed operation or a failed one that recorded a resource's physical id (a
-resource that failed deploy created). The empty record a failed first deploy
+The SDK creates of these types hand back, or overwrite, an existing resource
+of the same name instead of failing: `AWS::SQS::Queue`, `AWS::SNS::Topic`,
+`AWS::Logs::LogGroup`, `AWS::CloudWatch::Alarm`, `AWS::Events::Rule`,
+`AWS::S3::Bucket`, `AWS::ECS::Cluster`,
+`AWS::ElasticLoadBalancingV2::LoadBalancer`,
+`AWS::ElasticLoadBalancingV2::TargetGroup` and
+`AWS::StepFunctions::StateMachine`. Every other type's create fails on a
+taken name (or matches only its own idempotency token), and a create through
+Cloud Control refuses an existing name.
+
+When one of those creates would use a name cdkd generated, cdkd looks the name
+up first. If a resource already holds it, the create goes ahead only when this
+stack's own evidence names that resource:
+
+- its state record (under any logical id), or its rollback orphans;
+- its rollback journal: a completed operation, or a failed one that recorded
+  the resource's physical id;
+- its create-token ledger, which records the names a deploy is about to create
+  in one write before the first of those creates is sent, so a re-run after a
+  crash between a create and its record takes the resource back;
+- `retained.json`, the resources a `cdkd destroy` of this stack under this
+  prefix kept (`RemovalPolicy.RETAIN`). The next deploy under the same prefix
+  takes them back, and drops them from that list once its record names them.
+  Another prefix, another bucket or `cdkd state orphan` does not see the list
+  (orphan removes it), so a redeploy there is refused.
+
+Otherwise the deploy refuses before that create, as CloudFormation refuses a
+name that already exists, and creates nothing for it. The message names the
+holder, the likely cause (the stack is also deployed under another state
+backend), and `cdkd import <stack> --resource <logicalId>=<physicalId>` for a
+resource that is in fact this stack's own. This covers a second deployment in
+another prefix, another bucket and another account's bucket alike. A name the
+template declares is not looked up: declaring a name is choosing it.
+
+**What it costs.** Nothing on a redeploy: only a CREATE row is looked up, so an
+update, a no-change deploy and a destroy make no lookup. For the creates, every
+name is looked up once the plan is known, all at once, batched per type, and
+each create waits only for its own answer, so a first deploy pays about one
+round trip whatever its size. Per type: alarms 100 names per
+`DescribeAlarms` call (both alarm kinds) and log groups 50 per
+`DescribeLogGroups` call, the calls in parallel; queues, topics, rules, load
+balancers, target groups and state machines one listing by name prefix, its
+pages bounded; ECS clusters 100 per `DescribeClusters`. A listing that does
+not end within its bound falls back to one lookup per name. Each API has one
+concurrency limit across the whole run, `deploy --all` included.
+
+**Permissions.** The lookups need the read permission of each type a stack
+creates: `sqs:ListQueues` (or `sqs:GetQueueUrl`), `sns:ListTopics`,
+`logs:DescribeLogGroups`, `cloudwatch:DescribeAlarms`, `events:ListRules`
+(or `events:DescribeRule`), `ecs:DescribeClusters`,
+`elasticloadbalancing:DescribeLoadBalancers` /
+`elasticloadbalancing:DescribeTargetGroups`, `states:ListStateMachines`, and
+the bucket's own `s3:ListBucket` for an S3 bucket. A lookup refused with 403
+warns and creates, as before the check existed; any other lookup failure
+refuses that create.
+
+**What it does not see.** A holder created between the lookup and the create:
+two first deploys of the same stack name at the same moment. In one bucket the
+stack registry below serializes them; in two buckets that window remains.
+
+### The stack registry
+
+For each top-level stack and region, the state bucket keeps one marker at
+`_cdkd-registry/<region>/<stack>.json` naming the one state prefix that stack
+belongs to. A nested stack is covered by its top-level stack's marker.
+
+- A first deploy under a prefix claims the marker before its first provider
+  call, with a conditional write that only succeeds when there is none. When
+  the marker names another prefix, the deploy refuses as described below.
+- `cdkd deploy` of a stack this prefix already records reads the marker only
+  when its plan may destroy something: a resource deleted, a resource
+  replaced, a resource that MAY be replaced, or a nested stack added or
+  updated. The read runs before the `--require-approval` prompt. A plan that
+  only creates resources, updates in place, or removes a retained resource
+  makes no registry request. A replacement the deploy decides only on reading
+  a resource back is checked then: a refusal keeps that resource, warns, and
+  counts as unaddressed (exit 2 unless `--allow-unaddressed`).
+- `cdkd destroy`, `cdkd state destroy` and `cdkd rollback` read it every time,
+  and refuse when another prefix holds the stack, since its record may name
+  the same resources. Once you know which record you are keeping, drop the
+  other with `cdkd state orphan <stack> --stack-region <region> --state-prefix
+  <prefix>`, which removes only the record (and releases the marker).
+- A successful deploy about to delete a resource a failed earlier deploy left
+  in its rollback journal, and a failed deploy's automatic rollback about to
+  delete a resource it created, ask the same question first. When another
+  prefix holds the stack, or the question cannot be answered, the resource is
+  kept, with a warning, and stays in the journal (the successful deploy exits
+  2).
+- `cdkd destroy` removes the marker after removing the record (only when it
+  still names this prefix). `cdkd state orphan` of a whole stack removes it,
+  `cdkd import` claims it, and `cdkd state migrate` moves it with the record.
+
+A marker naming another prefix is weighed against what that prefix holds. A
+record there that can own a resource (it lists resources or rollback-orphaned
+resources, or its rollback journal holds a completed operation or a failed one
+that recorded a physical id) refuses, naming the prefix and the remedies. Only
+a lock there means a deploy is in progress: the command refuses and names
+`cdkd force-unlock` for a lock a crashed run left. Nothing there at all is a
+stale marker (its owner was removed without the marker, for example by an
+older cdkd), and this prefix claims it. The empty record a failed first deploy
 that created nothing leaves behind blocks nothing; the command prints a note
 naming its prefix and the `cdkd state orphan` command that removes it.
 
-**What the check costs.** One listing of the bucket's top-level prefixes. Then,
-for each top-level prefix `p`, one listing of `p/<stack>/`; only where that
-finds something are the stack's record, legacy record and rollback journal read
-(three reads, in parallel). The trailing-slash forms `p/` are probed the same
-way in a second pass, only when no `p` held the stack. So the work grows with
-the number of top-level prefixes in the bucket. A deploy runs it only when a
-check above needs it: for a first deploy it starts once synthesis has
-finished, overlapping asset publishing and the lock; for a plan that destroys,
-and before the deletion of a journaled orphan, it runs then. An ordinary
-redeploy or one with no changes lists nothing and probes nothing (it reads
-only its own three keys), unless a journaled orphan is to be deleted or the
-automatic rollback has something to delete. A destroy and a rollback run it
-each time; `destroy --all` starts every stack's scan at once and serves them
-in the order it destroys the stacks.
+**What it costs.** One read of one small object, once per command run, only on
+the commands above; a first deploy adds one conditional write. Records written
+before the registry existed have no marker: the first command that needs the
+answer for such a stack lists the bucket's top-level prefixes once (50
+listings in parallel, a single pass), then claims the marker, so every later
+command is one read again. A dry run reads the registry and never writes it.
 
-**Keep the bucket small.** Because that cost grows with the bucket's top-level
-prefixes, a large shared bucket slows every destroy and rollback and every
-deploy that deletes. Give the state a dedicated bucket rather than one shared
-with unrelated data. In CI, a fresh `--state-prefix` per run with stable stack
-names accumulates prefixes and leaves records behind that refuse the next first
-deploy of the same stack name: prefer a stable prefix, or remove a finished
-run's records (`cdkd state orphan <stack> --state-prefix <prefix>`, or a
-destroy) before the next run.
+**Permissions.** `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on
+`<bucket>/_cdkd-registry/*`. When S3 refuses the marker (403), the command
+warns and falls back to the prefix listing, whose own 403 also warns and
+continues. A read that fails otherwise (a server error, a record or marker that
+will not parse) refuses, naming the object it could not read.
 
-**What it sees, and what it does not.** It sees a record under any top-level
-prefix of the same bucket, including one written with a trailing slash
-(`--state-prefix team-a/`) and the empty prefix. It does not see:
-
-- a record in a **different bucket**;
-- a prefix with a `/` before its end (`team/a`): only the first segment of each
-  key is listed;
-- a second deployment whose first deploy runs at the same moment as this one's,
-  under another prefix: neither has a record yet when the other looks.
-
-When S3 refuses the check — the bucket listing (an identity whose policy only
-covers its own prefix) or a read under another prefix — the command warns
-whenever the check runs, and continues. A read that fails otherwise (a server
-error, a record that will not parse, an empty object, which cdkd never writes)
-refuses, naming the object it could not read. A record whose `resources` is missing or not an
-object proves nothing and blocks.
+**What it does not see.** A record in a different bucket (the create check
+above still refuses its takeovers, but a pair that predates this version keeps
+both records until one is removed); a pair one stack name already formed
+before this version under a prefix with a `/` before its end (`team/a`) when no
+marker exists yet; and a deploy by an older cdkd, which neither claims nor
+reads markers.
 
 ## Records outlive the binary that wrote them
 
