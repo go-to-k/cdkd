@@ -343,8 +343,16 @@ describe('DeployEngine - the provisioning refusal masks a NoEcho-fed token (go-t
       },
     });
     const errors = chain(error);
-    // PREMISE: the refusal fired, so its message is what is checked.
+    // PREMISE: the PROVISIONING-time refusal fired (not the plan-time one, whose
+    // masker is the diff's), so its message is what is checked.
     expect(errors.some((e) => e.code === SERVICE_TOKEN_CHANGE_REFUSED)).toBe(true);
+    expect(isRefusedBeforeApplying(error, 'Cr')).toBe(true);
+    // Positive control: the refusal row naming the new token was rendered, so the
+    // absence check below reads a message that carried the token's position.
+    expect(errors.some((e) => e.message.includes('Cr: ServiceToken changes to '))).toBe(true);
+    // This pins the end-to-end guarantee: the provisioning wrapper re-masks the
+    // whole chain with the resource's printing bag, so the refusal's own inner
+    // masker is defence in depth and has no test of its own.
     for (const e of errors) expect(e.message).not.toContain(NEW_TOKEN);
     expect(callsFor(p.update, 'Cr')).toHaveLength(0);
   });
