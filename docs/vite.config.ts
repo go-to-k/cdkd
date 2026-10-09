@@ -11,6 +11,7 @@ import { homeTitlePlugin } from './plugins/home-title.js';
 import { registryName } from './islands/html.js';
 import { islandSsrPlugin } from './islands/ssr-plugin.js';
 import { codeSpans } from './plugins/code-spans.js';
+import { diagrams } from './plugins/diagrams.js';
 import { STATUS_ICONS, statusIcons } from './plugins/status-icons.js';
 import { tokens, tokensToCss } from './brand/tokens.js';
 
@@ -356,7 +357,7 @@ export default defineConfig(({ command }) => ({
       // the classes they use; the status marks (rendered by the transformer)
       // and the home page's feature icons (read from its frontmatter, which
       // the scan does not reach) are named outright.
-      transformers: [statusIcons(), codeSpans()],
+      transformers: [statusIcons(), codeSpans(), diagrams()],
       // `<pm>npm i …</pm>` becomes one tab per package manager, and the
       // reader's choice carries across every such block (and the hero's).
       embeds: { pm: { sync: true } },

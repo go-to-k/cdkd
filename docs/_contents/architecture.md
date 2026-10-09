@@ -11,7 +11,7 @@ description: "cdkd's layered architecture — CDK synthesis, asset publishing, a
 
 ## Architecture Diagram
 
-```
+```text diagram=layers
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLI Layer                               │
 │  (src/cli/)                                                     │
@@ -122,7 +122,7 @@ Reads the cloud assembly output directly from the `cdk.out/` directory:
 
 Orchestrates the context provider loop:
 
-```
+```text diagram=synthesizer-loop
 1. Execute CDK app (AppExecutor)
    ↓
 2. Read cloud assembly (AssemblyReader)
@@ -162,7 +162,7 @@ All CDK context provider types are supported. See `src/synthesis/context-provide
 
 **Synthesis Flow**:
 
-```
+```text diagram=synthesis-flow
 1. User CDK App (--app option, CDKD_APP env var, or cdk.json "app" field)
    ↓
 2. AppExecutor.execute() via child_process.spawn()
@@ -785,7 +785,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 1. Initial Deployment (CREATE)
 
-```
+```text diagram=deploy-create
 ┌─────────────┐
 │ User        │
 │ $ cdkd      │
@@ -859,7 +859,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 2. Update Deployment (UPDATE)
 
-```
+```text diagram=deploy-update
 ... (Same until Synthesis)
          │
          ▼
@@ -883,7 +883,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 3. Deletion (DESTROY)
 
-```
+```text diagram=deploy-destroy
 ┌─────────────┐
 │ User        │
 │ $ cdkd      │
@@ -926,7 +926,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 
 ### 4. Context Provider Resolution Loop
 
-```
+```text diagram=context-loop
 ┌───────────────────────┐
 │ Synthesizer           │
 │ synthesize()          │

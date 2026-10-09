@@ -492,6 +492,87 @@ body {
     }
   }
 
+  /* Diagrams (docs/diagrams) are drawn in the page's own colors, so they
+     follow the theme; on a phone the narrow drawing stands in for the wide
+     one rather than shrinking its text. */
+  & .cdkd-diagram {
+    margin: var(--cdkd-space-8) 0;
+
+    & svg {
+      display: block;
+      inline-size: 100%;
+      block-size: auto;
+      overflow: visible;
+      font-family: var(--cdkd-font-sans);
+    }
+
+    & .cdkd-diagram__svg--wide {
+      max-inline-size: 45rem;
+    }
+
+    & .cdkd-diagram__svg--narrow {
+      display: none;
+      max-inline-size: 22.5rem;
+    }
+
+    & .d-node rect {
+      fill: var(--cdkd-color-surface);
+      stroke: var(--cdkd-color-border);
+      stroke-width: 1;
+    }
+
+    & .d-node--route rect {
+      stroke: var(--cdkd-color-accent);
+      stroke-width: 1.5;
+    }
+
+    & .d-title {
+      fill: var(--cdkd-color-text);
+      font-size: 15px;
+      font-weight: var(--cdkd-weight-semibold);
+    }
+
+    & :is(.d-detail, .d-mono) {
+      fill: var(--cdkd-color-text-secondary);
+      font-size: 13px;
+    }
+
+    & .d-mono {
+      font-family: var(--cdkd-font-mono);
+      font-size: 12.5px;
+    }
+
+    & .d-note {
+      fill: var(--cdkd-color-text-muted);
+      font-size: 13px;
+    }
+
+    & .d-label {
+      fill: var(--cdkd-color-text-muted);
+      font-size: 12px;
+    }
+
+    & .d-edge {
+      fill: none;
+      stroke: var(--cdkd-color-text-muted);
+      stroke-width: 1.25;
+    }
+
+    & .d-head {
+      fill: var(--cdkd-color-text-muted);
+    }
+
+    @media (max-width: 40rem) {
+      & .cdkd-diagram__svg--wide {
+        display: none;
+      }
+
+      & .cdkd-diagram__svg--narrow {
+        display: block;
+      }
+    }
+  }
+
   & .ox-tab-panel {
     padding: 0;
     background: transparent;
