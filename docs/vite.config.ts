@@ -10,6 +10,7 @@ import vize from '@vizejs/vite-plugin';
 import { homeTitlePlugin } from './plugins/home-title.js';
 import { registryName } from './islands/html.js';
 import { islandSsrPlugin } from './islands/ssr-plugin.js';
+import { codeSpans } from './plugins/code-spans.js';
 import { STATUS_ICONS, statusIcons } from './plugins/status-icons.js';
 import { tokens, tokensToCss } from './brand/tokens.js';
 
@@ -206,6 +207,40 @@ const theme = (command: 'build' | 'serve') =>
       '  new IntersectionObserver(function (entries) { set(entries[0].isIntersecting); },',
       "    { rootMargin: '-64px 0px 0px 0px' }).observe(hero);",
       '})();',
+      // On a phone a table's rows are set one under another, each cell
+      // labelled by its column (theme/cdkd.css). The explicit roles keep it a
+      // table for assistive technology once its display is no longer one.
+      '(function () {',
+      "  document.querySelectorAll('.content table').forEach(function (table) {",
+      "    var heads = Array.prototype.map.call(table.querySelectorAll('thead th'), function (th) {",
+      '      return th.textContent.trim();',
+      '    });',
+      "    table.setAttribute('role', 'table');",
+      "    table.querySelectorAll(':scope > thead, :scope > tbody').forEach(function (group) {",
+      "      group.setAttribute('role', 'rowgroup');",
+      '    });',
+      "    table.querySelectorAll('tr').forEach(function (row) {",
+      "      row.setAttribute('role', 'row');",
+      '      Array.prototype.forEach.call(row.children, function (cell, i) {',
+      "        if (cell.closest('thead')) { cell.setAttribute('role', 'columnheader'); return; }",
+      "        cell.setAttribute('role', 'cell');",
+      "        if (heads[i]) cell.setAttribute('data-label', heads[i]);",
+      '      });',
+      '    });',
+      "    table.setAttribute('data-cdkd-stack', '');",
+      // Core may have measured the table before it stacked and named it
+      // scrollable; a stacked table that no longer scrolls drops that.
+      "    if (table.dataset.oxTableScrollLabel === 'true' && table.scrollWidth <= table.clientWidth + 1) {",
+      "      table.removeAttribute('aria-label');",
+      "      table.removeAttribute('data-ox-table-scrollable');",
+      '      delete table.dataset.oxTableScrollLabel;',
+      "      if (table.dataset.oxTableScrollTabindex === 'true') {",
+      "        table.removeAttribute('tabindex');",
+      '        delete table.dataset.oxTableScrollTabindex;',
+      '      }',
+      '    }',
+      '  });',
+      '})();',
     ].join('\n'),
     embed: {
       head: [
@@ -309,7 +344,7 @@ export default defineConfig(({ command }) => ({
       // the classes they use; the status marks (rendered by the transformer)
       // and the home page's feature icons (read from its frontmatter, which
       // the scan does not reach) are named outright.
-      transformers: [statusIcons()],
+      transformers: [statusIcons(), codeSpans()],
       icons: {
         include: ['components/*.vue'],
         safelist: [...STATUS_ICONS, ...FEATURE_ICONS],

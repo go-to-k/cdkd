@@ -391,6 +391,20 @@ body {
     border-radius: var(--cdkd-radius-sm);
     background: var(--cdkd-color-surface-alt);
     color: var(--cdkd-color-text);
+    /* One token, one line (a flag never splits after its dashes); a span
+       too long for that is marked long by plugins/code-spans.ts. */
+    white-space: nowrap;
+
+    &.cdkd-code-long {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  /* Heading text is its anchor id, so a heading's code is not marked and
+     wraps as heading text does. */
+  & :is(h1, h2, h3, h4, h5, h6) code {
+    white-space: normal;
   }
 
   & hr {
@@ -451,6 +465,9 @@ body {
   & :is(th, td) {
     border-inline-end: 0;
     border-block-end: 1px solid var(--cdkd-color-border-subtle);
+    /* A row reads from its first line: a flag sits level with the start of
+       its description, not halfway down it. */
+    vertical-align: baseline;
   }
 
   & th {
@@ -503,14 +520,64 @@ body {
   }
 
   @media (max-width: 48rem) {
-    /* A phone reads a table by wrapping its cells; only an unbreakable
-       value still scrolls the table sideways. */
+    /* A phone has no room for columns: each row is set as a block, its first
+       cell as the row's name and every other cell under its column's label.
+       The labels and table roles come from the theme script; without it the
+       table keeps its columns and scrolls sideways. */
     & table {
       inline-size: auto;
     }
 
-    & :is(th, td) {
-      min-inline-size: 6rem;
+    & table[data-cdkd-stack] {
+      overflow: visible;
+
+      & thead {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      & :is(tbody, tr, td) {
+        display: block;
+      }
+
+      & tr {
+        padding: var(--cdkd-space-4);
+        border-block-end: 1px solid var(--cdkd-color-border-subtle);
+
+        &:last-child {
+          border-block-end: 0;
+        }
+      }
+
+      & td {
+        padding: 0;
+        border: 0;
+        /* Core keeps a phone's cells on one line for sideways scrolling. */
+        white-space: normal;
+
+        & + td {
+          margin-block-start: var(--cdkd-space-2);
+        }
+
+        &:first-child {
+          font-weight: var(--cdkd-weight-semibold);
+          color: var(--cdkd-color-text);
+        }
+
+        &:not(:first-child)[data-label]::before {
+          content: attr(data-label);
+          /* Seen only: a screen reader already names the cell's column. */
+          content: attr(data-label) / '';
+          margin-inline-end: var(--cdkd-space-2);
+          font-size: var(--cdkd-type-caption-size);
+          line-height: var(--cdkd-type-caption-leading);
+          color: var(--cdkd-color-text-muted);
+        }
+      }
     }
 
     & h2 {

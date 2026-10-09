@@ -64,10 +64,10 @@ vp run docs:dev
 vp run docs:build
 vp run docs:preview
 
-# The site's Vue components and client code, through vize
-vp run docs:lint        # opinionated preset
-vp run docs:fmt         # docs:fmt:check in CI form
-vp run docs:check       # strict type check
+# The site's Vue app (components and client code under docs/), through vize
+vp run vue:lint         # Vue components, opinionated preset
+vp run vue:fmt          # vue:fmt:check only reports
+vp run vue:check        # strict type check
 ```
 
 Every task is registered in `vite.config.ts` and invoked as `vp run <task>`;

@@ -248,19 +248,19 @@ export default defineConfig({
       // a vize.config file: the opinionated lint preset, the format settings
       // above, and docs/tsconfig.json (strict, from the root tsconfig).
       // `vp lint` / `vp fmt` / `vp check` cover src/ only.
-      'docs:lint': {
+      'vue:lint': {
         command: 'vize lint --no-config --preset opinionated docs',
         cache: false,
       },
-      'docs:fmt': {
+      'vue:fmt': {
         command: `vize fmt --write ${vizeFormatFlags} ${DOCS_SOURCES}`,
         cache: false,
       },
-      'docs:fmt:check': {
+      'vue:fmt:check': {
         command: `vize fmt --check ${vizeFormatFlags} ${DOCS_SOURCES}`,
         cache: false,
       },
-      'docs:check': {
+      'vue:check': {
         command: 'vize check --no-config --tsconfig docs/tsconfig.json',
         cache: false,
       },
