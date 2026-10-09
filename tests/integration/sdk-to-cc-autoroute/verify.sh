@@ -2,7 +2,7 @@
 # verify.sh — what a STILL-SDK resource does when the template gains a
 # silently-dropped property (issue 2744).
 #
-# docs/_contents/cli-deploy-safety.md answered that twice, oppositely, ~70 lines apart:
+# docs/cli-deploy-safety.md answered that twice, oppositely, ~70 lines apart:
 # the `--prefer-sdk-route` section said the next deploy AUTO-ROUTES
 # the resource through Cloud Control and that the flag exists to PREVENT that;
 # the recreate-via-cc-api section said the property "will not reach AWS, because the
@@ -412,7 +412,7 @@ grep -qE '^[[:space:]]*Updated:[[:space:]]*1$' <<<"${ARM_PLAIN}" || { echo "FAIL
 
 P1=$(record '.physicalId')
 LAYER1=$(record '.provisionedBy')
-[ "${LAYER1}" = "cc-api" ] || { echo "FAIL: the record did not move to Cloud Control (provisionedBy=${LAYER1}). docs/_contents/cli-deploy-safety.md's --prefer-sdk-route section claims this re-route happens with no flag." >&2; exit 1; }
+[ "${LAYER1}" = "cc-api" ] || { echo "FAIL: the record did not move to Cloud Control (provisionedBy=${LAYER1}). docs/cli-deploy-safety.md's --prefer-sdk-route section claims this re-route happens with no flag." >&2; exit 1; }
 [ "${P1}" = "${P0}" ] || { echo "FAIL: the auto-route changed the physical id (${P0} -> ${P1})" >&2; exit 1; }
 
 # Did the deploy actually provision anything? Without this, "the record says
@@ -428,7 +428,7 @@ awk -v t="${THRESHOLD}" 'BEGIN { exit !(t + 0 == 2) }' || { echo "FAIL: the depl
 # THE question. Read from AWS, not from cdkd's state record.
 EW_ARM=$(alarm_eval_window_json) || { echo "FAIL: could not read the alarm's EvaluationWindow after phase 2b" >&2; exit 1; }
 WINDOW=$(jq -r '.WallClockWindow.Timezone // "None"' <<<"${EW_ARM}")
-[ "${WINDOW}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${WINDOW}). docs/_contents/cli-deploy-safety.md's recreate-via-cc-api section would be right and its --prefer-sdk-route section wrong: the auto-route does not apply the property to an existing SDK-created resource." >&2; exit 1; }
+[ "${WINDOW}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${WINDOW}). docs/cli-deploy-safety.md's recreate-via-cc-api section would be right and its --prefer-sdk-route section wrong: the auto-route does not apply the property to an existing SDK-created resource." >&2; exit 1; }
 
 # In place, not replaced.
 ARN1=$(alarm_arn)

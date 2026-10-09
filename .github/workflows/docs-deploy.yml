@@ -1,6 +1,6 @@
 name: docs-deploy
 
-# Build the cdkd.dev documentation site (Ox Content SSG, docs/vite.config.ts)
+# Build the cdkd.dev documentation site (Ox Content SSG, docs/_site/vite.config.ts)
 # and deploy it to GitHub Pages. PRs only build (deploy job is main-only) so a
 # broken site config fails the PR instead of production.
 
@@ -106,8 +106,20 @@ jobs:
             grep -rn 'dl\.google\.com' /etc/apt/sources.list.d/ >&2
             exit 1
           fi
+      # The site's Vue and TypeScript code (docs/_site/) is outside `vp run
+      # check`, which covers src/ only; this is its lint, format and type gate.
+      - run: vp run vue:lint
+      - run: vp run vue:fmt:check
+      - run: vp run vue:check
       - run: ./node_modules/.bin/playwright install --with-deps chromium
       - run: vp run docs:build
+      - name: Assert the Vue islands were rendered at build time
+        # The pages link assets/islands.css by a fixed name, and the hero's
+        # islands are server-rendered into the HTML; a build that drops either
+        # still succeeds, with a page that loads unstyled or empty.
+        run: |
+          test -f dist/site/assets/islands.css
+          grep -q 'data-ox-ssr="true"' dist/site/index.html
       - name: Assert OG images were generated
         # The root og-image.png catches a missing Chromium; the count catches a
         # template regression that fails per-page rendering (each failure only

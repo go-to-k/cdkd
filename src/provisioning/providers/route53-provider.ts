@@ -2913,7 +2913,7 @@ export class Route53Provider implements ResourceProvider {
    * decodes Route 53's octal escapes, so they canonicalize normally.)
    *
    * This stays OVERRIDE-ONLY (see the "sub-resources without a standalone
-   * identity" list in docs/_contents/import.md): the id is now derived from the template
+   * identity" list in docs/import.md): the id is now derived from the template
    * rather than trusted, but an import with no override at all still declines,
    * because a RecordSet has no standalone identity for auto mode to key on.
    */
@@ -3077,7 +3077,7 @@ export class Route53Provider implements ResourceProvider {
    *
    * An explicit `--resource` id is ground truth and is only VERIFIED. With no
    * override, the zone is resolved from the template's `Name` via
-   * `ListHostedZonesByName` — the physical-name route docs/_contents/import.md's
+   * `ListHostedZonesByName` — the physical-name route docs/import.md's
    * Auto-resolved section documents, which this method declined to take until
    * now, so a type the table listed as auto-resolved silently reported
    * `skipped-not-found` and (under `--migrate-from-cloudformation`) was left
@@ -3160,7 +3160,7 @@ export class Route53Provider implements ResourceProvider {
     // that tag never exists on a real resource and the walk could not match
     // (issue #1134). What IS available is the template's own physical-name
     // property — a hosted zone's `Name` — which is the FIRST of the two
-    // auto-resolution routes docs/_contents/import.md documents, and the route this
+    // auto-resolution routes docs/import.md documents, and the route this
     // provider declined to take until issue #1702.
     const zoneName = input.properties['Name'];
     if (typeof zoneName !== 'string' || !zoneName) return null;

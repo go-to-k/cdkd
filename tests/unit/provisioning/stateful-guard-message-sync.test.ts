@@ -147,7 +147,7 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     // `BackupVaultName` is `AWS::Backup::BackupVault`'s createOnly identity
     // property, recorded per candidate in the generated artifact.
     const report = JSON.parse(
-      readFileSync(join(REPO_ROOT, 'docs/_contents/_generated/stateful-candidates.json'), 'utf8')
+      readFileSync(join(REPO_ROOT, 'docs/_generated/stateful-candidates.json'), 'utf8')
     ) as { candidates: Array<{ typeName: string; createOnlyProperties: string[] }> };
     const vault = report.candidates.find((c) => c.typeName === 'AWS::Backup::BackupVault');
     expect(vault?.createOnlyProperties).toContain('/properties/BackupVaultName');
@@ -465,7 +465,7 @@ describe('the healthimaging-stateful-update-fallback fixture greps strings cdkd 
     // And the live schema DOES list Tags as create-only, which the control
     // phase relies on.
     const report = JSON.parse(
-      readFileSync(join(REPO_ROOT, 'docs/_contents/_generated/stateful-candidates.json'), 'utf8')
+      readFileSync(join(REPO_ROOT, 'docs/_generated/stateful-candidates.json'), 'utf8')
     ) as { candidates: Array<{ typeName: string; createOnlyProperties: string[] }> };
     expect(report.candidates.find((c) => c.typeName === TYPE)?.createOnlyProperties).toContain(
       '/properties/Tags'

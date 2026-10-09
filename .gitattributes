@@ -18,4 +18,4 @@
 # the file; consumers are defensive: /run-integ's awk update drops every
 # existing row for the test before appending, and /pick-integ reads the
 # LAST row per test as authoritative.
-docs/_contents/_generated/integ-last-run.tsv merge=union
+docs/_generated/integ-last-run.tsv merge=union

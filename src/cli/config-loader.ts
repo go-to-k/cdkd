@@ -422,7 +422,7 @@ export function getDefaultStateBucketName(accountId: string): string {
  *
  * TODO(remove-bc-after-1.x): Remove this helper and all callers when the
  * backwards-compat read path is dropped (tracked in PR 99 of the
- * region/state refactor — see `docs/_contents/plans/04-state-bucket-naming.md`).
+ * region/state refactor — see `docs/plans/04-state-bucket-naming.md`).
  */
 export function getLegacyStateBucketName(accountId: string, region: string): string {
   return `cdkd-state-${accountId}-${region}`;

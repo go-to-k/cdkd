@@ -5,7 +5,7 @@
 # Each PR in the region/state refactor that changes a user-visible default
 # carries a verification block here. The markgate `bc-check` marker is
 # recorded only after this script exits 0 for the requested PR ID. See
-# `docs/_contents/plans/README.md` ("Compatibility strategy") for context.
+# `docs/plans/README.md` ("Compatibility strategy") for context.
 #
 # Usage:
 #   scripts/verify-bc.sh PR-1   # state key region prefix

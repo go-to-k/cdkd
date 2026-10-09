@@ -21,7 +21,7 @@ export interface CrossStackScanStack {
  *   producer a deploy dependency; deploying a consumer must not drag an
  *   unselected producer into the deploy.
  *
- * See `docs/_contents/cross-stack-references.md` (strong) and
+ * See `docs/cross-stack-references.md` (strong) and
  * `src/types/state.ts` `outputReads` (weak) for the full semantics.
  */
 export type CrossStackRefKind = 'ImportValue' | 'GetStackOutput';

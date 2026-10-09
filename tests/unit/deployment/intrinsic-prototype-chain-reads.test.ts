@@ -362,7 +362,7 @@ describe('template-controlled bag reads do not walk the prototype chain (#2767)'
     it('keeps a DECLARED parameter whose value is undefined on the parameter arm', async () => {
       const resolver = new IntrinsicFunctionResolver();
 
-      // `docs/_contents/changelog-cdkd.md`'s issue #2285 entry records this as a
+      // `docs/changelog-cdkd.md`'s issue #2285 entry records this as a
       // pre-existing behaviour deliberately left alone: the parameter arm
       // tested membership, not the VALUE, so a declared-but-unbound parameter
       // returned `undefined` instead of throwing. `Object.hasOwn` answers the

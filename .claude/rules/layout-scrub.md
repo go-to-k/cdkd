@@ -8,7 +8,7 @@ paths:
 
 The redaction machinery this command drives:
 [layout-deployment-secrets.md](layout-deployment-secrets.md). Exit codes and
-every exit-1 arm live in [docs/_contents/cli-scrub.md](../../docs/_contents/cli-scrub.md), which is
+every exit-1 arm live in [docs/cli-scrub.md](../../docs/cli-scrub.md), which is
 the ONE copy — do not restate them here.
 
 `cdkd scrub [STACK...]` is the permanent state secret-hygiene command (clean +

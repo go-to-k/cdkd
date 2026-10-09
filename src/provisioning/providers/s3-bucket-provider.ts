@@ -2136,7 +2136,7 @@ export class S3BucketProvider implements ResourceProvider {
    * about, so it may be ANOTHER account's -- or over a pre-flight that could
    * not answer, where the bucket may not exist at all. The earlier attempt may
    * have created it, or a concurrent actor (this account or another) may hold
-   * the name, and a name is not attribution (`docs/_contents/provider-rules.md`, "Adopt
+   * the name, and a name is not attribution (`docs/provider-rules.md`, "Adopt
    * only on EXACT attribution"). Adopting would apply this stack's
    * configuration to a bucket that may not be ours and, if a later call
    * failed, leave a bucket this run created with no created-before-failure
@@ -2208,7 +2208,7 @@ export class S3BucketProvider implements ResourceProvider {
    * (go-to-k/cdkd#4684): S3 answered `BucketAlreadyOwnedByYou`, or, in
    * us-east-1, the pre-flight found the bucket, where `CreateBucket` would
    * answer 200 OK and reset its ACLs. Either way this create did not make it,
-   * and a name is not attribution (`docs/_contents/provider-rules.md`, "Adopt only on
+   * and a name is not attribution (`docs/provider-rules.md`, "Adopt only on
    * EXACT attribution"): the bucket may be a hand-made one or another stack's,
    * and adopting it would reconfigure it and hand it to this stack's
    * `cdkd destroy`. CloudFormation fails the same create. A generated name
@@ -7899,7 +7899,7 @@ export class S3BucketProvider implements ResourceProvider {
    * `ServerSideEncryptionConfigurationNotFoundError`, `NoSuchTagSet`,
    * `NoSuchPublicAccessBlockConfiguration`, etc.) — those are caught
    * individually and the corresponding key is emitted as a CFn-shape
-   * placeholder (per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection: always-emit
+   * placeholder (per docs/provider-rules.md#readcurrentstate-for-drift-detection: always-emit
    * user-controllable top-level keys), NOT treated as the bucket being
    * absent.
    *
@@ -8004,7 +8004,7 @@ export class S3BucketProvider implements ResourceProvider {
   // -------------------------------------------------------------------
   // readCurrentState helpers — one per sub-config. Each catches the
   // "feature not configured" error and returns the always-emit
-  // placeholder shape per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection.
+  // placeholder shape per docs/provider-rules.md#readcurrentstate-for-drift-detection.
   // -------------------------------------------------------------------
 
   private async readVersioning(bucket: string): Promise<Record<string, unknown>> {

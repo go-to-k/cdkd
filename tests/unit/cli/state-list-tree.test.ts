@@ -394,7 +394,7 @@ describe('buildStackTree depth cap', () => {
       children: [],
     });
 
-    // "Shown at the root instead" is what docs/_contents/cli-state.md tells the user, and
+    // "Shown at the root instead" is what docs/cli-state.md tells the user, and
     // the DEFAULT view is the text one — so assert the rendered row, at column
     // 0 with no `└── ` connector, rather than only the JSON shape.
     const lines = renderStackTreeAscii(roots, (node) => node.stackName).split('\n');

@@ -655,7 +655,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
   });
 
   it('refuses --providers-dir= in WRITER mode instead of rewriting the matrix', () => {
-    // Without the guard the seam renders docs/_contents/_generated from a scratch tree.
+    // Without the guard the seam renders docs/_generated from a scratch tree.
     const run = spawnSync(process.execPath, [SCRIPT, `--providers-dir=${PROVIDERS_DIR}`], {
       cwd: repoRoot,
       encoding: 'utf8',

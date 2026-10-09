@@ -14,8 +14,8 @@
  *            Provider would be required for cdkd to support it.
  *
  * Outputs (atomic write via `.tmp` + rename):
- *   docs/_contents/_generated/provider-coverage.json — machine-readable cache.
- *   docs/_contents/_generated/provider-coverage.md   — human-readable review.
+ *   docs/_generated/provider-coverage.json — machine-readable cache.
+ *   docs/_generated/provider-coverage.md   — human-readable review.
  *
  * Usage:
  *   node scripts/audit-provider-coverage.ts          # offline: print summary from cache
@@ -566,7 +566,7 @@ export function atomicWriteFile(path: string, content: string): void {
   }
 }
 
-/** Read the cached report from `docs/_contents/_generated/provider-coverage.json`. */
+/** Read the cached report from `docs/_generated/provider-coverage.json`. */
 export function loadCachedReport(path: string): CoverageReport {
   const raw = readFileSync(path, 'utf8');
   const parsed = JSON.parse(raw) as CoverageReport;
@@ -597,8 +597,8 @@ export function renderSummaryToStdout(report: CoverageReport): string {
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '..');
 const REGISTER_PROVIDERS_PATH = resolve(REPO_ROOT, 'src/provisioning/register-providers.ts');
-const OUTPUT_JSON = resolve(REPO_ROOT, 'docs/_contents/_generated/provider-coverage.json');
-const OUTPUT_MARKDOWN = resolve(REPO_ROOT, 'docs/_contents/_generated/provider-coverage.md');
+const OUTPUT_JSON = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.json');
+const OUTPUT_MARKDOWN = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.md');
 
 async function regenerate(): Promise<void> {
   const source = readFileSync(REGISTER_PROVIDERS_PATH, 'utf8');
@@ -826,7 +826,7 @@ const HELP_TEXT = [
   '  (no flags)     Read the cached report and print a summary.',
   '  --regenerate   Call AWS to enumerate every public CFn resource type,',
   '                 cross-check against cdkd-registered SDK Providers, and',
-  '                 rewrite docs/_contents/_generated/provider-coverage.{json,md}.',
+  '                 rewrite docs/_generated/provider-coverage.{json,md}.',
   '                 Requires AWS credentials with cloudformation:ListTypes',
   '                 and cloudformation:DescribeType. ~10-30 minutes cold.',
   '  --check        Verify the cached Tier 1 list matches the current',

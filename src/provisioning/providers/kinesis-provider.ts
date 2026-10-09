@@ -369,7 +369,7 @@ export class KinesisStreamProvider implements ResourceProvider {
    * retry, which marks the create as possibly replayed: the replay's
    * collision is then never credited to another holder (`withRetry`, #3978).
    * The stream is not adopted on that collision: a name is not attribution
-   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): KinesisClient {
     if (!this.createClient) {
@@ -408,7 +408,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
 
-    // PRE-FLIGHT, deliberately ABOVE the try (docs/_contents/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards).
+    // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards).
     // Refusing from inside it would throw AFTER `CreateStream` already ran,
     // leaving a stream no state record holds: only `cdkd rollback
     // --revert-failed` removes it (go-to-k/cdkd#1710's mark in the catch below),
@@ -846,7 +846,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       // But it must SAY so. The metrics sibling below warns on its skip, and
       // without this the same junk value is a hard refusal on create and a
       // silent no-op on update — same template, opposite feedback, and no
-      // signal at all on the update path (docs/_contents/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards
+      // signal at all on the update path (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards
       // requires the warn-and-skip arm to announce itself).
       const desiredSizeRead = readMaxRecordSize(properties['MaxRecordSizeInKiB'], mask);
       if (desiredSizeRead.kind === 'unusable') {

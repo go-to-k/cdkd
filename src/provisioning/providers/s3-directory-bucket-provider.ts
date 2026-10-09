@@ -175,7 +175,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * holds. Refused here, the 5xx reaches the deploy engine's retry, which
    * marks the create as possibly replayed (`withRetry`, #3978). The bucket is
    * not adopted on that collision: a name is not attribution
-   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): Promise<S3Client> {
     this.createClient ??= this.s3Client.config.region().then(
@@ -658,7 +658,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     }
 
     // Tags via S3 Control ListTagsForResource (always-emit per
-    // docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection; an untagged bucket returns an empty
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection; an untagged bucket returns an empty
     // list, not an error, and the comparator's "key absent in state never
     // drifts" rule keeps pre-Tags-support stacks quiet).
     result['Tags'] = await this.readTags(physicalId);

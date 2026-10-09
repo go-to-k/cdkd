@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vite-plus/test';
  * Every registered SDK provider must be documented in BOTH user-facing
  * coverage pages.
  *
- * WHY. `docs/_contents/supported-resources.md` is what a user reads to find out whether
- * cdkd can deploy their resource type, and `docs/_contents/import.md` is what they read
+ * WHY. `docs/supported-resources.md` is what a user reads to find out whether
+ * cdkd can deploy their resource type, and `docs/import.md` is what they read
  * to find out whether `cdkd import` can adopt it. A type that is registered but
  * absent from either page works and is invisible: the v2 drift-coverage push
  * (PRs #210-#216) shipped seven new resource types — Glue Job / Crawler /
@@ -63,21 +63,21 @@ describe('registered provider types are documented', () => {
     expect(types.length).toBeGreaterThanOrEqual(MIN_REGISTERED_TYPES);
   });
 
-  it('docs/_contents/supported-resources.md names every registered type', () => {
-    const body = readFileSync(join(REPO_ROOT, 'docs/_contents/supported-resources.md'), 'utf8');
+  it('docs/supported-resources.md names every registered type', () => {
+    const body = readFileSync(join(REPO_ROOT, 'docs/supported-resources.md'), 'utf8');
     const missing = types.filter((t) => !namesType(body, t));
     expect(
       missing,
-      `add these resource types to docs/_contents/supported-resources.md:\n  ${missing.join('\n  ')}`,
+      `add these resource types to docs/supported-resources.md:\n  ${missing.join('\n  ')}`,
     ).toEqual([]);
   });
 
-  it('docs/_contents/import.md names every registered type', () => {
-    const body = readFileSync(join(REPO_ROOT, 'docs/_contents/import.md'), 'utf8');
+  it('docs/import.md names every registered type', () => {
+    const body = readFileSync(join(REPO_ROOT, 'docs/import.md'), 'utf8');
     const missing = types.filter((t) => !namesType(body, t));
     expect(
       missing,
-      `add these resource types to docs/_contents/import.md:\n  ${missing.join('\n  ')}`,
+      `add these resource types to docs/import.md:\n  ${missing.join('\n  ')}`,
     ).toEqual([]);
   });
 });

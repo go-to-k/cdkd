@@ -1,8 +1,8 @@
 /**
  * Repo-relative link builders for the generated coverage matrices.
  *
- * The matrices live at the top of `docs/_contents/`, the published pages, and
- * only those pages are published — so a `../tests/integration/<fixture>/` link
+ * The matrices live at the top of `docs/`, which is the published site, and
+ * only `docs/` is published — so a `../tests/integration/<fixture>/` link
  * resolves to nothing on cdkd.dev. About 2,600 of them did until issue #2510.
  *
  * These exist so the host is written once rather than at each of the eight

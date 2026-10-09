@@ -9,7 +9,7 @@
  *     manufactured where an attribute value is built -- a property value, a
  *     `const` / `let` initializer, an `=` right-hand side, a `?:` branch --
  *     may be REACHABLE from an `attributes` value (the shape
- *     `docs/_contents/provider-development.md` forbids) through the shapes the walk
+ *     `docs/provider-development.md` forbids) through the shapes the walk
  *     follows -- the literal, a same-function `const` / `let` an identifier
  *     resolves to and every reassignment of it, builder writes onto it, a
  *     same-file helper's `return`s, the ARGUMENTS and the RECEIVER of any

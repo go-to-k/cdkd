@@ -43,7 +43,7 @@ import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-
  * cdkd-owned asset storage for the region: asset bucket + container-asset
  * ECR repo + the per-region bootstrap marker that flips deploys in this
  * region from legacy (CDK bootstrap destinations) to cdkd-assets mode
- * (issue #1002, design at docs/_contents/design/1002-cdkd-asset-storage.md).
+ * (issue #1002, design at docs/design/1002-cdkd-asset-storage.md).
  */
 async function bootstrapCommand(options: {
   stateBucket?: string;

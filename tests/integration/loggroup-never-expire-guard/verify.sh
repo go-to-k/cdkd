@@ -185,7 +185,7 @@ sweep_log_groups() { # best-effort teardown; never aborts the sweep
     # the only thing standing between a future edit and an account-wide delete.
     # `exit 0` and not `return 0`: this is a SUBSHELL, so the exit ends the
     # sweep and the function returns its status, leaving the caller running.
-    # The convention is in `docs/_contents/integ-fixture-conventions.md` (issue #2621).
+    # The convention is in `docs/integ-fixture-conventions.md` (issue #2621).
     case "${LG_PREFIX}" in
       /cdkd-integ/*/) ;;
       *)

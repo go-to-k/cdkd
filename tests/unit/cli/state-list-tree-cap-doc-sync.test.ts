@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { MAX_STACK_TREE_DEPTH } from '../../../src/cli/commands/state-list-tree.js';
 
 /**
- * `docs/_contents/cli-state.md` states the `cdkd state list --tree` depth cap as a bare
+ * `docs/cli-state.md` states the `cdkd state list --tree` depth cap as a bare
  * number, twice — it is a user-facing page and a reader cannot import a
  * constant. So the number is a COPY, and changing
  * {@link MAX_STACK_TREE_DEPTH} would leave the page quietly wrong about what
@@ -25,7 +25,7 @@ import { MAX_STACK_TREE_DEPTH } from '../../../src/cli/commands/state-list-tree.
  * it), and the thing to widen if a second page ever does.
  */
 describe('state list --tree depth cap: docs match the constant', () => {
-  const docPath = join(process.cwd(), 'docs', '_contents', 'cli-state.md');
+  const docPath = join(process.cwd(), 'docs', 'cli-state.md');
   const doc = readFileSync(docPath, 'utf-8');
 
   it('names the live cap value in every sentence that states a depth', () => {

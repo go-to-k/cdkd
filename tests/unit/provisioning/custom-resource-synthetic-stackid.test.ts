@@ -433,7 +433,7 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
   it('installs the SIGINT watch BEFORE the StackId resolution awaits', async () => {
     // Resolving the account needs an `await`, and every await that runs before
     // the invocation's SIGINT watch is installed is a window in which Ctrl-C is
-    // dead — `docs/_contents/provider-development.md` requires a new wait site to be
+    // dead — `docs/provider-development.md` requires a new wait site to be
     // interruptible, and the backoff this method guards is 47.75s long. Reading
     // the listener list SYNCHRONOUSLY is what pins the order: `create()` runs
     // to its FIRST await, so a resolution hoisted in front of the watch leaves

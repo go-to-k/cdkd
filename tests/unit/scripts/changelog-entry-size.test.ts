@@ -13,7 +13,7 @@ import {
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
- * `docs/_contents/changelog-cdkd.md` caps what ONE entry may carry. Issue
+ * `docs/changelog-cdkd.md` caps what ONE entry may carry. Issue
  * go-to-k/cdkd#2552 filed the shape and this file is its durable half.
  *
  * ## What the cap is for
@@ -50,10 +50,10 @@ import { describe, expect, it } from 'vite-plus/test';
  * Narrowing `.markgate.yml` is a separate question, deliberately out of scope.
  *
  * The rationale does not get deleted -- it MOVES, to wherever it can be checked
- * or at least sits next to what it describes: `docs/_contents/design/<issue>-<slug>.md`
+ * or at least sits next to what it describes: `docs/design/<issue>-<slug>.md`
  * for a design decision (the directory already exists, every numbered file in
  * it carries that shape, and `.claude/rules/` bullets already end with
- * `Design: docs/_contents/design/<n>-<slug>.md`), or the module's or test's own doc
+ * `Design: docs/design/<n>-<slug>.md`), or the module's or test's own doc
  * comment for a mechanism.
  *
  * ## Why the limit is 2000 and not the median
@@ -92,7 +92,7 @@ import { describe, expect, it } from 'vite-plus/test';
  * calendar rather than by merge order.
  *
  * The price is that on the day this lands the cap selects NOTHING from the real
- * file, so the verdict over `docs/_contents/changelog-cdkd.md` is vacuously green until
+ * file, so the verdict over `docs/changelog-cdkd.md` is vacuously green until
  * the first entry is written under a later heading. That is paid for
  * explicitly: `selects over-limit entries and only those` runs the SAME parser
  * and the SAME predicate over a synthetic document, so the selection logic is
@@ -200,7 +200,7 @@ const CUTOFF = '2026-09-05';
  * nothing but this list makes them agree -- the drift shape
  * `cross-cutting-list-sync.test.ts` exists for, one file over.
  *
- * Every entry must be an INDEPENDENTLY AUTHORED copy. `docs/_contents/changelog-cdkd.md`
+ * Every entry must be an INDEPENDENTLY AUTHORED copy. `docs/changelog-cdkd.md`
  * was one until the assembler began emitting `_header.md` verbatim as its head
  * (`HEADER_FILE` in `scripts/assemble-changelog.ts`): the two are now one text
  * by construction, so listing both counted a single surface twice and made the
@@ -384,13 +384,13 @@ const FRAGMENT_CAP_ADVICE =
   'the filename -- a fragment is new whatever date it carries, which is what stops an over-long entry ' +
   'shipping under a pre-cutoff name (go-to-k/cdkd#2859). Same remedy as the assembled-document cap: keep ' +
   'the user-visible behavior delta, the changed files, the issue / PR numbers and the residual\'s issue ' +
-  'number, and move a design decision to docs/_contents/design/<issue>-<slug>.md or a mechanism to the doc comment ' +
+  'number, and move a design decision to docs/design/<issue>-<slug>.md or a mechanism to the doc comment ' +
   'on the module or test that implements it, linked from the entry.';
 
 const CAP_ADVICE =
-  `A docs/_contents/changelog-cdkd.md entry exceeds ${LIMIT} characters (line numbers are in that file). ` +
+  `A docs/changelog-cdkd.md entry exceeds ${LIMIT} characters (line numbers are in that file). ` +
   'The entry keeps the user-visible behavior delta, the changed files, the issue / PR numbers, and the ' +
-  "residual's issue number. Everything else moves: a design decision to docs/_contents/design/<issue>-<slug>.md, a " +
+  "residual's issue number. Everything else moves: a design decision to docs/design/<issue>-<slug>.md, a " +
   'mechanism to the doc comment on the module or test that implements it, and the entry links to it. ' +
   'This is not a formatting nit -- prose in this file asserts implementation detail that no fence can ' +
   'verify, and it drifts (go-to-k/cdkd#2549). There is no per-entry opt-out on purpose.';

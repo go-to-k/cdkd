@@ -44,7 +44,7 @@ describe('S3DirectoryBucketProvider read-update round-trip', () => {
 
   it('Class 1 — round-trip on observed snapshot does not push DataRedundancy back through AWS', async () => {
     // Mechanical guard for Class 1 placeholder regression on type-
-    // discriminator-dependent fields. See docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection
+    // discriminator-dependent fields. See docs/provider-rules.md#readcurrentstate-for-drift-detection
     //  "Read-update round-trip test".
     //
     // S3 Express Directory Buckets are immutable after create — every

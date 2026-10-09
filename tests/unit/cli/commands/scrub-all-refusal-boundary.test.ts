@@ -887,7 +887,7 @@ describe('cdkd scrub exit codes for an unreadable outputs bag (go-to-k/cdkd#3192
       // Guarding the read moved them to exit 0 on a plain run, and to exit 1
       // under `--fail`.
       //
-      // BOTH POLARITIES, because `docs/_contents/cli-scrub.md`'s row promises "with or
+      // BOTH POLARITIES, because `docs/cli-scrub.md`'s row promises "with or
       // without `--fail`" and that holds only by source ORDERING — the raise
       // sits above `if (options.fail)` — which nothing pinned (review round
       // 10). Without `--fail` the wrong answer is a silent exit 0; with it, a
@@ -930,7 +930,7 @@ describe('cdkd scrub exit codes for an unreadable outputs bag (go-to-k/cdkd#3192
     // in every case.
     //
     // It is the arm that matters most: `--dry-run --fail` is documented as a
-    // standing CI gate, and `docs/_contents/cli-scrub.md` promises this code "with or
+    // standing CI gate, and `docs/cli-scrub.md` promises this code "with or
     // without `--fail`, `--dry-run` included". No `fail` here, deliberately.
     arrangeDamagedProducer('abcdef');
 

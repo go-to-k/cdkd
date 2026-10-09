@@ -32,7 +32,7 @@ const vizeFormatFlags = [
   `--use-tabs=${formatOptions.useTabs}`,
   ...(formatOptions.semi ? [] : ['--no-semi']),
 ].join(' ');
-const DOCS_SOURCES = "'docs/**/*.vue' 'docs/**/*.ts'";
+const DOCS_SOURCES = "'docs/_site/**/*.vue' 'docs/_site/**/*.ts'";
 
 const getVpCommand = (): string => {
   const localCommand = resolve(
@@ -95,7 +95,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
-    // Materialises the gitignored docs/_contents/changelog-cdkd.md before any suite
+    // Materialises the gitignored docs/changelog-cdkd.md before any suite
     // runs. Two suites read it by PATH -- a link-target check cannot be
     // satisfied in memory -- and a fresh clone does not have it, so both were
     // measured RED without this and green locally only by accident. It runs
@@ -216,8 +216,8 @@ export default defineConfig({
       },
       // Documentation site (https://cdkd.dev, Ox Content SSG). Separate config
       // file because this root config's buildApp hook claims every environment
-      // as built — see the header comment in docs/vite.config.ts.
-      // Assembles docs/_contents/changelog-cdkd.md from changelog.d/ (issue
+      // as built — see the header comment in docs/_site/vite.config.ts.
+      // Assembles docs/changelog-cdkd.md from changelog.d/ (issue
       // go-to-k/cdkd#2779). The output is GITIGNORED -- committing it would
       // restore the single shared anchor the fragment layout exists to remove
       // -- so anything that reads the shipped document has to build it first.
@@ -230,26 +230,26 @@ export default defineConfig({
         cache: false,
       },
       'docs:dev': {
-        command: 'vp dev --config docs/vite.config.ts',
+        command: 'vp dev --config docs/_site/vite.config.ts',
         dependsOn: ['gen:changelog'],
         cache: false,
       },
       'docs:build': {
-        command: 'vp build --config docs/vite.config.ts',
+        command: 'vp build --config docs/_site/vite.config.ts',
         dependsOn: ['gen:changelog'],
         cache: false,
       },
       'docs:preview': {
-        command: 'vp preview --config docs/vite.config.ts',
+        command: 'vp preview --config docs/_site/vite.config.ts',
         dependsOn: ['gen:changelog'],
         cache: false,
       },
       // The docs site's Vue toolchain is vize, configured here rather than in
       // a vize.config file: the opinionated lint preset, the format settings
-      // above, and docs/tsconfig.json (strict, from the root tsconfig).
+      // above, and docs/_site/tsconfig.json (strict, from the root tsconfig).
       // `vp lint` / `vp fmt` / `vp check` cover src/ only.
       'vue:lint': {
-        command: 'vize lint --no-config --preset opinionated docs',
+        command: 'vize lint --no-config --preset opinionated docs/_site',
         cache: false,
       },
       'vue:fmt': {
@@ -261,7 +261,7 @@ export default defineConfig({
         cache: false,
       },
       'vue:check': {
-        command: 'vize check --no-config --tsconfig docs/tsconfig.json',
+        command: 'vize check --no-config --tsconfig docs/_site/tsconfig.json',
         cache: false,
       },
       // `vp run check` is CI's required step and `/check` step 1 calls it "the

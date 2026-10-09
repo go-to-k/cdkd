@@ -88,7 +88,7 @@ list_esms_for_function() {
   # SCOPE GUARD (#2621). `contains(FunctionArn, '')` is true of EVERY mapping,
   # and the caller deletes what this returns. The WARN is what distinguishes a
   # refusal from an early death when reading a failed teardown; the convention
-  # is in `docs/_contents/integ-fixture-conventions.md`.
+  # is in `docs/integ-fixture-conventions.md`.
   if [ -z "${fn}" ]; then
     echo "    WARN: teardown sweep refused an empty function scope" >&2
     return 0

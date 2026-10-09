@@ -115,8 +115,8 @@ describe('--remove-protection types match the providers (go-to-k/cdkd#2660)', ()
     });
   }
 
-  it('docs/_contents/cli-destroy.md --remove-protection table has a row for every covered type', () => {
-    const doc = readFileSync(join(import.meta.dirname, '../../../docs/_contents/cli-destroy.md'), 'utf8');
+  it('docs/cli-destroy.md --remove-protection table has a row for every covered type', () => {
+    const doc = readFileSync(join(import.meta.dirname, '../../../docs/cli-destroy.md'), 'utf8');
     expect(removeProtectionTypes().filter((t) => !doc.includes(`| \`${t}\` |`))).toEqual([]);
   });
 

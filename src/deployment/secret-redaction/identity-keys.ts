@@ -125,7 +125,7 @@ export function identityKeyFor(
  * leaf the child template spells `{Ref: <Param>}` arrives beside an intrinsic
  * OBJECT as an array — a shape NO arm matched, which dropped it to the
  * plaintext-keyed value scan and handed BOTH members of a coinciding pair the
- * survivor's expression. `docs/_contents/cli-reference.md` names `CommaDelimitedList` as
+ * survivor's expression. `docs/cli-reference.md` names `CommaDelimitedList` as
  * an ALLOWED spelling for a secret-bearing nested-stack parameter, so it is
  * reachable rather than theoretical.
  *

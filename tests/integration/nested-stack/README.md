@@ -17,7 +17,7 @@ NestedStackExample (parent)
 
 - 1 nested stack (`Child`) containing exactly 3 resources (S3 Bucket /
   IAM Role / SSM Parameter), matching the design doc's minimum-shape
-  verification surface ([docs/_contents/design/459-nested-stacks.md](../../../docs/_contents/design/459-nested-stacks.md) §13).
+  verification surface ([docs/design/459-nested-stacks.md](../../../docs/design/459-nested-stacks.md) §13).
 - 1 parent-side SSM Parameter that references the child bucket's name
   via `Fn::GetAtt: [Child, 'Outputs.<key>']` — verifies cdkd resolves
   nested-stack outputs into the parent's intrinsic-resolution path.

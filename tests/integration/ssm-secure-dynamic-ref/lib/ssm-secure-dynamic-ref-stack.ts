@@ -23,7 +23,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * allowlist (IAM login password, RDS master password, ...), and cdkd does
  * not enforce that list for any service. The three forms exercised:
  *   - the WHOLE-value token,
- *   - the token EMBEDDED in a longer string (the shape `docs/_contents/cli-drift.md`
+ *   - the token EMBEDDED in a longer string (the shape `docs/cli-drift.md`
  *     used to document as "written with the token literal, exactly as
  *     `cdkd deploy` does"),
  *   - the `<name>:<version>` selector CloudFormation's grammar allows.

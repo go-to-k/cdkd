@@ -1113,7 +1113,7 @@ describe('the harness is hermetic on every axis it could depend on', () => {
   it('EVERY pinned variable is asserted from inside the child, not just listed', () => {
     // Deleting HOME / BASH_ENV / ENV / LC_ALL / LANG / TZ from `childEnv` left
     // the suite green: only PATH and TMPDIR were load-bearing, while the code
-    // comments, the changelog and docs/_contents/testing.md all claimed each pin was
+    // comments, the changelog and docs/testing.md all claimed each pin was
     // probed. This reads every pin back out of a real child process, so
     // removing ANY of them fails here by name.
     //
@@ -2221,7 +2221,7 @@ function helperCallers(): Fixture[] {
 /**
  * Claims about this helper are repeated in prose across docs, rules and test
  * comments, and correcting one site at a time has now failed three times in a
- * single lane: a count was fixed in `docs/_contents/testing.md` while four more copies
+ * single lane: a count was fixed in `docs/testing.md` while four more copies
  * stood, and the "no fixture in the swept set has a nested stack" and "every
  * caller wraps the purge in `|| true`" sentences each survived their own
  * correction in two other files.
@@ -2335,7 +2335,7 @@ const FALSIFIED_CLAIMS: readonly {
     // wrong instrument for prose.
     //
     // The two statements that must NOT match are known and named, so excluding
-    // them by their own verb is both narrower and complete: `docs/_contents/testing.md`'s
+    // them by their own verb is both narrower and complete: `docs/testing.md`'s
     // "Sixteen fixtures DO this today" (fixtures seeding a known plaintext, the
     // #2096 measurement) and `integ-single-exit-trap.test.ts`'s "Sixteen
     // fixtures LEGITIMATELY re-install ... EXIT" (fixtures with a second trap
@@ -2400,7 +2400,7 @@ const FALSIFIED_CLAIMS: readonly {
   {
     retired: 'persisted as the UNRESOLVED expression, so no plaintext reaches `state.json` / the rollback journal', // falsified sample
     why:
-      'FALSE on all three destinations, and it sat in `docs/_contents/architecture.md`, which AGENTS.md tells ' +
+      'FALSE on all three destinations, and it sat in `docs/architecture.md`, which AGENTS.md tells ' +
       'every session to trust. `state.json` and the journal: the three `LEAK (#2012)` rows above. CLI ' +
       'output: `maskSecretsInText` only SCANS for substrings of at least `MIN_NEEDLE_LENGTH`, so a ' +
       'shorter secret survives inside a larger echoed string.',
@@ -2435,7 +2435,7 @@ describe('claims this lane corrected stay corrected TREE-WIDE', () => {
 
   // TRACKED files only, and enumerated by git rather than by walking the disk.
   // A `readdirSync` walk reads whatever happens to be on this machine, so
-  // `docs/_contents/changelog-cdkd.md` -- gitignored, present only after `gen:changelog`
+  // `docs/changelog-cdkd.md` -- gitignored, present only after `gen:changelog`
   // -- was in the corpus locally and absent in CI, giving the fence two
   // different populations. `git ls-files` is also what section 8-g's own
   // subtraction rule prescribes (go-to-k/cdkd#2878).
@@ -2469,7 +2469,7 @@ describe('claims this lane corrected stay corrected TREE-WIDE', () => {
   // references/implement.md 5-f''s rule -- a floor must count at the GRAIN it
   // protects -- and `plugins` is the sharp case, because its population is 1.
   const ROOT_ANCHORS: readonly [string, string][] = [
-    ['docs', 'docs/_contents/testing.md'],
+    ['docs', 'docs/testing.md'],
     ['.claude/rules', '.claude/rules/testing.md'],
     ['tests/unit/scripts', 'tests/unit/scripts/integ-secret-fixture-sweep.test.ts'],
     ['tests/integration', 'tests/integration/s3-versions.sh'],

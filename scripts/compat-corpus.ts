@@ -12,7 +12,7 @@
  *             genuinely-unsupported type passes pre-flight and then fails
  *             mid-deploy with a confusing Cloud Control error.
  *   TRUTH   = what will actually deploy. The authoritative unsupported set
- *             is `docs/_contents/_generated/provider-coverage.json` -> `tier3`
+ *             is `docs/_generated/provider-coverage.json` -> `tier3`
  *             (AWS `ProvisioningType: NON_PROVISIONABLE` per DescribeType).
  *             SDK-registered types (tier1) and real Cloud Control types
  *             (tier2) deploy; tier3 does not.
@@ -65,7 +65,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '..');
 const REGISTER_PROVIDERS_PATH = resolve(REPO_ROOT, 'src/provisioning/register-providers.ts');
-const PROVIDER_COVERAGE_PATH = resolve(REPO_ROOT, 'docs/_contents/_generated/provider-coverage.json');
+const PROVIDER_COVERAGE_PATH = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.json');
 
 /**
  * The CDK sentinel resource type. Never deployed by cdkd — excluded

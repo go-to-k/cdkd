@@ -15,7 +15,7 @@ gh pr view <N> --json files \
 ```
 
 `paths` is the load-bearing field. Report `a`/`d`/`fc` and `src_loc`/`src_fc`
-so a reader knows the diff's size, and remember that `docs/_contents/_generated/**` and
+so a reader knows the diff's size, and remember that `docs/_generated/**` and
 lockfiles inflate the whole-diff numbers without adding reviewer surface
 (reviewers audit the SCRIPT that produced them, not the output).
 

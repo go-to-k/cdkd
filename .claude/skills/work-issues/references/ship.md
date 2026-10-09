@@ -33,7 +33,7 @@ unasked its ETA and the PRs queued.
 ### Flatten, then rebase
 
 **FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
-`docs/_contents/_generated/integ-last-run.tsv` gains a row at the same place on every lane
+`docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
 that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
 repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
 so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
@@ -106,7 +106,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
   test runs only after the push: re-run `vp run gen:all-matrices && vp run format`
   (it ends in the ledger normalize) after EVERY rebase; push once
-  `git status --porcelain` is empty (`docs/_contents/cli-flag-coverage.md` is outside `_generated/`).
+  `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,

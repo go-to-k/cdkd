@@ -12,7 +12,7 @@
  *
  * A REAL client per package (no module mock) against a stub HTTP handler, so
  * an SDK upgrade that moved the fill per attempt turns this red. (Across two
- * `send`s the fill is fresh -- `docs/_contents/provider-rules.md`, "Do not assume the
+ * `send`s the fill is fresh -- `docs/provider-rules.md`, "Do not assume the
  * SDK's auto-fill is a fix" -- which is not the path this pins.)
  */
 import { Readable } from 'node:stream';

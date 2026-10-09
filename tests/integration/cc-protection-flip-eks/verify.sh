@@ -128,7 +128,7 @@ cleanup() {
     # thing that would have caught the empty value. `exit 0` and not
     # `return 0`: this is a SUBSHELL, so the exit ends the sweep and leaves
     # `cleanup` running. The convention is in
-    # `docs/_contents/integ-fixture-conventions.md`.
+    # `docs/integ-fixture-conventions.md`.
     case "${STACK}" in
       Cdkd?*) ;;
       *)

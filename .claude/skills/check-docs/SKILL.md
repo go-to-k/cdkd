@@ -18,11 +18,11 @@ this repository.
    review IS required if the diff touches any of:
    - `src/index.ts` — public exports.
    - `src/cli/options.ts`, `src/cli/commands/**` — the CLI surface described in
-     `docs/_contents/getting-started.md` and the per-command pages under `docs/`.
+     `docs/getting-started.md` and the per-command pages under `docs/`.
    - `src/types/**` — public type definitions.
    - `src/state/**` — bucket name, key layout, lock layout, schema version, all
-     documented verbatim in `docs/_contents/state-management.md`,
-     `docs/_contents/troubleshooting.md`, `docs/_contents/stack-outputs.md` and
+     documented verbatim in `docs/state-management.md`,
+     `docs/troubleshooting.md`, `docs/stack-outputs.md` and
      `.claude/rules/state-schema.md`. A path-layout change invalidates dozens of
      shell snippets across them.
    - Any NEW file under `src/**` — it must be reachable from the key-file index
@@ -49,23 +49,23 @@ this repository.
      declaring several globs. Then read what each SAYS about the code you
      changed, not just whether it names your new files: nothing mechanical
      watches a rule file that asserts a decision.
-   - `src/cli/` → CLI options/commands in `docs/_contents/getting-started.md` and the
+   - `src/cli/` → CLI options/commands in `docs/getting-started.md` and the
      per-command pages.
    - `src/synthesis/`, `src/assets/`, `src/deployment/`, `src/analyzer/` → the
-     matching section of `docs/_contents/architecture.md`.
-   - `src/provisioning/` → `docs/_contents/provider-development.md` and
-     `docs/_contents/provider-rules.md`, plus `.claude/rules/providers.md`. For a NEW SDK
-     provider also `docs/_contents/supported-resources.md` + `docs/_contents/import.md`. If the
+     matching section of `docs/architecture.md`.
+   - `src/provisioning/` → `docs/provider-development.md` and
+     `docs/provider-rules.md`, plus `.claude/rules/providers.md`. For a NEW SDK
+     provider also `docs/supported-resources.md` + `docs/import.md`. If the
      provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`, its
      resource type MUST appear in the per-type wait-semantics table in
-     `docs/_contents/cli-deploy.md` and in the `noWaitOption` help + JSDoc in
+     `docs/cli-deploy.md` and in the `noWaitOption` help + JSDoc in
      `src/cli/options.ts` (enforced by
      `tests/unit/provisioning/no-wait-doc-coverage.test.ts`).
-   - `src/state/` → `docs/_contents/state-management.md`.
+   - `src/state/` → `docs/state-management.md`.
    - New exports in `src/index.ts` → public API docs.
    - `package.json` dependency changes → `.claude/rules/package-and-release.md`.
-   - New integration tests → `docs/_contents/testing.md` and
-     `docs/_contents/integ-fixture-conventions.md`.
+   - New integration tests → `docs/testing.md` and
+     `docs/integ-fixture-conventions.md`.
    - **Any behaviour change → `plugins/cdkd-skills/skills/cdkd/SKILL.md`**, the
      DISTRIBUTED plugin surface, written for an audience that never reads this
      repo. Grep it for the subject you changed. If you edit it, bump the
@@ -101,5 +101,5 @@ do not report the docs consistent.
   `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md` carrying the bullet and no
   dated heading, capped at 2000 characters
   (`tests/unit/scripts/changelog-entry-size.test.ts`); a design decision goes to
-  `docs/_contents/design/<issue>-<slug>.md` instead.
+  `docs/design/<issue>-<slug>.md` instead.
 - Prefer referencing source directories over hardcoded lists in docs.

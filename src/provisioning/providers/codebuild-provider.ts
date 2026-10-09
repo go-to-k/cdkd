@@ -124,7 +124,7 @@ export class CodeBuildProvider implements ResourceProvider {
    * as a name somebody else holds. Refused here, the 5xx reaches the deploy
    * engine's retry, which marks the create as possibly replayed (`withRetry`,
    * #3978). Nothing is adopted on that collision: a name is not attribution
-   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): CodeBuildClient {
     this.getClient();
@@ -223,7 +223,7 @@ export class CodeBuildProvider implements ResourceProvider {
     const name = (properties['Name'] as string | undefined) ?? logicalId;
     const source = properties['Source'] as Record<string, unknown> | undefined;
     const environment = properties['Environment'] as Record<string, unknown> | undefined;
-    // Class 2 sanitize (docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection): readCurrentState
+    // Class 2 sanitize (docs/provider-rules.md#readcurrentstate-for-drift-detection): readCurrentState
     // emits `''` placeholders for ServiceRole / EncryptionKey / SourceVersion
     // so a console-side ADD on a project deployed without those keys
     // surfaces as drift. Shipping `''` back through CreateProject /
@@ -532,7 +532,7 @@ export class CodeBuildProvider implements ResourceProvider {
       // is applied to the mapped input (instead of an adjusted property bag)
       // so the whole-bag forward into `mapProperties` stays intact for the
       // handled-property-wiring critic's taint walk.
-      // Sub-key granularity, per docs/_contents/provider-rules.md#update-removal-semantics-clear-on-removal's
+      // Sub-key granularity, per docs/provider-rules.md#update-removal-semantics-clear-on-removal's
       // "test both shapes": a key dropped from a still-present
       // `BuildBatchConfig` needs no separate handling, because the block is
       // sent WHOLESALE — the mapper rebuilds it from the desired side each

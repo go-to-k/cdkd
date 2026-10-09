@@ -5,7 +5,7 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
 
 /**
  * Fences the hand-maintained `## Contents` index at the top of
- * `docs/_contents/troubleshooting.md` against the headings it indexes.
+ * `docs/troubleshooting.md` against the headings it indexes.
  *
  * WHY THE PAGE CARRIES ONE AT ALL. The published site renders an
  * `<aside class="toc">`, but the theme's own stylesheet declares it
@@ -13,7 +13,7 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
  * (measured in the built `ox-content-core-*.css`). Below that width — every
  * phone, and a 1280 or 1366 laptop — the page shipped with NO navigation of
  * its own, which on a guide this many headings deep means scrolling to find out
- * whether your symptom is covered at all. `docs/vite.config.ts` lowers the
+ * whether your symptom is covered at all. `docs/_site/vite.config.ts` lowers the
  * breakpoint to 1280px, and this in-page index covers what is still below it.
  * (No heading COUNT is quoted: it drifts with every entry added, and the
  * anti-vacuity floor below is what actually holds the claim up.)
@@ -32,7 +32,7 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
  * redundant.
  */
 const ROOT = join(import.meta.dirname, '../../..');
-const PAGE = join(ROOT, 'docs/_contents/troubleshooting.md');
+const PAGE = join(ROOT, 'docs/troubleshooting.md');
 
 /** H2/H3 headings in document order, skipping fenced code and the index itself. */
 function headings(src: string): Array<{ depth: number; text: string }> {
@@ -64,7 +64,7 @@ function expectedBlock(src: string): string {
   return ['## Contents', '', ...lines].join('\n');
 }
 
-describe('docs/_contents/troubleshooting.md contents index', () => {
+describe('docs/troubleshooting.md contents index', () => {
   const src = readFileSync(PAGE, 'utf8');
 
   it('has a Contents index', () => {

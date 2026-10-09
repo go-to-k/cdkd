@@ -16,7 +16,7 @@ import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * Asset-location redirection to cdkd-owned storage (issue #1002 PR 2, design
- * §6-§8 in docs/_contents/design/1002-cdkd-asset-storage.md).
+ * §6-§8 in docs/design/1002-cdkd-asset-storage.md).
  *
  * When a region is opted in via `cdkd bootstrap` (bootstrap marker present),
  * cdkd publishes assets to the cdkd-owned bucket / ECR repo instead of the

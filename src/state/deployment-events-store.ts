@@ -102,7 +102,7 @@ function deploymentsDirPrefix(prefix: string, stackName: string, region: string)
 /**
  * What a surviving `deployments/` version contains, for the purge's warnings
  * (`objectDescription`). Error messages are recorded verbatim past a bounded
- * secret mask (`docs/_contents/deployment-events.md`), which is why the purge exists.
+ * secret mask (`docs/deployment-events.md`), which is why the purge exists.
  */
 export const DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION =
   'deployment-event streams and their index, whose recorded error messages can quote values the secret mask does not catch';

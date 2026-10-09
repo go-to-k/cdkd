@@ -11,7 +11,7 @@
  * server-side expansion via {@link import('./macro-expander.js')}
  * before the rest of the pipeline can safely consume it.
  *
- * Design: [docs/_contents/design/463-cfn-macros.md](../../docs/_contents/design/463-cfn-macros.md).
+ * Design: [docs/design/463-cfn-macros.md](../../docs/design/463-cfn-macros.md).
  */
 
 /**

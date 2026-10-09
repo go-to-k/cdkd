@@ -1390,7 +1390,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // `CHECK_GUIDANCE`'s keys, so a fifth check is FORCED into the guidance —
       // and was free to be left out of the page a maintainer actually opens
       // when the PR arrives. The table is prose; nothing else reads it.
-      const runbook = readFileSync(join(REPO_ROOT, 'docs/_contents/schema-refresh-runbook.md'), 'utf8');
+      const runbook = readFileSync(join(REPO_ROOT, 'docs/schema-refresh-runbook.md'), 'utf8');
       for (const check of Object.keys(CHECK_GUIDANCE)) {
         // The TABLE ROW, not the file. `property-coverage` also appears in two
         // `vp test run` code blocks, so a whole-file `toContain` stayed green

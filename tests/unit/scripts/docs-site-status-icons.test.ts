@@ -6,7 +6,7 @@ import {
   splitStatusText,
   statusIcons,
   statusMarkHtml,
-} from '../../../docs/plugins/status-icons.js';
+} from '../../../docs/_site/plugins/status-icons.js';
 
 // The docs keep their status emoji in Markdown (GitHub and the raw Markdown
 // companions read them); the site renders them as Lucide status marks.

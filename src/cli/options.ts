@@ -72,7 +72,7 @@ export const commonOptions = [
  * *deprecated* — the recommended way to choose the region is `AWS_REGION` or
  * your AWS profile — but passing it is NOT a no-op. See
  * `warnIfDeprecatedRegion` for the runtime warning. Final removal is
- * tracked in PR 99 (see `docs/_contents/plans/05-region-flag-cleanup.md`).
+ * tracked in PR 99 (see `docs/plans/05-region-flag-cleanup.md`).
  */
 export const deprecatedRegionOption = new Option(
   '--region <region>',
@@ -1036,7 +1036,7 @@ export const recreateViaSdkProviderOption = new Option(
  * too — not only the flag-gated ones, and with its own exemptions (a
  * property-driven replacement under `UpdateReplacePolicy: Retain` creates
  * first, so it is skipped there) (see
- * `docs/_contents/cli-deploy-safety.md#stateful-resource-guard`), and some of them
+ * `docs/cli-deploy-safety.md#stateful-resource-guard`), and some of them
  * reach a replacement with NO flag at all: a property-driven replacement
  * (an immutable / createOnly property changed in the template) and the
  * update-failure fallback's Cloud Control trigger (issue [#2514]). On
@@ -1047,7 +1047,7 @@ export const recreateViaSdkProviderOption = new Option(
  * The guard list of "stateful" types lives in
  * `src/provisioning/stateful-types.ts` so it can be queried from both
  * the CLI pre-flight and the deploy engine, and it is published — as the
- * only enumeration users read — in `docs/_contents/cli-deploy-safety.md`, which a
+ * only enumeration users read — in `docs/cli-deploy-safety.md`, which a
  * set-equality fence keeps in step with the source. Prose elsewhere
  * (this help string included) names EXAMPLES and points there; it must
  * not read as exhaustive, because a widened guard would silently make it

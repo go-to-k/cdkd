@@ -152,7 +152,7 @@ export async function provisionUpdate(
   // route on different types: everything aimed at the OLD physical
   // resource (its delete, final snapshot, stateful guard) takes
   // `oldResourceType`, and the create takes `resourceType`. Design:
-  // docs/_contents/design/2668-type-change-routing.md.
+  // docs/design/2668-type-change-routing.md.
   const oldResourceType = currentResource.resourceType;
   const typeChanged = oldResourceType !== resourceType;
 

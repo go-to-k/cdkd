@@ -72,7 +72,7 @@
  * Reads `src/provisioning/providers/*.ts` plus
  * `src/provisioning/cloud-control-provider.ts` (the widest-coverage provider in
  * the repo, which lives one directory up) via the TypeScript Compiler API.
- * Writes `docs/_contents/_generated/update-wrap-coverage.{json,md}`.
+ * Writes `docs/_generated/update-wrap-coverage.{json,md}`.
  *
  * CLASSIFICATION (per provider class that declares `update`)
  * -----------------------------------------------------------
@@ -106,8 +106,8 @@ const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 // is the WIDEST-coverage provider in the repo — scanning only providers/ left
 // it unaudited.
 const EXTRA_PROVIDER_FILES = [resolve(repoRoot, 'src/provisioning/cloud-control-provider.ts')];
-const OUT_JSON = resolve(repoRoot, 'docs/_contents/_generated/update-wrap-coverage.json');
-const OUT_MD = resolve(repoRoot, 'docs/_contents/_generated/update-wrap-coverage.md');
+const OUT_JSON = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.json');
+const OUT_MD = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.md');
 
 /**
  * cdkd error classes an `instanceof` guard may name, mapped to the classes that

@@ -264,7 +264,7 @@ interface LocalInvokeOptions {
  * `src/local/runtime-image.ts` for the canonical supported set. Docker
  * is required. Literal env vars pass through; intrinsic-valued env vars
  * require `--from-state` to substitute deployed physical IDs /
- * attributes. See [docs/_contents/cli-reference.md](../../../docs/_contents/cli-reference.md)
+ * attributes. See [docs/cli-reference.md](../../../docs/cli-reference.md)
  * for the full surface and out-of-scope items.
  */
 async function localInvokeCommand(target: string, options: LocalInvokeOptions): Promise<void> {
@@ -985,7 +985,7 @@ async function resolveInvokeTemplateEnvWith(
     // original PR 1 UX.
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
     // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
-    // matches docs/_contents/local-invoke.md's target-resolution guidance and the
+    // matches docs/local-invoke.md's target-resolution guidance and the
     // `cdkd local invoke` target shape;
     // the resolver's prefix rule accepts either form.
     const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;

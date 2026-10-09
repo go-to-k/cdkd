@@ -105,7 +105,7 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   5. Pin each addition with a unit test in intrinsic-functions.test.ts.
  *
  * AUDIT RECORD (2026-08-12, issue #1667) — every type in the composite-id table
- * of `docs/_contents/state-management.md` was re-checked against its docs-verified `Ref`,
+ * of `docs/state-management.md` was re-checked against its docs-verified `Ref`,
  * plus the two types that table lists as ACCEPTING a composite without
  * producing one. `AWS::Glue::Table` was the one this Set could fix and was
  * added here; it has since moved to {@link glueTableRefFromPhysicalId} (issue

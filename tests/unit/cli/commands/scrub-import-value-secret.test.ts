@@ -582,7 +582,7 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
   it('SCRUBS the rest of the stack — it does not refuse over a foreign damaged record', async () => {
     // The half go-to-k/cdkd#3207 had to preserve, and the one a fix at the
     // resolver silently reverses if the pre-pass is not taught the new class.
-    // `docs/_contents/design/3192-outputs-consumers.md` §6 decided it: refusing the whole
+    // `docs/design/3192-outputs-consumers.md` §6 decided it: refusing the whole
     // stack would strand THIS stack's own plaintext over a record its owner may
     // not be able to repair, so scrub scrubs what it can, counts the
     // unverifiable read, and exits non-zero.

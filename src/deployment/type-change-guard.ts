@@ -12,7 +12,7 @@
  *
  * The routing is fixed: the old half of a replacement routes on the STATE
  * record's type and the create on the template's
- * (docs/_contents/design/2668-type-change-routing.md). Every other type pair is now
+ * (docs/design/2668-type-change-routing.md). Every other type pair is now
  * replaced normally. This pair is STILL refused, deliberately, because correct
  * routing is necessary here and not sufficient:
  *

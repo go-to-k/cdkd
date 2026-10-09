@@ -3,7 +3,7 @@
  * scripts/normalize-integ-ledger.ts
  *
  * Deterministic normalizer for the integ-last-run ledger
- * (docs/_contents/_generated/integ-last-run.tsv), an update-type ledger with the
+ * (docs/_generated/integ-last-run.tsv), an update-type ledger with the
  * invariant "exactly one row per test".
  *
  * Why this exists (issue #1112): `/run-integ` used to record a run by
@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
-export const LEDGER_PATH = join(REPO_ROOT, 'docs/_contents/_generated/integ-last-run.tsv');
+export const LEDGER_PATH = join(REPO_ROOT, 'docs/_generated/integ-last-run.tsv');
 
 /** Column count of a ledger data row: test/last_run_iso/result/duration_s/flow/note. */
 const COLUMNS = 6;

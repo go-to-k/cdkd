@@ -71,7 +71,7 @@ paths:
   the fold plus the lexical and symlink refusals meant NO spelling reached a
   file outside the assembly. Honouring one opens that; the warning is the whole
   signal for an absolute value, and every copy of this claim — code comment,
-  `docs/_contents/cli-deploy-safety.md`, changelog — says so. The nested-stack
+  `docs/cli-deploy-safety.md`, changelog — says so. The nested-stack
   `aws:asset:path` walk keeps REFUSING an absolute value: a different question,
   since CDK always writes a nested template into the outdir.
   A value NAMING THE OUTDIR ITSELF, by any spelling, is accepted with its own

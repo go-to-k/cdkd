@@ -34,9 +34,9 @@ residual's issue number — roughly the headline plus the file list plus a few
 sentences of mechanism.
 
 Everything past that **moves rather than disappears**: a design decision to
-`docs/_contents/design/<issue>-<slug>.md` (the directory already holds documents of that
+`docs/design/<issue>-<slug>.md` (the directory already holds documents of that
 shape, and `.claude/rules/` bullets already close with
-`Design: docs/_contents/design/<n>-<slug>.md`), and a mechanism to the doc comment on the
+`Design: docs/design/<n>-<slug>.md`), and a mechanism to the doc comment on the
 module or test that implements it — where it sits next to the thing it
 describes and moves when that thing does. The entry links to it.
 
@@ -138,7 +138,7 @@ Two consequences worth stating, since neither is obvious from the rule. An
 entry is not a record of effort — a large agent-tooling PR correctly writes
 nothing, and that is not a demotion. And the entry a change does not write
 still has somewhere to go: the reasoning belongs in the commit message, a
-design note under `docs/_contents/design/`, or the doc comment of the module it
+design note under `docs/design/`, or the doc comment of the module it
 describes, all of which outlive a bullet.
 
 Enforced only by review. A CI check could require an entry from a `src/**`

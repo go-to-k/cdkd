@@ -15,10 +15,10 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
  * Cross-site consistency guard for the CC protection registry (issues
  * #1312 / #1314 / #1315): every registered type must ALSO appear in the
  * destroy confirm-prompt count map, both `--remove-protection` help strings,
- * and the docs/_contents/cli-destroy.md type table. These five sites are hand-synced;
+ * and the docs/cli-destroy.md type table. These five sites are hand-synced;
  * this test is what keeps a future registry entry from silently missing one
  * of them. (README.md used to carry a sixth copy of the table; the slimmed
- * README links to the cdkd.dev page rendered from docs/_contents/cli-destroy.md
+ * README links to the cdkd.dev page rendered from docs/cli-destroy.md
  * instead, so that entry was dropped.)
  */
 describe('CC protection registry cross-site consistency', () => {
@@ -38,7 +38,7 @@ describe('CC protection registry cross-site consistency', () => {
   for (const [label, content] of [
     ['cdkd destroy --remove-protection help', destroyRemoveProtectionHelp()],
     ['cdkd state destroy --remove-protection help', stateDestroyRemoveProtectionHelp()],
-    ['docs/_contents/cli-destroy.md type table', read('docs/_contents/cli-destroy.md')],
+    ['docs/cli-destroy.md type table', read('docs/cli-destroy.md')],
   ] as const) {
     it(`every registry type appears in ${label}`, () => {
       const missing = types.filter((t) => !content.includes(t));

@@ -961,7 +961,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
   });
 
   it('TWO outputs sharing ONE Export.Name is deliberately NOT guarded', async () => {
-    // Documented behavior (docs/_contents/cross-stack-references.md): both bags stay
+    // Documented behavior (docs/cross-stack-references.md): both bags stay
     // consistent — one iteration writes the value and its source together — so
     // it is not this issue's class. The later output simply wins the key, where
     // CloudFormation would reject the template outright. Pinned because a

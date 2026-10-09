@@ -122,7 +122,7 @@ export interface DeployEngineOptions {
    * the three fields stay unset (top-level state file shape).
    *
    * See issue [#459](https://github.com/go-to-k/cdkd/issues/459) /
-   * [docs/_contents/design/459-nested-stacks.md](../../docs/_contents/design/459-nested-stacks.md)
+   * [docs/design/459-nested-stacks.md](../../docs/design/459-nested-stacks.md)
    * §3 for the full state-key + identity layout.
    */
   parentStackInfo?: {
@@ -387,7 +387,7 @@ export interface DeployEngineOptions {
    * The update-failure fallback exempts neither, because it deletes the old
    * resource before creating the new one. The exemptions are enumerated under
    * "Three exemptions apply to this trigger specifically" in
-   * `docs/_contents/cli-deploy-safety.md`, whose per-path table separately enumerates
+   * `docs/cli-deploy-safety.md`, whose per-path table separately enumerates
    * the paths; prose here names examples and must not read as exhaustive.
    *
    * Without it, the engine refuses the replacement and surfaces a clear error

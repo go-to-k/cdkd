@@ -195,7 +195,7 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
   });
 
   it('never-present block stays absent — no reset is derived from an absence on both sides', async () => {
-    // The third shape docs/_contents/provider-development.md's clear-on-removal
+    // The third shape docs/provider-development.md's clear-on-removal
     // checklist demands ("never-present -> stays absent"), and the one that
     // separates a REMOVAL reset from a blanket always-send: a template that
     // never declared the block must not acquire one.

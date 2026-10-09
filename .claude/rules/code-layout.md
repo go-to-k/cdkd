@@ -27,10 +27,10 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/state/**`, `src/types/**` | [layout-state-types.md](layout-state-types.md) | state backend, locks, shared types |
 | `src/state/lock-contention-message.ts` | [lock-contention-message.md](lock-contention-message.md) | the lock-contention refusal and its `cdkd force-unlock` recovery hint |
 | `src/version.ts`, `vite.config.ts` | [layout-build.md](layout-build.md) | version injection, Vite+ config |
-| `scripts/**`, `docs/_contents/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
+| `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
 | `scripts/check-{pr,issue}-*.ts` | [layout-ci-checks.md](layout-ci-checks.md) | CI checks replacing retired gates |
 | `scripts/refresh-cfn-schemas.mjs` + chain | [layout-schema-refresh.md](layout-schema-refresh.md) | CFn schema refresh, diagnosis, backfill campaign |
 | `.github/workflows/pr-content-checks.yml` | [layout-ci-pr-content.md](layout-ci-pr-content.md) | The PR-content diff scan |
-| `docs/_contents/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for the public cdkd.dev site |
+| `docs/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for the public cdkd.dev site |
 
 Provider contract, Custom Resources, and "Adding a New SDK Provider": [providers.md](providers.md).

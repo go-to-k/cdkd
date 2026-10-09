@@ -304,7 +304,7 @@ describe('renderMarkdown', () => {
 
 /**
  * Issue #2545: a description containing `|` was interpolated into a table row
- * unescaped, so six rows of `docs/_contents/scenario-coverage.md` rendered with more
+ * unescaped, so six rows of `docs/scenario-coverage.md` rendered with more
  * columns than the header names and every fixture link landed under a heading
  * that did not describe it.
  *

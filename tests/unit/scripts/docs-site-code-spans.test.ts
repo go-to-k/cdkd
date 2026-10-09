@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import type { MarkdownNode } from '@ox-content/vite-plugin';
-import { UNBROKEN_MAX, codeSpan, codeSpans, escapeHtml } from '../../../docs/plugins/code-spans.js';
+import { UNBROKEN_MAX, codeSpan, codeSpans, escapeHtml } from '../../../docs/_site/plugins/code-spans.js';
 
 // Inline code stays on one line in the theme; only a span too long for a
 // phone's line is marked so it may wrap.

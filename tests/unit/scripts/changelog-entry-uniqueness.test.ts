@@ -4,7 +4,7 @@ import { LOOSE_HEADING, assembleChangelog } from '../../../scripts/assemble-chan
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
- * `docs/_contents/changelog-cdkd.md` is a conflict magnet by construction: every lane
+ * `docs/changelog-cdkd.md` is a conflict magnet by construction: every lane
  * prepends its entry to the SAME list, so the file conflicts on essentially
  * every rebase whenever more than one lane is open. The natural resolution --
  * "keep both sides" -- is right for two DIFFERENT lanes' entries and wrong for

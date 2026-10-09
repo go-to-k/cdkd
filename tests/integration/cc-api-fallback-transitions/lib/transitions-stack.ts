@@ -26,7 +26,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  *
  * WHY `AWS::ApiGatewayV2::Api.Body` (issue #2648). Both arms are ABOUT the
  * silent-drop auto-route, so they have to key on a silent drop — the one
- * case `docs/_contents/integ-fixture-conventions.md` ("Never seed a Cloud Control
+ * case `docs/integ-fixture-conventions.md` ("Never seed a Cloud Control
  * route from an unhandled property") allows. This fixture keyed on Lambda's
  * `RuntimeManagementConfig` until #1621 wired it; the item-3 assertion then
  * failed on correct behaviour (live, 2026-09-17). Lambda's remaining silent

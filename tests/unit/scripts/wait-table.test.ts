@@ -19,7 +19,7 @@ import { parseWaitTable, readWaitTable, WAIT_TABLE_HEADING } from '../../wait-ta
  * hand each time it changes.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const deployDocPath = join(repoRoot, 'docs', '_contents', 'cli-deploy.md');
+const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 
 const HEADER = [
   '| Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |',
@@ -142,7 +142,7 @@ describe('wait-table parser', () => {
     expect(rows.map((r) => r.type)).not.toContain('AWS::After::Section');
   });
 
-  it('parses the real docs/_contents/cli-deploy.md, and agrees with a direct read', () => {
+  it('parses the real docs/cli-deploy.md, and agrees with a direct read', () => {
     const fromPath = readWaitTable(deployDocPath);
     const fromText = parseWaitTable(readFileSync(deployDocPath, 'utf8'));
     expect(fromPath).toEqual(fromText);

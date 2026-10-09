@@ -403,7 +403,7 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // (MEASURED — the A/B's first arm is exactly this), and a CloudWatch Logs
   // resource policy at one of its quotas (READ from AWS's docs, not exercised
   // here — no fixture reaches either). Both are documented for users in
-  // docs/_contents/troubleshooting.md, which is the copy to keep correct.
+  // docs/troubleshooting.md, which is the copy to keep correct.
   //
   // Several entries here make the same trade, one of them more loosely than
   // this: 'is unable to assume the role' above deliberately drops its service

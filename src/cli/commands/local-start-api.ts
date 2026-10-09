@@ -345,7 +345,7 @@ export function formatServerListeningBanner(
  *
  * Still deferred: WebSocket APIs.
  *
- * See [docs/_contents/cli-reference.md](../../../docs/_contents/cli-reference.md) for the
+ * See [docs/cli-reference.md](../../../docs/cli-reference.md) for the
  * full surface and out-of-scope items.
  */
 async function localStartApiCommand(
@@ -1679,7 +1679,7 @@ function warnVpcConfigLambdas(
  *
  * Implementation note: signature verification only — IAM policy
  * evaluation (resource / action / condition) is NOT emulated. See
- * `src/local/sigv4-verify.ts` and the help text in `docs/_contents/cli-reference.md`.
+ * `src/local/sigv4-verify.ts` and the help text in `docs/cli-reference.md`.
  */
 function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
   const logger = getLogger();
@@ -2047,7 +2047,7 @@ export async function buildContainerSpec(args: {
     // state-resolver evolves).
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
     // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
-    // matches docs/_contents/local-invoke.md's target-resolution guidance and the
+    // matches docs/local-invoke.md's target-resolution guidance and the
     // `cdkd local invoke` target shape;
     // the resolver's prefix rule accepts either form.
     const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? logicalId;

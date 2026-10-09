@@ -183,7 +183,7 @@ export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
  * The fields are not documentation. `tests/unit/provisioning/
  * sticky-exempt-registry.test.ts` requires `integFixture` to name a directory
  * that EXISTS under `tests/integration/` and to have at least one row in
- * `docs/_contents/_generated/integ-last-run.tsv` -- so an entry naming a fixture that
+ * `docs/_generated/integ-last-run.tsv` -- so an entry naming a fixture that
  * never ran fails the unit suite. A fixture that ran before its parity arm was
  * added still passes, so that arm's real-AWS run is a merge condition of the
  * PR adding the entry. That is the mechanism behind "evidence rather than
@@ -299,7 +299,7 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // made the both-bags gate below live and `cdkd diff`'s sticky annotation
       // reachable under --allow-unsupported-properties). A refresh that lands
       // a drop on an admitted type owes the wiring in the same cycle, or the
-      // admission stops meaning what docs/_contents/provider-rules.md step 1 says.
+      // admission stops meaning what docs/provider-rules.md step 1 says.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
         'both layers store the topic ARN: the schema primaryIdentifier is ' +

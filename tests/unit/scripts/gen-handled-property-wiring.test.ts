@@ -1258,10 +1258,10 @@ describe('evidence-loss verdict (#1842)', () => {
   });
 
   it('loads the committed matrix as a baseline, and returns null for a non-baseline', () => {
-    const baseline = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'));
+    const baseline = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'));
     expect(baseline?.schemaVersion).toBe(1);
     expect(baseline!.classes.length).toBeGreaterThanOrEqual(70);
-    expect(loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/nope-does-not-exist.json'))).toBeNull();
+    expect(loadBaseline(resolve(REPO_ROOT, 'docs/_generated/nope-does-not-exist.json'))).toBeNull();
   });
 
   it('returns null rather than throwing on a corrupt / wrong-schema baseline', () => {
@@ -1328,7 +1328,7 @@ describe('evidence-loss verdict (#1842)', () => {
     // every later run starts from a baseline nobody can reproduce.
     expect(
       findEvidenceLosses(
-        loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json')),
+        loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json')),
         SHIPPED_REPORT
       )
     ).toEqual([]);
@@ -1433,13 +1433,13 @@ describe('the shipped --check command', () => {
   // SAFETY NET, and it earns its keep: several cases here deliberately run the
   // WRITER against a degraded providers tree, with only a production guard
   // standing between them and the committed matrix. When a mutation probe broke
-  // one of those guards, the run rewrote `docs/_contents/_generated/*` and TEN unrelated
+  // one of those guards, the run rewrote `docs/_generated/*` and TEN unrelated
   // tests then failed for the side effect rather than on their own subject —
   // which both hides which fence actually died and leaves the repo dirty.
   // Restoring after every case keeps a broken guard's blast radius inside the
   // one test that asserts the file is untouched.
   const MATRIX_NAMES = ['handled-property-wiring.json', 'handled-property-wiring.md'];
-  const MATRIX = MATRIX_NAMES.map((n) => resolve(REPO_ROOT, 'docs/_contents/_generated', n));
+  const MATRIX = MATRIX_NAMES.map((n) => resolve(REPO_ROOT, 'docs/_generated', n));
   // A broken guard does not only overwrite the matrix IN PLACE — a run whose
   // output path resolves to the cwd drops the two files at the REPO ROOT as
   // untracked strays. That happened during a probe here, and because the net did
@@ -1684,14 +1684,14 @@ describe('the shipped --check command', () => {
   }, SPAWN_TIMEOUT_MS);
 
   it('refuses --providers-dir= in WRITER mode unless the output is redirected too', () => {
-    // Otherwise the writer renders docs/_contents/_generated from a tree that is not src/.
+    // Otherwise the writer renders docs/_generated from a tree that is not src/.
     const dir = providersCopyWith('providers-writer-guard', 'dynamodb-table-provider.ts', degradeWarmThroughput);
     // This case deliberately omits --out-dir, so the ONLY thing standing between
     // it and the committed matrix is the guard under test. When a reviewer broke
     // that guard, the run rewrote the matrix in their worktree and two LATER
     // tests failed for the side effect rather than on their own subject. Assert
     // the file is intact so the blast radius stays inside this test.
-    const committed = resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json');
+    const committed = resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json');
     const untouched = readFileSync(committed, 'utf8');
     const { status, stderr } = run([`--providers-dir=${dir}`]);
     expect(readFileSync(committed, 'utf8'), 'the committed matrix must be untouched').toBe(untouched);
@@ -1705,8 +1705,8 @@ describe('the shipped --check command', () => {
     expect(allowed.stderr).toContain('declared properties LOST wiring evidence');
   }, SPAWN_TIMEOUT_MS);
 
-  it('refuses an --out-dir= that resolves BACK to docs/_contents/_generated (a fake redirect)', () => {
-    // Checking only that the flag is PRESENT let `--out-dir=docs/_contents/_generated`
+  it('refuses an --out-dir= that resolves BACK to docs/_generated (a fake redirect)', () => {
+    // Checking only that the flag is PRESENT let `--out-dir=docs/_generated`
     // satisfy the guard while still rendering the committed matrix from a
     // degraded tree against a nulled baseline — the flag became its own bypass.
     //
@@ -1717,15 +1717,15 @@ describe('the shipped --check command', () => {
     // SYMLINK (a different path entirely, same directory). `realpathSync` does
     // not settle the first; only `dev`+`ino` identity settles both.
     const dir = providersCopyWith('providers-fake-redirect', 'dynamodb-table-provider.ts', degradeWarmThroughput);
-    const committed = resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json');
+    const committed = resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json');
     const before = readFileSync(committed, 'utf8');
     const link = join(scratch, 'link-to-generated');
     rmSync(link, { force: true });
-    symlinkSync(resolve(REPO_ROOT, 'docs/_contents/_generated'), link);
+    symlinkSync(resolve(REPO_ROOT, 'docs/_generated'), link);
 
     // Whether a CASE variant names the same directory is a property of the
     // filesystem, not of the guard: macOS/APFS folds case (so `docs/_GENERATED`
-    // IS docs/_contents/_generated and must be refused), while CI on ext4 does not (so it
+    // IS docs/_generated and must be refused), while CI on ext4 does not (so it
     // is a genuine, safe redirect to a new directory). Asserting the
     // redirect-guard message unconditionally passed locally and failed on CI —
     // the guard was right in both places, the test was wrong in one. Probe the
@@ -1739,13 +1739,13 @@ describe('the shipped --check command', () => {
         return false;
       }
     };
-    const generated = resolve(REPO_ROOT, 'docs/_contents/_generated');
+    const generated = resolve(REPO_ROOT, 'docs/_generated');
     const caseFolding = sameInode(generated, resolve(REPO_ROOT, 'docs/_GENERATED'));
 
     const alwaysSameDir = [
-      'docs/_contents/_generated',
-      './docs/_contents/_generated/.',
-      'docs/_contents/_generated/../_generated',
+      'docs/_generated',
+      './docs/_generated/.',
+      'docs/_generated/../_generated',
       generated,
       link,
     ];
@@ -1786,7 +1786,7 @@ describe('the shipped --check command', () => {
     // guard the writer would overwrite the COMMITTED matrix with weaker
     // evidence, exit 0, and print nothing. Verified against real degraded input.
     const dir = providersCopyWith('providers-baseline-guard', 'dynamodb-table-provider.ts', degradeWarmThroughput);
-    const committed = resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json');
+    const committed = resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json');
     const before = readFileSync(committed, 'utf8');
     const { status, stderr } = run([`--providers-dir=${dir}`, '--baseline=/nonexistent-baseline.json']);
     expect(status).toBe(1);
@@ -1801,7 +1801,7 @@ describe('the shipped --check command', () => {
     // fail-open. A baseline that RECORDS MORE than the tree can prove must fail.
     const inflated = join(scratch, 'inflated-baseline.json');
     const real = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'), 'utf8')
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
     ) as HandledPropertyWiringReport;
     writeFileSync(
       inflated,
@@ -1857,7 +1857,7 @@ describe('the shipped --check command', () => {
     expect(stderr).not.toContain('ACCEPTED EVIDENCE LOSS');
     expect(stderr).toContain('wrote handled-property-wiring');
     expect(readFileSync(join(outDir, 'handled-property-wiring.json'), 'utf8')).toBe(
-      readFileSync(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'), 'utf8')
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
     );
   }, SPAWN_TIMEOUT_MS);
 
@@ -1884,7 +1884,7 @@ describe('the shipped --check command', () => {
     // `--baseline=<real> --baseline=/nope` would otherwise read as the real one
     // while the author believed the opposite. A seam that decides what the loss
     // check grades against must not have a silent precedence rule.
-    const real = resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json');
+    const real = resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json');
     const { status, stderr } = runCheck(undefined, [`--baseline=${real}`, '--baseline=/nope.json']);
     expect(status).toBe(1);
     expect(stderr).toContain('--baseline= given 2 times');
@@ -2025,7 +2025,7 @@ describe('the shipped --check command', () => {
     // clean, `--check` OK. The cut file still advertises the full
     // `declaredProperties`, and that disagreement is a free discriminator.
     const real = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'), 'utf8')
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
     ) as HandledPropertyWiringReport;
     const one = real.classes[0]!;
     const shrunk = join(scratch, 'shrunk-one-pair.json');
@@ -2068,7 +2068,7 @@ describe('the shipped --check command', () => {
     // payload with `summary: {}`, and the `status` / `bucket` mutants passed on
     // condition 1 instead — the "trips an earlier clause" trap, reproduced in
     // the very test written to avoid it.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const firstWired = real.classes.findIndex((c) => c.properties.some((p) => p.status === 'wired'));
     const withClass = (
       mutate: (c: ClassClassification) => unknown
@@ -2247,7 +2247,7 @@ describe('the shipped --check command', () => {
     // still produce losses — a self-inconsistent copy of the real matrix — so
     // both conditions hold at once and chaining them visibly swallows one.
     const real = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'), 'utf8')
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
     ) as HandledPropertyWiringReport;
     const inconsistent = join(scratch, 'inconsistent-but-rich.json');
     writeFileSync(
@@ -2309,7 +2309,7 @@ describe('the shipped --check command', () => {
     expect(status).toBe(0);
     for (const name of ['handled-property-wiring.json', 'handled-property-wiring.md']) {
       expect(readFileSync(join(outDir, name), 'utf8'), `${name} must match the committed copy`).toBe(
-        readFileSync(resolve(REPO_ROOT, 'docs/_contents/_generated', name), 'utf8')
+        readFileSync(resolve(REPO_ROOT, 'docs/_generated', name), 'utf8')
       );
     }
   }, SPAWN_TIMEOUT_MS);
@@ -2408,7 +2408,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // A fixture that trips every clause of a conjunction fences none of them.
     // The property-only shrink is also the LIKELIER accident — a partial write
     // or bad merge drops properties inside classes while the class count holds.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const fields = [
       'classifiedCount',
       'declaredProperties',
@@ -2434,7 +2434,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // The realistic `jq` cut: keep all 84 classes, trim each to its first
     // property. `classifiedCount` still agrees; only the property-side fields
     // disagree. Measured before this: reported OK, exit 0, graded 81/1138.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const shrunk = {
       ...real,
       classes: real.classes.map((c) => ({ ...c, properties: c.properties.slice(0, 1) })),
@@ -2450,7 +2450,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
   it('catches a CLASS-only drop that leaves the property arrays untouched', () => {
     // The mirror: remove whole classes, so `declaredProperties` and
     // `classifiedCount` disagree in the other direction.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const dropped = { ...real, classes: real.classes.slice(0, 40) } as HandledPropertyWiringReport;
     const a = assessBaseline(dropped, live);
     expect(a.usable).toBe(false);
@@ -2464,7 +2464,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // sole fixture blanked BOTH, so dropping either half stayed green. Every
     // clause is itself a conjunction or disjunction needing its own fixture —
     // the lesson recurses, so it is applied here to all three directions.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const firstWired = (): { ci: number; pi: number } => {
       for (const [ci, c] of real.classes.entries()) {
         const pi = c.properties.findIndex((x) => x.status === 'wired');
@@ -2554,7 +2554,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // reports. It cannot be padded for the same reason the biconditional cannot
     // be gamed: fabricated evidence must be a SUBSET of what the current run
     // proves, or the comparison reports it as a loss.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const intact = assessBaseline(real, live);
     expect(intact.gradedDepth).toBe(
       real.classes
@@ -2596,7 +2596,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // checked-out matrix), and summing the whole thing would over-report the
     // announced depth — the same "the number claims presence, not provable
     // content" defect this metric was added to fix, one level along.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const narrowed: HandledPropertyWiringReport = {
       ...live,
       classes: live.classes.slice(0, 10),
@@ -2626,7 +2626,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // makes the printed line mean what it says, which is worth more than the
     // refusal: a surgical one-property tamper now announces 1135 rather than a
     // clean 1138.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const intact = assessBaseline(real, live);
     expect(intact.gradedPairs).toBeLessThan(intact.currentPairs);
     expect(intact.gradedPairs, 'the 2 allow-listed pairs have no evidence to lose').toBe(
@@ -2648,7 +2648,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // mitigation announces `graded 1138/1138` while the comparison reads blank
     // fields and can report nothing. Rounds 1-4 all constrained something
     // ADJACENT to the comparison; this is the field it actually consumes.
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const blanked = {
       ...real,
       classes: real.classes.map((c) => ({
@@ -2666,7 +2666,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
   });
 
   it('counts DISTINCT pairs, so replication cannot fake a length', () => {
-    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json'))!;
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
     const replicated = {
       ...real,
       classes: real.classes.map((c) => ({
@@ -2721,7 +2721,7 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     // properties carry no evidence by definition, so 1136/1138 is the honest
     // ceiling and pinning 100% would have been pinning a falsehood.
     const a = assessBaseline(
-      loadBaseline(resolve(REPO_ROOT, 'docs/_contents/_generated/handled-property-wiring.json')),
+      loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json')),
       live
     );
     expect(a.usable).toBe(true);

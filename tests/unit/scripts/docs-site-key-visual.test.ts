@@ -6,8 +6,8 @@ import {
   seeded,
   step,
   strike,
-} from '../../../docs/key-visual/bands.js';
-import { parseHex } from '../../../docs/key-visual/color.js';
+} from '../../../docs/_site/key-visual/bands.js';
+import { parseHex } from '../../../docs/_site/key-visual/color.js';
 
 // The key visual's motion is plain state: bands that slide along the route,
 // pulled home by critically damped springs.

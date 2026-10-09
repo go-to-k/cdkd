@@ -168,7 +168,7 @@
  * OFFLINE-ONLY (NO AWS)
  * ---------------------
  * Reads `src/provisioning/providers/*.ts` via the TypeScript Compiler API.
- * Writes `docs/_contents/_generated/handled-property-wiring.{json,md}`.
+ * Writes `docs/_generated/handled-property-wiring.{json,md}`.
  *
  * CLASSIFICATION (per provider class declaring `handledProperties`)
  * -----------------------------------------------------------------
@@ -294,7 +294,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
-const OUT_JSON = resolve(repoRoot, 'docs/_contents/_generated/handled-property-wiring.json');
+const OUT_JSON = resolve(repoRoot, 'docs/_generated/handled-property-wiring.json');
 
 /**
  * Parameter names that hold the DESIRED-state CFn property bag — the one whose
@@ -1989,7 +1989,7 @@ const USAGE =
   '  --providers-dir=<p>         TEST SEAM: walk a scratch copy of the providers tree\n' +
   '                              (writer mode additionally requires --out-dir=)\n' +
   '  --baseline=<p>              TEST SEAM: grade against a scratch matrix\n' +
-  '  --out-dir=<p>               TEST SEAM: write the matrix somewhere other than docs/_contents/_generated\n';
+  '  --out-dir=<p>               TEST SEAM: write the matrix somewhere other than docs/_generated\n';
 
 const KNOWN_VALUE_FLAGS = ['--providers-dir=', '--baseline=', '--out-dir='];
 
@@ -2054,7 +2054,7 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   const dirFlag = argv.find((a) => a.startsWith('--providers-dir='));
   // Test seam: grade against a scratch baseline instead of the committed matrix.
   const baselineFlag = argv.find((a) => a.startsWith('--baseline='));
-  // Test seam: write the matrix somewhere other than docs/_contents/_generated, so the
+  // Test seam: write the matrix somewhere other than docs/_generated, so the
   // WRITER's refusal path can be exercised end-to-end without a broken refusal
   // being able to overwrite the committed matrix with the probe's degradation.
   const outDirFlag = argv.find((a) => a.startsWith('--out-dir='));
@@ -2100,11 +2100,11 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   // than by string equality.
   //
   // Two rounds of this guard were bypassable. First it checked only that
-  // `--out-dir=` was PRESENT, so `--out-dir=docs/_contents/_generated` satisfied it.
+  // `--out-dir=` was PRESENT, so `--out-dir=docs/_generated` satisfied it.
   // Comparing `resolve()` output fixed the pure-path spellings (`./x/.`,
   // `../_generated`, the absolute form) but NOT the two that do not differ as
   // paths at all: on a case-insensitive filesystem `docs/_GENERATED` is the same
-  // directory under a different string, and a SYMLINK to `docs/_contents/_generated` is
+  // directory under a different string, and a SYMLINK to `docs/_generated` is
   // the same directory under a different path entirely. Both were measured
   // writing the committed matrix from a degraded tree at exit 0.
   //
@@ -2130,7 +2130,7 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   // tree that is not `src/`; `--baseline=` is subtler and strictly worse —
   // pointing it anywhere unreadable makes `loadBaseline` answer null, which the
   // loss check reads as "nothing to compare", so the writer would overwrite
-  // docs/_contents/_generated with WEAKER evidence, exit 0, and print nothing. That is the
+  // docs/_generated with WEAKER evidence, exit 0, and print nothing. That is the
   // silent default this whole verdict exists to remove, reachable by one flag.
   // Allowed together with a real `--out-dir=`, which is what the probes do.
   for (const [flag, present] of [
@@ -2140,7 +2140,7 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     if (present && !checkMode && !redirected) {
       process.stderr.write(
         `handled-property-wiring: FAIL — ${flag} may only accompany a WRITE when --out-dir= also\n` +
-          'redirects the output SOMEWHERE ELSE. Refusing to render docs/_contents/_generated from a tree\n' +
+          'redirects the output SOMEWHERE ELSE. Refusing to render docs/_generated from a tree\n' +
           `or a baseline that is not the committed one.\n${USAGE}`
       );
       process.exit(1);

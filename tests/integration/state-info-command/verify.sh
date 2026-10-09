@@ -120,7 +120,7 @@ echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && vp run build)
 
 cd "${TEST_DIR}"
-# Sourced after the `cd`, per the convention in docs/_contents/integ-fixture-conventions.md.
+# Sourced after the `cd`, per the convention in docs/integ-fixture-conventions.md.
 # The state bucket is VERSIONED, so deleting the planted key below only writes a
 # delete marker; `s3_purge_key_versions` is what actually removes it.
 . ../s3-versions.sh

@@ -199,7 +199,7 @@ export class ScrubNeededError extends CdkdError {
  *
  * `exitCode = 2` rather than `CdkdError`'s default of 1, because 1 is already
  * SPOKEN FOR: `--fail` throws {@link ScrubNeededError} for "plaintext is in
- * state", and `docs/_contents/cli-reference.md` documents the pair as `1` (`--fail` found
+ * state", and `docs/cli-reference.md` documents the pair as `1` (`--fail` found
  * plaintext) / `2` (error). A refusal is the second one, and left on the default
  * a CI gate reading the exit code alone could not tell "scrub looked and found a
  * leak" from "scrub refused to look" — the two call for opposite responses
@@ -2033,7 +2033,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   };
 
   // COVERAGE, not detection (issue #2667). `--all` targets every stack in the
-  // SYNTHESIZED APP (`docs/_contents/cli-scrub.md`), not every stack with a state
+  // SYNTHESIZED APP (`docs/cli-scrub.md`), not every stack with a state
   // record, and one bucket and region are legitimately shared by several CDK
   // apps — so an entry whose producer is outside this app is one no run from
   // here decided about. It is REPORTED and never turns `--fail` red: a gate
@@ -2292,7 +2292,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // fail-soft and warns for itself (missing grants, a replicated bucket) ABOVE
   // this line, so the claim is qualified by those warnings rather than made
   // unconditionally. Rotation stays the remedy for every copy cdkd cannot
-  // reach. See docs/_contents/cli-scrub.md, "What a real run removes, and what it cannot".
+  // reach. See docs/cli-scrub.md, "What a real run removes, and what it cannot".
   if (totalStacksScrubbed > 0) {
     logger.info(
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
@@ -2892,7 +2892,7 @@ export function findDroppedOutputReaders(
     // A record older than the field records no reads of that kind at all, so
     // an absent list there is UNKNOWN rather than empty. A version that is not
     // a number is read as the oldest. TWO residuals, both documented in
-    // docs/_contents/cli-scrub.md: it is FAIL-OPEN for a pre-v8 record a non-deploy
+    // docs/cli-scrub.md: it is FAIL-OPEN for a pre-v8 record a non-deploy
     // writer (scrub, drift, import, the state commands) has since rewritten —
     // `saveState` stamps the current version on every write, so that record
     // reads as current with no `outputReads` — and it OVER-REFUSES, since one
@@ -3608,7 +3608,7 @@ export function orderScrubTargets<
  * resolved its element and raised `plaintextProducerCrossStackReadError`, the
  * STRING shape threw a `TypeError` the pre-pass deliberately does not catch.
  * Routing them into `unverifiableReads` alone made a plain `cdkd scrub` exit
- * 0 — and the `--fail` path exit 1, which `docs/_contents/cli-reference.md` teaches as
+ * 0 — and the `--fail` path exit 1, which `docs/cli-reference.md` teaches as
  * the opposite remedy (1 = rotate the secret, 2 = repair and re-run).
  *
  * Names are rendered through `displayIdent` for the reason
@@ -4658,7 +4658,7 @@ interface CrossStackPrePassFindings {
    * finish", not "cdkd looked and found something". Counting it only in
    * `unverifiable` made a plain `cdkd scrub` exit 0 over a consumer record
    * still holding the imported plaintext, and made even the `--fail` path exit
-   * 1, which `docs/_contents/cli-reference.md` teaches as the opposite remedy.
+   * 1, which `docs/cli-reference.md` teaches as the opposite remedy.
    */
   damagedProducerRecords: string[];
   /**
@@ -5711,7 +5711,7 @@ function makeCrossStackPrePass(deps: {
    * this branch the read lands on `unresolvableCrossStackReadError` below and
    * refuses the whole stack, so a consumer's own plaintext would stay in
    * `state.json` over a producer record its owner may not be able to repair —
-   * exactly the trade `docs/_contents/design/3192-outputs-consumers.md` §6 decided
+   * exactly the trade `docs/design/3192-outputs-consumers.md` §6 decided
    * against, silently reversed by the fix one layer up.
    *
    * SAME two lists as the classifier's arm, deliberately: `unverifiable` gates
@@ -6401,7 +6401,7 @@ export interface ScrubStackResult {
    * Carried separately because it earns a different EXIT CODE: **2,
    * unconditionally**, where the by-design half earns 1 and only under
    * `--fail`. See {@link CrossStackPrePassFindings.damagedProducerRecords} for
-   * why, and `docs/_contents/cli-reference.md` for what the two codes mean to a CI gate.
+   * why, and `docs/cli-reference.md` for what the two codes mean to a CI gate.
    */
   unverifiableProducerRecords: number;
   /**
@@ -8430,7 +8430,7 @@ export async function scrubStack(
     // wrote kept its plaintext and `cdkd scrub --fail` reported it clean.
     //
     // WHICH FIELDS, and why it is not all six: the per-field provenance is in
-    // `docs/_contents/design/3289-cross-stack-read-name-redaction.md`. Three names come
+    // `docs/design/3289-cross-stack-read-name-redaction.md`. Three names come
     // from the TEMPLATE and are redactable; `sourceRegion` is an AWS region and
     // `imports[].sourceStack` is stored verbatim forever because
     // `scanActiveConsumers` matches destroy-time refusals on it. Redacting that

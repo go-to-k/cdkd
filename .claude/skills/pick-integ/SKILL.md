@@ -25,7 +25,7 @@ truncated, and the wrap-up names exactly which tests were not run.
 
 ## Data sources
 
-1. **Ledger** `docs/_contents/_generated/integ-last-run.tsv` (committed, one row per
+1. **Ledger** `docs/_generated/integ-last-run.tsv` (committed, one row per
    test; written by `/run-integ` on every run):
    - **Stale**: age > the `integ-destroy` gate TTL (**14 days**) — past that
      the marker expires, so a clean result no longer proves today's AWS
@@ -44,7 +44,7 @@ truncated, and the wrap-up names exactly which tests were not run.
 
 1. **Discover the universe + ledger state**:
    ```bash
-   LEDGER="docs/_contents/_generated/integ-last-run.tsv"
+   LEDGER="docs/_generated/integ-last-run.tsv"
    now=$(date -u +%s)
    # Union-merge can leave duplicate rows — LAST row per test wins. The
    # header is MULTIPLE `#` lines; skip them all (a single NR==1 guard let

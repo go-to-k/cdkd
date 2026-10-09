@@ -27,7 +27,7 @@ import { displayIdent, plainIdentOr, STACK_REF_MAX_CODE_POINTS } from '../utils/
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
  * asset-mode detection (issue #1002, design at
- * docs/_contents/design/1002-cdkd-asset-storage.md).
+ * docs/design/1002-cdkd-asset-storage.md).
  *
  * Why this exists: cdkd publishes assets to the CDK bootstrap bucket / ECR
  * repo, but `cdk gc` decides "in use" by scanning CloudFormation stack

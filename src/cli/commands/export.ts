@@ -2391,7 +2391,7 @@ function repairStackArg(stackName: string | undefined): CommandArg {
  * resource, which is precisely what this table exists to prevent.
  *
  * Anything failing both sources is refused. That covers the degraded record
- * `docs/_contents/state-management.md` describes — written by a cdkd older than the fix
+ * `docs/state-management.md` describes — written by a cdkd older than the fix
  * that started recording the ARN, or by an import that could not reach STS —
  * and the remedy is the one that doc already gives.
  */

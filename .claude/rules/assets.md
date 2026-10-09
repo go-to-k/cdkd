@@ -18,7 +18,7 @@ Self-implemented; no external CDK asset library.
 
 Per-module notes are in [layout-assets.md](layout-assets.md); the cross-region
 refusal is in [asset-bucket-region.md](asset-bucket-region.md). Design:
-`docs/_contents/design/1002-cdkd-asset-storage.md`.
+`docs/design/1002-cdkd-asset-storage.md`.
 
 ## Things easy to get wrong
 

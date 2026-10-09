@@ -6,7 +6,7 @@
  *
  * The OPERATOR's side of the daily job that runs this — what arrives, what to do
  * with each class, and what to do when nothing arrives because the job failed or
- * never fired — is `docs/_contents/schema-refresh-runbook.md`. Linked here because that
+ * never fired — is `docs/schema-refresh-runbook.md`. Linked here because that
  * page is `unlisted` and its other inbound links are written by a pull request
  * which, in exactly the failure case, does not exist.
  *
@@ -526,7 +526,7 @@ export function extractDefinitionShapes(schemaJson) {
  * template. Without this capture, the strongest available assertion is that the
  * member paths are still MODELLED — which stays true the day AWS relaxes the
  * `required` list, silently turning a "parity by loud reject" verdict into a
- * real silent drop with no test failing. `docs/_contents/provider-development.md` already
+ * real silent drop with no test failing. `docs/provider-development.md` already
  * tells provider authors to check the nested definition's `required` list
  * before treating a depth-2 replace as reachable; this is the data that makes
  * that checkable.

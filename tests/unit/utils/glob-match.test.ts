@@ -137,7 +137,7 @@ describe('pathGlobMatches', () => {
     expect(pathGlobMatches('Stage/*', 'Stage/Inner/Stack')).toBe(false);
     expect(pathGlobMatches('Stage/*', 'Other/Stack')).toBe(false);
     // Unlike picomatch's default, `*` and `**` match a segment that starts
-    // with `.` (documented in pathGlobMatches and docs/_contents/cli-list.md).
+    // with `.` (documented in pathGlobMatches and docs/cli-list.md).
     expect(pathGlobMatches('*', '.x')).toBe(true);
     expect(pathGlobMatches('**', 'Stage/.x/Stack')).toBe(true);
     expect(pathGlobMatches('Stage/*', 'Stage/.x')).toBe(true);

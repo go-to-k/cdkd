@@ -100,7 +100,7 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     Widening to subcommands is a separate change.
  */
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
-const DOCS_CONFIG = join(repoRoot, 'docs', 'vite.config.ts');
+const DOCS_CONFIG = join(repoRoot, 'docs', '_site', 'vite.config.ts');
 
 /** The hub. Refused as a topic-page target regardless of its wording. */
 const HUB_PAGE = '/cli-reference';
@@ -164,7 +164,7 @@ const NON_DOCUMENTING_PAGES: readonly string[] = [
 /**
  * Command -> the navigation path of ITS OWN reference page.
  *
- * The path is the site path as written in `docs/vite.config.ts` (`/cli-gc`),
+ * The path is the site path as written in `docs/_site/vite.config.ts` (`/cli-gc`),
  * which maps to `docs/<path>.md`. Each page's H1 must be `# cdkd <command>`.
  */
 const COMMAND_REFERENCE_PAGES: Readonly<Record<string, string>> = {
@@ -377,15 +377,15 @@ function navPaths(): Set<string> {
   return new Set([...uncommented.matchAll(/path:\s*'([^']+)'/g)].map((m) => m[1] as string));
 }
 
-/** `/cli-gc` -> `docs/_contents/cli-gc.md`. */
+/** `/cli-gc` -> `docs/cli-gc.md`. */
 function docFileFor(navPath: string): string {
-  return join(repoRoot, 'docs', '_contents', `${navPath.slice(1)}.md`);
+  return join(repoRoot, 'docs', `${navPath.slice(1)}.md`);
 }
 
 /**
  * Does this text name the command, at a word boundary?
  *
- * The boundary is load-bearing: `docs/_contents/concepts.md`'s description reads "How
+ * The boundary is load-bearing: `docs/concepts.md`'s description reads "How
  * cdkd deploys CDK apps", which CONTAINS the substring `cdkd deploy` -- so a
  * plain `includes` would let the `deploy` mapping be repointed at Core Concepts
  * and stay green.
@@ -405,7 +405,7 @@ function frontmatterOf(file: string): string | null {
  * The page's first `# ` heading, or `null` when it has none.
  *
  * Fenced blocks are removed first: a shell example's `# comment` is not a
- * heading, and `docs/_contents/cli-reference.md` already contains one (`# or`, inside a
+ * heading, and `docs/cli-reference.md` already contains one (`# or`, inside a
  * bash fence). It is harmless there -- the real H1 comes earlier -- but a page
  * whose fence preceded its H1 would be read wrong.
  */
@@ -462,7 +462,7 @@ describe('docs command/nav coverage', () => {
   });
 
   it('rejects an inflected verb as a frontmatter mention', () => {
-    // Pinned here rather than only through `docs/_contents/concepts.md`, whose description
+    // Pinned here rather than only through `docs/concepts.md`, whose description
     // is the tree's one witness for the boundary: rewording that page would
     // leave the load-bearing arm of `namesCommand` unfalsifiable.
     expect(namesCommand('How cdkd deploys CDK apps without CloudFormation', 'deploy')).toBe(false);
@@ -485,7 +485,7 @@ describe('docs command/nav coverage', () => {
       missing,
       `These pages document a command but are not linked from the hub's index of ` +
         `per-command reference pages, so a reader who starts at the CLI Reference never ` +
-        `finds them. Add the bullet to ${HUB_INDEX_HEADING} in docs/_contents/cli-reference.md.`
+        `finds them. Add the bullet to ${HUB_INDEX_HEADING} in docs/cli-reference.md.`
     ).toEqual([]);
   });
 
@@ -558,7 +558,7 @@ describe('docs command/nav coverage', () => {
     expect(
       missing,
       `These pages are claimed as a command's documentation but have no entry in the ` +
-        `navigation array in docs/vite.config.ts, so a reader browsing the site cannot ` +
+        `navigation array in docs/_site/vite.config.ts, so a reader browsing the site cannot ` +
         `reach them.`
     ).toEqual([]);
   });

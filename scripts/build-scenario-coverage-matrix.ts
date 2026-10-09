@@ -30,8 +30,8 @@
  *     rejected at parse time as a typo.
  *
  * Outputs:
- *   - docs/_contents/_generated/scenario-coverage.json: machine-readable matrix.
- *   - docs/_contents/scenario-coverage.md:              markdown report.
+ *   - docs/_generated/scenario-coverage.json: machine-readable matrix.
+ *   - docs/scenario-coverage.md:              markdown report.
  *
  * Run from the repo root:
  *   node --experimental-strip-types scripts/build-scenario-coverage-matrix.ts
@@ -48,7 +48,7 @@
  *
  * CI auto-regen check (mirrors #399 for integ-coverage / #422 for
  * audit-provider-coverage): `vp run scenario-coverage` + `git diff
- * --quiet docs/_contents/_generated/scenario-coverage.json docs/_contents/scenario-coverage.md`
+ * --quiet docs/_generated/scenario-coverage.json docs/scenario-coverage.md`
  * fails CI if a fixture sidecar was added without regenerating the
  * report. Wired in .github/workflows/ci.yml.
  *
@@ -75,8 +75,8 @@ const __dirname = dirname(__filename);
 const REPO_ROOT = resolve(__dirname, '..');
 
 const INTEG_DIR = join(REPO_ROOT, 'tests/integration');
-const OUTPUT_JSON = join(REPO_ROOT, 'docs/_contents/_generated/scenario-coverage.json');
-const OUTPUT_MD = join(REPO_ROOT, 'docs/_contents/scenario-coverage.md');
+const OUTPUT_JSON = join(REPO_ROOT, 'docs/_generated/scenario-coverage.json');
+const OUTPUT_MD = join(REPO_ROOT, 'docs/scenario-coverage.md');
 const SIDECAR_NAME = '.scenarios.json';
 
 /**
@@ -164,7 +164,7 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'nested-stack-deep-deploy-cascade':
     'Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level\'s resources + state files.',
   'cfn-macro-expansion':
-    'CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/_contents/design/463-cfn-macros.md`.',
+    'CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`.',
 
   // ---- Conditions / intrinsic-function patterns ----
   'conditions-and-if':
@@ -531,7 +531,7 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
   lines.push('');
   lines.push('Empty `[]` means "intentionally no canonical scenario applies to this fixture" (per-service smoke tests). Absent file means "not yet annotated" — surfaced in the un-annotated section below.');
   lines.push('');
-  lines.push('This report is a visibility tool, not a commit-time gate. Many cdkd fixtures legitimately exercise no canonical scenario, and forcing per-commit annotation would add friction without proportional value. Contrast with the provider-coverage matrix ([docs/_contents/integ-coverage.md](integ-coverage.md)) which IS gated because the "is every registered SDK Provider exercised?" question has a structural answer.');
+  lines.push('This report is a visibility tool, not a commit-time gate. Many cdkd fixtures legitimately exercise no canonical scenario, and forcing per-commit annotation would add friction without proportional value. Contrast with the provider-coverage matrix ([docs/integ-coverage.md](integ-coverage.md)) which IS gated because the "is every registered SDK Provider exercised?" question has a structural answer.');
   lines.push('');
 
   // --- Orphan scenarios ---

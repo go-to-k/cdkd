@@ -6,11 +6,11 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
 // Messages cdkd prints, the skill it distributes, the README and the
 // changelog fragments link readers to https://cdkd.dev. Each link has to be
 // well formed, stand on its own (a stray `$` before it breaks the link in a
-// terminal), land on a page the site builds from docs/_contents, and name
+// terminal), land on a page the site builds from docs, and name
 // an anchor that page has.
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
-const CONTENTS = join(ROOT, 'docs', '_contents');
+const CONTENTS = join(ROOT, 'docs');
 // Everything up to a character that ends a link in prose, Markdown or code.
 const LINK = /https?:\/\/cdkd\.dev[^\s"'`<>()[\]{}]*/g;
 const SHAPE = /^https:\/\/cdkd\.dev(?:\/(?:[a-z0-9-]+\/)*(?:#[a-z0-9-]+)?)?$/;

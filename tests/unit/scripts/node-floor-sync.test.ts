@@ -116,11 +116,11 @@ const DOCS_STATING_THE_FLOOR: ReadonlyArray<readonly [file: string, statement: R
   ],
   ['CONTRIBUTING.md', new RegExp(String.raw`users\s+on\s+Node\.js\s+${FLOOR_SHORT_RE}\s+and\s+later`)],
   [
-    'docs/_contents/contributing.md',
+    'docs/contributing.md',
     new RegExp(String.raw`users\s+on\s+Node\.js\s+${FLOOR_SHORT_RE}\s+and\s+later`),
   ],
-  ['docs/_contents/getting-started.md', new RegExp(String.raw`\*\*Node\.js\*\*\s+>=\s+${FLOOR_RE}`)],
-  ['docs/_contents/testing.md', new RegExp(String.raw`Node\.js\s+${FLOOR_SHORT_RE}\s+or\s+higher`)],
+  ['docs/getting-started.md', new RegExp(String.raw`\*\*Node\.js\*\*\s+>=\s+${FLOOR_RE}`)],
+  ['docs/testing.md', new RegExp(String.raw`Node\.js\s+${FLOOR_SHORT_RE}\s+or\s+higher`)],
   ['tests/benchmark/README.md', new RegExp(String.raw`Node\.js\s+>=\s+${FLOOR_RE}`)],
   [
     'plugins/cdkd-skills/skills/cdkd/SKILL.md',
@@ -152,9 +152,9 @@ describe('the published Node.js floor is one value across every surface (#3037)'
       'README.md',
       '.claude/rules/package-and-release.md',
       'CONTRIBUTING.md',
-      'docs/_contents/contributing.md',
-      'docs/_contents/getting-started.md',
-      'docs/_contents/testing.md',
+      'docs/contributing.md',
+      'docs/getting-started.md',
+      'docs/testing.md',
       'tests/benchmark/README.md',
       'plugins/cdkd-skills/skills/cdkd/SKILL.md',
     ]);

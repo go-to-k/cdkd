@@ -1,0 +1,1223 @@
+---
+title: Architecture
+description: "cdkd's layered architecture — CDK synthesis, asset publishing, analysis, state, and SDK/Cloud Control provisioning — with deploy flows and design principles."
+---
+
+# cdkd Architecture Documentation
+
+## Overview
+
+**cdkd** (CDK Direct) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It orchestrates CDK app synthesis (via subprocess execution) and implements its own asset publishing pipeline, then uses SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
+
+## Architecture Diagram
+
+```text diagram=layers
+┌─────────────────────────────────────────────────────────────────┐
+│                         CLI Layer                               │
+│  (src/cli/)                                                     │
+│  - commands/: deploy, diff, destroy, synth, bootstrap          │
+│  - options.ts: CLI option definitions                          │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│                    Synthesis Layer                              │
+│  (src/synthesis/)                                               │
+│  - app-executor.ts: CDK app execution via child_process        │
+│  - assembly-reader.ts: manifest.json/template parser           │
+│  - synthesizer.ts: Context provider loop orchestrator          │
+│  - context-store.ts: cdk.context.json read/write               │
+│  - context-providers/index.ts: Context provider registry       │
+│  - context-providers/: Missing context resolution providers    │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                 ┌──────────┴──────────┐
+                 │                     │
+┌────────────────▼──────┐   ┌─────────▼────────────────────────────┐
+│    Assets Layer       │   │      Analysis Layer                  │
+│  (src/assets/)        │   │  (src/analyzer/)                     │
+│  - file-asset-        │   │  - template-parser.ts: Template parsing│
+│    publisher.ts       │   │  - dag-builder.ts: Dependency graph  │
+│  - docker-asset-      │   │  - diff-calculator.ts: Diff calculation│
+│    publisher.ts       │   │  - intrinsic-function-resolver.ts    │
+│  - asset-publisher.ts │   │                                      │
+│    (orchestrator)     │   │                                      │
+└───────────────────────┘   └──────────┬───────────────────────────┘
+                                       │
+                            ┌──────────┴──────────┐
+                            │                     │
+┌───────────────────────────▼─────┐   ┌──────────▼──────────────────┐
+│       State Layer               │   │   Deployment Layer          │
+│  (src/state/)                   │   │  (src/deployment/)          │
+│  - s3-state-backend.ts          │   │  - deploy-engine.ts         │
+│  - lock-manager.ts              │   │  - intrinsic-function-      │
+│  - State schema (types/state.ts)│   │    resolver.ts              │
+└─────────────────────────────────┘   └──────────┬──────────────────┘
+                                                 │
+                                      ┌──────────▼──────────────────┐
+                                      │   Provisioning Layer        │
+                                      │  (src/provisioning/)        │
+                                      │  - provider-registry.ts     │
+                                      │  - cloud-control-provider.ts│
+                                      │  - providers/:              │
+                                      │    - See src/provisioning/  │
+                                      │      providers/ for full    │
+                                      │      list                   │
+                                      │  - json-patch-generator.ts  │
+                                      └─────────────────────────────┘
+```
+
+## Layer Details
+
+### 1. CLI Layer (`src/cli/`)
+
+**Responsibilities**: User interface, command-line argument processing
+
+**Main Components**:
+
+- `commands/deploy.ts`: Deploy command implementation
+- `commands/diff.ts`: Diff display command implementation
+- `commands/destroy.ts`: Resource deletion command implementation
+- `commands/synth.ts`: Synthesis only execution
+- `commands/bootstrap.ts`: State bucket initialization
+- `options.ts`: Common CLI option definitions
+- `config-loader.ts`: Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
+
+**Design Pattern**: Command pattern
+
+**Entry Point**: `src/cli/index.ts`
+
+### 2. Synthesis Layer (`src/synthesis/`)
+
+**Responsibilities**: CDK application execution, CloudFormation template generation, context provider resolution
+
+cdkd orchestrates CDK app synthesis without external CDK toolkit dependencies. The CDK app itself (aws-cdk-lib) generates the CloudFormation template — cdkd's role is to execute the app as a child process, read the resulting cloud assembly output, and handle context provider resolution through an iterative loop.
+
+**Main Components**:
+
+#### `app-executor.ts` - AppExecutor
+
+Executes the CDK app command via `child_process.spawn()` with the following environment variables:
+
+- `CDK_OUTDIR`: Output directory for synthesized templates (e.g., `cdk.out`)
+- `CDK_CONTEXT_JSON`: Serialized JSON context (includes cached context from `cdk.context.json`)
+- `CDK_DEFAULT_REGION`: AWS region
+- `CDK_DEFAULT_ACCOUNT`: AWS account ID
+
+#### `assembly-reader.ts` - AssemblyReader
+
+Reads the cloud assembly output directly from the `cdk.out/` directory:
+
+- Parses `manifest.json` to discover stack artifacts and asset manifests
+- Extracts CloudFormation templates (`{StackName}.template.json`)
+- Extracts asset manifests (`{StackName}.assets.json`)
+- Resolves artifact dependencies and metadata
+- Collects CDK annotation messages (`Annotations.addError` / `addWarning` /
+  `addInfo`) per stack via `stack-messages.ts` — from both the inline
+  `manifest.json` `metadata` field and the `{artifactId}.metadata.json` side
+  file (`additionalMetadataFile`) written by current aws-cdk-lib. `synth` and
+  `deploy` print warnings/infos and refuse to proceed when a selected stack
+  carries an error annotation (CDK CLI `Found errors` parity, issue #1228)
+
+#### `synthesizer.ts` - Synthesizer
+
+Orchestrates the context provider loop:
+
+```text diagram=synthesizer-loop
+1. Execute CDK app (AppExecutor)
+   ↓
+2. Read cloud assembly (AssemblyReader)
+   ↓
+3. Check for missing context in manifest
+   ↓  (if missing context found)
+4. Resolve missing context via ContextProviderRegistry
+   ↓
+5. Save resolved context to cdk.context.json (ContextStore)
+   ↓
+6. Re-execute CDK app with updated context → go to step 1
+   ↓  (if no missing context)
+7. Return final assembly with stacks and asset manifests
+```
+
+This iterative loop mirrors the behavior of the CDK CLI: when a CDK app encounters a construct that requires runtime context (e.g., `Vpc.fromLookup()`), it records the missing context key and exits. The synthesizer detects these missing keys, resolves them via AWS SDK calls, caches the results, and re-runs synthesis until all context is satisfied.
+
+**Context Merge Order** (later wins):
+
+1. CDK defaults (`aws:cdk:enable-path-metadata`, `aws:cdk:enable-asset-metadata`, `aws:cdk:version-reporting`, `aws:cdk:bundling-stacks`)
+2. `~/.cdk.json` "context" field (user-level defaults)
+3. `cdk.json` "context" field (project-level settings)
+4. `cdk.context.json` (cached lookup results, reloaded each iteration)
+5. CLI `-c key=value` (highest priority)
+
+#### `context-store.ts` - ContextStore
+
+Reads and writes `cdk.context.json` for context caching. This file persists resolved context values across synthesis runs, avoiding redundant AWS API calls.
+
+#### `context-providers/index.ts` - ContextProviderRegistry
+
+Registry of context providers that resolve missing context during synthesis. Each provider handles a specific context type.
+
+**Built-in Context Providers** (`context-providers/`):
+
+All CDK context provider types are supported. See `src/synthesis/context-providers/` for the full list of implementations.
+
+**Synthesis Flow**:
+
+```text diagram=synthesis-flow
+1. User CDK App (--app option, CDKD_APP env var, or cdk.json "app" field)
+   ↓
+2. AppExecutor.execute() via child_process.spawn()
+   ↓  (with CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT env vars)
+3. Output to cdk.out/ directory
+   - manifest.json
+   - {StackName}.template.json
+   - {StackName}.assets.json
+   ↓
+4. AssemblyReader parses manifest.json
+   ↓
+5. Check for missing context → resolve via providers → re-synthesize if needed
+   ↓
+6. Return final assembly with stacks and asset manifests
+```
+
+### 3. Assets Layer (`src/assets/`)
+
+**Responsibilities**: Publish assets like Lambda code, Docker images to S3/ECR
+
+cdkd implements its own asset publishing without external dependencies.
+
+**Main Components**:
+
+#### `file-asset-publisher.ts` - FileAssetPublisher
+
+Publishes file assets (Lambda code packages, etc.) to S3:
+
+- Checks for existing assets via `HeadObject` (skips if already published)
+- Supports ZIP packaging for directory assets
+- Uploads to the CDK asset bucket
+
+#### `docker-asset-publisher.ts` - DockerAssetPublisher
+
+Publishes Docker image assets to ECR:
+
+- Pushes first and logs in only when the push fails auth: a credential left in
+  docker's store by an earlier login lets a repeat push to the same registry
+  skip `GetAuthorizationToken` and `docker login` entirely (#1193).
+- The login targets the registry host the push uses
+  (`<accountId>.dkr.ecr.<region>.<urlSuffix>`, the suffix derived from the
+  region so `aws-cn` / `us-iso*` registries resolve — issue #1745), never the
+  token's `proxyEndpoint`, which names the caller's own registry (issue #3681).
+- Builds Docker images from source
+- Tags and pushes images to the ECR repository
+
+#### `asset-publisher.ts` - AssetPublisher
+
+Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type. Used by standalone `publish-assets` command. For `deploy`, the `WorkGraph` DAG manages individual asset nodes directly.
+
+#### `asset-storage.ts` + `asset-redirect.ts` - cdkd-owned asset storage (issue #1002)
+
+`asset-storage.ts` owns the storage naming, the per-region bootstrap marker
+(`s3://{stateBucket}/cdkd-bootstrap/{region}.json`, written by
+`cdkd bootstrap`), and the deploy-time `AssetModeResolver` (marker absent →
+legacy mode, byte-identical to pre-#1002; present → cdkd-assets mode).
+`asset-redirect.ts` owns what happens in cdkd-assets mode: the
+destination-driven mapping table built from the stack's `*.assets.json`
+(only default-bootstrap-shaped destinations for the deploy account+region
+are redirected — user-chosen storage and cross-region destinations stay
+verbatim), the boundary-aware template rewrite (plain strings, `Fn::Sub`
+template strings, and folded pseudo-parameter-only `Fn::Join` runs), the
+post-resolution audit the deploy engine runs on every resolved resource
+(any surviving CDK-bootstrap reference fails the resource loudly), and the
+publish-time destination redirection the publishers consume — the SAME
+table feeds both sides so they cannot diverge. Applied by `deploy` (incl.
+nested-child templates via `NestedStackProvider`), `diff` (incl.
+`--recursive` children), `import` (incl. the recursive CFn-migration walk),
+and `publish-assets`; `synth` / `export` stay unrewritten by design.
+
+**Asset Types**:
+
+- **File Assets**: Lambda code zip, CloudFormation templates
+- **Docker Image Assets**: Container image publishing to ECR
+
+**Publish Destinations**:
+
+- Legacy mode (no bootstrap marker for the region — bootstrapped by
+  cdkd < 0.232.0 or with `--no-assets`): S3
+  `cdk-hnb659fds-assets-${AccountId}-${Region}/`,
+  ECR `cdk-hnb659fds-container-assets-${AccountId}-${Region}`
+- cdkd-assets mode (region opted in via `cdkd bootstrap`): S3
+  `cdkd-assets-${AccountId}-${Region}/`, ECR
+  `cdkd-container-assets-${AccountId}-${Region}` — out of `cdk gc`'s reach
+
+### 4. Analysis Layer (`src/analyzer/`)
+
+**Responsibilities**: Template analysis, dependency analysis, diff calculation
+
+**Main Components**:
+
+#### `template-parser.ts`
+
+Parses CloudFormation templates and extracts resource information
+
+```typescript
+parseTemplate(template: CloudFormationTemplate): ParsedResource[]
+```
+
+#### `dag-builder.ts`
+
+Analyzes dependencies between resources and builds a DAG (Directed Acyclic Graph)
+
+```typescript
+buildDAG(resources: ParsedResource[]): ResourceDAG
+```
+
+**Dependency Detection**:
+
+- `DependsOn` attribute
+- `Ref` function (`{ "Ref": "LogicalId" }`)
+- `Fn::GetAtt` function (`{ "Fn::GetAtt": ["LogicalId", "Attribute"] }`)
+- **Implicit edges for Custom Resources**: `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` resources attached to a Custom Resource's ServiceToken Lambda execution role get an automatic edge to the Custom Resource itself, so the handler can't be invoked before the inline policy attachment has returned (avoids AccessDenied during deploy)
+- **Implicit edges for Lambda VpcConfig**: every `AWS::EC2::Subnet` / `AWS::EC2::SecurityGroup` referenced by an `AWS::Lambda::Function` `VpcConfig.SubnetIds` / `SecurityGroupIds` gets an explicit edge to the Lambda. For DELETE-time reverse traversal this guarantees the Lambda is removed before its Subnets/SGs so the asynchronous ENI detach has time to complete before EC2 rejects the subnet/SG delete with `DependencyViolation`. Implemented via `extractLambdaVpcDeleteDeps` in `src/analyzer/lambda-vpc-deps.ts`.
+
+**Execution levels are reported, not used as barriers**: `getExecutionLevels`
+groups the DAG by topological depth, and the deploy engine prints only the
+count (`DAG: <n> levels`). Dispatch is event-driven: a resource starts as soon
+as all of its own dependencies complete, without waiting for the rest of its
+level.
+
+```
+Level 0: Resources without dependencies (S3 Bucket, DynamoDB Table)
+Level 1: Depends on Level 0 (IAM Role)
+Level 2: Depends on Level 1 (Lambda Function)
+```
+
+#### `diff-calculator.ts`
+
+Compares current state (S3) with template and calculates changes
+
+```typescript
+async calculateDiff(
+  currentState: StackState,
+  template: CloudFormationTemplate,
+  resolveFn?: IntrinsicResolveFn
+): Promise<Map<string, ResourceChange>>
+```
+
+**Diff Types**:
+
+- `CREATE`: New resource
+- `UPDATE`: Property change
+- `DELETE`: Resource deletion
+- `NO_CHANGE`: No change
+
+**Comparison Behavior**:
+
+- **Intrinsic function handling**: State stores resolved values while templates hold unresolved intrinsics. When a `resolveFn` is supplied (always the case from `deploy`/`diff`), desired properties are resolved against current state before comparison, so changes buried inside an intrinsic (e.g. a literal like `-value` → `-value2` inside `Fn::Join`) are detected. If resolution throws for a particular value (e.g. `Ref` to a not-yet-created resource), that value falls back to the legacy "treat intrinsic as equal" behavior so CREATE-time diffs don't fail. When no `resolveFn` is supplied, intrinsics are detected per-value and treated as equal to the old resolved value.
+- **AWS default key filtering**: AWS APIs often return additional properties not present in the template (e.g., `IncludeCookies: false`, `Enabled: true`). During comparison, only keys present in the template (new) side are compared; extra keys in the state (old) side are ignored as AWS-added defaults.
+- **Resource-level `Condition:` exclusion** (issue #840): CloudFormation does not strip condition-gated resources at synth time — CDK emits a resource carrying a `Condition:` key into `Resources` regardless of the condition's value, and the deploy engine excludes it when the condition evaluates false. After evaluating the `Conditions` section (used for `Fn::If` resolution) the deploy engine prunes every resource whose `Condition:` key resolved to `false` via `TemplateParser.filterResourcesByCondition`, so the whole downstream pipeline (type/property validation, DAG build, diff) sees the CFn-effective resource set. A condition-false resource is therefore never created, and one that exists in prior state but whose condition flipped `true → false` on a redeploy falls through the diff's "present in state, absent from the desired template → DELETE" path — exactly as CloudFormation removes it. A resource whose `Condition:` names an unevaluated/unknown condition is kept (treated as present rather than silently dropped). **Outputs get the same treatment** (issue #1028): an `Outputs` entry carrying a `Condition:` key that evaluated false is skipped silently by `resolveOutputs` — not resolved, not warned about, not persisted to state, not published as an export — mirroring CloudFormation, which never creates a condition-false output. **The standalone `cdkd diff` command mirrors this preprocessing too** (issue #1027): `computeStackDiff` binds template `Parameters` defaults, evaluates `Conditions`, and prunes condition-false resources best-effort before diffing, so a raw CloudFormation template (e.g. ingested via CDK's `CfnInclude`) gets the same parameter/condition-resolved comparison from `cdkd diff` that `cdkd deploy` performs — no phantom `to create` for condition-false resources and no spurious `[requires replacement]` from comparing an unresolved intrinsic against its resolved prior value.
+- **Replacement detection (immutable / createOnly properties)**: a property change is classified as a replacement (`requiresReplacement: true` → DELETE+CREATE, matching CloudFormation's "Update requires: Replacement") two ways. First, the hand-authored `ReplacementRulesRegistry` (`src/analyzer/replacement-rules.ts`) lists the immutable / updateable / conditional properties for ~25 common types. Second — for any property the registry does NOT explicitly classify — the diff falls back to the type's CFn **registry schema** `createOnlyProperties`, resolved at diff time via `cloudformation:DescribeType` (`src/provisioning/create-only-properties.ts`, cached per type for the run; a failed lookup falls back to cdkd's bundled schema snapshot where it has one, else to the registry-only behavior). The fallback only fills the gap (`ReplacementRulesRegistry.isClassified` guards it) so a deliberate `updateableProperties` decision is never overridden, but it means an immutable change on ANY type — not just the ~25 with a rule — is now correctly shown as a replacement by `cdkd diff` instead of mis-classified as an in-place UPDATE. The deploy engine applies the **stateful-replacement guard** to this property-driven path: a replacement of a stateful type (RDS / EFS / Secret / SSM Parameter / Kinesis / S3-with-data / etc., per `STATEFUL_TYPES`) requires `--force-stateful-recreation` (it throws `STATEFUL_REPLACE_BLOCKED` otherwise), the same protection the `--replace` / `--recreate-via-*` flags carry — so a template immutable-property change can no longer silently DELETE+CREATE a stateful resource's data without confirmation. The Cloud Control auto-fallback — which catches an `UnsupportedActionException` rejection mid-deploy (classified by exception NAME down the cause chain since issue [#2520](https://github.com/go-to-k/cdkd/issues/2520), with AWS's prose kept as a top-level fallback) and replaces the resource with no flag at all — consults the SAME guard (issue [#2514](https://github.com/go-to-k/cdkd/issues/2514)), under the same `UpdateReplacePolicy: Retain` exemption the property-driven path carries (issue [#2518](https://github.com/go-to-k/cdkd/issues/2518) — under `Retain` both paths leave the old resource in place, so there is no data loss for the flag to confirm); it used to be the one replacement path that skipped it, which made the guard's presence depend on which provisioning layer a type happened to route through, a decision cdkd re-makes every deploy. Because that path is the Cloud-Control one, the guard list's coverage of types with NO SDK provider became load-bearing, and it had never been swept: both of its mechanical lower bounds are derived from `src/provisioning/providers/**`. `scripts/audit-stateful-candidates.ts` is the third bound and the first to read that population, proposing tier-2 types whose registry schema declares a createOnly property and that look data-bearing; every proposal must land on the guard list or be written off with a reason (issue [#2553](https://github.com/go-to-k/cdkd/issues/2553)).
+- **Replacement propagation to dependents** (issue #807): after per-resource diffs are computed, the calculator walks reverse reference edges (`Ref` / `Fn::GetAtt` / `Fn::Sub` and intrinsics nesting them) from every resource whose `propertyChanges` include `requiresReplacement: true`, and from each of the stack's own `--recreate-via-*` targets that has a record to recreate (issue #4383; the deploy engine passes them in, since the flag is no template edit), and promotes transitive `NO_CHANGE` dependents to `UPDATE` — mirroring CloudFormation's new-physical-ID propagation (e.g. an `AWS::ECS::Service` whose only "change" is the `Ref` to a replaced `AWS::ECS::TaskDefinition` revision still gets `UpdateService`). Each promoted referencing property is re-evaluated against the replacement rules, so a promoted dependent whose referencing property is itself immutable becomes a replacement seed for *its* dependents in turn. The synthetic change's `requiresReplacement` is evaluated with `undefined` old/new values: the referencing property's template value did not actually change (only its resolved physical ID / ARN will), so unconditional `replacementProperties` (which match on the property name) still fire while `conditionalReplacements` are not fed a phantom resolved-string → unresolved-intrinsic delta that would spuriously report "changed". Where the registry does not classify the property, the same CFn-schema `createOnlyProperties` fallback as the ordinary diff decides (issue #3803), for this pass and for the in-place pass below. Only a whole-property create-only path counts, and a write-only one only when the property is exactly a `Ref` or `Fn::GetAtt` of the replaced resource (issue #4701; not a `Fn::GetAtt` of a custom resource or nested stack): AWS never returns a write-only property, so a fresh `NoEcho` value there could not be confirmed and would replace the resource, while a plain reference resolves to the replaced resource's id or attribute, which the engine compares with the record. A nested one (`ConnectionInput.Name`) raises no ceiling, because the engine lowers a ceiling by comparing the whole top-level value, and a mutable sibling moving would then replace the resource. The schema is read only for resource types a changed resource, a recreate target or a fresh parameter can reach through references, so an unchanged stack makes no `DescribeType` call for it. A type whose write-only list cannot be read (`DescribeType` denied; there is no write-only snapshot) raises a schema ceiling only for a property that is a plain reference to the replaced resource. Promotion is safe even when speculative: the deploy engine re-resolves the promoted resource's properties against the in-flight state map (which by DAG order already carries the dependency's new physical ID) and skips the provider call when nothing actually changed. Each synthetic change carries `replacementPropagated: true` so `cdkd diff` annotates the property line `[replacement propagated]` — the apparent old-value → `{Ref}` delta in the display reads as a propagated replacement, not a literal value edit. That synthetic `requiresReplacement` is a ceiling, not a verdict (issue #3662): once the deploy engine has resolved the dependent, it drops the replacement for a property whose resolved value equals the record, so a dependent whose referenced value did not in fact move is updated in place rather than destroyed and re-created. The one exception is a dependent AWS stores INSIDE the replaced resource (a Lambda function's `Permission` / `Version` / `Alias` / `EventInvokeConfig`, an SNS topic's `Subscription` / `TopicPolicy`, a queue or bucket policy, a log group's filters, a role's inline policies, a scalable target's `ScalingPolicy`, listed in `src/deployment/child-of-recreated-parent.ts`): when the replacement destroyed the old resource and the new one holds the same physical id, such a dependent went with the old one, so the engine re-creates it, without a delete, whatever its resolved value (issue #4411).
+- **In-place attribute propagation to dependents**: an in-place `UPDATE` also promotes a `NO_CHANGE` dependent that reads one of the updated resource's attributes through `Fn::GetAtt` / `Fn::Sub` when that attribute can move with the update — it names a property that changed, it is a derived attribute of the type (`AWS::EC2::LaunchTemplate`'s `LatestVersionNumber` / `DefaultVersionNumber`, issue #985), it is a nested stack's `Outputs.<Key>` (issue #3631), or the upstream is a custom resource, every attribute of which is its handler's response `Data` (issue #3662) and whose `Ref` its handler may move by answering an Update with a new `PhysicalResourceId` (issue #3722). A nested stack's outputs are decided by the child's own deploy, which runs after the parent's diff, so every reader of an updated `AWS::CloudFormation::Stack`'s outputs is promoted, and the deploy engine skips the provider call for each one whose output did not move. Other `Ref` readers are not promoted, since an in-place update of any other type keeps the physical ID. A nested child's engine also promotes every reader of a stack parameter whose value carries a `NoEcho` value the parent supplied in the same deploy: its diff side binds the redacted parameter, `***` like the record, so it cannot see the change (issue #3717). The replacement and in-place passes run until neither promotes anything more, so a promotion that is itself a replacement, or a nested stack whose `Parameters` read a moved output, carries on to its own readers. A custom resource's readers are promoted on the same terms: the handler runs again on the update, and cdkd cannot know what it returns. A reader of a persisted `***` mask (a `NoEcho` custom resource's value, issue #2274) is promoted like any other (issue #3662). The engine takes its no-change skip before it refuses a masked read, so a reader whose value did not move sends nothing. A reader holding a `NoEcho` value that the upstream returned again in this deploy never takes the skip, because `***` equal to a recorded `***` says nothing about the value underneath. A reader whose other reads moved while the masked value was not returned again is refused, as any update of it already was. Each in-place promotion carries `inPlacePropagated: true`, which `cdkd diff` renders as `[attribute propagated]`, and its `requiresReplacement` is the same kind of ceiling: the engine replaces the reader only if a value that cannot change in place actually moved. For a `NoEcho` value returned in this deploy, the record holds only `***`, so the engine reads the reader back from AWS (`readCurrentState`, routed by the record and handed the masked record rather than the resolved bag). It lowers the ceiling only when AWS holds exactly that value at every such position, and keeps the replacement on any readback that cannot confirm it (issue #3729). The same readback settles a create-only consumer of a recovered cross-stack `NoEcho` output, whose change the diff reports only because it compares the plaintext with the mask. Nothing from the readback is stored.
+- **Diff display**: When showing property changes, only the actually changed sub-properties are displayed. Unchanged sibling values and intrinsic-containing values are stripped from the output to reduce noise.
+
+#### `outputs-diff.ts`
+
+`diff-calculator.ts` compares `Resources` only. The template's `Outputs`
+section is compared separately by `outputs-diff.ts`, called from
+`computeStackDiff` in `src/cli/commands/diff-recursive.ts` (issue
+[#1921](https://github.com/go-to-k/cdkd/issues/1921)).
+
+This exists because an **Outputs-only** change — one whose `Resources` section
+is byte-identical — is a real change the deploy performs: `cdkd deploy` persists
+it and republishes the exports index (issue #875, see the no-change branch of
+`deploy-engine/deploy-flow.ts`). Without the preview half, such a stack printed
+`No changes detected` and `cdkd diff --fail` exited `0` while the apply did
+write new outputs. The motivating chain is a producer that gains an
+`Export.Name` because a downstream stack started referencing it: the diff
+steered the user away from the very deploy that would let the consumer's
+`Fn::ImportValue` resolve. The reverse — an export being REMOVED, which can
+break a consumer — was hidden the same way.
+
+- `resolveTemplateOutputs` reproduces the bag shape
+  `DeployEngine.resolveOutputs` persists to `StackState.outputs`: a
+  condition-false output is skipped (CFn never creates it), and an
+  `Export.Name` is stored as a **second key** holding the same value, since
+  `Fn::ImportValue` resolves by export name. An output the last deploy
+  skipped — its `skippedOutputs` digest still matching today's template, the
+  key still absent from state, and no resource it references changing on this
+  run — is previewed as absent too (`src/analyzer/skipped-outputs.ts`), so the
+  deploy's own skip does not read as a phantom `ADD`.
+- The unresolved detector is deliberately **wider** than the deploy side's
+  `v === undefined`, because the diff's best-effort resolver fails in more ways.
+  It flags `undefined` (the same signal — `resolve` returns it *without*
+  throwing for a constructible-but-unknown attribute such as
+  `AWS::DynamoDB::Table.StreamArn`), a symbol (`Ref: AWS::NoValue` selected at
+  top level), a surviving intrinsic object, and — only for a value whose raw
+  template source actually used `Fn::Sub` — an unsubstituted `${...}` string
+  (`resolveSub` keeps the literal placeholder on a genuine miss rather than
+  throwing). Each would otherwise be a PERMANENT phantom change on a stack the
+  deploy considers clean, with `--fail` exiting 1 forever. The `Fn::Sub` scoping
+  matters: applied to every string, the placeholder test would also match an IAM
+  policy body's `${aws:username}` or a UserData shell `${VAR}`, and a single such
+  key suppresses the whole Outputs section for that stack forever.
+- `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
+  `outputMapsEqual` predicate the deploy engine gates its persist on, so a fully
+  resolved preview compares the same bags the apply does.
+- A partially-resolved bag on a stack with **no resource change**, bound
+  parameters, conditions that were evaluated (not skipped for depending on a
+  secret-valued parameter), and no condition verdict that can reach an output (an output's
+  own `Condition`, or `Fn::If` / `{Condition: ...}` outside `Resources` and
+  `Conditions`) is previewed
+  through the deploy engine's own NO-CHANGE merge (`mergeNoChangeOutputs`),
+  which persists the outputs that did resolve and keeps each failed output's
+  stored value, or keeps the previous outputs whole in the two cases it cannot
+  merge safely (an intrinsic `Export.Name` on a failed output with a stored
+  value, and a first secret reference beside a kept value). It does so only
+  when every failure is one the deploy records too — the resolver threw, or
+  returned `undefined` at the top level — named by output key; a failure only
+  the wider detector reports (a nested `undefined` included), or an
+  `Export.Name` the preview cannot resolve or decide,
+  cannot be handed to the merge. A warning names the failed outputs, split into
+  those compared at their stored values and those with no stored value under
+  their own name, since the deploy can still resolve one the diff could not (a secret the
+  diff never fetches, used as a mapping key), and says when previous values are
+  withheld for that reason.
+  The deploy's save-time re-check of the mixed-generation refusal, run after
+  its observed-capture drain, is not reproduced, so a row shown here can still
+  be kept back by the deploy.
+- Everywhere else a partially-resolved bag reports no delta at all. With a
+  resource change pending the deploy's changed-resources branch has no gate,
+  correctly, since by then every resource exists, and usually nothing is lost,
+  since an output usually fails to resolve because it references a resource
+  this deploy has yet to CREATE, which the resource side already shows.
+  A suppressed delta is WARNED about when a difference survives the failed-key
+  filter; when none does, an absent Outputs section is silent.
+- Because this is the first code path that **displays** a stored output value,
+  it withholds an `oldValue` that is legacy secret plaintext. Two signals
+  identify such a record: the desired side still being a secret-bearing dynamic
+  reference (`{{resolve:secretsmanager:` / `{{resolve:ssm-secure:`, or a plain
+  `{{resolve:ssm:` token the diff's resolution kept — per issue #1901 it is
+  classified by the parameter's type, and only a `SecureString` keeps its
+  token while a public `String` resolves to its value, issue #4056) while the
+  stored side is not (the condition `cdkd scrub` repairs; a stored value counts
+  as the expression only as one whole token (where the desired value is one
+  whole token too, or absent) or under exactly the desired value's literal text, never as a token beside other text, issue #4101; a stored
+  value failing that shape, or a container with such a leaf, is itself withheld
+  per key, whatever else the record holds),
+  and the template itself declaring the key's value as a dynamic reference —
+  the latter collected for *every* declared output, including condition-skipped
+  ones, because those have no desired side at all and would otherwise print in
+  full as a `REMOVE` row. A hit on either makes the whole record suspect (it was
+  written by a pre-GHSA binary), so the withholding is record-level; the change
+  is still reported, only the value is withheld. The no-change merge preview
+  above forces the same record-level verdict whenever a value it carried from
+  state for a failed output, an export alias included, is not itself a secret
+  expression: a carried key's desired side is then the stored value, so
+  evidence only its resolved value held is gone, and where such an expression
+  can come from is not enumerable.
+- Neither signal reaches an output **deleted** from the template — both are built
+  from what the template declares, and a deleted output declares nothing (issue
+  [#1948](https://github.com/go-to-k/cdkd/issues/1948)). A third signal answers
+  that from the stored bag, and as a *refusal* rather than a detection, because
+  it is undecidable there: a stored plaintext is indistinguishable from an
+  ordinary string. A stored key present in neither the declared keys (every
+  output name plus every literal `Export.Name`) nor the resolved bag has its
+  value withheld — gated on the template still proving a secret reference
+  *anywhere*, `Resources` included, and exonerated when any stored value is
+  itself a plain `ssm` secret expression in the shape above (a
+  `secretsmanager` / `ssm-secure` one proves only a write after the GHSA fix,
+  and a binary before issue #1901 stored a `SecureString` plaintext beside it,
+  issue #4108) — never a reference beside
+  other text, issue #4101 — (read as evidence the last write redacted the
+  whole bag; a no-change deploy that carries a failed output's stored value
+  refuses to create the one shape that breaks that reading, though a deploy
+  that keeps the whole previous set can still produce it). This arm withholds per KEY
+  rather than record-wide: unlike the two above it concludes only that one key
+  is undecidable, not that the record predates redaction. A stack whose only
+  secret reference *was* the deleted output leaves nothing to gate on, and
+  withholding every `REMOVE` value on every stack would be the worse trade.
+  A nested child REMOVED from its parent's template is the same case one level
+  up — it diffs against an *empty* template, so nothing is declared and nothing
+  is resolved — and it takes the parent's answer, propagated unchanged to a
+  deleted grandchild.
+- Rows the preview cannot decide from the template alone come from state.
+  One is an output whose resolution failed inside a secret lookup at the last
+  deploy — the diff never makes that lookup, so it trusts the deploy's
+  `skippedOutputs` record while the digested template inputs are unchanged and
+  no resource the output references is changing on this run.
+  Another is a **literal**
+  `Export.Name` in a stack that resolves a secret: the deploy refuses such a
+  name when it contains a resolved plaintext, and the preview never substitutes
+  one. It reads the verdict the apply already recorded (issue
+  [#1942](https://github.com/go-to-k/cdkd/issues/1942)): state holding that
+  alias key proves a previous deploy published it over the same literal name, so
+  the preview publishes the same key with today's value — which is what keeps a
+  genuine export change visible instead of suppressing the whole section. An
+  absent key records no verdict (a first deploy of the alias, or of the stack)
+  and still suppresses. A third is a failed output on a stack with no resource
+  change: the no-change merge preview above carries its stored value, and its
+  literal alias's, from state instead of resolving them.
+- It also strips control and bidi characters from template-controlled output /
+  export names and rendered values before they reach the terminal — an
+  `Export.Name` is a value cdkd *resolved*, so unlike a CFn logical ID it never
+  passed a validator. The `--json` payload is not stripped on purpose: it is a
+  machine interface where mutating a name a consumer matches on would be a
+  correctness regression. It is escaped instead (`stringifyJsonPayload`), so it
+  parses back to the same values ([#4045](https://github.com/go-to-k/cdkd/issues/4045)).
+
+The module is a deliberate SECOND implementation rather than shared code: the
+deploy-side block lives in `deploy-engine/`, which is in the `integ-destroy`
+merge-gate scope. `tests/unit/analyzer/outputs-diff.test.ts`
+pays for that trade with an anti-drift fence asserting the mirrored
+deploy-side semantics still hold.
+
+#### `intrinsic-function-resolver.ts`
+
+Resolves CloudFormation intrinsic functions
+
+**Supported Functions**:
+
+- `Ref`: Logical ID → Physical ID / value
+- `Fn::GetAtt`: Attribute reference (e.g., `BucketName`, `Arn`)
+- `Fn::Join`: String concatenation
+- `Fn::Sub`: Template string substitution
+- `Fn::Select`, `Fn::Split`: List and string operations
+- `Fn::If`, `Fn::Equals`: Conditional evaluation
+- `Fn::And`, `Fn::Or`, `Fn::Not`: Logical operators for Conditions
+- `Fn::ImportValue`: Cross-stack references (cdkd state first, then a CloudFormation `ListExports` fallback for CFn-managed producers — issue #1697; disable with `--no-cfn-fallback`)
+- `Fn::GetStackOutput`: Cross-stack / cross-region output reference (cdkd state first, then a same-account CloudFormation `DescribeStacks` fallback — issue #1697; cross-account via `RoleArn` reads the producer account's cdkd state, no CFn fallback)
+- `Fn::FindInMap`: Mapping lookup
+- `Fn::GetAZs`: Availability Zone list
+- `Fn::Base64`: Base64 encoding
+
+All CloudFormation intrinsic functions are now supported.
+
+### 5. State Layer (`src/state/`)
+
+**Responsibilities**: State persistence, mutual exclusion control
+
+#### `s3-state-backend.ts`
+
+State management with S3 as backend
+
+**State Structure**:
+
+```
+s3://{STATE_BUCKET}/{STATE_PREFIX}/
+  └── {StackName}/
+      ├── lock.json      # Exclusive lock
+      └── state.json     # Resource state
+```
+
+**Main Methods**:
+
+```typescript
+interface S3StateBackend {
+  getState(stackName: string): Promise<StackState | null>
+  saveState(stackName: string, state: StackState): Promise<void>
+  deleteState(stackName: string): Promise<void>
+  listStacks(): Promise<string[]>
+}
+```
+
+**State Schema** (`types/state.ts`) — abbreviated; the full current-version
+shape (v11, incl. `region` / `imports` / `outputReads` / `exportNames` / the
+nested-stack parent links) is in [State Management](state-management.md#state-schema):
+
+```typescript
+interface StackState {
+  version: number
+  stackName: string
+  resources: Record<string, ResourceState>
+  outputs: Record<string, unknown>  // resolved Output values, NOT coerced to string
+  lastModified: number
+}
+
+interface ResourceState {
+  physicalId: string          // AWS physical ID (arn:aws:...)
+  resourceType: string        // AWS::Lambda::Function
+  properties: Record<string, any>
+  attributes: Record<string, any>  // For Fn::GetAtt
+  dependencies: string[]      // For deletion order
+}
+```
+
+#### `lock-manager.ts`
+
+Optimistic locking using S3 Conditional Writes
+
+**Locking Method**:
+
+- **Acquire**: `PutObject` with `If-None-Match: *` (create only if doesn't exist)
+- **Release**: `DeleteObject` with `If-Match: {ETag}` (delete only if ETag matches)
+
+**Timeout**: Default 5 minutes (configurable)
+
+**Lock Schema**:
+
+```typescript
+interface LockInfo {
+  lockId: string       // UUID
+  timestamp: number    // Unix timestamp
+  owner: string        // Process identifier
+}
+```
+
+### 6. Deployment Layer (`src/deployment/`)
+
+**Responsibilities**: Deployment execution control, intrinsic function resolution, work graph orchestration
+
+#### `work-graph.ts` - WorkGraph
+
+DAG-based orchestrator for asset publishing and stack deployment. Each asset and stack deploy is a node with typed dependencies.
+
+**Node Types**:
+
+| Type | Concurrency | Description |
+| --- | --- | --- |
+| `asset-build` | 4 (default) | Docker image build (CPU/memory bound) |
+| `asset-publish` | 8 (default) | S3 file upload or ECR push (I/O bound) |
+| `stack` | 4 (default) | Stack deployment via DeployEngine |
+
+**Dependencies**:
+- File assets: `asset-publish → stack`
+- Docker assets: `asset-build → asset-publish → stack`
+- Inter-stack: `stack → stack` (CDK dependency order)
+
+**Algorithm**: Lazy ready-pool evaluation — nodes become ready when all dependencies are completed. Per-type concurrency limits, failure propagation (downstream nodes skipped), deadlock detection.
+
+#### `deploy-engine.ts`
+
+Main deployment engine
+
+**Deployment Flow**:
+
+```typescript
+async deploy(options: DeployOptions): Promise<void> {
+  1. Acquire lock
+  2. Get current state
+  3. Publish assets (can skip with --skip-assets)
+  4. Parse template
+  5. Build DAG
+  6. Calculate diff
+  7. Display execution plan
+  8. Exit here if --dry-run
+  9. Execute via event-driven DAG dispatch
+     - CREATE: Create resource via provider
+     - UPDATE: Generate JSON Patch → Provider update
+     - DELETE: Delete in reverse dependency order
+  10. Resolve Outputs
+  11. Save state
+  12. Release lock
+}
+```
+
+**Event-driven Execution**:
+
+Each resource is dispatched as soon as ALL of its own dependencies complete —
+it does not wait for unrelated siblings in the same DAG level to finish.
+A bounded concurrency limit (`--concurrency`, default 10) caps the number of
+in-flight provisioning operations.
+
+```typescript
+const executor = new DagExecutor();
+for (const id of createUpdateIds) {
+  executor.add({
+    id,
+    dependencies: new Set(dagBuilder.getDirectDependencies(dag, id)),
+    state: 'pending',
+    data: changes.get(id),
+  });
+}
+await executor.execute(concurrency, async (node) => {
+  await this.provisionResource(node.id, node.data);
+});
+```
+
+**Error Handling**:
+
+- Catch errors per resource
+- Continue with other resources even if some fail
+- Save only successful resources to state
+
+#### `intrinsic-function-resolver.ts`
+
+Intrinsic function resolution (shared with Analysis Layer). The class lives
+here with its options interface; its other module-scope helpers and types,
+including `ResolverContext`, live in
+`intrinsic-resolver/support.ts` and the `ref-values.ts`, `context.ts` and
+`account-drain.ts` it re-exports; the method groups live beside them in
+`intrinsic-resolver/` (`getatt.ts` with `getatt-heal.ts`, `getatt-refusals.ts` and
+the `getatt-construct-*.ts` per-type handlers, `cross-stack.ts`, `cfn-fallback.ts`,
+`stack-output.ts`, `stack-state.ts`, `dynamic-refs.ts` with `dynamic-ref-lookups.ts`,
+`string-functions.ts` with `sub.ts`, `functions.ts`, `masking.ts` with
+`masking-display.ts`, `params-conditions.ts`, `parameter-secrets.ts`,
+`refs.ts`, `clients.ts`).
+
+**Resolution Context**:
+
+```typescript
+interface ResolutionContext {
+  resources: Record<string, ResourceState>  // From state
+  pseudoParameters: Record<string, string>  // AWS::AccountId, etc.
+}
+```
+
+**Pseudo Parameters**:
+
+- `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`, else from a
+  12-digit `AWS_ACCOUNT_ID`; with neither, resolution REFUSES rather than
+  substituting a placeholder account (issue
+  [#1730](https://github.com/go-to-k/cdkd/issues/1730))
+- `AWS::Region`: From CLI options, CANONICALIZED (issue
+  [#1882](https://github.com/go-to-k/cdkd/issues/1882)) — folded to lower
+  case at its source so a user `Fn::Sub` cannot inherit a spelling AWS
+  itself refuses; SigV4 compares a credential's region scope
+  case-sensitively, so a non-canonical region never reaches CloudFormation
+- `AWS::Partition`: Derived from the region (`aws` / `aws-cn` / `aws-us-gov` /
+  `aws-iso` / `aws-iso-b` / `aws-iso-e` / `aws-iso-f` / `aws-eusc`) via
+  `derivePartitionAndUrlSuffix` — issues #1730 / #1764
+- `AWS::StackId`: Generated unique identifier (partition-aware)
+- `AWS::StackName`: From stack configuration
+- `AWS::URLSuffix`: Derived from the region (`amazonaws.com` /
+  `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov` / `cloud.adc-e.uk` /
+  `csp.hci.ic.gov` / `amazonaws.eu`) — issues #1730 / #1764
+- `AWS::NoValue`: For conditional property omission
+
+### 7. Provisioning Layer (`src/provisioning/`)
+
+**Responsibilities**: AWS resource creation, update, deletion
+
+#### Architecture Pattern: Strategy + Registry
+
+**Provider Registry** (`provider-registry.ts`):
+
+```typescript
+class ProviderRegistry {
+  private providers: Map<string, ResourceProvider>
+
+  register(resourceType: string, provider: ResourceProvider): void
+  getProvider(resourceType: string): ResourceProvider
+}
+```
+
+**Provider Interface**:
+
+```typescript
+interface ResourceProvider {
+  create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>
+  update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>, context?: UpdateContext): Promise<ResourceUpdateResult>
+  delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void | ResourceDeleteResult>
+  getAttribute?(physicalId: string, resourceType: string, attributeName: string, logicalId: string): Promise<unknown>
+}
+```
+
+The three lifecycle methods are required; `getAttribute` and the dozen further
+members (`handledProperties`, `readCurrentState`, `import`, the drift
+canonicalizers) are optional — see `src/types/resource.ts` for the whole
+interface.
+
+#### Cloud Control Provider (`cloud-control-provider.ts`)
+
+**Fallback Provider**: Handles resource types without a registered SDK Provider (async polling)
+
+**AWS API**:
+
+- `CreateResource`
+- `UpdateResource`
+- `DeleteResource`
+- `GetResource`
+
+**Update Method**: JSON Patch (RFC 6902)
+
+```typescript
+// json-patch-generator.ts
+generatePatch(oldProps: any, newProps: any): JSONPatchOperation[]
+```
+
+Write-only properties (per the type's registry schema `writeOnlyProperties`,
+resolved via `cloudformation:DescribeType` and cached per type) are stripped
+from the previous-properties side before patch generation, so the patch
+always carries `add` ops for write-only properties present in the desired
+properties. Cloud Control applies patches read-modify-write and read handlers
+cannot return write-only properties, so any write-only property absent from
+the patch would be dropped from the desired state on every UPDATE (issue #809;
+e.g. `AWS::ECS::Service.VolumeConfigurations`). The exception is an
+unchanged write-only property whose value holds a create-only path
+overlapping a write-only one (`AWS::Cognito::ManagedLoginBranding.ClientId`,
+`AWS::CodePipeline::CustomActionType.Settings`): Cloud Control refuses any
+patch bringing such a value in, even unchanged, so it stays on the
+previous side and sends no op (issue #4416). If `DescribeType` is
+unavailable (missing permission, throttling), cdkd warns and falls back to
+the minimal patch.
+
+**Limitations**:
+
+- Some resources not supported by Cloud Control API
+- Some properties require replacement when updated
+
+#### SDK Providers (`providers/`)
+
+**Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API.
+
+**Implemented Providers**: IAM, S3, SQS, SNS, Lambda, DynamoDB, CloudWatch, Secrets Manager, SSM, EventBridge, EC2 (VPC/Subnet/SecurityGroup etc.), API Gateway, CloudFront, StepFunctions, ECS, ELBv2, RDS, Route53, WAFv2, Cognito, BedrockAgentCore, Custom Resources. See `src/provisioning/providers/` and [Supported Resources](./supported-resources.md) for the full list.
+
+**How to Add Providers**: See [Provider Development](./provider-development.md)
+
+### 8. Utilities (`src/utils/`)
+
+**logger.ts**: Winston-based logging
+
+```typescript
+logger.info('message')
+logger.debug('verbose message')  // Shown with --verbose
+logger.error('error', error)
+```
+
+**error-handler.ts**: Error classification and handling
+
+```typescript
+handleProvisioningError(error: Error, resource: Resource): void
+```
+
+**aws-clients.ts**: AWS SDK v3 client management
+
+```typescript
+getClient<T>(ClientClass: new (...) => T, region: string): T
+```
+
+## Deployment Flow Details
+
+### 1. Initial Deployment (CREATE)
+
+```text diagram=deploy-create
+┌─────────────┐
+│ User        │
+│ $ cdkd      │
+│   deploy    │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ CLI Layer       │
+│ config-loader   │  --app (or CDKD_APP / cdk.json), --state-bucket (or env/cdk.json)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Synthesis Layer         │
+│ AppExecutor             │  Execute CDK app via child_process.spawn()
+│ AssemblyReader          │  Parse manifest.json from cdk.out/
+│ Synthesizer             │  Context provider loop (resolve missing context)
+└────────┬────────────────┘
+         │
+         │  (per stack, pipelined)
+         ▼
+┌─────────────────────────┐
+│ Assets Layer            │
+│ - Publish to S3/ECR     │  File: 8 concurrent, Docker: 4 concurrent
+│ - Skip if exists        │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ State Layer             │
+│ - Lock Acquire          │
+│ - Get State (null)      │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Analysis Layer          │
+│ - Template Parse        │
+│ - DAG Build             │
+│ - Diff Calc (all CREATE)│
+└────────┬────────────────┘
+                  │
+                  ▼
+         ┌─────────────────────────┐
+         │ Deployment Layer        │
+         │ - Deploy Engine         │
+         │ - Event-driven dispatch │
+         └────────┬────────────────┘
+                  │
+         ┌────────┴─────────┐
+         │                  │
+         ▼                  ▼
+┌─────────────────┐  ┌──────────────────┐
+│ SDK Providers   │  │ Cloud Control    │
+│ (preferred)     │  │ Provider         │
+│ - S3, Lambda    │  │ (fallback)       │
+│ - IAM, DynamoDB │  │ - Many types     │
+│ - SQS, SNS, etc│  │ - Async polling  │
+└────────┬────────┘  └──────────────────┘
+         │
+         │
+         ▼
+┌─────────────────────────┐
+│ State Layer             │
+│ - Resolve Outputs       │
+│ - Save State            │
+│ - Release Lock          │
+└─────────────────────────┘
+```
+
+### 2. Update Deployment (UPDATE)
+
+```text diagram=deploy-update
+... (Same until Synthesis)
+         │
+         ▼
+┌──────────────────┐
+│ Analysis Layer   │
+│ - Diff Calc      │
+│   Current State  │
+│   vs Template    │
+│   → UPDATE       │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────────────┐
+│ Provisioning Layer       │
+│ - JSON Patch Generator   │
+│   oldProps → newProps    │
+│ - Cloud Control API      │
+│   UpdateResource()       │
+└──────────────────────────┘
+```
+
+### 3. Deletion (DESTROY)
+
+```text diagram=deploy-destroy
+┌─────────────┐
+│ User        │
+│ $ cdkd      │
+│   destroy   │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ CLI Layer       │
+│ destroy.ts      │  <stackName>, --app, --force, --all (synth-based)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ State Layer             │
+│ - Get State             │
+│ - Rebuild DAG from      │
+│   state.dependencies    │
+│ - Apply implicit type-  │
+│   based delete deps     │
+│   (analyzer/implicit-   │
+│    delete-deps.ts)      │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Deployment Layer        │
+│ - Reverse Topology Sort │
+│   (delete in reverse)   │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Provisioning Layer      │
+│ - Provider.delete()     │
+│   Execute in reverse    │
+│   dependency order      │
+└─────────────────────────┘
+```
+
+### 4. Context Provider Resolution Loop
+
+```text diagram=context-loop
+┌───────────────────────┐
+│ Synthesizer           │
+│ synthesize()          │
+└──────────┬────────────┘
+           │
+           ▼
+┌───────────────────────┐
+│ AppExecutor           │
+│ spawn(cdkApp)         │◄──────────────────────┐
+│ env: CDK_OUTDIR,      │                       │
+│   CDK_CONTEXT_JSON,   │                       │
+│   CDK_DEFAULT_REGION  │                       │
+└──────────┬────────────┘                       │
+           │                                    │
+           ▼                                    │
+┌───────────────────────┐                       │
+│ AssemblyReader        │                       │
+│ read manifest.json    │                       │
+└──────────┬────────────┘                       │
+           │                                    │
+           ▼                                    │
+┌───────────────────────┐     ┌─────────────────┴───────┐
+│ Missing context?      │─Yes→│ ContextProviderRegistry │
+│ (check manifest       │     │ resolve(key, props)     │
+│  missing entries)     │     │ (all CDK provider types │
+└──────────┬────────────┘     │  supported — see        │
+           │ No               │  context-providers/)    │
+           ▼                  │                         │
+┌───────────────────────┐     │                         │
+│ Return final assembly │     └─────────────┬───────────┘
+└───────────────────────┘                   │
+                                            ▼
+                              ┌─────────────────────────┐
+                              │ ContextStore             │
+                              │ save to cdk.context.json │
+                              └─────────────┬───────────┘
+                                            │
+                                            │ (re-synthesize)
+                                            └───────────────┘
+```
+
+### 5. End-to-end Pipeline Walkthrough (`cdkd deploy`)
+
+A flat, top-to-bottom view of what happens when you run `cdkd deploy`,
+complementary to the per-flow diagrams above:
+
+```
+1. CLI Layer
+   ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
+   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}, with legacy fallback to cdkd-state-{accountId}-{region})
+   └── Initialize AWS clients
+
+2. Synthesis (self-implemented, no CDK CLI dependency)
+   ├── Short-circuit: if --app is an existing directory, treat it as a
+   │   pre-synthesized cloud assembly and skip the steps below
+   ├── Load context (merge order, later wins):
+   │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
+   │   ├── ~/.cdk.json "context" field (user defaults)
+   │   ├── cdk.json "context" field (project settings)
+   │   ├── cdk.context.json (cached lookups, reloaded each iteration)
+   │   └── CLI -c key=value (highest priority)
+   ├── Execute CDK app as subprocess
+   │   ├── child_process.spawn(app command)
+   │   ├── Pass env: CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT
+   │   └── App writes Cloud Assembly to cdk.out/
+   ├── Parse cdk.out/manifest.json
+   │   ├── Extract stacks (type: aws:cloudformation:stack)
+   │   ├── Extract asset manifests (type: cdk:asset-manifest)
+   │   └── Extract stack dependencies
+   └── Context provider loop (if missing context detected):
+       ├── Resolve via AWS SDK (all CDK context provider types supported)
+       ├── Save to cdk.context.json
+       └── Re-execute CDK app with updated context
+
+3. Asset Publishing + Deployment (WorkGraph DAG)
+   ├── Each asset is a node, each stack deploy is a node
+   │   ├── asset-publish nodes: 8 concurrent (file S3 uploads + Docker build+push)
+   │   ├── stack nodes: 4 concurrent deployments
+   │   ├── Dependencies: asset-publish → stack (all assets complete before deploy)
+   │   └── Inter-stack: stack A → stack B (CDK dependency order)
+   ├── Region resolved from asset manifest destination (stack's target region)
+   ├── Skip if already exists (HeadObject for S3, DescribeImages for ECR)
+   ├── Per-stack deploy flow:
+   │   ├── Acquire S3 lock (optimistic locking)
+   │   ├── Load current state from S3
+   │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
+   │   ├── Calculate diff (CREATE/UPDATE/DELETE)
+   │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
+   │   ├── Execute via event-driven DAG dispatch (a resource starts as
+   │   │   soon as ALL of its own deps complete; no level barrier):
+   │   │   ├── SDK Providers (direct API calls, preferred)
+   │   │   └── Cloud Control API (fallback, async polling)
+   │   ├── Save state after each successful resource (partial state save)
+   │   └── Release lock
+   └── synth does NOT publish assets or deploy (deploy only)
+```
+
+> Note: the top-to-bottom order above is the logical flow, not a strict serial
+> schedule. As a latency optimization, `cdkd deploy` resolves the default state
+> bucket (STS `GetCallerIdentity` + `GetBucketLocation`) and runs the fail-fast
+> bucket-exists preflight **concurrently with CDK synthesis** — synth needs
+> neither the state bucket (only the deferred macro-expander consumes it) nor
+> the provisioning clients, so the two independent I/O phases overlap instead of
+> running back-to-back.
+
+## Design Principles
+
+### 1. Single Responsibility Principle (SRP)
+
+Each layer has clear responsibilities
+
+- CLI: UI/UX
+- Synthesis: CDK app execution and context resolution
+- Analysis: Analysis and planning
+- Deployment: Execution control
+- Provisioning: AWS API calls
+
+### 2. Dependency Inversion Principle (DIP)
+
+- Depends on `ResourceProvider` interface
+- Concrete providers are interchangeable
+
+### 3. Open/Closed Principle (OCP)
+
+- Can add new providers (Registry pattern)
+- Can add new context providers (ContextProviderRegistry pattern)
+- Extensible without modifying existing code
+
+### 4. Fail-Fast with State Recovery
+
+- Saves partial state even on error
+- Can re-run as diff on next execution
+
+### 5. Zero External CDK Dependencies
+
+- Synthesis, assembly reading, and asset publishing are all implemented internally
+- cdkd's own source imports no `@aws-cdk/*` package — not `@aws-cdk/toolkit-lib`, `@aws-cdk/cloud-assembly-api`, nor `@aws-cdk/cdk-assets-lib`
+- Only `aws-cdk-lib` is required as the user's CDK app dependency, and cdkd does not declare it either — it is a `devDependency` used by the test suite, never imported by the shipped code
+
+Read those bullets as statements about cdkd's CODE, not about your
+`node_modules`. Installing cdkd does bring `@aws-cdk/*` packages in, all of
+them through [`cdk-local`](https://www.npmjs.com/package/cdk-local) — the
+local-emulation engine cdkd depends on at runtime. It depends on
+`@aws-cdk/toolkit-lib` and `@aws-cdk/cloud-assembly-api` directly, reaches
+`@aws-cdk/cdk-assets-lib` through the former, and declares `aws-cdk-lib` /
+`constructs` as optional peers, which npm and pnpm do not install. So a tree
+inspected after `npm install @go-to-k/cdkd` contains those three `@aws-cdk/*`
+packages (and their own `@aws-cdk/*` dependencies) but no `aws-cdk-lib`, and `npm explain <package>` names `cdk-local`
+at the root of every chain.
+
+Re-derive the set rather than trusting this paragraph — it moves with
+cdk-local's own dependencies, and the hop count is what goes stale first:
+
+```bash
+ls node_modules/@aws-cdk/
+npm explain @aws-cdk/cdk-assets-lib   # prints the whole chain, not just the parent
+```
+
+Note that a strict-layout `pnpm` checkout of THIS repo shows none of them,
+because they are cdk-local's dependencies rather than cdkd's; `ls
+node_modules/@aws-cdk/` here is not the user's view and cannot settle this
+question.
+
+## Performance Characteristics
+
+### Comparison with CloudFormation
+
+| Item | CloudFormation | cdkd |
+| ---- | -------------- | ---- |
+| **Small Stack (5 resources)** | 60-90 seconds | 15-25 seconds |
+| **Medium Stack (20 resources)** | 3-5 minutes | 40-80 seconds |
+| **Parallel Execution** | Mainly sequential | Event-driven DAG dispatch (each resource starts as soon as its own deps complete) |
+| **Rollback** | Automatic | Manual (recover from state) |
+
+### Bottlenecks
+
+1. **Asset Publishing**: S3 upload of Lambda code (seconds to tens of seconds)
+2. **Cloud Control API Polling**: CC API requires async polling for resource operations (mitigated by using SDK Providers for common types)
+3. **Cloud Control API Rate Limits**: Limits per resource type
+4. **Dependency Chains**: Long critical paths through the DAG cap parallelism
+
+## Security Considerations
+
+### 1. Authentication & Authorization
+
+- Uses AWS SDK default authentication chain
+- IAM role or environment variables (`AWS_ACCESS_KEY_ID`, etc.)
+
+### 2. State File Security
+
+- Recommend S3 bucket encryption (SSE-S3 or SSE-KMS)
+- Bucket policy with principle of least privilege
+
+### 3. Lock Mechanism
+
+- Prevents race conditions
+- Prevents inconsistency from concurrent execution
+
+### 4. Sensitive Information
+
+- CloudFormation Parameters supported (with default values and type coercion)
+- Dynamic References supported: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
+- A reference is resolved in **the region it names**, not the region of the
+  stack that holds it. A `SECRET_ID` / parameter name spelled as a full ARN
+  carries its own region, and cdkd routes the lookup to a client pinned there
+  (issue [#2134](https://github.com/go-to-k/cdkd/issues/2134)). This is decided
+  AFTER the reference is assembled, so it holds for one built by `Fn::Sub` /
+  `Fn::Join` / `Ref` / `Fn::FindInMap` as well as for a literal one. A
+  region-LESS reference resolves in the stack's own region, which is the
+  CloudFormation behaviour; if that is not what you want, spell it as an ARN.
+- SECRET-bearing references are resolved for the AWS call but persisted as the
+  UNRESOLVED expression, which is what keeps plaintext out of `state.json`, the
+  rollback journal and CLI output on the ordinary path. It is a redaction pass,
+  not an invariant: the substitution happens only at positions it can certify
+  against the source bag, and where it cannot — a readback whose elements were
+  reordered or normalised, an unpaired element beside a paired one, an observed
+  key the source does not carry — it persists what it was handed. Those three
+  are measured LEAKs reachable by a plain `cdkd deploy`, whose
+  `drainObservedCaptures` baseline hits the persist choke point with an empty
+  secrets map; they are tracked as issue
+  [#2012](https://github.com/go-to-k/cdkd/issues/2012) and the per-row table
+  lives in `src/deployment/secret-redaction/readback-certification.ts`. A separate floor,
+  `MIN_NEEDLE_LENGTH`, bounds the SUBSTRING and derived arms only: an
+  expression-bearing needle below it is still substituted on the whole-value
+  arm, and masking still replaces an exact whole-value match at any length —
+  what a very short secret escapes is the substring SCAN, so it can survive
+  inside a larger string such as an echoed AWS error. Treat a value ever
+  persisted in plaintext as compromised and rotate it. Which references count
+  as secret-bearing is decided by
+  TYPE, not spelling: every `secretsmanager` reference, plus an `ssm` reference
+  whose parameter is a `SecureString` (issue
+  [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
+  `StringList` parameter is public config and stays resolved in state. See
+  [`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
+- A **custom-resource `Data` value has no reference behind it**, so it takes a
+  second channel: a handler that sets `NoEcho: true` on its cfn-response has
+  every value in its `Data` persisted as `***` — in the custom resource's own
+  `attributes`, in the resolved `properties` of everything that consumed it via
+  `Fn::GetAtt`, and in `state.outputs` (a string EMBEDDING it is stored as `***`
+  whole, issue [#2453](https://github.com/go-to-k/cdkd/issues/2453)) — while `Fn::GetAtt` keeps resolving to
+  the REAL value, which is what CloudFormation delivers to a dependent (issue
+  [#2274](https://github.com/go-to-k/cdkd/issues/2274)). Because the value
+  cannot be re-derived, a later deploy that has to WRITE a position holding the
+  mask is refused rather than sending it. ACROSS STACKS the value is bridged
+  only within ONE run: a nested-stack child or a same-run `cdkd deploy --all`
+  producer still has the plaintext in memory and hands it to the consumer,
+  while a producer deployed by an earlier run has none and the consumer is
+  refused. See
+  [State Management](state-management.md#noecho-custom-resource-responses)
+  and [Cross-stack reference internals](cross-stack-internals.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
+- A **`NoEcho: true` template parameter's value** is persisted as `***` too
+  (state schema `version: 11`): wherever it equals or is embedded in a stored
+  string, and at every position the template fills from the parameter, whatever
+  the value's type or length. Each such position is listed in the record's
+  `noEchoLeaves`, and an attribute a producer declares `NoEcho` in
+  `noEchoAttributeNames`. The deploy still sends the real value; to decide
+  whether it changed it reads the resource back from AWS (a record written
+  before `version: 11` is compared with the value it still holds). A create-only
+  property such a value feeds is replaced on a readback only where an earlier
+  readback, handed the masked record, proved AWS reports it exactly
+  (`noEchoExactEchoLeaves`, issue #4656); otherwise the deploy warns and names
+  `--recreate-via-cc-api` / `--recreate-via-sdk-provider`. A custom
+  resource's `Delete` is sent the real value only where cdkd holds the
+  template (`cdkd destroy` with the app, or `cdkd deploy --recreate-via-cc-api`
+  naming the resource): it re-resolves each position from
+  today's template (issue #4682), in memory only; elsewhere that delete is
+  skipped.
+  See [State Management](state-management.md#version-11-stores-noecho-values-as-current-writers).
+
+## Limitations and Future Extensions
+
+### Current Limitations
+
+1. **CloudFormation Macros**: Supported via a transient CloudFormation changeset round-trip (issue [#463](https://github.com/go-to-k/cdkd/issues/463) — `CreateChangeSet` type CREATE, `GetTemplate --template-stage Processed`, cleanup; see the [CloudFormation macros design note](design/463-cfn-macros.md)). Expansion is selection-aware (issue [#1150](https://github.com/go-to-k/cdkd/issues/1150)): `cdkd deploy` / `cdkd diff` expand only the stacks they target, `cdkd list` / `cdkd destroy` never expand (names and destroy both come from the manifest / cdkd state), and intermittent `AWS::EarlyValidation::*` hook rejections of the transient changeset are retried (issue [#1151](https://github.com/go-to-k/cdkd/issues/1151)). Multi-stage macros (expansion output that itself contains a macro) remain out of scope
+2. **Nested Stacks**: Fully supported in both directions. Fresh `cdkd deploy` of nested-stack-bearing CDK apps uses the recursive `NestedStackProvider` (issue [#459](https://github.com/go-to-k/cdkd/issues/459)). Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import --migrate-from-cloudformation` (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive `DescribeStackResources` walk, per-child v6-keyed state writes, recursive `DeletionPolicy: Retain` injection, single parent-side `DeleteStack` cascade). Handing a cdkd-managed nested-stack tree back to CloudFormation uses `cdkd export` (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2 — the orchestrator runs `runPerStackImportLoop` which submits one CFn IMPORT changeset per cdkd-managed stack in the tree in leaf-first order; non-leaf parents adopt their just-imported children via the AWS-docs "Nest an existing stack" pattern (`DeletionPolicy: Retain` plus `ResourceIdentifier: { StackId: <child-arn> }` plus a `TemplateURL` rewritten to point at the child's `GetTemplate(Processed)` output). The original "one atomic `--include-nested-stacks` IMPORT changeset" design was found infeasible by the 2026-05-24 AWS spike — AWS rejects that flag combination with `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`; see the [nested-stack export/import design note](design/464-nested-stacks-export-import.md) §4.0 / §4.3 for the per-stack-loop algorithm.
+3. **Change Sets**: No concept (always executes immediately)
+4. All intrinsic functions are now supported (16/16, including `Fn::GetStackOutput` for cross-region references — same-account, or cross-account via `RoleArn` against the producer account's cdkd state. Cross-stack references also fall back to CloudFormation on a cdkd-state miss — issue [#1697](https://github.com/go-to-k/cdkd/issues/1697) — so producers still managed by CloudFormation can be referenced)
+5. All pseudo parameters are now supported (7/7)
+
+### Phase 9 and Beyond Plans
+
+- CloudWatch metrics integration
+- Progress bar/Rich UI
+
+## References
+
+- [State Management Specification](./state-management.md)
+- [Provider Development Guide](./provider-development.md)
+- [Troubleshooting](./troubleshooting.md)
+- [AWS Cloud Control API Reference](https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/Welcome.html)

@@ -21,7 +21,7 @@ import { safeMsg } from '../utils/display-safe.js';
  * - Anything else (a coerced, aliased, nested, conditional or SDK-shaped
  *   clear) stays in the provider through {@link clearOnUpdateRemoval}.
  *
- * docs/_contents/provider-rules.md#update-removal-semantics-clear-on-removal has the
+ * docs/provider-rules.md#update-removal-semantics-clear-on-removal has the
  * per-field checklist. A leaf (one import-free utility): the deploy engine,
  * the rollback executor and `drift --revert` all reach it.
  */

@@ -90,7 +90,7 @@ on:
   # scheduled fire.
   #
   # How and when to use it, and what it will NOT fix:
-  # https://github.com/go-to-k/cdkd/blob/main/docs/_contents/schema-refresh-runbook.md
+  # https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md
   workflow_dispatch:
 
 # Deny by default, grant per job — the house style set by release.yml.

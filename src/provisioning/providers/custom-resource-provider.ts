@@ -2993,7 +2993,7 @@ export class CustomResourceProvider implements ResourceProvider {
    *    `deployments/{runId}.jsonl`, a durable store that outlives
    *    `cdkd destroy` and is contractually "error + metadata only, never
    *    resource properties, because they may contain secrets"
-   *    (`docs/_contents/deployment-events.md`).
+   *    (`docs/deployment-events.md`).
    *  - On the TIMEOUT / ABORT arms `reason` is a fixed string, but an
    *    `observedResponses` key is the serialized response for one without
    *    `$metadata.httpStatusCode`, and a rejected poll's own message otherwise
@@ -3316,7 +3316,7 @@ export class CustomResourceProvider implements ResourceProvider {
     // while this JSDoc claimed the call had "its OWN budget".
     //
     // `isInterrupted` / `onInterrupted` are threaded per
-    // `docs/_contents/provider-development.md`: a new `withRetry` that omits them leaves
+    // `docs/provider-development.md`: a new `withRetry` that omits them leaves
     // Ctrl-C dead for the whole 47.75s schedule.
     const bucket = this.responseBucket;
     try {

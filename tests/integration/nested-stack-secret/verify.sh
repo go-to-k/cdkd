@@ -1064,7 +1064,7 @@ assert_eq "HandoffSub persists the LOSING parameter's OWN expression, spliced in
 # positions it. Here `coerceParameterValue` split the parent's string on `,`
 # before any redaction ran, so the leaf is an ARRAY beside an intrinsic OBJECT
 # -- a shape NO arm matched, which dropped it to the plaintext-keyed value scan
-# and handed BOTH leaves the survivor's expression. `docs/_contents/cli-reference.md`
+# and handed BOTH leaves the survivor's expression. `docs/cli-reference.md`
 # names `CommaDelimitedList` as an ALLOWED spelling for a secret-bearing
 # nested-stack parameter, so this is reachable rather than theoretical.
 #

@@ -262,7 +262,7 @@ fi
 # `version:[[:space:]]*[0-9]+(...)+` and `STATE_SCHEMA_VERSION[[:space:]]*=...`,
 # which describe `version: 1 | 2 | 3 | 4 | 5;` and `STATE_SCHEMA_VERSION = 5` --
 # the shape the docs' flattened `interface StackState` snippet renders
-# (`.claude/rules/state-schema.md`, `docs/_contents/state-management.md`).
+# (`.claude/rules/state-schema.md`, `docs/state-management.md`).
 # `git log -S'  version: 1 | 2' -- src/types/state.ts` is EMPTY: the real file
 # has always spelled the union as a named type and the constant with a `_CURRENT`
 # suffix, so `_CURRENT:` intervenes before the `=` and the field itself carries

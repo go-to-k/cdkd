@@ -410,7 +410,7 @@ export class CrossAccountSecretRefusalError extends IntrinsicResolutionRefusalEr
  * plaintext in `state.json` over a file they cannot repair. Issue
  * [#3192](https://github.com/go-to-k/cdkd/issues/3192) settled that trade one
  * layer down, for the classifier this refusal now runs ahead of
- * (`docs/_contents/design/3192-outputs-consumers.md` §6), and the same answer has to
+ * (`docs/design/3192-outputs-consumers.md` §6), and the same answer has to
  * hold here or closing the resolver would silently reverse it: scrub records
  * an unverifiable FINDING, scrubs the rest of the stack, does not report it
  * clean, and exits 2.
@@ -504,7 +504,7 @@ export class ConfigError extends CdkdError {
  *        unhandled exception). Default for any thrown error.
  *   - 2: partial failure — work completed but some resources are still in
  *        an error state. Re-running typically resolves it. Documented in
- *        docs/_contents/cli-reference.md's "Exit codes" section.
+ *        docs/cli-reference.md's "Exit codes" section.
  *
  * `handleError` recognizes this class via `instanceof` and uses its
  * `exitCode` instead of the default 1.
@@ -719,7 +719,7 @@ export class NestedStackChildDirectDestroyError extends CdkdError {
       ? ` (parent's logical id: ${plainOrDescribed(parentLogicalId, 'logical id')})`
       : '';
     // Hoisted rather than built inline in the template: this message is quoted
-    // in `docs/_contents/design/459-nested-stacks.md`, and a template whose holes carry
+    // in `docs/design/459-nested-stacks.md`, and a template whose holes carry
     // object literals is far harder to read beside that quotation. The
     // docs-parity checker handles either spelling now that it takes its literal
     // parts from the TypeScript parser.

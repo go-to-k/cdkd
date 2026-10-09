@@ -314,7 +314,7 @@ deregister_family() { (
   # `deregister` is as destructive as `delete` here: an INACTIVE revision
   # cannot be run and cannot be restored. `exit 0` and not `return 0`: this is
   # a SUBSHELL, so the exit ends the sweep and leaves the caller running.
-  # The convention is in `docs/_contents/integ-fixture-conventions.md`.
+  # The convention is in `docs/integ-fixture-conventions.md`.
   case "${FAMILY}" in
     cdkd-test-array-secret-?*) ;;
     *)

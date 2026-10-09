@@ -1655,7 +1655,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * table somebody else holds. Refused here, the 5xx reaches the deploy
    * engine's retry, which marks the create as possibly replayed (`withRetry`,
    * #3978). The table is not adopted on that collision: a name is not
-   * attribution (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
+   * attribution (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): Promise<DynamoDBClient> {
     this.createClient ??= this.dynamoDBClient.config.region().then(

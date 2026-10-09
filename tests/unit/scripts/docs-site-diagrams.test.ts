@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import type { MarkdownNode } from '@ox-content/vite-plugin';
-import { DIAGRAMS } from '../../../docs/diagrams/index.js';
+import { DIAGRAMS } from '../../../docs/_site/diagrams/index.js';
 import {
   type Diagram,
   type Variant,
@@ -11,8 +11,8 @@ import {
   renderFigure,
   renderSvg,
   wrap,
-} from '../../../docs/diagrams/render.js';
-import { diagramId, diagrams } from '../../../docs/plugins/diagrams.js';
+} from '../../../docs/_site/diagrams/render.js';
+import { diagramId, diagrams } from '../../../docs/_site/plugins/diagrams.js';
 
 // The docs' flow diagrams are drawn from data; these pin the layout's
 // invariants and the swap of a named fence for its drawing.
@@ -150,9 +150,9 @@ describe('diagrams transformer', () => {
   });
 
   it('defines every diagram a page names', () => {
-    const pages = readdirSync(join(ROOT, 'docs', '_contents')).filter((f) => f.endsWith('.md'));
+    const pages = readdirSync(join(ROOT, 'docs')).filter((f) => f.endsWith('.md'));
     const named = pages.flatMap((page) =>
-      [...readFileSync(join(ROOT, 'docs', '_contents', page), 'utf8').matchAll(/^```\S*\s+([^\n]*)$/gm)]
+      [...readFileSync(join(ROOT, 'docs', page), 'utf8').matchAll(/^```\S*\s+([^\n]*)$/gm)]
         .map((m) => diagramId(m[1]))
         .filter((id): id is string => id !== null)
     );

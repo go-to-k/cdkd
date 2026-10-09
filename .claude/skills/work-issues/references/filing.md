@@ -2,7 +2,7 @@
 
 ## 5-f. Filing what you find mid-lane
 
-**A finding about the TOOLING is a ROW in `docs/_contents/tooling-backlog.md`, not an
+**A finding about the TOOLING is a ROW in `docs/tooling-backlog.md`, not an
 issue** (AGENTS.md's Tooling Policy: a fence only on a SECOND occurrence).
 
 **N sites of one root cause is ONE issue and ONE PR, never N issues** — each

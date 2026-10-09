@@ -504,7 +504,7 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
 /**
  * Connects the refusal's out-of-band remedy to the page that documents it.
  *
- * `docs/_contents/cli-deploy-safety.md` quotes the same
+ * `docs/cli-deploy-safety.md` quotes the same
  * `aws logs put-log-group-deletion-protection` invocation the protected arm
  * emits, and states the same two facts about it — that `cdkd deploy` has no
  * `--remove-protection`, and that nothing needs re-enabling because the
@@ -526,7 +526,7 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     join(repoRoot, 'src', 'provisioning', 'providers', 'logs-loggroup-provider.ts'),
     'utf8'
   );
-  const doc = readFileSync(join(repoRoot, 'docs', '_contents', 'cli-deploy-safety.md'), 'utf8');
+  const doc = readFileSync(join(repoRoot, 'docs', 'cli-deploy-safety.md'), 'utf8');
   /**
    * Only the doc's FENCED code blocks, whitespace-collapsed.
    *
@@ -590,14 +590,14 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
     expect(
       headings.filter((h) => h.includes(section)),
       `logs-loggroup-provider.ts sends the reader to "${section}"; exactly one heading in ` +
-        'docs/_contents/cli-deploy-safety.md must contain it — zero means the reference is ' +
+        'docs/cli-deploy-safety.md must contain it — zero means the reference is ' +
         'dangling, more than one means it is ambiguous. Headings: ' +
         headings.join(' | ')
     ).toHaveLength(1);
   });
 
   for (const phrase of PHRASES) {
-    it(`\`${phrase}\` appears in the provider and in docs/_contents/cli-deploy-safety.md`, () => {
+    it(`\`${phrase}\` appears in the provider and in docs/cli-deploy-safety.md`, () => {
       const inSource = providerSrc.split(phrase).length - 1;
       expect(
         inSource,
@@ -607,7 +607,7 @@ describe('the LogGroupClass protection remedy stays in step with its doc (#2579)
       expect(
         docFenced,
         `logs-loggroup-provider.ts emits "${phrase}" but no fenced example in ` +
-          'docs/_contents/cli-deploy-safety.md contains it — the message and its documented ' +
+          'docs/cli-deploy-safety.md contains it — the message and its documented ' +
           'runnable example have to move together'
       ).toContain(phrase);
     });

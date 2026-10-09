@@ -813,7 +813,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       //
       // So: state the refusal, the flag that does not exist, the disable
       // command, and the same-deploy trap — all knowable here — then point at
-      // `docs/_contents/cli-deploy-safety.md`, which has the policy in view and room to
+      // `docs/cli-deploy-safety.md`, which has the policy in view and room to
       // be precise. A shorter message that is TRUE beats a complete one that
       // is not.
       const deletionProtected = isTruthyCfnBoolean(previousProperties['DeletionProtectionEnabled']);
@@ -1472,7 +1472,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       const result: Record<string, unknown> = {};
       if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
       result['KmsKeyId'] = found.kmsKeyId ?? '';
-      // Always-emit per docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection: a console-side
+      // Always-emit per docs/provider-rules.md#readcurrentstate-for-drift-detection: a console-side
       // attach of a retention policy on a previously-unbounded log group
       // must surface as drift. `0` is the semantic "never expire"
       // placeholder — `update()` sends `DeleteRetentionPolicyCommand` for it

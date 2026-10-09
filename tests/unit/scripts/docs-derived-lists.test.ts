@@ -25,7 +25,7 @@ import { dirname, join } from 'node:path';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
-const docs = (name: string): string => readFileSync(join(repoRoot, 'docs', '_contents', name), 'utf8');
+const docs = (name: string): string => readFileSync(join(repoRoot, 'docs', name), 'utf8');
 
 /** Resource types named in a markdown page's `AWS::X::Y` occurrences. */
 const typesIn = (markdown: string): Set<string> =>

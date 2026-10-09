@@ -222,7 +222,7 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
     expect(child).toBeDefined();
     expect(child!.changes.get(TORN_ID)?.changeType).toBe('DELETE');
     // The warning names the stack the record came from — a healthy parent sits
-    // above a torn child, which is the per-node claim `docs/_contents/cli-diff.md` makes.
+    // above a torn child, which is the per-node claim `docs/cli-diff.md` makes.
     // Shell-quoted because of the `~`, the same rendering the sibling
     // container's test pins.
     expect(warnings()).toContain(`State for '${STACK}~Child'`);

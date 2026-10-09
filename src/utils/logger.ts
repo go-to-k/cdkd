@@ -72,7 +72,7 @@ const colors = {
  * commands call this in total, not twelve. Those five call it
  * UNCONDITIONALLY at command entry, so for them the DEFAULT human output
  * contract is the one that moved — deliberately, and documented per command
- * in `docs/_contents/cli-reference.md`. The OTHER three `cdkd state` subcommands keep
+ * in `docs/cli-reference.md`. The OTHER three `cdkd state` subcommands keep
  * the `--json` gate on the discriminator that page states: their flagless
  * output is a formatted human VIEW with no record-set mode behind it, not a
  * line-oriented RECORD SET. What has NOT changed is that the decision stays

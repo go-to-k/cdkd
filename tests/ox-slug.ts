@@ -2,7 +2,7 @@
  * The published site's heading slugger, and the fence-stripper its callers
  * need — shared so there is ONE implementation.
  *
- * Ox Content (`docs/vite.config.ts`) renders `docs/_contents/**`, and its
+ * Ox Content (`docs/_site/vite.config.ts`) renders `docs/**`, and its
  * heading-permalink ids are NOT GitHub's: every non-alphanumeric RUN collapses
  * to a single hyphen, and leading hyphens are dropped, so
  * `## \`--pin-cc-api\` (deploy)` is `#pin-cc-api-deploy` where GitHub would

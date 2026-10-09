@@ -281,7 +281,7 @@ echo "==> Phase 1: deploy (standalone subscription, RawMessageDelivery=false)"
 # ARN — so it would pass with the attribute never recorded. The flag fails the
 # deploy on ANY fallback regardless of shape, so a pre-change binary hard-fails
 # here. Safe for this stack: the only other `Fn::GetAtt` is `Queue.Arn`, which
-# `docs/_contents/_generated/sdk-attr-coverage.md` records as cached.
+# `docs/_generated/sdk-attr-coverage.md` records as cached.
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \

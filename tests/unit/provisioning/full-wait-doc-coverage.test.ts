@@ -7,7 +7,7 @@ import { readWaitTable } from '../../wait-table.js';
 /**
  * Enforce that every SDK provider whose stabilization wait is gated on
  * `CDKD_FULL_WAIT` is documented in the per-type wait table of
- * `docs/_contents/cli-deploy.md`. This is the `--full-wait`-side mirror of
+ * `docs/cli-deploy.md`. This is the `--full-wait`-side mirror of
  * `no-wait-doc-coverage.test.ts`: when a provider's default becomes
  * fire-and-forget with `--full-wait` opting into the wait, the resource type
  * MUST appear in that table — otherwise the user-facing "which resources
@@ -19,7 +19,7 @@ import { readWaitTable } from '../../wait-table.js';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
-const deployDocPath = join(repoRoot, 'docs', '_contents', 'cli-deploy.md');
+const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 
 function handledTypes(source: string): string[] {
   const matches = source.match(/'AWS::[A-Za-z0-9]+::[A-Za-z0-9]+'/g) ?? [];

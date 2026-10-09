@@ -185,7 +185,7 @@ export function scanSubject(subject: Subject): Offender[] {
  * by a /work-issues PARENT copying the harness attribution line into lane
  * prompts: first go-to-k/cdkd#3685 (the lane caught it), then six merged PR
  * bodies (#3584 ... #3658, cleaned by hand). This is the second-occurrence
- * build that `docs/_contents/tooling-backlog.md` named. It rides this check because this
+ * build that `docs/tooling-backlog.md` named. It rides this check because this
  * is already the required check that reads every published body.
  *
  * Only a SESSION link, and only when an id character follows `session_`: text

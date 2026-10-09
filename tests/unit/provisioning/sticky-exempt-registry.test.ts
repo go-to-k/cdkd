@@ -35,7 +35,7 @@ const providerClasses = await loadProviderClasses();
  * reason no code change caused.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const LEDGER = join(repoRoot, 'docs', '_contents', '_generated', 'integ-last-run.tsv');
+const LEDGER = join(repoRoot, 'docs', '_generated', 'integ-last-run.tsv');
 
 /** Test names with at least one recorded run, from the committed ledger. */
 function ledgerTestNames(): Set<string> {
@@ -74,7 +74,7 @@ describe('sticky-CC exemption table', () => {
   });
 
   it("every 'sdk-coverage' entry's type has an EMPTY silentDrop map (the admission premise, issue #3413)", () => {
-    // The premise docs/_contents/provider-rules.md step 1 states is a MOVING one: the
+    // The premise docs/provider-rules.md step 1 states is a MOVING one: the
     // daily schema refresh regenerates `property-coverage.generated.ts`, and
     // a property AWS publishes that the provider does not write lands as a
     // drop with nothing turning the refresh PR red — measured on
@@ -163,7 +163,7 @@ describe('sticky-CC exemption table', () => {
       expect(
         ran.has(e.integFixture),
         `${type} names integ fixture "${e.integFixture}", which has no row in ` +
-          `docs/_contents/_generated/integ-last-run.tsv. Existing is not running: this is the assertion ` +
+          `docs/_generated/integ-last-run.tsv. Existing is not running: this is the assertion ` +
           `that stops an entry naming a fixture that never ran against real AWS.`,
       ).toBe(true);
     }

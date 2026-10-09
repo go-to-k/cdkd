@@ -36,4 +36,4 @@ derived and recomputed from the current sources.
 Types with no entry in the public bundle keep the authenticated `DescribeType`
 path as their only refresh route and are left untouched here.
 
-Runbook: https://github.com/go-to-k/cdkd/blob/main/docs/_contents/schema-refresh-runbook.md
+Runbook: https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md

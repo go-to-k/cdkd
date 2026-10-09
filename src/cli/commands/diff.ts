@@ -147,7 +147,7 @@ class DiffDetectedError extends CdkdError {
  *    and merging them would make a CI job that gates on drift report the same
  *    code for "there is work to do" and "the work cannot begin".
  *  - **2** is this CLI's partial-failure family, documented as "work
- *    completed, re-running typically resolves it" (`docs/_contents/cli-reference.md`).
+ *    completed, re-running typically resolves it" (`docs/cli-reference.md`).
  *    A refusal is the opposite: re-running changes nothing until a human acts
  *    — repairing the record, or resolving the ownership conflict, depending on
  *    which condition fired.

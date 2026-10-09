@@ -245,7 +245,7 @@ describe('withoutServerErrorRetries against a real SDK client', () => {
     ['a client timeout', Object.assign(new Error('timed out'), { name: 'TimeoutError' })],
   ])('a wrapped client keeps the SDK retry of %s', async (_what, failure) => {
     // Ambiguous too, but the engine does not retry these: refusing them would
-    // fail the deploy instead (the residual docs/_contents/troubleshooting.md records).
+    // fail the deploy instead (the residual docs/troubleshooting.md records).
     const { client, requests } = makeClient([{ throws: failure }]);
     withoutServerErrorRetries(client);
 

@@ -31,7 +31,7 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
  * makes the fragments the subject, which is what a lane actually edits.
  */
 const assembled = () => assembleChangelog(REPO_ROOT);
-const LEDGER = join(REPO_ROOT, 'docs', '_contents', '_generated', 'integ-last-run.tsv');
+const LEDGER = join(REPO_ROOT, 'docs', '_generated', 'integ-last-run.tsv');
 
 /**
  * Matches the shape `/run-integ`'s ledger rows are quoted in: a backticked test
@@ -90,7 +90,7 @@ describe('changelog citations of the integ ledger', () => {
       stale,
       'a changelog entry cites an integ run the ledger no longer holds — the lane re-ran the fixture ' +
         'after the prose was written, and one row per test means the cited run is gone. Re-derive the ' +
-        'citation from docs/_contents/_generated/integ-last-run.tsv.'
+        'citation from docs/_generated/integ-last-run.tsv.'
     ).toEqual([]);
   });
 

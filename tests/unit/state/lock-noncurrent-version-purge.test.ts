@@ -569,7 +569,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
 
     it('the takeover purge reports at WARN, unlike the release path', async () => {
       // A takeover is rare and already prints a warning of its own, so the
-      // cost profile is the one `docs/_contents/state-management.md` means by "only the
+      // cost profile is the one `docs/state-management.md` means by "only the
       // cleanup paths that need them".
       primeTakeover();
       behaviour.deleteObjects = (): Promise<unknown> =>

@@ -44,7 +44,7 @@ import type { ResourceChange, ResourceState as StateRecord } from '../../../src/
  * refuses at pre-flight before any resource is touched — the flags have never
  * addressed a nested resource. The only ids that reached a child were ones
  * validated for the PARENT and colliding by accident, which is the defect.
- * `docs/_contents/cli-deploy-safety.md` now states the limitation, and
+ * `docs/cli-deploy-safety.md` now states the limitation, and
  * `renderRecreateTargetsErrors` names it when the template has nested stacks.
  */
 

@@ -12,7 +12,7 @@ import { Construct } from 'constructs';
  * `awsvpc` at resolver time with `EcsTaskResolutionError`; after #461 it
  * ACCEPTS the task and maps `awsvpc` to a docker bridge network with a
  * startup warn (docker cannot emulate ENI-per-task — see
- * docs/_contents/design/461-awsvpc-decision.md). This fixture's verify.sh asserts
+ * docs/design/461-awsvpc-decision.md). This fixture's verify.sh asserts
  * that acceptance + the warn + that the container actually boots and
  * serves on the bridge fallback.
  *

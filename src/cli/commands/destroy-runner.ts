@@ -892,7 +892,7 @@ export async function runDestroyForStack(
   // starts AND saves its imports[] entirely between the lock-protected
   // scan and the producer's per-resource delete loop; per-stack locks
   // can't cover cross-stack reads. This race is documented in
-  // docs/_contents/cross-stack-references.md and matches the same inherent
+  // docs/cross-stack-references.md and matches the same inherent
   // limitation in CloudFormation's own strong-reference enforcement.
   const needsStrongRefCheck = !!(state.outputs && Object.keys(state.outputs).length > 0);
   if (needsStrongRefCheck) {
@@ -1225,7 +1225,7 @@ export async function runDestroyForStack(
   // consumer deploy that runs ENTIRELY between this scan and the
   // delete-loop start is invisible. Per-stack locks can't cover
   // cross-stack reads; this matches CloudFormation's own inherent
-  // limitation. Documented in docs/_contents/cross-stack-references.md.
+  // limitation. Documented in docs/cross-stack-references.md.
   if (needsStrongRefCheck) {
     // Any exit out of this block happens BEFORE the main try/finally that
     // owns the lock release, so it releases here — for the refusal throw AND

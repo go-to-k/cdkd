@@ -16,13 +16,13 @@
  *
  * The L2 table is intentionally a curated lower bound: a missed L2
  * construct produces a false-negative ("type appears uncovered when it
- * is") which surfaces in the docs/_contents/integ-coverage.md report and can be
+ * is") which surfaces in the docs/integ-coverage.md report and can be
  * patched here. Building the matrix from `cdk synth` per fixture would
  * be more accurate but is too slow for a pre-commit / CI gate.
  *
  * Outputs:
- *   - docs/_contents/_generated/integ-coverage.json: machine-readable matrix.
- *   - docs/_contents/integ-coverage.md:               markdown report.
+ *   - docs/_generated/integ-coverage.json: machine-readable matrix.
+ *   - docs/integ-coverage.md:               markdown report.
  *
  * Run from the repo root:
  *   node --experimental-strip-types scripts/build-integ-coverage-matrix.ts
@@ -33,7 +33,7 @@
  *   - Manual invocation when adding a new provider / integ fixture.
  *
  * Known limitations (decisions made during PR #404 review — review the
- * docs/_contents/_generated/integ-coverage.json output if any of these become
+ * docs/_generated/integ-coverage.json output if any of these become
  * load-bearing for a particular type):
  *
  *   1. `CDK_L2_TO_L1` omits direct `new ec2.Subnet(...)` / `new
@@ -77,8 +77,8 @@ const REPO_ROOT = resolve(__dirname, '..');
 const REGISTER_FILE = join(REPO_ROOT, 'src/provisioning/register-providers.ts');
 const ALLOWLIST_FILE = join(REPO_ROOT, '.claude/integ-coverage-allowlist.json');
 const INTEG_DIR = join(REPO_ROOT, 'tests/integration');
-const OUTPUT_JSON = join(REPO_ROOT, 'docs/_contents/_generated/integ-coverage.json');
-const OUTPUT_MD = join(REPO_ROOT, 'docs/_contents/integ-coverage.md');
+const OUTPUT_JSON = join(REPO_ROOT, 'docs/_generated/integ-coverage.json');
+const OUTPUT_MD = join(REPO_ROOT, 'docs/integ-coverage.md');
 
 /**
  * Mapping from CDK module alias (the lowercase name in the import

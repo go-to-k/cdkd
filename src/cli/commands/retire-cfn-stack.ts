@@ -624,7 +624,7 @@ function templateContainsNestedStackRows(templateBody: string): boolean {
  *
  * `AWS::CloudFormation::Stack` resources are **intentionally skipped** — see
  * issue [#464](https://github.com/go-to-k/cdkd/issues/464) and the design at
- * [docs/_contents/design/464-nested-stacks-export-import.md](../../../docs/_contents/design/464-nested-stacks-export-import.md)
+ * [docs/design/464-nested-stacks-export-import.md](../../../docs/design/464-nested-stacks-export-import.md)
  * §3.4. Retain on a nested-stack row tells AWS CFn's parent-side `DeleteStack`
  * to NOT cascade-delete the child stack record at all, which would leave a
  * stranded child stack record on AWS that the user has to clean up manually.
@@ -660,7 +660,7 @@ function injectRetainPoliciesOnParsedResources(resources: Record<string, unknown
  * Recursive variant of {@link injectRetainPolicies} that handles a parent
  * template containing one or more `AWS::CloudFormation::Stack` rows. Issue
  * [#464](https://github.com/go-to-k/cdkd/issues/464); see
- * [docs/_contents/design/464-nested-stacks-export-import.md](../../../docs/_contents/design/464-nested-stacks-export-import.md)
+ * [docs/design/464-nested-stacks-export-import.md](../../../docs/design/464-nested-stacks-export-import.md)
  * §3.4 for the design rationale.
  *
  * For each nested-stack row in the parent template:

@@ -167,7 +167,7 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       });
     });
 
-    it('stays override-only: declines with no override, per docs/_contents/import.md', async () => {
+    it('stays override-only: declines with no override, per docs/import.md', async () => {
       const result = await provider.import({
         logicalId: 'WebsiteRecord',
         resourceType: 'AWS::Route53::RecordSet',

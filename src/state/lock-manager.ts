@@ -1115,7 +1115,7 @@ export class LockManager {
    * but lacks `s3:DeleteObjectVersion` — silent today, and newly noisy without
    * it. So
    * release-path failures go to `debug` and only the rare `'reap'` paths warn,
-   * which is the cost profile `docs/_contents/state-management.md` means by "only the
+   * which is the cost profile `docs/state-management.md` means by "only the
    * cleanup paths that need them".
    *
    * A warn-once-per-process dedupe was the other option and is not taken, for

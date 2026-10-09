@@ -129,7 +129,7 @@ describe('the extension / lockfile skip list', () => {
   it.each([
     'docs/image.png',
     'assets/cdk-vs-cdkd.gif',
-    'docs/logo.svg',
+    'docs/_site/logo.svg',
     'assets/x.jpeg',
     'a/b.webp',
     'a/b.pdf',
@@ -149,7 +149,7 @@ describe('the extension / lockfile skip list', () => {
     expect(hasSkippedExtension(path)).toBe(true);
   });
 
-  it.each(['src/foo.ts', 'README.md', 'docs/_contents/cli-reference.md', '.markgate.yml', 'Makefile'])(
+  it.each(['src/foo.ts', 'README.md', 'docs/cli-reference.md', '.markgate.yml', 'Makefile'])(
     'scans %s',
     (path) => {
       expect(hasSkippedExtension(path)).toBe(false);

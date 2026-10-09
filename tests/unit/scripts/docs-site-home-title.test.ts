@@ -7,17 +7,17 @@ import {
   homeTitleOf,
   homeTitlePlugin,
   rewriteHomeTitle,
-} from '../../../docs/plugins/home-title.js';
+} from '../../../docs/_site/plugins/home-title.js';
 
 // cdkd.dev's home page shipped `<title>cdkd</title>`, so a Google result for
-// the site read "cdkd" and nothing else. docs/plugins/home-title.ts patches the
+// the site read "cdkd" and nothing else. docs/_site/plugins/home-title.ts patches the
 // SSG's output into `cdkd - <hero.text>`; this fence pins (1) the derivation
-// from docs/_contents/index.md, so the hero headline and the search headline cannot
+// from docs/index.md, so the hero headline and the search headline cannot
 // drift apart, (2) the rewrite against a head captured from a real build, and
 // (3) that no other page's title is touched.
 
 const ROOT = resolve(import.meta.dirname, '../../..');
-const INDEX_MD = readFileSync(join(ROOT, 'docs/_contents/index.md'), 'utf8');
+const INDEX_MD = readFileSync(join(ROOT, 'docs/index.md'), 'utf8');
 const SITE_NAME = 'cdkd';
 
 // Lines of dist/site/index.html as Ox Content 3.0.0-beta.11 emits them (each
@@ -41,8 +41,8 @@ const HOME_HEAD = [
   '</body>',
 ].join('\n');
 
-describe('docs-site home title', () => {
-  it('derives the home title from docs/_contents/index.md hero.text', () => {
+describe('docs/_site home title', () => {
+  it('derives the home title from docs/index.md hero.text', () => {
     expect(heroTextOf(INDEX_MD)).toBe('The fastest way to deploy AWS CDK.');
     expect(homeTitleOf(SITE_NAME, INDEX_MD)).toBe('cdkd - The fastest way to deploy AWS CDK.');
   });

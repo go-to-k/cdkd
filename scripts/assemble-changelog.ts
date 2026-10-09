@@ -1,5 +1,5 @@
 /**
- * Assembles `docs/_contents/changelog-cdkd.md` from `changelog.d/`.
+ * Assembles `docs/changelog-cdkd.md` from `changelog.d/`.
  *
  * WHY THE FILE IS NO LONGER EDITED DIRECTLY (issue
  * go-to-k/cdkd#2779, option A). Every lane appended its entry to the SAME
@@ -13,7 +13,7 @@
  * turns on rather than a detail. The issue's own analysis is that assembly
  * "removes the conflict only under one condition ... the assembled file must
  * not be committed by each lane" -- committing it reproduces the same anchor
- * one file over and gains nothing. So `docs/_contents/changelog-cdkd.md` is gitignored
+ * one file over and gains nothing. So `docs/changelog-cdkd.md` is gitignored
  * and built.
  *
  * ## The layout
@@ -274,7 +274,7 @@ export function assembleChangelog(root: string): string {
   return [header, '', out.join('\n').replace(/^\n+/, ''), ''].join('\n');
 }
 
-export const OUTPUT_PATH = join('docs', '_contents', 'changelog-cdkd.md');
+export const OUTPUT_PATH = join('docs', 'changelog-cdkd.md');
 
 function main(): void {
   const root = join(import.meta.dirname, '..');

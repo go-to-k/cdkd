@@ -9,7 +9,7 @@
  * no state record. `idempotency-token.ts` closes that for APIs with a token
  * member; these three have none, so the provider can only find out after the
  * fact, on the NEXT attempt, by looking -- and, lacking any exact attribution,
- * only REPORT what it finds (see `docs/_contents/provider-rules.md`).
+ * only REPORT what it finds (see `docs/provider-rules.md`).
  *
  * Three pieces live here, process-scoped like the token memo:
  *

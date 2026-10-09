@@ -1,7 +1,7 @@
 /**
  * The ONE spelling of the attribute-map rule an SDK provider's `create()` /
  * `update()` / `import()` result follows (issue #3077, closing the `?? ''`
- * shape `docs/_contents/provider-development.md` forbids under "Never store an
+ * shape `docs/provider-development.md` forbids under "Never store an
  * empty-string placeholder"):
  *
  *   an attribute cdkd could not read back is ABSENT from the map — never

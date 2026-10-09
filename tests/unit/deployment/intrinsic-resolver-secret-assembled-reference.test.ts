@@ -556,7 +556,7 @@ describe('issue #4166: a custom resource NoEcho value in a reference name', () =
   });
 
   it('is refused: the value is a mask-only key of the pass bag, and its twin masks it', async () => {
-    // What `docs/_contents/state-management.md` says about a reference NAME built from a
+    // What `docs/state-management.md` says about a reference NAME built from a
     // `NoEcho` value: when the reference resolves to a secret it is refused.
     const bag: RecordedSecretValues = new Map([['crnoechovalue', SECRET_MASK]]);
     const context = {

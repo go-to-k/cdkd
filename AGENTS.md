@@ -24,8 +24,8 @@ vp test run      # preferred over `vp run test`: no task runner between caller a
 vp run typecheck | lint | lint:fix | format | format:check
 ```
 
-Tasks live in `vite.config.ts`, invoked as `vp run <task>` — there is no
-`package.json` `scripts` block. Setup and the full task list:
+Tasks are registered in `vite.config.ts` and invoked as `vp run <task>` — there
+is no `package.json` `scripts` block. Setup and the full task list:
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Conventions
@@ -158,9 +158,9 @@ back. State an exception in the PR body for the maintainer to decide.
 
 1. **Default answer: do not build it.** A new hook, gate, CI fence, rule
    paragraph, skill step or test-of-prose is added only on the **second**
-   occurrence of the same failure. The first is a row in the
-   [tooling backlog](docs/_contents/tooling-backlog.md), which also carries when
-   a hook may block at all — "it would have caught this" IS the first occurrence.
+   occurrence of the same failure. The first is a row in
+   [docs/tooling-backlog.md](docs/tooling-backlog.md), which also carries when a
+   hook may block at all — "it would have caught this" IS the first occurrence.
 2. **No fences on prose.** A test may check that a link resolves, a file exists,
    a `paths:` glob matches, or a byte cap holds. It may not count phrases, pin
    wording, compare two copies of a sentence, or assert that a paragraph exists.
@@ -172,13 +172,13 @@ back. State an exception in the PR body for the maintainer to decide.
    small; a change that grows one trims it in the same PR. AGENTS.md has a
    down-only byte ceiling in `tests/unit/scripts/agents-md-size.test.ts`.
 4. **Tooling findings are not issues.** The tracker is for behavior a user can
-   hit. Record the finding in the
-   [tooling backlog](docs/_contents/tooling-backlog.md); it becomes an issue when
+   hit. Record the finding in
+   [docs/tooling-backlog.md](docs/tooling-backlog.md); it becomes an issue when
    someone starts working it.
 
 ## Where everything else lives
 
-Each loads on its own when needed; none is restated here.
+Each of these loads on its own when it is needed, so it is not restated here.
 
 | Subject | Loads from | On |
 | --- | --- | --- |
@@ -189,4 +189,4 @@ Each loads on its own when needed; none is restated here.
 | Testing, fixtures, mutation probes | [testing.md](.claude/rules/testing.md) | `tests/**` |
 | Hooks, gates, the `main` ruleset | [hooks.md](.claude/rules/hooks.md) | `.claude/hooks/**`, `.claude/settings.json`, `.markgate.yml` |
 | Dependencies, Node versions, releases | [package-and-release.md](.claude/rules/package-and-release.md) | `package.json`, release-please files |
-| User-facing documentation | [docs/_contents/](docs/_contents/) | — |
+| User-facing documentation | [docs/](docs/) | — |

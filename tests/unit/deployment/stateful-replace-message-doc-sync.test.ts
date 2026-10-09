@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * `docs/_contents/cli-deploy-safety.md` quotes the stateful-replace refusals' text
+ * `docs/cli-deploy-safety.md` quotes the stateful-replace refusals' text
  * VERBATIM in fenced example blocks — the Cloud Control arm's message, the
  * `UpdateReplacePolicy: Retain` same-name collision refusal that replaced the
  * old "Retain does NOT protect this path" note (issue #2518), and the
@@ -42,7 +42,7 @@ const SOURCE_PATHS = {
   // `renderStatefulReason` sources could never carry them.
   prompt: join(repoRoot, 'src', 'cli', 'commands', 'recreate-confirm-prompt.ts'),
 } as const;
-const docPath = join(repoRoot, 'docs', '_contents', 'cli-deploy-safety.md');
+const docPath = join(repoRoot, 'docs', 'cli-deploy-safety.md');
 
 /**
  * Phrases the refusals and the doc examples must agree on, one line each side,

@@ -85,7 +85,7 @@ export function collectDeclaredOutputNames(outputs: Record<string, TemplateOutpu
  * Deliberately NOT extended to two outputs sharing one `Export.Name` with no
  * output of that name. Both bags stay consistent there (one iteration writes
  * both the value and its source), so it is not this issue's class — see
- * `docs/_contents/cross-stack-references.md`.
+ * `docs/cross-stack-references.md`.
  */
 export function isExportAliasCollision(
   exportName: string,

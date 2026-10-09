@@ -101,7 +101,7 @@ export class S3VectorsProvider implements ResourceProvider {
    * holds. Refused here, the 5xx reaches the deploy engine's retry, which
    * marks the create as possibly replayed (`withRetry`, #3978). Nothing is
    * adopted on that collision: a name is not attribution
-   * (`docs/_contents/provider-rules.md`, "Adopt only on EXACT attribution").
+   * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   private getCreateClient(): S3VectorsClient {
     this.getClient();
@@ -508,7 +508,7 @@ export class S3VectorsProvider implements ResourceProvider {
       if (sseType !== undefined) {
         enc['SseType'] = sseType;
       }
-      // Class 1 guard (docs/_contents/provider-rules.md#readcurrentstate-for-drift-detection): KmsKeyArn is
+      // Class 1 guard (docs/provider-rules.md#readcurrentstate-for-drift-detection): KmsKeyArn is
       // KMS-only — only valid when SseType === 'aws:kms'. AWS will not
       // return kmsKeyArn for AES256-encrypted buckets, but defend
       // against a future SDK that surfaces an account-default KMS key

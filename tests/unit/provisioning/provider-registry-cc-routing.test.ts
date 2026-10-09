@@ -89,7 +89,7 @@ describe('ProviderRegistry.getProviderFor', () => {
   });
 
   it('AUTO-ROUTES an existing provisionedBy: sdk resource whose template gained a silent drop', () => {
-    // The claim docs/_contents/cli-deploy-safety.md now makes, and the one it got
+    // The claim docs/cli-deploy-safety.md now makes, and the one it got
     // BACKWARDS until go-to-k/cdkd#2744: the sticky rule applies only to a
     // record already at 'cc-api', so an 'sdk' record falls through to the
     // silent-drop check on EVERY deploy. Adding such a property to an

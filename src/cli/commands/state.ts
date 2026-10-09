@@ -210,7 +210,7 @@ const STATE_READ_REASONS: Record<StateReadErrorKind, string> = {
 /**
  * A record's resource count, or `null` when its `resources` is not a JSON
  * object ({@link RESOURCES_MALFORMED_REASON}). An absent or `null` bag counts
- * as zero, the tolerance `docs/_contents/cli-state.md` documents for it.
+ * as zero, the tolerance `docs/cli-state.md` documents for it.
  */
 function resourceCountOrNull(resources: unknown): number | null {
   if (resources === undefined || resources === null) return 0;
@@ -1607,7 +1607,7 @@ const SHOW_RENDERED_CONTAINERS: ReadonlySet<RenderedStateContainer> = new Set(
  * What `cdkd state resources` walks: the attribute bag alone.
  *
  * `properties` is deliberately absent — that command excludes them from every
- * mode (`docs/_contents/cli-state.md` says so and `stateResourcesCommand`'s own doc
+ * mode (`docs/cli-state.md` says so and `stateResourcesCommand`'s own doc
  * repeats it), so warning about a container it never renders would report a
  * defect the user cannot see in the output in front of them. `outputs` and
  * `skippedOutputs` are absent for the same reason.
@@ -3289,7 +3289,7 @@ function createStateDestroyCommand(): Command {
 /**
  * Human-readable label for a {@link StateBucketSource}.
  *
- * Mirrors the `Source` column documented in `docs/_contents/plans/07-state-bucket-display.md`.
+ * Mirrors the `Source` column documented in `docs/plans/07-state-bucket-display.md`.
  */
 function formatBucketSource(source: StateBucketSource): string {
   switch (source) {

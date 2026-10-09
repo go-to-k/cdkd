@@ -527,7 +527,7 @@ export class AssemblyReader {
     // Index nested templates by logical id. CDK encodes the child template's
     // sibling path under `Metadata['aws:asset:path']` on each
     // `AWS::CloudFormation::Stack` resource (verified against `cdk synth` of
-    // CDK 2.x `cdk.NestedStack` on 2026-05-22; see docs/_contents/design/459-nested-stacks.md §4).
+    // CDK 2.x `cdk.NestedStack` on 2026-05-22; see docs/design/459-nested-stacks.md §4).
     // Null-prototype, like every other nested-template index (issue
     // go-to-k/cdkd#3480). A logical id is a template key, so on a `{}` literal
     // a row named `__proto__` runs `Object.prototype`'s setter: the assignment

@@ -60,7 +60,7 @@ and the long-running `local start-*` servers deliberately keep human stdout. On
 the two `local invoke*` commands the reservation covers cdkd's logger and the
 container's log pipe; cdk-local's separate logger still reaches stdout, so their
 payload is the LAST stdout line, not the whole stream. Contract in
-`docs/_contents/cli-reference.md`, "Output streams: when stdout is a payload".
+`docs/cli-reference.md`, "Output streams: when stdout is a payload".
 
 ## Concurrency and per-resource deadlines
 
@@ -125,4 +125,4 @@ new unguarded copy cannot be written.
   is a no-op for a Tier 2 / Custom / unknown type. A property absent from the CFn
   schema snapshot routes like a drop unless read-only, on a type with no CC
   route, or held unchanged by the record
-  ([design](../../docs/_contents/design/3713-route-unrecognized-properties.md)).
+  ([design](../../docs/design/3713-route-unrecognized-properties.md)).

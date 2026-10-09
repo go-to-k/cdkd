@@ -193,7 +193,7 @@ import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js'
  *     Driving the exit code off it would make `cdkd drift` exit non-zero
  *     forever, in CI, for every one of those users, over a defect this change
  *     did not introduce — the same "permanently non-zero" hazard
- *     `docs/_contents/cli-reference.md` already cites as a reason NOT to report an
+ *     `docs/cli-reference.md` already cites as a reason NOT to report an
  *     absent write-only credential as drift.
  *
  * So the split is: as INFORMATION both causes mean the resource was not fully

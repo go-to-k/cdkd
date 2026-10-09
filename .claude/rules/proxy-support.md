@@ -9,7 +9,7 @@ paths:
 # Proxy support
 
 Issue [#2388](https://github.com/go-to-k/cdkd/issues/2388); user docs in
-[troubleshooting](../../docs/_contents/troubleshooting.md).
+[troubleshooting](../../docs/troubleshooting.md).
 
 ## `aws-client-defaults.ts`
 
