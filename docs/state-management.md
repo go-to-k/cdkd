@@ -3158,7 +3158,19 @@ detect any of them:
   example an `AWS::IAM::AccessKey`'s `SecretAccessKey`;
 - a `NoEcho` parameter's value in a state record written before
   [`version: 11`](#version-11-stores-noecho-values-as-current-writers), until the
-  next `cdkd deploy` migrates it, and in every earlier object version of it.
+  next `cdkd deploy` migrates it, and in every earlier object version of it;
+- a physical name derived from a secret — a `{{resolve:...}}` reference or a
+  `NoEcho` parameter used in a name or other identifier property, such as an
+  SQS `QueueName`. It is the resource's identity, so it is stored in that
+  resource's `physicalId`, and every other resource's resolved `Ref`,
+  `Fn::GetAtt` or `Fn::Sub` copy of it (an IAM policy's `Resource` ARN, a
+  nested stack's parameters) is stored as resolved. What cdkd prints — logs,
+  deployment events, `cdkd diff` — masks it, and an unmasked occurrence there
+  is a [security report](https://github.com/go-to-k/cdkd/blob/main/SECURITY.md).
+  CloudFormation behaves the same and
+  [advises against](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html)
+  putting a dynamic reference or other sensitive data in an identifier
+  property — do not.
 
 Limit who can read the state bucket, and its earlier object versions,
 accordingly.

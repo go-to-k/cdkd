@@ -66,7 +66,9 @@ Two modes, both useful long after any one-time cleanup:
   what you run after upgrading cdkd on a stack you do not want to
   re-provision, or any time you suspect a state file predates a redaction fix.
 - **Audit** — `--dry-run --fail` exits `1` when a value the template names
-  through a `{{resolve:...}}` reference is still in state as plaintext, so it
+  through a `{{resolve:...}}` reference is still in state as plaintext (a
+  physical name derived from one aside — see
+  [How secrets stay out of state](#how-secrets-stay-out-of-state)), so it
   works as a standing CI gate rather than incident-only tooling. Secrets landing in infrastructure state is a structural, recurring
   concern — the same class Terraform has — so it is worth asserting
   continuously.
@@ -130,6 +132,15 @@ AWS returns, so a password an operator set out of band over a placeholder
 literal is stored as AWS returned it, and scrub, which learns a secret's value
 only from a reference, cannot see it. That is by design; see
 [A value your template never references](#a-value-your-template-never-references).
+
+Nor do they cover a physical name derived from a secret — a
+`{{resolve:...}}` reference or a `NoEcho` parameter in a name or other
+identifier property. The name is the resource's identity, so its `physicalId`
+holds it, and other resources' resolved `Ref`, `Fn::GetAtt` and `Fn::Sub`
+copies of it are stored as resolved; `cdkd scrub` reports those records clean
+and rewrites none of them. The resource's own properties keep the reference.
+CloudFormation does the same; keep secrets out of identifier properties, as
+[its documentation advises](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html).
 
 ## What scrub needs, and what it changes
 

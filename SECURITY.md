@@ -37,7 +37,7 @@ In scope:
 
 - A secret (a `NoEcho` parameter, a `{{resolve:...}}` dynamic reference, a
   value derived from one) reaching state, logs, CLI output, deployment events
-  or an exports index in plaintext.
+  or an exports index in plaintext, except as listed below.
 - Terminal control characters or escape sequences from a template, resource,
   state or AWS value reaching the terminal unstripped.
 - A secret or credential placed on a child process's command line, left on
@@ -70,3 +70,14 @@ Out of scope:
   `Fn::GetAtt` can read it (an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a
   Cognito user pool client's `ClientSecret`), nor a `NoEcho` parameter's value,
   nor a custom resource's `NoEcho` `Data`; reports of those remain welcome.
+- **A physical name derived from a secret, and other resources' resolved
+  references to it, recorded in state.** A `{{resolve:...}}` reference or a
+  `NoEcho` parameter used in a name or other identifier property becomes the
+  resource's identity: its `physicalId`, and the value every resolved `Ref`,
+  `Fn::GetAtt` or `Fn::Sub` of it carries into another resource's record.
+  CloudFormation uses the plaintext value in the primary identifier the same
+  way and
+  [advises against it](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html);
+  see [Security and Best Practices](docs/state-management.md#security-and-best-practices).
+  Such a name reaching logs, deployment events or CLI output unmasked remains
+  in scope.
