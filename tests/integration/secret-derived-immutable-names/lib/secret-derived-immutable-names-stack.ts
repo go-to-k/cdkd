@@ -312,7 +312,7 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
     plainTargetSchedule.addDependency(scheduleGroup);
 
     new QueueReaderChild(this, 'QueueReaderChild', {
-      parameters: { QueueArn: secretQueue.attrArn, QueueUrl: secretQueue.queueUrl },
+      parameters: { QueueArn: secretQueue.attrArn, QueueUrl: secretQueue.ref },
       update,
     });
 
