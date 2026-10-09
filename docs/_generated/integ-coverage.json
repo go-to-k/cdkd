@@ -4974,6 +4974,7 @@
         "custom-resource-noecho-nested",
         "custom-resource-provider",
         "custom-resource-resolved-secret",
+        "custom-resource-service-token-change",
         "data-pipeline",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -5137,6 +5138,10 @@
           "l2"
         ],
         "custom-resource-resolved-secret": [
+          "l2",
+          "literal"
+        ],
+        "custom-resource-service-token-change": [
           "l2",
           "literal"
         ],

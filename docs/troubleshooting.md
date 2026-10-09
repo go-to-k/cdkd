@@ -21,6 +21,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
   - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
   - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
+  - [A changed custom-resource ServiceToken is refused](#a-changed-custom-resource-servicetoken-is-refused)
   - ["Backing Lambda for custom resource X no longer exists" on destroy](#backing-lambda-for-custom-resource-x-no-longer-exists-on-destroy)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Properties validation failed": a list where an object is expected, or the reverse](#properties-validation-failed-a-list-where-an-object-is-expected-or-the-reverse)
@@ -677,6 +678,36 @@ downgraded, since the downgrade would send the value.
   read the value itself.
 - For a nested stack, pass the name down as the parameter, not the resolved
   value.
+
+### A changed custom-resource ServiceToken is refused
+
+**Symptoms:**
+
+```
+Refusing to deploy S: a custom resource's ServiceToken changes, which CloudFormation does not allow ("Modifying service token is not allowed") (issue #4749). Nothing was sent to either handler.
+  - Cr: ServiceToken changes to arn:aws:lambda:...:function:new, away from the handler its record names.
+```
+
+**Causes:**
+
+The custom resource now points at a different handler: its `serviceToken`
+names another provider, or the backing Lambda was renamed or moved under a new
+construct id, so its ARN changed. CloudFormation refuses this, and an in-place
+update would orphan whatever the old handler created. A row reading `its
+recorded ServiceToken is ...` means the record holds no comparable token, so
+cdkd cannot tell whether it changed. See
+[a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken).
+
+**Solutions:**
+
+- To use the new handler, give the custom resource a new logical id (in CDK, a
+  new construct id, or `overrideLogicalId`): the deploy creates it through the
+  new handler and deletes the old one through its old handler.
+- To keep the existing resource, deploy its previous `ServiceToken`.
+- For an unreadable recorded token whose handler did not change, put back as
+  `ServiceToken` in `state.json` the ARN of the handler that created this
+  resource (the one it was last deployed with, not the one the template names
+  now) and re-deploy.
 
 ### "Backing Lambda for custom resource X no longer exists" on destroy
 

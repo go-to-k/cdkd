@@ -5114,6 +5114,102 @@ describe('buildDiffTree replacement routing and the nested-stack Type-change ref
 });
 
 /**
+ * go-to-k/cdkd#4749, through `buildDiffTree` with the real `DiffCalculator`: a
+ * custom resource whose ServiceToken changes is previewed as the refusal
+ * `cdkd deploy` raises, and a token the preview cannot judge is a warning.
+ */
+describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4749)', () => {
+  const OLD = 'arn:aws:lambda:us-east-1:123456789012:function:old-handler';
+  const NEW = 'arn:aws:lambda:us-east-1:123456789012:function:new-handler';
+  const fn = (name: string): ResourceState => ({
+    ...res('AWS::Lambda::Function', { FunctionName: name, Role: 'r' }),
+    physicalId: name,
+    attributes: { Arn: `arn:aws:lambda:us-east-1:123456789012:function:${name}` },
+  });
+  const tree = (template: CloudFormationTemplate, resources: Record<string, ResourceState>) =>
+    buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({ S: st('S', resources) }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+  const crTemplate = (token: unknown, seed = 'a', functionName?: string): CloudFormationTemplate => ({
+    Resources: {
+      ...(functionName !== undefined && {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: functionName, Role: 'r' } },
+      }),
+      Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: token, Seed: seed } },
+    },
+  });
+  const warnings = (): string[] => vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+
+  beforeEach(() => vi.mocked(getLogger().warn).mockClear());
+
+  it('blocks a literal token change, naming the new token and the remedy', async () => {
+    const node = await tree(crTemplate(NEW), { Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }) });
+    expect(node.blocking).toEqual([
+      `Cr: ServiceToken changes to ${NEW}, away from the handler its record names. cdkd deploy refuses a changed ` +
+        `custom-resource ServiceToken, as CloudFormation does (issue #4749); give the custom ` +
+        `resource a new logical id to move it to another handler.`,
+    ]);
+  });
+
+  it('does not block an unchanged token beside another change (the control)', async () => {
+    const node = await tree(crTemplate(OLD, 'b'), {
+      Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }),
+    });
+    expect(node.changes.get('Cr')?.changeType).toBe('UPDATE');
+    expect(node.blocking).toEqual([]);
+  });
+
+  it('shows no change for a GetAtt to a Lambda whose ARN did not change', async () => {
+    const node = await tree(crTemplate({ 'Fn::GetAtt': ['Fn', 'Arn'] }, 'a', 'old-handler'), {
+      Fn: fn('old-handler'),
+      Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }),
+    });
+    expect(node.changes.get('Cr')?.changeType).toBe('NO_CHANGE');
+    expect(node.blocking).toEqual([]);
+    expect(warnings().filter((w) => w.includes('#4749'))).toEqual([]);
+  });
+
+  it('warns, without blocking, when the token reads a Lambda this deploy replaces', async () => {
+    const node = await tree(crTemplate({ 'Fn::GetAtt': ['Fn', 'Arn'] }, 'a', 'new-handler'), {
+      Fn: fn('old-handler'),
+      Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }),
+    });
+    // PREMISE: the real calculator propagates the Lambda's replacement.
+    expect(
+      node.changes.get('Cr')?.propertyChanges?.find((pc) => pc.path === 'ServiceToken')
+        ?.replacementPropagated
+    ).toBe(true);
+    expect(node.blocking).toEqual([]);
+    const lines = warnings().filter((w) => w.includes('#4749'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Cr: its ServiceToken reads a resource this deploy replaces');
+  });
+
+  it('blocks a change over a recorded redaction mask', async () => {
+    const node = await tree(crTemplate(NEW), { Cr: res('Custom::Thing', { ServiceToken: '***', Seed: 'a' }) });
+    expect(node.blocking).toHaveLength(1);
+    expect(node.blocking[0]).toContain("Cr: its recorded ServiceToken is the redaction mask '***'");
+  });
+
+  it('neither blocks nor warns for a token the record and template spell as the same reference', async () => {
+    const ref = '{{resolve:ssm:/handler/arn}}';
+    const node = await tree(crTemplate(ref, 'b'), {
+      Cr: res('Custom::Thing', { ServiceToken: ref, Seed: 'a' }),
+    });
+    expect(node.blocking).toEqual([]);
+    expect(warnings().filter((w) => w.includes('#4749'))).toEqual([]);
+  });
+});
+
+/**
  * go-to-k/cdkd#2790: `cdkd diff` previews the flag-less deploy, so a row the
  * deploy refuses with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` is a WARNING, never
  * a `blocking` reason — blocking means exit 3, and a stack always deployed

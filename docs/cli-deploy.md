@@ -531,6 +531,46 @@ flag was reported as *missing from state*, with advice to drop the flag for a
 resource whose broken row was the reason it could not be recreated, and a row
 with no `resourceType` reached the confirmation prompt with no type to show.
 
+## A changed custom-resource ServiceToken
+
+A custom resource's `ServiceToken` cannot change in place. CloudFormation
+refuses the update (`Modifying service token is not allowed`), and so does
+`cdkd deploy`: sent as an `Update`, the change would reach only the NEW
+handler, and the old handler would never get a `Delete` for what it created.
+
+- A token the plan can compare (two different ARNs) is refused before anything
+  is provisioned, `--dry-run` included. No request reaches either handler and
+  state is unchanged.
+- A token that reads a resource the same deploy replaces or creates (a renamed
+  backing Lambda, or a switch to a new provider) is known only once that
+  resource exists. The update is refused then, before the handler is invoked,
+  and the deploy fails and rolls back like any other resource failure. Unlike
+  CloudFormation, which keeps a replaced resource until cleanup, cdkd has
+  already deleted a replaced backing Lambda by then, and the rollback
+  re-creates it from its record; if that re-creation fails or lands under
+  another name, the custom resource's record names a function that no longer
+  exists. A `Ref` / `Fn::GetAtt` whose ARN did not change is not a change.
+- Where the recorded token is missing, the redaction mask `***` or a
+  `{{resolve:...}}` reference, cdkd cannot compare it, so a deploy whose
+  template changes it (or the expression behind a masked one) is refused too.
+  If the handler did not change, put back as `ServiceToken` in `state.json` the
+  ARN of the handler that created this resource (the one it was last deployed
+  with, not the one the template names now) and re-deploy. Restoring the
+  template's new ARN would send the next update to the new handler, which is
+  the problem this refusal prevents.
+- A `ServiceToken` fed by a `NoEcho` parameter is recorded only as `***`, so a
+  new VALUE of that parameter is not detected: the deploy updates the custom
+  resource as before, through whichever handler the value names. Feed
+  `ServiceToken` from a plain value to have such a change refused.
+
+To move a custom resource to another handler, give it a new logical id (in
+CDK, a new construct id, or `overrideLogicalId` on its `CfnResource`). The
+deploy then creates the new resource through the new handler and deletes the
+old one through its old handler. No flag overrides the refusal; a
+`--recreate-via-cc-api` target is not refused, since it already deletes the
+old resource through the record's token and creates the new one through the
+template's.
+
 ## A skipped custom-resource delete
 
 A deploy deletes a custom resource when it leaves the template, is replaced,

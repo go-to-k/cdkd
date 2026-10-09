@@ -69,6 +69,11 @@ import {
   renderNestedStackTypeChangeRefusal,
 } from '../type-change-guard.js';
 import {
+  findServiceTokenRefusals,
+  renderServiceTokenRefusal,
+  SERVICE_TOKEN_CHANGE_REFUSED,
+} from '../custom-resource-service-token.js';
+import {
   forgetRecordedCreateTokens,
   noteDeployStateRecord,
 } from '../../provisioning/providers/create-token-ledger.js';
@@ -769,6 +774,31 @@ export async function doDeployWithPrefetch(
         new CdkdError(
           renderNestedStackTypeChangeRefusal(nestedStackTypeChanges, stackName),
           'TYPE_CHANGE_NESTED_STACK'
+        )
+      );
+    }
+
+    // go-to-k/cdkd#4749: a custom resource's changed ServiceToken, refused
+    // as CloudFormation refuses it, before any provider call and before the
+    // `--dry-run` return, for the same reasons as the refusal above. A token
+    // the plan cannot judge is decided again at the in-place update
+    // (`update.ts`), once it is resolved. Rationale in
+    // `custom-resource-service-token.ts`.
+    const serviceTokenRefusals = findServiceTokenRefusals({
+      changes,
+      stateResources: currentState.resources,
+      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+    }).refused;
+    if (serviceTokenRefusals.length > 0) {
+      const mask = this.diffLogMasker(
+        diffResolverContext.recordedSecretValues,
+        effectiveTemplate,
+        parameterValues
+      );
+      throw markNonRetryable(
+        new CdkdError(
+          renderServiceTokenRefusal(serviceTokenRefusals, stackName, mask),
+          SERVICE_TOKEN_CHANGE_REFUSED
         )
       );
     }

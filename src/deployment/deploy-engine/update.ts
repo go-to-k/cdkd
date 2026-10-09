@@ -41,6 +41,7 @@ import {
   SECRET_MASK,
   canonicalCoordinates,
   carriesSecretMask,
+  createSecretMasker,
   freshNoEchoLeafPositions,
   type FreshNoEchoLeaf,
   markSameGenerationBag,
@@ -68,6 +69,12 @@ import {
 import { printNestedStackReadsOnly } from './resolver-context.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
+import {
+  diffMovedServiceToken,
+  renderServiceTokenRefusal,
+  SERVICE_TOKEN_CHANGE_REFUSED,
+  serviceTokenUpdateRefusal,
+} from '../custom-resource-service-token.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -1420,6 +1427,33 @@ export async function provisionUpdate(
         updateSecrets,
         lostWithParent,
       })
+    );
+  }
+  // go-to-k/cdkd#4749: the plan refused every ServiceToken change it could
+  // judge; this one sees the RESOLVED token, so a token reading a resource
+  // this deploy replaced or created (a renamed backing Lambda) is refused
+  // here, before the handler is invoked. Nothing was sent, so the journal
+  // must not record the bag as an attempt.
+  const serviceTokenRefusal = serviceTokenUpdateRefusal({
+    logicalId,
+    resourceType,
+    recordedType: currentResource.resourceType,
+    recorded: currentResource.properties?.['ServiceToken'],
+    desired: resolvedProps['ServiceToken'],
+    diffSawTokenChange: diffMovedServiceToken(change),
+  });
+  if (serviceTokenRefusal !== undefined) {
+    throw markRefusedBeforeApplying(
+      markNonRetryable(
+        new CdkdError(
+          renderServiceTokenRefusal(
+            [serviceTokenRefusal],
+            stackName,
+            createSecretMasker(updateSecrets)
+          ),
+          SERVICE_TOKEN_CHANGE_REFUSED
+        )
+      )
     );
   }
   return markRestored(

@@ -72,6 +72,7 @@ custom-resource-masked-service-token	2026-10-06T17:47:53Z	PASS	175	verify.sh	rc 
 custom-resource-noecho-nested	2026-10-08T11:22:30Z	PASS	1467	verify.sh	rc ok, orph clean (PR #4699 NoEcho echo-fidelity, rebased onto #4716)
 custom-resource-provider	2026-10-08T17:12:09Z	PASS	662	verify.sh	rc ok, orph clean
 custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-service-token-change	2026-10-09T06:16:55Z	PASS	145	verify.sh	rc ok, orph clean (PR #4750 fix round)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-10-03T05:56:47Z	PASS	80	verify.sh	rc ok, orph clean (#4497)
@@ -310,7 +311,7 @@ s3-tables	2026-10-07T13:48:36Z	PASS	70	verify.sh	PR #4664 (#4639 data/streaming 
 s3-vectors	2026-10-07T13:48:36Z	PASS	66	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-10-03T04:25:53Z	PASS	122	verify.sh	rc ok, orph clean (#4283 PR #4449)
-schema-v10-to-v11-migration	2026-10-08T18:07:29Z	PASS	531	verify.sh	rc ok, orph clean, 155 assertions (PR #4742 CR delete re-resolve)
+schema-v10-to-v11-migration	2026-10-09T06:25:24Z	PASS	506	verify.sh	rc ok, orph clean, 160 assertions incl. Phase 7g recreate-via-cc-api (PR #4750)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
