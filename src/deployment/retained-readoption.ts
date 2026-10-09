@@ -33,9 +33,10 @@ export function keptForReadoption(resource: ResourceState): resource is Resource
  * earlier entry of the same logical id. With nothing kept and no record yet,
  * the empty record is written: the tombstone that tells a later deploy this
  * cdkd destroyed the stack here, so an older cdkd's history licenses nothing
- * (review D-1). Best-effort: a failure to record a kept resource is warned
- * (the next deploy's create of it is then refused with the `cdkd import`
- * remedy); a tombstone that could not be written is silent.
+ * (review D-1). Best-effort: a failure is warned -- to record a kept
+ * resource (the next deploy's create of it is then refused with the
+ * `cdkd import` remedy), or to write the tombstone (an older cdkd's history
+ * then still licenses).
  */
 export async function recordRetainedForReadoption(
   backend: Pick<S3StateBackend, 'loadRetainedRecord' | 'saveRetainedResources'>,
@@ -49,8 +50,12 @@ export async function recordRetainedForReadoption(
       if ((await backend.loadRetainedRecord(stackName, region)) === null) {
         await backend.saveRetainedResources(stackName, region, []);
       }
-    } catch {
-      // The tombstone is a narrowing, never a reason to warn on a destroy.
+    } catch (error) {
+      logger.warn(
+        safeMsg`Could not write the empty kept-resource record of ${displayStackName(stackName)} ` +
+          safeMsg`(${describeAwsFailure(error).summary}). Until one exists, a later deploy here may ` +
+          `take back a resource an older cdkd kept; 'cdkd state orphan' writes it.`
+      );
     }
     return;
   }

@@ -130,7 +130,7 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
     expect(provider.delete).not.toHaveBeenCalled();
     expect(saved.at(-1)).toEqual([
       { logicalId: 'Earlier', resourceType: 'AWS::SQS::Queue', physicalId: 'q' },
-      { logicalId: 'Kept', resourceType: type, physicalId, keptAt: expect.any(Number) },
+      { logicalId: 'Kept', resourceType: type, physicalId },
     ]);
   });
 

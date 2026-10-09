@@ -1262,6 +1262,7 @@ export async function doDeployWithPrefetch(
         );
       },
       accountInfo: () => getAccountInfo(this.stackRegion),
+      warn: (message) => this.logger.warn(message),
     });
     if (this.generatedNameGuard !== undefined) {
       this.logger.debug(
@@ -1283,7 +1284,7 @@ export async function doDeployWithPrefetch(
 
     // `--require-approval`: asked on the diff this deploy executes, before any
     // provider call. The lock is released by the `finally`.
-    await requireDeploymentApproval({
+    const prompted = await requireDeploymentApproval({
       options: this.options,
       stackName,
       changes: changes.values(),
@@ -1291,6 +1292,9 @@ export async function doDeployWithPrefetch(
       template: effectiveTemplate,
       recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
     });
+    // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
+    // it are read again at each create.
+    if (prompted) this.generatedNameGuard?.noteApprovalPrompted();
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path

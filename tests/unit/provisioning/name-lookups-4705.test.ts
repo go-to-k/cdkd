@@ -433,9 +433,10 @@ describe('review D-2: when a holder was created', () => {
 
   it('a log group reads its own creationTime (exact name, not a prefix sibling)', async () => {
     logsSend.mockResolvedValue({
+      // E-6: a prefix sibling listed FIRST must not answer for the exact name.
       logGroups: [
-        { logGroupName: '/cdkd/App-L', creationTime: 111 },
         { logGroupName: '/cdkd/App-L2', creationTime: 222 },
+        { logGroupName: '/cdkd/App-L', creationTime: 111 },
       ],
     });
     await expect(new LogsLogGroupProvider().holderCreatedAt('AWS::Logs::LogGroup', '/cdkd/App-L')).resolves.toBe(111);

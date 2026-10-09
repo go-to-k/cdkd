@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ResourceAlreadyExistsException } from '@aws-sdk/client-cloudwatch-logs';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
 const NAME = '/cdkd/my-log-group';
@@ -69,6 +70,14 @@ describe('LogsLogGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
 
     const error = await createError(provider);
     expect(createdBeforeFailure(error, 'MyLG', RESOURCE_TYPE)).toBe(NAME);
+  });
+
+  it('go-to-k/cdkd#4705 E-3: a 4xx on the wiring with the log group left behind keeps the intent', async () => {
+    mockSend.mockResolvedValueOnce({}); // CreateLogGroup
+    mockSend.mockRejectedValueOnce(Object.assign(new Error('ValidationException: bad input'), { name: 'ValidationException', $metadata: { httpStatusCode: 400 } }));
+    mockSend.mockRejectedValueOnce(new Error('DeleteLogGroup boom'));
+    const error = await createError(provider);
+    expect(provenNothingCreated(error, 'MyLG', RESOURCE_TYPE)).toBe(false);
   });
 
   it('does not mark when the cleanup deleted the log group', async () => {

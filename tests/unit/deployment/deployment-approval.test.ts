@@ -22,7 +22,7 @@ function run(
   changes: ResourceChange[],
   approve: (r: DeploymentApprovalRequest) => Promise<boolean>,
   extra: { recreateTargetIds?: string[]; records?: Record<string, ResourceState> } = {}
-): Promise<void> {
+): Promise<boolean> {
   return requireDeploymentApproval({
     options: { requireApproval: level, approveDeployment: approve },
     stackName: 'S',
@@ -77,7 +77,7 @@ describe('requireDeploymentApproval', () => {
         records: { Q: rec() },
         template: { Resources: {} },
       })
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 
   it('marks a refusal to ask non-retryable, as it marks a decline', async () => {
@@ -103,12 +103,13 @@ describe('requireDeploymentApproval', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(onTimeout).not.toHaveBeenCalled();
       answer(true);
-      await expect(row).resolves.toBeUndefined();
+      // go-to-k/cdkd#4705: `true` -- it asked, and was approved.
+      await expect(row).resolves.toBe(true);
     });
 
     it('refuses without asking once the row already timed out', async () => {
       const asked = vi.fn(async () => true);
-      let inner: Promise<void> | undefined;
+      let inner: Promise<boolean> | undefined;
       const row = withResourceDeadline(
         async () => {
           // The child's own diff outlived the row's deadline before it asked.

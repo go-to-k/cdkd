@@ -88,6 +88,8 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     createFails?: Record<string, Error>;
     /** The earlier record versions `loadKeptInHistory` reads. */
     earlierRecords?: Array<{ resources: Record<string, unknown>; writtenAt?: number }>;
+    /** Run `--require-approval any-change` with this answer. */
+    approve?: () => Promise<boolean>;
   }) {
     const provider = {
       generatedCreateName: vi.fn((_t: string, logicalId: string) => `${STACK}-${logicalId}`),
@@ -166,6 +168,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         concurrency: 4,
         ...(opts.dryRun && { dryRun: true }),
         ...(opts.refusalRecovery && { refusalRecovery: opts.refusalRecovery }),
+        ...(opts.approve && { requireApproval: 'any-change', approveDeployment: opts.approve }),
       },
       'us-east-1'
     );
@@ -303,6 +306,23 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     });
     await engine.deploy(STACK, template);
     expect(provider.create.mock.calls.map((c) => c[0])).toEqual(['Q1', 'Q2', 'Q3']);
+  });
+
+  it('E-1: no prompt -> one lookup for the whole plan; a prompt that ran -> the creates re-read (batched)', async () => {
+    const plain = buildEngine({});
+    await plain.engine.deploy(STACK, template);
+    expect(plain.provider.lookupNames).toHaveBeenCalledTimes(1);
+    events = [];
+    // The user takes a while to answer: the lookups are decided before it.
+    const prompted = buildEngine({
+      approve: async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return true;
+      },
+    });
+    await prompted.engine.deploy(STACK, template);
+    // The plan-time read, then one re-read per DAG wave (Q1, Q2, Q3 are chained).
+    expect(prompted.provider.lookupNames).toHaveBeenCalledTimes(4);
   });
 
   it('a dry run looks nothing up and writes nothing', async () => {

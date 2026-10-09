@@ -1145,15 +1145,29 @@ export class S3StateBackend {
   ): Promise<void> {
     await this.ensureClientForBucket();
     const key = this.getRetainedKey(stackName, region);
-    await this.s3Client.send(
-      new PutObjectCommand({
-        Bucket: this.config.bucket,
-        ...(await this.ownerParam()),
-        Key: key,
-        Body: JSON.stringify({ retainedVersion: 1, resources: entries }),
-        ContentType: 'application/json',
-      })
+    const put = (resources: readonly RetainedResource[]) =>
+      this.ownerParam().then((owner) =>
+        this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...owner,
+            Key: key,
+            Body: JSON.stringify({ retainedVersion: 1, resources }),
+            ContentType: 'application/json',
+          })
+        )
+      );
+    await put(entries);
+    if (entries.every((e) => e.keptAt !== undefined)) return;
+    // A new entry is stamped with S3's own clock (review E-8): the time of
+    // the write that recorded it, read back from the object, never this
+    // machine's clock. A holder created later is not the resource kept.
+    const head = await this.s3Client.send(
+      new HeadObjectCommand({ Bucket: this.config.bucket, ...(await this.ownerParam()), Key: key })
     );
+    const keptAt = head.LastModified instanceof Date ? head.LastModified.getTime() : undefined;
+    if (keptAt === undefined) return;
+    await put(entries.map((e) => (e.keptAt === undefined ? { ...e, keptAt } : e)));
   }
 
   /**
@@ -2508,8 +2522,10 @@ export interface RetainedResource {
   resourceType: string;
   physicalId: string;
   /**
-   * When this stack let the resource go (epoch ms). A holder created after it
-   * is not the resource that was kept (go-to-k/cdkd#4705 review D-2).
+   * When this stack let the resource go (epoch ms, S3's clock: the write that
+   * recorded it). A holder created after it is not the resource that was kept
+   * (go-to-k/cdkd#4705 review D-2). cdkd always stamps it; an entry without
+   * one (only a hand edit makes one) is trusted by name alone.
    */
   keptAt?: number;
 }

@@ -119,6 +119,14 @@ describe('cdkd state orphan and the registry (go-to-k/cdkd#4705)', () => {
     expect(backend.saveRetainedResources.mock.calls).toEqual([['App', 'us-east-1', []]]);
   });
 
+  it('E-7: a tombstone that cannot be written is warned, and the success line is not printed', async () => {
+    backend.listRawKeys.mockResolvedValue(['cdkd/App/us-east-1/retained.json']);
+    backend.saveRetainedResources.mockRejectedValueOnce(new Error('AccessDenied'));
+    await orphan(['App']);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/Could not empty the kept-resource record of App/));
+    expect(infoSpy).not.toHaveBeenCalledWith(expect.stringMatching(/Cleared the kept-resource record/));
+  });
+
   it('no record and nothing kept: the idempotent skip, no write', async () => {
     await orphan(['App']);
     expect(backend.saveRetainedResources).not.toHaveBeenCalled();

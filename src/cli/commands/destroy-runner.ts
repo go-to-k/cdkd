@@ -1755,7 +1755,6 @@ export async function runDestroyForStack(
                 logicalId,
                 resourceType: resource.resourceType,
                 physicalId: resource.physicalId,
-                keptAt: Date.now(),
               });
             }
             recordDestroyEvent(ctx.eventRecorder, {
@@ -2307,14 +2306,17 @@ export async function runDestroyForStack(
     await saveChain;
 
     // go-to-k/cdkd#4705: before the record goes, note what this destroy kept
-    // that the stack's next create here may take back by name.
-    await recordRetainedForReadoption(
-      ctx.stateBackend,
-      stackName,
-      regionForState,
-      retainedForReadoption,
-      logger
-    );
+    // that the stack's next create here may take back by name. (Kept nothing:
+    // the tombstone is written below, only once the record is gone.)
+    if (retainedForReadoption.length > 0) {
+      await recordRetainedForReadoption(
+        ctx.stateBackend,
+        stackName,
+        regionForState,
+        retainedForReadoption,
+        logger
+      );
+    }
 
     // Preserve state (rather than delete it) when there were delete errors OR
     // the destroy was gracefully interrupted (issue #816) OR a resource was
@@ -2333,6 +2335,10 @@ export async function runDestroyForStack(
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
+      if (retainedForReadoption.length === 0) {
+        // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1).
+        await recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger);
+      }
       await releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
       // Drop this stack's entries from the exports index so the next
       // resolver lookup doesn't return stale values. Best-effort —

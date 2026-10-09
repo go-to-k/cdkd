@@ -250,8 +250,8 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     // named bucket (its create probes by name already), nor a Role (whose
     // create fails natively with EntityAlreadyExists).
     expect(entries).toEqual([
-      { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x', keptAt: expect.any(Number) },
-      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs', keptAt: expect.any(Number) },
+      { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x' },
+      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs' },
     ]);
     expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
       h.deleteState.mock.invocationCallOrder[0]!
@@ -296,6 +296,32 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
       h.deleteState.mock.invocationCallOrder[0]!
     );
+  });
+
+  it('E-6: the main path (resources, none Retain) writes the empty tombstone when no record exists yet', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const deleted: StackState = {
+      ...emptyState(),
+      resources: {
+        Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
+      } as unknown as StackState['resources'],
+    };
+    const provider = { delete: vi.fn(async () => undefined) };
+    (h.ctx as unknown as { providerRegistry: unknown }).providerRegistry = {
+      getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
+      getProvider: vi.fn(() => provider),
+    };
+    const result = await runDestroyForStack('App', deleted, h.ctx);
+    expect(result.errorCount).toBe(0);
+    expect(h.deleteState).toHaveBeenCalledTimes(1);
+    expect(h.saveRetainedResources).toHaveBeenCalledWith('App', REGION, []);
+  });
+
+  it('E-7: a destroy whose tombstone write fails warns (never silent)', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    h.saveRetainedResources.mockRejectedValueOnce(new Error('AccessDenied'));
+    await runDestroyForStack('App', emptyState(), h.ctx);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Could not write the empty kept-resource record of App/));
   });
 
   it('G5: a destroy that keeps the record (a delete failed) keeps the marker', async () => {

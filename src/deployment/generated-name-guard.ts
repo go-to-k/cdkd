@@ -38,8 +38,9 @@
  *
  * The plan-time reads write nothing. A name is recorded as this stack's
  * intent only at admission (after approval, under the deploy's lock), one
- * write per wave of creates; a verdict older than a few seconds (a long
- * approval prompt) is read again first. {@link GeneratedNameGuard.settle}, in
+ * write per wave of creates; a verdict decided before an approval prompt
+ * that ran, or more than a minute old, is read again first (a re-read that
+ * cannot answer falls back to it, with a warning). {@link GeneratedNameGuard.settle}, in
  * the deploy's `finally` before the lock is released, drops every intent whose
  * create was not sent, came back, or was rejected outright.
  *
@@ -142,13 +143,15 @@ export interface GeneratedNameGuardInput {
   accountInfo(): Promise<{ partition: string; region: string; accountId: string }>;
   /** Timing, overridable for tests. */
   timing?: Partial<GuardTiming>;
+  /** Where a non-fatal note goes (the deploy's logger). */
+  warn?(message: string): void;
 }
 
 /** The guard's clocks and waits. */
 export interface GuardTiming {
   now(): number;
   sleep(ms: number): Promise<void>;
-  /** A plan-time verdict older than this is read again at admission. */
+  /** A verdict older than this is read again at admission (a prompt that ran makes any earlier one stale). */
   staleAfterMs: number;
   /** How long a held queue or bucket is re-read while it may be deleting. */
   cooldownMs: number;
@@ -160,7 +163,9 @@ export interface GuardTiming {
 export const DEFAULT_TIMING: GuardTiming = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  staleAfterMs: 5_000,
+  // A prompt that ran makes every earlier verdict stale; otherwise only a gap
+  // this long (an ordinary multi-level deploy pays no re-read).
+  staleAfterMs: 60_000,
   // SQS keeps a deleted queue's name for 60 seconds; S3 answers for a
   // just-deleted bucket for about as long.
   cooldownMs: 65_000,
@@ -244,7 +249,11 @@ export class GeneratedNameGuard {
   /** Every intent write started, so `settle` awaits them all. */
   private readonly writes = new Set<Promise<void>>();
   private staleQueue: Candidate[] = [];
-  private staleRun: Promise<Map<string, GeneratedNameVerdict>> | undefined;
+  private staleRun: Promise<Map<string, Promise<GeneratedNameVerdict>>> | undefined;
+  /** Verdicts already decided when the approval prompt was answered. */
+  private readonly decidedBeforePrompt = new Set<string>();
+  private evidenceRead: Promise<Evidence> | undefined;
+  private historyRead: Promise<readonly KeptInHistory[]> | undefined;
   private recordedRead:
     | Promise<ReadonlyMap<string, { resourceType: string; name: string }> | undefined>
     | undefined;
@@ -305,32 +314,55 @@ export class GeneratedNameGuard {
     return guard;
   }
 
-  /** Look `candidates` up together and file each one's verdict. */
+  /** Look `candidates` up and file each one's verdict. */
   private ask(candidates: readonly Candidate[]): void {
-    if (candidates.length === 0) return;
-    const all = this.decide(candidates);
-    for (const c of candidates) {
-      this.verdicts.set(
-        c.logicalId,
-        all.then((verdicts) => verdicts.get(c.logicalId) ?? { kind: 'free' })
-      );
-    }
+    for (const [logicalId, verdict] of this.resolve(candidates))
+      this.verdicts.set(logicalId, verdict);
   }
 
-  /** {@link run}, never rejecting, stamping when each verdict was decided. */
-  private decide(candidates: readonly Candidate[]): Promise<Map<string, GeneratedNameVerdict>> {
-    return this.run(candidates)
-      .catch(
-        (error: unknown) =>
-          new Map<string, GeneratedNameVerdict>(
-            candidates.map((c) => [c.logicalId, { kind: 'failed', error }])
-          )
-      )
-      .then((verdicts) => {
-        const at = this.timing.now();
-        for (const c of candidates) this.decidedAt.set(c.logicalId, at);
-        return verdicts;
-      });
+  /**
+   * Each candidate's verdict, resolved as soon as ITS type's lookup answers
+   * (one type's slow lookup never holds another type's creates). A held,
+   * unlicensed queue or bucket waits out a possible deletion
+   * ({@link waitOutDeletion}); no other create waits for it. Never rejects.
+   */
+  private resolve(candidates: readonly Candidate[]): Map<string, Promise<GeneratedNameVerdict>> {
+    const out = new Map<string, Promise<GeneratedNameVerdict>>();
+    const byType = new Map<string, Candidate[]>();
+    for (const c of candidates)
+      byType.set(c.resourceType, [...(byType.get(c.resourceType) ?? []), c]);
+    for (const group of byType.values()) {
+      const decided = this.run(group).catch((error: unknown) => ({
+        verdicts: new Map<string, GeneratedNameVerdict>(
+          group.map((c) => [c.logicalId, { kind: 'failed', error }])
+        ),
+        deleting: [] as Candidate[],
+      }));
+      let waited: Promise<Map<string, GeneratedNameVerdict>> | undefined;
+      for (const c of group) {
+        out.set(
+          c.logicalId,
+          decided.then(async ({ verdicts, deleting }) => {
+            let verdict = verdicts.get(c.logicalId) ?? { kind: 'free' };
+            if (deleting.includes(c)) {
+              waited ??= this.waitOutDeletion(deleting);
+              verdict = (await waited).get(c.logicalId) ?? verdict;
+            }
+            this.decidedAt.set(c.logicalId, this.timing.now());
+            return verdict;
+          })
+        );
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The deploy asked `--require-approval`'s question: every verdict decided
+   * before the answer is read again at its create.
+   */
+  noteApprovalPrompted(): void {
+    for (const logicalId of this.decidedAt.keys()) this.decidedBeforePrompt.add(logicalId);
   }
 
   /** How many planned creates are checked. */
@@ -351,9 +383,11 @@ export class GeneratedNameGuard {
 
   /**
    * The verdict `logicalId`'s create acts on, called right before it is sent
-   * with its RESOLVED properties: a deferred lookup runs now, and a plan-time
-   * verdict older than a few seconds is read again (one exact read, batched
-   * with the creates admitted together); a name the create may take (free, or
+   * with its RESOLVED properties: a deferred lookup runs now, and a free or
+   * licensed verdict decided before an approval prompt that ran, or more than
+   * a minute old, is read again (one exact read, batched with the creates
+   * admitted together; one that cannot answer keeps the earlier verdict, with
+   * a warning); a name the create may take (free, or
    * licensed) is then recorded as this stack's intent, in one write shared by
    * the creates admitted together. A write that fails turns the verdict into
    * `failed` (refuse: a create sent unrecorded could not be taken back after a
@@ -370,17 +404,30 @@ export class GeneratedNameGuard {
     }
     let verdict = await this.verdicts.get(logicalId)!;
     const decidedAt = this.decidedAt.get(logicalId);
-    if (
-      !this.refreshed.has(logicalId) &&
+    const stale =
       decidedAt !== undefined &&
-      this.timing.now() - decidedAt > this.timing.staleAfterMs &&
+      (this.decidedBeforePrompt.has(logicalId) ||
+        this.timing.now() - decidedAt > this.timing.staleAfterMs);
+    if (
+      stale &&
+      !this.refreshed.has(logicalId) &&
       (verdict.kind === 'free' || verdict.kind === 'licensed')
     ) {
       this.refreshed.add(logicalId);
-      verdict = (await this.reread({ ...c, properties: resolvedProperties, deferred: false })).get(
-        logicalId
-      ) ?? { kind: 'free' };
-      this.verdicts.set(logicalId, Promise.resolve(verdict));
+      const fresh =
+        (await (
+          await this.reread({ ...c, properties: resolvedProperties, deferred: false })
+        ).get(logicalId)) ?? verdict;
+      if (fresh.kind === 'failed' || fresh.kind === 'unchecked') {
+        // The re-read could not answer: act on the plan-time answer, as a
+        // deploy without the prompt would, rather than refuse mid-deploy.
+        this.input.warn?.(
+          `${c.logicalId}: could not re-read whether a resource holds its generated name after the approval prompt; acting on the earlier lookup.`
+        );
+      } else {
+        verdict = fresh;
+        this.verdicts.set(logicalId, Promise.resolve(verdict));
+      }
     }
     if (verdict.kind !== 'free' && verdict.kind !== 'licensed') return verdict;
     try {
@@ -392,16 +439,16 @@ export class GeneratedNameGuard {
   }
 
   /** Read `c` again, together with the other stale creates admitted now. */
-  private reread(c: Candidate): Promise<Map<string, GeneratedNameVerdict>> {
+  private reread(c: Candidate): Promise<Map<string, Promise<GeneratedNameVerdict>>> {
     this.staleQueue.push(c);
     if (this.staleRun === undefined) {
-      const run: Promise<Map<string, GeneratedNameVerdict>> = new Promise<void>((resolve) =>
-        setImmediate(resolve)
+      const run: Promise<Map<string, Promise<GeneratedNameVerdict>>> = new Promise<void>(
+        (resolve) => setImmediate(resolve)
       ).then(() => {
         const batch = this.staleQueue;
         this.staleQueue = [];
         if (this.staleRun === run) this.staleRun = undefined;
-        return this.decide(batch);
+        return this.resolve(batch);
       });
       this.staleRun = run;
     }
@@ -493,7 +540,9 @@ export class GeneratedNameGuard {
     return this.recordedRead;
   }
 
-  private async run(candidates: readonly Candidate[]): Promise<Map<string, GeneratedNameVerdict>> {
+  private async run(
+    candidates: readonly Candidate[]
+  ): Promise<{ verdicts: Map<string, GeneratedNameVerdict>; deleting: Candidate[] }> {
     const input = this.input;
     const out = new Map<string, GeneratedNameVerdict>();
     // The ledger's recorded intents are read alongside the lookups: a crash
@@ -507,7 +556,8 @@ export class GeneratedNameGuard {
     // Evidence is read only when some name is held.
     let evidence: Evidence | { error: unknown } | undefined;
     if (found.size > 0) {
-      evidence = await loadEvidence(input).catch((error: unknown) => ({ error }));
+      this.evidenceRead ??= loadEvidence(input);
+      evidence = await this.evidenceRead.catch((error: unknown) => ({ error }));
     }
     const recordedResult = await recorded;
 
@@ -574,7 +624,8 @@ export class GeneratedNameGuard {
     ) {
       let kept: readonly KeptInHistory[];
       try {
-        kept = await input.loadKeptInHistory();
+        this.historyRead ??= input.loadKeptInHistory();
+        kept = await this.historyRead;
       } catch {
         // Unreadable history licenses nothing: the held verdict stands.
         kept = [];
@@ -597,15 +648,11 @@ export class GeneratedNameGuard {
       }
     }
 
-    // A queue or bucket being deleted can still read as held: read the names
-    // nothing licenses again across that window before refusing them.
+    // A queue or bucket being deleted can still read as held: the names
+    // nothing licenses are read again across that window (by `resolve`, for
+    // those creates only) before they are refused.
     const deleting = unlicensed.filter((c) => STILL_LISTED_WHILE_DELETING.has(c.resourceType));
-    if (deleting.length > 0) {
-      for (const [logicalId, verdict] of await this.waitOutDeletion(deleting)) {
-        out.set(logicalId, verdict);
-      }
-    }
-    return out;
+    return { verdicts: out, deleting };
   }
 
   /**

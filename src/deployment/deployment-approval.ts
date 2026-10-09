@@ -30,6 +30,10 @@ const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
  * One that already expired before the question (the child's own load and diff
  * outlived it) refuses without asking: the parent has failed, so a "yes"
  * could only provision a child nothing will track.
+ *
+ * Resolves `true` when it asked (and was approved), `false` when it did not
+ * ask (go-to-k/cdkd#4705: a prompt that waited makes the generated-name
+ * lookups re-read at each create).
  */
 export async function requireDeploymentApproval(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -38,10 +42,10 @@ export async function requireDeploymentApproval(args: {
   records: Readonly<Record<string, ResourceState>>;
   template: CloudFormationTemplate;
   recreateTargetIds?: Iterable<string> | undefined;
-}): Promise<void> {
+}): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
-  if (level === 'never' || approve === undefined) return;
+  if (level === 'never' || approve === undefined) return false;
 
   // go-to-k/cdkd#4043: a reader promoted ONLY because a `NoEcho` parameter's
   // value may have moved is no template change (the engine compares it with
@@ -63,7 +67,7 @@ export async function requireDeploymentApproval(args: {
     level === 'destructive'
       ? destructiveChanges.length > 0
       : changes.length > 0 && !onlyNestedUpdates;
-  if (!ask) return;
+  if (!ask) return false;
 
   const count = (type: ResourceChange['changeType']): number =>
     changes.filter((c) => c.changeType === type).length;
@@ -93,6 +97,7 @@ export async function requireDeploymentApproval(args: {
       )
     );
   }
+  return true;
 }
 
 /**

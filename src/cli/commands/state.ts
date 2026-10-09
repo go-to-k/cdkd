@@ -2298,14 +2298,17 @@ async function clearRetainedQuietly(
   stackName: string,
   region: string,
   logger: { warn(message: string): void }
-): Promise<void> {
+): Promise<boolean> {
   try {
     await backend.saveRetainedResources(stackName, region, []);
+    return true;
   } catch (error) {
     logger.warn(
-      safeMsg`Could not clear the kept-resource record of ${displayStackName(stackName)} ` +
-        safeMsg`(${describeAwsFailure(error).summary}).`
+      safeMsg`Could not empty the kept-resource record of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}): a later deploy here may still take a kept ` +
+        `resource back. Re-run 'cdkd state orphan' once it can write.`
     );
+    return false;
   }
 }
 
@@ -2322,8 +2325,8 @@ async function clearRetainedWithoutRecord(
   stackName: string,
   stackRegion: string | undefined,
   logger: { warn(message: string): void; debug(message: string): void }
-): Promise<string[]> {
-  if (stackName.includes('/')) return [];
+): Promise<{ cleared: string[]; attempted: number }> {
+  if (stackName.includes('/')) return { cleared: [], attempted: 0 };
   const base = `${backend.prefix}/${stackName}/`;
   let regions: string[];
   try {
@@ -2341,13 +2344,14 @@ async function clearRetainedWithoutRecord(
       safeMsg`Could not look for a kept-resource record of ${displayStackName(stackName)} ` +
         safeMsg`(${describeAwsFailure(error).summary}).`
     );
-    return [];
+    return { cleared: [], attempted: 0 };
   }
+  const cleared: string[] = [];
   for (const region of regions) {
-    await clearRetainedQuietly(backend, stackName, region, logger);
+    if (await clearRetainedQuietly(backend, stackName, region, logger)) cleared.push(region);
     await releaseRegistryMarkerQuietly(backend, stackName, region, logger);
   }
-  return regions;
+  return { cleared, attempted: regions.length };
 }
 
 async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptions): Promise<void> {
@@ -2379,12 +2383,14 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
         // go-to-k/cdkd#4705: a destroyed stack keeps its `retained.json`
         // (what that destroy kept, which a redeploy here takes back by name).
         // With no record left, orphan clears that, and the registry marker.
-        const cleared = await clearRetainedWithoutRecord(
+        const { cleared, attempted } = await clearRetainedWithoutRecord(
           setup.stateBackend,
           stackName,
           options.stackRegion,
           logger
         );
+        // A region whose write failed was warned about, and is not claimed.
+        if (attempted > 0 && cleared.length === 0) continue;
         if (cleared.length > 0) {
           logger.info(
             safeMsg`Cleared the kept-resource record of ${plainOrDescribed(stackName, 'stack name')} ` +

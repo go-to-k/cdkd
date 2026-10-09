@@ -567,6 +567,18 @@ describe('review round CB2', () => {
       }
     });
 
+    it.each([
+      [30_000, 'licensed'],
+      [90_000, 'held'],
+    ] as const)('E-6: the 60 s clock-skew allowance: a holder %i ms after keptAt is %s', async (after, kind) => {
+      const provider = providerOf({ 'gen-A': URL });
+      (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => KEPT_AT + after);
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: provider }, {
+        loadRetained: async () => [{ logicalId: 'A', resourceType: QUEUE, physicalId: URL, keptAt: KEPT_AT }],
+      });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind });
+    });
+
     it('a type that reports no creation time, or an entry with no keptAt, licenses by name (the documented residual)', async () => {
       const provider = providerOf({ 'gen-A': URL });
       (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => undefined);
@@ -609,6 +621,7 @@ describe('review round CB2', () => {
       ['wrapped under a provider error', Object.assign(new Error('wrap'), { cause: status(400, 'ValidationError') }), true],
       ['a throttle', status(400, 'ThrottlingException'), false],
       ['a 429', status(429, 'TooManyRequestsException'), false],
+      ['a 408 (E-4: the request may have been processed)', status(408, 'RequestTimeout'), false],
       ['a 503', status(503, 'ServiceUnavailable'), false],
       ['a client timeout', Object.assign(new Error('t'), { name: 'TimeoutError' }), false],
       ['a socket reset', Object.assign(new Error('r'), { code: 'ECONNRESET' }), false],
@@ -715,16 +728,132 @@ describe('review round CB2', () => {
     expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
   });
 
-  it('D-14: settle waits for every intent write in flight, not only the last', async () => {
+  it('D-14 / E-5: settle waits for EVERY intent write in flight -- an earlier one still pending included', async () => {
+    let releaseFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => (releaseFirst = resolve));
+    const { recordAdoptingCreates } = await import('../../../src/provisioning/providers/create-token-ledger.js');
+    let firstStarted = false;
+    vi.mocked(recordAdoptingCreates).mockImplementationOnce(async (creates) => {
+      firstStarted = true;
+      await firstPending; // the first wave's write is still in flight...
+      ledger.writes.push(creates as never);
+    });
     const guard = GeneratedNameGuard.start(
       inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: providerOf() })
     )!;
+    await guard.verdict('A');
     const first = guard.admit('A', {});
+    while (!firstStarted) await new Promise((r) => setImmediate(r)); // A's write started, and waits
+    await guard.admit('B', {}); // ...while B's (a later wave) lands
+    let settled = false;
+    const settling = guard.settle().then(() => (settled = true));
     await new Promise((r) => setImmediate(r));
-    const second = guard.admit('B', {});
-    await guard.settle();
-    await Promise.all([first, second]);
-    // Neither was sent: both intents dropped, i.e. both writes had landed.
+    expect(settled).toBe(false); // settle is still waiting for A's write
+    releaseFirst();
+    await settling;
+    await first;
+    // Neither was sent: both intents dropped -- A's too, because settle waited.
     expect(ledger.drops.flat().sort()).toEqual(['A', 'B']);
+  });
+});
+
+describe('review round CB3', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+
+  describe('E-1: re-read at admission only after an approval prompt, or a gap over a minute', () => {
+    function clocked(q: ReturnType<typeof providerOf>, warn = vi.fn()) {
+      let clock = 0;
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q }, {
+          timing: { now: () => clock, cooldownMs: 0 },
+          warn,
+        })
+      )!;
+      return { guard, warn, at: (t: number) => (clock = t) };
+    }
+
+    it('an ordinary multi-level first deploy (no prompt, waves 30 s apart) pays no re-read', async () => {
+      const q = providerOf();
+      const { guard, at } = clocked(q);
+      await guard.verdict('A');
+      at(10_000);
+      await guard.admit('A', {});
+      at(40_000);
+      await guard.admit('B', {});
+      expect(q.lookupNames).toHaveBeenCalledTimes(1);
+    });
+
+    it('after a prompt that ran, every earlier verdict is read again, however quick the answer', async () => {
+      const q = providerOf();
+      const { guard, at } = clocked(q);
+      await guard.verdict('A');
+      at(1_000);
+      guard.noteApprovalPrompted();
+      at(2_000);
+      await Promise.all([guard.admit('A', {}), guard.admit('B', {})]);
+      expect(q.lookupNames).toHaveBeenCalledTimes(2);
+    });
+
+    it('a gap over a minute without a prompt re-reads too', async () => {
+      const q = providerOf();
+      const { guard, at } = clocked(q);
+      await guard.verdict('A');
+      at(61_000);
+      await guard.admit('A', {});
+      expect(q.lookupNames).toHaveBeenCalledTimes(2);
+    });
+
+    it('a re-read that fails transiently keeps the plan-time verdict, with a warning -- never a mid-deploy refusal', async () => {
+      const q = providerOf();
+      const { guard, warn, at } = clocked(q);
+      await guard.verdict('A');
+      at(1_000);
+      guard.noteApprovalPrompted();
+      at(5_000);
+      q.lookupNames.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { $metadata: { httpStatusCode: 503 } }));
+      await expect(guard.admit('A', {})).resolves.toEqual({ kind: 'free' });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/A: could not re-read/));
+      expect(ledger.writes.flat().map((w) => w.logicalId)).toEqual(['A']);
+    });
+  });
+
+  describe("E-2: each create's verdict resolves when its own type answers", () => {
+    it('a slow type never holds another type\'s creates', async () => {
+      const q = providerOf();
+      const logs = providerOf();
+      let releaseLogs!: () => void;
+      logs.lookupNames.mockImplementation(
+        () => new Promise((resolve) => (releaseLogs = () => resolve(new Map())))
+      );
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('A', QUEUE), create('L', LOGS)], { [QUEUE]: q, [LOGS]: logs })
+      )!;
+      await expect(guard.verdict('A')).resolves.toEqual({ kind: 'free' });
+      releaseLogs();
+      await expect(guard.verdict('L')).resolves.toEqual({ kind: 'free' });
+    });
+
+    it('a held queue waiting out a deletion delays only that create, not its free siblings', async () => {
+      let wake!: () => void;
+      const q = providerOf({ 'gen-A': URL });
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('A', QUEUE), create('B', QUEUE)], { [QUEUE]: q }, {
+          timing: {
+            now: () => 0,
+            sleep: () => new Promise<void>((resolve) => (wake = resolve)),
+            cooldownMs: 65_000,
+            cooldownStepMs: 10_000,
+          },
+        })
+      )!;
+      await expect(guard.verdict('B')).resolves.toEqual({ kind: 'free' });
+      let aSettled = false;
+      void guard.verdict('A')!.then(() => (aSettled = true));
+      await new Promise((r) => setImmediate(r));
+      expect(aSettled).toBe(false); // A is still waiting out the cooldown
+      q.lookupNames.mockResolvedValue(new Map());
+      wake();
+      await expect(guard.verdict('A')).resolves.toEqual({ kind: 'free' });
+    });
   });
 });

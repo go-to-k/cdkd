@@ -216,6 +216,29 @@ sweep_named() {
 
 # Count what this run left: prints one WARN per leftover family and returns 1
 # when there was any (or a listing failed).
+# This run's stack registry markers (`_cdkd-registry/<region>/<stack>.json`):
+# exactly the stacks DEPLOYED_LIST names, and only a marker naming one of this
+# run's prefixes is removed. A destroy releases its own; this catches a run
+# that failed before its destroy.
+run_markers() {
+  [ -n "${DEPLOYED_LIST:-}" ] && [ -f "${DEPLOYED_LIST}" ] || return 0
+  cut -f1 "${DEPLOYED_LIST}" | sort -u | while IFS= read -r stack; do
+    case "${stack}" in
+      "${STACK_BASE}"?*) printf '_cdkd-registry/%s/%s.json\n' "${REGION}" "${stack}" ;;
+    esac
+  done
+}
+
+sweep_markers() {
+  local key prefix
+  for key in $(run_markers); do
+    prefix="$( (aws s3 cp "s3://${STATE_BUCKET}/${key}" - 2>/dev/null || true) | jq -r '.prefix // ""' 2>/dev/null || true)"
+    case "${prefix}" in
+      "${RUN_PREFIX_BASE}"-?*) aws s3 rm "s3://${STATE_BUCKET}/${key}" --only-show-errors ;;
+    esac
+  done
+}
+
 rescan() {
   local left found=0
   if left="$(aws sqs list-queues --queue-name-prefix "${STACK_BASE}" --region "${REGION}" --query 'QueueUrls' --output text 2>&1)"; then
@@ -293,6 +316,13 @@ rescan() {
     echo "WARN: could not list state records: ${left}" >&2
     found=1
   fi
+  local key
+  for key in $(run_markers); do
+    if ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" ); then
+      echo "WARN: stack registry marker left: s3://${STATE_BUCKET}/${key}" >&2
+      found=1
+    fi
+  done
   return "${found}"
 }
 
@@ -337,6 +367,7 @@ cleanup() {
     sweep_seeds
   fi
   sweep_run_prefixes
+  sweep_markers
   rescan || rc=1
   rm -f "${DEPLOYED_LIST:-}" "${RESULTS:-}"
   if [ -n "${SCRATCH:-}" ] && [ -d "${SCRATCH}" ]; then
@@ -624,6 +655,7 @@ rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
 sweep_named
 sweep_run_prefixes
+sweep_markers
 LEFTOVERS=0
 rescan || LEFTOVERS=1
 rm -f "${DEPLOYED_LIST}" "${RESULTS}"

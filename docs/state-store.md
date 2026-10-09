@@ -105,7 +105,9 @@ stack's own evidence names that resource:
   list once its record names them. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. `cdkd state orphan` empties
   it, with or without a record left, and so does a destroy that keeps nothing:
-  the empty list is a tombstone, never deleted;
+  the empty list is a tombstone, never deleted. One destroy (or orphan) by this
+  cdkd therefore ends the older-cdkd history license below for that stack and
+  region for good;
 - only when this prefix has NO `retained.json` for the stack (it was last
   destroyed by an older cdkd), this prefix's own history: one of the newest 10
   earlier versions of the stack's record that names the resource with a
@@ -117,10 +119,12 @@ stack's own evidence names that resource:
   a held name nothing else licenses.
 
 A kept resource (`retained.json`, the history) licenses only a holder created
-no later than it was kept, for a type that reports a creation time (an SQS
-queue, a log group, a state machine, a load balancer): a resource of the same
-name re-created later, after the kept one was deleted out of band, is someone
-else's.
+no later than it was kept (within a minute's clock skew), for a type that
+reports a creation time (an SQS queue, a log group, a state machine, a load
+balancer): a resource of the same name re-created later, after the kept one
+was deleted out of band, is someone else's. The keep time in `retained.json`
+is S3's clock (the write that recorded the entry); an entry without one, which
+only a hand edit produces, is trusted by its name alone.
 
 Otherwise the deploy refuses before that create, as CloudFormation refuses a
 name that already exists; that resource is not created (resources the deploy
@@ -145,7 +149,9 @@ resource being deleted (an `INACTIVE` ECS cluster, a `DELETING` state
 machine, a queue or bucket already gone) reads as absent, so its create waits
 out the deletion as before. A queue or bucket can still read as present for
 up to a minute after its delete: a held, unlicensed one is read again every
-10 seconds for about 65 seconds before the create is refused. A rule
+10 seconds for about 65 seconds before its create is refused. Only that create
+waits; each create's answer is ready as soon as its own type's lookup
+answers. A rule
 whose `EventBusName` is an intrinsic is looked up at its create, on the
 resolved bus, never on the default one.
 
@@ -156,9 +162,12 @@ only for its own answer, so a first deploy pays about one round trip whatever
 its size. Each API has one concurrency limit across the whole run,
 `deploy --all` included, so a burst queues instead of throttling. The
 intents cost one ledger write per wave of name-adopting creates the deploy
-starts together. A verdict older than 5 seconds when its create starts (a long
-`--require-approval` prompt, a late DAG level) is read again first, one exact
-read per such create, batched with the creates starting together.
+starts together. When a `--require-approval` prompt ran, every verdict
+decided before its answer is read again at its create (one exact read per
+such create, batched with the creates starting together), as is any verdict
+more than a minute old; an ordinary deploy, however many DAG levels, pays no
+re-read. A re-read that cannot answer keeps the earlier verdict, with a
+warning.
 
 **Permissions.** The lookups need the read permission of each type a stack
 creates: `sqs:GetQueueUrl`, `sns:GetTopicAttributes`,
@@ -178,12 +187,16 @@ two first deploys of the same stack name at the same moment. In one bucket the
 stack registry below serializes them; in two buckets that window remains. And
 a resource this stack let go of that no source above names any more -- for
 example kept by a deploy of an older cdkd that removed it from the template,
-once the history has rotated past it: re-adding it is refused, and
+once the history has rotated past it, or at once without the optional
+permissions or bucket versioning: re-adding it is refused, and
 `cdkd import <stack> --resource <logicalId>=<physicalId>` (the command the
-refusal prints) adopts it. For a type that reports no creation time (an S3
-bucket, a topic, an alarm, a rule, an ECS cluster, a target group), a kept
-resource deleted out of band and re-created by another backend under the same
-name is licensed by its name. And a create that threw a 4xx after its
+refusal prints) adopts it. For a type that reports no creation time -- an S3
+bucket, an SNS topic, a CloudWatch alarm, an EventBridge rule, an ECS cluster
+and an ELBv2 target group -- a kept resource deleted out of band and
+re-created by another backend under the same name is licensed by its name.
+(`ListBuckets` reports a bucket's `CreationDate`, but AWS documents that it
+can change when the bucket is edited, so it does not prove when the bucket was
+made.) And a create that threw a 4xx after its
 provider had already made the resource without saying so loses its intent.
 
 ### The stack registry

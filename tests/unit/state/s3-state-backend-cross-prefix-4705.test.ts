@@ -140,7 +140,7 @@ function makeClient(): {
       const body = bodies.get(key);
       if (body === undefined) throw cmd instanceof HeadObjectCommand ? notFound() : noSuchKey();
       return cmd instanceof HeadObjectCommand
-        ? {}
+        ? { LastModified: new Date(5_000) }
         : { Body: { transformToString: async () => body }, ETag: '"e"' };
     }
     throw new Error(`unexpected command ${String(cmd)}`);
@@ -625,8 +625,8 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
   it('is a sibling of state.json, absent as []', async () => {
     await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([]);
     await backend.saveRetainedResources('App', 'us-east-1', [entry]);
-    expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [entry] });
-    await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([entry]);
+    expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [{ ...entry, keptAt: 5_000 }] });
+    await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([{ ...entry, keptAt: 5_000 }]);
   });
 
   it('D-1: saving none writes the empty tombstone, which reads as present (not absent)', async () => {
@@ -635,6 +635,19 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     await backend.saveRetainedResources('App', 'us-east-1', []);
     expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [] });
     await expect(backend.loadRetainedRecord('App', 'us-east-1')).resolves.toEqual([]);
+  });
+
+  it("E-8: a new entry is stamped with S3's clock (the object's LastModified), never this machine's", async () => {
+    await backend.saveRetainedResources('App', 'us-east-1', [{ ...entry, keptAt: 1 }, { ...entry, logicalId: 'New' }]);
+    expect(JSON.parse(bodies.get(KEY)!).resources).toEqual([
+      { ...entry, keptAt: 1 },
+      { ...entry, logicalId: 'New', keptAt: 5_000 },
+    ]);
+    // An all-stamped list (or the empty tombstone) is one write, no read-back.
+    client.send.mockClear();
+    await backend.saveRetainedResources('App', 'us-east-1', []);
+    expect(commandsOf(HeadObjectCommand)).toHaveLength(0);
+    expect(commandsOf(PutObjectCommand)).toHaveLength(1);
   });
 
   it('D-2: keeps an entry\'s keptAt; drops a non-number one', async () => {
