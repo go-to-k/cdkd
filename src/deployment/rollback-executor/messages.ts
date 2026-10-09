@@ -399,7 +399,7 @@ export function safe(value: unknown): string {
 }
 
 /**
- * The three refusal OBJECTS the replay creates that end on
+ * The refusal OBJECTS the replay creates that end on
  * {@link orphanRemedy}'s labelled LINE, registered at their throw sites by
  * {@link ownRemedyError}.
  *
@@ -533,7 +533,7 @@ export function refusalLogicalId(logicalId: unknown): string {
 
 /**
  * How a message that also names a `cdkd` command or a `--flag` NAMES a logical
- * id, outside the three `--orphan` refusals ({@link refusalLogicalId}): itself
+ * id, outside the `--orphan` refusals ({@link refusalLogicalId}): itself
  * when `isPasteableIdent` admits it (`composite-id.ts`'s `logicalIdShown`,
  * which keeps a hyphenated cdkd id legible), a description otherwise
  * (go-to-k/cdkd#4214). `typeof` first, as {@link refusalLogicalId} does.

@@ -1364,6 +1364,9 @@ export async function rollbackCommand(
                   // go-to-k/cdkd#4523: an imported id's failed op is left alone
                   // too, and stays in the journal (below).
                   const failedOps = splitImportedOps(segment.failedOperations ?? [], segment);
+                  // go-to-k/cdkd#4690: the delete-first guard reads the segment's
+                  // failed ops as they stood BEFORE the replay below strips them.
+                  const failedForGuard = segment.failedOperations ?? [];
                   // go-to-k/cdkd#4584: a plain rollback replays the proven
                   // orphans alone; the rest are kept by the strip below while
                   // the segment stays, and leave with it once it pops.
@@ -1433,6 +1436,19 @@ export async function rollbackCommand(
                       ...failedOps.displaced,
                       ...failedOps.replay.filter((op) => !failedToReplay.includes(op)),
                       ...failedResult.remainingFailedOps,
+                      // go-to-k/cdkd#4690: a handled delete-first replacement
+                      // stays while this segment's completed ops remain, so a
+                      // re-run's delete-first guard still sees the resource it
+                      // removed. Its re-classification is the same skip, and it
+                      // leaves with the segment once it pops.
+                      ...(completedOps.length > 0
+                        ? failedToReplay.filter(
+                            (op) =>
+                              op.changeType === 'UPDATE' &&
+                              op.replacementOrphaned === 'delete-first' &&
+                              !failedResult.remainingFailedOps.includes(op)
+                          )
+                        : []),
                     ];
                     // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
                     // the handled ops' state rows were never saved, so stripping
@@ -1487,7 +1503,7 @@ export async function rollbackCommand(
                         // — and a crash there loses it for good (issue #2934).
                         onOrphan: (record) => mintedOrphans.push(record),
                         inlinePolicyWriters,
-                        failedOperations: segment.failedOperations,
+                        failedOperations: failedForGuard,
                       })
                   );
                   return {

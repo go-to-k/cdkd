@@ -23,11 +23,27 @@ import { awsSdkError } from '../_aws-sdk-error.js';
 import { withRetry } from '../../../src/deployment/retry.js';
 import { markDeleteFirstBlocked, deleteFirstBlocker } from '../../../src/deployment/rollback-executor/plan.js';
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
+import { PASTE_PAYLOADS, expectNoCommandBesideDisplay } from '../utils/paste-harness.js';
 
 // Single-attempt pass-through so a retried create does not sleep.
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
   return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
+});
+
+// The refusals the replay raises, captured as OBJECTS (their `code`), while
+// the real `ownRemedyError` still registers each one.
+const ownRefusals = vi.hoisted(() => [] as Error[]);
+vi.mock('../../../src/deployment/rollback-executor/messages.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/rollback-executor/messages.js')>();
+  return {
+    ...actual,
+    ownRemedyError: (error: Error) => {
+      ownRefusals.push(error);
+      return actual.ownRemedyError(error);
+    },
+  };
 });
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -830,9 +846,189 @@ describe('a blocked delete-first op, end to end (go-to-k/cdkd#4690)', () => {
       oldDeletedBeforeCreate: true,
     };
     // Reversed newest first: Q only (Dlq's own create fails too, but Q runs first).
+    ownRefusals.length = 0;
     const result = await replayRollback([dlqOp, qOp], state, 'S', ctx);
     expect(del.mock.calls.map((c) => (c as unknown[])[0])).not.toContain('Q');
     expect(state['Q']!.physicalId).toBe('q-new');
     expect(result.failures).toBeGreaterThanOrEqual(1);
+    const refusal = ownRefusals.find((e) => e.message.includes('may not be able to restore'));
+    expect(refusal).toBeDefined();
+    expect((refusal as Error & { code?: string }).code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(refusal!.message).toContain('Nothing was deleted');
+    expect(refusal!.message).toContain('Dlq');
+    // The blocker by logical id only: never its URL or its ARN.
+    expect(refusal!.message).not.toContain('dlq-old');
+  });
+
+  it('the collision-route refusal pastes nothing runnable beside a payload logical id', async () => {
+    for (const { value: id } of PASTE_PAYLOADS) {
+      ownRefusals.length = 0;
+      const create = vi.fn().mockRejectedValue(awsSdkError('Queue already exists', 'QueueNameExists'));
+      const ctx: RollbackExecutorContext = {
+        region: 'us-east-1',
+        logger: portModel().ctx.logger,
+        providerRegistry: {
+          getProviderFor: () => ({ provider: { create, delete: vi.fn() } }),
+        } as unknown as RollbackExecutorContext['providerRegistry'],
+      };
+      const record = (physicalId: string, dlq: string): ResourceState => ({
+        physicalId,
+        resourceType: 'AWS::SQS::Queue',
+        properties: { QueueName: 'q', RedrivePolicy: { deadLetterTargetArn: dlq } },
+        attributes: {},
+        dependencies: [],
+      });
+      const DLQ_OLD = 'arn:aws:sqs:us-east-1:123456789012:dlq-old';
+      await replayRollback(
+        [
+          {
+            logicalId: 'Dlq',
+            changeType: 'DELETE',
+            resourceType: 'AWS::SQS::Queue',
+            previousState: {
+              physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/dlq-old',
+              resourceType: 'AWS::SQS::Queue',
+              properties: {},
+              attributes: { Arn: DLQ_OLD },
+              dependencies: [],
+            },
+          },
+          {
+            logicalId: id,
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SQS::Queue',
+            physicalId: 'q-new',
+            previousState: record('q-old', DLQ_OLD),
+            oldResourceRetained: false,
+            oldDeletedBeforeCreate: true,
+          },
+        ],
+        { [id]: record('q-new', 'arn:aws:sqs:us-east-1:123456789012:dlq-new') },
+        'S',
+        ctx
+      );
+      const refusal = ownRefusals.find((e) => e.message.includes('may not be able to restore'));
+      expect(refusal, id).toBeDefined();
+      expectNoCommandBesideDisplay(refusal!.message, id);
+    }
+  });
+});
+
+describe('the delete-first guard ignores what a gone record shares with others (go-to-k/cdkd#4690)', () => {
+  const dependent = (props: Record<string, unknown>): CompletedOperation => {
+    const o = listenerOp('ignored');
+    o.logicalId = 'X';
+    o.previousState!.properties = props;
+    return o;
+  };
+  const gone = (logicalId: string, physicalId: string, attributes: Record<string, unknown>): CompletedOperation => ({
+    ...targetGroupOp(),
+    logicalId,
+    physicalId: `${physicalId}-replacement`,
+    previousState: { physicalId, resourceType: 'AWS::Test::Thing', properties: {}, attributes, dependencies: [] },
+  });
+  const blocker = (ops: CompletedOperation[]) => {
+    markDeleteFirstBlocked(ops);
+    return deleteFirstBlocker(ops.at(-1)!);
+  };
+  const SUBNET = gone('Subnet', 'subnet-0123456789abcdef0', {
+    AvailabilityZone: 'us-east-1a',
+    VpcId: 'vpc-0abc1234',
+    CidrBlock: '10.0.0.0/24',
+  });
+  const SG = gone('Sg', 'sg-0123456789abcdef0', { VpcId: 'vpc-0abc1234', GroupId: 'sg-0123456789abcdef0' });
+
+  it("a replaced subnet's AZ, VPC id or CIDR does not block", () => {
+    expect(blocker([SUBNET, dependent({ AvailabilityZone: 'us-east-1a' })])).toBeUndefined();
+    expect(blocker([SUBNET, dependent({ VpcId: 'vpc-0abc1234' })])).toBeUndefined();
+    expect(blocker([SUBNET, dependent({ Cidr: '10.0.0.0/24' })])).toBeUndefined();
+    // Control: the subnet itself does.
+    expect(blocker([SUBNET, dependent({ SubnetIds: ['subnet-0123456789abcdef0'] })])).toMatchObject({
+      logicalId: 'Subnet',
+    });
+  });
+
+  it("a replaced security group's VPC id does not block, its own id does", () => {
+    expect(blocker([SG, dependent({ VpcId: 'vpc-0abc1234' })])).toBeUndefined();
+    expect(
+      blocker([SG, dependent({ Arn: 'arn:aws:ec2:us-east-1:123456789012:vpc/vpc-0abc1234' })])
+    ).toBeUndefined();
+    expect(blocker([SG, dependent({ SecurityGroupIds: ['sg-0123456789abcdef0'] })])).toMatchObject({
+      logicalId: 'Sg',
+    });
+  });
+
+  it("another resource's ARN among a record's attributes does not block, its own does", () => {
+    const cluster = gone('Cluster', 'my-cluster', {
+      Arn: 'arn:aws:eks:us-east-1:123456789012:cluster/my-cluster',
+      EncryptionConfigKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/1234abcd',
+      CertificateAuthorityData: 'Q0VSVA==',
+      Endpoint: 'https://ABC.gr7.us-east-1.eks.amazonaws.com',
+    });
+    expect(
+      blocker([cluster, dependent({ KeyArn: 'arn:aws:kms:us-east-1:123456789012:key/1234abcd' })])
+    ).toBeUndefined();
+    expect(blocker([cluster, dependent({ Ca: 'Q0VSVA==' })])).toBeUndefined();
+    expect(
+      blocker([cluster, dependent({ ClusterArn: 'arn:aws:eks:us-east-1:123456789012:cluster/my-cluster' })])
+    ).toMatchObject({ logicalId: 'Cluster' });
+  });
+
+  it('a short physical id is never matched inside an attribute value', () => {
+    const short = gone('S', 'abc', { Description: 'xabcx-value' });
+    expect(blocker([short, dependent({ Note: 'xabcx-value' })])).toBeUndefined();
+  });
+
+  it('a named delete-first reversal sharing only a VPC id with a replaced subnet completes', async () => {
+    const queue = (physicalId: string): ResourceState => ({
+      physicalId,
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'q', Tags: [{ Key: 'vpc', Value: 'vpc-0abc1234' }] },
+      attributes: {},
+      dependencies: [],
+    });
+    // The name `q` is held while the new queue lives: a create-first attempt
+    // collides with a proven holder, which a FALSE block would refuse.
+    const del = vi.fn(async () => undefined);
+    const create = vi.fn(async () => {
+      if (del.mock.calls.length === 0) throw awsSdkError('Queue already exists', 'QueueNameExists');
+      return { physicalId: 'q-new', attributes: {} };
+    });
+    const ctx: RollbackExecutorContext = {
+      region: 'us-east-1',
+      logger: portModel().ctx.logger,
+      providerRegistry: {
+        getProviderFor: (r: { resourceType: string }) => ({
+          provider:
+            r.resourceType === 'AWS::SQS::Queue'
+              ? { create, delete: del }
+              : { create: vi.fn(async () => ({ physicalId: 'subnet-x', attributes: {} })), delete: vi.fn() },
+        }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+    };
+    ownRefusals.length = 0;
+    const state: Record<string, ResourceState> = { Q: queue('q-new') };
+    const result = await replayRollback(
+      [
+        SUBNET,
+        {
+          logicalId: 'Q',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'q-new',
+          wasReplaced: true,
+          previousState: queue('q-old'),
+          oldResourceRetained: false,
+          oldDeletedBeforeCreate: true,
+        },
+      ],
+      state,
+      'S',
+      ctx
+    );
+    expect(ownRefusals).toEqual([]);
+    expect(del.mock.calls.map((c) => (c as unknown[])[1])).toContain('q-new');
+    expect(state['Q']!.physicalId).toBe('q-new');
+    expect(result.failures).toBe(0);
   });
 });

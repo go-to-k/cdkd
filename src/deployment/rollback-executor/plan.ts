@@ -1046,17 +1046,21 @@ const deleteFirstBlockedBy = new WeakMap<
  * scanned: the re-create sends `previousState.properties`, and its attributes
  * never reach `create()`.
  *
- * A gone resource is named by its old physical id AND by every string value of
- * its old record's attributes (`Arn`, `QueueArn`, `DNSName`, ...): a dependent
- * names an SQS queue by its ARN, never by its URL id. A leaf matches a needle
+ * A gone resource is named by its old physical id AND by the attributes of its
+ * old record that IDENTIFY it ({@link identityAttributeValues}): a dependent
+ * names an SQS queue by its ARN, never by its URL id. Never by an attribute it
+ * merely shares with other resources (a subnet's `VpcId` or
+ * `AvailabilityZone`, a `CidrBlock`, a hosted-zone id, an account or region).
+ * A leaf matches a needle
  * exactly, as any whole `:`/`/`-separated segment (an ARN or path boundary)
  * whatever its length, so a short
  * user-chosen name inside an ARN counts, or, for a needle of 16+ characters,
  * anywhere inside it (an ARN embedded in a document).
  *
- * The match errs toward blocking: a false block only restores the
- * create-first order the rollback used before #4690; a missed one loses a
- * resource.
+ * Both errors cost something, so the needles are identities only: a missed
+ * match can lose a resource, and a false block keeps the create-first order
+ * AND refuses that op's collision route, where main deletes the new resource
+ * on a proven name holder and completes the reversal.
  *
  * The segment's FAILED ops count too (`failedOperations`): a replacement that
  * deleted its old resource before a create that failed.
@@ -1076,13 +1080,11 @@ export function markDeleteFirstBlocked(
     attributes: Record<string, unknown> | undefined
   ): void => {
     if (typeof physicalId !== 'string' || physicalId === '') return;
-    const needles = [
+    gone.push({
+      logicalId,
       physicalId,
-      ...(attributes !== null && typeof attributes === 'object'
-        ? Object.values(attributes).filter((v): v is string => typeof v === 'string' && v !== '')
-        : []),
-    ];
-    gone.push({ logicalId, physicalId, needles });
+      needles: [physicalId, ...identityAttributeValues(physicalId, attributes)],
+    });
   };
   // A FAILED replacement that deleted its old resource first took it away
   // too, whether or not its create made anything.
@@ -1119,6 +1121,37 @@ export function markDeleteFirstBlocked(
     );
     if (hit) deleteFirstBlockedBy.set(op, { logicalId: hit.logicalId, physicalId: hit.physicalId });
   }
+}
+
+/**
+ * The attribute values of a gone record that name THAT record, not something
+ * it shares with others:
+ * - a value containing a physical id of 8+ characters (an ARN or URL built on
+ *   it; a shorter id is too likely to occur inside an unrelated value);
+ * - an `arn:` value whose last `:`/`/` segment is a segment of the physical id
+ *   (an SQS queue's `Arn` against its URL id; an EKS cluster's KMS key ARN is
+ *   another resource's, and its key id is no segment of the cluster name);
+ * - `DNSName`: a load balancer's own name, which a Route 53 alias names.
+ */
+function identityAttributeValues(
+  physicalId: string,
+  attributes: Record<string, unknown> | undefined
+): string[] {
+  if (attributes === null || typeof attributes !== 'object') return [];
+  const idSegments = new Set(physicalId.split(/[:/|]/).filter((t) => t !== ''));
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(attributes)) {
+    if (typeof value !== 'string' || value === '' || value === physicalId) continue;
+    const arnTail = value.startsWith('arn:') ? value.split(/[:/]/).at(-1) : undefined;
+    if (
+      (physicalId.length >= 8 && value.includes(physicalId)) ||
+      (arnTail !== undefined && arnTail !== '' && idSegments.has(arnTail)) ||
+      key === 'DNSName'
+    ) {
+      out.push(value);
+    }
+  }
+  return out;
 }
 
 /** Whether `leaf` names `needle` (see {@link markDeleteFirstBlocked}). */

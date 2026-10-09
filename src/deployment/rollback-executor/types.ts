@@ -340,7 +340,7 @@ export interface RollbackExecutorContext {
    * segment stays in the child's journal, and only a rollback of the child
    * honours `--orphan` for its ops (the parent's replays it only through
    * `--revert-failed`, as a child revert `--orphan` does not reach), so the
-   * three refusals' `--orphan` command names the child stack
+   * refusals' `--orphan` command names the child stack
    * (go-to-k/cdkd#3859).
    */
   nestedChildStack?: string | undefined;
