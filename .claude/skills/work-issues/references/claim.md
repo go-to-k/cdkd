@@ -55,7 +55,9 @@ Claiming to avoid collision with parallel agents."
 
 Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
-that list**: beside the fix and its unit test, the integ fixture §8-c will
+that list**: beside the fix and its unit test, every suite already exercising
+a touched file (`grep -rl '<basename>' tests/unit`: suites need not mirror
+`src/` paths), the integ fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every comment, doc or rule the fix makes FALSE — stating the old invariant or
