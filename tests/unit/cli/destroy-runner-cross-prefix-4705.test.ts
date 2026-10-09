@@ -73,6 +73,7 @@ function makeCtx(opts: {
   skipConfirmation?: boolean;
   prefixes?: string[] | Error;
   holders?: Record<string, boolean>;
+  retained?: Array<{ logicalId: string; resourceType: string; physicalId: string }>;
 }) {
   const acquireLock = vi.fn().mockResolvedValue(true);
   const deleteState = vi.fn().mockResolvedValue(undefined);
@@ -81,7 +82,8 @@ function makeCtx(opts: {
     return opts.prefixes ?? [];
   });
   const recordUnderPrefix = vi.fn(async (p: string) => (opts.holders?.[p] ? 'holder' : 'absent'));
-  const ownRecordExists = vi.fn(async () => true);
+  const saveRetainedResources = vi.fn(async () => undefined);
+  const releaseRegistryMarker = vi.fn(async () => 'released' as const);
   const stateBackend = {
     prefix: 'cdkd',
     getState: vi.fn().mockResolvedValue(null),
@@ -91,14 +93,17 @@ function makeCtx(opts: {
     loadRollbackJournal: vi.fn().mockResolvedValue(null),
     listTopLevelPrefixes,
     recordUnderPrefix,
-    ownRecordExists,
+    loadRetainedResources: vi.fn(async () => opts.retained ?? []),
+    saveRetainedResources,
+    releaseRegistryMarker,
   };
   return {
     acquireLock,
     deleteState,
     listTopLevelPrefixes,
     recordUnderPrefix,
-    ownRecordExists,
+    saveRetainedResources,
+    releaseRegistryMarker,
     ctx: {
       stateBackend: stateBackend as unknown as S3StateBackend,
       lockManager: {
@@ -134,8 +139,6 @@ describe('runDestroyForStack — another state prefix records the stack (go-to-k
     const probed = h.recordUnderPrefix.mock.calls.map((c) => c[0]);
     expect(probed).toContain('team-b');
     expect(probed).not.toContain('cdkd');
-    // The record it destroys is not re-checked.
-    expect(h.ownRecordExists).not.toHaveBeenCalled();
   });
 
   it('proceeds when no other prefix records the stack', async () => {
@@ -195,5 +198,95 @@ describe('runDestroyForStack — another state prefix records the stack (go-to-k
     const result = await runDestroyForStack('App', emptyState(), h.ctx);
     expect(result.skippedEmpty).toBe(true);
     expect(h.listTopLevelPrefixes).not.toHaveBeenCalled();
+  });
+});
+
+describe('runDestroyForStack -- what a destroy keeps, and the registry marker (go-to-k/cdkd#4705)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const retainedState = (): StackState => ({
+    ...emptyState(),
+    resources: {
+      Bucket: {
+        physicalId: 'app-bucket-x',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        deletionPolicy: 'Retain',
+        provisionedBy: 'sdk',
+      },
+      Logs: {
+        physicalId: '/cdkd/App-Logs',
+        resourceType: 'AWS::Logs::LogGroup',
+        properties: { RetentionInDays: 7 },
+        deletionPolicy: 'Retain',
+        provisionedBy: 'sdk',
+      },
+      Named: {
+        physicalId: 'mine',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { BucketName: 'mine' },
+        deletionPolicy: 'Retain',
+        provisionedBy: 'sdk',
+      },
+      Role: {
+        physicalId: 'App-Role',
+        resourceType: 'AWS::IAM::Role',
+        properties: {},
+        deletionPolicy: 'Retain',
+        provisionedBy: 'sdk',
+      },
+    } as unknown as StackState['resources'],
+  });
+
+  it('records the kept resources a later create takes back by their GENERATED name, before the record goes', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    await runDestroyForStack('App', retainedState(), h.ctx);
+    expect(h.saveRetainedResources).toHaveBeenCalledTimes(1);
+    const [, , entries] = h.saveRetainedResources.mock.calls[0]! as unknown as [string, string, unknown[]];
+    // The S3 bucket and log group with generated names; not the explicitly
+    // named bucket (its create probes by name already), nor a Role (whose
+    // create fails natively with EntityAlreadyExists).
+    expect(entries).toEqual([
+      { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x' },
+      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs' },
+    ]);
+    expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.deleteState.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('merges with what an earlier destroy kept, replacing the same logical id', async () => {
+    const h = makeCtx({
+      crossPrefixCheck: true,
+      prefixes: ['cdkd'],
+      retained: [
+        { logicalId: 'Old', resourceType: 'AWS::SQS::Queue', physicalId: 'https://q/App-Old' },
+        { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'stale' },
+      ],
+    });
+    await runDestroyForStack('App', retainedState(), h.ctx);
+    const [, , entries] = h.saveRetainedResources.mock.calls[0]! as unknown as [string, string, Array<{ logicalId: string; physicalId: string }>];
+    expect(entries.map((e) => `${e.logicalId}=${e.physicalId}`)).toEqual([
+      'Old=https://q/App-Old',
+      'Bucket=app-bucket-x',
+      'Logs=/cdkd/App-Logs',
+    ]);
+  });
+
+  it('releases the registry marker AFTER the record is deleted, for a top-level stack', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    await runDestroyForStack('App', retainedState(), h.ctx);
+    expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION);
+    expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      h.deleteState.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('a nested child (no crossPrefixCheck) never touches the registry marker', async () => {
+    const h = makeCtx({});
+    await runDestroyForStack('App~Child', retainedState(), h.ctx);
+    expect(h.releaseRegistryMarker).not.toHaveBeenCalled();
   });
 });

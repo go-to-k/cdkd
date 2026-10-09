@@ -557,3 +557,37 @@ describe('the stack registry marker (go-to-k/cdkd#4705)', () => {
     expect(registryMarkerPrefix(undefined)).toBeUndefined();
   });
 });
+
+describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", () => {
+  const KEY = 'cdkd/App/us-east-1/retained.json';
+  const entry = { logicalId: 'B', resourceType: 'AWS::S3::Bucket', physicalId: 'app-b' };
+
+  it('is a sibling of state.json, absent as []', async () => {
+    await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([]);
+    await backend.saveRetainedResources('App', 'us-east-1', [entry]);
+    expect(JSON.parse(bodies.get(KEY)!)).toEqual({ retainedVersion: 1, resources: [entry] });
+    await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([entry]);
+  });
+
+  it('saving none deletes it', async () => {
+    bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));
+    await backend.saveRetainedResources('App', 'us-east-1', []);
+    expect(bodies.has(KEY)).toBe(false);
+  });
+
+  it('a body that is not such a record throws, naming the key; a malformed entry is dropped', async () => {
+    bodies.set(KEY, '{"retainedVersion":2,"resources":[]}');
+    const error = await backend.loadRetainedResources('App', 'us-east-1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CrossPrefixReadError);
+    expect((error as CrossPrefixReadError).key).toBe(KEY);
+    bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry, { logicalId: 'X' }] }));
+    await expect(backend.loadRetainedResources('App', 'us-east-1')).resolves.toEqual([entry]);
+  });
+
+  it('survives deleteState, which removes the record and the ledger only', async () => {
+    bodies.set('cdkd/App/us-east-1/state.json', '{}');
+    bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));
+    await backend.deleteState('App', 'us-east-1').catch(() => undefined);
+    expect(bodies.has(KEY)).toBe(true);
+  });
+});
