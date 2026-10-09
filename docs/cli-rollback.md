@@ -367,14 +367,20 @@ resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
 A replacement that deleted the old resource BEFORE creating the new one
 (`--recreate-via-cc-api`, `--recreate-via-sdk-provider`, the update-unsupported
-fallback, or `--replace`'s delete-first fallback) is reversed in that order
+fallback, `--replace`'s delete-first fallback, or a resource lost with a parent
+that was re-created under the same id) is reversed in that order
 too: the new resource is deleted first, then the old one is re-created. So a
 port or name that only one of them can hold, such as an ELBv2 listener's port,
 does not collide. If that delete fails or is skipped, state keeps naming the
 new resource and the journal is kept. If the re-create then fails, the resource
 is absent and the message says so; re-deploy to fix it forward. A journal
 written by an older cdkd, and a new resource kept by `UpdateReplacePolicy:
-Retain`, use the create-first order.
+Retain`, use the create-first order. So does a resource whose old properties
+name another resource the same deploy replaced or deleted (a listener's old
+target group, replaced by a create-only change): the rollback cannot bring
+that resource back under the id they name, so deleting the new copy first
+would lose it. The rollback says so in a warning, and if the re-create fails,
+the new resource is kept.
 
 What counts as a replacement is what the provider reported. An update applied
 in place is reverted in place even when it changed the physical id, as an SQS

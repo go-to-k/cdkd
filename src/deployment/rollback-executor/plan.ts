@@ -1021,3 +1021,75 @@ export function sortRollbackCreates(
   logger?.debug(`Rollback CREATE deletion order: ${sorted.map((op) => op.logicalId).join(' → ')}`);
   return sorted;
 }
+
+/**
+ * go-to-k/cdkd#4690: the delete-first reversal deletes the NEW resource before
+ * re-creating the old one from `previousState.properties`. When those
+ * properties name a resource that another op of the SAME segment took away
+ * (a replacement that did not keep its old copy, or a DELETE), the rollback
+ * cannot bring that resource back under the id they name: the re-create then
+ * fails after the new resource is gone, and the resource is lost (a target
+ * group replaced create-first while its listener was recreated delete-first).
+ * Such an op keeps the create-first order instead, whose failure keeps the new
+ * resource. Keyed by the op object, like {@link markProvenDistinctFromRecord}:
+ * computed per replay, never journaled.
+ */
+const deleteFirstBlockedBy = new WeakMap<
+  CompletedOperation,
+  { logicalId: string; physicalId: string }
+>();
+
+/**
+ * Mark each delete-first op of one segment whose old properties reference an
+ * id {@link deleteFirstBlockedBy} describes. Only the PROPERTIES are scanned:
+ * the re-create sends `previousState.properties`, and its attributes never
+ * reach `create()`.
+ *
+ * The match errs toward blocking: an exact string leaf, or, for an id of 16+
+ * characters (an ARN, a URL), a leaf containing it, so an id embedded in a
+ * document counts. A false block only restores the create-first order the
+ * rollback used before #4690; a missed one loses a resource.
+ */
+export function markDeleteFirstBlocked(operations: readonly CompletedOperation[]): void {
+  const gone: Array<{ logicalId: string; physicalId: string }> = [];
+  for (const op of operations) {
+    const prev = op.previousState?.physicalId;
+    if (typeof prev !== 'string' || prev === '') continue;
+    const replacedAway =
+      op.changeType === 'DELETE' ||
+      (op.changeType === 'UPDATE' &&
+        op.physicalId !== prev &&
+        op.wasReplaced !== false &&
+        op.oldResourceRetained !== true);
+    if (replacedAway) gone.push({ logicalId: op.logicalId, physicalId: prev });
+  }
+  if (gone.length === 0) return;
+  for (const op of operations) {
+    if (op.oldDeletedBeforeCreate !== true) continue;
+    const props = op.previousState?.properties;
+    if (props === undefined) continue;
+    const hit = gone.find(
+      (g) =>
+        g.logicalId !== op.logicalId &&
+        someStringLeaf(
+          props,
+          (leaf) => leaf === g.physicalId || (g.physicalId.length >= 16 && leaf.includes(g.physicalId))
+        )
+    );
+    if (hit) deleteFirstBlockedBy.set(op, hit);
+  }
+}
+
+/** The op and id that keep `op` off the delete-first reversal, if any. */
+export function deleteFirstBlocker(
+  op: CompletedOperation
+): { logicalId: string; physicalId: string } | undefined {
+  return deleteFirstBlockedBy.get(op);
+}
+
+function someStringLeaf(value: unknown, test: (leaf: string) => boolean, depth = 0): boolean {
+  if (typeof value === 'string') return test(value);
+  if (depth > 64 || value === null || typeof value !== 'object') return false;
+  const children = Array.isArray(value) ? value : Object.values(value);
+  return children.some((child) => someStringLeaf(child, test, depth + 1));
+}

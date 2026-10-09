@@ -82,6 +82,7 @@ import {
   failedOpOwnRecord,
   recordUnderIdIsNotOwn,
   recheckMismatchedFailedCreate,
+  markDeleteFirstBlocked,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -256,6 +257,9 @@ async function replayRollbackUnbound(
   // go-to-k/cdkd#4408: until an op completes, its resource's record is the
   // failed deploy's, which the put-back at the end never reads from.
   inlinePolicyWriters.notePending(operations);
+  // go-to-k/cdkd#4690: a delete-first reversal whose old properties name a
+  // resource this segment took away keeps the create-first order.
+  markDeleteFirstBlocked(operations);
 
   const { createOps, otherOps } = partitionOps(operations);
 

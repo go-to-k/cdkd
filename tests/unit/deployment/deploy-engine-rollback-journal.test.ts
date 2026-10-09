@@ -7,6 +7,7 @@ import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-fa
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).
@@ -36,7 +37,11 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
+vi.mock('../../../src/provisioning/cloud-control-provider.js', async (importOriginal) => ({
+  // The error class stays real: go-to-k/cdkd#4690's `--replace` case throws one.
+  CloudControlOperationFailedError: (
+    await importOriginal<typeof import('../../../src/provisioning/cloud-control-provider.js')>()
+  ).CloudControlOperationFailedError,
   CloudControlProvider: { isSupportedResourceType: vi.fn(() => true) },
 }));
 
@@ -75,6 +80,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     currentEtag?: string;
     currentResources?: Record<string, ResourceState>;
     eventRecorder?: { record: (e: unknown) => void; runId?: string };
+    /** Extra `DeployEngine` options (go-to-k/cdkd#4690: `replace`). */
+    engineOptions?: Record<string, unknown>;
   }) {
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) =>
@@ -152,6 +159,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         noRollback: opts.noRollback ?? false,
         roleArn: 'arn:aws:iam::1:role/r',
         ...(opts.eventRecorder && { eventRecorder: opts.eventRecorder as never }),
+        ...opts.engineOptions,
       },
       'us-east-1'
     );
@@ -1969,9 +1977,12 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
           F: { Type: 'AWS::S3::Bucket', Properties: {} },
         },
       };
+      let firstDeleted: unknown[] = [];
       if (reuse) {
         unsupported();
+        provider.delete.mockClear();
         await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        firstDeleted = provider.delete.mock.calls.map((c: unknown[]) => c[1]);
         provider.update.mockResolvedValue({ physicalId: 'b-old', wasReplaced: false });
       } else if (shape === 'delete-first') {
         unsupported();
@@ -1982,6 +1993,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       return {
         op: seg.operations.find((o: { logicalId: string }) => o.logicalId === 'B'),
         deleted: provider.delete.mock.calls.map((c: unknown[]) => c[1]),
+        firstDeleted,
       };
     }
 
@@ -2004,8 +2016,73 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect((await completedB('in-place')).op).toHaveProperty('oldDeletedBeforeCreate', false);
     });
 
+    // `--replace`'s delete-first fallback: the create-first attempt collides
+    // with the name the old resolver holds, so the engine deletes it first.
+    it("records true for --replace's delete-first fallback", async () => {
+      const TYPE = 'AWS::AppSync::Resolver';
+      const identity = { ApiId: 'api1', TypeName: 'Query', FieldName: 'field' };
+      const changeB = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: TYPE,
+        currentProperties: { ...identity, Mode: 'a' },
+        desiredProperties: { ...identity, Mode: 'b' },
+        propertyChanges: [{ path: 'Mode', oldValue: 'a', newValue: 'b', requiresReplacement: true }],
+      } as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['B', changeB],
+          ['F', makeChange('F')],
+        ]),
+        deps: { B: [], F: ['B'] },
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        engineOptions: { replace: true },
+        currentResources: {
+          B: {
+            physicalId: 'api1|Query|field',
+            resourceType: TYPE,
+            properties: { ...identity, Mode: 'a' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValueOnce(
+        ccAlreadyExistsError(
+          `CREATE failed for B: Resource of type '${TYPE}' with identifier 'api1|Query|field' already exists.`,
+          TYPE
+        )
+      );
+      provider.delete.mockClear();
+      await expect(
+        engine.deploy(stackName, {
+          Resources: {
+            B: { Type: TYPE, Properties: { ...identity, Mode: 'b' } },
+            F: { Type: 'AWS::S3::Bucket', Properties: {} },
+          },
+        })
+      ).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['api1|Query|field']);
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      const op = seg.operations.find((o: { logicalId: string }) => o.logicalId === 'B');
+      expect(op).toMatchObject({ physicalId: 'phys-B', oldDeletedBeforeCreate: true });
+    });
+
     it("does not carry a previous deploy's delete-first onto a reused engine", async () => {
-      const { op } = await completedB('in-place', true);
+      const { op, firstDeleted } = await completedB('in-place', true);
+      // The premise: the first deploy on this engine really went delete-first.
+      expect(firstDeleted).toEqual(['b-old']);
       expect(op).toHaveProperty('oldDeletedBeforeCreate', false);
     });
   });

@@ -712,6 +712,9 @@ echo "    OK: HealthRule replaced onto ${P5_NEW_LISTENER} (priority 1, /health -
 # collided on the port the new one still held ("A listener already exists on
 # this port"), and the reversal refused with `cdkd rollback --orphan`. It must
 # now delete the new listener first, then re-create the old one.
+# Not covered here: HealthRule's record still names the rule AWS deleted
+# with Phase 5's listener (its replacement is the op that failed), which the
+# destroy reads as already gone.
 echo ""
 echo "==> Phase 6: --recreate-via-sdk-provider ${LISTENER_LOGICAL}, a later failure, and its rollback (#4690)"
 P6_OLD_LISTENER="$(state_physical_id "${LISTENER_LOGICAL}")"

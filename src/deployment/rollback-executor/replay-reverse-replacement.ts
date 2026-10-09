@@ -28,7 +28,11 @@ import {
   markNonRetryable,
 } from '../retryable-errors.js';
 import { redactRollbackRecord } from './replay-secrets.js';
-import { resolveReplacementOldType, unroutableReplacementError } from './plan.js';
+import {
+  deleteFirstBlocker,
+  resolveReplacementOldType,
+  unroutableReplacementError,
+} from './plan.js';
 import {
   requireRestorableBaseline,
   replayPrefixScope,
@@ -225,8 +229,28 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // reversal would refuse. Not when the new copy is retained: that arm never
   // deletes it, so it keeps the create-first route (the Retain refusal on a
   // name collision, the create's own error otherwise).
+  //
+  // Nor when the old properties name a resource another op of this segment
+  // took away (`markDeleteFirstBlocked`): the re-create would then fail after
+  // the new resource is gone, losing it, where create-first fails and keeps it.
+  const deleteFirstBlocked =
+    op.oldDeletedBeforeCreate === true && !rollbackRetainsNewResource(current)
+      ? deleteFirstBlocker(op)
+      : undefined;
+  if (deleteFirstBlocked !== undefined) {
+    logger.warn(
+      mask(
+        safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} first: its old properties ` +
+          safeMsg`name ${deleteFirstBlocked.physicalId}, which ${shownLogicalId(deleteFirstBlocked.logicalId)} ` +
+          `replaced or deleted in the same deploy and this rollback cannot restore under that id — ` +
+          `re-creating the old resource first, which keeps the new one if that fails`
+      )
+    );
+  }
   const reverseDeleteFirst =
-    op.oldDeletedBeforeCreate === true && !rollbackRetainsNewResource(current);
+    op.oldDeletedBeforeCreate === true &&
+    !rollbackRetainsNewResource(current) &&
+    deleteFirstBlocked === undefined;
   logger.info(
     `  Rollback: Reversing replacement of ${safe(op.logicalId)} ` +
       `(${typeChanged ? `${safe(op.resourceType)} -> ${safe(oldType)}` : safe(op.resourceType)}) — ` +
@@ -858,7 +882,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   //   here the Create RETURNED the only live copy, and deleting it on
   //   speculation risks total resource loss if the re-create then fails
   //   (and, unlike deploy, rollback has no --replace-style opt-in to
-  //   accept that risk).
+  //   accept that risk; the delete-first route, go-to-k/cdkd#4690, accepts
+  //   it only because the deploy itself ran delete-first, and it never
+  //   reaches this arm).
   // State is rebuilt from previousState below (the intended
   // post-rollback record), so the not-re-applied properties surface via
   // `cdkd drift` / the next `cdkd deploy` for reconciliation. When

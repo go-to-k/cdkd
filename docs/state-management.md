@@ -231,7 +231,8 @@ re-creates it. A journal written before that field falls back to the previous
 resource record the op already carries. It also records whether the deploy
 deleted the old resource BEFORE creating the new one (`oldDeletedBeforeCreate`
 — additive, no bump; `--recreate-via-cc-api` / `--recreate-via-sdk-provider`,
-the update-unsupported fallback, `--replace`'s delete-first fallback): the
+the update-unsupported fallback, `--replace`'s delete-first fallback, a child
+lost with its re-created parent): the
 rollback then deletes the new resource before re-creating the old one, so a
 port or name only one of them can hold does not collide. An absent value (an
 older binary's journal) keeps the create-first order. It is deliberately **not** part of the state

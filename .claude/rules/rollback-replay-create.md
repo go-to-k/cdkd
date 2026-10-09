@@ -9,14 +9,13 @@ paths:
 
 Both arms live in the `reverse-replacement` branch
 (`deployment/rollback-executor/replay-reverse-replacement.ts`): create-first,
-and delete-new-first, routed to by the name-collision catch or, up front, by a
+and delete-new-first, reached from the name-collision catch or, up front, a
 journaled `oldDeletedBeforeCreate` (#4690).
 **`effectiveProperties` is honoured** (#1682): `create()` gets
 `previousState.properties`; a RETURNED bag replaces the record's `properties`
-wholesale, reporting none keeps it. Its
+wholesale, reporting none keeps it. Do not re-narrow that result type. Its
 `attributes` are recorded too, after its `NoEcho` is registered
-(`recordNoEchoAttributeValues`, #4434), as `recordAfterRollbackUpdate` does
-for an update's.
+(`recordNoEchoAttributeValues`, #4434), as for an update's.
 
 **When the ROUTING DECISION is `cc-api`, both arms run the bag through
 `applyDefaultNameForFallback`** (#3199), filling a

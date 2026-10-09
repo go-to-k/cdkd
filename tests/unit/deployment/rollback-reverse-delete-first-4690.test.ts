@@ -20,6 +20,8 @@ import {
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { markDeleteFirstBlocked, deleteFirstBlocker } from '../../../src/deployment/rollback-executor/plan.js';
+import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 
 // Single-attempt pass-through so a retried create does not sleep.
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
@@ -311,5 +313,310 @@ describe('reversing a delete-first replacement (go-to-k/cdkd#4690)', () => {
     expect(m.calls).toEqual(['create']);
     expect(result.failures).toBe(0);
     expect(state['Listener']!.physicalId).toBe('listener-old-2');
+  });
+});
+
+// The real retry loop, minus its sleeps, for the cases that drive it.
+const actualRetry = await vi.importActual<typeof import('../../../src/deployment/retry.js')>(
+  '../../../src/deployment/retry.js'
+);
+function driveRealRetry(): void {
+  vi.mocked(withRetry).mockImplementation(((fn: () => Promise<unknown>, label: string, opts?: object) =>
+    actualRetry.withRetry(fn, label, { ...(opts ?? {}), sleep: async () => undefined })) as never);
+}
+function restoreSinglePassRetry(): void {
+  vi.mocked(withRetry).mockImplementation(((fn: () => Promise<unknown>) => fn()) as never);
+}
+
+const TG_TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+const TG_OLD = 'arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/tg/0123456789abcdef';
+const TG_NEW = 'arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/tg/fedcba9876543210';
+
+/** A listener op whose OLD properties forward to `targetGroupArn`. */
+function listenerOp(targetGroupArn: string): CompletedOperation {
+  const o = op(true);
+  o.previousState = rec('listener-old', {
+    provisionedBy: 'cc-api',
+    properties: {
+      ...PROPS,
+      DefaultActions: [{ Type: 'forward', TargetGroupArn: targetGroupArn }],
+    },
+  });
+  return o;
+}
+
+/** The target group's op: replaced create-first in the same deploy. */
+function targetGroupOp(over: Partial<CompletedOperation> = {}): CompletedOperation {
+  return {
+    logicalId: 'Tg',
+    changeType: 'UPDATE',
+    resourceType: TG_TYPE,
+    provisionedBy: 'sdk',
+    physicalId: TG_NEW,
+    previousState: {
+      physicalId: TG_OLD,
+      resourceType: TG_TYPE,
+      properties: { Port: 80 },
+      attributes: {},
+      dependencies: [],
+    },
+    oldResourceRetained: false,
+    ...over,
+  };
+}
+
+describe('a delete-first reversal whose old properties name a resource the deploy took away (go-to-k/cdkd#4690)', () => {
+  /** The listener's calls only: the target group's op runs through its own provider. */
+  function model() {
+    const m = portModel();
+    const tgProvider = {
+      create: vi.fn(async () => ({ physicalId: 'tg-recreated', attributes: {} })),
+      delete: vi.fn(async () => undefined),
+      update: vi.fn(),
+    };
+    const warns: string[] = [];
+    (m.ctx.logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn.mockImplementation(
+      (w: string) => warns.push(w)
+    );
+    (m.ctx.providerRegistry as unknown as { getProviderFor: unknown }).getProviderFor = (r: {
+      resourceType: string;
+    }) => ({ provider: r.resourceType === TG_TYPE ? tgProvider : m.provider });
+    return { ...m, tgProvider, warns };
+  }
+  const state = (): Record<string, ResourceState> => ({
+    Listener: rec('listener-new', {
+      provisionedBy: 'sdk',
+      properties: { ...PROPS, DefaultActions: [{ Type: 'forward', TargetGroupArn: TG_NEW }] },
+    }),
+    Tg: {
+      physicalId: TG_NEW,
+      resourceType: TG_TYPE,
+      properties: { Port: 81 },
+      attributes: {},
+      dependencies: [],
+    },
+  });
+
+  it('keeps create-first, so the failed re-create keeps the new listener', async () => {
+    const m = model();
+    const s = state();
+    // Completion order: the target group, then the listener; reversed listener first.
+    const result = await replayRollback([targetGroupOp(), listenerOp(TG_OLD)], s, 'S', m.ctx);
+    expect(m.calls).toEqual(['create']);
+    expect(s['Listener']!.physicalId).toBe('listener-new');
+    expect(result.failures).toBeGreaterThanOrEqual(1);
+    expect(m.warns.join('\n')).toContain('not deleting the new Listener first');
+    expect(m.warns.join('\n')).toContain('which Tg replaced or deleted in the same deploy');
+  });
+
+  it('control: an old target group the deploy left alone keeps delete-first', async () => {
+    const m = model();
+    const s = state();
+    const result = await replayRollback(
+      [targetGroupOp(), listenerOp('arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/other/0000000000000000')],
+      s,
+      'S',
+      m.ctx
+    );
+    expect(m.calls).toEqual(['delete listener-new', 'create']);
+    expect(result.failures).toBe(0);
+  });
+
+  it('a replacement that KEPT its old copy does not block', async () => {
+    const m = model();
+    const result = await replayRollback(
+      [targetGroupOp({ oldResourceRetained: true }), listenerOp(TG_OLD)],
+      state(),
+      'S',
+      m.ctx
+    );
+    expect(m.calls).toEqual(['delete listener-new', 'create']);
+    expect(result.failures).toBe(0);
+  });
+
+  it("a DELETE op's old id blocks", async () => {
+    const m = model();
+    const s = state();
+    delete s['Tg'];
+    await replayRollback(
+      [
+        listenerOp(TG_OLD),
+        {
+          logicalId: 'Tg',
+          changeType: 'DELETE',
+          resourceType: TG_TYPE,
+          provisionedBy: 'sdk',
+          previousState: {
+            physicalId: TG_OLD,
+            resourceType: TG_TYPE,
+            properties: { Port: 80 },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      ],
+      s,
+      'S',
+      m.ctx
+    );
+    expect(m.calls[0]).toBe('create');
+    expect(m.calls).not.toContain('delete listener-new');
+    expect(s['Listener']!.physicalId).toBe('listener-new');
+  });
+
+  it('matches an id embedded in a longer string, and never a short id by substring', () => {
+    const embedded = listenerOp('ignored');
+    embedded.previousState!.properties = { Doc: `{"Resource":"${TG_OLD}/*"}` };
+    const short = listenerOp('ignored');
+    short.previousState!.properties = { Name: 'q-old-suffix' };
+    const shortGone: CompletedOperation = {
+      ...targetGroupOp(),
+      logicalId: 'Q',
+      physicalId: 'q-new',
+      previousState: { ...targetGroupOp().previousState!, physicalId: 'q-old' },
+    };
+    markDeleteFirstBlocked([targetGroupOp(), embedded]);
+    markDeleteFirstBlocked([shortGone, short]);
+    expect(deleteFirstBlocker(embedded)).toEqual({ logicalId: 'Tg', physicalId: TG_OLD });
+    expect(deleteFirstBlocker(short)).toBeUndefined();
+  });
+
+  it("never blocks on the op's own old id", () => {
+    const self = listenerOp('listener-old');
+    markDeleteFirstBlocked([self]);
+    expect(deleteFirstBlocker(self)).toBeUndefined();
+  });
+});
+
+describe('the delete-first route, further shapes (go-to-k/cdkd#4690)', () => {
+  it('a Type change deletes through the new type and re-creates through the old one', async () => {
+    const byType: Record<string, { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> }> = {
+      'AWS::SNS::Topic': {
+        create: vi.fn(async () => ({ physicalId: 'topic-old-2', attributes: {} })),
+        delete: vi.fn(),
+      },
+      'AWS::SQS::Queue': { create: vi.fn(), delete: vi.fn(async () => undefined) },
+    };
+    const m = portModel();
+    (m.ctx.providerRegistry as unknown as { getProviderFor: unknown }).getProviderFor = (r: {
+      resourceType: string;
+    }) => ({ provider: byType[r.resourceType] });
+    const state: Record<string, ResourceState> = {
+      R: { physicalId: 'queue-new', resourceType: 'AWS::SQS::Queue', properties: { a: 2 }, attributes: {}, dependencies: [] },
+    };
+    const result = await replayRollback(
+      [
+        {
+          logicalId: 'R',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          previousResourceType: 'AWS::SNS::Topic',
+          physicalId: 'queue-new',
+          previousState: { physicalId: 'topic-old', resourceType: 'AWS::SNS::Topic', properties: { a: 1 }, attributes: {}, dependencies: [] },
+          oldResourceRetained: false,
+          oldDeletedBeforeCreate: true,
+        },
+      ],
+      state,
+      'S',
+      m.ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(byType['AWS::SQS::Queue']!.delete).toHaveBeenCalledTimes(1);
+    expect(byType['AWS::SQS::Queue']!.delete.mock.calls[0]![2]).toBe('AWS::SQS::Queue');
+    expect(byType['AWS::SNS::Topic']!.create).toHaveBeenCalledTimes(1);
+    expect(byType['AWS::SNS::Topic']!.create.mock.calls[0]![1]).toBe('AWS::SNS::Topic');
+    expect(byType['AWS::SQS::Queue']!.delete.mock.invocationCallOrder[0]!).toBeLessThan(
+      byType['AWS::SNS::Topic']!.create.mock.invocationCallOrder[0]!
+    );
+    expect(state['R']).toMatchObject({ physicalId: 'topic-old-2', resourceType: 'AWS::SNS::Topic' });
+  });
+
+  it('the re-create loop retries a late release and then succeeds', async () => {
+    driveRealRetry();
+    try {
+      const m = portModel();
+      // The port is released only after the delete returns: one collision first.
+      let released = false;
+      m.provider.delete.mockImplementation(async (_l: string, physicalId: string) => {
+        m.calls.push(`delete ${physicalId}`);
+      });
+      m.provider.create.mockImplementation(async () => {
+        m.calls.push('create');
+        if (!released) {
+          released = true;
+          throw awsSdkError(
+            'A listener already exists on this port for this load balancer',
+            'DuplicateListenerException'
+          );
+        }
+        return { physicalId: 'listener-old-2', attributes: {} };
+      });
+      const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };
+      const result = await replayRollback([op(true)], state, 'S', m.ctx);
+      expect(m.calls).toEqual(['delete listener-new', 'create', 'create']);
+      expect(result.failures).toBe(0);
+      expect(state['Listener']!.physicalId).toBe('listener-old-2');
+    } finally {
+      restoreSinglePassRetry();
+    }
+  });
+});
+
+describe('the collision route through the shared helpers (go-to-k/cdkd#4690)', () => {
+  /** A queue named `q` replaced by a copy that still holds the name: the proven collision. */
+  function collision() {
+    const queue = (physicalId: string, a: number): ResourceState => ({
+      physicalId,
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'q', a },
+      attributes: {},
+      dependencies: [],
+    });
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(awsSdkError('Queue already exists', 'QueueNameExists'))
+      .mockResolvedValue({ physicalId: 'q-old-2', attributes: {} });
+    const del = vi.fn(async () => undefined);
+    const ctx: RollbackExecutorContext = {
+      region: 'us-east-1',
+      logger: portModel().ctx.logger,
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { create, delete: del } }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+    };
+    const opQ: CompletedOperation = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'q-new',
+      previousState: queue('q-old', 1),
+      oldResourceRetained: false,
+    };
+    return { create, del, ctx, opQ, state: { Q: queue('q-new', 2) } as Record<string, ResourceState> };
+  }
+
+  it('hands the inline-policy claim to the delete it runs first', async () => {
+    const c = collision();
+    const writers = new RollbackInlinePolicyWriters();
+    const claim = (): boolean => false;
+    vi.spyOn(writers, 'claimedFor').mockReturnValue(claim as never);
+    const result = await replayRollback([c.opQ], c.state, 'S', c.ctx, { inlinePolicyWriters: writers });
+    expect(result.failures).toBe(0);
+    expect(c.del).toHaveBeenCalledTimes(1);
+    expect((c.del.mock.calls[0] as unknown[])[4]).toMatchObject({ inlinePolicyClaimed: claim });
+  });
+
+  it('names the release it waits for when interrupted', async () => {
+    vi.mocked(withRetry).mockClear();
+    const c = collision();
+    await replayRollback([c.opQ], c.state, 'S', c.ctx, { isInterrupted: () => false });
+    const outer = vi
+      .mocked(withRetry)
+      .mock.calls.filter((call) => (call[2] as { isRetryable?: unknown } | undefined)?.isRetryable !== undefined);
+    const onInterrupted = (outer.at(-1)![2] as { onInterrupted: () => Error }).onInterrupted;
+    expect(onInterrupted().message).toBe(
+      'Rollback interrupted while waiting for the new resource to release its name or slot'
+    );
   });
 });
