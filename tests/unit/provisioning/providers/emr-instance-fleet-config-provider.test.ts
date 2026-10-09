@@ -140,7 +140,7 @@ describe('EMRInstanceFleetConfigProvider create', () => {
     const result = await newProvider().create('Fleet', RESOURCE_TYPE, BASE_PROPS);
 
     expect(result.physicalId).toBe(FLEET_ID);
-    expect(result.attributes).toEqual({ Id: FLEET_ID });
+    expect(result.attributes).toEqual({ Id: FLEET_ID, InstanceFleetId: FLEET_ID });
 
     const add = callsOf(AddInstanceFleetCommand);
     expect(add).toHaveLength(1);
@@ -278,6 +278,8 @@ describe('EMRInstanceFleetConfigProvider update', () => {
     const result = await newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, next, BASE_PROPS);
 
     expect(result.wasReplaced).toBe(false);
+    // The deploy engine replaces (not merges) the attribute bag with this one.
+    expect(result.attributes).toEqual({ Id: FLEET_ID, InstanceFleetId: FLEET_ID });
     const modify = callsOf(ModifyInstanceFleetCommand);
     expect(modify).toHaveLength(1);
     expect(modify[0]!.input.ClusterId).toBe(CLUSTER_ID);
@@ -522,7 +524,11 @@ describe('EMRInstanceFleetConfigProvider update', () => {
       BASE_PROPS,
       BASE_PROPS
     );
-    expect(result).toEqual({ physicalId: FLEET_ID, wasReplaced: false });
+    expect(result).toEqual({
+      physicalId: FLEET_ID,
+      wasReplaced: false,
+      attributes: { Id: FLEET_ID, InstanceFleetId: FLEET_ID },
+    });
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
@@ -592,9 +598,10 @@ describe('EMRInstanceFleetConfigProvider getAttribute', () => {
     vi.clearAllMocks();
   });
 
-  it('returns the physical id for Id and undefined for anything else', async () => {
+  it('returns the physical id for Id and InstanceFleetId, undefined for anything else', async () => {
     const provider = newProvider();
     expect(await provider.getAttribute(FLEET_ID, RESOURCE_TYPE, 'Id')).toBe(FLEET_ID);
+    expect(await provider.getAttribute(FLEET_ID, RESOURCE_TYPE, 'InstanceFleetId')).toBe(FLEET_ID);
     expect(await provider.getAttribute(FLEET_ID, RESOURCE_TYPE, 'Other')).toBeUndefined();
     expect(mockSend).not.toHaveBeenCalled();
   });

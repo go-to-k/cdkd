@@ -424,7 +424,11 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
     if (!instanceCountChanged && !autoScalingChanged) {
       this.logger.debug(`No mutable diff for EMR instance group ${logicalId}, skipping update`);
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: { Id: physicalId, InstanceGroupId: physicalId },
+      };
     }
 
     const jobFlowId = properties['JobFlowId'] as string | undefined;
