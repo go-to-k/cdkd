@@ -88,7 +88,7 @@ import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -122,7 +122,11 @@ import {
   stringifyCfnTemplate,
   type TemplateFormat,
 } from '../yaml-cfn.js';
-import { carriesSecretMask, noEchoLeavesOf } from '../../deployment/secret-redaction.js';
+import {
+  carriesSecretMask,
+  noEchoLeavesOf,
+  SECRET_MASK,
+} from '../../deployment/secret-redaction.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -5289,26 +5293,38 @@ export async function buildImportPlan(
     // bag must not be.
     // go-to-k/cdkd#4043 (schema v11): a property a `NoEcho` template
     // parameter fed holds `***` by design, and its record names the position
-    // in `noEchoLeaves`. None of the three remedies below applies to it, so
-    // it gets its own reason: the export has no value to declare there.
+    // in `noEchoLeaves`. The exported TEMPLATE still reads the parameter, and
+    // CloudFormation receives its value through its own parameter
+    // (`resolveTemplateParameters`), so such a record is let through (Phase
+    // C, design section 4.8) as long as nothing below reads a marked
+    // position: the IAM policy pre-delete's principals and name, and the
+    // import identifier (checked where it is resolved).
     const noEchoLeaves = noEchoLeavesOf(stateEntry);
-    if (
+    const masksOnlyAtNoEchoLeaves =
       noEchoLeaves !== undefined &&
       noEchoLeaves.length > 0 &&
       carriesSecretMask(stateEntry.properties) &&
-      !carriesSecretMask(withoutCoordinates(stateEntry.properties, noEchoLeaves))
-    ) {
+      !carriesSecretMask(withoutCoordinates(stateEntry.properties, noEchoLeaves));
+    const noEchoReadByPreDelete =
+      masksOnlyAtNoEchoLeaves &&
+      IMPORT_UNSUPPORTED_RECREATABLE_TYPES.has(resourceType) &&
+      noEchoLeaves.some(
+        (coordinate) =>
+          typeof coordinate[0] === 'string' && NOECHO_PRE_DELETE_KEYS.has(coordinate[0])
+      );
+    if (noEchoReadByPreDelete) {
       blocked.push({
         logicalId,
         resourceType,
         reason:
-          "a NoEcho template parameter feeds at least one property, and cdkd state holds only the redaction mask ('***') there, " +
-          'so the export has no value to declare for it. Export this stack without that resource and adopt it into ' +
-          'CloudFormation by hand, passing the parameter value yourself.',
+          "a NoEcho template parameter feeds a property this resource's pre-delete reads (its principals or " +
+          "its name), and cdkd state holds only the redaction mask ('***') there, so the export cannot tell " +
+          'what to remove. Export this stack without that resource and adopt it into CloudFormation by hand, ' +
+          'passing the parameter value yourself.',
       });
       continue;
     }
-    if (carriesSecretMask(stateEntry.properties)) {
+    if (!masksOnlyAtNoEchoLeaves && carriesSecretMask(stateEntry.properties)) {
       blocked.push({
         logicalId,
         resourceType,
@@ -5563,6 +5579,27 @@ export async function buildImportPlan(
     // `properties` (the `AWS::EC2::VPCCidrBlock` splitter), which the
     // `properties` blocker above already fences. It stays so a splitter that
     // one day reads a THIRD source into the overlay is still caught here.
+    // go-to-k/cdkd#4043 Phase C: a record let through above whose identifier
+    // was built from a marked position (a splitter reading a property) holds
+    // the mask INSIDE the identifier, which the whole-leaf test below misses.
+    // Whatever let the record through: another record's masked attribute
+    // embedded through `Fn::Sub` reaches an identifier the same way. A whole
+    // `***` leaf takes the general reason below.
+    if (
+      (JSON.stringify(resolved.resourceIdentifier).includes(SECRET_MASK) ||
+        JSON.stringify(propertiesOverlay).includes(SECRET_MASK)) &&
+      !(carriesSecretMask(resolved.resourceIdentifier) || carriesSecretMask(propertiesOverlay))
+    ) {
+      blocked.push({
+        logicalId,
+        resourceType,
+        reason:
+          "the CloudFormation import identifier of this resource embeds the redaction mask ('***'): it is " +
+          'built from a value cdkd stores only as the mask (a NoEcho value). Export this stack ' +
+          'without that resource and adopt it into CloudFormation by hand, passing the parameter value yourself.',
+      });
+      continue;
+    }
     if (carriesSecretMask(resolved.resourceIdentifier) || carriesSecretMask(propertiesOverlay)) {
       blocked.push({
         logicalId,
@@ -8033,37 +8070,54 @@ export async function resolveChildImportParameters(
   const stillSkipped: string[] = [];
   for (const key of base.intrinsicSkipped) {
     const intrinsicValue = (rawParams as Record<string, unknown>)[key];
+    let result: unknown;
     try {
-      const result = await resolver.resolve(intrinsicValue, parentResolverContext);
-      if (result === undefined || result === null) {
-        stillSkipped.push(key);
-        continue;
-      }
-      if (typeof result === 'string') {
-        resolvedParams.push({ ParameterKey: key, ParameterValue: result });
-      } else if (typeof result === 'number' || typeof result === 'boolean') {
-        resolvedParams.push({ ParameterKey: key, ParameterValue: String(result) });
-      } else if (Array.isArray(result)) {
-        // CFn Parameter `Type: CommaDelimitedList` accepts comma-joined
-        // strings — match CFn's wire shape for an array-typed Parameter.
-        // Each element is coerced to string first to tolerate mixed shapes.
-        resolvedParams.push({
-          ParameterKey: key,
-          ParameterValue: (result as unknown[]).map((e) => String(e)).join(','),
-        });
-      } else {
-        // Resolved to an object (e.g. a nested intrinsic that didn't fully
-        // collapse, or a structured shape CFn Parameters cannot carry).
-        // Treat as unresolvable — keep in skipped so the warn+fallback path
-        // surfaces it.
-        stillSkipped.push(key);
-      }
+      result = await resolver.resolve(intrinsicValue, parentResolverContext);
     } catch {
       // Resolver threw (most commonly: `Ref` to a Parameter not present in
       // context, `Fn::GetAtt` to a resource attr cdkd state didn't capture,
       // or an unsupported intrinsic shape). Fall back to the pre-resolver
       // behavior — keep in skipped, the orchestrator's existing warn path
       // tells the user to verify the child template's Defaults cover it.
+      stillSkipped.push(key);
+      continue;
+    }
+    // go-to-k/cdkd#4043 Phase C: a value the parent's state holds only as the
+    // redaction mask (a declared-`NoEcho` attribute, a `NoEcho` position)
+    // resolves to `***`, whole or embedded. It is REFUSED, never passed to
+    // CloudFormation and never replaced by the child's `Default`: either
+    // would declare a value the live child was not deployed with.
+    if (JSON.stringify(result ?? null).includes(SECRET_MASK)) {
+      throw new CdkdError(
+        `Cannot export the nested stack row ${quotedOrNotShown(childLogicalId)}: its parameter ` +
+          `${quotedOrNotShown(key)} resolves from a value cdkd stores only as the redaction mask ` +
+          `(***), a NoEcho value, so the export has no value to pass to the child. ` +
+          `Export the stack without that nested stack and adopt it into CloudFormation by hand, ` +
+          `passing the parameter value yourself.`,
+        'EXPORT_MASKED_CHILD_PARAMETER'
+      );
+    }
+    if (result === undefined || result === null) {
+      stillSkipped.push(key);
+      continue;
+    }
+    if (typeof result === 'string') {
+      resolvedParams.push({ ParameterKey: key, ParameterValue: result });
+    } else if (typeof result === 'number' || typeof result === 'boolean') {
+      resolvedParams.push({ ParameterKey: key, ParameterValue: String(result) });
+    } else if (Array.isArray(result)) {
+      // CFn Parameter `Type: CommaDelimitedList` accepts comma-joined
+      // strings — match CFn's wire shape for an array-typed Parameter.
+      // Each element is coerced to string first to tolerate mixed shapes.
+      resolvedParams.push({
+        ParameterKey: key,
+        ParameterValue: (result as unknown[]).map((e) => String(e)).join(','),
+      });
+    } else {
+      // Resolved to an object (e.g. a nested intrinsic that didn't fully
+      // collapse, or a structured shape CFn Parameters cannot carry).
+      // Treat as unresolvable — keep in skipped so the warn+fallback path
+      // surfaces it.
       stillSkipped.push(key);
     }
   }
@@ -9955,6 +10009,18 @@ export function createExportCommand(): Command {
 
   return cmd;
 }
+
+/**
+ * The properties the IAM policy pre-delete reads (`policyDetachTargets`, and
+ * `policyTemplateCheck`'s `PolicyName`): a NoEcho mask at one of them leaves
+ * the export unable to say what to remove (go-to-k/cdkd#4043 Phase C).
+ */
+const NOECHO_PRE_DELETE_KEYS: ReadonlySet<string> = new Set([
+  'Roles',
+  'Users',
+  'Groups',
+  'PolicyName',
+]);
 
 /**
  * A copy of `bag` with every coordinate in `coordinates` removed, so a mask

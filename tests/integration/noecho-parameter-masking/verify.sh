@@ -47,6 +47,8 @@
 #      held another 3-character value. `cdkd diff` and `cdkd diff --json`
 #      still report its REMOVE row, but with the name withheld: the old value
 #      prints in neither. The original state is restored before Phase 2.
+#   1d. `cdkd scrub --dry-run --fail` exits 0 on the stack the v11 deploy
+#      wrote: scrub's NoEcho arm reproduces the deploy's (#4043 Phase C).
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
 #      neither its output nor any deployments/*.jsonl object carries it.
@@ -853,6 +855,12 @@ env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" d
   --region "${REGION}" \
   --json >"${P1C_JSON}" 2>"${P1C_JSON_ERR}"
 DIFF_JSON_RC_P1C=$?
+# go-to-k/cdkd#4043 Phase C: scrub reports the planted alias (a key the deploy
+# would never publish) as a finding, and prints no value. Asserted after the
+# restore below.
+SCRUB_OUT_P1C=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail 2>&1)
+SCRUB_RC_P1C=$?
 set -e
 # Restore FIRST, so a failing assertion below leaves no planted alias behind
 # (the cleanup trap restores too).
@@ -862,6 +870,26 @@ if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | j
   exit 1
 fi
 P1C_ORIGINAL=""
+# The planted alias spells OLD_SHORT, so it is a needle here too.
+if grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" \
+  || grep -qE "(^|[^A-Za-z0-9])${OLD_SHORT}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" \
+  || [[ "${SCRUB_OUT_P1C}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 1c 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
+if [ "${SCRUB_RC_P1C}" -ne 1 ]; then
+  echo "FAIL: 'cdkd scrub --dry-run --fail' exited ${SCRUB_RC_P1C} over the planted legacy alias (expected 1: a key the deploy would not publish) (issue #4043 Phase C)" >&2
+  diag_output "${SCRUB_OUT_P1C}"
+  exit 1
+fi
+# Exit 1 is also what a crash returns: the finding line itself (its wording is
+# pinned by scrub-export-index.test.ts) is the positive sentinel.
+if ! grep -qE "the template no longer declares would be dropped|may be a live export alias" <<< "${SCRUB_OUT_P1C}"; then
+  echo "FAIL: 'cdkd scrub --dry-run --fail' exited 1 over the planted legacy alias without reporting it as a key to drop (issue #4043 Phase C)" >&2
+  diag_output "${SCRUB_OUT_P1C}"
+  exit 1
+fi
+echo "    OK: cdkd scrub --dry-run --fail reports the planted alias (exit 1), printing no value"
 if [ "${DIFF_RC_P1C}" -ne 0 ] || [ "${DIFF_JSON_RC_P1C}" -ne 0 ]; then
   echo "FAIL: 'cdkd diff' over the planted alias exited ${DIFF_RC_P1C} (human) / ${DIFF_JSON_RC_P1C} (--json)" >&2
   diag_output "${DIFF_OUT_P1C}"
@@ -916,6 +944,30 @@ if [ "${DRIFT_RC_P1B}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd drift exits 0 and reports NoEchoConsumer's marked leaf under noEchoParameter"
+
+# --- Phase 1d: cdkd scrub finds nothing to do on a v11 stack (#4043 C) ----
+# Scrub's positional arm reproduces what the deploy wrote: every NoEcho
+# position already holds `***` and is named in `noEchoLeaves`, so a dry run
+# with --fail exits 0 and prints no value. A scrub that disagreed with the
+# deploy would report the stack (exit 1) on every run.
+echo "==> Phase 1d: cdkd scrub --dry-run --fail on the v11 stack"
+set +e
+SCRUB_OUT_P1D=$(env -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail 2>&1)
+P1D_RC=$?
+set -e
+if [[ "${SCRUB_OUT_P1D}" == *"${TOKEN}"* ]] || [[ "${SCRUB_OUT_P1D}" == *"${ALIAS_TOKEN}"* ]] \
+  || grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1D}"; then
+  echo "FAIL: the Phase 1d 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
+  exit 1
+fi
+assert_no_split_piece "the Phase 1d 'cdkd scrub' output" "${SCRUB_OUT_P1D}"
+if [ "${P1D_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd scrub --dry-run --fail' exited ${P1D_RC} on a stack a v11 deploy just wrote -- scrub's NoEcho arm disagrees with the deploy's (issue #4043 Phase C)" >&2
+  diag_output "${SCRUB_OUT_P1D}"
+  exit 1
+fi
+echo "    OK: cdkd scrub --dry-run --fail exits 0 on the v11 stack"
 
 # --- Phase 2: the provider rejection quotes the value ------------------------
 echo "==> Phase 2: probe deploy whose SSM Tier is the NoEcho value, which SSM rejects quoting it"

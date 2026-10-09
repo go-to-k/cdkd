@@ -5537,6 +5537,41 @@ describe('resolveChildImportParameters (issue #464 follow-up — intrinsic Param
     expect(result.params).toEqual([{ ParameterKey: 'FromRef', ParameterValue: 'v1' }]);
     expect(result.intrinsicSkipped).toEqual(['FromBadGetAtt']);
   });
+
+  // go-to-k/cdkd#4043 Phase C (review B1 of #4764): a child parameter that
+  // resolves from a value the parent's state holds only as `***` -- a
+  // declared-NoEcho attribute an SSM parameter echoes -- is REFUSED, never
+  // sent to CloudFormation and never replaced by the child's Default.
+  it.each([
+    ['whole', { 'Fn::GetAtt': ['Producer', 'Value'] }],
+    ['embedded through Fn::Sub', { 'Fn::Sub': 'pre-${Producer.Value}' }],
+  ])('refuses a child parameter resolving to the mask (%s)', async (_l, value) => {
+    const parentTemplate = {
+      Resources: {
+        Producer: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'x' } },
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { Parameters: { P: value } } },
+      },
+    };
+    await expect(
+      resolveChildImportParameters(
+        parentTemplate,
+        parentCtx({
+          template: parentTemplate as unknown as ResolverContext['template'],
+          resources: {
+            Producer: {
+              physicalId: '/app/p',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Type: 'String', Value: '***' },
+              attributes: { Value: '***' },
+              noEchoAttributeNames: ['Value'],
+            },
+          } as unknown as ResolverContext['resources'],
+        }),
+        'Child',
+        resolver
+      )
+    ).rejects.toThrow(/resolves from a value cdkd stores only as the redaction mask/);
+  });
 });
 
 describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first pre-pass)', () => {

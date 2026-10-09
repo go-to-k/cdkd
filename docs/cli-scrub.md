@@ -948,12 +948,38 @@ the last step is `cdkd scrub <stack> --purge-history`.
 The same scope leaves two other kinds of value out of scrub's check. A
 credential a provider records in `attributes` so that `Fn::GetAtt` can read
 it — an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a Cognito user pool
-client's `ClientSecret` — is stored as returned. A `NoEcho` parameter's value
-is found only as the template's `Default` binds it today, where a resource that
-reads the parameter holds it whole or embedded in a value of 4 or more
-characters; an older value, a shorter one or a number is not found. A
-`cdkd deploy` masks every position the parameter fills (see
-[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
+client's `ClientSecret` — is stored as returned.
+
+A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
+[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)):
+
+- **By position.** Every property today's template fills from a `NoEcho`
+  parameter holds `***`, whatever the value's type or length, and the record
+  names the position in `noEchoLeaves`. So does the observed baseline there.
+  A record that already names its positions keeps them, as a deploy does. A
+  nested child's parameter its parent's row fills from a `NoEcho` source
+  counts as one too. One whose every `NoEcho` read sits inside an `Fn::If`
+  counts whichever branch reads the source, because scrub cannot tell which
+  branch the deploy took (and so does a grandchild's parameter filled from
+  it): the child stores `***` there, but a plaintext it held there is not
+  masked elsewhere in the record (it may be the other branch's literal). A
+  position marked this way when the deploy took the plain branch reads back
+  from AWS until the next deploy rewrites it.
+- **By the stored value.** Where the record still holds a plaintext at such a
+  position (a stack deployed before state `version: 11`, or under an older
+  `Default`), that value is masked wherever else the same record holds it, a
+  leaf embedding it included (4 characters or more). Another record holding
+  the same literal is left alone, and so is a value only an `Fn::If` row
+  parameter positions.
+- **Attributes.** An attribute of the same name as such a property that
+  equals its value (an SSM parameter's `Value`) is masked at any length and
+  declared `NoEcho`, so a resource reading it through `Fn::GetAtt` is
+  positioned too, whatever order the records are in.
+- **Outputs.** A declared output the parameter serves holds `***`, and so do
+  its own export alias and any key no other output publishes that holds the
+  same stored value. The exports index entry is converged onto `***`.
+- **Not found:** a value at a position a record that names no positions no
+  longer reads. A `cdkd deploy` of the stack masks it.
 
 ## Stack outputs
 
@@ -996,6 +1022,11 @@ Dropped 1 output key(s) from MyStack that its template no longer declares: OldDb
 name that holds a secret, or the key's own stored value, is masked or withheld;
 a name that may be an export alias and carries a character an output's logical
 id cannot is withheld outright, as `cdkd diff` withholds it.
+An `Export.Name` a deploy now refuses because it holds or reads a `NoEcho`
+parameter's value is never published, so its missing key does not make every
+other key a possible alias. An alias key an older cdkd published under such a
+value is reported as a key that renders a secret (scrub cannot rewrite a key;
+a deploy drops it).
 A dropped export alias leaves the record's export set too; its entry in the
 [exports index](#the-exports-index) is reported as a name `state.outputs` no
 longer holds, and a redeploy rewrites the index.
@@ -1155,8 +1186,10 @@ after the `state.json` write for each stack. For every entry the index already
 holds whose `producerStack` / `producerRegion` name a stack this run scrubbed:
 
 - when `state.outputs` holds a value under the same name, that value contains
-  `{{resolve:`, and the entry's value differs from it, the entry is rewritten
-  to the state value;
+  `{{resolve:` or carries the redaction mask `***` (any masked output, such as
+  one a `NoEcho` parameter serves), and the entry's value differs from it, the
+  entry is rewritten to the state value. Until it is written, the entry is a
+  finding: `--dry-run --fail` exits 1 over it;
 - when it does not differ, nothing is written.
 
 The rule is a comparison against the state record, not against the plaintext

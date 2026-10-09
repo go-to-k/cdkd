@@ -79,8 +79,26 @@ import {
   MIN_NEEDLE_LENGTH,
   inheritNestedStackParameterAssociations,
   recordNestedStackParameterExpressions,
+  canonicalCoordinates,
+  carriesSecretMask,
+  maskAtCoordinates,
+  maskReadbackAtCoordinates,
+  maskWholeValue,
+  noEchoCoordinatesOf,
+  noEchoLeavesOf,
+  readsNoEchoSource,
+  type NoEchoPositionSources,
+  isSingleDynamicReferenceToken,
+  recordNoEchoParameterFreshValue,
+  valueAtCoordinate,
+  type NoEchoCoordinate,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
+import {
+  noEchoAttributeNamesOf,
+  noEchoExactEchoLeavesOf,
+  noEchoParameterNamesOf,
+} from '../../deployment/deploy-engine/noecho.js';
 // Issue #2109: the region split is #2057's, imported rather than re-spelled —
 // one answer to "which region must answer for this `{{resolve:...}}`
 // expression", shared by the rollback replay and by `cdkd scrub`.
@@ -115,6 +133,8 @@ import {
   templateUsesSub,
 } from '../../analyzer/outputs-diff.js';
 import {
+  carriedExportAliasExposure,
+  noEchoParameterValueSeed,
   collectDeclaredOutputNames,
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
@@ -327,7 +347,7 @@ function scrubStacksFailedError(failures: ReadonlyArray<{ stackName: string }>):
  * the entry is reported and left holding whatever it holds.
  */
 export type ExportIndexFinding =
-  | { kind: 'converge'; exportName: string; stateValue: unknown }
+  | { kind: 'converge'; exportName: string; stateValue: unknown; entryValue: unknown }
   | { kind: 'absent'; exportName: string; entryValue: unknown };
 
 /** What one stack's pass over one region's exports index examined and found. */
@@ -394,12 +414,17 @@ export function planExportIndexRepair(
     // has just rewritten, or one this run recorded no needle for, and
     // converging an entry onto a plaintext would move a plaintext INTO the
     // shared object rather than out of it.
-    if (!carriesDynamicReference(stateValue)) continue;
+    //
+    // The redaction MASK is canonical the same way (go-to-k/cdkd#4043 Phase
+    // C): a `NoEcho`-served output scrub masked, which a deploy also publishes
+    // to the index as `***` (`redactOutputs`), so an entry still holding the
+    // value converges onto the mask.
+    if (!carriesDynamicReference(stateValue) && !carriesSecretMask(stateValue)) continue;
     // `JSON.stringify` for the same reason `mapsEqual` uses it in the store:
     // an Output value is `unknown` and a list-valued `Fn::GetAtt` persists an
     // array, so `!==` alone reports every array as divergent.
     if (JSON.stringify(entry.value) === JSON.stringify(stateValue)) continue;
-    findings.push({ kind: 'converge', exportName, stateValue });
+    findings.push({ kind: 'converge', exportName, stateValue, entryValue: entry.value });
   }
   return { examined, findings };
 }
@@ -722,6 +747,19 @@ export interface NestedChildScrubInput {
    * plaintext: passed on, never enumerated or logged.
    */
   inheritedSecrets: RecordedSecretValues;
+  /**
+   * The child parameters the parent's row fills from a `NoEcho` source
+   * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8), which the child's
+   * own template does not declare `NoEcho`.
+   */
+  noEchoParameters?: readonly string[];
+  /**
+   * The subset of {@link noEchoParameters} the row fills through an `Fn::If`.
+   * Positioned like the rest, but a plaintext the child stored there is no
+   * migration needle: it may be the OTHER branch's literal, which as a needle
+   * would mask unrelated copies of it.
+   */
+  noEchoConditionalParameters?: readonly string[];
 }
 
 /** One nested child a parent's scrub found, for `scrubCommand` to visit next. */
@@ -1676,8 +1714,17 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           'it may carry a secret'
         );
       const unwrittenNames = new Set(repair.unwritten);
+      // A converge entry's name may embed the value the entry still holds
+      // (an export named after a masked output's plaintext), so every line
+      // naming it masks that value too (go-to-k/cdkd#4043 Phase C).
+      const entryValueOf = new Map(
+        repair.findings.map((finding) => [finding.exportName, finding.entryValue] as const)
+      );
       for (const exportName of repair.unwritten) {
-        indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
+        indexUnwritten.push({
+          region: stackRegion,
+          shown: named(exportName, entryValueOf.get(exportName)),
+        });
       }
       for (const finding of repair.findings) {
         if (finding.kind === 'converge') {
@@ -1696,7 +1743,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           // conditional-tense for every finding.
           if (!options.dryRun && unwrittenNames.has(finding.exportName)) {
             logger.warn(
-              `Exports index entry ${named(finding.exportName)} (${displayIdent(stackRegion)}) differs from ` +
+              `Exports index entry ${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) differs from ` +
                 `${shownStack}'s state.outputs and could NOT be written — it keeps the ` +
                 `value it holds.`
             );
@@ -1721,7 +1768,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             totalIndexEntriesConverged++;
             logger.info(
               `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
-                `${named(finding.exportName)} (${displayIdent(stackRegion)}) to ${shownStack}'s ` +
+                `${named(finding.exportName, finding.entryValue)} (${displayIdent(stackRegion)}) to ${shownStack}'s ` +
                 `state.outputs value.`
             );
           }
@@ -7174,6 +7221,24 @@ export async function scrubStack(
     // alias is accounted, which `planUnnamedOutputDrop` needs before it drops
     // an unaccounted key that may be an alias.
     let everyExportAliasReproduced = true;
+    // Every `NoEcho` value this run binds, the seed of the deploy's
+    // export-name verdict (go-to-k/cdkd#4043): a name it refuses is never
+    // published, so its absence accounts for nothing.
+    // A conditional row parameter stays a possible live alias: the deploy's
+    // branch may not have read the `NoEcho` source.
+    const conditionalNameParameters = new Set(nestedInput?.noEchoConditionalParameters ?? []);
+    const noEchoNameParameters = new Set([
+      ...noEchoParameterNamesOf(stack.template),
+      ...(nestedInput?.noEchoParameters ?? []).filter(
+        (name) => !conditionalNameParameters.has(name)
+      ),
+    ]);
+    const declaredAliasOf = new Map<string, string>();
+    const noEchoNameSeed = noEchoParameterValueSeed(
+      stack.template.Parameters,
+      parameters,
+      inheritedSecrets
+    );
     // Declared above the wrap because the block below it reads some of them.
 
     // ONE drain budget for the resolve LOOPS between here and the
@@ -7814,9 +7879,32 @@ export async function scrubStack(
         const literalCollision =
           typeof declaredExportName === 'string' &&
           isExportAliasCollision(declaredExportName, name, declaredOutputNames);
+        // go-to-k/cdkd#4043 Phase C: a name the deploy's export-name verdict
+        // REFUSES (it holds or reads a `NoEcho` value) is never published, so
+        // its alias key is absent by design and does not make the stored
+        // aliases unaccountable. A key an older binary published under it is
+        // then an unnamed key the drop plan decides like any other: reported
+        // when its name renders a secret (and then kept, since a key cannot
+        // be rewritten), dropped otherwise.
+        // Not through an `Fn::If`, on either arm: the deploy reads only the
+        // branch its condition selects, which scrub's default-bound verdicts
+        // may not reproduce, so a conditional name stays a possible live alias.
+        const refusedForNoEcho =
+          declaredExportName !== undefined &&
+          !JSON.stringify(declaredExportName).includes('"Fn::If"') &&
+          ((typeof exportName === 'string' &&
+            !exportNameUnresolved &&
+            carriedExportAliasExposure(exportName, outputSecrets, noEchoNameSeed) !== undefined) ||
+            readsNoEchoSource(declaredExportName, { parameters: noEchoNameParameters }));
+        // The alias key a declared output publishes, for the NoEcho output
+        // mask: only a served output's OWN alias is masked by name.
+        if (typeof exportName === 'string' && !exportNameUnresolved) {
+          declaredAliasOf.set(name, exportName);
+        }
         if (
           declaredExportName !== undefined &&
           !literalCollision &&
+          !refusedForNoEcho &&
           !(
             typeof exportName === 'string' &&
             !exportNameUnresolved &&
@@ -7990,6 +8078,22 @@ export async function scrubStack(
       logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
     }
 
+    // go-to-k/cdkd#4043 Phase C: the POSITIONAL arm and its MIGRATION rule.
+    // A leaf today's template serves from a `NoEcho` parameter (or a declared
+    // `NoEcho` `Fn::GetAtt`) is persisted as `***`, named in `noEchoLeaves`,
+    // as a v11 deploy writes it. Where the record still holds the plaintext
+    // there (a stack deployed before v11, or under an older `Default`), that
+    // stored value becomes a value-arm needle of a second scrub of that record
+    // alone, so its other copies in the record are masked too.
+    const noEchoPlans = planScrubNoEcho(
+      state,
+      stack.template,
+      perResourceTemplateProps,
+      conditions,
+      nestedInput?.noEchoParameters ?? [],
+      nestedInput?.noEchoConditionalParameters ?? []
+    );
+
     // The nested children this stack deploys (go-to-k/cdkd#2252): every
     // `AWS::CloudFormation::Stack` row the template declares OR the record
     // holds. Each becomes a target carrying the parameters and bag above, or a
@@ -8051,6 +8155,24 @@ export async function scrubStack(
           // child with no secret-fed parameter: its own template still names
           // its own references.
           inheritedSecrets: perResourceSecrets.get(logicalId) ?? new Map<string, string>(),
+          // Read against the plan's FINAL declared attributes (its fixed
+          // point), so a row fed by an echoed `NoEcho` attribute counts.
+          ...((): Pick<
+            NestedChildScrubInput,
+            'noEchoParameters' | 'noEchoConditionalParameters'
+          > => {
+            const filled = noEchoFilledRowParameters(
+              templateResources[logicalId]?.Properties,
+              noEchoPlans.sources,
+              noEchoPlans.needleSources
+            );
+            return {
+              noEchoParameters: filled.names,
+              ...(filled.conditional.length > 0 && {
+                noEchoConditionalParameters: filled.conditional,
+              }),
+            };
+          })(),
         },
       });
     }
@@ -8122,6 +8244,8 @@ export async function scrubStack(
       return JSON.stringify(redactSecretsForState(value, needles)) !== JSON.stringify(value);
     };
 
+    const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
+
     const totalSecrets =
       outputSecrets.size +
       [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0) +
@@ -8130,7 +8254,7 @@ export async function scrubStack(
       // zero-needle branch below, returns `recordsChanged: 0`, and prints
       // "No plaintext secrets found" over the record it never examined.
       [...orphanSecrets.values()].reduce((n, m) => n + m.size, 0);
-    if (totalSecrets === 0) {
+    if (totalSecrets === 0 && !noEchoPlans.changesAny) {
       // NOT a blanket "nothing found": `unverifiableReads` is carried out even
       // here, because a stack whose only cross-stack read cdkd declined by
       // design has exactly this shape — zero needles — and reporting it clean
@@ -8237,8 +8361,26 @@ export async function scrubStack(
               STATE_SOURCED_CROSS_GENERATION_RULES
             )
           : record;
-      if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
-      newResources[logicalId] = scrubbed;
+      // go-to-k/cdkd#4043 Phase C, the migration rule: a plaintext this record
+      // still holds at a `NoEcho` position is a needle of a SECOND scrub of
+      // this record alone, in a map of its own: never `perResourceSecrets`,
+      // which the stack-wide passes (orphans, cross-stack read names,
+      // unaccounted outputs) union, and never the record's own bag, whose
+      // pairs and marks the first pass reads unchanged.
+      const plan = noEchoPlans.byLogicalId.get(logicalId);
+      const migrationNeedles = scrubMigrationNeedles(plan, noEchoPublicTokens);
+      const migrated =
+        migrationNeedles === undefined
+          ? scrubbed
+          : scrubResourceRecord(
+              scrubbed,
+              migrationNeedles,
+              undefined,
+              STATE_SOURCED_CROSS_GENERATION_RULES
+            );
+      const written = applyScrubNoEcho(migrated, record, plan);
+      if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
+      newResources[logicalId] = written;
     }
 
     // Rollback-orphan records (issue go-to-k/cdkd#2943).
@@ -8454,6 +8596,16 @@ export async function scrubStack(
       // these keys, so a coinciding literal is redacted too.
       allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
     );
+    // go-to-k/cdkd#4043 Phase C: a declared output today's template serves
+    // from a `NoEcho` parameter holds `***`, as the deploy's
+    // `maskOutputsByPosition` writes it, and so does every other key (an
+    // export alias) holding the same stored value.
+    const noEchoMaskedOutputs = maskScrubNoEchoOutputs(
+      redactedOutputs,
+      noEchoPlans.outputKeys,
+      new Set(Object.keys(stack.template.Outputs ?? {})),
+      declaredAliasOf
+    );
     emitAbandonedScanNotes();
     // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name
     // and neither pass rewrote is REMOVED from the bag this run writes, never
@@ -8463,7 +8615,7 @@ export async function scrubStack(
     // read: the rest of the record is still written, because refusing it would
     // strand every plaintext this run CAN repair over a leftover it cannot
     // identify. Both are findings, never a clean result.
-    let newOutputs = redactedOutputs;
+    let newOutputs = noEchoMaskedOutputs;
     let newExportNames: unknown = state.exportNames;
     let droppedOutputKeys = 0;
     let keptReadOutputKeys = 0;
@@ -8473,11 +8625,13 @@ export async function scrubStack(
     const droppedDisplayCorpus: RecordedSecretValues = new Map();
     // The alias-shaped names the lines below withhold, for the index lines too.
     const withheldOutputKeys = new Set<string>();
-    if (isReadableBag(state.outputs) && isReadableBag(redactedOutputs)) {
+    // Everything below reads the NoEcho-masked bag: a drop rebuilt from the
+    // unmasked one would write the plaintext back (review of #4764).
+    if (isReadableBag(state.outputs) && isReadableBag(noEchoMaskedOutputs)) {
       const stored = state.outputs as Record<string, unknown>;
       const plan = planUnnamedOutputDrop({
         stored,
-        rewritten: redactedOutputs as Record<string, unknown>,
+        rewritten: noEchoMaskedOutputs as Record<string, unknown>,
         accountedKeys: accountedOutputKeys,
         reportedKeys: new Set(secretBearingKeys),
         exportNames: state.exportNames,
@@ -8572,7 +8726,7 @@ export async function scrubStack(
         if (dropping.size > 0) {
           droppedOutputKeys = dropping.size;
           newOutputs = Object.fromEntries(
-            Object.entries(redactedOutputs as Record<string, unknown>).filter(
+            Object.entries(noEchoMaskedOutputs as Record<string, unknown>).filter(
               ([key]) => !dropping.has(key)
             )
           );
@@ -8774,4 +8928,348 @@ export function createScrubCommand(): Command {
 
   cmd.action(withErrorHandling(scrubCommand));
   return cmd;
+}
+
+/** One record's `NoEcho` positions in scrub (go-to-k/cdkd#4043 Phase C). */
+interface ScrubNoEchoPlan {
+  /** The coordinates the record is written with. */
+  readonly leaves: NoEchoCoordinate[];
+  /**
+   * The plaintext the record still held at a coordinate (the migration
+   * witness). `needle` is false where only a conditional row parameter
+   * positions it: masked there, but no needle for the rest of the record.
+   */
+  readonly stored: ReadonlyArray<{ coordinate: NoEchoCoordinate; value: unknown; needle: boolean }>;
+  /** Attribute names declared `NoEcho`: the record's own, plus echoes found now. */
+  readonly attributeNames: readonly string[];
+}
+
+/**
+ * Plan the `NoEcho` arms over every record today's template still declares
+ * under the same type (go-to-k/cdkd#4043 Phase C, design section 4.6).
+ *
+ * - The coordinates are the record's own `noEchoLeaves` when it has the field
+ *   (as a deploy keeps it for a record it does not write), else today's
+ *   template positions that read a `NoEcho` parameter, over the STORED record.
+ * - A plaintext the record still holds there is kept as the record's
+ *   migration witness: {@link scrubMigrationNeedles} makes it a FRESH mask-only
+ *   and containment needle of a second scrub of THAT record alone, never the
+ *   stack-wide union: one record's value must not rewrite another's literal.
+ * - An attribute of the same name as a coordinate's property that equals the
+ *   stored value (an SSM parameter's `Value`) is declared `NoEcho`, and the
+ *   positions are recomputed until no declaration is added, so a
+ *   `Fn::GetAtt` consumer is positioned whatever the record order.
+ *
+ * `changesAny` lets a stack with no other recorded secret still be scrubbed.
+ * `passedParameters` are the child parameters a parent's row fills from a
+ * `NoEcho` source, for a nested child (the deploy's decision 8). Those in
+ * `conditionalParameters` (filled through an `Fn::If`) are positioned, but a
+ * stored plaintext only they position is no migration needle.
+ */
+function planScrubNoEcho(
+  state: StackState,
+  template: CloudFormationTemplate,
+  templateProps: ReadonlyMap<string, Record<string, unknown>>,
+  conditions: Record<string, boolean>,
+  passedParameters: readonly string[] = [],
+  conditionalParameters: readonly string[] = []
+): {
+  byLogicalId: Map<string, ScrubNoEchoPlan>;
+  outputKeys: string[];
+  changesAny: boolean;
+  parameters: ReadonlySet<string>;
+  /** The positioning sources over the FINAL declared attribute names. */
+  sources: NoEchoPositionSources;
+  /**
+   * The sources a NEEDLE comes from: no conditional parameter, and only the
+   * attributes declared without one. A nested row reading none of them
+   * outside an `Fn::If` is conditional for its child too.
+   */
+  needleSources: NoEchoPositionSources;
+} {
+  const byLogicalId = new Map<string, ScrubNoEchoPlan>();
+  const parameters = new Set([...noEchoParameterNamesOf(template), ...passedParameters]);
+  const resources = state.resources ?? {};
+  const declared = new Map<string, Set<string>>();
+  for (const [id, record] of Object.entries(resources)) {
+    declared.set(id, new Set(noEchoAttributeNamesOf(record) ?? []));
+  }
+  const sources = {
+    parameters,
+    attributeIsNoEcho: (id: string, attribute: string): boolean =>
+      declared.get(id)?.has(attribute) === true,
+    ...(Object.keys(conditions).length > 0 && { conditions }),
+  };
+  const persisted = (value: unknown): boolean =>
+    carriesSecretMask(value) || (typeof value === 'string' && isSingleDynamicReferenceToken(value));
+  const templateResources = template.Resources ?? {};
+  const eligible = Object.entries(resources).filter(
+    ([logicalId, record]) =>
+      templateProps.has(logicalId) &&
+      Object.hasOwn(templateResources, logicalId) &&
+      templateResources[logicalId]?.Type === record.resourceType
+  );
+  // The positions and declarations reached from `params`, to a fixed point.
+  const positionFrom = (
+    params: ReadonlySet<string>,
+    names: Map<string, Set<string>>
+  ): Map<string, NoEchoCoordinate[]> => {
+    const from = {
+      ...sources,
+      parameters: params,
+      attributeIsNoEcho: (id: string, attribute: string): boolean =>
+        names.get(id)?.has(attribute) === true,
+    };
+    const leavesOf = new Map<string, NoEchoCoordinate[]>();
+    for (let round = 0; round <= eligible.length; round++) {
+      let grew = false;
+      for (const [logicalId, record] of eligible) {
+        const own = noEchoLeavesOf(record);
+        const leaves = canonicalCoordinates(
+          own ?? noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, from)
+        );
+        leavesOf.set(logicalId, leaves);
+        for (const [name, attribute] of Object.entries(record.attributes ?? {})) {
+          if (attribute === record.physicalId || persisted(attribute)) continue;
+          const echoes = leaves.some(
+            (coordinate) =>
+              coordinate[0] === name &&
+              JSON.stringify(valueAtCoordinate(record.properties, coordinate)) ===
+                JSON.stringify(attribute)
+          );
+          const recordNames = names.get(logicalId)!;
+          if (echoes && !recordNames.has(name)) {
+            recordNames.add(name);
+            grew = true;
+          }
+        }
+      }
+      if (!grew) break;
+    }
+    return leavesOf;
+  };
+  const leavesOf = positionFrom(parameters, declared);
+  // The coordinates whose stored plaintext is a migration NEEDLE: those a
+  // source other than a conditional row parameter positions.
+  const conditional = new Set(conditionalParameters);
+  const needleParameters = new Set([...parameters].filter((name) => !conditional.has(name)));
+  const needleDeclared =
+    conditional.size === 0
+      ? declared
+      : new Map(
+          Object.entries(resources).map(([id, record]) => [
+            id,
+            new Set(noEchoAttributeNamesOf(record) ?? []),
+          ])
+        );
+  const needleLeavesOf =
+    conditional.size === 0 ? leavesOf : positionFrom(needleParameters, needleDeclared);
+  let changesAny = false;
+  for (const [logicalId, record] of eligible) {
+    const leaves = leavesOf.get(logicalId) ?? [];
+    const attributeNames = [...(declared.get(logicalId) ?? [])].sort();
+    if (leaves.length === 0 && attributeNames.length === 0) continue;
+    const stored: Array<{ coordinate: NoEchoCoordinate; value: unknown; needle: boolean }> = [];
+    const needleCoordinates = new Set(
+      (needleLeavesOf.get(logicalId) ?? []).map((coordinate) => JSON.stringify(coordinate))
+    );
+    for (const coordinate of leaves) {
+      const value = valueAtCoordinate(record.properties, coordinate);
+      if (value === undefined || value === null || persisted(value)) continue;
+      stored.push({ coordinate, value, needle: needleCoordinates.has(JSON.stringify(coordinate)) });
+    }
+    byLogicalId.set(logicalId, { leaves, stored, attributeNames });
+    const unmaskedAttribute = attributeNames.some(
+      (name) => Object.hasOwn(record.attributes ?? {}, name) && !persisted(record.attributes![name])
+    );
+    if (
+      stored.length > 0 ||
+      unmaskedAttribute ||
+      (leaves.length > 0 && JSON.stringify(record.noEchoLeaves) !== JSON.stringify(leaves))
+    ) {
+      changesAny = true;
+    }
+  }
+  // Declared outputs whose value reads a `NoEcho` parameter on EVERY branch
+  // (no conditions: scrub cannot know the deploy's verdicts, so a value is
+  // masked if any branch could read one), not yet persisted as the mask.
+  const outputSources = { parameters, attributeIsNoEcho: sources.attributeIsNoEcho };
+  const outputKeys: string[] = [];
+  const stored = state.outputs as unknown;
+  if (stored !== null && typeof stored === 'object' && !Array.isArray(stored)) {
+    for (const [key, output] of Object.entries(template.Outputs ?? {})) {
+      if (!Object.hasOwn(stored, key)) continue;
+      const value = (stored as Record<string, unknown>)[key];
+      if (value === undefined || value === null || persisted(value)) continue;
+      if (!readsNoEchoSource((output as { Value?: unknown } | undefined)?.Value, outputSources)) {
+        continue;
+      }
+      outputKeys.push(key);
+    }
+  }
+  if (outputKeys.length > 0) changesAny = true;
+  return {
+    byLogicalId,
+    outputKeys,
+    changesAny,
+    parameters,
+    sources: outputSources,
+    needleSources: {
+      parameters: needleParameters,
+      attributeIsNoEcho: (id: string, attribute: string): boolean =>
+        needleDeclared.get(id)?.has(attribute) === true,
+    },
+  };
+}
+
+/**
+ * The migration needles of one record's plan (go-to-k/cdkd#4043 Phase C): a
+ * map of its own, each stored plaintext a FRESH mask-only and containment
+ * needle as the deploy records a `NoEcho` value. `undefined` when the record
+ * holds none.
+ */
+function scrubMigrationNeedles(
+  plan: ScrubNoEchoPlan | undefined,
+  publicTokens: ReadonlySet<string>
+): RecordedSecretValues | undefined {
+  if (plan === undefined || plan.stored.length === 0) return undefined;
+  const needles: RecordedSecretValues = new Map();
+  for (const { value, needle } of plan.stored) {
+    if (needle) recordNoEchoParameterFreshValue(value, needles, publicTokens);
+  }
+  return needles.size > 0 ? needles : undefined;
+}
+
+/**
+ * Mask every declared output a `NoEcho` parameter serves (go-to-k/cdkd#4043
+ * Phase C), as the deploy's `maskOutputsByPosition` does, and its OWN export
+ * alias key (`aliasOf`, resolved by this run). A key that is neither a declared
+ * output nor ANOTHER output's alias, holding the same stored value, is an alias
+ * this run cannot name (an older binary's), and is masked by value. Another
+ * declared output, or another output's alias, is never matched by value.
+ */
+function maskScrubNoEchoOutputs(
+  outputs: Record<string, unknown> | undefined,
+  keys: readonly string[],
+  declared: ReadonlySet<string>,
+  aliasOf: ReadonlyMap<string, string>
+): Record<string, unknown> | undefined {
+  if (outputs === undefined || keys.length === 0) return outputs;
+  const ownAliases = new Set(keys.flatMap((key) => (aliasOf.has(key) ? [aliasOf.get(key)!] : [])));
+  const otherAliases = new Set(
+    [...aliasOf].filter(([key]) => !keys.includes(key)).map(([, alias]) => alias)
+  );
+  const spelled = new Set(
+    keys.filter((key) => Object.hasOwn(outputs, key)).map((key) => JSON.stringify(outputs[key]))
+  );
+  const masked: Record<string, unknown> = nullPrototypeRecord();
+  for (const [key, value] of Object.entries(outputs)) {
+    const byValue =
+      !declared.has(key) && !otherAliases.has(key) && spelled.has(JSON.stringify(value));
+    masked[key] =
+      keys.includes(key) || ownAliases.has(key) || byValue ? maskWholeValue(value) : value;
+  }
+  return masked;
+}
+
+/**
+ * Apply a record's {@link ScrubNoEchoPlan} to what the dynamic-reference
+ * scrub produced: `properties` by index, `observedProperties` through each
+ * list's identity field (the whole list where nothing pairs), and an
+ * attribute of the SAME NAME as a coordinate's property that equals the
+ * stored value (an SSM parameter's `Value`) masked and declared, whatever
+ * its type or length; one equal to the physical id stays.
+ */
+function applyScrubNoEcho(
+  scrubbed: StackState['resources'][string],
+  record: StackState['resources'][string],
+  plan: ScrubNoEchoPlan | undefined
+): StackState['resources'][string] {
+  if (plan === undefined) return scrubbed;
+  const { leaves, attributeNames } = plan;
+  // `observedProperties` was redacted by `scrubResourceRecord` already; this
+  // only adds the `NoEcho` positions on top.
+  const next: StackState['resources'][string] = {
+    ...scrubbed,
+    properties: maskAtCoordinates(scrubbed.properties, leaves),
+    ...(leaves.length > 0 && { noEchoLeaves: leaves.map((coordinate) => [...coordinate]) }),
+    ...(scrubbed.observedProperties !== undefined && {
+      observedProperties: maskReadbackAtCoordinates(
+        scrubbed.observedProperties,
+        record.properties,
+        leaves
+      ),
+    }),
+  };
+  // An echo-fidelity entry describes a coordinate the record still marks,
+  // or nothing (as the deploy's `applyNoEchoPersist` prunes it).
+  const marked = new Set(leaves.map((coordinate) => JSON.stringify(coordinate)));
+  const exact = noEchoExactEchoLeavesOf(scrubbed);
+  if (exact !== undefined) {
+    const kept = exact.filter((coordinate) => marked.has(JSON.stringify(coordinate)));
+    if (kept.length > 0) next.noEchoExactEchoLeaves = kept;
+    else delete next.noEchoExactEchoLeaves;
+  }
+  // Every attribute declared `NoEcho` (the record's own names, and an echo
+  // the plan found) is masked whole, whatever its type or length.
+  const attributes = next.attributes;
+  if (attributes !== undefined && attributes !== null && attributeNames.length > 0) {
+    const masked = { ...attributes };
+    for (const name of attributeNames) {
+      if (Object.hasOwn(masked, name)) masked[name] = maskWholeValue(masked[name]);
+    }
+    next.attributes = masked;
+    next.noEchoAttributeNames = [...attributeNames];
+  }
+  return next;
+}
+
+/** `value` with every `Fn::If` node replaced by `null`. */
+function withoutFnIf(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutFnIf);
+  if (value === null || typeof value !== 'object') return value;
+  if (Object.hasOwn(value, 'Fn::If')) return null;
+  const out: Record<string, unknown> = nullPrototypeRecord();
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = withoutFnIf(inner);
+  }
+  return out;
+}
+
+/**
+ * The child parameters a nested-stack row fills from a `NoEcho` source
+ * (go-to-k/cdkd#4043 Phase C, the deploy's decision 8: `recordPassedNoEchoParameters`):
+ * each `Parameters` entry whose template value reads a `NoEcho` parameter or a
+ * declared `NoEcho` attribute, on either branch of an `Fn::If`. One is also
+ * listed in `conditional` when no needle source (`needleSources`: no
+ * conditional parameter, only attributes declared without one) is read
+ * outside every `Fn::If`: scrub's default-bound verdicts may not reproduce the
+ * deploy's branch, so the child positions it but takes no needle from it.
+ */
+function noEchoFilledRowParameters(
+  rowProperties: unknown,
+  sources: NoEchoPositionSources,
+  needleSources: NoEchoPositionSources
+): { names: string[]; conditional: string[] } {
+  const names: string[] = [];
+  const conditional: string[] = [];
+  if (rowProperties === null || typeof rowProperties !== 'object') return { names, conditional };
+  const passed = (rowProperties as Record<string, unknown>)['Parameters'];
+  if (passed === null || typeof passed !== 'object' || Array.isArray(passed)) {
+    return { names, conditional };
+  }
+  // No condition verdicts: an `Fn::If` is read on both branches.
+  const unconditioned: NoEchoPositionSources = {
+    parameters: sources.parameters,
+    ...(sources.attributeIsNoEcho !== undefined && {
+      attributeIsNoEcho: sources.attributeIsNoEcho,
+    }),
+  };
+  for (const [name, value] of Object.entries(passed as Record<string, unknown>)) {
+    if (!readsNoEchoSource(value, unconditioned)) continue;
+    names.push(name);
+    // Conditional unless a needle source is read OUTSIDE every `Fn::If`.
+    if (!readsNoEchoSource(withoutFnIf(value), needleSources)) conditional.push(name);
+  }
+  return { names, conditional };
 }
