@@ -31,6 +31,7 @@ import {
   protectedReplacementAdvice,
   renderDisableCommand,
 } from '../../../src/provisioning/replacement-protection-advice.js';
+import { oxSlug } from '../../ox-slug.js';
 
 /** Resolve a command by its `cdkd <a> <b>` path, failing loudly if it moved. */
 function command(...path: string[]): Command {
@@ -109,10 +110,11 @@ describe('the doc pointer every #2610 message prints', () => {
     // only pre-existing heading fence reads `logs-loggroup-provider.ts` alone.
     const { readFileSync } = await import('node:fs');
     const doc = readFileSync('docs/_contents/cli-deploy-safety.md', 'utf8');
-    const quoted = DELETION_PROTECTION_DOC_POINTER.match(/^"(.+)" in (.+)$/);
-    expect(quoted, 'the pointer is no longer `"<heading>" in <path>`').not.toBeNull();
-    const [, heading, path] = quoted!;
-    expect(path).toBe('docs/_contents/cli-deploy-safety.md');
+    const quoted = DELETION_PROTECTION_DOC_POINTER.match(/^"(.+)" at (.+)$/);
+    expect(quoted, 'the pointer is no longer `"<heading>" at <url>`').not.toBeNull();
+    const [, heading, url] = quoted!;
+    // The published page, opened at that heading's anchor.
+    expect(url).toBe(`https://cdkd.dev/cli-deploy-safety/#${oxSlug(heading!)}`);
     // The WHOLE heading, anchored as a markdown heading line — a substring
     // match would survive exactly the tail rename this fence exists to catch.
     const headings = doc

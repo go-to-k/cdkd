@@ -1170,7 +1170,7 @@ export class ProviderRegistry {
               // will be wrong about one; the deploy-safety docs carry it with
               // its conditions.
               `Returning this resource to the SDK provider is a destroy-and-recreate, not a ` +
-                `flag change — see docs/_contents/cli-deploy-safety.md. Widening ` +
+                `flag change — see https://cdkd.dev/cli-deploy-safety/ Widening ` +
                 `--prefer-sdk-route alone cannot do it.`,
             ]
           : [

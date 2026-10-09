@@ -1067,7 +1067,7 @@ export const forceStatefulRecreationOption = new Option(
     'template immutable-property change, and an in-place update the ' +
     'provisioning layer rejects. Stateful types are databases, filesystems, ' +
     'KMS keys, table / vector storage, source repositories, and more; ' +
-    'docs/_contents/cli-deploy-safety.md carries the full list. S3 buckets and log ' +
+    'https://cdkd.dev/cli-deploy-safety/ carries the full list. S3 buckets and log ' +
     'groups are the conditional cases: at pre-flight, a non-empty bucket, or ' +
     'a log group with retention, with log streams, or whose emptiness the ' +
     'probe could not settle; mid-deploy, ANY bucket or log group, because the ' +

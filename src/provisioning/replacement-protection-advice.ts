@@ -112,7 +112,7 @@ import { shellQuote } from '../state/lock-contention-message.js';
  * resolves it against `docs/_contents/cli-deploy-safety.md`'s actual headings.
  */
 export const DELETION_PROTECTION_DOC_POINTER =
-  '"Deletion protection blocks a replacement, and deploy cannot clear it" in docs/_contents/cli-deploy-safety.md';
+  '"Deletion protection blocks a replacement, and deploy cannot clear it" at https://cdkd.dev/cli-deploy-safety/#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it';
 
 /**
  * What the message says when the resource id cannot be named on a command
