@@ -347,6 +347,22 @@ These are surfaced in the plan rather than applied silently.
   principal then lacks that policy until the resource next changes or
   `cdkd drift --revert` runs. A rollback killed between such a removal and the
   put-back also leaves the policy off: a re-run does not repeat the removal.
+- A property fed by a **`NoEcho` template parameter** (or a `NoEcho` attribute
+  read through `Fn::GetAtt`) is recorded in state only as the mask `***`. A
+  revert reads that property back from AWS and leaves it as AWS holds it, so a
+  `NoEcho` value the failed deploy changed is **not** reverted; the next
+  `cdkd deploy` with the old value restores it. The value never reaches state,
+  the events or the log in the clear, and `***` is never sent.
+  - **The value cannot be read back** (a write-only property, a property AWS
+    does not return, a resource type with no readback, or a read that fails):
+    the operation fails with `ROLLBACK_REDACTED_BASELINE`, sends nothing, and
+    the journal is kept. Restore the property with `cdkd deploy`.
+  - **Reversing a replacement** re-creates the old resource, and there is no
+    live resource to read the value from: the operation fails the same way.
+  - A **nested stack** row passing the value as a `Parameters` entry reverts
+    as usual: its revert replays the child's journal and sends no parameter.
+  - A value shorter than 4 characters is masked in state by position, but a
+    log line or event message that embeds it in longer text is not.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The

@@ -62,6 +62,10 @@
 #      nothing beyond the marker it never wrote).
 #   7f re-add ParamCr (CDKD_V11_PARAM_CR stays 1 from here on, through the
 #      destroys), so phase 8 exercises both destroy arms.
+#   7g `cdkd deploy --recreate-via-cc-api ParamCr`, the one deploy route that
+#      replaces a custom resource still in the template, RE-RESOLVES the OLD
+#      copy's Token on its Delete (#4682): exit 0, no skip line, the marker
+#      holds the REAL rotated token's digest, the new record keeps `***`.
 #   8  `cdkd destroy` with the app RE-RESOLVES ParamCr's Token (#4682): it
 #      exits 0, the handler's Delete wrote the marker holding a digest of the
 #      REAL rotated token (never the token itself, and not the mask's digest),
@@ -975,6 +979,33 @@ assert_handler_gone() { # <label>
 }
 
 # ---------------------------------------------------------------------------
+echo "==> Phase 7g: cdkd deploy --recreate-via-cc-api ParamCr delivers the old copy's Delete (#4682)"
+# ---------------------------------------------------------------------------
+# A recreate deletes the old copy FIRST, through its recorded handler, with
+# the values the deploy re-resolved from today's template; then creates the
+# new one. The marker is written only by that Delete.
+run_cdkd ok "v11 deploy recreating ParamCr" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --recreate-via-cc-api "${PARAM_CR_ID}" --yes
+assert_log_has_no_tokens "v11 deploy recreating ParamCr"
+if grep -qF -- "Custom resource ${PARAM_CR_ID} is recorded in state with" "${DEPLOY_LOG}"; then
+  redact_tokens <"${DEPLOY_LOG}" | tail -40 >&2
+  fail "v11 deploy recreating ParamCr: the old copy's delete was skipped (deploy-side #4682 regressed)"
+fi
+pass "v11 deploy recreating ParamCr: no skip line"
+MARKER_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}" \
+  --query Parameter.Value --output text)" \
+  || fail "the old copy's Delete wrote no marker ${MARKER_PARAM_NAME} (or the read failed)"
+assert_eq "the old copy's Delete received the real rotated token (digest in ${MARKER_PARAM_NAME})" \
+  "${MARKER_VALUE}" "$(delete_marker_for "${TOKEN_ROTATED}")"
+fetch_state "v11 deploy recreating ParamCr"
+assert_eq "v11 deploy recreating ParamCr: the new ${PARAM_CR_ID}.properties.Token" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+aws ssm delete-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}" >/dev/null
+assert_gone "the delete marker ${MARKER_PARAM_NAME} survived its delete before the destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+
+# ---------------------------------------------------------------------------
 echo "==> Phase 8: cdkd destroy with the app delivers ParamCr's Delete (#4682)"
 # ---------------------------------------------------------------------------
 record_handler_names "before the destroy"
@@ -1094,11 +1125,11 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 155 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 155 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 160 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 160 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi
 
 echo ""
-echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, a rotated create-only value replaced only where the readback is proven exact, a custom resource reading a NoEcho parameter never sent a Delete holding the mask, and sent the real value by cdkd destroy with the app); ${ASSERTIONS_RUN} assertions executed"
+echo "==> schema-v10-to-v11-migration test passed (v10 -> v11 transparent auto-migration with no update or replacement, NoEcho values masked by value and position, declared custom-resource attributes refused exactly, readback-settled redeploy, a rotated create-only value replaced only where the readback is proven exact, a custom resource reading a NoEcho parameter never sent a Delete holding the mask, and sent the real value by cdkd deploy --recreate-via-cc-api and by cdkd destroy with the app); ${ASSERTIONS_RUN} assertions executed"

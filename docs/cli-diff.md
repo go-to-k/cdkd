@@ -1154,7 +1154,7 @@ condition — but it stops because there is nothing left for it to do, while a
 preview that died before printing would be a preview you could not use to
 decide anything.
 
-Four conditions raise it.
+Five conditions raise it.
 
 **A rollback-orphan adoption cdkd refuses.** A rollback left a
 `DeletionPolicy: Retain` resource behind, cdkd recorded it so the next deploy
@@ -1195,7 +1195,24 @@ reason names the row and both types. Give the new resource a different logical
 id (in CDK, rename the construct), or remove the resource in one deploy and add
 its replacement in the next.
 
-The first and fourth conditions are raised at every node the preview diffs.
+**A custom resource whose `ServiceToken` changes.** CloudFormation refuses it
+(`Modifying service token is not allowed`), and so does `cdkd deploy`, before
+any handler is invoked: sent as an update, the change would reach only the new
+handler and orphan what the old one created. The reason names the row and the new
+token; where the recorded token is missing, the redaction mask `***` or a
+`{{resolve:...}}` reference and the template moves it, it says cdkd cannot compare it, which the
+deploy refuses too. Give the custom resource a new logical id (in CDK, a new construct
+id, or `overrideLogicalId`), which creates a new resource through the new
+handler and deletes the old one through its old handler. A token that reads a
+resource this deploy replaces or creates (a renamed backing Lambda), or an
+attribute an update may move (a nested stack's output, another custom
+resource's `Data`), is known
+only once that resource exists, so the preview WARNS instead: the deploy
+refuses it then, before invoking any handler, and rolls back (a replaced
+backing Lambda is re-created by that rollback, see
+[a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken)).
+
+The first, fourth and fifth conditions are raised at every node the preview diffs.
 Only the TOP-LEVEL stack raises the second and third, as a
 conservative choice: a deploy skips an unchanged nested-stack row, and an
 `UPDATE` that moves only `DeletionPolicy` / `UpdateReplacePolicy` never diffs

@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as elasticache from 'aws-cdk-lib/aws-elasticache';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
@@ -56,6 +57,10 @@ import { Construct } from 'constructs';
  *   elements on its `Resolved Ref to parameter: ListIn` line unless the
  *   inherited needle is carried element by element. Its SSM parameter holds
  *   the first element.
+ * - `NoEchoFailingQueue` (only under `CDKD_TEST_NOECHO_FAIL=true`,
+ *   go-to-k/cdkd#4043 Phase C): an SQS queue SQS rejects, created after
+ *   `NoEchoConsumer`, so a `--no-rollback` deploy that changes the value
+ *   fails with the SSM update journaled for `cdkd rollback`.
  * - `NoEchoSnapshotGroup` (only under `CDKD_TEST_NOECHO_SNAPSHOT=true`,
  *   go-to-k/cdkd#3869): a one-node Redis replication group whose id is
  *   `rg-<token>` and whose `DeletionPolicy` is `Snapshot`. The redeploy that
@@ -97,7 +102,7 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
       default: process.env['CDKD_TEST_NOECHO_TOKEN'] ?? 'cdkd-noecho-unset-token',
     });
 
-    new ssm.CfnParameter(this, 'NoEchoConsumer', {
+    const consumer = new ssm.CfnParameter(this, 'NoEchoConsumer', {
       name: `cdkd-test-noecho-consumer-${account}`,
       type: 'String',
       // `token-`, not `token=`: the resolver's `--verbose` line prints a value
@@ -105,6 +110,12 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
       // frame would be DESCRIBED there and the arm could no longer see the
       // mask (go-to-k/cdkd#4161).
       value: cdk.Fn.sub('token-${NoEchoToken}'),
+      // go-to-k/cdkd#4043 Phase C: a non-NoEcho sibling the failing mode also
+      // changes, so a rollback that restores it proves the revert's update ran.
+      description:
+        process.env['CDKD_TEST_NOECHO_FAIL'] === 'true'
+          ? 'noecho-consumer-failing'
+          : 'noecho-consumer',
     });
 
     new sns.CfnTopic(this, 'NoEchoRenamed', {
@@ -187,6 +198,17 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
         tags: [{ key: 'cdkd-integ', value: 'noecho-parameter-masking-snapshot' }],
       });
       group.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.SNAPSHOT;
+    }
+
+    if (process.env['CDKD_TEST_NOECHO_FAIL'] === 'true') {
+      // go-to-k/cdkd#4043 Phase C: fails AFTER NoEchoConsumer's update (it
+      // depends on it), so a `--no-rollback` deploy leaves that update in the
+      // journal for `cdkd rollback` to revert. SQS rejects the retention.
+      const failing = new sqs.CfnQueue(this, 'NoEchoFailingQueue', {
+        queueName: `cdkd-test-noecho-failing-${account}`,
+        messageRetentionPeriod: 9999999,
+      });
+      failing.addDependency(consumer);
     }
 
     if (process.env['CDKD_TEST_NOECHO_REJECT'] === 'true') {

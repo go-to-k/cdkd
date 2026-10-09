@@ -120,6 +120,11 @@ import {
   type NestedStackTypeChange,
 } from '../../deployment/type-change-guard.js';
 import {
+  deferredServiceTokenWarning,
+  findServiceTokenRefusals,
+  serviceTokenBlockingReason,
+} from '../../deployment/custom-resource-service-token.js';
+import {
   malformedExportNamesWarning,
   malformedOutputsWarning,
   malformedResourceEntriesWarning,
@@ -2106,6 +2111,25 @@ export async function computeStackDiff(
   });
   if (nestedStackTypeChanges.length > 0) {
     blocking = [...blocking, ...nestedStackTypeChanges.map(nestedStackTypeChangeReason)];
+  }
+
+  // The deploy's ServiceToken refusal (go-to-k/cdkd#4749), through the SAME
+  // finder over the same inputs. The diff takes no `--recreate-via-*`, so it
+  // previews the flag-less deploy. A row the preview cannot judge (the token
+  // reads a resource this deploy replaces, or a value it could not resolve)
+  // is decided by the deploy once resolved, so it is a warning, not blocking.
+  const serviceTokens = findServiceTokenRefusals({
+    changes,
+    stateResources: stateForDiff.resources,
+  });
+  if (serviceTokens.refused.length > 0) {
+    blocking = [
+      ...blocking,
+      ...serviceTokens.refused.map((refusal) => serviceTokenBlockingReason(refusal, maskForLog)),
+    ];
+  }
+  for (const row of serviceTokens.deferred) {
+    logger.warn(printing.mask(deferredServiceTokenWarning(row)));
   }
 
   // The deploy's create-only drop refusal (issue #2790), through the SAME

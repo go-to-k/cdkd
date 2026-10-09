@@ -679,8 +679,9 @@ export class DeployEngine {
    * The last `resolveOutputs` pass's verdict over an export alias the
    * no-change merge would CARRY from state rather than resolve
    * (go-to-k/cdkd#4657): the refusal warning, or `undefined` to carry it.
-   * Same lifetime rule as `resolvedExportNames`; `undefined` until a pass
-   * with `Outputs` has run.
+   * Same lifetime rule as `resolvedExportNames`; `undefined` until a
+   * `resolveOutputs` pass has run (with or without `Outputs`: a pass with
+   * none decides from the `NoEcho` seed alone, go-to-k/cdkd#4043 Phase C).
    */
   /** @internal */
   carriedExportAliasRefusal:

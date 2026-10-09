@@ -5013,6 +5013,7 @@
         "custom-resource-noecho-nested",
         "custom-resource-provider",
         "custom-resource-resolved-secret",
+        "custom-resource-service-token-change",
         "data-pipeline",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -5176,6 +5177,10 @@
           "l2"
         ],
         "custom-resource-resolved-secret": [
+          "l2",
+          "literal"
+        ],
+        "custom-resource-service-token-change": [
           "l2",
           "literal"
         ],
@@ -6620,6 +6625,7 @@
         "multi-resource",
         "nested-required-preflight",
         "nested-stack-rollback",
+        "noecho-parameter-masking",
         "perf-cross-backend-check",
         "rename-refactor",
         "replacement-rename-onto-holder",
@@ -6762,6 +6768,9 @@
           "literal"
         ],
         "nested-stack-rollback": [
+          "l1"
+        ],
+        "noecho-parameter-masking": [
           "l1"
         ],
         "perf-cross-backend-check": [

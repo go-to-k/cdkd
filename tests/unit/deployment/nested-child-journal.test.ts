@@ -831,13 +831,39 @@ describe('nestedPendingSnapshot / revertedNestedRowIds (#3754)', () => {
       exportNames: ['E'],
       imports: [{ exportName: 'I' }],
     } as unknown as StackState;
-    const snap = nestedPendingSnapshot(state);
+    const snap = nestedPendingSnapshot(state, () => false);
     expect(snap).toEqual({
       previousOutputs: { outputs: { A: 1 }, exportNames: ['E'] },
       previousCrossStackReads: { imports: [{ exportName: 'I' }] },
     });
     (state.outputs as Record<string, unknown>)['A'] = 2;
     expect(snap.previousOutputs!.outputs['A']).toBe(1);
+  });
+
+  // go-to-k/cdkd#4043 Phase C: an alias an older binary published that this
+  // deploy's export-name verdict refuses is not snapshotted, key or export,
+  // so a revert of the child cannot re-persist and republish it.
+  it('leaves out an export name the verdict refuses, key and export alike', () => {
+    const state = {
+      outputs: { Out: 'v', 'alias-hunter2-x': 'v', Kept: 'k' },
+      exportNames: ['alias-hunter2-x', 'Kept'],
+    } as unknown as StackState;
+    const asked: string[] = [];
+    const snap = nestedPendingSnapshot(state, (name) => {
+      asked.push(name);
+      return name.includes('hunter2');
+    });
+    expect(asked.sort()).toEqual(['Kept', 'alias-hunter2-x']);
+    expect(snap.previousOutputs).toEqual({
+      outputs: { Out: 'v', Kept: 'k' },
+      exportNames: ['Kept'],
+    });
+  });
+
+  it('a legacy record with no exportNames: every key is an export the verdict reads', () => {
+    const state = { outputs: { A: 1, 'n-hunter2': 2 } } as unknown as StackState;
+    const snap = nestedPendingSnapshot(state, (name) => name.includes('hunter2'));
+    expect(snap.previousOutputs).toEqual({ outputs: { A: 1 } });
   });
 
   it('names only the nested-stack UPDATE rows', () => {

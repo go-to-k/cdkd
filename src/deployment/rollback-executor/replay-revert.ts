@@ -41,6 +41,7 @@ import {
 import { markNonRetryable } from '../retryable-errors.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
+import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
 
 /** `replaySingle`'s 'reverse-replacement-readopt' arm (#4426). */
@@ -413,9 +414,6 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     skipUnaddressableReplay(s, logger, op, 'restore');
     return;
   }
-  logger.info(
-    `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
-  );
   // Route via the provider that owns the resource right now per state.
   const { provider, provisionedBy: revertVia } = ctx.providerRegistry.getProviderFor({
     resourceType: op.resourceType,
@@ -428,23 +426,37 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   // no-op. `secrets` (hoisted to the top of this function) captures
   // plaintext->expression to redact the record AND to mask every log site
   // downstream, the shared catch included.
-  const desiredProps = await resolveReplayProps(
-    previousState.properties,
-    resolver,
-    secrets,
+  // go-to-k/cdkd#4043 Phase C: a leaf the baseline holds as `***` because a
+  // NoEcho source served it is read back from AWS and left as AWS holds it;
+  // an unreadable one refuses here, before anything is sent.
+  const noEcho = await substituteMarkedNoEchoLeaves({
+    desired: await resolveReplayProps(
+      previousState.properties,
+      resolver,
+      secrets,
+      ctx,
+      op.logicalId
+    ),
+    baseline: previousState,
+    live: current,
+    logicalId: op.logicalId,
     ctx,
-    op.logicalId
-  );
+    secrets,
+    routedVia: [op.provisionedBy, revertVia],
+    stackName,
+  });
+  const desiredProps = noEcho.desired;
   // Issue #2274: the DESIRED side only — that is the bag `update()`
   // writes. `currentProps` below becomes `previousProperties`, where a
-  // mask is harmless.
-  refuseMaskedReplayBaseline(desiredProps, op.logicalId);
-  const currentProps = await resolveReplayProps(
-    current.properties,
-    resolver,
-    secrets,
-    ctx,
-    op.logicalId
+  // mask is harmless. Any mask left is not a marked NoEcho leaf.
+  refuseMaskedReplayBaseline(desiredProps, op.logicalId, noEcho.inert);
+  // Announced only once nothing above refused (go-to-k/cdkd#3203's rule):
+  // the NoEcho readback and the masked-baseline refusal run first.
+  logger.info(
+    `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
+  );
+  const currentProps = noEcho.onPreviousSide(
+    await resolveReplayProps(current.properties, resolver, secrets, ctx, op.logicalId)
   );
   // Issue #2291, the UPDATE twin of the reverse-replacement re-create
   // arm's recording, whose note says why a CHILD engine seeded from this
@@ -611,10 +623,14 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   // stack's masked outputs) must become needles BEFORE the redaction below,
   // exactly as the deploy engine registers them — or they persist in the clear.
   if (revertResult) recordNoEchoAttributeValues(revertResult, secrets, desiredProps);
-  stateResources[op.logicalId] = redactRollbackRecord(
-    recordAfterRollbackUpdate(previousState, revertResult),
-    secrets,
-    previousState.properties
+  stateResources[op.logicalId] = maskRestoredNoEchoRecord(
+    redactRollbackRecord(
+      recordAfterRollbackUpdate(previousState, revertResult),
+      secrets,
+      previousState.properties
+    ),
+    previousState,
+    noEcho.substituted
   );
   // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
   // the deploy side.

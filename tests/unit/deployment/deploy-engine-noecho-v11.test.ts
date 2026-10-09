@@ -1317,6 +1317,53 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(segment.previousOutputs.outputs).toEqual({ Out: '***', Plain: 'plain-value' });
     });
 
+    // go-to-k/cdkd#4043 Phase C: a nested child's success journals its
+    // PRE-deploy outputs for the parent's revert. An alias an older binary
+    // published that spells a NoEcho value must not ride along, or the revert
+    // re-persists it and republishes it to the exports index.
+    describe.each([
+      ['with Outputs', { Plain: { Value: { Ref: 'Plain' }, Export: { Name: 'Kept' } } }],
+      ['with no Outputs', undefined],
+    ])('(Phase C) a nested child\'s pending snapshot, template %s', (_label, outputs) => {
+      it('leaves out a previous alias the export-name verdict refuses, keeps a clean one', async () => {
+        const state = v11State();
+        state.outputs = { Plain: 'plain-value', Kept: 'plain-value', [`alias-${TOKEN}`]: 'v' };
+        state.exportNames = ['Kept', `alias-${TOKEN}`];
+        stateBackend.getState.mockResolvedValue({ state, etag: 'e' });
+        await makeEngine({
+          parentStackInfo: { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: REGION },
+        }).deploy(STACK, template(TOKEN, {}, outputs));
+        const segment = stateBackend.appendRollbackJournalSegment.mock.calls
+          .map((c) => c[2] as { reason?: string; previousOutputs?: { outputs: object; exportNames?: string[] } })
+          .find((s) => s.reason === 'nested-pending-parent');
+        expect(segment?.previousOutputs?.exportNames).toEqual(['Kept']);
+        expect(Object.keys(segment!.previousOutputs!.outputs).sort()).toEqual(['Kept', 'Plain']);
+        expect(JSON.stringify(stateBackend.appendRollbackJournalSegment.mock.calls)).not.toContain(
+          TOKEN
+        );
+      });
+    });
+
+    // Phase C: with no export-name verdict (no outputs pass ran), the
+    // nested child's snapshot keeps no previous export, and says so.
+    it('(Phase C) a nested pending snapshot with NO verdict refuses every previous export name, with a warning', async () => {
+      const engine = makeEngine({
+        parentStackInfo: { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: REGION },
+      }) as unknown as Record<string, unknown> & {
+        settleJournalAfterSuccess: (...args: unknown[]) => Promise<number>;
+      };
+      engine['carriedExportAliasRefusal'] = undefined;
+      const state = v11State();
+      state.outputs = { Kept: 'v' };
+      state.exportNames = ['Kept'];
+      await engine.settleJournalAfterSuccess(STACK, [], state, state.resources, false);
+      const segment = stateBackend.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
+        previousOutputs: { outputs: object; exportNames?: string[] };
+      };
+      expect(segment.previousOutputs).toEqual({ outputs: {}, exportNames: [] });
+      expect(lines(logger.warn).some((l) => l.includes('no export-name verdict is available'))).toBe(true);
+    });
+
     it('(3) an orphan record is masked by today\'s template positions', () => {
       const engine = makeEngine() as unknown as Record<string, unknown> & {
         redactStateForPersist: (state: StackState) => StackState;

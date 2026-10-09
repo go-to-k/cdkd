@@ -16,6 +16,7 @@ import { CdkdError } from '../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import {
   maskSecretsInError,
+  noEchoLeavesOf,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
   STATE_DERIVED_RULES,
@@ -56,6 +57,7 @@ import {
   retainedSurvivorId,
 } from './messages.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
+import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
@@ -135,7 +137,10 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   const resolvedPrevProps =
     (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId)) ?? {};
   // Issue #2274: this bag is about to be CREATED with. Refuse before the
-  // AWS call rather than after, so nothing is half-applied.
+  // AWS call rather than after, so nothing is half-applied. A mask only at
+  // the coordinates a NoEcho source served gets its own remedy
+  // (go-to-k/cdkd#4043 Phase C): no live resource exists to read it from.
+  refuseMarkedNoEchoRecreate(resolvedPrevProps, noEchoLeavesOf(prev), op.logicalId);
   refuseMaskedReplayBaseline(resolvedPrevProps, op.logicalId);
   // Issue #4037: the old name is PLAINTEXT now, so its derived spellings
   // (the old id, the names its provider sends) join the op's masker.

@@ -987,8 +987,8 @@ report it" row above:
 
 | request | what the handler receives |
 | --- | --- |
-| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position |
-| `Delete` | `cdkd destroy` with the app: `ResourceProperties` holds the real value, re-resolved from today's template and parameters. A deploy that replaces the resource while it is still in the template would re-resolve it the same way, but no `cdkd deploy` replaces a custom resource that is still in the template today (a `ServiceToken` change is not a replacement, and a `Type` change keeps the skip). Otherwise not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
+| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position. A `ServiceToken` fed this way is not compared with the record, so a changed value is not refused ([a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken)) |
+| `Delete` | `cdkd destroy` with the app: `ResourceProperties` holds the real value, re-resolved from today's template and parameters. `cdkd deploy --recreate-via-cc-api <logicalId>` re-resolves it the same way: it is the one deploy route that replaces a custom resource still in the template (deleting through its recorded handler and creating through the template's, on the custom-resource provider, so the record stays `provisionedBy: sdk`). No other deploy does (a changed `ServiceToken` is refused, and a `Type` change keeps the skip). Otherwise not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
 
 On a `Delete`, cdkd re-resolves a position only while today's template still
 reads a `NoEcho` parameter there, for a resource of the same type, and, where
@@ -1065,8 +1065,11 @@ count as a change for `--fail`.
   never written to state.
 - `cdkd drift` reports a masked position in its own group, without printing
   either side and without affecting the exit code. `cdkd drift --accept` /
-  `--revert`, `cdkd rollback` and `cdkd export` still refuse a masked value, as
-  they do for a custom-resource one.
+  `--revert` and `cdkd export` still refuse a masked value, as they do for a
+  custom-resource one.
+- A rollback revert reads a masked position back from AWS and sends the value
+  AWS holds there, and refuses when it cannot read it (see
+  [`cdkd rollback`](cli-rollback.md#known-limitations)).
 - The observed baseline (captured at the start of a `cdkd deploy`, or by
   `cdkd state refresh-observed`) is masked at every position where the
   record holds `***`, named in `noEchoLeaves` or not. A leaf that is `***`
