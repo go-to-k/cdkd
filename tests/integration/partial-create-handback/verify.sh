@@ -422,8 +422,10 @@ echo "[verify] phase C/lb ok: the cleanup deleted the partially-created load bal
 echo "[verify] phase F: destroy ${STACK}'s state"
 # A failed first deploy may or may not leave a state file: destroy one only
 # when it is there, then require it gone.
+FINAL_DESTROY=""
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"; then
   node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
+  FINAL_DESTROY=1
 fi
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
@@ -435,11 +437,29 @@ assert_gone "subnet ${SUBNET_ID} still exists after destroy" \
 assert_gone "VPC ${VPC_ID} still exists after destroy" \
   aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
-# The destroy released the stack's registry marker; a failed first deploy
-# that never reached a destroy may have left it, which the sweep removes.
+# The stack registry marker (go-to-k/cdkd#4705), observed BEFORE the sweep:
+# a successful state destroy releases it; with no destroy (no record was ever
+# written -- the H arms refuse before any create), the first deploy's claim is
+# legitimately left, and must name this fixture's prefix.
+MARKER_NOW="absent"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
+  MARKER_NOW="$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - | jq -r '.prefix // "<no prefix>"')"
+fi
+echo "OBSERVE: registry-marker=${MARKER_NOW} final-destroy=${FINAL_DESTROY:-none}"
+if [ -n "${FINAL_DESTROY}" ]; then
+  if [ "${MARKER_NOW}" != "absent" ]; then
+    echo "[verify] FAIL: the state destroy did not release the stack registry marker ${MARKER_KEY} (it names '${MARKER_NOW}')" >&2
+    exit 1
+  fi
+elif [ "${MARKER_NOW}" != "absent" ]; then
+  echo "OBSERVE: no record was destroyed, so the first deploy's claim is left by design"
+  if [ "${MARKER_NOW}" != "cdkd" ]; then
+    echo "[verify] FAIL: the left registry marker ${MARKER_KEY} names '${MARKER_NOW}', not this fixture's prefix cdkd" >&2
+    exit 1
+  fi
+fi
+# Then the cleanup: remove a marker the run legitimately left.
 sweep_marker
-assert_gone "the stack registry marker ${MARKER_KEY} still exists after the run" \
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM
