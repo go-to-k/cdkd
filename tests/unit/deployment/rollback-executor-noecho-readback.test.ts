@@ -761,6 +761,23 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       expect(state['Param']!.attributes).toEqual({ ConnectionString: SECRET_MASK, Plain: 'kept' });
     });
 
+    it('a value EQUAL to the region is not a containment needle: an ARN embedding the region is kept', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'phys',
+        wasReplaced: false,
+        attributes: { Arn: 'arn:aws:ssm:us-east-1:123456789012:parameter/app/token' },
+      });
+      const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: 'us-east-1' });
+      const { state, ops } = marked();
+
+      await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(state['Param']!.attributes).toEqual({
+        Arn: 'arn:aws:ssm:us-east-1:123456789012:parameter/app/token',
+      });
+    });
+
     it('an OBJECT value at a marked coordinate masks each of its scalars in lines, a number included', async () => {
       const update = vi
         .fn()

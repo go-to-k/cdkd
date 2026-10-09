@@ -501,15 +501,21 @@ export async function settleJournalAfterSuccess(
       // publishes it; with no verdict (no outputs pass ran), none is.
       nestedPendingSnapshot(previousState, (name) => {
         const verdict = this.carriedExportAliasRefusal;
-        const refusal =
-          verdict === undefined
-            ? 'An export alias the previous record published was not kept for a revert of ' +
-              'this nested stack: no export-name verdict is available.'
-            : verdict(name, name);
+        const dropped = verdict === undefined || verdict(name, name) !== undefined;
         // Said once per dropped name: the revert of this child will not
-        // restore it. The verdict's text names it masked.
-        if (refusal !== undefined) this.logger.warn(refusal);
-        return refusal !== undefined;
+        // restore it. The name is never printed: the verdict refuses it
+        // because it spells a NoEcho value, and the deploy's own export
+        // warning (a publish-time sentence) does not fit a revert snapshot.
+        if (dropped) {
+          this.logger.warn(
+            verdict === undefined
+              ? 'An export alias the previous record published was not kept for a revert of ' +
+                  'this nested stack: no export-name verdict is available.'
+              : 'An export alias the previous record published was not kept for a revert of ' +
+                  'this nested stack: its name contains a NoEcho value.'
+          );
+        }
+        return dropped;
       })
     );
     return 0;

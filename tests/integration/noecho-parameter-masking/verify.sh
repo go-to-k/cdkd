@@ -1216,24 +1216,29 @@ assert_noecho_rollback_kept 2c "${TOKEN_RB2}" "${DEPLOY_OUT_P2C}" 2 failed-only
 echo "==> Phase 2b/2c: no object version under the stack's prefix carries a NoEcho value"
 P2_VERSION_ROWS=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
   --prefix "${STATE_PREFIX}" --output json \
-  | jq -r '.Versions // [] | .[] | "\(.Key)\t\(.VersionId)"')
+  | jq -r '.Versions // [] | .[] | "\(.Key)\t\(.VersionId)\t\(.IsLatest)"')
 P2_VERSIONS_SCANNED=0
-while IFS=$'\t' read -r version_key version_id || [ -n "${version_key}" ]; do
+P2_NONCURRENT_STATE=0
+while IFS=$'\t' read -r version_key version_id version_latest || [ -n "${version_key}" ]; do
   [ -n "${version_key}" ] || continue
   VERSION_FILE=$(mktemp)
   SCRATCH_FILES+=("${VERSION_FILE}")
   aws s3api get-object --bucket "${STATE_BUCKET}" --key "${version_key}" \
     --version-id "${version_id}" "${VERSION_FILE}" >/dev/null
   P2_VERSIONS_SCANNED=$((P2_VERSIONS_SCANNED + 1))
+  if [ "${version_key}" = "${STATE_PREFIX}state.json" ] && [ "${version_latest}" = "false" ]; then
+    P2_NONCURRENT_STATE=$((P2_NONCURRENT_STATE + 1))
+  fi
   if grep -qF -- "${TOKEN_RB}" "${VERSION_FILE}" || grep -qF -- "${TOKEN_RB2}" "${VERSION_FILE}" \
     || grep -qF -- "${TOKEN}" "${VERSION_FILE}"; then
     echo "FAIL: an object version of ${version_key} carries a NoEcho value in plaintext (issue #4043)" >&2
     exit 1
   fi
 done < <(printf '%s\n' "${P2_VERSION_ROWS}")
-# Floor: the two rollbacks alone wrote several state versions.
-if [ "${P2_VERSIONS_SCANNED}" -lt 4 ]; then
-  echo "FAIL: the version scan read ${P2_VERSIONS_SCANNED} object version(s) under ${STATE_PREFIX} -- the negative above passes for free" >&2
+# Floor on NONCURRENT state.json versions, the ones the rollbacks' per-op
+# saves leave behind: the current objects alone would reach any total floor.
+if [ "${P2_NONCURRENT_STATE}" -lt 2 ]; then
+  echo "FAIL: the version scan read ${P2_NONCURRENT_STATE} noncurrent state.json version(s) under ${STATE_PREFIX} (${P2_VERSIONS_SCANNED} versions in all) -- the negative above did not reach what the rollbacks wrote" >&2
   exit 1
 fi
 echo "    OK: no object version under the stack's prefix carries a NoEcho value (${P2_VERSIONS_SCANNED} versions)"
