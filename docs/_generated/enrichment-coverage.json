@@ -1690,12 +1690,12 @@
       "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
-        "Id"
+        "InstanceFleetId"
       ],
       "enrichedKeys": [],
       "attributes": [
         {
-          "name": "Id",
+          "name": "InstanceFleetId",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }

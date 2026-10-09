@@ -1,9 +1,9 @@
 {
   "resourceType": "AWS::EMR::InstanceFleetConfig",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-09",
   "properties": [
     "ClusterId",
-    "Id",
+    "InstanceFleetId",
     "InstanceFleetType",
     "InstanceTypeConfigs",
     "LaunchSpecifications",
@@ -13,7 +13,7 @@
     "TargetSpotCapacity"
   ],
   "readOnlyProperties": [
-    "Id"
+    "InstanceFleetId"
   ],
   "createOnlyProperties": [
     "ClusterId",
@@ -36,7 +36,8 @@
     ]
   ],
   "primaryIdentifier": [
-    "Id"
+    "ClusterId",
+    "InstanceFleetId"
   ],
   "nestedProperties": {
     "LaunchSpecifications": [
@@ -138,21 +139,21 @@
       "TargetSpotCapacity": "scalar",
       "LaunchSpecifications": "object",
       "ResizeSpecifications": "object",
-      "Id": "scalar",
+      "InstanceFleetId": "scalar",
       "InstanceTypeConfigs": "array",
       "Name": "scalar"
     },
     "VolumeSpecification": {
       "SizeInGB": "scalar",
-      "Throughput": "scalar",
       "VolumeType": "scalar",
+      "Throughput": "scalar",
       "Iops": "scalar"
     },
     "EbsConfiguration": {
       "EbsBlockDeviceConfigs": "array",
       "EbsOptimized": "scalar"
     },
-    "Configuration": {
+    "ApplicationConfiguration": {
       "ConfigurationProperties": "object",
       "Configurations": "array",
       "Classification": "scalar"
@@ -187,11 +188,11 @@
       "BidPrice": "scalar",
       "WeightedCapacity": "scalar",
       "EbsConfiguration": "object",
-      "Priority": "scalar",
       "BidPriceAsPercentageOfOnDemandPrice": "scalar",
       "CustomAmiId": "scalar",
       "Configurations": "array",
-      "InstanceType": "scalar"
+      "InstanceType": "scalar",
+      "Priority": "scalar"
     },
     "SpotResizingSpecification": {
       "AllocationStrategy": "scalar",
@@ -245,5 +246,25 @@
       "TimeoutAction",
       "TimeoutDurationMinutes"
     ]
+  },
+  "propertyShapes": {
+    "InstanceTypeConfigs": "array",
+    "InstanceTypeConfigs[]": "object",
+    "InstanceTypeConfigs[].Configurations": "array",
+    "InstanceTypeConfigs[].Configurations[]": "object",
+    "InstanceTypeConfigs[].Configurations[].ConfigurationProperties": "object",
+    "InstanceTypeConfigs[].Configurations[].Configurations": "array",
+    "InstanceTypeConfigs[].EbsConfiguration": "object",
+    "InstanceTypeConfigs[].EbsConfiguration.EbsBlockDeviceConfigs": "array",
+    "InstanceTypeConfigs[].EbsConfiguration.EbsBlockDeviceConfigs[]": "object",
+    "InstanceTypeConfigs[].EbsConfiguration.EbsBlockDeviceConfigs[].VolumeSpecification": "object",
+    "LaunchSpecifications": "object",
+    "LaunchSpecifications.OnDemandSpecification": "object",
+    "LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions": "object",
+    "LaunchSpecifications.SpotSpecification": "object",
+    "ResizeSpecifications": "object",
+    "ResizeSpecifications.OnDemandResizeSpecification": "object",
+    "ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions": "object",
+    "ResizeSpecifications.SpotResizeSpecification": "object"
   }
 }
