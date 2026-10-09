@@ -140,15 +140,22 @@ verify, clean up.
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
    # FIRE also kills verify's `node` child, which would keep calling AWS. The
    # group outlives a harness kill: before a re-run, `ps -g <old VPID>` is rc=1.
-   perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh > "$LOG" 2>&1 &
+   # `>>`, not `>`: verify's cleanup writes after a FIRE, and a `>` open would
+   # overwrite the WATCHDOG_FIRED line the watchdog appended.
+   perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh >> "$LOG" 2>&1 &
    VPID=$!
    # 5s polls that end on their own: NEVER kill the watchdog — a kill orphans
-   # its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED.
+   # its `sleep` to PID 1, or races it into a false WATCHDOG_FIRED. A FIRE sends
+   # TERM first so verify's TERM trap runs its cleanup (a `kill -9` skips it and
+   # leaves the fixture's resources), then `kill -9` after up to 10 min.
    ( i=0; while [ $i -lt $POLLS ]; do sleep 5; kill -0 $VPID 2>/dev/null || exit 0; i=$((i+1)); done
-     kill -0 $VPID 2>/dev/null && { echo "WATCHDOG_FIRED" >> "$LOG"; kill -9 -- -$VPID; } ) &
+     kill -0 $VPID 2>/dev/null || exit 0
+     echo "WATCHDOG_FIRED" >> "$LOG"; kill -TERM -- -$VPID
+     i=0; while [ $i -lt 120 ] && kill -0 $VPID 2>/dev/null; do sleep 5; i=$((i+1)); done
+     kill -9 -- -$VPID 2>/dev/null ) &
    WPID=$!
    wait "$VPID"; RC=$?
-   wait "$WPID"   # at most 5s more
+   wait "$WPID"   # at most 5s more, or the cleanup grace after a FIRE
    grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
    echo "verify.sh rc=$RC"   # the verdict steps 6-11 read
    ```
