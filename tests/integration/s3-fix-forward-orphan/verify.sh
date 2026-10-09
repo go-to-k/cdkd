@@ -16,10 +16,11 @@
 #      WITH_ORPHANS=true creates `OrphanA`'s, `OrphanC`'s, `OrphanD`'s, `OrphanE`'s and `OrphanF`'s buckets, enables
 #      their versioning, fails on the tagging call that follows, and the
 #      provider's own cleanup cannot delete them. (The AccessDenied is retried
-#      as IAM propagation; the retry meets the bucket and refuses it as an
-#      explicit name already held, so the deploy's last line for each is that
-#      refusal, while the first attempt's created-bucket mark is carried to
-#      the journal.) Asserted: the
+#      as IAM propagation; each retry proves the bucket is its own first
+#      attempt's leftover (#4758), takes it back without a CreateBucket, and
+#      fails on the tagging call again until the retries give up, while the
+#      created-bucket mark is carried to the journal, an abort during the
+#      backoff included (#4757).) Asserted: the
 #      deploy failed, every orphan bucket exists, no state record holds them, and the
 #      rollback journal carries each as a proven orphan with its identity
 #      `<name>|<region>|<CreationDate>`, equal to what ListBuckets reports.
