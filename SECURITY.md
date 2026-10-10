@@ -75,8 +75,9 @@ Out of scope:
   name or other identifier property becomes the resource's identity. This
   covers that name in the resource's `physicalId`; the name, or an identifier
   embedding it, wherever a resolved `Ref`, `Fn::GetAtt` or `Fn::Sub` carries
-  it into another resource's record, a stack output or the exports index; the
-  `physicalId` field of a deployment event; and commands that print a stored
+  it into another resource's record, a stack output, the exports index or the
+  rollback journal; an `orphans` record's physical id; the `physicalId` field
+  of a deployment event; and commands that print a stored
   record as it is, such as `cdkd state show` or `cdkd events`. CloudFormation uses the
   plaintext value in the primary identifier the same way and
   [advises against it](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html);

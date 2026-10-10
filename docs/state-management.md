@@ -1096,7 +1096,10 @@ count as a change for `--fail`.
 - A resource's physical id is never masked, whether it embeds a `NoEcho` value
   or IS one (a name-identified resource, such as an RDS parameter group named
   by the parameter). A `NoEcho` value used as a NAME is published by AWS, and
-  the deploy warns once per such resource.
+  the deploy warns once per such resource. Other resources' resolved copies of
+  that name, and the outputs, exports index and rollback journal that carry
+  it, hold it in the clear too; see
+  [A name derived from a secret is stored as resolved](#security-and-best-practices).
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target, or any property of a custom resource, whose handler would
   receive `***`) cannot be addressed from its record, which holds `***`
@@ -3169,13 +3172,14 @@ such as an SQS `QueueName`, becomes the resource's identity. It is stored in:
 - other resources' resolved `Ref`, `Fn::GetAtt` or `Fn::Sub` copies of the
   name, or of an identifier embedding it — an IAM policy's `Resource` ARN, a
   nested stack's parameters;
-- stack outputs, the exports index and `rollback-journal.json` that carry it;
-- the `physicalId` field of each
-  [deployment event](deployment-events.md) about the resource.
+- stack outputs, the exports index and `rollback-journal.json` that carry it,
+  and the resource's `orphans` record if a rollback retains it;
+- a [deployment event](deployment-events.md)'s `physicalId` field.
 
 The resource's own properties keep the reference (`***` for a `NoEcho`
 parameter). cdkd masks the name in logs, `cdkd diff` output and the text of
-deployment events; commands that show a stored record, such as `cdkd state show` or `cdkd events`, print
+deployment events wherever it recognises the read of it; a read it does not recognise is
+printed as resolved, and is a bug to report. Commands that show a stored record, such as `cdkd state show` or `cdkd events`, print
 it as stored. CloudFormation behaves the same and
 [advises against](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html)
 putting a dynamic reference or other sensitive data in an identifier property.
