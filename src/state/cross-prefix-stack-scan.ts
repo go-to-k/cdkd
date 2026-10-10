@@ -55,6 +55,15 @@ export interface CrossPrefixScanTarget {
 export type RecordUnderPrefix = 'absent' | 'empty' | 'holder';
 
 /**
+ * go-to-k/cdkd#4705: whether a stack with NO record can still own a resource
+ * through its rollback journal -- {@link recordCanOwnResources} for an empty
+ * record. A failed first deploy releases its registry marker only when not.
+ */
+export function journalCanOwnResources(journal: { segments?: unknown } | null): boolean {
+  return recordCanOwnResources({ resources: {} }, journal);
+}
+
+/**
  * Can a record, with its rollback journal, own an AWS resource? It can when it
  * lists `resources` or rollback-`orphans`, or when a journal segment holds a
  * completed operation (`operations`, which a rollback reverts) or a failed one

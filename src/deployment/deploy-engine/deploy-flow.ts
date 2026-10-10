@@ -3,7 +3,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard } from '../generated-name-guard.js';
 import { flushKeptForReadoption } from './delete.js';
-import { recordCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
+import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
 import { loadKeptInHistory } from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
@@ -1604,7 +1604,7 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed
     // operation or a failed one with a physical id (the cross-prefix
-    // classification, `recordCanOwnResources`) -- releases the registry
+    // classification, `journalCanOwnResources`) -- releases the registry
     // marker it claimed (or found naming this prefix), under the lock, so "a
     // marker exists" keeps meaning "this prefix can own the stack's
     // resources". Anything it did leave keeps the marker; a read that fails
@@ -1616,7 +1616,7 @@ export async function doDeployWithPrefetch(
           left === null
             ? await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion)
             : undefined;
-        if (left === null && !recordCanOwnResources({ resources: {} }, journal ?? null)) {
+        if (left === null && !journalCanOwnResources(journal ?? null)) {
           await this.options.onFirstDeployLeftNoRecord(stackName);
         }
       } catch (error) {
