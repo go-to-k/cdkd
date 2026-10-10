@@ -4,6 +4,7 @@ import {
   plainOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   GetBucketLocationCommand,
@@ -39,6 +40,7 @@ import {
   stringifyJsonPayload,
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
+  displaySafe,
 } from '../../utils/display-safe.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import {
@@ -118,6 +120,7 @@ import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
+import { releaseRegistryMarkerQuietly } from './registry-release.js';
 
 /**
  * Detail row for a single stack when --long is requested.
@@ -212,6 +215,21 @@ const STATE_READ_REASONS: Record<StateReadErrorKind, string> = {
  * object ({@link RESOURCES_MALFORMED_REASON}). An absent or `null` bag counts
  * as zero, the tolerance `docs/cli-state.md` documents for it.
  */
+/**
+ * The records `cdkd state destroy` destroys for one stack: with
+ * `--stack-region`, every record in that region (a legacy record with no
+ * region included); without, the only record. `undefined` when there are
+ * several and none is chosen (the command refuses). The cross-prefix
+ * pre-start (go-to-k/cdkd#4705) and the loop share it.
+ */
+export function stateDestroyTargets<T extends { region?: string | undefined }>(
+  refs: readonly T[],
+  stackRegion: string | undefined
+): T[] | undefined {
+  if (stackRegion) return refs.filter((r) => r.region === stackRegion || !r.region);
+  return refs.length === 1 ? [...refs] : undefined;
+}
+
 function resourceCountOrNull(resources: unknown): number | null {
   if (resources === undefined || resources === null) return 0;
   if (typeof resources !== 'object' || Array.isArray(resources)) return null;
@@ -612,7 +630,12 @@ export async function setupStateBackend(options: {
     bucket,
     prefix,
     exportIndexStore,
-    dispose: () => awsClients.destroy(),
+    // The backend may have REPLACED its client with a bucket-region one, which
+    // `awsClients.destroy()` does not reach (go-to-k/cdkd#4705 review R4-2).
+    dispose: () => {
+      awsClients.destroy();
+      stateBackend.destroyClient();
+    },
   };
 }
 
@@ -2241,6 +2264,72 @@ interface StateOrphanOptions {
   verbose: boolean;
 }
 
+/**
+ * go-to-k/cdkd#4705: drop the stack's kept-resource record under this prefix
+ * (`retained.json`): after `state orphan`, a later create no longer takes a
+ * kept resource back by name. Best-effort.
+ */
+async function clearRetainedQuietly(
+  backend: Pick<S3StateBackend, 'saveRetainedResources'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void }
+): Promise<boolean> {
+  try {
+    await backend.saveRetainedResources(stackName, region, []);
+    return true;
+  } catch (error) {
+    logger.warn(
+      safeMsg`Could not empty the kept-resource record of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}): a later deploy here may still take a kept ` +
+        `resource back. Re-run 'cdkd state orphan' once it can write.`
+    );
+    return false;
+  }
+}
+
+/**
+ * go-to-k/cdkd#4705: for a stack with NO record under this prefix, write the
+ * empty `retained.json` (the tombstone) in `stackRegion`, or in every region
+ * that still holds anything of the stack here (a kept-resource record, or the
+ * event history an older cdkd's destroy left, which would otherwise license
+ * taking a kept resource back), and release the registry marker there when it
+ * names this prefix. The regions cleared. Best-effort: a failure is warned.
+ */
+async function clearRetainedWithoutRecord(
+  backend: S3StateBackend,
+  stackName: string,
+  stackRegion: string | undefined,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<{ cleared: string[]; attempted: number }> {
+  if (stackName.includes('/')) return { cleared: [], attempted: 0 };
+  const base = `${backend.prefix}/${stackName}/`;
+  let regions: string[];
+  try {
+    regions = [
+      ...new Set(
+        (await backend.listRawKeys(base))
+          .map((key) => key.slice(base.length).split('/'))
+          .filter((parts) => parts.length >= 2 && parts[0] !== '')
+          .map((parts) => parts[0]!)
+          .filter((region) => stackRegion === undefined || region === stackRegion)
+      ),
+    ];
+  } catch (error) {
+    logger.warn(
+      safeMsg`Could not look for a kept-resource record of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}).`
+    );
+    return { cleared: [], attempted: 0 };
+  }
+  const cleared: string[] = [];
+  for (const region of regions) {
+    if (await clearRetainedQuietly(backend, stackName, region, logger)) cleared.push(region);
+    await releaseRegistryMarkerQuietly(backend, stackName, region, logger);
+  }
+  return { cleared, attempted: regions.length };
+}
+
 async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -2267,6 +2356,25 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
     for (const stackName of stackArgs) {
       const stackRefs = refs.filter((r) => r.stackName === stackName);
       if (stackRefs.length === 0) {
+        // go-to-k/cdkd#4705: a destroyed stack keeps its `retained.json`
+        // (what that destroy kept, which a redeploy here takes back by name).
+        // With no record left, orphan clears that, and the registry marker.
+        const { cleared, attempted } = await clearRetainedWithoutRecord(
+          setup.stateBackend,
+          stackName,
+          options.stackRegion,
+          logger
+        );
+        // A region whose write failed was warned about, and is not claimed.
+        if (attempted > 0 && cleared.length === 0) continue;
+        if (cleared.length > 0) {
+          logger.info(
+            safeMsg`Cleared the kept-resource record of ${plainOrDescribed(stackName, 'stack name')} ` +
+              safeMsg`(${cleared.map((r) => displaySafe(r, { asciiOnly: true })).join(', ')}): ` +
+              `a later deploy here no longer takes a kept resource back.`
+          );
+          continue;
+        }
         // Every line `state orphan` prints can sit beside a labelled
         // `Destroy with:` row -- this one above the NEXT stack's banner -- so
         // it names the stack only when it is a plain identifier
@@ -2454,6 +2562,12 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           await warnOnLiveForeignLock(setup.lockManager, stackName, target.region, logger);
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
+          // go-to-k/cdkd#4705: the record is gone, so the stack registry
+          // marker naming this prefix goes too (record first, then marker).
+          await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, target.region, logger);
+          // go-to-k/cdkd#4705: and what a destroy kept stops licensing a
+          // later create to take it back by name.
+          await clearRetainedQuietly(setup.stateBackend, stackName, target.region, logger);
         } else {
           // Pure legacy record without a region body field. Both keys are the
           // region-less ones, and they are separate objects: issue #2537, the
@@ -2975,6 +3089,18 @@ async function stateDestroyCommand(
         if (!options.stackRegion) return laterRefs.length > 0;
         return laterRefs.some((r) => r.region === options.stackRegion || !r.region);
       });
+    // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
+    // sequential loop (one listing, one run-wide probe cap), prioritized in
+    // the loop's order; each stack's destroy then awaits its own memoized
+    // result, which promotes it ahead of the rest.
+    // Only for the records the loop below destroys (`stateDestroyTargets`).
+    const crossPrefixCheck = { cache: new CrossPrefixGuard(setup.stateBackend) };
+    for (const name of stackNames) {
+      const refs = stateRefs.filter((r) => r.stackName === name);
+      for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
+        void crossPrefixCheck.cache.full(name, ref.region ?? setup.region, 'prestart');
+      }
+    }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):
@@ -2983,8 +3109,9 @@ async function stateDestroyCommand(
       // - If multiple regions exist and no --stack-region, error out (ambiguous).
       const refs = stateRefs.filter((r) => r.stackName === stackName);
       let targets: typeof refs;
+      const planned = stateDestroyTargets(refs, options.stackRegion);
       if (options.stackRegion) {
-        targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
+        targets = planned ?? [];
         if (targets.length === 0) {
           logger.warn(
             // The stack name is NAMED only when plain, described otherwise: the
@@ -2999,8 +3126,8 @@ async function stateDestroyCommand(
           );
           continue;
         }
-      } else if (refs.length === 1) {
-        targets = refs;
+      } else if (planned !== undefined) {
+        targets = planned;
       } else {
         // The candidate regions are raw `listStacks()` key segments
         // (go-to-k/cdkd#3027); the shared builder gives each its boundary.
@@ -3124,6 +3251,8 @@ async function stateDestroyCommand(
                   resolveSecretDerivedPrincipals: {},
                   // go-to-k/cdkd#2115: a whole-stack teardown (see destroy.ts).
                   stackDestroy: true,
+                  // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
+                  crossPrefixCheck,
                   exportIndexStore: setup.exportIndexStore,
                   ...(options.allowUnsupportedTypes?.length && {
                     allowUnsupportedTypes: options.allowUnsupportedTypes,

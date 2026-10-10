@@ -110,6 +110,12 @@ import {
   renderNoStackMatch,
 } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
+import {
+  composeStateLoadedGates,
+  crossPrefixEngineOptions,
+  deployStackRegion,
+} from './cross-prefix-gate.js';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
@@ -400,6 +406,11 @@ async function deployCommand(
   // and the providers' poll-abort listeners).
   const unforwardSigterm = forwardSigtermToSigint();
 
+  // go-to-k/cdkd#4705 (review R4-2): the preflight backend may REPLACE its S3
+  // client with a bucket-region one (`ensureClientForBucket`), which
+  // `awsClients.destroy()` does not reach; a cross-prefix scan still pending at
+  // the end of the run must not keep the process alive on it.
+  let preflightBackendForCleanup: S3StateBackend | undefined;
   try {
     // 1. Synthesize CDK app (or read a pre-synthesized assembly when --app
     // points at an existing directory — synthesis is skipped in that case).
@@ -428,6 +439,7 @@ async function deployCommand(
       statePrepPromise,
     ]);
     const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;
+    preflightBackendForCleanup = preflightStateBackend;
     // The deferred macro-expander (expandMacrosForStacks, below) needs the
     // resolved state bucket for its > 51,200-byte template upload path (#463).
     synthOptions.stateBucket = stateBucket;
@@ -589,6 +601,17 @@ async function deployCommand(
     // the backstop for a context this command did not build.
     refuseMalformedNestedTemplateTrees(targetStacks);
 
+    // go-to-k/cdkd#4705: the run's stack-registry checks, LAZY and memoized
+    // per stack and region: a first deploy claims its marker once its state
+    // load finds no record; a destructive plan, the settle and the automatic
+    // rollback read it on demand. An ordinary redeploy makes no request. A dry
+    // run writes no marker. `deployStackRegion` is the ONE function both the
+    // checks and `runStackInner` (the engine's region) use.
+    const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
+    const crossPrefixGuard = new CrossPrefixGuard(preflightStateBackend, {
+      readOnly: options.dryRun === true,
+    });
+
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
     // dependency stacks), mutating each template in place before the
@@ -666,7 +689,6 @@ async function deployCommand(
       relaxCdkVpcDefensiveDeps: !!options.aggressiveVpcParallel,
     });
     const diffCalculator = new DiffCalculator();
-    const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
 
     // Build work graph
     const workGraph = new WorkGraph();
@@ -780,6 +802,8 @@ async function deployCommand(
     // descendant's own counts, so a resource left unaddressed at any depth
     // reaches this counter and the exit code.
     let totalUnaddressed = 0;
+    // go-to-k/cdkd#4705: the part of it the cross-prefix check kept.
+    let totalCrossPrefixKept = 0;
     // Stacks that never ran: the user declined the prefix-migration gate, or an
     // interrupt landed before the stack started. Both unwind through
     // `DeployCancelledError` with a bare `return`, so the work-graph node
@@ -812,7 +836,7 @@ async function deployCommand(
           `Deploy interrupted before stack '${stackInfo.stackName}' started — not starting it.`
         );
       }
-      const stackRegion = stackInfo.region || baseRegion;
+      const stackRegion = deployStackRegion(stackInfo, baseRegion);
 
       logger.info(
         `\n${cyan('Deploying stack:')} ${bold(cyan(stackInfo.stackName))}${stackRegion !== baseRegion ? gray(` (region: ${stackRegion})`) : ''}`
@@ -905,6 +929,14 @@ async function deployCommand(
           stackName: stackInfo.stackName,
           skipPrefix,
           yes: options.yes,
+        });
+        const crossPrefix = crossPrefixEngineOptions({
+          stackName: stackInfo.stackName,
+          region: stackRegion,
+          bucket: stateBucket,
+          recovery: refusalRecovery,
+          guard: crossPrefixGuard,
+          backend: preflightStateBackend,
         });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
@@ -1094,7 +1126,12 @@ async function deployCommand(
           refusalRecovery,
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
-          ...(migrationGate && { onCurrentStateLoaded: migrationGate }),
+          onCurrentStateLoaded: composeStateLoadedGates(crossPrefix.firstDeployGate, migrationGate),
+          ...(crossPrefix.onFirstDeployLeftNoRecord && {
+            onFirstDeployLeftNoRecord: crossPrefix.onFirstDeployLeftNoRecord,
+          }),
+          onDestructivePlan: crossPrefix.onDestructivePlan,
+          crossPrefixHolder: crossPrefix.crossPrefixHolder,
           // Issue #2719. Unconditional, unlike `recreateTargets` above: an
           // empty Set is the same as absent to every reader, and gating on
           // size only matters where the value's PRESENCE changes behaviour.
@@ -1209,6 +1246,13 @@ async function deployCommand(
         if (deployResult.deleteSkipped > 0) {
           logger.info(`  Skipped (not deleted): ${yellow(deployResult.deleteSkipped)}`);
         }
+        // go-to-k/cdkd#4705: same only-when-non-zero rule.
+        const crossPrefixKept = deployResult.crossPrefixKept ?? 0;
+        if (crossPrefixKept > 0) {
+          logger.info(
+            `  Kept (replacement refused: another state prefix records the stack, or the check could not run): ${yellow(crossPrefixKept)}`
+          );
+        }
         // Issue #1819: same only-when-non-zero rule and the same reason. Worded
         // as what SURVIVED rather than as "partial", because the row the user
         // is looking at was updated fine — the number counts resources the
@@ -1243,13 +1287,17 @@ async function deployCommand(
         // `cdkd deploy` re-attempts it — that one self-heals. A partial
         // UPDATE's survivor is untracked, because the record now points at
         // the replacement, so nothing will ever retry it.
-        const stackUnaddressed = deployResult.deleteSkipped + deployResult.updatePartial;
+        const stackUnaddressed =
+          deployResult.deleteSkipped + deployResult.updatePartial + crossPrefixKept;
         // Guarded on dryRun even though the engine hard-codes both counters to
         // 0 on its two dry-run returns: that invariant lives in the engine, and
         // a future dry run that PREVIEWED "would be skipped" would otherwise
         // make `cdkd deploy --dry-run` exit 2 while printing "Dry run
         // completed" -- a run that changed nothing reporting a survivor.
-        if (!options.dryRun) totalUnaddressed += stackUnaddressed;
+        if (!options.dryRun) {
+          totalUnaddressed += stackUnaddressed;
+          totalCrossPrefixKept += crossPrefixKept;
+        }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
@@ -1338,9 +1386,7 @@ async function deployCommand(
             // responsible for". Splitting them at the run level would need a
             // schema field for a number the per-resource events already carry
             // — each survivor has its own RESOURCE_SKIPPED with the reason.
-            ...(deployResult.deleteSkipped + deployResult.updatePartial > 0 && {
-              skipped: deployResult.deleteSkipped + deployResult.updatePartial,
-            }),
+            ...(stackUnaddressed > 0 && { skipped: stackUnaddressed }),
           },
           deployResult.durationMs
         );
@@ -1473,7 +1519,15 @@ async function deployCommand(
           `AWS. The two cases differ in what happens next: a DELETE the provider could not ` +
           `issue KEEPS its state record, so the next 'cdkd deploy' re-attempts it, while a ` +
           `replacement's surviving predecessor is NOT tracked and will never be retried — ` +
-          `delete it by hand. The per-stack summaries above give the breakdown, and each ` +
+          `delete it by hand. ` +
+          // go-to-k/cdkd#4705: only when such a replacement was kept, so an
+          // ordinary exit 2 reads as it always has.
+          (totalCrossPrefixKept > 0
+            ? `A replacement kept because another state prefix records the stack, or the ` +
+              `check could not run, keeps its old resource and applies no new value — ` +
+              `resolve the pair, or let the check run, and re-deploy. `
+            : '') +
+          `The per-stack summaries above give the breakdown, and each ` +
           `resource's own warning names its cause and remedy. ` +
           (cancelledStacks > 0
             ? `Note ${cancelledStacks} stack(s) were also cancelled and never deployed, so the ` +
@@ -1486,6 +1540,7 @@ async function deployCommand(
     unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
     awsClients.destroy();
+    preflightBackendForCleanup?.destroyClient();
   }
 }
 

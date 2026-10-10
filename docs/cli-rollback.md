@@ -274,6 +274,18 @@ newer journal entry may own (neither blocks `cdkd deploy` or `cdkd destroy`), an
 (remove the one you mean from `rollback-journal.json` by hand), and
 `--orphan`, `--revert-failed` or `--skip-final-snapshot` beside it.
 
+## The same stack name under another state prefix refuses the rollback
+
+`cdkd rollback` refuses, under the lock and before the plan, the prompt or any
+replay, when the state bucket also records the stack and region under another
+`--state-prefix`. The replay deletes what the failed deploy created,
+and for such a pair a create can have been handed the other deployment's
+resource. Drop the record you are not keeping with the `cdkd state orphan ...
+--state-prefix <prefix>` command the refusal prints and re-run. See
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
+The answer comes from the stack's registry marker in the state bucket; if S3
+denies it, the rollback warns and falls back to listing the bucket's prefixes.
+
 ## Known limitations
 
 These are surfaced in the plan rather than applied silently.

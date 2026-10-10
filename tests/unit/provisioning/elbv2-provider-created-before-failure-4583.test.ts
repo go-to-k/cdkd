@@ -67,6 +67,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 const LB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
 const TG_TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
@@ -175,6 +176,14 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       expect((error as Error).message).toContain('wiring boom');
       expect(createdBeforeFailure(error, 'Res', c.type)).toBe(c.arn);
+    });
+
+    it('go-to-k/cdkd#4705 E-3: the 4xx wiring failure with the resource left behind keeps the intent', async () => {
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+      mockSend.mockRejectedValueOnce(new Error('cleanup delete refused'));
+      const error = await failure(() => provider.create('Res', c.type, c.props));
+      expect(provenNothingCreated(error, 'Res', c.type)).toBe(false);
     });
 
     it('names nothing when the cleanup delete succeeded', async () => {

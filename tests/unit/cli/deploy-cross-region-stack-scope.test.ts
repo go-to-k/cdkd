@@ -63,6 +63,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
     getState: vi.fn(async () => null),

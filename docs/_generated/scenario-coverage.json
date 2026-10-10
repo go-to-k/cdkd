@@ -691,6 +691,16 @@
       "scenarios": []
     },
     {
+      "name": "cross-backend-same-stack",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cross-backend-same-stack-migration",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-region-concurrent-stacks",
       "annotated": false,
       "scenarios": []
@@ -1887,6 +1897,11 @@
     },
     {
       "name": "partial-create-handback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "perf-cross-backend-check",
       "annotated": false,
       "scenarios": []
     },
@@ -3244,6 +3259,8 @@
     "cognito-lambda-triggers",
     "cognito-userpool-user-ref",
     "created-before-failure-revert",
+    "cross-backend-same-stack",
+    "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "custom-resource-service-token-change",
@@ -3319,6 +3336,7 @@
     "noecho-parameter-masking",
     "orphan-getatt-takeover",
     "partial-create-handback",
+    "perf-cross-backend-check",
     "rds-dbinstance-backfill",
     "rds-fix-forward-orphan",
     "recreate-mixed-direction",

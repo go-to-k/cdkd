@@ -610,13 +610,46 @@ the next deploy would send the handler a fresh Create. A delete reads the state
 record: restore the ARN in `state.json`, or, for a resource removed from the
 template, drop only its record with `--resource` as above.
 
+## The same stack name under another state prefix refuses the deploy
+
+A stack name is one deployment per account and region, as in CloudFormation —
+see [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
+for why, what the checks cannot see, the permissions they use, and the remedies
+the refusals print. A deploy enforces it twice:
+
+- **A create never takes over a resource it cannot account for.** Before
+  creating a queue, topic, log group, alarm, EventBridge rule, S3 bucket, ECS
+  cluster, load balancer, target group or state machine under a name cdkd
+  generated, the deploy looks the name up. An existing holder that this
+  stack's state, rollback journal, create-token ledger, `retained.json` or
+  (for what an older cdkd kept) its own history does not name refuses that
+  create (`GENERATED_NAME_HELD`), as CloudFormation refuses a name that
+  already exists; that resource is not created. This holds whatever backend
+  the other deployment uses — another prefix, bucket or account's bucket. The
+  lookups are exact reads by name, all started once the plan is known, so a
+  first deploy pays about one round trip; a redeploy that creates nothing
+  looks nothing up. A lookup refused with 403 warns and creates; any other
+  lookup failure refuses that create.
+- **The stack registry.** A first deploy claims the bucket's marker
+  `_cdkd-registry/<region>/<stack>.json` for this prefix before its first
+  provider call, and refuses when the marker names another prefix that holds
+  the stack. A stack the prefix already records reads the marker only when its
+  plan deletes, replaces or may replace a resource, or adds or updates a nested
+  stack, before the `--require-approval` prompt; an ordinary redeploy makes no
+  registry request. A replacement the deploy finds only on reading a resource
+  back is checked then, and a refusal keeps that resource and exits `2`. A
+  failed deploy's automatic rollback, a nested stack's included, keeps, rather
+  than deletes, a created resource when another prefix holds the stack or the
+  check fails. If S3 denies the marker, the deploy warns and falls back to
+  listing the bucket's prefixes.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Every resource was deployed. |
 | `1` | Hard error — bad arguments (including `--no-wait` together with `--full-wait`), auth failure, a synth crash, or a resource failure that the automatic rollback then handled. |
-| `2` | Resources were left unaddressed: a skipped DELETE, or a replacement whose predecessor survives. State is preserved; re-running usually clears it. `--allow-unaddressed` restores `0`. |
+| `2` | Resources were left unaddressed: a skipped DELETE, a replacement whose predecessor survives, or a replacement refused because another state prefix records the stack or the check could not run. State is preserved; re-running usually clears it. `--allow-unaddressed` restores `0`. |
 
 An ECS service that never stabilizes under `--full-wait` fails the deploy, so it
 exits non-zero rather than `2`. A CloudFront wait that runs out does not fail

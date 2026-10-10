@@ -144,6 +144,13 @@ function install(
     lastModified: 1,
   };
   backend = {
+    // go-to-k/cdkd#4705: the rollback's cross-prefix check -- no marker, a
+    // bucket with no other prefix: clear, then claimed.
+    getRegistryMarker: vi.fn().mockResolvedValue(null),
+    claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
+    lockUnderPrefix: vi.fn().mockResolvedValue(false),
+    listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+    recordUnderPrefix: vi.fn().mockResolvedValue('absent'),
     listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
     listRawKeys: vi.fn().mockResolvedValue([]),
     getState: vi.fn().mockResolvedValue(readAtKeyRegion(record, REGION)),
@@ -166,7 +173,7 @@ function install(
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
   };
   setupMock.mockResolvedValue({
-    stateBackend: backend,
+    stateBackend: { ...backend, prefix: 'cdkd' },
     lockManager: {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
       releaseLock: vi.fn().mockResolvedValue(undefined),

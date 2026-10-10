@@ -119,6 +119,21 @@ describe('parseCreateTokenLedger', () => {
     expect(doc?.sent['Fs']).toEqual({ base: 'cdkd-Fs-aaa', token: 'cdkd-Fs-bbb', firstSentAt: 1000 });
   });
 
+  it('keeps a finite sent-entry `failedAt` and drops any other value (go-to-k/cdkd#4705 S-6)', () => {
+    const withFailed = (failedAt: unknown) =>
+      parseCreateTokenLedger(
+        JSON.stringify({ ...valid, sent: { Fs: { ...valid.sent.Fs, failedAt } } })
+      )?.sent['Fs'];
+    expect(withFailed(2000)).toEqual({ ...valid.sent.Fs, failedAt: 2000 });
+    expect(withFailed('2000')).toEqual(valid.sent.Fs);
+  });
+
+  it('keeps a finite `abandonedAt` and drops any other value (go-to-k/cdkd#4705)', () => {
+    expect(parseCreateTokenLedger(JSON.stringify({ ...valid, abandonedAt: 1234 }))?.abandonedAt).toBe(1234);
+    expect(parseCreateTokenLedger(JSON.stringify({ ...valid, abandonedAt: '1234' }))?.abandonedAt).toBeUndefined();
+    expect(parseCreateTokenLedger(JSON.stringify(valid))?.abandonedAt).toBeUndefined();
+  });
+
   it.each([
     ['not JSON', '{'],
     ['a non-object', '5'],

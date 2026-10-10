@@ -1269,6 +1269,31 @@ Notes:
   tests, with three cases: explicit-override path, tag-based lookup
   hit, tag-based lookup miss (returns `null`)
 
+### Step 3.6: A create that adopts an existing name
+
+If the type's create API hands back, or overwrites, an existing resource of
+the same name instead of failing (as `CreateQueue`, `CreateTopic`,
+`PutMetricAlarm` and `PutRule` do), add it to `NAME_ADOPTING_SDK_CREATE_TYPES`
+(`src/deployment/replacement-name-holder/deploy-name.ts`) and implement:
+
+- `generatedCreateName(resourceType, logicalId, properties)` — the name
+  `create()` sends when the template declares none (`undefined` when it does),
+  and have `create()` call it, so the two cannot drift;
+- `lookupNames(resourceType, names, ctx)` — which of those names a resource
+  already holds, as a `Map<name, physicalId>`: an exact read by name -- a
+  batch read by name where the service has one, else one read per name --
+  never a listing (eventually consistent: it can omit a resource just
+  created), a resource being deleted read as absent, each API behind
+  `withApiLimit` (`src/provisioning/name-lookup.ts`). Without it, `import()`
+  is asked once per name. If the lookup needs a property the plan cannot know
+  yet, also implement `lookupNeedsResolvedProperties`.
+
+A deploy then refuses a create whose generated name another resource holds
+unless this stack's own records name it
+([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region));
+`tests/unit/deployment/generated-name-guard-types-4705.test.ts` checks every
+listed type has both.
+
 ### Step 4: Add AWS Client
 
 Add client to `src/utils/aws-clients.ts`:

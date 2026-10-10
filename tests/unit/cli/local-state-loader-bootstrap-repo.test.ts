@@ -27,6 +27,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     getRawObject: mocks.getRawObjectMock,
   })),
 }));

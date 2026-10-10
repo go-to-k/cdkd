@@ -14,6 +14,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **provider-registry.ts** - The ROUTING decision, in order: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` says otherwise (one spelling, shared with `cdkd diff`; per-type escapes in `STICKY_CC_MIGRATION_EXEMPT` — issue #2719); an SDK provider with no silent-drop property -> that one; a silent drop -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic as much as create logic**, hence in the `integ-destroy` gate scope.
 
+- **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it, not its own pool.
+
 - **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift); no `aws:cdk:path` tag walk, since AWS rejects `aws:` tag writes.
 
 - **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete` — set only by the engine's replacement / recreate deletes under `--force-stateful-recreation`.

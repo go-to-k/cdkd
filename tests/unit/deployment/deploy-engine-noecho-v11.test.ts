@@ -9,12 +9,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { GeneratedNameGuard } from '../../../src/deployment/generated-name-guard.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
+import {
+  CrossPrefixScanCache,
+  type CrossPrefixScanResult,
+} from '../../../src/state/cross-prefix-stack-scan.js';
+import { createCrossPrefixDestructiveGate } from '../../../src/cli/commands/cross-prefix-gate.js';
 import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
@@ -1644,6 +1651,106 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       }
     );
 
+    describe('the cross-prefix check of a late replacement (go-to-k/cdkd#4705)', () => {
+      it('asks onDestructivePlan with stage late, which the plan never called, then replaces', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const onDestructivePlan = vi.fn(async (..._args: unknown[]) => undefined);
+        await makeEngine({ onDestructivePlan }).deploy(STACK, rotatedTemplate());
+        // The plan saw a promotion only, so the ONE call is the late one.
+        expect(onDestructivePlan).toHaveBeenCalledTimes(1);
+        const [stackName, destructive, stage] = onDestructivePlan.mock.calls[0]!;
+        expect(stackName).toBe(STACK);
+        expect((destructive as { logicalId: string }[]).map((c) => c.logicalId)).toEqual([
+          'Topic',
+        ]);
+        expect(stage).toBe('late');
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+      });
+
+      // The real gate over a scan of each kind (review R5-2).
+      const gateOver = (result: CrossPrefixScanResult) => {
+        const cache = new CrossPrefixScanCache({
+          prefix: 'cdkd',
+          listTopLevelPrefixes: vi.fn(),
+          recordUnderPrefix: vi.fn(),
+        });
+        vi.spyOn(cache, 'full').mockResolvedValue(result);
+        return vi.fn(createCrossPrefixDestructiveGate({ region: 'us-east-1', bucket: 'b', cache }));
+      };
+
+      it.each([
+        ['found', { kind: 'found', prefixes: ['team-b'] }, /recorded under another state prefix/],
+        [
+          'failed',
+          { kind: 'failed', error: new Error('boom') },
+          /could not check whether the bucket/,
+        ],
+      ] as const)(
+        'a %s refusal keeps the resource, warns it in full, and counts as unaddressed (exit 2)',
+        async (_kind, scan, needle) => {
+          stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+          const onDestructivePlan = gateOver(scan as CrossPrefixScanResult);
+          const approveDeployment = vi.fn(async () => true);
+          const result = await makeEngine({
+            onDestructivePlan,
+            requireApproval: 'destructive',
+            approveDeployment,
+          }).deploy(STACK, rotatedTemplate());
+          expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+          expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
+          // Refused before the late approval prompt.
+          expect(approveDeployment).not.toHaveBeenCalled();
+          // Its own counter (review R6-5): the CLI exits 2 on it (unless
+          // --allow-unaddressed), and it is not a skipped DELETE.
+          expect(result.crossPrefixKept).toBe(1);
+          expect(result.deleteSkipped).toBe(0);
+          const warned = lines(logger.warn);
+          expect(
+            warned.filter((l) => l.startsWith('Refusing to replace a resource of stack'))
+          ).toHaveLength(1);
+          expect(warned.join('\n')).toMatch(needle);
+          const topic = warned.filter((l) => l.includes('Topic.TopicName'));
+          expect(topic).toHaveLength(1);
+          expect(topic[0]).toContain(
+            '(differs; the replacement was refused: see the state-prefix warning above)'
+          );
+          expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+        }
+      );
+
+      it('denied (403): warns and the replacement proceeds, counting nothing', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const denied = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+        const result = await makeEngine({
+          onDestructivePlan: gateOver({ kind: 'denied', error: denied, stage: 'list' }),
+        }).deploy(STACK, rotatedTemplate());
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
+        expect(result.crossPrefixKept).toBeUndefined();
+      });
+
+      it('an unrelated CdkdError from the hook fails the deploy (review R5-3)', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const onDestructivePlan = vi.fn(async () => {
+          throw new CdkdError('something else', 'SOME_OTHER_CODE');
+        });
+        await expect(
+          makeEngine({ onDestructivePlan }).deploy(STACK, rotatedTemplate())
+        ).rejects.toThrow(/Failed to update resource Topic/);
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      });
+
+      it('an error that is not a refusal still fails the deploy', async () => {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const onDestructivePlan = vi.fn(async () => {
+          throw new TypeError('boom');
+        });
+        await expect(
+          makeEngine({ onDestructivePlan }).deploy(STACK, rotatedTemplate())
+        ).rejects.toThrow();
+        expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+      });
+    });
+
     it('asks nothing under --require-approval=never, even with an approver', async () => {
       stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
       const approveDeployment = vi.fn(async () => false);
@@ -1826,6 +1933,38 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(approveDeployment).toHaveBeenCalledTimes(1);
       expect(callsFor(provider.create, 'Topic')).toHaveLength(1);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(1);
+    });
+
+    it('F-2 (go-to-k/cdkd#4705): an answered late prompt tells the generated-name guard, as the up-front one does', async () => {
+      const noteApprovalPrompted = vi.fn();
+      const fakeGuard = {
+        size: 0,
+        noteApprovalPrompted,
+        recordPlannedIntents: vi.fn(),
+        settle: vi.fn(async () => undefined),
+        readoptedFromRetained: vi.fn(async () => []),
+        candidate: () => undefined,
+        admit: vi.fn(async () => undefined),
+        noteSent: vi.fn(),
+        noteReturned: vi.fn(),
+        noteFailed: vi.fn(),
+      };
+      const start = vi
+        .spyOn(GeneratedNameGuard, 'start')
+        .mockReturnValue(fakeGuard as unknown as GeneratedNameGuard);
+      try {
+        stateBackend.getState.mockResolvedValue({ state: exactState(), etag: 'etag-old' });
+        const approveDeployment = vi.fn(async () => true);
+        await makeEngine({ requireApproval: 'any-change', approveDeployment }).deploy(
+          STACK,
+          rotatedTemplate()
+        );
+        // The one question asked was the late one (the diff showed no change).
+        expect(approveDeployment).toHaveBeenCalledTimes(1);
+        expect(noteApprovalPrompted).toHaveBeenCalledTimes(1);
+      } finally {
+        start.mockRestore();
+      }
     });
 
     it('keeps the resource when the late prompt cannot be asked (no terminal), and the deploy goes on', async () => {

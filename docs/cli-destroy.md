@@ -997,6 +997,23 @@ A stack whose deletes were interrupted keeps its `state.json` and its
 deployment-event history. The events are the post-mortem for the retry, which
 is why `--purge-events` is skipped on an interrupted run.
 
+## The same stack name under another state prefix refuses the destroy
+
+`cdkd destroy` (and `cdkd state destroy`) read the stack's registry marker
+(`_cdkd-registry/<region>/<stack>.json` in the state bucket) and refuse, before
+any prompt or delete, when it names another `--state-prefix` that holds the
+stack: that record may name the same resources. Drop the record you are not
+keeping with the `cdkd state orphan ... --state-prefix <prefix>` command the
+refusal prints, which never deletes a resource, and re-run. See
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
+A successful destroy removes the marker with the record. A resource the
+destroy keeps (`RemovalPolicy.RETAIN`) is listed in
+`<prefix>/<stack>/<region>/retained.json`, so the next deploy under the same
+prefix takes it back instead of refusing its name; `cdkd state orphan` removes
+that list. A stack recorded before the registry existed pays one listing of
+the bucket's top-level prefixes the first time, then claims its marker. If S3
+denies the marker, the destroy warns and falls back to that listing.
+
 ## A malformed `resources` map refuses the destroy
 
 The `resources` map is the list of what a destroy deletes, and a state record is

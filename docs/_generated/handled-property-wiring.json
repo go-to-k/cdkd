@@ -3835,10 +3835,12 @@
             "AWS::CloudWatch::Alarm"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "generatedCreateName"
           ]
         },
         {
@@ -7851,6 +7853,7 @@
           "seededBy": [
             "create",
             "createCluster",
+            "generatedCreateName",
             "update"
           ]
         },
@@ -9696,7 +9699,8 @@
           "seededBy": [
             "create",
             "createLoadBalancer",
-            "createTargetGroup"
+            "createTargetGroup",
+            "generatedCreateName"
           ]
         },
         {
@@ -10842,6 +10846,7 @@
           ],
           "seededBy": [
             "create",
+            "lookupNeedsResolvedProperties",
             "update"
           ]
         },
@@ -10866,10 +10871,12 @@
             "AWS::Events::Rule"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "generatedCreateName",
             "update"
           ]
         },
@@ -15032,10 +15039,12 @@
             "AWS::Logs::LogGroup"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "generatedCreateName"
           ]
         },
         {
@@ -17118,10 +17127,12 @@
             "AWS::S3::Bucket"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "generatedCreateName",
             "update"
           ]
         },
@@ -18576,10 +18587,12 @@
             "AWS::SNS::Topic"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "generatedCreateName"
           ]
         },
         {
@@ -18782,10 +18795,12 @@
             "AWS::SQS::Queue"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "generatedCreateName",
             "update"
           ]
         },
@@ -19131,10 +19146,12 @@
             "AWS::StepFunctions::StateMachine"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "generatedCreateName"
           ]
         },
         {

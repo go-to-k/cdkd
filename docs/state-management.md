@@ -43,6 +43,10 @@ State and lock keys are region-scoped (since schema `version: 2`).
 The same `stackName` deployed to two different regions has two independent
 state files; changing `env.region` no longer silently overwrites the prior
 region's record.
+The same `stackName` under two state prefixes (or two buckets) in one
+account and region is a different matter: it is unsupported, and refused where
+cdkd can see it — see
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 
 **The key is what decides a record's region, not the `region` field inside
 it.** cdkd writes the two to agree — every save stamps the key's region into
@@ -3230,6 +3234,13 @@ stays readable through `GetObject` with a `VersionId`.
 - **`s3:DeleteObjectVersion`** — object-level, like the `s3:DeleteObject`
   above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
   remove them.
+
+A policy that scopes an identity to its own state prefix
+(`arn:aws:s3:::cdkd-state-bucket/team-a/*`) must also grant `s3:GetObject`,
+`s3:PutObject` and `s3:DeleteObject` on
+`arn:aws:s3:::cdkd-state-bucket/_cdkd-registry/*`, the bucket's
+[stack registry](state-store.md#the-stack-registry); without it cdkd warns and
+falls back to a check that needs `s3:ListBucket` on the whole bucket.
 
 The third addition is DIAGNOSTIC rather than required, and the only entry in
 this policy that is:

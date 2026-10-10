@@ -44,6 +44,7 @@ const mockGetState = vi.fn<(stackName: string) => Promise<{ state: StackState; e
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
     verifyBucketExists: mockVerifyBucketExists,
@@ -302,6 +303,8 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].resolveSecretDerivedPrincipals).toEqual({});
     // go-to-k/cdkd#2115: a top-level state destroy is a whole-stack teardown.
     expect(callArgs?.[2].stackDestroy).toBe(true);
+    // go-to-k/cdkd#4705: a top-level state destroy checks the bucket's other state prefixes.
+    expect(callArgs?.[2].crossPrefixCheck?.cache).toBeDefined();
     // go-to-k/cdkd#4682: no template, so no NoEcho re-resolution source.
     expect(callArgs?.[2]).not.toHaveProperty('noEchoReresolver');
   });
@@ -454,6 +457,59 @@ describe('cdkd state destroy', () => {
     // EuStack should be filtered out by --stack-region; UsStack should run.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('UsStack');
+  });
+
+  it('pre-starts every target record\'s scan before the first destroy, only for the records it destroys (go-to-k/cdkd#4705 review R5-8)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+      { stackName: 'B', region: 'eu-west-1' },
+      { stackName: 'Legacy', region: undefined },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name, 'us-east-1'),
+      etag: '"x"',
+    }));
+    const { CrossPrefixGuard } = await import('../../../src/state/stack-registry.js');
+    const order: string[] = [];
+    const fullSpy = vi
+      .spyOn(CrossPrefixGuard.prototype, 'full')
+      .mockImplementation(async (name: string, region: string) => {
+        order.push(`scan:${name}:${region}`);
+        return { kind: 'clear' };
+      });
+    mockRunDestroyForStack.mockImplementation(async (name: string) => {
+      order.push(`destroy:${name}`);
+      return {
+        stackName: name,
+        cancelled: false,
+        deletedCount: 0,
+        errorCount: 0,
+        skippedCount: 0,
+        retainedCount: 0,
+        guardIndeterminateCount: 0,
+        skippedEmpty: false,
+        interrupted: false,
+      };
+    });
+
+    await runStateDestroy(['destroy', 'A', 'B', 'Legacy', '--stack-region', 'us-east-1', '--yes']);
+    fullSpy.mockRestore();
+
+    const firstDestroy = order.findIndex((o) => o.startsWith('destroy:'));
+    expect(order.slice(0, firstDestroy)).toEqual([
+      'scan:A:us-east-1',
+      'scan:B:us-east-1',
+      'scan:Legacy:us-east-1',
+    ]);
+    // B's eu-west-1 record is not destroyed, so it is not scanned.
+    expect(order.filter((o) => o.startsWith('scan:'))).toHaveLength(3);
+    expect(new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].crossPrefixCheck?.cache)).size).toBe(1);
+    // Review R5-8: `setupStateBackend`'s dispose destroys the client of the
+    // backend the destroys (and the scans) ran on, once.
+    const backends = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].stateBackend));
+    expect(backends.size).toBe(1);
+    expect([...backends][0].destroyClient).toHaveBeenCalledTimes(1);
   });
 
   it('--stack-region tolerates state without a region tag (legacy layout)', async () => {

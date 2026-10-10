@@ -18,6 +18,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -223,6 +224,47 @@ export class SQSQueueProvider implements ResourceProvider {
   /**
    * Create an SQS queue
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['QueueName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 80 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: the queue's `CreatedTimestamp` (seconds, as epoch ms),
+   * so a kept queue licenses only a holder created no later than it was kept.
+   */
+  async holderCreatedAt(_resourceType: string, physicalId: string): Promise<number | undefined> {
+    const resp = await this.sqsClient.send(
+      new GetQueueAttributesCommand({ QueueUrl: physicalId, AttributeNames: ['CreatedTimestamp'] })
+    );
+    const seconds = Number(resp.Attributes?.['CreatedTimestamp']);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+  }
+
+  /**
+   * go-to-k/cdkd#4705: one exact `GetQueueUrl` per name. Never `ListQueues`:
+   * its listing is eventually consistent and omitted a queue another
+   * deployment had created a minute earlier, so the create adopted it (and the
+   * failed deploy's rollback deleted it). Any failure but `QueueDoesNotExist`
+   * throws, which refuses the create.
+   */
+  async lookupNames(_resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    return lookupEachName(names, 'sqs:GetQueueUrl', 10, async (name) => {
+      try {
+        const resp = await this.sqsClient.send(new GetQueueUrlCommand({ QueueName: name }));
+        return resp.QueueUrl;
+      } catch (err) {
+        if (err instanceof QueueDoesNotExist) return undefined;
+        throw err;
+      }
+    });
+  }
+
   async create(
     logicalId: string,
     resourceType: string,
@@ -234,7 +276,7 @@ export class SQSQueueProvider implements ResourceProvider {
 
     const queueName =
       (properties['QueueName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 80 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
 
     try {
       // Convert CDK properties to SQS attributes

@@ -1,4 +1,10 @@
 import { freshNoEchoParametersWithDeclared } from './noecho.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { getAccountInfo } from '../intrinsic-function-resolver.js';
+import { GeneratedNameGuard } from '../generated-name-guard.js';
+import { flushKeptForReadoption } from './delete.js';
+import { loadKeptInHistory } from '../kept-in-history.js';
+import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
@@ -38,6 +44,7 @@ import {
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
 import {
+  checkDestructivePlan,
   isNoEchoPromotionOnly,
   requireDeploymentApproval,
   requireOutputsOnlyApproval,
@@ -75,6 +82,7 @@ import {
 } from '../custom-resource-service-token.js';
 import {
   forgetRecordedCreateTokens,
+  noteAbandonedRun,
   noteDeployStateRecord,
 } from '../../provisioning/providers/create-token-ledger.js';
 
@@ -135,6 +143,15 @@ export async function doDeployWithPrefetch(
     throw error;
   }
 
+  // go-to-k/cdkd#4705 review P4 / G-6: a first deploy's state gate runs
+  // overlapped with the work before the plan is acted on. When that work
+  // throws while the gate is still pending, the gate's refusal (if it
+  // refuses) is the error reported -- it is the more fundamental one.
+  let firstDeployStateGate: Promise<void> | undefined;
+  // go-to-k/cdkd#4705: this run found no record (a first deploy), and it
+  // failed -- the `finally` then checks whether it left one.
+  let firstDeploy = false;
+  let failed = false;
   try {
     // Started INSIDE this `try` (issue #2171): `start()` writes to stdout and
     // can throw (EPIPE on `cdkd deploy | head`), and it sits AFTER the lock
@@ -258,8 +275,21 @@ export async function doDeployWithPrefetch(
     // call — so a caller that declines here has changed nothing. Reuses
     // the state read just performed instead of making the CLI issue its
     // own pre-lock GET of the same object.
+    // go-to-k/cdkd#4705 review P4: for a FIRST deploy (no record) the gate's
+    // work -- the cross-prefix registry claim -- overlaps the journal read,
+    // the parse and the diff, which make no provider call and change nothing
+    // for a stack with no record; it is awaited before anything acts on the
+    // plan (`firstDeployStateGate` below). A loaded record keeps the gate
+    // strictly first.
     if (this.options.onCurrentStateLoaded) {
-      await this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
+      const gate = this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
+      if (currentStateData === null || currentStateData === undefined) {
+        firstDeployStateGate = gate;
+        firstDeploy = true;
+        gate.catch(() => undefined);
+      } else {
+        await gate;
+      }
     }
 
     // 1b. If a rollback journal exists, a previous deploy failed / was
@@ -844,6 +874,12 @@ export async function doDeployWithPrefetch(
       });
     }
 
+    // The first deploy's state gate (above), before any branch acts on the plan.
+    if (firstDeployStateGate !== undefined) {
+      const gate = firstDeployStateGate;
+      firstDeployStateGate = undefined;
+      await gate;
+    }
     const hasChanges = this.diffCalculator.hasChanges(changes);
 
     if (!hasChanges) {
@@ -1259,9 +1295,51 @@ export async function doDeployWithPrefetch(
       );
     }
 
-    // `--require-approval`: asked on the diff this deploy executes, before any
-    // provider call. The lock is released by the `finally`.
-    await requireDeploymentApproval({
+    // go-to-k/cdkd#4705: every planned create of a name-adopting type whose
+    // name cdkd generates is looked up NOW (exact reads, all at once),
+    // overlapping the checks and the prompt below; each create awaits its
+    // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intents
+    // are written per type after the approval, and settled in the `finally`.
+    const abandonedRunAt = (
+      this.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
+    ).abandonedRunEndedBy?.(stackName, this.stackRegion);
+    if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
+    this.generatedNameGuard = GeneratedNameGuard.start({
+      stackName,
+      region: this.stackRegion,
+      changes: changes.values(),
+      providerFor: (input) => this.providerRegistry.getProviderFor({ ...input, quiet: true }),
+      records: currentState.resources,
+      orphans: currentState.orphans,
+      loadJournal: () => this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
+      loadRetained: () => this.stateBackend.loadRetainedRecord(stackName, this.stackRegion),
+      loadKeptInHistory: () => {
+        const reader = new DeploymentEventsReader(this.stateBackend);
+        return loadKeptInHistory(
+          {
+            earlierStateResources: (s, r) => this.stateBackend.earlierStateResources(s, r),
+            listRuns: (s, r) => reader.listRuns(s, r),
+            readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
+          },
+          stackName,
+          this.stackRegion
+        );
+      },
+      accountInfo: () => getAccountInfo(this.stackRegion),
+      warn: (message) => this.logger.warn(message),
+      // G-1: this deploy took over the lock an abandoned run left.
+      ...(abandonedRunAt !== undefined && { abandonedRunAt }),
+    });
+    if (this.generatedNameGuard !== undefined) {
+      this.logger.debug(
+        safeMsg`Generated-name check: looking up ${String(this.generatedNameGuard.size)} planned create(s)`
+      );
+    }
+
+    // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
+    // is checked against the bucket's other state prefixes BEFORE the approval
+    // prompt and any provider call.
+    await checkDestructivePlan({
       options: this.options,
       stackName,
       changes: changes.values(),
@@ -1269,6 +1347,23 @@ export async function doDeployWithPrefetch(
       template: effectiveTemplate,
       recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
     });
+
+    // `--require-approval`: asked on the diff this deploy executes, before any
+    // provider call. The lock is released by the `finally`.
+    const prompted = await requireDeploymentApproval({
+      options: this.options,
+      stackName,
+      changes: changes.values(),
+      records: currentState.resources,
+      template: effectiveTemplate,
+      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+    });
+    // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
+    // it are read again at each create.
+    if (prompted) this.generatedNameGuard?.noteApprovalPrompted();
+    // The one intent write (review P1): past the prompt and the destructive
+    // check, under the lock, before the first create (each awaits it).
+    this.generatedNameGuard?.recordPlannedIntents();
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path
@@ -1334,18 +1429,46 @@ export async function doDeployWithPrefetch(
     // The legacy migration delete (when migrationPending) was already done by
     // the first per-resource save inside executeDeployment, so this final
     // save is unconditionally region-scoped.
-    const newEtag = await this.stateBackend.saveState(
-      stackName,
-      this.stackRegion,
-      // The record joins here, on the save that ends a successful deploy
-      // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
-      // field, so none of its saves carries it.
-      this.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
-    );
+    // go-to-k/cdkd#4705 review H-1/(g): what this deploy kept is recorded in
+    // one write beside it (disjoint objects). A crash leaving either alone is
+    // the documented residual: unrecorded, its re-create is refused with the
+    // `cdkd import` remedy.
+    const [newEtag] = await Promise.all([
+      this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        // The record joins here, on the save that ends a successful deploy
+        // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
+        // field, so none of its saves carries it.
+        this.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
+      ),
+      flushKeptForReadoption(this),
+    ]);
     this.logger.debug(`State saved (ETag: ${newEtag})`);
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
-    await forgetRecordedCreateTokens(Object.keys(newState.resources));
+    // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
+    // record now names it, so `retained.json` lets it go. Best-effort. Both
+    // run beside 7c's writes below (review P4): disjoint objects, read by
+    // neither, so no serial round trip on a successful deploy.
+    const ledgerAndKeptCleanup = (async (): Promise<void> => {
+      await forgetRecordedCreateTokens(Object.keys(newState.resources));
+      const readopted = (await this.generatedNameGuard?.readoptedFromRetained()) ?? [];
+      if (readopted.length > 0) {
+        try {
+          const kept = await this.stateBackend.loadRetainedResources(stackName, this.stackRegion);
+          await this.stateBackend.saveRetainedResources(
+            stackName,
+            this.stackRegion,
+            kept.filter((entry) => !readopted.includes(entry.logicalId))
+          );
+        } catch (error) {
+          this.logger.debug(
+            safeMsg`Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
+          );
+        }
+      }
+    })();
 
     // 7c. Two independent post-save S3 writes, run CONCURRENTLY:
     //
@@ -1400,6 +1523,7 @@ export async function doDeployWithPrefetch(
             })
           )
         : Promise.resolve(),
+      ledgerAndKeptCleanup,
     ]);
 
     const durationMs = Date.now() - startTime;
@@ -1414,11 +1538,19 @@ export async function doDeployWithPrefetch(
       deleteSkipped: actualCounts.deleteSkipped + journaledOrphansLeft,
       updatePartial: actualCounts.updatePartial,
       nestedUpdatePartial: actualCounts.nestedUpdatePartial,
+      ...((actualCounts.crossPrefixKept ?? 0) > 0 && {
+        crossPrefixKept: actualCounts.crossPrefixKept,
+      }),
       unchanged: unchangedCount,
       durationMs,
       outputs: this.buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
       attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
     };
+  } catch (error) {
+    failed = true;
+    // G-6: the overlapped gate's refusal outranks an error from its window.
+    if (firstDeployStateGate !== undefined) await firstDeployStateGate;
+    throw error;
   } finally {
     // Stop live renderer (clears any remaining in-flight task display).
     //
@@ -1455,6 +1587,33 @@ export async function doDeployWithPrefetch(
     // across deploys. The underlying promises already have a `.catch` so
     // dropping the references will not produce an unhandled rejection.
     this.observedCaptureTasks.clear();
+
+    // go-to-k/cdkd#4705: under the lock, drop the name-adopting intents whose
+    // create was not sent or came back. Guarded like every step before
+    // `releaseLock`.
+    try {
+      // A deploy that failed after keeping something still records it (a
+      // no-op once the success path flushed).
+      await flushKeptForReadoption(this);
+      await this.generatedNameGuard?.settle();
+    } catch {
+      // Both warn on their own failures.
+    }
+
+    // go-to-k/cdkd#4705: a first deploy that failed and left no record
+    // releases the registry marker it claimed (or found naming this prefix),
+    // under the lock, so "a marker exists" keeps meaning "a record exists".
+    // A record it did leave (a partial save) keeps the marker. Best-effort.
+    if (firstDeploy && failed && this.options.onFirstDeployLeftNoRecord && !this.options.dryRun) {
+      try {
+        const left = await this.stateBackend.getState(stackName, this.stackRegion);
+        if (left === null) await this.options.onFirstDeployLeftNoRecord(stackName);
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not check whether the failed first deploy left a record: ${describeAwsFailure(error).summary}`
+        );
+      }
+    }
 
     // Always release lock
     try {

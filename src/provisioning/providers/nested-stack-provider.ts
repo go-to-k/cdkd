@@ -867,12 +867,13 @@ export class NestedStackProvider implements ResourceProvider {
         // decide scoping for you. No count is written in this paragraph,
         // because a count is the part that rots.
         //
-        // `recreateTargets`, `pinCcApi` and `onCurrentStateLoaded` SELF-SCOPE,
+        // `recreateTargets`, `pinCcApi`, `onCurrentStateLoaded` and
+        // `onFirstDeployLeftNoRecord` (go-to-k/cdkd#4705) SELF-SCOPE,
         // so inheriting them is inert: the first two match only while deploying
         // their own `stackName` (`pinCcApi` gained that shape in issue #2719
         // for exactly this reason -- it started as a bare logical-id Set), the
-        // third (the prefix-migration gate) returns early
-        // on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
+        // third (the prefix-migration gate) and the fourth (the registry
+        // release) return early on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
         // and CDK's stack-name rule bars `~`, so neither can match in a
         // descendant. `parentStackInfo` and `eventRecorder` are stack-named but
         // are not decisions ABOUT a stack: the first is overwritten a few lines
@@ -907,6 +908,17 @@ export class NestedStackProvider implements ResourceProvider {
         // `properties.Parameters` on its `AWS::CloudFormation::Stack`
         // resource — that's the authoritative source.
         parameters: childParameters,
+        // go-to-k/cdkd#4705: the cross-prefix destructive-plan check is the
+        // TOP-LEVEL stack's, taken before the parent's first provider call
+        // (a nested-stack row added or updated in the parent's plan triggers
+        // it). A child running it mid-parent-deploy would refuse after the
+        // parent changed things.
+        onDestructivePlan: undefined,
+        // `crossPrefixHolder` IS inherited (go-to-k/cdkd#4705 review R6-2): a
+        // child's creates can be handed resources its twin under another
+        // prefix records (`Parent~Child`), and the child's AUTOMATIC rollback
+        // asks it, by the child's own name, before deleting one. A child never
+        // settles a journal, so that is its only use there.
         // `hasMaskableValues`, not `size` (go-to-k/cdkd#1998): a bag holding
         // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
         // child's lines and is carried into its consuming resources' bags.

@@ -22,7 +22,7 @@ function run(
   changes: ResourceChange[],
   approve: (r: DeploymentApprovalRequest) => Promise<boolean>,
   extra: { recreateTargetIds?: string[]; records?: Record<string, ResourceState> } = {}
-): Promise<void> {
+): Promise<boolean> {
   return requireDeploymentApproval({
     options: { requireApproval: level, approveDeployment: approve },
     stackName: 'S',
@@ -45,6 +45,13 @@ describe('requireDeploymentApproval', () => {
     expect(approve.mock.calls[0]![0].destructiveChanges).toEqual([
       { stackName: 'S', logicalId: 'Fn', resourceType: 'AWS::SQS::Queue', impact: 'WILL_REPLACE' },
     ]);
+  });
+
+  it('H-3 (go-to-k/cdkd#4705): an approver that answers without asking (--yes) reports that no one was asked', async () => {
+    const yes = Object.assign(vi.fn(async () => true), { autoApproves: true as const });
+    await expect(run('any-change', [change('Q', 'CREATE')], yes)).resolves.toBe(false);
+    expect(yes).toHaveBeenCalledTimes(1);
+    await expect(run('any-change', [change('Q', 'CREATE')], approve)).resolves.toBe(true);
   });
 
   it('does not ask under destructive for a plain in-place update', async () => {
@@ -77,7 +84,7 @@ describe('requireDeploymentApproval', () => {
         records: { Q: rec() },
         template: { Resources: {} },
       })
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 
   it('marks a refusal to ask non-retryable, as it marks a decline', async () => {
@@ -103,12 +110,13 @@ describe('requireDeploymentApproval', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(onTimeout).not.toHaveBeenCalled();
       answer(true);
-      await expect(row).resolves.toBeUndefined();
+      // go-to-k/cdkd#4705: `true` -- it asked, and was approved.
+      await expect(row).resolves.toBe(true);
     });
 
     it('refuses without asking once the row already timed out', async () => {
       const asked = vi.fn(async () => true);
-      let inner: Promise<void> | undefined;
+      let inner: Promise<boolean> | undefined;
       const row = withResourceDeadline(
         async () => {
           // The child's own diff outlived the row's deadline before it asked.
@@ -166,6 +174,40 @@ describe('approveLateReplacement (go-to-k/cdkd#4656)', () => {
     await expect(
       late('destructive', () => Promise.reject(new Error('stdin is not interactive')))
     ).resolves.toBe(false);
+  });
+
+  it('F-2 (go-to-k/cdkd#4705): onAsked runs after an answered question, and never when nothing asked', async () => {
+    const run = (level: 'never' | 'destructive', approve?: () => Promise<boolean>) => {
+      const onAsked = vi.fn();
+      return approveLateReplacement({
+        options: { requireApproval: level, ...(approve && { approveDeployment: approve }) },
+        stackName: 'S',
+        change: replacement,
+        records: { Q: rec('AWS::SQS::Queue') },
+        template: { Resources: {} },
+        onAsked,
+      }).then(() => onAsked);
+    };
+    await expect(run('destructive', async () => true)).resolves.toHaveBeenCalledTimes(1);
+    await expect(run('destructive', async () => false)).resolves.toHaveBeenCalledTimes(1);
+    await expect(run('never', async () => true)).resolves.not.toHaveBeenCalled();
+    await expect(run('destructive', () => Promise.reject(new Error('no tty')))).resolves.not.toHaveBeenCalled();
+  });
+
+  it('H-3: onAsked never runs for an approver that answers without asking (--yes)', async () => {
+    const onAsked = vi.fn();
+    await approveLateReplacement({
+      options: {
+        requireApproval: 'destructive',
+        approveDeployment: Object.assign(async () => true, { autoApproves: true as const }),
+      },
+      stackName: 'S',
+      change: replacement,
+      records: { Q: rec('AWS::SQS::Queue') },
+      template: { Resources: {} },
+      onAsked,
+    });
+    expect(onAsked).not.toHaveBeenCalled();
   });
 
   describe('inside a resource deadline', () => {

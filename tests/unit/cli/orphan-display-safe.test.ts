@@ -70,6 +70,7 @@ const mockListStacks = vi.hoisted(() => vi.fn());
 const mockVerifyBucketExists = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     getState: mockGetState,
     saveState: mockSaveState,
     listStacks: mockListStacks,

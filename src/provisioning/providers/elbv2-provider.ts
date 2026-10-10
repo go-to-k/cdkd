@@ -58,6 +58,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
+import { lookupEachName } from '../name-lookup.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import {
   protectedReplacementAdvice,
@@ -3623,6 +3624,78 @@ export class ELBv2Provider implements ResourceProvider {
    * Listener is likewise not auto-importable (no template-supplied stable
    * identifier); use `--resource <listenerId>=<arn>` for those.
    */
+  /**
+   * go-to-k/cdkd#4705: the name a load balancer's or target group's
+   * `create()` sends when the template names none (`sentElbv2Name`).
+   */
+  generatedCreateName(
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (
+      resourceType !== 'AWS::ElasticLoadBalancingV2::LoadBalancer' &&
+      resourceType !== 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    ) {
+      return undefined;
+    }
+    // Any declared Name -- a string, a number, or an intrinsic not yet
+    // resolved -- is not a generated one (go-to-k/cdkd#4705 review CB-13).
+    const declared = properties['Name'];
+    if (declared !== undefined && declared !== null && declared !== '') return undefined;
+    return sentElbv2Name(properties, logicalId);
+  }
+
+  /**
+   * go-to-k/cdkd#4705: a load balancer's `CreatedTime` (epoch ms), so a kept
+   * one licenses only a holder created no later than it was kept. A target
+   * group reports none.
+   */
+  async holderCreatedAt(resourceType: string, physicalId: string): Promise<number | undefined> {
+    if (resourceType !== 'AWS::ElasticLoadBalancingV2::LoadBalancer') return undefined;
+    const resp = await this.getClient().send(
+      new DescribeLoadBalancersCommand({ LoadBalancerArns: [physicalId] })
+    );
+    const created = resp.LoadBalancers?.[0]?.CreatedTime;
+    return created instanceof Date ? created.getTime() : undefined;
+  }
+
+  /**
+   * go-to-k/cdkd#4705: one exact `Describe...` with `Names: [name]` per name
+   * (a `Names` batch fails outright when any one name is missing, which on a
+   * first deploy is every time), never a region listing, which can omit a
+   * resource just created. Any failure but the not-found error throws, which
+   * refuses the create. The physical id is the ARN.
+   */
+  async lookupNames(resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    const lb = resourceType === 'AWS::ElasticLoadBalancingV2::LoadBalancer';
+    if (!lb && resourceType !== 'AWS::ElasticLoadBalancingV2::TargetGroup') return new Map();
+    const api = lb ? 'elbv2:DescribeLoadBalancers' : 'elbv2:DescribeTargetGroups';
+    return lookupEachName(names, api, 3, async (name) => {
+      try {
+        if (lb) {
+          const resp = await this.getClient().send(
+            new DescribeLoadBalancersCommand({ Names: [name] })
+          );
+          return onlyNamedMatch(resp.LoadBalancers, (l) => l.LoadBalancerArn, 'load balancer').arn;
+        }
+        const resp = await this.getClient().send(
+          new DescribeTargetGroupsCommand({ Names: [name] })
+        );
+        return onlyNamedMatch(resp.TargetGroups, (t) => t.TargetGroupArn, 'target group').arn;
+      } catch (err) {
+        const errName = (err as { name?: unknown }).name;
+        if (
+          errName === 'LoadBalancerNotFoundException' ||
+          errName === 'TargetGroupNotFoundException'
+        ) {
+          return undefined;
+        }
+        throw err;
+      }
+    });
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':

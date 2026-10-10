@@ -1,3 +1,4 @@
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { constructPathOf } from '../../analyzer/destructive-changes.js';
@@ -256,6 +257,53 @@ export class ObservedBaselineRefusals extends Set<string> {
    * a source it means nothing was judged at all.
    */
   hadDeployedParameterSource = false;
+}
+
+/**
+ * go-to-k/cdkd#4705: point a top-level stack's registry marker at this prefix
+ * after an import wrote its record, through the guard: no marker (or a stale
+ * one) is claimed only after the one-time prefix scan answers clear. Another
+ * prefix holding the stack is named, not overridden: a later destroy or
+ * destructive deploy under either is refused until one record is dropped.
+ * Never throws: every outcome but `clear` is a warning.
+ */
+export async function claimRegistryMarkerAfterImport(
+  backend: S3StateBackend,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  // The guard's own path (go-to-k/cdkd#4705 review CB-2): with no marker, or
+  // a stale one, the prefix scan runs once and only a clear answer claims.
+  const answer = await new CrossPrefixGuard(backend).full(stackName, region);
+  const regionShown = displaySafe(region, { asciiOnly: true });
+  switch (answer.kind) {
+    case 'clear':
+      return;
+    case 'found':
+      logger.warn(
+        safeMsg`The state bucket also records ${displayStackName(stackName)} (${regionShown}) under another state prefix ` +
+          safeMsg`(${answer.prefixes.map((p) => displayIdent(p)).join(', ')}). One stack name per ` +
+          `account and region is supported: drop one of the records with 'cdkd state orphan' ` +
+          `before deploying or destroying either.`
+      );
+      return;
+    case 'in-progress':
+      logger.warn(
+        safeMsg`A deploy of ${displayStackName(stackName)} (${regionShown}) holds a lock under another state prefix ` +
+          safeMsg`(${displayIdent(answer.prefix)}). One stack name per account and region is ` +
+          `supported: keep one of the two before deploying or destroying either.`
+      );
+      return;
+    default:
+      logger.warn(
+        safeMsg`Could not record ${displayStackName(stackName)} (${regionShown}) in the state bucket's stack registry` +
+          (answer.kind === 'denied' || answer.kind === 'failed'
+            ? safeMsg` (${describeAwsFailure(answer.error).summary})`
+            : '') +
+          `. Its next guarded command records it.`
+      );
+  }
 }
 
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
@@ -1075,6 +1123,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       );
       await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState, saveOptions);
       logger.info(`✓ State written: ${stackInfo.stackName} (${targetRegion})`);
+      // go-to-k/cdkd#4705: the stack now has a record here, so it claims its
+      // stack registry marker (record first, then marker).
+      await claimRegistryMarkerAfterImport(stateBackend, stackInfo.stackName, targetRegion, logger);
       logger.info(
         `  ${importedRows.length} resource(s) imported. ` +
           `Run 'cdkd diff' to see how the imported state lines up with the template.`

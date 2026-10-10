@@ -180,7 +180,7 @@ export class SNSTopicProvider implements ResourceProvider {
 
     const topicName =
       (properties['TopicName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 256 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     // go-to-k/cdkd#4583: the ARN of a topic this create made and failed to clean
     // up; a topic that held the name before (`heldBefore`) is never set here.
     let leftBehindArn: string | undefined;
@@ -1046,6 +1046,16 @@ export class SNSTopicProvider implements ResourceProvider {
    * import resolves ids from CloudFormation's `DescribeStackResources` or the
    * template's physical name; without a `TopicName` there is nothing to match.
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['TopicName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 256 });
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {

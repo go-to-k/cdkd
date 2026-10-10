@@ -62,6 +62,7 @@ conditions-and-if	2026-10-03T00:30:21Z	PASS	80	verify.sh	rc ok, orph clean (#447
 conditions-update-2	2026-10-03T00:30:21Z	PASS	85	verify.sh	rc ok, orph clean (#4471)
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 created-before-failure-revert	2026-10-08T16:17:02Z	PASS	75	verify.sh	PR #4729 (#4658/#4696 replay orphan guards); rc 0, destroy clean, orph clean, dedicated state bucket; E2 expects the ECR keep
+cross-backend-same-stack	2026-10-08T06:47:14Z	FAIL	80	verify.sh	expected red repro of #4705: B rollback deleted A queue, LG retention 7->3; orph clean
 cross-region-concurrent-stacks	2026-10-06T12:30:56Z	PASS	190	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)

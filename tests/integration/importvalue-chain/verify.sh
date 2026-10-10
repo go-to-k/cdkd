@@ -84,6 +84,9 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STACK_A="CdkdImportChainA"
 STACK_B="CdkdImportChainB"
 STACK_C="CdkdImportChainC"
+# The error-path consumer (bin/app.ts, synthesized only under
+# CDKD_IMPORTCHAIN_FRESH_CONSUMER=1): a name no prefix records, see Step 2.
+STACK_C_FRESH="CdkdImportChainCFresh"
 
 # Main run uses the default `cdkd` prefix. The error-path step (Step 2) uses a
 # throwaway prefix so a missing-producer deploy can be attempted in isolation
@@ -109,7 +112,7 @@ cleanup() {
   ${CDKD} destroy ${STACK_B} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK_A} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   # Fresh prefix: tear down anything the error-path step left + drop the prefix.
-  ${CDKD} destroy ${STACK_C} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
+  CDKD_IMPORTCHAIN_FRESH_CONSUMER=1 ${CDKD} destroy ${STACK_C_FRESH} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK_B} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK_A} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" --force >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${FRESH_PREFIX}/" --recursive >/dev/null 2>&1 || true
@@ -244,7 +247,11 @@ echo ""
 echo "==> Step 2: ERROR PATH — deploy C EXCLUSIVELY on a fresh prefix (no producers)"
 # C imports ChainDerivedValue, which does not exist on the fresh prefix. cdkd
 # must surface a clear "export not found" error rather than silently producing
-# a dangling token / unresolved string.
+# a dangling token / unresolved string. The export DOES exist under `cdkd/`
+# (Step 1), so this also proves it is not resolved across prefixes. The consumer
+# is `CdkdImportChainCFresh`, a second copy of C under a name no prefix records:
+# a first deploy of `CdkdImportChainC` itself here is refused before resolution
+# while `cdkd/` records it (go-to-k/cdkd#4705).
 #
 # `-e` / `--exclusively` is LOAD-BEARING here: like `cdk deploy`, a bare
 # `cdkd deploy <stack>` also deploys the stack's DEPENDENCY CLOSURE, so without
@@ -256,7 +263,7 @@ echo "==> Step 2: ERROR PATH — deploy C EXCLUSIVELY on a fresh prefix (no prod
 # genuinely has no producer on the fresh prefix and fails at resolution BEFORE
 # any resource is created (no collision with the main chain's global names).
 set +e
-ERR_OUTPUT=$(${CDKD} deploy ${STACK_C} --exclusively --region "${AWS_REGION}" \
+ERR_OUTPUT=$(CDKD_IMPORTCHAIN_FRESH_CONSUMER=1 ${CDKD} deploy ${STACK_C_FRESH} --exclusively --region "${AWS_REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${FRESH_PREFIX}" 2>&1)
 ERR_RC=$?
 set -e

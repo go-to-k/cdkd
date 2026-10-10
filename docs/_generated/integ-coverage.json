@@ -815,6 +815,7 @@
         "deep-getatt-chains",
         "full-stack-demo",
         "log-pipeline",
+        "perf-cross-backend-check",
         "replacement-immutable-name",
         "scheduled-task",
         "sdk-to-cc-autoroute",
@@ -837,6 +838,10 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "replacement-immutable-name": [
           "l2",
@@ -1074,6 +1079,7 @@
         "local-run-task-from-state",
         "multi-resource",
         "multi-stack-deps",
+        "perf-cross-backend-check",
         "remove-protection",
         "rename-refactor",
         "s3-event-notification",
@@ -1161,6 +1167,10 @@
         ],
         "multi-stack-deps": [
           "l2"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "remove-protection": [
           "l2",
@@ -3435,6 +3445,7 @@
         "local-start-alb-from-state",
         "local-start-service",
         "local-start-service-watch-fast",
+        "perf-cross-backend-check",
         "replacement-rename-onto-holder",
         "secret-derived-immutable-names"
       ],
@@ -3470,6 +3481,10 @@
         ],
         "local-start-service-watch-fast": [
           "l1"
+        ],
+        "perf-cross-backend-check": [
+          "l1",
+          "literal"
         ],
         "replacement-rename-onto-holder": [
           "l1",
@@ -3885,6 +3900,7 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "partial-create-handback",
+        "perf-cross-backend-check",
         "replacement-rename-onto-holder"
       ],
       "signals": {
@@ -3913,6 +3929,9 @@
         ],
         "partial-create-handback": [
           "l1",
+          "literal"
+        ],
+        "perf-cross-backend-check": [
           "literal"
         ],
         "replacement-rename-onto-holder": [
@@ -3960,6 +3979,7 @@
         "iam-propagation-stress",
         "nested-stack-secret",
         "partial-create-handback",
+        "perf-cross-backend-check",
         "rename-refactor",
         "replacement-immutable-name",
         "scheduled-task"
@@ -3989,6 +4009,10 @@
         ],
         "partial-create-handback": [
           "l1",
+          "literal"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
           "literal"
         ],
         "rename-refactor": [
@@ -4322,6 +4346,8 @@
         "ci-cd",
         "cloudtrail-trail",
         "composite-stack",
+        "cross-backend-same-stack",
+        "cross-backend-same-stack-migration",
         "deep-getatt-chains",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
@@ -4433,6 +4459,14 @@
           "l2"
         ],
         "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack-migration": [
           "l2",
           "literal"
         ],
@@ -4777,6 +4811,7 @@
       "integs": [
         "cloudtrail-trail",
         "composite-stack",
+        "cross-backend-same-stack",
         "drift-revert",
         "dynamodb-streams",
         "ecr-scanning",
@@ -4792,6 +4827,10 @@
           "l2"
         ],
         "composite-stack": [
+          "literal"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
           "literal"
         ],
         "drift-revert": [
@@ -5594,6 +5633,8 @@
         "cloudtrail-trail",
         "cloudwatch",
         "composite-stack",
+        "cross-backend-same-stack",
+        "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
         "drift-revert",
         "ec2-vpc",
@@ -5608,6 +5649,7 @@
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
         "monitoring",
+        "perf-cross-backend-check",
         "remove-protection",
         "retain-orphan-redeploy",
         "route53",
@@ -5636,6 +5678,14 @@
           "l2"
         ],
         "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack-migration": [
           "l2",
           "literal"
         ],
@@ -5685,6 +5735,10 @@
         ],
         "monitoring": [
           "l2"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "remove-protection": [
           "l1",
@@ -6319,6 +6373,7 @@
         "nested-stack-3level",
         "noecho-parameter-masking",
         "partial-create-handback",
+        "perf-cross-backend-check",
         "replacement-fanout",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6432,6 +6487,10 @@
         ],
         "partial-create-handback": [
           "l1",
+          "literal"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
           "literal"
         ],
         "replacement-fanout": [
@@ -6550,6 +6609,8 @@
         "cloudwatch-anomaly-detector",
         "composite-stack",
         "conditions-update-2",
+        "cross-backend-same-stack",
+        "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
         "data-pipeline",
         "drift-revert-arrays",
@@ -6574,6 +6635,7 @@
         "nested-required-preflight",
         "nested-stack-rollback",
         "noecho-parameter-masking",
+        "perf-cross-backend-check",
         "rename-refactor",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6632,6 +6694,14 @@
         ],
         "conditions-update-2": [
           "l1"
+        ],
+        "cross-backend-same-stack": [
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack-migration": [
+          "l2",
+          "literal"
         ],
         "cross-region-concurrent-stacks": [
           "l2",
@@ -6711,6 +6781,10 @@
         ],
         "noecho-parameter-masking": [
           "l1"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "rename-refactor": [
           "l2",
@@ -6835,6 +6909,8 @@
         "conditions-and-if",
         "conditions-update-2",
         "context-test",
+        "cross-backend-same-stack",
+        "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
@@ -6890,6 +6966,7 @@
         "orphan-getatt-takeover",
         "output-never-resolved-diff",
         "outputs-only-export",
+        "perf-cross-backend-check",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
@@ -6941,6 +7018,15 @@
         ],
         "context-test": [
           "l2"
+        ],
+        "cross-backend-same-stack": [
+          "l1",
+          "l2",
+          "literal"
+        ],
+        "cross-backend-same-stack-migration": [
+          "l1",
+          "literal"
         ],
         "cross-region-concurrent-stacks": [
           "l2",
@@ -7131,6 +7217,10 @@
         ],
         "outputs-only-export": [
           "l2"
+        ],
+        "perf-cross-backend-check": [
+          "l2",
+          "literal"
         ],
         "rds-full-stack": [
           "l2"

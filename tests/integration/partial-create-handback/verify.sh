@@ -6,15 +6,19 @@
 # success with the resource already holding the name, and EventBridge PutRule
 # overwrites it. When a later step of the same create failed, the provider's
 # cleanup deleted whatever the create returned: someone else's resource. The
-# stack names nothing, so cdkd sends its generated `CdkdPcHandback-<id>`, which
-# the deploy's own name probe never looks up (#4180 asks only for explicit
-# names), and each mode declares a wiring step AWS rejects.
+# stack names nothing, so cdkd sends its generated `CdkdPcHandback-<id>`, and
+# each mode declares a wiring step AWS rejects.
 #
 # Per MODE (tg, topic, rule):
-#   H. HOLDER ARM. Create the generated name out of band, then deploy. The
-#      deploy MUST fail (the wiring step) and the out-of-band resource MUST
-#      survive, with the warning that it existed before the create. Before
-#      the fix the cleanup deleted it (a rule after stripping its targets).
+#   H. HOLDER ARM. Create the generated name out of band, then deploy. Since
+#      go-to-k/cdkd#4705 the deploy looks the generated name up first and
+#      REFUSES the create (GENERATED_NAME_HELD: nothing this stack records
+#      names the holder), so the create, its wiring step and the provider's
+#      cleanup never run: the deploy MUST fail with that refusal naming the
+#      holder, the out-of-band resource MUST survive, and no state record may
+#      name it. (Before #4705 the create ran, the wiring failed, and #4403's
+#      cleanup kept the holder with an "already existed before this create"
+#      warning; before #4403 the cleanup deleted it.)
 #   C. CONTROL. Remove the holder and deploy again (--verbose). The deploy
 #      fails the same way and the cleanup DELETES what this create made: the
 #      provider's own "Cleaned up partially-created" line is printed (proof
@@ -77,6 +81,8 @@ REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
+# The stack registry marker the first deploy claims (go-to-k/cdkd#4705).
+MARKER_KEY="_cdkd-registry/${REGION}/${STACK}.json"
 TG_NAME="${STACK}-Tg"
 TOPIC_NAME="${STACK}-Topic"
 RULE_NAME="${STACK}-Rule"
@@ -84,8 +90,12 @@ LB_NAME="${STACK}-Lb"
 # The lb phases' VPC and subnet, read from state after phase L0.
 VPC_ID=""
 SUBNET_ID=""
-# The sentinel the skipped cleanup prints (src/provisioning/providers/create-ownership.ts).
+# The sentinel the skipped cleanup prints (src/provisioning/providers/create-ownership.ts):
+# a control must never print it, and a refused create can no longer reach it.
 HELD_SENTINEL="already existed before this create"
+# The refusal of a create onto a held generated name (src/deployment/deploy-engine/create.ts,
+# go-to-k/cdkd#4705 GENERATED_NAME_HELD).
+REFUSAL_NEEDLE="nothing this stack records names that resource"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pch.XXXXXX")"
@@ -120,6 +130,30 @@ lb_arn() { # usage: lb_arn — the load balancer's ARN, or a hard failure
 }
 state_field() { # usage: state_field <jq path>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r "$1"
+}
+recorded_id() { # usage: recorded_id <logical id> — its recorded physical id, or "absent" (no record either)
+  if ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ); then
+    echo "absent"
+    return 0
+  fi
+  state_field ".resources.$1.physicalId // \"absent\""
+}
+# The held-name refusal, as #4705 prints it: before the create, naming the
+# holder; and no trace of the create or its cleanup.
+assert_refused_before_create() { # usage: assert_refused_before_create <phase> <log> <logical id> <holder id>
+  local phase="$1" log="$2" logical="$3" holder="$4"
+  if ! grep -F -- "${REFUSAL_NEEDLE}" "${log}" | grep -qF -- "${holder}"; then
+    echo "[verify] FAIL: phase ${phase}: no held-name refusal ('${REFUSAL_NEEDLE}') naming the holder ${holder}" >&2
+    exit 1
+  fi
+  if grep -qF -- "${HELD_SENTINEL}" "${log}" || grep -qF -- "Cleaned up partially-created" "${log}"; then
+    echo "[verify] FAIL: phase ${phase}: the create ran (a cleanup line was printed) -- it must be refused before it is sent" >&2
+    exit 1
+  fi
+  if [ "$(recorded_id "${logical}")" != "absent" ]; then
+    echo "[verify] FAIL: phase ${phase}: state records ${logical} after the refused create" >&2
+    exit 1
+  fi
 }
 # A network load balancer's interfaces leave its subnet minutes after its
 # delete; until they do, the subnet cannot be deleted. Returns 1 on a failed
@@ -183,6 +217,18 @@ delete_holders_best_effort() {
   )
 }
 
+# Remove the stack's registry marker, but only when it names this fixture's
+# prefix (`cdkd`) and the stack has no record left there: a marker naming
+# another prefix, or one whose record survived, is not this run's to drop.
+sweep_marker() {
+  local prefix
+  ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ) || return 0
+  prefix="$( (aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null || true) | jq -r '.prefix // ""' 2>/dev/null || true)"
+  if [ "${prefix}" = "cdkd" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
+  fi
+}
+
 cleanup() {
   rc=$?
   echo "[verify] cleanup (rc=${rc})"
@@ -204,6 +250,10 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
+  sweep_marker
+  if ! ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}" ); then
+    echo "[verify] WARN: stack registry marker left: s3://${STATE_BUCKET}/${MARKER_KEY}" >&2
+  fi
   rm -rf "${LOG_DIR}"
   )
   exit "${rc}"
@@ -256,7 +306,7 @@ for m in tg topic rule; do
   # -------------------------------------------------------------------------
   # PHASE H (${m}): the generated name is held out of band
   # -------------------------------------------------------------------------
-  echo "[verify] phase H/${m}: hold the generated name out of band, then deploy (expect a failure that keeps the holder)"
+  echo "[verify] phase H/${m}: hold the generated name out of band, then deploy (expect the create refused before it is sent, the holder kept)"
   case "${m}" in
     tg)
       HOLDER_ID="$(aws elbv2 create-target-group --name "${TG_NAME}" --target-type lambda \
@@ -272,17 +322,7 @@ for m in tg topic rule; do
       ;;
   esac
   deploy_expect_failure "${m}" "${LOG_DIR}/h-${m}.log"
-  # The marker names the TYPE and logical id as the warning spells them: the
-  # bare id alone also matches inside the generated name in the ARN.
-  case "${m}" in
-    tg) held_marker="TargetGroup ${logical} (" ;;
-    topic) held_marker="SNS topic ${logical} (" ;;
-    rule) held_marker="EventBridge rule ${logical} (" ;;
-  esac
-  if ! grep -F -- "${HELD_SENTINEL}" "${LOG_DIR}/h-${m}.log" | grep -qF -- "${held_marker}"; then
-    echo "[verify] FAIL: phase H/${m}: no '${HELD_SENTINEL}' warning naming '${held_marker}' (the cleanup ran, or the wording drifted)" >&2
-    exit 1
-  fi
+  assert_refused_before_create "H/${m}" "${LOG_DIR}/h-${m}.log" "${logical}" "${HOLDER_ID}"
   case "${m}" in
     tg) STILL="$(tg_arn)" ;;
     topic)
@@ -298,7 +338,7 @@ for m in tg topic rule; do
   fi
   delete_holders_best_effort
   assert_mode_gone "${m}" "phase H/${m}: the out-of-band resource survived its own delete"
-  echo "[verify] phase H/${m} ok: the deploy failed and ${HOLDER_ID} survived"
+  echo "[verify] phase H/${m} ok: the create was refused before it was sent and ${HOLDER_ID} survived"
 
   # -------------------------------------------------------------------------
   # PHASE C (${m}): CONTROL — a free name; the cleanup deletes what it made
@@ -342,28 +382,21 @@ echo "[verify] phase L0 ok: ${VPC_ID} / ${SUBNET_ID}"
 # ---------------------------------------------------------------------------
 # PHASE H/lb: the generated load balancer name is held in the stack's subnet
 # ---------------------------------------------------------------------------
-echo "[verify] phase H/lb: hold ${LB_NAME} out of band, then deploy MODE=lb (expect a failure that keeps the holder)"
+echo "[verify] phase H/lb: hold ${LB_NAME} out of band, then deploy MODE=lb (expect the create refused before it is sent, the holder kept)"
 # The settings the stack's load balancer sends, so the create hands it back.
 LB_HOLDER_ARN="$(aws elbv2 create-load-balancer --name "${LB_NAME}" --type network --scheme internal \
   --subnets "${SUBNET_ID}" --region "${REGION}" --query 'LoadBalancers[0].LoadBalancerArn' --output text)"
 deploy_expect_failure lb "${LOG_DIR}/h-lb.log"
-if ! grep -F -- "${HELD_SENTINEL}" "${LOG_DIR}/h-lb.log" | grep -qF -- "LoadBalancer Lb ("; then
-  echo "[verify] FAIL: phase H/lb: no '${HELD_SENTINEL}' warning naming 'LoadBalancer Lb (' (the cleanup ran, or the wording drifted)" >&2
-  exit 1
-fi
+assert_refused_before_create "H/lb" "${LOG_DIR}/h-lb.log" Lb "${LB_HOLDER_ARN}"
 if [ "$(lb_arn)" != "${LB_HOLDER_ARN}" ]; then
   echo "[verify] FAIL: phase H/lb: the out-of-band load balancer is gone or replaced" >&2
-  exit 1
-fi
-if [ "$(state_field '.resources.Lb.physicalId // "absent"')" != "absent" ]; then
-  echo "[verify] FAIL: phase H/lb: state records the stack's Lb after the failed create" >&2
   exit 1
 fi
 aws elbv2 delete-load-balancer --load-balancer-arn "${LB_HOLDER_ARN}" --region "${REGION}"
 assert_mode_gone lb "phase H/lb: the out-of-band load balancer survived its own delete"
 wait_lb_enis_released 600 \
   || { echo "[verify] FAIL: phase H/lb: the holder's network interfaces are still in the subnet (or unreadable)" >&2; exit 1; }
-echo "[verify] phase H/lb ok: the deploy failed and ${LB_HOLDER_ARN} survived"
+echo "[verify] phase H/lb ok: the create was refused before it was sent and ${LB_HOLDER_ARN} survived"
 
 # ---------------------------------------------------------------------------
 # PHASE C/lb: CONTROL — a free name; the cleanup deletes what it made
@@ -389,8 +422,10 @@ echo "[verify] phase C/lb ok: the cleanup deleted the partially-created load bal
 echo "[verify] phase F: destroy ${STACK}'s state"
 # A failed first deploy may or may not leave a state file: destroy one only
 # when it is there, then require it gone.
+FINAL_DESTROY=""
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"; then
   node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
+  FINAL_DESTROY=1
 fi
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
@@ -402,6 +437,29 @@ assert_gone "subnet ${SUBNET_ID} still exists after destroy" \
 assert_gone "VPC ${VPC_ID} still exists after destroy" \
   aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
+# The stack registry marker (go-to-k/cdkd#4705), observed BEFORE the sweep:
+# a successful state destroy releases it; with no destroy (no record was ever
+# written -- the H arms refuse before any create), the first deploy's claim is
+# legitimately left, and must name this fixture's prefix.
+MARKER_NOW="absent"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"; then
+  MARKER_NOW="$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - | jq -r '.prefix // "<no prefix>"')"
+fi
+echo "OBSERVE: registry-marker=${MARKER_NOW} final-destroy=${FINAL_DESTROY:-none}"
+if [ -n "${FINAL_DESTROY}" ]; then
+  if [ "${MARKER_NOW}" != "absent" ]; then
+    echo "[verify] FAIL: the state destroy did not release the stack registry marker ${MARKER_KEY} (it names '${MARKER_NOW}')" >&2
+    exit 1
+  fi
+elif [ "${MARKER_NOW}" != "absent" ]; then
+  echo "OBSERVE: no record was destroyed, so the first deploy's claim is left by design"
+  if [ "${MARKER_NOW}" != "cdkd" ]; then
+    echo "[verify] FAIL: the left registry marker ${MARKER_KEY} names '${MARKER_NOW}', not this fixture's prefix cdkd" >&2
+    exit 1
+  fi
+fi
+# Then the cleanup: remove a marker the run legitimately left.
+sweep_marker
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM

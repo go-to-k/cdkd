@@ -23,12 +23,29 @@ import { reportDeleteGuards } from '../delete-guard-scope.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
 import { nestedChildStackName } from '../nested-child-journal.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { KeptForReadoption, keptForReadoption } from '../retained-readoption.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     provisionDelete: OmitThisParameter<typeof provisionDelete>;
   }
+}
+
+/**
+ * go-to-k/cdkd#4705 review H-1: the resources one engine's deploy keeps,
+ * recorded in ONE `retained.json` write when the deploy ends
+ * ({@link flushKeptForReadoption}) rather than a read-merge-write each.
+ */
+const keptByEngine = new WeakMap<DeployEngine, KeptForReadoption>();
+
+/**
+ * Record what this engine's deploy kept (one write; the read started with the
+ * first one). Called before the deploy's final state save, and again (a
+ * no-op once flushed) on every other exit. Never throws.
+ */
+export async function flushKeptForReadoption(engine: DeployEngine): Promise<void> {
+  await keptByEngine.get(engine)?.flush();
 }
 
 /** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
@@ -70,6 +87,16 @@ export async function provisionDelete(
     // go-to-k/cdkd#4438: the kept resource still holds this stack's create
     // token, so a later create of the logical id must not send it again.
     await noteRetainedResource(resourceType, logicalId);
+    // go-to-k/cdkd#4705: and a later deploy that adds it back takes it back
+    // by its generated name rather than refusing that name.
+    if (keptForReadoption(currentResource)) {
+      let kept = keptByEngine.get(this);
+      if (kept === undefined) {
+        kept = new KeptForReadoption(this.stateBackend, stackName, this.stackRegion, this.logger);
+        keptByEngine.set(this, kept);
+      }
+      kept.add({ logicalId, resourceType, physicalId: currentResource.physicalId });
+    }
     return;
   }
 

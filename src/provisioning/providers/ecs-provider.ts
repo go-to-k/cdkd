@@ -91,6 +91,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
+import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   isPlainImportValue,
@@ -904,7 +905,7 @@ export class ECSProvider implements ResourceProvider {
 
     const clusterName =
       (properties['ClusterName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
 
     try {
       const response = await client.send(
@@ -4113,6 +4114,53 @@ export class ECSProvider implements ResourceProvider {
    * `--resource` override is honored verbatim, so a caller may also supply the
    * composite `<clusterArn>|<serviceName>` form that `readCurrentState` accepts.
    */
+  /**
+   * go-to-k/cdkd#4705: the name a cluster's `create()` sends when the
+   * template names none (clusters only: the one name-adopting ECS type).
+   */
+  generatedCreateName(
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (resourceType !== 'AWS::ECS::Cluster' || properties['ClusterName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 255 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: `DescribeClusters`, exact names, 100 per call, the
+   * chunks in parallel through one run-wide limiter. As `importCluster`
+   * reads it: an `INACTIVE` (deleted) cluster frees its name, a `MISSING`
+   * failure is absent, and any other failure did not answer (throws).
+   */
+  async lookupNames(resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    const found = new Map<string, string>();
+    if (resourceType !== 'AWS::ECS::Cluster') return found;
+    const wanted = new Set(names);
+    await Promise.all(
+      chunks(names, 100).map((chunk) =>
+        withApiLimit('ecs:DescribeClusters', 5, async () => {
+          const resp = await this.getClient().send(
+            new DescribeClustersCommand({ clusters: chunk })
+          );
+          const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
+          if (unanswered !== undefined) {
+            throw new Error(
+              `DescribeClusters did not answer: ${displaySafe(unanswered.reason ?? 'no reason given')}`
+            );
+          }
+          for (const cluster of resp.clusters ?? []) {
+            const name = cluster.clusterName;
+            if (name !== undefined && wanted.has(name) && cluster.status !== 'INACTIVE') {
+              found.set(name, name);
+            }
+          }
+        })
+      )
+    );
+    return found;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
       case 'AWS::ECS::Cluster':

@@ -607,6 +607,11 @@ resource running**. After this, cdkd no longer knows the stack exists; the
 resources become untracked rather than deleted. With `--resource`, it removes
 only the named resources' entries and keeps the rest of the stack's record
 ([Removing one resource from the record](#removing-one-resource-from-the-record)).
+Orphaning a whole stack also removes its stack registry marker (when it names
+this prefix) and empties its `retained.json` -- also when no record is left,
+in each region that still holds anything of the stack (an older cdkd's event
+history included) -- so another prefix can then deploy the stack and the
+resources it leaves running are no longer taken back by a deploy here ([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)).
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -689,7 +694,10 @@ cdkd state destroy MyStack --remove-protection --yes
 Deletes a stack's AWS resources and then its state record, reading the record
 instead of synthesizing — the CDK-app-free counterpart of `cdkd destroy`. Both
 run the identical per-stack pipeline, so the data guards, `DeletionPolicy`
-handling, strong-reference blocks, lock behavior, and exit codes are the same.
+handling, strong-reference blocks, lock behavior, and exit codes are the same —
+including the refusal when another `--state-prefix` of the bucket records the
+same stack and region
+([One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)).
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -747,7 +755,8 @@ cdkd state migrate --region us-east-1 --remove-legacy
 Copies a legacy region-suffixed state bucket (`cdkd-state-{account}-{region}`)
 into the region-free default (`cdkd-state-{account}`). This is a bucket-name
 migration, not a schema or key-layout one: objects are copied key-for-key and
-no record body is rewritten.
+no record body is rewritten. The stack registry markers (`_cdkd-registry/`) are
+copied with the records.
 
 | Flag | Default | Description |
 | --- | --- | --- |

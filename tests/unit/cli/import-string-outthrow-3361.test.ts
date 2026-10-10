@@ -103,6 +103,7 @@ const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     getState: mockGetState,
     saveState: mockSaveState,

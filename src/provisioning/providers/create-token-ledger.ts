@@ -22,6 +22,7 @@ import {
   emptyCreateTokenLedger,
   withStateSavedObserver,
   type CreateTokenLedgerDoc,
+  type SentCreateToken,
 } from '../../state/create-token-ledger.js';
 import { getLogger } from '../../utils/logger.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
@@ -65,6 +66,8 @@ export interface CreateTokenLedgerStack {
 /** One stack's ledger for the length of one deploy. */
 export class CreateTokenLedger {
   private doc: CreateTokenLedgerDoc | undefined;
+  /** The store was read and held no ledger (go-to-k/cdkd#4705 P1: not read again). */
+  private loadedAbsent = false;
   /**
    * Set when a read or write failed: what is in memory may not be what is
    * stored, so the next use reads the ledger again.
@@ -123,8 +126,10 @@ export class CreateTokenLedger {
    */
   private async current(): Promise<CreateTokenLedgerDoc | null> {
     if (this.doc !== undefined && !this.stale) return this.doc;
+    if (this.loadedAbsent && !this.stale) return null;
     const loaded = await this.store.load();
     this.stale = false;
+    this.loadedAbsent = loaded === null;
     if (loaded !== null && this.replaceRecordedLedger && loaded.stateRecorded === true) {
       // No state record, yet the ledger says one was saved: an earlier cdkd
       // version deleted the record (a destroy, perhaps keeping resources) and
@@ -276,6 +281,130 @@ export class CreateTokenLedger {
   }
 
   /**
+   * go-to-k/cdkd#4705: the stored `sent` entries (a copy). Throws when the
+   * ledger cannot be read; `{}` when the stack has none.
+   */
+  sentEntries(): Promise<Record<string, SentCreateToken>> {
+    return this.serialized(async () => {
+      try {
+        const doc = await this.current();
+        return { ...(doc?.sent ?? {}) };
+      } catch (error) {
+        this.stale = true;
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: record, in ONE write and BEFORE any of them is sent,
+   * the creates a deploy is about to send that adopt a resource by name: each
+   * `sent[logicalId] = { base, token: <the name>, firstSentAt }`. A re-run
+   * after a crash between such a create and its state record then finds its
+   * own name here, which licenses taking the resource back. Throws when the
+   * ledger cannot be read or written (the caller refuses those creates).
+   */
+  recordSent(
+    entries: ReadonlyArray<{ logicalId: string; base: string; token: string }>,
+    firstSentAt: number
+  ): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        let doc = await this.current();
+        if (doc === null) {
+          doc = emptyCreateTokenLedger(randomUUID());
+          this.doc = doc;
+          this.startedThisDeploy = true;
+        }
+        let changed = false;
+        for (const entry of entries) {
+          const recorded = doc.sent[entry.logicalId];
+          if (recorded?.base === entry.base && recorded.token === entry.token) continue;
+          doc.sent[entry.logicalId] = { base: entry.base, token: entry.token, firstSentAt };
+          changed = true;
+        }
+        if (changed) await this.persist(doc);
+      } catch (error) {
+        this.stale = true;
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * go-to-k/cdkd#4705 review G-1: when an earlier run of this stack was
+   * abandoned (`abandonedAt`), or `undefined`. Throws when the ledger cannot
+   * be read.
+   */
+  abandonedAt(): Promise<number | undefined> {
+    return this.serialized(async () => (await this.current())?.abandonedAt);
+  }
+
+  /**
+   * go-to-k/cdkd#4705 review G-1: record that a run of this stack was
+   * abandoned by `at` (its lock's lease horizon), when the ledger holds an
+   * adopting create's intent it may have left. A stack with no ledger, or
+   * none of those intents, is not written (nothing to bound). Rejects when
+   * the ledger cannot be read or written; the caller decides how loud.
+   */
+  noteAbandoned(at: number): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        const doc = await this.current();
+        if (doc === null) return;
+        const intents = Object.values(doc.sent).some((e) =>
+          e.base.startsWith(ADOPTING_CREATE_BASE)
+        );
+        if (!intents || (doc.abandonedAt !== undefined && doc.abandonedAt >= at)) return;
+        doc.abandonedAt = at;
+        await this.persist(doc);
+      } catch (error) {
+        this.stale = true;
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: settle, in one write, the name-adopting creates' intents
+   * (`base` starting with {@link ADOPTING_CREATE_BASE}) the deploy that wrote
+   * them leaves: `drop` -- not sent, or came back (the record or the
+   * rollback has the resource now) -- are removed; `failedAt` stamps an
+   * intent whose create came back failed with an unknown outcome (review
+   * S-6). Rejects when the ledger cannot be read or written (the caller
+   * retries, then bounds what is left).
+   */
+  settleAdoptingCreates(
+    drop: readonly string[],
+    failedAt: ReadonlyMap<string, number>
+  ): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        const doc = await this.current();
+        if (doc === null) return;
+        const adopting = (id: string): boolean =>
+          doc.sent[id]?.base.startsWith(ADOPTING_CREATE_BASE) === true;
+        let changed = false;
+        for (const id of drop) {
+          if (!adopting(id)) continue;
+          delete doc.sent[id];
+          changed = true;
+        }
+        for (const [id, at] of failedAt) {
+          const entry = adopting(id) ? doc.sent[id] : undefined;
+          if (entry === undefined || entry.failedAt !== undefined) continue;
+          entry.failedAt = at;
+          changed = true;
+        }
+        if (changed) await this.persist(doc);
+      } catch (error) {
+        this.stale = true;
+        throw error;
+      }
+    });
+  }
+
+  /**
    * Drop the `sent` entries of `logicalIds` once the deploy that sent them
    * has SUCCEEDED and its state record names each of them (go-to-k/cdkd#4438).
    * An entry exists to find a resource an interrupted deploy made but never
@@ -374,6 +503,102 @@ export function ledgerForStack(
 const ledgerStore = new AsyncLocalStorage<CreateTokenLedger>();
 
 /**
+ * The `base` prefix of a `sent` entry recording a name-adopting create
+ * (go-to-k/cdkd#4705); the rest is its resource type. No token type's base
+ * starts with it.
+ */
+export const ADOPTING_CREATE_BASE = 'adopt-by-name:';
+
+/**
+ * go-to-k/cdkd#4705: the bound ledger's recorded adopting creates, as
+ * logical id → { resource type, name }. `undefined` with no ledger bound.
+ * Throws when the ledger cannot be read.
+ */
+export async function recordedAdoptingCreates(): Promise<
+  ReadonlyMap<string, RecordedAdoptingCreate> | undefined
+> {
+  const ledger = ledgerStore.getStore();
+  if (ledger === undefined) return undefined;
+  const out = new Map<string, RecordedAdoptingCreate>();
+  for (const [logicalId, entry] of Object.entries(await ledger.sentEntries())) {
+    if (entry.base.startsWith(ADOPTING_CREATE_BASE)) {
+      out.set(logicalId, {
+        resourceType: entry.base.slice(ADOPTING_CREATE_BASE.length),
+        name: entry.token,
+        firstSentAt: entry.firstSentAt,
+        ...(entry.failedAt !== undefined && { failedAt: entry.failedAt }),
+      });
+    }
+  }
+  return out;
+}
+
+/** A name-adopting create's recorded intent (go-to-k/cdkd#4705). */
+export interface RecordedAdoptingCreate {
+  resourceType: string;
+  name: string;
+  firstSentAt: number;
+  /** When its create came back failed with an unknown outcome (review S-6). */
+  failedAt?: number;
+}
+
+/**
+ * go-to-k/cdkd#4705: record the adopting creates a deploy is about to send
+ * (see {@link CreateTokenLedger.recordSent}) in the bound ledger, in one
+ * write. No ledger bound, no-op. Throws when it cannot be written.
+ */
+export async function recordAdoptingCreates(
+  creates: ReadonlyArray<{ logicalId: string; resourceType: string; name: string }>
+): Promise<void> {
+  const ledger = ledgerStore.getStore();
+  if (ledger === undefined || creates.length === 0) return;
+  await ledger.recordSent(
+    creates.map((c) => ({
+      logicalId: c.logicalId,
+      base: `${ADOPTING_CREATE_BASE}${c.resourceType}`,
+      token: c.name,
+    })),
+    Date.now()
+  );
+}
+
+/**
+ * go-to-k/cdkd#4705 review G-1: record, in the bound ledger, that the run
+ * whose expired lock this deploy took over stopped by `at`. Never throws;
+ * resolves whether it was recorded (this deploy's guard takes the bound
+ * in-process, so a failed write only leaves a later run without it).
+ */
+export async function noteAbandonedRun(at: number): Promise<boolean> {
+  const ledger = ledgerStore.getStore();
+  if (ledger === undefined) return true;
+  return ledger.noteAbandoned(at).then(
+    () => true,
+    () => false
+  );
+}
+
+/**
+ * go-to-k/cdkd#4705 review G-1: the bound ledger's abandoned-run time, or
+ * `undefined` (none recorded, or no ledger bound). Throws when it cannot be
+ * read.
+ */
+export async function ledgerAbandonedAt(): Promise<number | undefined> {
+  return ledgerStore.getStore()?.abandonedAt();
+}
+
+/**
+ * go-to-k/cdkd#4705: settle the bound ledger's name-adopting intents (see
+ * {@link CreateTokenLedger.settleAdoptingCreates}). Outside a bound ledger, a
+ * no-op. Rejects when the ledger cannot be written.
+ */
+export async function settleAdoptingCreates(
+  drop: readonly string[],
+  failedAt: ReadonlyMap<string, number> = new Map()
+): Promise<void> {
+  await ledgerStore.getStore()?.settleAdoptingCreates(drop, failedAt);
+}
+
+/**
  * Bound around everything that creates or lets go of a stack's resources: the
  * deploy engine's deploy (and the rollback inside it), `cdkd rollback`'s
  * replay, and a nested child's journal replay -- each with that stack's own
@@ -426,6 +651,9 @@ export const LEDGER_TOKEN_RESOURCE_TYPES: ReadonlySet<string> = new Set([
  * otherwise, and with no ledger bound, a no-op.
  */
 export async function noteRetainedResource(resourceType: string, logicalId: string): Promise<void> {
+  // No ledger read for any other type (go-to-k/cdkd#4705 review CB-19): a
+  // kept name-adopting resource is licensed back through `retained.json`, so
+  // its intent, if any, needs no change here.
   if (!LEDGER_TOKEN_RESOURCE_TYPES.has(resourceType)) return;
   await ledgerStore.getStore()?.rotate(logicalId);
 }
