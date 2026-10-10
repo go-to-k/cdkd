@@ -40,6 +40,10 @@
 # REPLACE its HealthRule onto the new listener (the rule's create-only
 # `ListenerArn` is also write-only), not update the rule AWS already deleted.
 #
+# PLUS issue #4690 (Phase 6): a `--recreate-via-sdk-provider` of the listener
+# followed by a failure in the same deploy; the automatic rollback must delete
+# the new listener before re-creating the old one on the same port.
+#
 # Run via: /run-integ alb
 #         or: bash tests/integration/alb/verify.sh
 
@@ -91,7 +95,7 @@ cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors tolerated)"
-  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}" "${P5_LOG:-}"
+  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}" "${P5_LOG:-}" "${P6_LOG:-}"
   # go-to-k/cdkd#4606: the Phase 4 injection's load balancer is created with
   # deletion protection on, and unfixed, the fix-forward settle drops it from
   # the rollback journal, so nothing else reaches it. Clear the protection and
@@ -612,8 +616,8 @@ echo "    OK: Phase 4 passed"
 # write-only, and the schema fallback leaves a write-only create-only property
 # out, so a recreate of the listener promoted HealthRule as an in-place UPDATE.
 # AWS deletes a listener's rules with it, and that update failed `NotFound`.
-# The rule must be REPLACED onto the new listener. Last before the destroy:
-# the recreate leaves the listener record on cc-api and under a new ARN, which
+# The rule must be REPLACED onto the new listener. Late in the run: the
+# recreate leaves the listener record on cc-api and under a new ARN, which
 # Phase 2.5 and the listener-attribute readbacks must not see.
 echo ""
 echo "==> Phase 5: --recreate-via-cc-api ${LISTENER_LOGICAL} with its HealthRule (#4689)"
@@ -699,6 +703,85 @@ if [ "${P5_RECORDED_REF}" != "${P5_NEW_LISTENER}" ]; then
   exit 1
 fi
 echo "    OK: HealthRule replaced onto ${P5_NEW_LISTENER} (priority 1, /health -> 200), no NotFound"
+
+# --- Phase 6: roll back a delete-first recreate of the listener (go-to-k/cdkd#4690)
+# `--recreate-via-sdk-provider` deletes the cc-api listener Phase 5 left, then
+# creates an SDK one on the same port. HealthRule's replacement onto it then
+# fails (ALB_RULE_BAD_PRIORITY), and the automatic rollback reverses the
+# listener recreate. Before #4690 it re-created the old listener FIRST, which
+# collided on the port the new one still held ("A listener already exists on
+# this port"), and the reversal refused with `cdkd rollback --orphan`. It must
+# now delete the new listener first, then re-create the old one.
+# Not covered here: HealthRule's record still names the rule AWS deleted
+# with Phase 5's listener (its replacement is the op that failed), which the
+# destroy reads as already gone.
+echo ""
+echo "==> Phase 6: --recreate-via-sdk-provider ${LISTENER_LOGICAL}, a later failure, and its rollback (#4690)"
+P6_OLD_LISTENER="$(state_physical_id "${LISTENER_LOGICAL}")"
+[ "${P6_OLD_LISTENER}" = "${P5_NEW_LISTENER}" ] || {
+  echo "FAIL: #4690 premise: the listener record holds '${P6_OLD_LISTENER}', not Phase 5's ${P5_NEW_LISTENER}" >&2
+  exit 1
+}
+[ "$(listener_record .provisionedBy)" = "cc-api" ] || {
+  echo "FAIL: #4690 premise: the listener is not on cc-api, so --recreate-via-sdk-provider would be refused" >&2
+  exit 1
+}
+P6_LOG=$(mktemp)
+set +e
+CDKD_TEST_REMOVAL=true ALB_RULE_BAD_PRIORITY=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" \
+  --state-bucket "${STATE_BUCKET}" --recreate-via-sdk-provider "${LISTENER_LOGICAL}" --yes >"${P6_LOG}" 2>&1
+P6_RC=$?
+set -e
+P6_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${P6_LOG}")"
+rm -f "${P6_LOG}"
+P6_LOG=""
+printf '%s\n' "${P6_PLAIN}" | sed 's/^/  /'
+if [ "${P6_RC}" -eq 0 ]; then
+  echo "FAIL: #4690 premise: the deploy with ALB_RULE_BAD_PRIORITY succeeded, so nothing was rolled back" >&2
+  exit 1
+fi
+# Premise: the listener recreate COMPLETED (the old listener was deleted
+# first), and the rollback reached its reversal.
+if ! grep -qF "Reversing replacement of ${LISTENER_LOGICAL} " <<<"${P6_PLAIN}"; then
+  echo "FAIL: #4690 premise: the rollback did not reverse the ${LISTENER_LOGICAL} recreate (output above)" >&2
+  exit 1
+fi
+# Pre-fix, this is the first assertion to go red.
+if grep -qF "Cannot reverse the replacement of ${LISTENER_LOGICAL}" <<<"${P6_PLAIN}" \
+  || grep -qF "Rollback failed for ${LISTENER_LOGICAL}" <<<"${P6_PLAIN}"; then
+  echo "FAIL: #4690: the rollback could not reverse the delete-first recreate of ${LISTENER_LOGICAL} (output above)" >&2
+  exit 1
+fi
+if ! grep -qF "the replacement deleted the old resource before creating the new one — deleting the new resource" <<<"${P6_PLAIN}"; then
+  echo "FAIL: #4690: the reversal did not delete the new listener first (output above)" >&2
+  exit 1
+fi
+if ! grep -qF "${LISTENER_LOGICAL} replacement reversed (old resource re-created as" <<<"${P6_PLAIN}"; then
+  echo "FAIL: #4690: no 'replacement reversed' line for ${LISTENER_LOGICAL} (output above)" >&2
+  exit 1
+fi
+P6_RESTORED="$(state_physical_id "${LISTENER_LOGICAL}")"
+case "${P6_RESTORED}" in
+  arn:*:listener/app/*) ;;
+  *) echo "FAIL: #4690: after the rollback the listener record holds '${P6_RESTORED}'" >&2; exit 1;;
+esac
+[ "${P6_RESTORED}" != "${P6_OLD_LISTENER}" ] || {
+  echo "FAIL: #4690: the listener record still names ${P6_OLD_LISTENER}, which the recreate deleted" >&2
+  exit 1
+}
+[ "$(listener_record .provisionedBy)" = "cc-api" ] || {
+  echo "FAIL: #4690: the restored listener record is not back on cc-api (the old resource's layer)" >&2
+  exit 1
+}
+# Exactly one listener on the load balancer, and it is the recorded one on port 80:
+# the SDK listener the recreate made is gone.
+P6_LIVE="$(aws elbv2 describe-listeners --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+  --query 'Listeners[].[ListenerArn,Port]' --output text)"
+if [ "${P6_LIVE}" != "$(printf '%s\t80' "${P6_RESTORED}")" ]; then
+  echo "FAIL: #4690: the load balancer's listeners are '${P6_LIVE}', expected only ${P6_RESTORED} on port 80" >&2
+  exit 1
+fi
+echo "    OK: the rollback deleted the recreated listener first and restored ${P6_RESTORED} on port 80"
 
 echo ""
 echo "==> Destroy ${STACK}"

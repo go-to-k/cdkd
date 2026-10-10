@@ -116,6 +116,11 @@ export function priorAttemptsInJournal(
     for (const op of segment.failedOperations ?? []) {
       if (op.logicalId !== logicalId || op.resourceType !== resourceType) continue;
       if (op.changeType === 'DELETE' || !isBag(op.attemptedProperties)) continue;
+      // go-to-k/cdkd#4690: a replacement UPDATE whose new resource was made is
+      // journaled beside that orphan, which carries the same bag as its own
+      // evidence; `cdkd rollback` keeps this UPDATE after settling the orphan
+      // (for its delete-first guard), and its bag must not outlive the orphan.
+      if (op.changeType === 'UPDATE' && op.replacementOrphaned !== undefined) continue;
       if (recordedAsNewResource(op)) continue;
       bags.push(op.attemptedProperties);
     }

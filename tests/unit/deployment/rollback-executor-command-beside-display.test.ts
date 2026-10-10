@@ -2,7 +2,7 @@
  * go-to-k/cdkd#4214: a rollback message line that names a `cdkd` command or a
  * `--flag` displays no untrusted value (go-to-k/cdkd#3950's S1 rule, judged
  * per line by `expectNoCommandBesideDisplay`). go-to-k/cdkd#4209 applied it to
- * the logical id of the three reverse-replacement refusals; this file drives
+ * the logical id of the reverse-replacement refusals; this file drives
  * the other journal and state values on those lines — the resource type, the
  * unroutable reason's types, both physical ids, the name-holder diagnosis and
  * the provider's collision text — and the sibling messages in the same module

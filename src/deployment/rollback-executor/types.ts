@@ -102,6 +102,20 @@ export interface CompletedOperation {
    * a changed physical id still reads as a replacement.
    */
   wasReplaced?: boolean | undefined;
+  /**
+   * go-to-k/cdkd#4690: the deploy deleted the OLD resource BEFORE it created
+   * the new one (`--recreate-via-cc-api` / `--recreate-via-sdk-provider`, the
+   * UPDATE-unsupported fallback, `--replace`'s delete-first fallback, or a
+   * child lost with its re-created parent). The reversal then deletes the new
+   * resource before re-creating the old one, mirroring that order: re-creating
+   * first would collide with the new resource on a uniqueness constraint (an
+   * ELBv2 listener's port) the name-holder proof cannot see.
+   *
+   * Stamped on every completed UPDATE. ADDITIVE, no `journalVersion` bump, as
+   * {@link oldResourceRetained}: absent (an older binary's journal) keeps the
+   * create-first reversal.
+   */
+  oldDeletedBeforeCreate?: boolean | undefined;
 }
 
 /**
@@ -182,6 +196,13 @@ export interface FailedOperation {
    * orphan's entry, which an interrupted rollback can settle alone.
    */
   replacementOrphaned?: 'create-first' | 'delete-first' | undefined;
+  /**
+   * go-to-k/cdkd#4690, on a failed UPDATE: the deploy deleted the old resource
+   * before the create that failed, so the record it names is gone. The
+   * rollback's delete-first guard counts it among the resources the segment
+   * took away. Absent on an older binary's journal; ADDITIVE, no bump.
+   */
+  oldDeletedBeforeCreate?: boolean | undefined;
   /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
@@ -309,7 +330,7 @@ export interface RollbackExecutorContext {
    * (`revertNestedChildFromJournal`). `cdkd rollback --orphan` reaches only the
    * replay of the stack it is run on, and a direct rollback of the child is
    * refused while the parent's run is unsettled, so no command reaches this
-   * replay's ops: the three refusals print no `--orphan` line here
+   * replay's ops: the reverse-replacement refusals print no `--orphan` line here
    * (go-to-k/cdkd#3845).
    */
   nestedChildRevert?: boolean | undefined;
@@ -319,7 +340,7 @@ export interface RollbackExecutorContext {
    * segment stays in the child's journal, and only a rollback of the child
    * honours `--orphan` for its ops (the parent's replays it only through
    * `--revert-failed`, as a child revert `--orphan` does not reach), so the
-   * three refusals' `--orphan` command names the child stack
+   * refusals' `--orphan` command names the child stack
    * (go-to-k/cdkd#3859).
    */
   nestedChildStack?: string | undefined;

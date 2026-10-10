@@ -1071,12 +1071,15 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain('const text = rollbackFailureText(error);');
     expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
     expect(src).toContain('.map((line) => displaySafe(line))');
-    // The per-line arm is keyed on IDENTITY, and all four of this module's
-    // refusals register through `ownRemedyError` (M7 of the go-to-k/cdkd#3764
+    // The per-line arm is keyed on IDENTITY, and every one of this module's
+    // refusals registers through `ownRemedyError` (M7 of the go-to-k/cdkd#3764
     // review; the unproven-holder refusal is #3979's, the unproven-copy
-    // readopt refusal go-to-k/cdkd#4628's); no code-keyed trust remains.
+    // readopt refusal go-to-k/cdkd#4628's, the delete-first-blocked collision
+    // refusal go-to-k/cdkd#4690's); no code-keyed trust remains.
     expect(src).toContain('OWN_REMEDY_ERRORS.has(error)');
-    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(4);
+    // A fifth since go-to-k/cdkd#4690: the collision route's refusal for an op
+    // whose old properties name a resource the same deploy took away.
+    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(5);
     expect(src).not.toMatch(/OWN_REMEDY_LINE_CODES|\.has\(error\.code\)/);
     // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
     // it is not classified at all: the collision decision moved to the ERROR
@@ -1219,7 +1222,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain(
       "const pasteable = typeof logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(logicalId);"
     );
-    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(4);
+    // Five since go-to-k/cdkd#4690's collision-route refusal.
+    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(5);
     // The fence sees its input: the wrapped form must be present in numbers.
     // Lowered from 40 by go-to-k/cdkd#4214, which moved the refusal renders
     // beside a command onto describing helpers.

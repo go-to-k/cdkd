@@ -187,6 +187,36 @@ describe('a rollback keeps an inline policy name another revert of it has put ba
     expect(asked(lastDelete[4])?.('role', ROLE_PHYS, 'y')).toBe(true);
   });
 
+  // go-to-k/cdkd#4690: a delete-first rename (`--recreate-via-*`) is reversed
+  // by deleting the new copy BEFORE the re-create, and that delete asks too.
+  it('the same SWAP reversed delete-first keeps each name with its first owner', async () => {
+    const state: Record<string, ResourceState> = {
+      A: policyRecord('y', 'docA'),
+      B: policyRecord('x', 'docB'),
+    };
+    put('y', 'docA');
+    put('x', 'docB');
+    const ops = [
+      updateOp('A', policyRecord('x', 'docA'), policyRecord('y', 'docA')),
+      updateOp('B', policyRecord('y', 'docB'), policyRecord('x', 'docB')),
+    ].map((o) => ({ ...o, oldDeletedBeforeCreate: true }));
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    // B: delete x, re-create y; A: delete y (claimed: B put it back), re-create x.
+    // Each op's delete runs BEFORE its create: create-first gives the same
+    // deletes and the same end state, so the order is what shows the route.
+    expect(policyProvider.delete.mock.calls.map((c) => c[1])).toEqual(['x', 'y']);
+    expect(policyProvider.create.mock.calls.slice(0, 2).map((c) => c[2].PolicyName)).toEqual(['y', 'x']);
+    const [delX, delY] = policyProvider.delete.mock.invocationCallOrder;
+    const [createY, createX] = policyProvider.create.mock.invocationCallOrder;
+    expect(delX!).toBeLessThan(createY!);
+    expect(createY!).toBeLessThan(delY!);
+    expect(delY!).toBeLessThan(createX!);
+    expect(holding()).toEqual({ x: 'docA', y: 'docB' });
+  });
+
   it('a reverted hand-off to the role\'s own Policies keeps the name the policy put back', async () => {
     // Deploy: the role took `to-role` into its Policies, then T renamed
     // `to-role` -> `moved` (T names the role, so the role updated first).

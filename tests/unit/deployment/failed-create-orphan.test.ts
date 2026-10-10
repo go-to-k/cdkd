@@ -323,6 +323,35 @@ describe('priorAttemptsInJournal: a proven orphan stays evidence (go-to-k/cdkd#1
     const op = failedCreate({ physicalId: 's-1', attemptedProperties: { Name: 's-1' } });
     expect(priorAttemptsInJournal(journalWith(op), 'S', 'AWS::Kinesis::Stream')).toEqual([]);
   });
+
+  // go-to-k/cdkd#4690: `cdkd rollback` keeps a delete-first replacement UPDATE
+  // after settling its orphan; the orphan carried the evidence, not the UPDATE.
+  it("ignores the bag of a replacement UPDATE that journaled its new resource as an orphan", () => {
+    const update = (over: Partial<FailedOperation>): FailedOperation => ({
+      logicalId: 'S',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::Kinesis::Stream',
+      physicalId: 's-old',
+      previousState: {
+        physicalId: 's-old',
+        resourceType: 'AWS::Kinesis::Stream',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+      attemptedProperties: { Name: 's-new' },
+      ...over,
+    });
+    for (const replacementOrphaned of ['delete-first', 'create-first'] as const) {
+      expect(
+        priorAttemptsInJournal(journalWith(update({ replacementOrphaned })), 'S', 'AWS::Kinesis::Stream')
+      ).toEqual([]);
+    }
+    // Control: a bare delete-first UPDATE (no orphan) keeps its bag as evidence.
+    expect(
+      priorAttemptsInJournal(journalWith(update({ oldDeletedBeforeCreate: true })), 'S', 'AWS::Kinesis::Stream')
+    ).toEqual([{ Name: 's-new' }]);
+  });
 });
 
 describe('replayFailedOperations: the proven orphan is deleted (go-to-k/cdkd#1710)', () => {

@@ -168,9 +168,13 @@ export class AlbStack extends cdk.Stack {
     }
 
     // ListenerRule (path-based routing)
+    // go-to-k/cdkd#4690 (Phase 6 of `verify.sh`): `ALB_RULE_BAD_PRIORITY`
+    // puts the rule out of ELBv2's 1-50000 range, so its replacement onto a
+    // recreated listener fails AFTER the listener recreate completed, and the
+    // automatic rollback must reverse that delete-first recreate.
     new elbv2.CfnListenerRule(this, 'HealthRule', {
       listenerArn: listener.listenerArn,
-      priority: 1,
+      priority: process.env.ALB_RULE_BAD_PRIORITY === 'true' ? 50001 : 1,
       conditions: [{ field: 'path-pattern', values: ['/health'] }],
       actions: [{ type: 'fixed-response', fixedResponseConfig: { statusCode: '200', contentType: 'text/plain', messageBody: 'OK' } }],
     });

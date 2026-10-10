@@ -96,8 +96,8 @@ export function isNameCollisionError(message: string): boolean {
  *
  * The message carries no code and never says "already exists", so
  * `isNameCollisionError` misses it — and the consequence is not cosmetic: the
- * `--replace` delete-first fallback and the rollback executor's
- * delete-new-first arm both gate on that predicate, so BOTH recovery paths went
+ * `--replace` delete-first fallback and the rollback executor's collision
+ * route to delete-new-first both gate on that predicate, so BOTH recovery paths went
  * inert and a create-only change to a cdkd-named target group could not be
  * deployed at all. Widening the prose matcher to a bare `exists` was rejected:
  * it is substring-matched against every service's text, and the direction of a
@@ -245,7 +245,9 @@ export function hasReplayMayCollide(error: unknown): boolean {
  *    socket errors too) say it (issue #3816). The SDK half keeps a cdkd
  *    refusal quoting a template value from classifying — the verdict here is
  *    a DELETE, acted on by the `--replace`
- *    delete-first fallback and the rollback's delete-new-first arm. The
+ *    delete-first fallback and the rollback's collision route to
+ *    delete-new-first (its delete-first route, go-to-k/cdkd#4690, reads the
+ *    journal instead). The
  *    top-level half keeps a provider's opt-out: one that rewords an AWS
  *    collision it knows delete-first cannot clear stays unclassified.
  *
