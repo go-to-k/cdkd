@@ -316,6 +316,67 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       await expect(redeploy.engine.deploy(STACK, template)).rejects.toThrow();
       expect(hook).not.toHaveBeenCalled();
     });
+    it('G-a: a redeploy (it found a record) that fails, and finds none after, calls nothing', async () => {
+      const hook = vi.fn(async () => undefined);
+      const redeploy = buildEngine({
+        levels: [['Q1']],
+        records: {},
+        createFails: { Q1: boom() },
+        stateGate: async () => undefined,
+        onFirstDeployLeftNoRecord: hook,
+      });
+      const loaded = { state: { stackName: STACK, region: 'us-east-1', resources: {}, outputs: {}, version: 1, lastModified: 1 } as StackState, etag: 'e0' };
+      redeploy.stateBackend.getState.mockImplementation(async () =>
+        redeploy.stateBackend.getState.mock.calls.length === 1 ? loaded : null
+      );
+      // Any later read would answer `null`: only `firstDeploy` stops the hook.
+      await expect(redeploy.engine.deploy(STACK, template)).rejects.toThrow();
+      expect(hook).not.toHaveBeenCalled();
+    });
+    it('R-m1: no record, but a journal holding a failed op with a physical id: the marker stays', async () => {
+      const hook = vi.fn(async () => undefined);
+      const { engine, stateBackend } = buildEngine({
+        levels: [['Q1']],
+        createFails: { Q1: boom() },
+        stateGate: async () => undefined,
+        onFirstDeployLeftNoRecord: hook,
+      });
+      stateBackend.loadRollbackJournal.mockImplementation(async () =>
+        stateBackend.getState.mock.calls.length > 1
+          ? ({
+              journalVersion: 1,
+              stackName: STACK,
+              region: 'us-east-1',
+              segments: [
+                {
+                  timestamp: 1,
+                  operations: [],
+                  failedOperations: [
+                    { logicalId: 'Q1', changeType: 'CREATE', resourceType: QUEUE, physicalId: urlOf('App-Q1') },
+                  ],
+                },
+              ],
+            } as never)
+          : null
+      );
+      await expect(engine.deploy(STACK, template)).rejects.toThrow();
+      expect(hook).not.toHaveBeenCalled();
+    });
+    it('R-m1: a journal that cannot be read keeps the marker (fail closed)', async () => {
+      const hook = vi.fn(async () => undefined);
+      const { engine, stateBackend } = buildEngine({
+        levels: [['Q1']],
+        createFails: { Q1: boom() },
+        stateGate: async () => undefined,
+        onFirstDeployLeftNoRecord: hook,
+      });
+      stateBackend.loadRollbackJournal.mockImplementation(async () => {
+        if (stateBackend.getState.mock.calls.length > 1) throw new Error('S3 503');
+        return null;
+      });
+      await expect(engine.deploy(STACK, template)).rejects.toThrow();
+      expect(hook).not.toHaveBeenCalled();
+    });
   });
 
   it("creates a name this stack's record licenses, as before", async () => {

@@ -73,14 +73,17 @@ beforeEach(() => {
 afterEach(() => setStdinIsTty(tty));
 
 describe('cdkd state orphan and the registry (go-to-k/cdkd#4705)', () => {
-  it('G4: a recorded stack: the record goes, then the marker is released and retained.json cleared', async () => {
+  it('G4 / n1: a recorded stack: the record goes, then retained.json is cleared (the tombstone), then the marker is released', async () => {
     backend.listStacks.mockResolvedValue([{ stackName: 'App', region: 'us-east-1' }]);
     await orphan(['App']);
     expect(backend.deleteState).toHaveBeenCalledWith('App', 'us-east-1');
     expect(backend.releaseRegistryMarker).toHaveBeenCalledWith('App', 'us-east-1');
     expect(backend.saveRetainedResources).toHaveBeenCalledWith('App', 'us-east-1', []);
-    expect(backend.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
+    expect(backend.saveRetainedResources.mock.invocationCallOrder[0]!).toBeGreaterThan(
       backend.deleteState.mock.invocationCallOrder[0]!
+    );
+    expect(backend.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      backend.saveRetainedResources.mock.invocationCallOrder[0]!
     );
   });
 

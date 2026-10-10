@@ -134,7 +134,8 @@ stack's own evidence names that resource:
   resource's row, or after a destroy deleted its record -- leaves the kept
   resource in neither the record nor the list: its re-create is then refused
   with the `cdkd import` remedy (the safe direction). `cdkd state orphan` empties
-  it, with or without a record left, and so does a destroy that keeps nothing:
+  it, with or without a record left, and so do a destroy that keeps nothing
+  and `cdkd export` (whose stack CloudFormation now owns):
   the empty list is a tombstone, never deleted. One destroy (or orphan) by this
   cdkd therefore ends the older-cdkd history license below for that stack and
   region for good;
@@ -284,8 +285,10 @@ Every other path that removes a stack's record
   removes the marker after it the same way, non-fatally: `cdkd state orphan`
   of a whole stack, `cdkd export` (the stack moves to CloudFormation),
   `cdkd rollback` of a first deploy that removes the record, and a first
-  deploy that fails and leaves no record (it releases the marker it claimed,
-  under its lock). So a marker names a prefix that records the stack. After
+  deploy that fails and leaves nothing that can own a resource -- no record,
+  and no rollback journal naming one (it releases the marker it claimed,
+  under its lock; a read that fails keeps it). So a marker names a prefix
+  that records the stack. After
   `cdkd state orphan` a redeploy under the same prefix is still refused for
   the resources it would take back: that comes from the emptied kept list,
   not from the marker. `cdkd import` claims it (after the one-time scan below

@@ -313,7 +313,7 @@ function buildStateBackend(
 ): {
   backend: S3StateBackend;
   deleted: Array<{ stackName: string; region: string }>;
-  /** `delete:<stack>` / `release:<stack>`, in order (go-to-k/cdkd#4705). */
+  /** `delete:` / `tombstone:` / `release:<stack>`, in order (go-to-k/cdkd#4705). */
   events: string[];
 } {
   const deleted: Array<{ stackName: string; region: string }> = [];
@@ -335,6 +335,9 @@ function buildStateBackend(
     async releaseRegistryMarker(stackName: string) {
       events.push(`release:${stackName}`);
       return 'released';
+    },
+    async ensureRetainedTombstone(stackName: string) {
+      events.push(`tombstone:${stackName}`);
     },
   } as unknown as S3StateBackend;
   return { backend, deleted, events };
@@ -1063,7 +1066,14 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
     ]);
     // go-to-k/cdkd#4705: the top-level stack's registry marker goes once its
     // record is gone; a nested child has none.
-    expect(events).toEqual(['delete:Root~Child', 'delete:Root', 'release:Root']);
+    // m1: each removed record gets its tombstone, before the release.
+    expect(events).toEqual([
+      'delete:Root~Child',
+      'tombstone:Root~Child',
+      'delete:Root',
+      'tombstone:Root',
+      'release:Root',
+    ]);
   });
 
   it('honors per-child --cfn-child-stack-name override', async () => {

@@ -2562,12 +2562,12 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           await warnOnLiveForeignLock(setup.lockManager, stackName, target.region, logger);
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
-          // go-to-k/cdkd#4705: the record is gone, so the stack registry
-          // marker naming this prefix goes too (record first, then marker).
-          await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, target.region, logger);
-          // go-to-k/cdkd#4705: and what a destroy kept stops licensing a
-          // later create to take it back by name.
+          // go-to-k/cdkd#4705: what a destroy kept stops licensing a later
+          // create to take it back by name (the tombstone), then -- the record
+          // being gone -- the stack registry marker naming this prefix goes
+          // too: record, tombstone, marker, as the no-record path does.
           await clearRetainedQuietly(setup.stateBackend, stackName, target.region, logger);
+          await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, target.region, logger);
         } else {
           // Pure legacy record without a region body field. Both keys are the
           // region-less ones, and they are separate objects: issue #2537, the

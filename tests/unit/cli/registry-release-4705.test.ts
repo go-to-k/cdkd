@@ -38,20 +38,32 @@ describe('releaseRegistryMarkerQuietly', () => {
   });
 });
 
-describe('export removes the record, then releases the marker', () => {
-  it('in that order', async () => {
+const exportBackend = (order: string[]) => ({
+  deleteState: vi.fn(async () => {
+    order.push('delete');
+  }),
+  ensureRetainedTombstone: vi.fn(async () => {
+    order.push('tombstone');
+  }),
+  loadRetainedRecord: vi.fn(async () => null),
+  saveRetainedResources: vi.fn(async () => undefined),
+  releaseRegistryMarker: vi.fn(async () => {
+    order.push('release');
+    return 'released' as const;
+  }),
+});
+
+describe('export removes the record, writes the tombstone, then releases the marker', () => {
+  it('in that order (review m1: the tombstone ends the older-cdkd history license)', async () => {
     const order: string[] = [];
-    const backend = {
-      deleteState: vi.fn(async () => {
-        order.push('delete');
-      }),
-      releaseRegistryMarker: vi.fn(async () => {
-        order.push('release');
-        return 'released' as const;
-      }),
-    };
-    await removeExportedStackRecord(backend, 'App', 'us-east-1', logger());
-    expect(order).toEqual(['delete', 'release']);
+    await removeExportedStackRecord(exportBackend(order), 'App', 'us-east-1', logger());
+    expect(order).toEqual(['delete', 'tombstone', 'release']);
+  });
+
+  it('a nested node gets its tombstone too, and no marker', async () => {
+    const order: string[] = [];
+    await removeExportedStackRecord(exportBackend(order), 'App~Child', 'us-east-1', logger());
+    expect(order).toEqual(['delete', 'tombstone']);
   });
 
   it('a failed record delete throws and releases nothing', async () => {
@@ -60,8 +72,12 @@ describe('export removes the record, then releases the marker', () => {
         throw new Error('denied');
       }),
       releaseRegistryMarker: vi.fn(async () => 'released' as const),
+      ensureRetainedTombstone: vi.fn(async () => undefined),
+      loadRetainedRecord: vi.fn(async () => null),
+      saveRetainedResources: vi.fn(async () => undefined),
     };
     await expect(removeExportedStackRecord(backend, 'App', 'us-east-1', logger())).rejects.toThrow('denied');
+    expect(backend.ensureRetainedTombstone).not.toHaveBeenCalled();
     expect(backend.releaseRegistryMarker).not.toHaveBeenCalled();
   });
 });
@@ -82,6 +98,8 @@ describe('a failed first deploy that left no record (crossPrefixEngineOptions)',
       backend,
     });
     await opts.onFirstDeployLeftNoRecord!('App~Child');
+    // G-b: another TOP-LEVEL stack of the same run is not this gate's.
+    await opts.onFirstDeployLeftNoRecord!('Other');
     expect(backend.releaseRegistryMarker).not.toHaveBeenCalled();
     await opts.onFirstDeployLeftNoRecord!('App');
     expect(backend.releaseRegistryMarker).toHaveBeenCalledWith('App', 'us-east-1', { prefix: 'cdkd', etag: '' });

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { releaseRegistryMarkerQuietly } from './registry-release.js';
+import { recordRetainedForReadoption } from '../../deployment/retained-readoption.js';
 import {
   commandHole,
   pasteableCommand,
@@ -8540,18 +8541,29 @@ export interface RunPerStackImportLoopOptions {
  * Exported for unit testing.
  */
 /**
- * Remove an exported stack's cdkd record, then (go-to-k/cdkd#4705) its
- * registry marker when it is a top-level stack -- record first, so "a marker
- * exists" keeps meaning "a record exists under its prefix". The marker's
- * release is non-fatal (a warning); the record's delete throws as before.
+ * Remove an exported stack's cdkd record, then (go-to-k/cdkd#4705) write its
+ * empty `retained.json` -- the tombstone that ends an older cdkd's history
+ * license, so a later `cdkd deploy` under this prefix never takes back a
+ * resource CloudFormation now owns (review m1) -- then release its registry
+ * marker when it is a top-level stack, so "a marker exists" keeps meaning "a
+ * record exists under its prefix". The tombstone and the release are
+ * non-fatal (warnings); the record's delete throws as before.
  */
 export async function removeExportedStackRecord(
-  stateBackend: Pick<S3StateBackend, 'deleteState' | 'releaseRegistryMarker'>,
+  stateBackend: Pick<
+    S3StateBackend,
+    | 'deleteState'
+    | 'releaseRegistryMarker'
+    | 'loadRetainedRecord'
+    | 'saveRetainedResources'
+    | 'ensureRetainedTombstone'
+  >,
   stackName: string,
   region: string,
   logger: { warn(message: string): void; debug(message: string): void }
 ): Promise<void> {
   await stateBackend.deleteState(stackName, region);
+  await recordRetainedForReadoption(stateBackend, stackName, region, [], logger);
   await releaseRegistryMarkerQuietly(stateBackend, stackName, region, logger);
 }
 

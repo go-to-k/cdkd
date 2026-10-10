@@ -536,6 +536,17 @@ describe("a license from this prefix's own history (review CB-14b: a destroy by 
     });
   });
 
+  it('m1: after an export (it writes the empty retained.json), the history licenses nothing: the holder CloudFormation now owns is refused', async () => {
+    const loadKeptInHistory = vi.fn(async () => [{ logicalId: 'A', resourceType: QUEUE, physicalId: URL }]);
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
+      loadKeptInHistory,
+      // The tombstone `cdkd export` now writes.
+      loadRetained: vi.fn(async () => []),
+    });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+    expect(loadKeptInHistory).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['another logical id', { logicalId: 'B', resourceType: QUEUE, physicalId: URL }],
     ['another type', { logicalId: 'A', resourceType: TOPIC, physicalId: URL }],
