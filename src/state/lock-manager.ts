@@ -79,7 +79,10 @@ function renewalIntervalFor(ttlMs: number): number {
 
 /**
  * go-to-k/cdkd#4705 review B1: the latest moment an abandoned run can have
- * been alive, read off the lock it left: its last renewal (the object's
+ * been alive while its lock was renewed -- a run whose renewals kept failing
+ * may have outlived it, and what it created after it is refused (the
+ * `cdkd import` remedy), never adopted -- read off the lock it left: its last
+ * renewal (the object's
  * LastModified, S3's clock) plus that lock's renewal interval -- the run kept
  * creating between renewals. The interval comes from the lock's own TTL
  * (`expiresAt` minus the renewal that set it), with the manager's formula; a

@@ -103,8 +103,11 @@ stack's own evidence names that resource:
   back failed. An intent licenses only a holder created no earlier than it
   was written and, once its create came back failed, no later than that,
   for a type that reports a creation time (a creation time this identity is
-  not granted to read counts as none); for one that does not, an intent a
-  hard crash left for a create that was never sent licenses by name (a
+  not granted to read counts as none); for one that does not, an intent
+  whose create came back failed licenses nothing -- the create is refused,
+  the refusal names that likely cause (this stack's own resource from that
+  create), and it gives the `cdkd import` remedy -- while an intent a hard
+  crash left for a create that was never sent licenses by name (a
   crash-only residual). If the deploy's end cannot drop the intents (the
   write is retried once), it records the run as ended at that moment, so
   they are bounded as below; only if that write fails too does the residual
@@ -115,7 +118,10 @@ stack's own evidence names that resource:
   TTL), since the run kept creating between renewals -- the intent
   licenses only a holder created by then, and for a type without a creation
   time it licenses nothing: the create is refused with the `cdkd import`
-  remedy rather than taking a name another backend may have created since;
+  remedy rather than taking a name another backend may have created since.
+  A run still alive whose lock renewals keep failing can create past that
+  bound; those resources of its own are refused on a later re-run, with the
+  `cdkd import` remedy, never adopted;
 - `retained.json`, the resources this stack let go of under this prefix while
   they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
   deploy that removed them from the template. The next deploy under the same

@@ -287,6 +287,14 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     release();
     await run;
     expect(h.ensureRetainedTombstone).not.toHaveBeenCalled();
+    // The record's read started with the first kept entry is reused: the
+    // tail reads nothing again.
+    const loadRetainedRecord = (h.ctx.stateBackend as unknown as { loadRetainedRecord: ReturnType<typeof vi.fn> })
+      .loadRetainedRecord;
+    expect(loadRetainedRecord).toHaveBeenCalledTimes(1);
+    expect(loadRetainedRecord.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.deleteState.mock.invocationCallOrder[0]!
+    );
   });
 
   it('F-1: a record written whose S3 time could not be confirmed warns that it was RECORDED, not that it failed', async () => {
