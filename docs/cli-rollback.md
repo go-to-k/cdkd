@@ -341,7 +341,8 @@ These are surfaced in the plan rather than applied silently.
   `NoEcho` value the failed deploy changed is **not** reverted; the next
   `cdkd deploy` with the old value restores it. The value never reaches state,
   the events or the log in the clear, and `***` is never sent — unless it is a
-  name or other identifier, which is stored as resolved
+name or other identifier, which state and an event's `physicalId` field store
+as resolved
   ([details](state-management.md#security-and-best-practices)).
   - **The value cannot be read back** (a write-only property, a property AWS
     does not return, a resource type with no readback, or a read that fails):
