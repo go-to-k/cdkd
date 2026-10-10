@@ -139,12 +139,17 @@ identifier property. The name is the resource's identity, so its `physicalId`
 holds it, and other resources' resolved `Ref`, `Fn::GetAtt` and `Fn::Sub`
 copies of it, and the outputs and exports index entries that carry it, are
 stored as resolved. `cdkd scrub` does not rewrite the physical id or other
-resources' recorded copies, and reports those records clean. A leftover that
-carries the name is the exception: an output key the template no longer
-declares is rewritten to the expression where it holds the resolved name
-verbatim, and otherwise handled like any undeclared key, and an exports index entry with no
-output left is reported. The resource's own properties keep the reference (`***` for a
-`NoEcho` parameter).
+resources' recorded copies, and reports those records clean. Leftovers that
+carry the name are the exception:
+
+- an output key the template no longer declares is rewritten to the
+  expression where it holds or embeds the secret's resolved value, and is
+  otherwise handled like any undeclared key;
+- another resource's `orphans` record is rewritten the same way;
+- an exports index entry with no output left is reported.
+
+The resource's own properties keep the reference (`***` for a `NoEcho`
+parameter).
 CloudFormation does the same; keep secrets out of identifier properties, as
 [its documentation advises](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html).
 
