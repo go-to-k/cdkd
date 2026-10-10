@@ -10,11 +10,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const debugLines: string[] = [];
-vi.mock('../../../src/utils/logger.js', () => {
+const debugLines = vi.hoisted(() => [] as string[]);
+// Each line through the sink masker `ConsoleLogger` applies, so a line masked
+// only by a bag bound around it (`withPrintingSecrets`) reads as printed.
+vi.mock('../../../src/utils/logger.js', async () => {
+  const { currentLogLineMasker: sink } = await import('../../../src/utils/log-line-masker.js');
   const fns = {
     setLevel: vi.fn(),
-    debug: (...args: unknown[]) => void debugLines.push(args.map(String).join(' ')),
+    debug: (...args: unknown[]) => {
+      const line = args.map(String).join(' ');
+      debugLines.push(sink()?.(line) ?? line);
+    },
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -40,7 +46,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasMaskableValues,
+  maskSecretsInText,
+  recordLogOnlyValue,
+} from '../../../src/deployment/secret-redaction.js';
 import {
   maskedInputFingerprint,
   maskedPropertyFingerprint,
@@ -361,46 +371,286 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     });
   });
 
-  it("masks a parent row's Ref passed to a nested child, on the child-parameter resolution too", async () => {
-    // The parent row's `Parameters` resolve twice: in the parent's own diff,
-    // and again to bind the child's inputs (`resolveChildStackParameters`).
-    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
-    try {
-      const childPath = join(dir, 'child.json');
-      writeFileSync(
-        childPath,
-        JSON.stringify({ Parameters: { QueueUrl: { Type: 'String' } }, Resources: {} })
-      );
-      const parent = state('{{resolve:secretsmanager:sdin:SecretString:queue::}}');
-      parent.resources['Child'] = {
-        physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
-        resourceType: 'AWS::CloudFormation::Stack',
-        properties: { Parameters: { QueueUrl: URL } },
-        attributes: {},
-        dependencies: ['Queue'],
-      };
-      const tpl = template('{{resolve:secretsmanager:sdin:SecretString:queue::}}');
-      tpl.Resources['Child'] = {
-        Type: 'AWS::CloudFormation::Stack',
-        Metadata: { 'aws:asset:path': 'child.json' },
-        Properties: { Parameters: { QueueUrl: { Ref: 'Queue' } } },
-      };
-      const child: StackState = {
+  it.each([
+    ['a secret-named target', '{{resolve:secretsmanager:sdin:SecretString:queue::}}', false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])(
+    "masks a parent row's Ref passed to a nested child, on the child's own walk too: %s",
+    async (_l, queueName, shown) => {
+      // The parent row's `Parameters` resolve twice: in the parent's own diff,
+      // and again to bind the child's inputs (`resolveChildStackParameters`).
+      // The child then binds the value as its OWN parameter and prints it on
+      // its parameter and `Ref` lines and in its rendered rows.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+            },
+          })
+        );
+        const parent = state(queueName);
+        parent.resources['Child'] = {
+          physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { Parameters: { QueueUrl: URL } },
+          attributes: {},
+          dependencies: ['Queue'],
+        };
+        const tpl = template(queueName);
+        tpl.Resources['Child'] = {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': 'child.json' },
+          Properties: { Parameters: { QueueUrl: { Ref: 'Queue' } } },
+        };
+        const child: StackState = {
+          stackName: 'S~Child',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            // A recorded value that differs, so the child's row renders the
+            // value it now reads.
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: 'https://sqs.us-east-1.amazonaws.com/123456789012/older' },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        };
+        const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+        debugLines.length = 0;
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const lines = debugLines.join('\n').split('\n');
+        const refLines = lines.filter((l) => l.includes('Ref to resource: Queue resolved to'));
+        // Premise: the parent pass AND the child-parameter pass both printed it.
+        expect(refLines.length).toBeGreaterThanOrEqual(2);
+        // The child's own lines over the value it received.
+        const childLines = lines.filter(
+          (l) =>
+            l.includes('Parameter QueueUrl: using user-provided value') ||
+            l.includes('Resolved Ref to parameter: QueueUrl')
+        );
+        // Premise: both child lines printed.
+        expect(childLines.some((l) => l.startsWith('Parameter QueueUrl'))).toBe(true);
+        expect(childLines.some((l) => l.includes('Resolved Ref to parameter'))).toBe(true);
+        for (const line of [...refLines, ...childLines]) {
+          expect(line.includes('sdin-diff-secret-queue')).toBe(shown);
+        }
+        // The child's rendered row.
+        const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+        const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+        // Premise: the row is rendered.
+        expect(row).toContain('"path":"Value"');
+        expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
+    // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
+    // `inheritedSecrets`, whose needles its export-alias preview reads.
+    const inheritedDerivedNames = new Map<string, string>();
+    recordLogOnlyValue(inheritedDerivedNames, 'sdin-diff-secret-queue');
+    const tpl: CloudFormationTemplate = {
+      Parameters: { QueueUrl: { Type: 'String' } },
+      Resources: {
+        Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+      },
+    };
+    const result = await computeStackDiff(
+      {
         stackName: 'S~Child',
         region: 'us-east-1',
         version: 9,
-        resources: {},
+        resources: {
+          Reader: {
+            physicalId: 'reader-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'older' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
         outputs: {},
         lastModified: 0,
-      };
-      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
-      debugLines.length = 0;
-      await buildDiffTree({
+      },
+      tpl,
+      'us-east-1',
+      'S~Child',
+      backend,
+      new DiffCalculator(),
+      { parameters: { QueueUrl: URL }, inheritedDerivedNames }
+    );
+    // The row is masked with it. Premise: the row is rendered.
+    const row = JSON.stringify(result.changes.get('Reader')?.propertyChanges);
+    expect(row).toContain('"path":"Value"');
+    expect(row).not.toContain('sdin-diff-secret-queue');
+    expect(hasMaskableValues(result.printingSecrets)).toBe(false);
+  });
+
+  describe('below the child: a grandchild the value is passed on to', () => {
+    const SECRET_NAME = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
+    const empty = (stackName: string, resources: StackState['resources'] = {}): StackState => ({
+      stackName,
+      region: 'us-east-1',
+      version: 9,
+      resources,
+      outputs: {},
+      lastModified: 0,
+    });
+    const nestedRow = (path: string, parameters: Record<string, unknown>) => ({
+      Type: 'AWS::CloudFormation::Stack',
+      Metadata: { 'aws:asset:path': path },
+      Properties: { Parameters: parameters },
+    });
+    const stackRecord = (id: string, parameters: Record<string, unknown>) => ({
+      physicalId: `arn:aws:cloudformation:us-east-1:123456789012:stack/${id}/1`,
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: parameters },
+      attributes: {},
+      dependencies: [],
+    });
+
+    /**
+     * Parent -> Child (fed `Ref Queue`) -> GC (fed the child's `Ref QueueUrl`,
+     * a parameter, so the child row reads no secret-named resource itself).
+     * `liveGc: false` drops GC from the child's template: its stored output
+     * then diffs as a REMOVE.
+     */
+    async function diffThreeLevels(
+      recordedQueueName: string,
+      templateQueueName: string,
+      liveGc: boolean
+    ) {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-gc-'));
+      try {
+        const gcPath = join(dir, 'gc.json');
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          gcPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+            },
+          })
+        );
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: liveGc ? { GC: nestedRow('gc.json', { QueueUrl: { Ref: 'QueueUrl' } }) } : {},
+          })
+        );
+        const parent = state(recordedQueueName);
+        parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+        const tpl = template(templateQueueName);
+        tpl.Resources['Child'] = nestedRow('child.json', { QueueUrl: { Ref: 'Queue' } });
+        const gc = empty('S~Child~GC', {
+          Reader: {
+            physicalId: 'reader-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'older' },
+            attributes: {},
+            dependencies: [],
+          },
+        });
+        gc.outputs = { GOut: URL };
+        const states: Record<string, StackState> = {
+          S: parent,
+          'S~Child': empty('S~Child', { GC: stackRecord('S-Child-GC', { QueueUrl: URL }) }),
+          'S~Child~GC': gc,
+        };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const child = tree.children.find((c) => c.stackName === 'S~Child');
+        return child?.children.find((c) => c.stackName === 'S~Child~GC');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it.each([
+      ['a secret-named target', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a live grandchild's rows: %s", async (_l, name, shown) => {
+      const gc = await diffThreeLevels(name, name, true);
+      const row = JSON.stringify(gc?.changes.get('Reader')?.propertyChanges);
+      // Premise: the row is rendered.
+      expect(row).toContain('"path":"Value"');
+      expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+
+    it.each([
+      ['a secret-named target', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted grandchild's stored output: %s", async (_l, recorded, shown) => {
+      // The template now names the queue literally, so no template above is
+      // secret-bearing and the REMOVE row keeps its old value: only the
+      // derived name the record still spells as a reference can mask it.
+      const gc = await diffThreeLevels(recorded, 'plain-queue-name', false);
+      const out = JSON.stringify(gc?.outputChanges.find((c) => c.name === 'GOut'));
+      // Premise: the REMOVE row carries its old value (masked or not).
+      expect(out).toContain('"changeType":"REMOVE"');
+      expect(out).toContain('"oldValue"');
+      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+
+    it.each([
+      ['a secret-named target', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted child's stored output with the root's own reads: %s", async (_l, recorded, shown) => {
+      // The root's Policy reads the queue; the child row is gone from the
+      // template, so only the root's own derived names can mask its output.
+      const parent = state(recorded);
+      parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+      // And a deleted stack below it: the names pass from deleted to deleted.
+      const child = empty('S~Child', { GC: stackRecord('S-Child-GC', { QueueUrl: URL }) });
+      child.outputs = { COut: URL };
+      const gc = empty('S~Child~GC');
+      gc.outputs = { GOut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child, 'S~Child~GC': gc };
+      const tree = await buildDiffTree({
         stackName: 'S',
         displayName: 'S',
         region: 'us-east-1',
-        template: tpl,
-        nestedTemplates: { Child: childPath },
+        template: template('plain-queue-name'),
+        nestedTemplates: {},
         recursive: true,
         stateBackend: {
           getState: async (name: string) =>
@@ -409,15 +659,163 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         diffCalculator: new DiffCalculator(),
         isNestedChild: false,
       });
-      const lines = debugLines.join('\n');
-      const refLines = lines.split('\n').filter((l) => l.includes('Ref to resource: Queue resolved to'));
-      // Premise: the parent pass AND the child-parameter pass both printed it.
-      expect(refLines.length).toBeGreaterThanOrEqual(2);
-      for (const line of refLines) expect(line).not.toContain('sdin-diff-secret-queue');
-      // The CHILD's own lines over the value it received still print it: the
-      // nested-child item, which stays open on go-to-k/cdkd#3869.
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      const node = tree.children.find((c) => c.stackName === 'S~Child');
+      const deletedGc = node?.children.find((c) => c.stackName === 'S~Child~GC');
+      for (const out of [
+        JSON.stringify(node?.outputChanges.find((c) => c.name === 'COut')),
+        JSON.stringify(deletedGc?.outputChanges.find((c) => c.name === 'GOut')),
+      ]) {
+        expect(out).toContain('"changeType":"REMOVE"');
+        expect(out).toContain('"oldValue"');
+        expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+      }
+    });
+
+    it.each([
+      ['a secret-named record', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted child's stored output when no live row reads the record: %s", async (_l, recorded, shown) => {
+      // The removed row was the ONLY reader: the root template keeps the queue
+      // under a literal name and nothing reads it, so the root's own reads hold
+      // no needle; only its state record still spells the name from a secret.
+      const parent = state(recorded);
+      delete parent.resources['Policy'];
+      parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+      const child = empty('S~Child');
+      child.outputs = { COut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: { Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'plain-queue-name' } } },
+        },
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const node = tree.children.find((c) => c.stackName === 'S~Child');
+      const out = JSON.stringify(node?.outputChanges.find((c) => c.name === 'COut'));
+      expect(out).toContain('"changeType":"REMOVE"');
+      expect(out).toContain('"oldValue"');
+      expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+    });
+
+    it("never hands the row's reads to the child as inheritedSecrets: its export alias still previews", async () => {
+      // A child export NAMED from the parent-passed URL. An inherited needle
+      // there would seed the child's NoEcho export-name verdict, which then
+      // withholds the alias the deploy publishes: the derived names are
+      // mask-only, so the alias row stays (its name display masked).
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-alias-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: { Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+            Outputs: {
+              QName: {
+                Value: 'v',
+                Export: { Name: { 'Fn::Select': [4, { 'Fn::Split': ['/', { Ref: 'QueueUrl' }] }] } },
+              },
+            },
+          })
+        );
+        const parent = state(SECRET_NAME);
+        parent.resources['Child'] = { ...stackRecord('S-Child', { QueueUrl: URL }), dependencies: ['Queue'] };
+        const tpl = template(SECRET_NAME);
+        tpl.Resources['Child'] = nestedRow('child.json', { QueueUrl: { Ref: 'Queue' } });
+        const states: Record<string, StackState> = {
+          S: parent,
+          'S~Child': empty('S~Child', {
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: 'x' },
+              attributes: {},
+              dependencies: [],
+            },
+          }),
+        };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const child = tree.children.find((c) => c.stackName === 'S~Child');
+        // Premise: the output itself previews.
+        expect(child?.outputChanges.some((c) => c.name === 'QName')).toBe(true);
+        const alias = child?.outputChanges.find((c) => c.isExport === true);
+        expect(alias?.changeType).toBe('ADD');
+        expect(JSON.stringify(alias?.nameDisplay)).not.toContain('sdin-diff-secret-queue');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ['a secret-named record', SECRET_NAME, false],
+      ['negative control, an ordinary name', 'plain-queue-name', true],
+    ])("masks a deleted grandchild's output with its deleted parent's own records: %s", async (_l, recorded, shown) => {
+      // The secret-named queue lives in the DELETED child's state, never in
+      // the root's: only the deleted child's own records can name it.
+      const parent = state('plain-root-queue');
+      parent.resources['Child'] = stackRecord('S-Child', {});
+      const child = empty('S~Child', {
+        Queue: {
+          physicalId: URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: recorded },
+          attributes: {},
+          dependencies: [],
+        },
+        GC: stackRecord('S-Child-GC', { QueueUrl: URL }),
+      });
+      // And the deleted child's OWN output: masked by its own records.
+      child.outputs = { COut: URL };
+      const gc = empty('S~Child~GC');
+      gc.outputs = { GOut: URL };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child, 'S~Child~GC': gc };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: template('plain-root-queue'),
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const deletedChild = tree.children.find((c) => c.stackName === 'S~Child');
+      const deletedGc = deletedChild?.children.find((c) => c.stackName === 'S~Child~GC');
+      for (const out of [
+        JSON.stringify(deletedChild?.outputChanges.find((c) => c.name === 'COut')),
+        JSON.stringify(deletedGc?.outputChanges.find((c) => c.name === 'GOut')),
+      ]) {
+        expect(out).toContain('"changeType":"REMOVE"');
+        expect(out).toContain('"oldValue"');
+        expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
+      }
+    });
   });
 });

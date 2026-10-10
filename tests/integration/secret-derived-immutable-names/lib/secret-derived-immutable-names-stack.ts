@@ -20,6 +20,13 @@ class QueueReaderChild extends cdk.NestedStack {
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('QueueReaderChild');
     const queueArn = new cdk.CfnParameter(this, 'QueueArn', { type: 'String' });
     queueArn.overrideLogicalId('QueueArn');
+    // Bound and never read: its value is SecretQueue's URL, the queue's
+    // PHYSICAL id, which state records in plaintext (the recorded ARN
+    // attribute is redacted to its `{{resolve:` spelling). `cdkd diff
+    // --recursive` binds it, and its `Parameter QueueUrl:` line is the one
+    // that names the queue unless masked (go-to-k/cdkd#3869).
+    const queueUrl = new cdk.CfnParameter(this, 'QueueUrl', { type: 'String' });
+    queueUrl.overrideLogicalId('QueueUrl');
     new ssm.CfnParameter(this, 'ChildQueueArn', {
       // Named per run by `verify.sh`, so its cleanup can delete it by name.
       name: process.env.SDIN_CHILD_PARAM_NAME ?? '/cdkd-integ/sdin-unset/child-queue-arn',
@@ -94,7 +101,7 @@ class QueueReaderChild extends cdk.NestedStack {
  *
  *   - `QueueReaderChild` (a nested stack, go-to-k/cdkd#3869) receives
  *     SecretQueue's ARN as its `QueueArn` parameter and stores it in an SSM
- *     String parameter. The parent's read is no recorded secret of the row, and
+ *     String parameter, and its URL as `QueueUrl`, which it only binds. The parent's read is no recorded secret of the row, and
  *     never may be (it would seed the child's export-name verdict), so the
  *     child's `Resolved Ref to parameter: QueueArn` and provider lines printed
  *     the queue name until the row's reads joined the printing bag bound around
@@ -305,7 +312,7 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
     plainTargetSchedule.addDependency(scheduleGroup);
 
     new QueueReaderChild(this, 'QueueReaderChild', {
-      parameters: { QueueArn: secretQueue.attrArn },
+      parameters: { QueueArn: secretQueue.attrArn, QueueUrl: secretQueue.ref },
       update,
     });
 

@@ -84,6 +84,7 @@ import {
   orphanRecordsPrintingBag,
   stateSecretNameNeedles,
 } from '../../deployment/secret-name-needles.js';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -867,6 +868,13 @@ export interface StackDiffResult {
    */
   printingSecrets: RecordedSecretValues;
   /**
+   * The MASK-ONLY derived-name needles this node printed with
+   * (go-to-k/cdkd#3869): what its readers read from a secret-named resource,
+   * plus what it inherited. Never part of {@link printingSecrets}; a deleted
+   * child's stored values are masked with it.
+   */
+  derivedNames: RecordedSecretValues;
+  /**
    * The parameter bag and the condition verdicts this node's resolver used
    * (go-to-k/cdkd#4094), for resolving a nested child's input `Parameters`
    * the way the deploy does: against the parent's BOUND parameters (template
@@ -980,8 +988,8 @@ function tokenValueForComparison(token: unknown, declaredType: string | undefine
  * The PRINTING corpus of one `cdkd diff` node (go-to-k/cdkd#4049), as one bag
  * of log-only needles: every needle of the diff resolver's own bag, of the
  * node's `NoEcho` parameter values, and of the bag a nested child inherits
- * from its parent. ONE bag, so `maskSecretsInText` matches longest-first over
- * all of them in one pass.
+ * from its parent. ONE bag, so `maskSecretsInText` masks all of them in one
+ * pass.
  *
  * A needle that IS one whole `{{resolve:...}}` token is left out: this
  * command prints a dynamic reference as its expression (it never resolves a
@@ -1290,6 +1298,13 @@ export async function computeStackDiff(
      */
     inheritedSecrets?: RecordedSecretValues;
     /**
+     * The needles of the secret-named resources the parent row read for this
+     * nested child's parameters (go-to-k/cdkd#3869), and its ancestors' too.
+     * MASK-ONLY, like this node's own `derivedNames`: never part of
+     * `printingSecrets`, so no export preview moves.
+     */
+    inheritedDerivedNames?: RecordedSecretValues;
+    /**
      * go-to-k/cdkd#4043 (review round 9): parameters of this nested child the
      * parent fills from a `NoEcho` source, positioned as `NoEcho` ones.
      */
@@ -1345,6 +1360,7 @@ export async function computeStackDiff(
     cfnFallback,
     inheritSecretBearingTemplate,
     inheritedSecrets,
+    inheritedDerivedNames,
     attributeHealer,
     parentUnresolvedParameters,
     inheritedNoEchoParameters,
@@ -1739,7 +1755,7 @@ export async function computeStackDiff(
   const outputsPassSecrets: RecordedSecretValues = new Map();
   const printing = createDiffPrintingMasker(
     [diffSecrets, inheritedForResolver, outputsPassSecrets],
-    [splitPieces, derivedNames]
+    [splitPieces, derivedNames, ...(inheritedDerivedNames ? [inheritedDerivedNames] : [])]
   );
   const maskForLog: MaskerFn = printing.mask;
 
@@ -2499,6 +2515,7 @@ export async function computeStackDiff(
     deployRefusals: shownDeployRefusals,
     effectiveTemplate,
     printingSecrets,
+    derivedNames: diffPrintingSecrets([derivedNames, inheritedDerivedNames]),
     resolvedParameters: mergedParameters,
     conditions,
     knownConditions:
@@ -2935,7 +2952,13 @@ async function resolveChildStackParameters(
    */
   unresolvedKeys?: Set<string>,
   /** What the parent node knows for certain; see {@link rowValueTrusted}. */
-  trust?: NodeTrust
+  trust?: NodeTrust,
+  /**
+   * Receives the print-only needles of every secret-named resource the row
+   * READ (go-to-k/cdkd#3869): the child prints those values as its own
+   * parameters, so the caller masks the child's walk with them.
+   */
+  derivedNameSink?: RecordedSecretValues
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -2958,7 +2981,7 @@ async function resolveChildStackParameters(
         // go-to-k/cdkd#3869: a parent row passing a secret-named resource's
         // id or ARN to its child masks it on this resolution's lines.
         secretNameNeedles: stateSecretNameNeedles(parentState.resources),
-        secretNameSink: new Map(),
+        secretNameSink: derivedNameSink ?? new Map(),
         stateBackend,
         stackName: parentStackName,
         // Best-effort like computeStackDiff's resolver: an unresolvable
@@ -3175,6 +3198,12 @@ export async function buildDiffTree(args: {
    */
   inheritedSecrets?: RecordedSecretValues;
   /**
+   * The mask-only needles this child's row read from secret-named resources,
+   * plus the parent's own (go-to-k/cdkd#3869); see `computeStackDiff`'s
+   * option of the same name. Absent at the root.
+   */
+  inheritedDerivedNames?: RecordedSecretValues;
+  /**
    * go-to-k/cdkd#4043 (review round 9): this child's parameters the parent row
    * fills from a `NoEcho` source; positioned as `NoEcho` ones, as the deploy's
    * child engine does. Absent at the root.
@@ -3208,6 +3237,7 @@ export async function buildDiffTree(args: {
     ancestorTemplatePaths,
     isNestedChild,
     inheritedSecrets,
+    inheritedDerivedNames,
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
     refusalRecovery,
@@ -3268,6 +3298,7 @@ export async function buildDiffTree(args: {
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
+        ...(inheritedDerivedNames && { inheritedDerivedNames }),
         ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
         ...(inheritedNoEchoParametersAnyVerdict && { inheritedNoEchoParametersAnyVerdict }),
         ...(attributeHealer && { attributeHealer }),
@@ -3292,6 +3323,7 @@ export async function buildDiffTree(args: {
     deployRefusals: adoptedDeployRefusals,
     effectiveTemplate,
     printingSecrets,
+    derivedNames: nodeDerivedNames,
     resolvedParameters,
     conditions,
     knownConditions,
@@ -3449,6 +3481,12 @@ export async function buildDiffTree(args: {
       undefined,
       stateAfterAdoption.resources
     );
+    // go-to-k/cdkd#3869: the row's reads of a secret-named resource (a child
+    // parameter fed `Fn::GetAtt SecretQueue.Arn`). The child binds that value
+    // as its own parameter and prints it on its resolver and provider lines,
+    // so its whole walk runs under these needles, and its rows mask with them.
+    // Mask-only: never the child's `inheritedSecrets`, as on the deploy path.
+    const rowDerivedNames: RecordedSecretValues = new Map();
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -3462,10 +3500,12 @@ export async function buildDiffTree(args: {
       printingSecrets,
       attributeHealer,
       childUnresolvedParameters,
-      trust
+      trust,
+      rowDerivedNames
     );
-    node.children.push(
-      await buildDiffTree({
+    const childDerivedNames = diffPrintingSecrets([inheritedDerivedNames, rowDerivedNames]);
+    const buildChild = (): Promise<DiffTreeNode> =>
+      buildDiffTree({
         stackName: childStackName,
         displayName: childStackName,
         region,
@@ -3485,12 +3525,19 @@ export async function buildDiffTree(args: {
         isNestedChild: true,
         parentHasSecretReference: secretBearingAbove,
         inheritedSecrets: printingSecrets,
-        ...(childNoEchoParameters.size > 0 && { inheritedNoEchoParameters: childNoEchoParameters }),
+        ...(hasMaskableValues(childDerivedNames) && { inheritedDerivedNames: childDerivedNames }),
+        ...(childNoEchoParameters.size > 0 && {
+          inheritedNoEchoParameters: childNoEchoParameters,
+        }),
         ...(childNoEchoParametersAnyVerdict.size > 0 && {
           inheritedNoEchoParametersAnyVerdict: childNoEchoParametersAnyVerdict,
         }),
         ...(refusalRecovery && { refusalRecovery }),
-      })
+      });
+    node.children.push(
+      await (hasMaskableValues(childDerivedNames)
+        ? withPrintingSecrets(childDerivedNames, buildChild)
+        : buildChild())
     );
   }
 
@@ -3523,7 +3570,10 @@ export async function buildDiffTree(args: {
         // happens to carry no reference cannot break the chain.
         secretBearingAbove,
         printingSecrets,
-        refusalRecovery
+        refusalRecovery,
+        // A deleted child's stored values can hold a name this node's records
+        // spell from a secret even when no live row reads it any more.
+        diffPrintingSecrets([nodeDerivedNames, stateDerivedNames(state.resources ?? {})])
       )
     );
   }
@@ -3547,7 +3597,11 @@ async function buildDeletedSubtree(
   // row's stored value can hold a `NoEcho` value that node passed down.
   inheritedSecrets: RecordedSecretValues,
   // go-to-k/cdkd#4159: the run's account flags, as at a live node.
-  refusalRecovery: LockRecoveryContext | undefined
+  refusalRecovery: LockRecoveryContext | undefined,
+  // go-to-k/cdkd#3869: the nearest live node's mask-only derived names. A
+  // stored value can hold a secret-derived name a row passed down, and these
+  // rows print after any bound bag is gone.
+  inheritedDerivedNames: RecordedSecretValues
 ): Promise<DiffTreeNode> {
   const { state, unreadable, unreadableContainers } = await loadStateOrEmpty(
     stackName,
@@ -3555,6 +3609,11 @@ async function buildDeletedSubtree(
     stateBackend,
     refusalRecovery
   );
+  // Its own secret-named records too: a nested stack it held may store them.
+  const derivedNames = diffPrintingSecrets([
+    inheritedDerivedNames,
+    stateDerivedNames(state.resources ?? {}),
+  ]);
   const { changes, outputChanges } = await computeStackDiff(
     state,
     EMPTY_TEMPLATE,
@@ -3565,6 +3624,7 @@ async function buildDeletedSubtree(
     {
       inheritSecretBearingTemplate: parentHasSecretReference,
       inheritedSecrets,
+      ...(hasMaskableValues(derivedNames) && { inheritedDerivedNames: derivedNames }),
       ...(refusalRecovery && { refusalRecovery }),
     }
   );
@@ -3620,11 +3680,27 @@ async function buildDeletedSubtree(
         diffCalculator,
         parentHasSecretReference,
         inheritedSecrets,
-        refusalRecovery
+        refusalRecovery,
+        derivedNames
       )
     );
   }
   return node;
+}
+
+/**
+ * The name needles of every record in `resources` named from a secret
+ * (go-to-k/cdkd#3869), as one MASK-ONLY bag of log-only needles, for a
+ * deleted subtree's rows: judged from the records alone, since no live row
+ * reads them. Over-masking costs nothing here; `cdkd diff` writes nothing.
+ */
+function stateDerivedNames(resources: Record<string, ResourceState>): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  const needlesOf = stateSecretNameNeedles(resources);
+  for (const logicalId of Object.keys(resources)) {
+    for (const needle of needlesOf(logicalId) ?? []) recordLogOnlyValue(bag, needle);
+  }
+  return bag;
 }
 
 const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();

@@ -473,9 +473,28 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       });
       let childLine: string | undefined;
       let inherited: Map<string, string> | undefined;
+      // The child engine's own event store: an AWS error quoting the value it
+      // received, recorded under the row's registry (the R1 residual).
+      const childEvents: Array<Record<string, unknown>> = [];
       const childDeploy = (): Promise<{ physicalId: string }> => {
         childLine = currentLogLineMasker()?.(`Resolved Ref to parameter: QueueArn -> ${queueArn}`);
         inherited = getCurrentResourceSecrets() as Map<string, string> | undefined;
+        new DeployEngine(
+          stateBackend as never,
+          {} as never,
+          {} as never,
+          diffCalculator as never,
+          registry as never,
+          {
+            dryRun: false,
+            eventRecorder: { record: (e: Record<string, unknown>) => void childEvents.push(e) },
+          } as never,
+          'us-east-1'
+        ).recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildQueueArn',
+          reason: `Value '${queueArn}' at 'value' failed to satisfy constraint`,
+        } as never);
         // The row's OWN provider line, through the logger's sink.
         getLogger().debug(`Creating nested stack NestedRow with QueueArn ${queueArn}`);
         return Promise.resolve({ physicalId: 'child-stack' });
@@ -488,6 +507,8 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       });
 
       expect(childLine).toBe('Resolved Ref to parameter: QueueArn -> ***');
+      expect(childEvents).toHaveLength(1);
+      expect(childEvents[0]!['reason']).toBe("Value '***' at 'value' failed to satisfy constraint");
       expect(logLines).toContain('debug Creating nested stack NestedRow with QueueArn ***');
       expect(logLines.join('\n')).not.toContain('team-secret-queue-name');
       // The child's `inheritedSecrets` (the row's own bag) holds no read needle.

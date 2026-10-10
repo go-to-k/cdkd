@@ -1,6 +1,6 @@
 import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
 import { logOnlyValuesOf, hasMaskableValues } from './log-only.js';
-import { buildNeedleRegex } from './rules.js';
+import { MIN_NEEDLE_LENGTH, maskMatchSpans } from './rules.js';
 
 /**
  * Replace every recorded secret value inside `text` with {@link SECRET_MASK}.
@@ -26,13 +26,11 @@ import { buildNeedleRegex } from './rules.js';
 export function maskSecretsInText(text: string, secrets: RecordedSecretValues): string {
   const logOnly = logOnlyValuesOf.get(secrets);
   if (logOnly === undefined || logOnly.size === 0) return maskRecordedSecretsInText(text, secrets);
-  // Whole-value first, then the substring scan over BOTH populations in one
-  // regex, so a longer needle of either kind is matched before a shorter one
-  // it overlaps.
+  // Whole-value first, then the substring scan over BOTH populations at once:
+  // the union of every match span, so neither kind leaves a tail of a needle
+  // it overlaps (go-to-k/cdkd#3869).
   if (text !== '' && (secrets.has(text) || logOnly.has(text))) return SECRET_MASK;
-  const regex = buildNeedleRegex([...secrets.keys(), ...logOnly]);
-  if (!regex) return text;
-  return text.replace(regex, SECRET_MASK);
+  return maskMatchSpans(text, substringNeedles([...secrets.keys(), ...logOnly]), SECRET_MASK);
 }
 
 /**
@@ -47,9 +45,12 @@ export function maskRecordedSecretsInText(text: string, secrets: RecordedSecretV
   // entire string), then substring masking for the rest. An empty-string secret
   // is never matched (it would mask every empty string).
   if (text !== '' && secrets.has(text)) return SECRET_MASK;
-  const regex = buildNeedleRegex(secrets.keys());
-  if (!regex) return text;
-  return text.replace(regex, SECRET_MASK);
+  return maskMatchSpans(text, substringNeedles(secrets.keys()), SECRET_MASK);
+}
+
+/** The distinct values long enough to scan for as a substring. */
+function substringNeedles(values: Iterable<string>): string[] {
+  return [...new Set(values)].filter((value) => value.length >= MIN_NEEDLE_LENGTH);
 }
 
 /**

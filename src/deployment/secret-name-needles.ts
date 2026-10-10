@@ -396,7 +396,8 @@ export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedS
  *
  * A message marked `ownLines` (a replay refusal from the completed-op arms,
  * masked at construction by the op masker, which holds no name the entry READ
- * from a sibling) is masked LINE BY LINE, except its labelled `To orphan it:`
+ * from a sibling) is masked run by run (each run of other lines as one text,
+ * so a multi-line needle still matches), except its labelled `To orphan it:`
  * command line: that line carries only the vetted logical id and the run's own
  * stack, region and option values, none derived from a secret, and a short
  * needle would cut the pasteable command. The completed-op replay now runs
@@ -407,7 +408,39 @@ export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedS
  * sink.
  */
 /** The label of `orphanRemedy`'s pasteable command line. */
-const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
+export const ORPHAN_COMMAND_LABEL = 'To orphan it: ';
+
+/**
+ * `message` with every run of consecutive lines other than a `To orphan it:`
+ * command line masked as ONE text, so a needle spanning lines (a PEM, a
+ * multi-line `SecretString`) still matches inside a run; then each line that a
+ * per-line pass masks WHOLE.
+ */
+function maskOutsideCommandLines(message: string, mask: (text: string) => string): string {
+  const out: string[] = [];
+  let run: string[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    // The joined run first, so a needle spanning lines masks all of them; then
+    // each line that IS a needle, the only arm a needle under the substring
+    // floor takes, which the joined run hides.
+    const masked = mask(run.join('\n'))
+      .split('\n')
+      .map((line) => (mask(line) === SECRET_MASK ? SECRET_MASK : line));
+    out.push(masked.join('\n'));
+    run = [];
+  };
+  for (const line of message.split('\n')) {
+    if (line.startsWith(ORPHAN_COMMAND_LABEL)) {
+      flush();
+      out.push(line);
+    } else {
+      run.push(line);
+    }
+  }
+  flush();
+  return out.join('\n');
+}
 
 export function maskEventTextWithBoundBags<
   T extends { error?: { message?: string; ownLines?: boolean }; reason?: string },
@@ -419,10 +452,7 @@ export function maskEventTextWithBoundBags<
   if (masked.error?.message) {
     const message =
       masked.error.ownLines === true
-        ? masked.error.message
-            .split('\n')
-            .map((line) => (line.startsWith(ORPHAN_COMMAND_LABEL) ? line : mask(line)))
-            .join('\n')
+        ? maskOutsideCommandLines(masked.error.message, mask)
         : mask(masked.error.message);
     masked.error = { ...masked.error, message };
   }

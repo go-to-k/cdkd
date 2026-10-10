@@ -45,6 +45,9 @@ const { hasMaskableValues, maskSecretsInText, recordLogOnlyValue } = await impor
   '../../../src/deployment/secret-redaction.js'
 );
 const { withPrintingSecrets } = await import('../../../src/deployment/resource-secrets-scope.js');
+// Loaded once at module level: the engine module is large, and a first case
+// importing it under load spends its own timeout on the import.
+const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
 
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER_ID = 'team-secret-user';
@@ -288,5 +291,212 @@ describe('maskEventTextWithBoundBags (go-to-k/cdkd#3869)', () => {
     expect(masked.error.message).toBe(
       `Cannot reverse the replacement of 'Q' (it read ***)\nTo orphan it: cdkd rollback S --orphan ${USER_ID}`
     );
+  });
+});
+
+describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869)', () => {
+  // A nested child's engine records its events under the parent row's
+  // derived-name registry (`withPrintingSecrets`); its own
+  // `printingSecretsFor` holds none of those needles, so `deployments/*.jsonl`
+  // kept a child AWS error quoting a parent-passed secret-named value.
+  const engineRecording = async (events: Array<Record<string, unknown>>): Promise<{
+    recordEvent: (event: Record<string, unknown>) => void;
+  }> => {
+    return new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { getProvider: vi.fn(), getProviderFor: vi.fn() } as never,
+      { dryRun: false, eventRecorder: { record: (e: Record<string, unknown>) => void events.push(e) } } as never,
+      'us-east-1'
+    ) as never;
+  };
+  const failed = () => ({
+    eventType: 'RESOURCE_FAILED',
+    logicalId: 'ChildParam',
+    physicalId: USER_ID,
+    reason: `create failed for ${USER_ID}`,
+    error: { message: `Value '${USER_ID}' at 'value' failed to satisfy constraint` },
+  });
+
+  it.each([
+    ['a bound needle masks the persisted text, never the physicalId field', true],
+    ['negative control: nothing bound leaves it as written', false],
+  ])('%s', async (_label, bind) => {
+    const events: Array<Record<string, unknown>> = [];
+    const engine = await engineRecording(events);
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, USER_ID);
+    if (bind) withPrintingSecrets(bag, () => engine.recordEvent(failed()));
+    else engine.recordEvent(failed());
+    expect(events).toHaveLength(1);
+    const [recorded] = events as Array<ReturnType<typeof failed>>;
+    expect(recorded!.physicalId).toBe(USER_ID);
+    if (bind) {
+      expect(recorded!.error.message).toBe("Value '***' at 'value' failed to satisfy constraint");
+      expect(recorded!.reason).toBe('create failed for ***');
+    } else {
+      expect(recorded).toEqual(failed());
+    }
+  });
+
+  describe('one pass over the engine bag and the bound bags', () => {
+    // The engine's own bag holds a NoEcho value the derived name embeds.
+    const ENGINE = 'teamsecret';
+    const DERIVED = 'q-teamsecret-queue';
+    const engineWith = async (events: Array<Record<string, unknown>>) => {
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, ENGINE);
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      return engine;
+    };
+    const boundBag = () => {
+      const bag = new Map<string, string>();
+      recordLogOnlyValue(bag, DERIVED);
+      recordLogOnlyValue(bag, 'boundonly');
+      return bag;
+    };
+
+    it('masks a derived needle that embeds an engine needle whole, leaving no fragment', async () => {
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineWith(events);
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          reason: `create failed for ${DERIVED}`,
+          error: { message: `queue ${DERIVED} rejected ${ENGINE}` },
+        })
+      );
+      const [recorded] = events as Array<{ reason: string; error: { message: string } }>;
+      expect(recorded!.reason).toBe('create failed for ***');
+      expect(recorded!.error.message).toBe('queue *** rejected ***');
+    });
+
+    it("keeps an own-remedy command line masked by the engine bag, and only by it", async () => {
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineWith(events);
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message:
+              `Cannot reverse 'Q' (it read ${DERIVED}, boundonly)\n` +
+              `To orphan it: cdkd rollback S --orphan Q -c k=${ENGINE} -c b=boundonly`,
+            ownLines: true,
+          },
+        } as never)
+      );
+      const [recorded] = events as Array<{ error: { message: string } }>;
+      expect(recorded!.error.message).toBe(
+        "Cannot reverse 'Q' (it read ***, ***)\nTo orphan it: cdkd rollback S --orphan Q -c k=*** -c b=boundonly"
+      );
+    });
+
+    it('masks an engine needle and a bound needle that overlap as one span, leaving neither tail', async () => {
+      // B (bound) starts before A (engine); neither contains the other.
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, 'cdefgh-tail');
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      const bag = new Map<string, string>();
+      recordLogOnlyValue(bag, 'xxab-cdefgh');
+      withPrintingSecrets(bag, () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          reason: 'got xxab-cdefgh-tail back',
+        })
+      );
+      expect((events[0] as { reason: string }).reason).toBe('got *** back');
+    });
+
+    it('masks a MULTI-LINE engine needle inside an own-remedy message, as one span', async () => {
+      // A PEM-shaped value: the needle spans lines, so a per-line pass misses it.
+      const pem = 'BEGIN-KEY\nsecret-body-line\nEND-KEY';
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, pem);
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message: `Cannot reverse 'Q': value ${pem} rejected\nTo orphan it: cdkd rollback S --orphan Q`,
+            ownLines: true,
+          },
+        } as never)
+      );
+      expect((events[0] as { error: { message: string } }).error.message).toBe(
+        "Cannot reverse 'Q': value *** rejected\nTo orphan it: cdkd rollback S --orphan Q"
+      );
+    });
+
+    it('masks a whole line that IS a short needle inside a multi-line own-remedy run', async () => {
+      // Under the substring floor, a needle masks only a text it equals: the
+      // line, not the joined run.
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, 'abc');
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message: "Cannot reverse 'Q', it read:\nabc\nTo orphan it: cdkd rollback S --orphan Q",
+            ownLines: true,
+          },
+        } as never)
+      );
+      expect((events[0] as { error: { message: string } }).error.message).toBe(
+        "Cannot reverse 'Q', it read:\n***\nTo orphan it: cdkd rollback S --orphan Q"
+      );
+    });
+
+    it('masks every line of a multi-line needle whose middle line is a needle on its own', async () => {
+      const multi = 'BEGIN-KEY\nkey-body\nEND-KEY';
+      const events: Array<Record<string, unknown>> = [];
+      const engine = await engineRecording(events);
+      const own = new Map<string, string>();
+      recordLogOnlyValue(own, multi);
+      recordLogOnlyValue(own, 'key-body');
+      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+        'ChildParam',
+        own
+      );
+      withPrintingSecrets(boundBag(), () =>
+        engine.recordEvent({
+          eventType: 'RESOURCE_FAILED',
+          logicalId: 'ChildParam',
+          error: {
+            message: `Cannot reverse 'Q':\n${multi}\nTo orphan it: cdkd rollback S --orphan Q`,
+            ownLines: true,
+          },
+        } as never)
+      );
+      expect((events[0] as { error: { message: string } }).error.message).toBe(
+        "Cannot reverse 'Q':\n***\nTo orphan it: cdkd rollback S --orphan Q"
+      );
+    });
   });
 });

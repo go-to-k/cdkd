@@ -48,8 +48,9 @@
 #      which passes with or without the fix and shows the update path is sound.
 #   5b. `cdkd diff --verbose` of the updated stack: its log names neither the
 #      queue name nor the policy path its readers resolve (go-to-k/cdkd#3869).
-#      The nested QueueReaderChild's parameter lines are reported as a NOTE
-#      there: `cdkd diff`'s child walk is a separate #3869 residual.
+#      With --recursive, so the nested QueueReaderChild's parameter lines
+#      are swept too: the diff's child walk masks them with the parent row's
+#      reads (its QueueUrl is SecretQueue's URL, in plaintext in state).
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -124,6 +125,10 @@
 # (go-to-k/cdkd#3869) and step 2 fails naming ${QUEUE_NAME} on the nested
 # child's `Resolved Ref to parameter: QueueArn` line, and step 4 the same on
 # the update (not yet measured on real AWS).
+# Revert the `withPrintingSecrets` wrap around the nested child's
+# `buildDiffTree` in src/cli/commands/diff-recursive.ts ALONE
+# (go-to-k/cdkd#3869) and step 5b fails naming ${QUEUE_NAME} on the child's
+# `Parameter QueueUrl:` line (not yet measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
@@ -737,12 +742,13 @@ expect_eq "SecretStage's recorded StageName after the update" \
   "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
 
 echo "==> Step 5b: cdkd diff --verbose withholds the names its readers read (go-to-k/cdkd#3869)"
-# The same template the update deployed, so the diff is NO_CHANGE, but the
-# diff still resolves every reader's Ref / Fn::GetAtt against state, where
-# SecretQueue's QueueName and SecretPolicy's Path are their {{resolve:
-# references. PREMISE: each read's --verbose line is in the diff's log.
+# The same template the update deployed, but the diff still resolves every
+# reader's Ref / Fn::GetAtt against state, where SecretQueue's QueueName and
+# SecretPolicy's Path are their {{resolve: references. PREMISE: each read's
+# --verbose line is in the diff's log. --recursive: without it the diff never
+# walks into QueueReaderChild.
 set +e
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" --recursive \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose > "${DEPLOY_LOG}" 2>&1
 DIFF_RC=$?
 set -e
@@ -752,19 +758,22 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 expect_read_lines "${DEPLOY_LOG}" "diff"
-# `cdkd diff`'s walk into QueueReaderChild binds and prints the child's QueueArn
-# parameter with no needle of the parent's read: a separate #3869 residual
-# (diff-recursive.ts), reported here and kept out of the FAIL below. Every
-# other line still FAILs.
-CHILD_LINE_PATTERNS=(-e "Resolved Ref to parameter: QueueArn" -e "Parameter QueueArn: ")
-CHILD_DIFF_HITS="$(grep -F "${CHILD_LINE_PATTERNS[@]}" "${DEPLOY_LOG}" | grep -cF -- "${QUEUE_NAME}" || true)"
-if [ "${CHILD_DIFF_HITS}" != "0" ]; then
-  echo "    NOTE: cdkd diff prints QueueReaderChild's parent-passed QueueArn with the queue name on ${CHILD_DIFF_HITS} line(s) (go-to-k/cdkd#3869, the diff child walk)"
-fi
-DIFF_LOG_REST="$(grep -vF "${CHILD_LINE_PATTERNS[@]}" "${DEPLOY_LOG}" || true)"
+# `cdkd diff`'s walk into QueueReaderChild binds the child's parameters and
+# prints them: masked by the needles of the parent row's reads
+# (go-to-k/cdkd#3869). QueueUrl is the one that carries the queue name in
+# plaintext (the row's `Ref SecretQueue`, the physical id); QueueArn arrives
+# in its `{{resolve:` spelling. PREMISE: the child's lines are in the log, so
+# the sweep below reads them too.
+for child_line in "Resolved Ref to parameter: QueueArn" "Parameter QueueArn: " "Parameter QueueUrl: "; do
+  if ! grep -qF -- "${child_line}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the cdkd diff log has no '${child_line}' line, so it cannot show QueueReaderChild's parameter is masked (premise; go-to-k/cdkd#3869)" >&2
+    log_tail
+    exit 1
+  fi
+done
 for needle_var in QUEUE_NAME POLICY_PATH; do
-  if grep -qF -- "${!needle_var}" <<< "${DIFF_LOG_REST}"; then
-    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | grep -vF "${CHILD_LINE_PATTERNS[@]}" | cut -d: -f1 | paste -sd ' ' -)"
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
     echo "FAIL: the cdkd diff log names a value read from a secret-named resource in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
     exit 1
   fi

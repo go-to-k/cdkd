@@ -52,6 +52,8 @@ import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { withRetry, type RetryLogger } from './retry.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
+import { maskEventTextWithBoundBags, ORPHAN_COMMAND_LABEL } from './secret-name-needles.js';
+import { withPrintingSecrets } from './resource-secrets-scope.js';
 import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -1392,6 +1394,12 @@ export class DeployEngine {
    * recorder. No-op when no recorder was supplied. `record()` is
    * contractually synchronous and never-throwing, but we still guard
    * with a try/catch so an event emission can NEVER abort a deploy.
+   *
+   * Masked by the printing bags bound where it is recorded too
+   * (go-to-k/cdkd#3869), as its log lines beside it are: a nested child's
+   * engine runs under its parent row's derived-name registry, whose needles
+   * (a parent-passed secret-named value) its own `printingSecretsFor` lacks.
+   * See {@link maskSecretsInEvent}.
    */
   /** @internal */
   recordEvent(
@@ -1416,9 +1424,21 @@ export class DeployEngine {
    * The LOG-ONLY needles count (go-to-k/cdkd#1998): a `NoEcho` parameter's
    * value quoted inside an AWS error is exactly what this store must not keep,
    * and masking text in an event rewrites no value cdkd reads back.
+   *
+   * ONE pass over the union of match spans of the event's own resource
+   * secrets AND the printing bags bound where it is recorded
+   * (go-to-k/cdkd#3869): two passes in either order let a needle of one bag
+   * split an overlapping needle of the other and leave a fragment of it. A replay refusal's own
+   * `To orphan it:` command line (`ownLines`) is exempt from the BOUND bags
+   * only, as `maskEventTextWithBoundBags` documents; the engine bag still
+   * masks it, as it always has.
    */
   private maskSecretsInEvent<
-    T extends { logicalId?: string; error?: { message?: string }; reason?: string },
+    T extends {
+      logicalId?: string;
+      error?: { message?: string; ownLines?: boolean };
+      reason?: string;
+    },
   >(event: T): T {
     // Mask with the event's own resource secrets; a resource-less (run-level)
     // event carries no properties-derived text.
@@ -1426,14 +1446,16 @@ export class DeployEngine {
     // physical-id needles here (go-to-k/cdkd#3869). The event's `physicalId`
     // FIELD is left as is: it is the id a cleanup pass needs, and `state.json`
     // beside this store records it too.
-    const secrets = event.logicalId ? this.printingSecretsFor(event.logicalId) : undefined;
-    if (!secrets || !hasMaskableValues(secrets)) return event;
-    const next: T = { ...event };
-    if (next.error?.message) {
-      next.error = { ...next.error, message: maskSecretsInText(next.error.message, secrets) };
-    }
-    if (next.reason) next.reason = maskSecretsInText(next.reason, secrets);
-    return next;
+    const own = event.logicalId ? this.printingSecretsFor(event.logicalId) : undefined;
+    if (own === undefined || !hasMaskableValues(own)) return maskEventTextWithBoundBags(event);
+    const masked = withPrintingSecrets(own, () => maskEventTextWithBoundBags(event));
+    const message = masked.error?.message;
+    if (masked.error?.ownLines !== true || !message) return masked;
+    const commandLines = message
+      .split('\n')
+      .map((line) => (line.startsWith(ORPHAN_COMMAND_LABEL) ? maskSecretsInText(line, own) : line))
+      .join('\n');
+    return { ...masked, error: { ...masked.error, message: commandLines } };
   }
 
   // Type-based implicit deletion ordering rules are defined in
