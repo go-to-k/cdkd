@@ -145,7 +145,8 @@ carry the name are the exception:
 - an output key the template no longer declares is rewritten to the
   expression where it holds or embeds the secret's resolved value, and is
   otherwise handled like any undeclared key;
-- another resource's `orphans` record is rewritten the same way;
+- another resource's `orphans` record is rewritten the same way (its stored
+  bags; not its physical id);
 - an exports index entry with no output left is reported when it holds a
   recorded secret's value.
 
