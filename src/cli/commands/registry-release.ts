@@ -21,7 +21,10 @@ export async function releaseRegistryMarkerQuietly(
 ): Promise<void> {
   if (stackName.includes('~')) return;
   try {
-    const released = await backend.releaseRegistryMarker(stackName, region, known);
+    const released =
+      known === undefined
+        ? await backend.releaseRegistryMarker(stackName, region)
+        : await backend.releaseRegistryMarker(stackName, region, known);
     logger.debug(safeMsg`Stack registry marker: ${released}`);
   } catch (error) {
     logger.warn(

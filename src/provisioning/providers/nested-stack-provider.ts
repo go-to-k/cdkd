@@ -867,12 +867,13 @@ export class NestedStackProvider implements ResourceProvider {
         // decide scoping for you. No count is written in this paragraph,
         // because a count is the part that rots.
         //
-        // `recreateTargets`, `pinCcApi` and `onCurrentStateLoaded` SELF-SCOPE,
+        // `recreateTargets`, `pinCcApi`, `onCurrentStateLoaded` and
+        // `onFirstDeployLeftNoRecord` (go-to-k/cdkd#4705) SELF-SCOPE,
         // so inheriting them is inert: the first two match only while deploying
         // their own `stackName` (`pinCcApi` gained that shape in issue #2719
         // for exactly this reason -- it started as a bare logical-id Set), the
-        // third (the prefix-migration gate) returns early
-        // on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
+        // third (the prefix-migration gate) and the fourth (the registry
+        // release) return early on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
         // and CDK's stack-name rule bars `~`, so neither can match in a
         // descendant. `parentStackInfo` and `eventRecorder` are stack-named but
         // are not decisions ABOUT a stack: the first is overwritten a few lines

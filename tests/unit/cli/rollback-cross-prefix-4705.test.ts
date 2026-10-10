@@ -182,7 +182,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     const setup = (await setupMock())!;
     await rollbackCommand('S', { ...BASE });
     expect(setup.stateBackend.deleteState).toHaveBeenCalledWith('S', REGION);
-    expect(setup.stateBackend.releaseRegistryMarker).toHaveBeenCalledWith('S', REGION, undefined);
+    expect(setup.stateBackend.releaseRegistryMarker).toHaveBeenCalledWith('S', REGION);
     expect(setup.stateBackend.deleteState.mock.invocationCallOrder[0]).toBeLessThan(
       setup.stateBackend.releaseRegistryMarker.mock.invocationCallOrder[0]
     );
