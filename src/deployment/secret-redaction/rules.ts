@@ -21,6 +21,38 @@ export function escapeRegExp(value: string): string {
 }
 
 /**
+ * `text` with the union of every literal occurrence of `needles` replaced,
+ * each run of OVERLAPPING occurrences by one `mask` (`SECRET_MASK`)
+ * (go-to-k/cdkd#3869). A regex alternation consumes the leftmost needle, so of
+ * two needles that overlap without one containing the other it printed the
+ * second's tail. Adjacent occurrences stay separate masks. The caller filters
+ * `needles` (e.g. by {@link MIN_NEEDLE_LENGTH}).
+ */
+export function maskMatchSpans(text: string, needles: readonly string[], mask: string): string {
+  const spans: Array<[number, number]> = [];
+  for (const needle of needles) {
+    for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
+      spans.push([at, at + needle.length]);
+    }
+  }
+  if (spans.length === 0) return text;
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  let out = '';
+  let cursor = 0;
+  let [start, end] = spans[0]!;
+  for (const [nextStart, nextEnd] of spans.slice(1)) {
+    if (nextStart < end) {
+      end = Math.max(end, nextEnd);
+      continue;
+    }
+    out += text.slice(cursor, start) + mask;
+    cursor = end;
+    [start, end] = [nextStart, nextEnd];
+  }
+  return out + text.slice(cursor, start) + mask + text.slice(end);
+}
+
+/**
  * Build a single alternation regex matching any recorded secret value, longest
  * first so an overlapping shorter secret cannot pre-empt a longer match. Returns
  * `undefined` when there is nothing worth scanning for.

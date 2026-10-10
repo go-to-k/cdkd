@@ -1,6 +1,6 @@
 import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
 import { sideSetOf, wholeStringLeavesOf, type WalkedContainers } from './mask-only.js';
-import { MIN_NEEDLE_LENGTH, buildNeedleRegex } from './rules.js';
+import { MIN_NEEDLE_LENGTH, maskMatchSpans } from './rules.js';
 import { type SecretMasker } from './mask-errors.js';
 
 /**
@@ -417,13 +417,20 @@ export function unionOfSecretBags(
 
 /**
  * ONE printing masker over several bags (go-to-k/cdkd#4049): their map
- * entries and log-only needles as a single union, masked in one
- * {@link maskSecretsInText} call. Masking bag by bag lets one bag's shorter
- * needle cut a longer needle another bag holds, printing the rest of it,
- * since longest-first holds only within one call. The bags are read by
- * reference; the needle set and its regex are rebuilt only when a bag's map
- * or log-only set changed size, which is sound because a pass's bags only
- * GROW. Do not hand it a bag that is cleared and refilled.
+ * entries and log-only needles as a single union, masked in one pass.
+ * Masking bag by bag lets one bag's needle cut a longer needle another bag
+ * holds, printing the rest of it, since overlaps resolve only within one
+ * pass. The bags are read by
+ * reference; the needle set is rebuilt only when a bag's map or log-only set
+ * changed size, which is sound because a pass's bags only GROW. Do not hand it
+ * a bag that is cleared and refilled.
+ *
+ * It masks the UNION of every needle's match spans (go-to-k/cdkd#3869), each
+ * overlapping run replaced by one {@link SECRET_MASK}: a single alternation
+ * consumes the leftmost needle, so of two needles that OVERLAP without one
+ * containing the other (different bags, or one bag) it printed the second's
+ * tail. Adjacent spans stay separate masks, as before; no fragment survives
+ * them.
  */
 export function createUnionSecretMasker(
   bags: ReadonlyArray<RecordedSecretValues | undefined>
@@ -431,7 +438,7 @@ export function createUnionSecretMasker(
   const present = bags.filter((bag): bag is RecordedSecretValues => bag !== undefined);
   let stamp: string | undefined;
   let needles = new Set<string>();
-  let regex: RegExp | undefined;
+  let scanned: string[] = [];
   return (text: string) => {
     const now = present.map((bag) => `${bag.size}:${logOnlyValueCount(bag)}`).join(',');
     if (now !== stamp) {
@@ -440,13 +447,13 @@ export function createUnionSecretMasker(
         for (const plaintext of bag.keys()) needles.add(plaintext);
         for (const plaintext of logOnlyValuesOf.get(bag) ?? []) needles.add(plaintext);
       }
-      regex = buildNeedleRegex(needles);
+      scanned = [...needles].filter((needle) => needle.length >= MIN_NEEDLE_LENGTH);
       stamp = now;
     }
     // {@link maskSecretsInText}'s two arms over the union: a whole text equal
-    // to a needle at any length, then the substring scan, longest first.
+    // to a needle at any length, then the substring scan.
     if (text !== '' && needles.has(text)) return SECRET_MASK;
-    return regex ? text.replace(regex, SECRET_MASK) : text;
+    return maskMatchSpans(text, scanned, SECRET_MASK);
   };
 }
 

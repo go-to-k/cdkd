@@ -199,7 +199,7 @@ export function isSecretDerivedValue(raw: unknown, mask: MaskerFn): raw is strin
  *
  * THE BASE MASKER RUNS FIRST, the needles after it (issue
  * [#4193](https://github.com/go-to-k/cdkd/issues/4193)). The base is one
- * longest-first pass over the recorded secrets, so a needle replaced BEFORE it
+ * pass over the recorded secrets, so a needle replaced BEFORE it
  * could cut a longer recorded secret containing the needle, which then no
  * longer occurs whole and its remainder prints. Each name is rendered as the
  * base renders it, on EVERY call (the base can read a bag that grows after

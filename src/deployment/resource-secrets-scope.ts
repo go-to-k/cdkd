@@ -66,7 +66,7 @@ const boundSecretBagsStore = new AsyncLocalStorage<readonly RecordedSecretValues
  *
  * Unbound or empty is one store read and an `undefined`, which the logger
  * takes as "leave the line alone". A bound line gets a FRESH union masker, so
- * its needle regex is built at most once per line and never outlives it: a
+ * its needle set is built at most once per line and never outlives it: a
  * bag can only change between lines, never while one is formatted.
  */
 installLogLineMaskerSource(() => {

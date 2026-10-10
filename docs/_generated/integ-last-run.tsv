@@ -323,7 +323,7 @@ schema-v9-to-v10-migration	2026-10-07T18:40:43Z	PASS	146	verify.sh	rc ok, orph c
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
-secret-derived-immutable-names	2026-10-08T16:17:02Z	PASS	421	verify.sh	PR #4729 (#4658/#4696 replay orphan guards); rc 0, destroy clean, orph clean, dedicated state bucket; 6b stream deleted from the journal (name masked), 6c ECR kept
+secret-derived-immutable-names	2026-10-09T23:42:49Z	PASS	451	verify.sh	PR #4779 (#3869 R1+R2): rc 0, destroy clean, orph clean, dedicated state bucket; 5b (diff --recursive) withholds the parent-passed QueueUrl/QueueArn; pre-fix RED at the 5b needle sweep
 secrets-array-nested	2026-10-09T10:13:13Z	PASS	401	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 secrets-dynamic-ref	2026-10-09T10:10:41Z	PASS	756	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
