@@ -69,6 +69,35 @@ const RENEWAL_TTL_FRACTION = 4;
 /** Floor, so a pathologically small TTL cannot spin the event loop. */
 const MIN_RENEWAL_INTERVAL_MS = 1000;
 
+/** How often a lock of `ttlMs` is renewed. */
+function renewalIntervalFor(ttlMs: number): number {
+  return Math.max(
+    MIN_RENEWAL_INTERVAL_MS,
+    Math.min(MAX_RENEWAL_INTERVAL_MS, Math.floor(ttlMs / RENEWAL_TTL_FRACTION))
+  );
+}
+
+/**
+ * go-to-k/cdkd#4705 review B1: the latest moment an abandoned run can have
+ * been alive, read off the lock it left: its last renewal (the object's
+ * LastModified, S3's clock) plus that lock's renewal interval -- the run kept
+ * creating between renewals. The interval comes from the lock's own TTL
+ * (`expiresAt` minus the renewal that set it), with the manager's formula; a
+ * lock that does not say falls back to the longest interval. `undefined` when
+ * S3 reported no LastModified.
+ */
+export function abandonedRunHorizon(record: {
+  info: { expiresAt?: unknown };
+  lastModified?: number;
+}): number | undefined {
+  if (record.lastModified === undefined) return undefined;
+  const expiresAt = Number(record.info.expiresAt);
+  const ttlMs = expiresAt - record.lastModified;
+  const interval =
+    Number.isFinite(ttlMs) && ttlMs > 0 ? renewalIntervalFor(ttlMs) : MAX_RENEWAL_INTERVAL_MS;
+  return record.lastModified + interval;
+}
+
 /**
  * How many times one `acquireLockWithRetry` call re-attempts at once, without
  * spending a retry, after a failed acquire is followed by an empty lock read
@@ -246,7 +275,7 @@ export class LockManager {
   private readonly renewalDisabled: boolean;
   /** Locks held by THIS process, keyed by S3 lock key. */
   private readonly heldLocks = new Map<string, HeldLock>();
-  /** By lock key: an expired lock this process took over, and its last renewal (G-1). */
+  /** By lock key: an expired lock this process took over, and its lease horizon (G-1/B1). */
   private readonly abandonedLocks = new Map<string, number>();
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
@@ -264,10 +293,7 @@ export class LockManager {
     }
     this.ttlMs = ttlMinutes * 60 * 1000;
     this.renewalDisabled = options?.disableRenewal === true;
-    this.renewalIntervalMs = Math.max(
-      MIN_RENEWAL_INTERVAL_MS,
-      Math.min(MAX_RENEWAL_INTERVAL_MS, Math.floor(this.ttlMs / RENEWAL_TTL_FRACTION))
-    );
+    this.renewalIntervalMs = renewalIntervalFor(this.ttlMs);
   }
 
   /**
@@ -505,11 +531,11 @@ export class LockManager {
               `if it is in fact still running, both processes are now writing to the same stack.`
           );
 
-          // go-to-k/cdkd#4705 review G-1: the abandoned run's last renewal
-          // (the lock object's write time, renewed at most every
-          // MAX_RENEWAL_INTERVAL_MS while it ran): no create of that run
-          // happened after it.
-          const abandonedAt = existing.lastModified;
+          // go-to-k/cdkd#4705 review G-1/B1: the abandoned run's lease
+          // horizon -- its last renewal plus that lock's renewal interval.
+          // It kept creating between renewals, so nothing it created is
+          // later than this.
+          const abandonedAt = abandonedRunHorizon(existing);
           if (abandonedAt !== undefined) this.abandonedLocks.set(key, abandonedAt);
 
           // Retry once after cleaning up expired lock
@@ -986,18 +1012,20 @@ export class LockManager {
    * `{prefix}/{stackName}/lock.json` file.
    */
   /**
-   * go-to-k/cdkd#4705 review G-1: when this process took over an EXPIRED lock
-   * of `stackName`, the abandoned run's last renewal (epoch ms, S3's clock),
-   * else `undefined`. No create of the abandoned run happened after it.
+   * go-to-k/cdkd#4705 review G-1/B1: when this process took over an EXPIRED
+   * lock of `stackName`, the abandoned run's lease horizon
+   * ({@link abandonedRunHorizon}: epoch ms), else `undefined`. Nothing the
+   * abandoned run created is later than it.
    */
-  abandonedLockRenewedAt(stackName: string, region: string | undefined): number | undefined {
+  abandonedRunEndedBy(stackName: string, region: string | undefined): number | undefined {
     return this.abandonedLocks.get(this.getLockKey(stackName, region));
   }
 
   /**
-   * Remove the stack's lock whoever holds it. Resolves the removed lock's last
-   * renewal (epoch ms, S3's clock) when one was read (go-to-k/cdkd#4705 review
-   * G-1: the caller records it as when the abandoned run stopped).
+   * Remove the stack's lock whoever holds it. Resolves the removed lock's
+   * lease horizon ({@link abandonedRunHorizon}) when one was read
+   * (go-to-k/cdkd#4705 review G-1/B1: the caller records it as the latest
+   * moment the abandoned run can have created anything).
    */
   async forceReleaseLock(
     stackName: string,
@@ -1058,7 +1086,7 @@ export class LockManager {
       // swept; the `IsLatest` filter keeps whatever is current intact.
       await this.purgeLockVersions(key, 'reap');
     }
-    return record?.lastModified;
+    return record ? abandonedRunHorizon(record) : undefined;
   }
 
   /**

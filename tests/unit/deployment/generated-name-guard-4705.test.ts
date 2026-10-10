@@ -47,11 +47,13 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
 }));
 
 import {
+  DEFAULT_TIMING,
   GeneratedNameGuard,
   provenNothingCreated,
   type GeneratedNameGuardInput,
 } from '../../../src/deployment/generated-name-guard.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
+import { abandonedRunHorizon } from '../../../src/state/lock-manager.js';
 import {
   disarmInterruptWatchForTests,
   interruptWatchTestSeam,
@@ -1151,4 +1153,49 @@ describe('review rounds H and S', () => {
       expect(isInterruptedWaitError((v as { error: unknown }).error)).toBe(true);
     });
   });
+});
+
+describe('review B1: a crashed run created between renewals, up to its lease horizon', () => {
+  const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/gen-A';
+  const RENEWED = Date.parse('2026-10-01T00:00:00Z');
+  const SENT = RENEWED - 60_000;
+  // The abandoned lock, default 30-minute TTL: renewed at RENEWED.
+  const horizon = abandonedRunHorizon({
+    info: { expiresAt: RENEWED + 30 * 60_000 },
+    lastModified: RENEWED,
+  })!;
+  const withCreatedAt = (createdAt: number) => {
+    const provider = providerOf({ 'gen-A': URL });
+    (provider as unknown as { holderCreatedAt: unknown }).holderCreatedAt = vi.fn(async () => createdAt);
+    return provider;
+  };
+  beforeEach(() => {
+    ledger.recorded = new Map([['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: SENT }]]) as never;
+  });
+  it('our own queue, created 90s after the last renewal and then SIGKILL: licensed', async () => {
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(RENEWED + 90_000) }, {
+      abandonedRunAt: horizon,
+    });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed' });
+  });
+  it('a twin created past the horizon plus the skew: held', async () => {
+    const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(horizon + 60_001) }, {
+      abandonedRunAt: horizon,
+    });
+    await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+  });
+});
+
+it('N1: the default cooldown sleep never holds the process open (its timer is unref\'d)', async () => {
+  const unref = vi.fn();
+  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) => {
+    queueMicrotask(fn);
+    return { unref } as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout);
+  try {
+    await DEFAULT_TIMING.sleep(10_000);
+    expect(unref).toHaveBeenCalledTimes(1);
+  } finally {
+    spy.mockRestore();
+  }
 });

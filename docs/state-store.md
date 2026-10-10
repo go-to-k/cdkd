@@ -110,8 +110,9 @@ stack's own evidence names that resource:
   they are bounded as below; only if that write fails too does the residual
   extend past a crash, and the deploy warns. When
   the re-run knows when the crashed run stopped -- it took over that run's
-  expired lock, or `cdkd force-unlock` released it, and the lock's last
-  renewal (at most two minutes before the crash) is the bound -- the intent
+  expired lock, or `cdkd force-unlock` released it, and the bound is the
+  lock's last renewal plus its renewal interval (two minutes at the default
+  TTL), since the run kept creating between renewals -- the intent
   licenses only a holder created by then, and for a type without a creation
   time it licenses nothing: the create is refused with the `cdkd import`
   remedy rather than taking a name another backend may have created since;
@@ -121,9 +122,11 @@ stack's own evidence names that resource:
   prefix that creates them again takes them back, and drops them from that
   list once its record names them. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. A deploy records what it
-  kept in one write when it ends, before its final state save; a crash before
-  that leaves them unrecorded, and their re-create is refused with the
-  `cdkd import` remedy. `cdkd state orphan` empties
+  kept in one write when it ends, before its final state save. A crash in
+  between -- after a removal's partial state save already dropped the
+  resource's row, before that write -- leaves the kept resource in neither
+  the record nor the list: its re-create is then refused with the
+  `cdkd import` remedy (the safe direction). `cdkd state orphan` empties
   it, with or without a record left, and so does a destroy that keeps nothing:
   the empty list is a tombstone, never deleted. One destroy (or orphan) by this
   cdkd therefore ends the older-cdkd history license below for that stack and
@@ -141,7 +144,8 @@ stack's own evidence names that resource:
 A kept resource (`retained.json`, the history) licenses only a holder created
 no later than it was kept (within a minute's clock skew), for a type that
 reports a creation time (an SQS queue, a log group, a state machine, a load
-balancer): a resource of the same name re-created later, after the kept one
+balancer; a creation time this identity may not read counts as none): a
+resource of the same name re-created later, after the kept one
 was deleted out of band, is someone else's. The keep time in `retained.json`
 is S3's clock (the write that recorded the entry), or this machine's clock at
 that write when reading S3's back failed (a warning says so); an entry without

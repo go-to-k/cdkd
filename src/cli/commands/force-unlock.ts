@@ -123,9 +123,10 @@ async function forceUnlockCommand(
         try {
           const abandonedAt = await lockManager.forceReleaseLock(stackName, r);
           logger.info(`✓ Lock released for stack: ${where}`);
-          // go-to-k/cdkd#4705 review G-1: the run that held it stopped by its
-          // last renewal; an adopting create it recorded but never sent must
-          // not license a resource created after that.
+          // go-to-k/cdkd#4705 review G-1/B1: the run that held it created
+          // nothing after its lease horizon (last renewal plus the lock's
+          // renewal interval); an adopting create it recorded must not
+          // license a resource created after that.
           // Never fails the unlock: the lock IS released by now.
           if (abandonedAt !== undefined && r !== undefined) {
             try {

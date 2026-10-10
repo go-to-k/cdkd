@@ -1293,11 +1293,11 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4705: every planned create of a name-adopting type whose
     // name cdkd generates is looked up NOW (exact reads, all at once),
     // overlapping the checks and the prompt below; each create awaits its
-    // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intent
-    // is written right before each create, and settled in the `finally`.
+    // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intents
+    // are written per type after the approval, and settled in the `finally`.
     const abandonedRunAt = (
-      this.lockManager as { abandonedLockRenewedAt?: (s: string, r: string) => number | undefined }
-    ).abandonedLockRenewedAt?.(stackName, this.stackRegion);
+      this.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
+    ).abandonedRunEndedBy?.(stackName, this.stackRegion);
     if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
     this.generatedNameGuard = GeneratedNameGuard.start({
       stackName,

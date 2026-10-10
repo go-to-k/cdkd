@@ -84,9 +84,9 @@ export interface CreateTokenLedgerDoc {
   stateRecorded?: boolean;
   /**
    * go-to-k/cdkd#4705 review G-1: when a run of this stack was abandoned (its
-   * lock force-released or taken over after it expired): the lock's last
-   * renewal, epoch ms. An adopting create's intent written before it was
-   * never followed by a create after it.
+   * lock force-released or taken over after it expired): the lock's lease
+   * horizon -- its last renewal plus its renewal interval -- epoch ms. The
+   * abandoned run created nothing after it.
    */
   abandonedAt?: number;
 }

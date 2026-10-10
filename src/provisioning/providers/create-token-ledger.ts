@@ -342,7 +342,7 @@ export class CreateTokenLedger {
 
   /**
    * go-to-k/cdkd#4705 review G-1: record that a run of this stack was
-   * abandoned at `at` (its lock's last renewal), when the ledger holds an
+   * abandoned by `at` (its lock's lease horizon), when the ledger holds an
    * adopting create's intent it may have left. A stack with no ledger, or
    * none of those intents, is not written (nothing to bound). Rejects when
    * the ledger cannot be read or written; the caller decides how loud.

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 import { S3Client, S3ServiceException, NoSuchKey } from '@aws-sdk/client-s3';
-import { LockManager } from '../../../src/state/lock-manager.js';
+import { LockManager, abandonedRunHorizon } from '../../../src/state/lock-manager.js';
 import type { LockInfo } from '../../../src/types/state.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
 import { LockError } from '../../../src/utils/error-handler.js';
@@ -306,7 +306,8 @@ describe('LockManager', () => {
                 JSON.stringify({
                   owner: 'old-user@host:123',
                   timestamp: Date.now() - 60 * 60 * 1000,
-                  expiresAt: Date.now() - 30 * 60 * 1000,
+                  // The default 30-minute TTL, set by that renewal.
+                  expiresAt: lastRenewed.getTime() + 30 * 60 * 1000,
                   operation: 'deploy',
                 })
               ),
@@ -315,16 +316,19 @@ describe('LockManager', () => {
         .mockResolvedValueOnce({})
         .mockResolvedValueOnce({});
 
-      expect(lockManager.abandonedLockRenewedAt('test-stack', 'us-east-1')).toBeUndefined();
+      expect(lockManager.abandonedRunEndedBy('test-stack', 'us-east-1')).toBeUndefined();
       expect(await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).toBe(true);
-      expect(lockManager.abandonedLockRenewedAt('test-stack', 'us-east-1')).toBe(lastRenewed.getTime());
-      expect(lockManager.abandonedLockRenewedAt('other-stack', 'us-east-1')).toBeUndefined();
+      // B1: the lease horizon -- the last renewal plus the 2-minute interval.
+      expect(lockManager.abandonedRunEndedBy('test-stack', 'us-east-1')).toBe(
+        lastRenewed.getTime() + 120_000
+      );
+      expect(lockManager.abandonedRunEndedBy('other-stack', 'us-east-1')).toBeUndefined();
     });
 
     it('records no abandoned run bound when the lock is acquired without a takeover', async () => {
       s3Client.send.mockResolvedValueOnce({});
       expect(await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).toBe(true);
-      expect(lockManager.abandonedLockRenewedAt('test-stack', 'us-east-1')).toBeUndefined();
+      expect(lockManager.abandonedRunEndedBy('test-stack', 'us-east-1')).toBeUndefined();
     });
 
     it('should return false if another process acquires lock during expired lock cleanup', async () => {
@@ -745,7 +749,7 @@ describe('LockManager', () => {
       expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
 
-    it("returns the released lock's LastModified (issue #4705)", async () => {
+    it("returns the released lock's lease horizon (issue #4705)", async () => {
       const lastRenewed = new Date(Date.now() - 5 * 60 * 1000);
       s3Client.send
         .mockResolvedValueOnce({
@@ -765,7 +769,11 @@ describe('LockManager', () => {
         })
         .mockResolvedValueOnce({});
 
-      expect(await lockManager.forceReleaseLock('test-stack', 'us-east-1')).toBe(lastRenewed.getTime());
+      // B1: the lease horizon -- the last renewal plus the interval its own
+      // TTL gives (35 minutes here: the 2-minute cap).
+      expect(await lockManager.forceReleaseLock('test-stack', 'us-east-1')).toBe(
+        lastRenewed.getTime() + 120_000
+      );
     });
 
     it('deletes a lock whose body cdkd cannot read (issue #2170)', async () => {
@@ -1286,5 +1294,21 @@ describe('LockManager — a lock record whose fields cannot be coerced (issue #2
     expect(warning).toMatch(/expired 1m\d+s ago/);
     expect(warning).toContain('crashed or was suspended');
     expect(warning).not.toContain('unknown time');
+  });
+});
+
+describe('abandonedRunHorizon (go-to-k/cdkd#4705 review B1)', () => {
+  const R = Date.parse('2026-10-01T00:00:00Z');
+  it.each([
+    ['the default 30-minute TTL: the 2-minute interval', R + 30 * 60_000, R + 120_000],
+    ['a 1-minute TTL: a quarter of it', R + 60_000, R + 15_000],
+    ['a 2-second TTL: the 1-second floor', R + 2_000, R + 1_000],
+    ['no usable expiresAt: the longest interval', 'soon', R + 120_000],
+    ['an expiresAt before the renewal: the longest interval', R - 1, R + 120_000],
+  ])('%s', (_label, expiresAt, horizon) => {
+    expect(abandonedRunHorizon({ info: { expiresAt }, lastModified: R })).toBe(horizon);
+  });
+  it('is undefined without a LastModified', () => {
+    expect(abandonedRunHorizon({ info: { expiresAt: R } })).toBeUndefined();
   });
 });

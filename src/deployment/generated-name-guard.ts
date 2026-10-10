@@ -150,8 +150,8 @@ export interface GeneratedNameGuardInput {
   /** The account the ARNs of SNS / Step Functions names are built in. */
   accountInfo(): Promise<{ partition: string; region: string; accountId: string }>;
   /**
-   * When this deploy took over an EXPIRED lock: the abandoned run's last
-   * renewal (epoch ms). With the ledger's own record of an abandoned run
+   * When this deploy took over an EXPIRED lock: the abandoned run's lease
+   * horizon (its last renewal plus its renewal interval, epoch ms). With the ledger's own record of an abandoned run
    * (`cdkd force-unlock`), it bounds what that run's intents license (G-1).
    */
   abandonedRunAt?: number;
@@ -174,7 +174,11 @@ export interface GuardTiming {
 /** The defaults (exported so an engine-level test can shorten the waits). */
 export const DEFAULT_TIMING: GuardTiming = {
   now: () => Date.now(),
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  // Unref'd (review N1): a Ctrl-C that ends the cooldown never waits on it.
+  sleep: (ms) =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms).unref?.();
+    }),
   // SQS keeps a deleted queue's name for 60 seconds; S3 answers for a
   // just-deleted bucket for about as long.
   cooldownMs: 65_000,
@@ -811,7 +815,7 @@ export class GeneratedNameGuard {
     if (createdAt === undefined) return byName;
     const { firstSentAt, failedAt } = intent;
     if (Number.isFinite(firstSentAt) && createdAt < firstSentAt - KEPT_AT_SKEW_MS) return held;
-    // G-1: the abandoned run made nothing after its last renewal; S-6: a
+    // G-1/B1: the abandoned run made nothing after its lease horizon; S-6: a
     // create that came back failed made nothing after it did.
     for (const until of [abandonedAt, failedAt]) {
       if (until !== undefined && createdAt > until + KEPT_AT_SKEW_MS) return held;
@@ -828,7 +832,7 @@ export class GeneratedNameGuard {
     );
   }
 
-  /** The abandoned run's last renewal: this deploy's takeover, or the ledger's record. */
+  /** The abandoned run's lease horizon: this deploy's takeover, or the ledger's record. */
   private async abandonedRunAt(): Promise<number | undefined> {
     this.abandonedRead ??= ledgerAbandonedAt()
       .catch(() => undefined)
