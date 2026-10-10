@@ -23,7 +23,11 @@ Application Load Balancer deployment example for cdkd.
 - **HealthRule** - a `ListenerRule` on the listener (`/health` -> fixed 200).
   verify.sh Phase 5 (issue #4689) recreates the listener with
   `--recreate-via-cc-api` and asserts the rule is replaced onto the new
-  listener with its priority and condition, not updated in place
+  listener with its priority and condition, not updated in place.
+  verify.sh Phase 6 (issue #4690) recreates the listener with
+  `--recreate-via-sdk-provider` while `ALB_RULE_BAD_PRIORITY=true` makes the
+  rule's replacement fail, and asserts the automatic rollback deletes the new
+  listener before re-creating the old one on port 80
 - **OrphanLb** (verify.sh Phase 4 only, issue #4606) - `INJECT_LB_ORPHAN=true`
   adds an internal load balancer whose CREATE fails after AWS made it
   (deletion protection on, then a malformed

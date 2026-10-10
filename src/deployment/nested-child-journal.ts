@@ -801,6 +801,7 @@ export async function revertNestedChildFromJournal(args: {
                       afterOp: save,
                       onOrphan: (record) => mintedOrphans.push(record),
                       inlinePolicyWriters,
+                      failedOperations: segment.failedOperations,
                     })
                 );
                 for (const [id, below] of inner.settled) settledBelow.set(id, below);

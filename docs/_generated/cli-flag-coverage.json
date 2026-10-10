@@ -836,6 +836,7 @@
     {
       "flag": "--recreate-via-sdk-provider",
       "integs": [
+        "alb",
         "recreate-mixed-direction",
         "recreate-via-sdk-provider",
         "sdk-to-cc-autoroute"

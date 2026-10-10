@@ -7,6 +7,7 @@ import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-fa
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).
@@ -36,7 +37,11 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
+vi.mock('../../../src/provisioning/cloud-control-provider.js', async (importOriginal) => ({
+  // The error class stays real: go-to-k/cdkd#4690's `--replace` case throws one.
+  CloudControlOperationFailedError: (
+    await importOriginal<typeof import('../../../src/provisioning/cloud-control-provider.js')>()
+  ).CloudControlOperationFailedError,
   CloudControlProvider: { isSupportedResourceType: vi.fn(() => true) },
 }));
 
@@ -76,6 +81,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     currentResources?: Record<string, ResourceState>;
     eventRecorder?: { record: (e: unknown) => void; runId?: string };
     crossPrefixHolder?: (stackName: string) => Promise<unknown>;
+    /** Extra `DeployEngine` options (go-to-k/cdkd#4690: `replace`). */
+    engineOptions?: Record<string, unknown>;
   }) {
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) =>
@@ -154,6 +161,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         roleArn: 'arn:aws:iam::1:role/r',
         ...(opts.eventRecorder && { eventRecorder: opts.eventRecorder as never }),
         ...(opts.crossPrefixHolder && { crossPrefixHolder: opts.crossPrefixHolder as never }),
+        ...opts.engineOptions,
       },
       'us-east-1'
     );
@@ -1801,7 +1809,31 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       });
       expect(ops.find((o) => o['changeType'] === 'UPDATE')).toMatchObject({
         replacementOrphaned: 'delete-first',
+        // go-to-k/cdkd#4690: the delete-first guard reads it.
+        oldDeletedBeforeCreate: true,
       });
+    });
+
+    // go-to-k/cdkd#4690: a delete-first replacement whose create made nothing
+    // still deleted the old resource, which only this flag records.
+    it('stamps a delete-first UPDATE whose create made nothing', async () => {
+      const { engine, provider } = replacingEngine(new Error('create rejected'), { inPlace: true });
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-old']);
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops).toHaveLength(1);
+      expect(ops[0]).toMatchObject({ changeType: 'UPDATE', oldDeletedBeforeCreate: true });
+      expect(ops[0]).not.toHaveProperty('replacementOrphaned');
+    });
+
+    it('stamps no failed create-first UPDATE', async () => {
+      const ops = await failedOpsOf(new Error('create rejected'));
+      expect(ops.find((o) => o['changeType'] === 'UPDATE')).not.toHaveProperty('oldDeletedBeforeCreate');
     });
 
     // The automatic rollback warns about the delete-first UPDATE itself and
@@ -1913,6 +1945,312 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         'auto-rollback-started',
       ]);
       expect(journal.popRollbackJournalSegment).toHaveBeenCalled();
+    });
+  });
+
+  // go-to-k/cdkd#4690: the rollback reverses a delete-first replacement by
+  // deleting the new resource first, so the completed UPDATE says which order
+  // the forward ran in.
+  describe('journals oldDeletedBeforeCreate on a completed UPDATE (go-to-k/cdkd#4690)', () => {
+    async function completedB(shape: 'delete-first' | 'create-first' | 'in-place', reuse = false) {
+      const changeB = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        desiredProperties: { p: 'new' },
+        propertyChanges: [
+          { path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: shape === 'create-first' },
+        ],
+      } as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['B', changeB],
+          ['F', makeChange('F')],
+        ]),
+        deps: { B: [], F: ['B'] },
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: {
+          B: {
+            physicalId: 'b-old',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { p: 'old' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { update: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      // Cloud Control's `UnsupportedActionException`: the auto-fallback that
+      // deletes the old resource and then creates the new one.
+      const unsupported = (): void => {
+        provider.update.mockRejectedValue(
+          Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+        );
+      };
+      const tmpl: CloudFormationTemplate = {
+        Resources: {
+          B: { Type: 'AWS::SQS::Queue', Properties: { p: 'new' } },
+          F: { Type: 'AWS::S3::Bucket', Properties: {} },
+        },
+      };
+      let firstDeleted: unknown[] = [];
+      if (reuse) {
+        unsupported();
+        provider.delete.mockClear();
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        firstDeleted = provider.delete.mock.calls.map((c: unknown[]) => c[1]);
+        provider.update.mockResolvedValue({ physicalId: 'b-old', wasReplaced: false });
+      } else if (shape === 'delete-first') {
+        unsupported();
+      }
+      provider.delete.mockClear();
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      return {
+        op: seg.operations.find((o: { logicalId: string }) => o.logicalId === 'B'),
+        deleted: provider.delete.mock.calls.map((c: unknown[]) => c[1]),
+        firstDeleted,
+      };
+    }
+
+    it('records true for a replacement that deleted the old resource before its create', async () => {
+      const { op, deleted } = await completedB('delete-first');
+      // The premise: the fallback deleted `b-old` and the UPDATE completed.
+      expect(deleted).toEqual(['b-old']);
+      expect(op.physicalId).toBe('phys-B');
+      expect(op.oldDeletedBeforeCreate).toBe(true);
+    });
+
+    it('records false for a create-first replacement', async () => {
+      const { op } = await completedB('create-first');
+      expect(op.physicalId).toBe('phys-B');
+      // Present and false: absent means an older binary's journal.
+      expect(op).toHaveProperty('oldDeletedBeforeCreate', false);
+    });
+
+    it('records false for an in-place update', async () => {
+      expect((await completedB('in-place')).op).toHaveProperty('oldDeletedBeforeCreate', false);
+    });
+
+    // `--replace`'s delete-first fallback: the create-first attempt collides
+    // with the name the old resolver holds, so the engine deletes it first.
+    it("records true for --replace's delete-first fallback", async () => {
+      const TYPE = 'AWS::AppSync::Resolver';
+      const identity = { ApiId: 'api1', TypeName: 'Query', FieldName: 'field' };
+      const changeB = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: TYPE,
+        currentProperties: { ...identity, Mode: 'a' },
+        desiredProperties: { ...identity, Mode: 'b' },
+        propertyChanges: [{ path: 'Mode', oldValue: 'a', newValue: 'b', requiresReplacement: true }],
+      } as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['B', changeB],
+          ['F', makeChange('F')],
+        ]),
+        deps: { B: [], F: ['B'] },
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        engineOptions: { replace: true },
+        currentResources: {
+          B: {
+            physicalId: 'api1|Query|field',
+            resourceType: TYPE,
+            properties: { ...identity, Mode: 'a' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValueOnce(
+        ccAlreadyExistsError(
+          `CREATE failed for B: Resource of type '${TYPE}' with identifier 'api1|Query|field' already exists.`,
+          TYPE
+        )
+      );
+      provider.delete.mockClear();
+      await expect(
+        engine.deploy(stackName, {
+          Resources: {
+            B: { Type: TYPE, Properties: { ...identity, Mode: 'b' } },
+            F: { Type: 'AWS::S3::Bucket', Properties: {} },
+          },
+        })
+      ).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['api1|Query|field']);
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      const op = seg.operations.find((o: { logicalId: string }) => o.logicalId === 'B');
+      expect(op).toMatchObject({ physicalId: 'phys-B', oldDeletedBeforeCreate: true });
+    });
+
+    it("does not carry a previous deploy's delete-first onto a reused engine", async () => {
+      const { op, firstDeleted } = await completedB('in-place', true);
+      // The premise: the first deploy on this engine really went delete-first.
+      expect(firstDeleted).toEqual(['b-old']);
+      expect(op).toHaveProperty('oldDeletedBeforeCreate', false);
+    });
+  });
+
+  // go-to-k/cdkd#4690: the automatic rollback hands the deploy's FAILED ops to
+  // the delete-first guard, so a failed delete-first replacement of B blocks
+  // the delete-first reversal of A, whose old properties name B's old id.
+  describe('the automatic rollback blocks a delete-first reversal on a failed sibling (go-to-k/cdkd#4690)', () => {
+    it('re-creates A first instead of deleting its new copy first', async () => {
+      const change = (id: string, oldValue: string, newValue: string): ResourceChange =>
+        ({
+          logicalId: id,
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: { ref: newValue },
+          propertyChanges: [{ path: 'ref', oldValue, newValue, requiresReplacement: false }],
+        }) as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['A', change('A', 'b-old', 'b-next')],
+          ['B', change('B', 'x', 'y')],
+        ]),
+        deps: { A: [], B: ['A'] },
+        failOn: new Set(['B']),
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: {
+          A: { physicalId: 'a-old', resourceType: 'AWS::SQS::Queue', properties: { ref: 'b-old' }, attributes: {}, dependencies: [] },
+          B: { physicalId: 'b-old', resourceType: 'AWS::SQS::Queue', properties: { ref: 'x' }, attributes: {}, dependencies: [] },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: {
+                create: ReturnType<typeof vi.fn>;
+                update: ReturnType<typeof vi.fn>;
+                delete: ReturnType<typeof vi.fn>;
+              };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      // Cloud Control's `UnsupportedActionException`: both replace delete-first.
+      provider.update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      const calls: string[] = [];
+      let aCreates = 0;
+      provider.create.mockImplementation((logicalId: string) => {
+        calls.push(`create ${logicalId}`);
+        if (logicalId === 'B') return Promise.reject(new Error('create failed: B'));
+        aCreates++;
+        return Promise.resolve({ physicalId: aCreates === 1 ? 'a-new' : 'a-old-2', attributes: {} });
+      });
+      provider.delete.mockImplementation((logicalId: string, physicalId: string) => {
+        calls.push(`delete ${logicalId} ${physicalId}`);
+        return Promise.resolve(undefined);
+      });
+      await expect(
+        engine.deploy(stackName, {
+          Resources: {
+            A: { Type: 'AWS::SQS::Queue', Properties: { ref: 'b-next' } },
+            B: { Type: 'AWS::SQS::Queue', Properties: { ref: 'y' } },
+          },
+        })
+      ).rejects.toThrow();
+      // The premise: both went delete-first forward, B's create failed.
+      expect(calls.slice(0, 2)).toEqual(['delete A a-old', 'create A']);
+      expect(calls).toContain('delete B b-old');
+      // The rollback's first call on A: unblocked it would delete `a-new` first.
+      const rollbackCalls = calls.slice(calls.indexOf('create B') + 1).filter((c) => / A( |$)/.test(c));
+      expect(rollbackCalls[0]).toBe('create A');
+    });
+
+    // The reviewers' question: does a FAILED automatic rollback keep B's failed
+    // UPDATE in the journal for the user's `cdkd rollback` re-run? It does: the
+    // `auto-rollback-started` segment is written BEFORE the replay with every
+    // failed op (`execute.ts`), and only a CLEAN replay settles it.
+    it('a failed automatic rollback keeps the failed delete-first UPDATE journaled', async () => {
+      const change = (id: string, oldValue: string, newValue: string): ResourceChange =>
+        ({
+          logicalId: id,
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: { ref: newValue },
+          propertyChanges: [{ path: 'ref', oldValue, newValue, requiresReplacement: false }],
+        }) as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['A', change('A', 'b-old', 'b-next')],
+          ['B', change('B', 'x', 'y')],
+        ]),
+        deps: { A: [], B: ['A'] },
+        failOn: new Set(['B']),
+        noRollback: false,
+        currentEtag: 'e0',
+        currentResources: {
+          A: { physicalId: 'a-old', resourceType: 'AWS::SQS::Queue', properties: { ref: 'b-old' }, attributes: {}, dependencies: [] },
+          B: { physicalId: 'b-old', resourceType: 'AWS::SQS::Queue', properties: { ref: 'x' }, attributes: {}, dependencies: [] },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      let aCreates = 0;
+      provider.create.mockImplementation((logicalId: string) => {
+        if (logicalId === 'B') return Promise.reject(new Error('create failed: B'));
+        aCreates++;
+        // The rollback's re-create of the old A fails: the auto-rollback fails.
+        return aCreates === 1
+          ? Promise.resolve({ physicalId: 'a-new', attributes: {} })
+          : Promise.reject(new Error('re-create of A rejected'));
+      });
+      await expect(
+        engine.deploy(stackName, {
+          Resources: {
+            A: { Type: 'AWS::SQS::Queue', Properties: { ref: 'b-next' } },
+            B: { Type: 'AWS::SQS::Queue', Properties: { ref: 'y' } },
+          },
+        })
+      ).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      expect(seg.reason).toBe('auto-rollback-started');
+      expect(
+        (seg.failedOperations as Array<Record<string, unknown>>).find((o) => o['logicalId'] === 'B')
+      ).toMatchObject({ changeType: 'UPDATE', oldDeletedBeforeCreate: true });
+      // Not settled: the segment stays whole for the re-run.
+      expect(journal.reduceRollbackJournalToFailedOperations).not.toHaveBeenCalled();
+      expect(journal.dropRollbackJournalFailedOperations).not.toHaveBeenCalled();
+      expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
     });
   });
 
@@ -2275,6 +2613,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(nonUpdates.length).toBeGreaterThan(0);
       for (const o of nonUpdates) {
         expect(Object.prototype.hasOwnProperty.call(o, 'oldResourceRetained')).toBe(false);
+        // go-to-k/cdkd#4690's stamp shares the UPDATE gate.
+        expect(Object.prototype.hasOwnProperty.call(o, 'oldDeletedBeforeCreate')).toBe(false);
       }
     });
 

@@ -232,7 +232,15 @@ the update (`previousResourceType` — additive, no bump): an op's own
 `resourceType` is the template's, so after a `Type` change it names only the new
 resource, and the rollback needs the old one to pick the provider that
 re-creates it. A journal written before that field falls back to the previous
-resource record the op already carries. It is deliberately **not** part of the state
+resource record the op already carries. It also records whether the deploy
+deleted the old resource BEFORE creating the new one (`oldDeletedBeforeCreate`
+— additive, no bump; `--recreate-via-cc-api` / `--recreate-via-sdk-provider`,
+the update-unsupported fallback, `--replace`'s delete-first fallback, a child
+lost with its re-created parent): the
+rollback then deletes the new resource before re-creating the old one, so a
+port or name only one of them can hold does not collide. An absent value (an
+older binary's journal) keeps the create-first order. A failed UPDATE carries
+it too, so the rollback knows the old resource it names is gone. It is deliberately **not** part of the state
 schema (its own `journalVersion` field, no `StackState.version` bump) and
 **not** under the `deployments/` prefix (that layer survives destroy by
 design; the journal must not). Lifecycle: created on a failed / interrupted
@@ -1092,7 +1100,10 @@ count as a change for `--fail`.
 - A resource's physical id is never masked, whether it embeds a `NoEcho` value
   or IS one (a name-identified resource, such as an RDS parameter group named
   by the parameter). A `NoEcho` value used as a NAME is published by AWS, and
-  the deploy warns once per such resource.
+  the deploy warns once per such resource. Other resources' resolved copies of
+  that name, and the outputs, exports index and rollback journal that carry
+  it, hold it in the clear too; see
+  [A name derived from a secret is stored as resolved](#security-and-best-practices).
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target, or any property of a custom resource, whose handler would
   receive `***`) cannot be addressed from its record, which holds `***`
@@ -3154,7 +3165,29 @@ detect any of them:
   example an `AWS::IAM::AccessKey`'s `SecretAccessKey`;
 - a `NoEcho` parameter's value in a state record written before
   [`version: 11`](#version-11-stores-noecho-values-as-current-writers), until the
-  next `cdkd deploy` migrates it, and in every earlier object version of it.
+  next `cdkd deploy` migrates it, and in every earlier object version of it;
+- a physical name derived from a secret, described below.
+
+**A name derived from a secret is stored as resolved.** A `{{resolve:...}}`
+reference or a `NoEcho` parameter used in a name or other identifier property,
+such as an SQS `QueueName`, becomes the resource's identity. It is stored in:
+
+- that resource's `physicalId`;
+- other resources' resolved `Ref`, `Fn::GetAtt` or `Fn::Sub` copies of the
+  name, or of an identifier embedding it — an IAM policy's `Resource` ARN, a
+  nested stack's parameters;
+- stack outputs, the exports index and `rollback-journal.json` that carry it,
+  and the resource's `orphans` record if a rollback retains it;
+- a [deployment event](deployment-events.md)'s `physicalId` field.
+
+The resource's own properties keep the reference (`***` for a `NoEcho`
+parameter). cdkd masks the name in logs, `cdkd diff` output and the text of
+deployment events wherever it recognises the read of it; a read it does not recognise is
+printed as resolved, and is a bug to report. Commands that show a stored record, such as `cdkd state show` or `cdkd events`, print
+it as stored. CloudFormation behaves the same and
+[advises against](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html)
+putting a dynamic reference or other sensitive data in an identifier property.
+Do not.
 
 Limit who can read the state bucket, and its earlier object versions,
 accordingly.

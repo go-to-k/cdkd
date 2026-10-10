@@ -148,7 +148,7 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     };
   });
 
-  function makeEngine(target = 'Fn'): DeployEngine {
+  function makeEngine(target = 'Fn', extra: Record<string, unknown> = {}): DeployEngine {
     return new DeployEngine(
       stateBackend as never,
       {
@@ -178,6 +178,7 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
           viaCcApi: new Set([target]),
           viaSdkProvider: new Set<string>(),
         },
+        ...extra,
       } as never,
       REGION,
       {
@@ -222,6 +223,37 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     await engine.deploy(STACK, template());
     const gone = (engine as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate;
     expect([...gone].sort()).toEqual(['Fn', 'Perm']);
+  });
+
+  // go-to-k/cdkd#4690: both are journaled as delete-first, so a rollback
+  // deletes their new copies before re-creating the old ones.
+  it('journals the recreate and the lost child as delete-first when a later op fails', async () => {
+    const journal = {
+      appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+      deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+      loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+      popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+      reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+      dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+      listStacks: vi.fn().mockResolvedValue([]),
+    };
+    Object.assign(stateBackend, journal);
+    sdk.create.mockImplementation((logicalId: string) =>
+      logicalId === 'Late'
+        ? Promise.reject(new Error('create failed: Late'))
+        : Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} })
+    );
+    const t = template();
+    t.Resources['Late'] = { Type: 'AWS::SNS::Topic', Properties: {}, DependsOn: ['Perm'] };
+    await expect(makeEngine('Fn', { noRollback: true }).deploy(STACK, t)).rejects.toThrow();
+    const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
+      operations: Array<{ logicalId: string; oldDeletedBeforeCreate?: boolean }>;
+    };
+    const stamp = (id: string): boolean | undefined =>
+      seg.operations.find((o) => o.logicalId === id)?.oldDeletedBeforeCreate;
+    expect(stamp('Fn')).toBe(true);
+    expect(stamp('Perm')).toBe(true);
   });
 
   it('leaves alone a reader that is not stored inside the function', async () => {

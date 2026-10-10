@@ -352,7 +352,9 @@ These are surfaced in the plan rather than applied silently.
   revert reads that property back from AWS and leaves it as AWS holds it, so a
   `NoEcho` value the failed deploy changed is **not** reverted; the next
   `cdkd deploy` with the old value restores it. The value never reaches state,
-  the events or the log in the clear, and `***` is never sent.
+  the events or the log in the clear, and `***` is never sent — unless it is a
+  name or other identifier, which state and an event's `physicalId` field
+  store as resolved ([details](state-management.md#security-and-best-practices)).
   - **The value cannot be read back** (a write-only property, a property AWS
     does not return, a resource type with no readback, or a read that fails):
     the operation fails with `ROLLBACK_REDACTED_BASELINE`, sends nothing, and
@@ -377,6 +379,24 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+A replacement that deleted the old resource BEFORE creating the new one
+(`--recreate-via-cc-api`, `--recreate-via-sdk-provider`, the update-unsupported
+fallback, `--replace`'s delete-first fallback, or a resource lost with a parent
+that was re-created under the same id) is reversed in that order
+too: the new resource is deleted first, then the old one is re-created. So a
+port or name that only one of them can hold, such as an ELBv2 listener's port,
+does not collide. If that delete fails or is skipped, state keeps naming the
+new resource and the journal is kept. If the re-create then fails, the resource
+is absent and the message says so; re-deploy to fix it forward. A journal
+written by an older cdkd, and a new resource kept by `UpdateReplacePolicy:
+Retain`, use the create-first order. So does a resource whose old properties
+name another resource the same deploy replaced or deleted, including one whose
+replacement failed after deleting it (a listener's old target group, replaced
+by a create-only change): the rollback may not be able to bring that resource
+back under the id they name, so deleting the new copy first could lose it. The
+rollback says so in a warning and does not delete the new resource to free a
+name either, so if the re-create fails, the new resource is kept.
+
 What counts as a replacement is what the provider reported. An update applied
 in place is reverted in place even when it changed the physical id, as an SQS
 `QueuePolicy` update does when its first queue changes and an SNS `TopicPolicy`
@@ -385,8 +405,8 @@ record the provider's answer, so there a changed physical id still reads as a
 replacement. A `Type` change, and a Glue table whose recorded database differs
 under an equal id, stay replacements whatever the provider answered.
 
-cdkd deletes the new resource first only when it can show that the new
-resource holds the name the re-create collided on:
+On the create-first order, cdkd deletes the new resource first only when it
+can show that the new resource holds the name the re-create collided on:
 
 - **An explicit name** matches when the new resource's state record has the
   same name property, spelled exactly alike (case is ignored only where the

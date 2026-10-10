@@ -401,6 +401,10 @@ export async function executeDeployment(
             // The UPDATE says so itself, so it never reads as a revert of
             // the old resource even once its orphan's entry is gone (an
             // interrupted rollback can settle one and not the other).
+            // go-to-k/cdkd#4690: the old resource is gone even when the create
+            // made nothing, which `replacementOrphaned` cannot say.
+            ...(change.changeType === 'UPDATE' &&
+              this.oldDeletedBeforeCreate.has(logicalId) && { oldDeletedBeforeCreate: true }),
             ...(orphanedBy !== undefined && {
               replacementOrphaned: this.oldDeletedBeforeCreate.has(logicalId)
                 ? ('delete-first' as const)
@@ -502,6 +506,9 @@ export async function executeDeployment(
           // only the `true` case would leave the DROP direction live.
           ...(change.changeType === 'UPDATE' && {
             oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
+            // go-to-k/cdkd#4690: the reversal deletes the new resource first
+            // when the forward deleted the old one first.
+            oldDeletedBeforeCreate: this.oldDeletedBeforeCreate.has(logicalId),
           }),
           // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
           // gave one; absent, the rollback infers a replacement from a changed

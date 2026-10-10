@@ -77,6 +77,7 @@ import {
   dropFailedHint,
   makeForeignHolderScan,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
+import { seedsDeleteFirstGuard } from '../../deployment/rollback-executor/plan.js';
 import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -1386,6 +1387,9 @@ export async function rollbackCommand(
                   // go-to-k/cdkd#4523: an imported id's failed op is left alone
                   // too, and stays in the journal (below).
                   const failedOps = splitImportedOps(segment.failedOperations ?? [], segment);
+                  // go-to-k/cdkd#4690: the delete-first guard reads the segment's
+                  // failed ops as they stood BEFORE the replay below strips them.
+                  const failedForGuard = segment.failedOperations ?? [];
                   // go-to-k/cdkd#4584: a plain rollback replays the proven
                   // orphans alone; the rest are kept by the strip below while
                   // the segment stays, and leave with it once it pops.
@@ -1455,6 +1459,22 @@ export async function rollbackCommand(
                       ...failedOps.displaced,
                       ...failedOps.replay.filter((op) => !failedToReplay.includes(op)),
                       ...failedResult.remainingFailedOps,
+                      // go-to-k/cdkd#4690: a handled delete-first replacement
+                      // stays while this segment's completed ops remain, so a
+                      // re-run's delete-first guard still sees the resource it
+                      // removed; it leaves with the segment once it pops. On a
+                      // `--revert-failed` re-run, the `replacementOrphaned` shape
+                      // re-classifies as the same skip and repeats its warning;
+                      // the bare shape (no orphan) re-attempts its forced revert
+                      // against the deleted old id, which normally fails
+                      // not-found and keeps it pending.
+                      ...(completedOps.length > 0
+                        ? failedToReplay.filter(
+                            (op) =>
+                              seedsDeleteFirstGuard(op) &&
+                              !failedResult.remainingFailedOps.includes(op)
+                          )
+                        : []),
                     ];
                     // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
                     // the handled ops' state rows were never saved, so stripping
@@ -1509,6 +1529,7 @@ export async function rollbackCommand(
                         // — and a crash there loses it for good (issue #2934).
                         onOrphan: (record) => mintedOrphans.push(record),
                         inlinePolicyWriters,
+                        failedOperations: failedForGuard,
                       })
                   );
                   return {
