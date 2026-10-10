@@ -2306,13 +2306,24 @@ async function clearRetainedWithoutRecord(
   const base = `${backend.prefix}/${stackName}/`;
   let regions: string[];
   try {
+    const keys = (await backend.listRawKeys(base))
+      .map((key) => key.slice(base.length).split('/'))
+      .filter((parts) => parts.length >= 2 && parts[0] !== '');
+    // A region that still has a region-scoped record keeps its kept list and
+    // its marker: only a region with no record here is this sweep's (review
+    // O-m1 -- a legacy orphan sweeps every region the stack has). A filter
+    // over the keys already listed; no further request.
+    const recorded = new Set(
+      keys
+        .filter((parts) => parts.length === 2 && parts[1] === 'state.json')
+        .map((parts) => parts[0]!)
+    );
     regions = [
       ...new Set(
-        (await backend.listRawKeys(base))
-          .map((key) => key.slice(base.length).split('/'))
-          .filter((parts) => parts.length >= 2 && parts[0] !== '')
+        keys
           .map((parts) => parts[0]!)
           .filter((region) => stackRegion === undefined || region === stackRegion)
+          .filter((region) => !recorded.has(region))
       ),
     ];
   } catch (error) {

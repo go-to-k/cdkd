@@ -149,6 +149,32 @@ describe('cdkd state orphan and the registry (go-to-k/cdkd#4705)', () => {
     );
   });
 
+  it('O-m1: a legacy record plus a region that still has its own record: that region is untouched; one without a record is tombstoned and released', async () => {
+    backend.listStacks.mockResolvedValue([{ stackName: 'App' }]);
+    backend.listRawKeys.mockResolvedValue([
+      'cdkd/App/state.json',
+      'cdkd/App/eu-west-1/state.json',
+      'cdkd/App/eu-west-1/retained.json',
+      'cdkd/App/us-east-1/retained.json',
+    ]);
+    await orphan(['App']);
+    expect(backend.deleteLegacyState).toHaveBeenCalledWith('App');
+    expect(backend.saveRetainedResources.mock.calls).toEqual([['App', 'us-east-1', []]]);
+    expect(backend.releaseRegistryMarker.mock.calls).toEqual([['App', 'us-east-1']]);
+  });
+
+  it('O-m1: the no-record path is unchanged -- every region without a record is swept', async () => {
+    backend.listRawKeys.mockResolvedValue([
+      'cdkd/App/us-east-1/retained.json',
+      'cdkd/App/eu-west-1/deployments/index.json',
+    ]);
+    await orphan(['App']);
+    expect(backend.saveRetainedResources.mock.calls).toEqual([
+      ['App', 'us-east-1', []],
+      ['App', 'eu-west-1', []],
+    ]);
+  });
+
   it('a pure legacy record whose region listing fails: warned, never fatal', async () => {
     backend.listStacks.mockResolvedValue([{ stackName: 'App' }]);
     backend.listRawKeys.mockRejectedValueOnce(new Error('AccessDenied'));
