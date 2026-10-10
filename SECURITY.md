@@ -71,17 +71,17 @@ Out of scope:
   Cognito user pool client's `ClientSecret`), nor a `NoEcho` parameter's value,
   nor a custom resource's `NoEcho` `Data`; reports of those remain welcome.
 - **A physical name derived from a secret, recorded in state and in what
-  carries it.** A `{{resolve:...}}` reference or a
-  `NoEcho` parameter used in a name or other identifier property becomes the
-  resource's identity. This covers that name in the resource's `physicalId`,
-  and the name, or an identifier embedding it, wherever a resolved `Ref`,
-  `Fn::GetAtt` or `Fn::Sub` carries it into another resource's record, a stack
-  output or the exports index — and commands that print a stored record as it
-  is, such as `cdkd state show`. CloudFormation uses the plaintext value in the
-  primary identifier the same way and
+  carries it.** A `{{resolve:...}}` reference or a `NoEcho` parameter used in a
+  name or other identifier property becomes the resource's identity. This
+  covers that name in the resource's `physicalId`; the name, or an identifier
+  embedding it, wherever a resolved `Ref`, `Fn::GetAtt` or `Fn::Sub` carries
+  it into another resource's record, a stack output or the exports index; the
+  `physicalId` field of a deployment event; and commands that print a stored
+  record as it is, such as `cdkd state show`. CloudFormation uses the
+  plaintext value in the primary identifier the same way and
   [advises against it](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html);
   see [Security and Best Practices](docs/state-management.md#security-and-best-practices).
   This does not cover the resource's own `properties`, `attributes` or
   `observedProperties`, a different secret read through the same resource, or
-  the name unmasked in any other CLI output, logs or deployment events;
-  reports of those remain welcome.
+  the name unmasked in any other CLI output, logs or a deployment event's
+  text; reports of those remain welcome.
