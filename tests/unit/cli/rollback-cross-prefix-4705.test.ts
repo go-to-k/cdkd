@@ -74,7 +74,8 @@ function install(
   failedOp: Record<string, unknown>,
   ownResources: Record<string, unknown>,
   others: Record<string, Record<string, unknown>> = {},
-  prefixes: { listed?: string[] | Error; holders?: string[] } = {}
+  prefixes: { listed?: string[] | Error; holders?: string[] } = {},
+  initialDeploy = false
 ): void {
   const states: Record<string, unknown> = {
     S: stateOf('S', ownResources),
@@ -110,7 +111,7 @@ function install(
           {
             timestamp: 1,
             reason: 'no-rollback-failure',
-            initialDeploy: false,
+            initialDeploy,
             operations: [],
             failedOperations: [failedOp],
           },
@@ -120,6 +121,7 @@ function install(
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
       deleteState: vi.fn().mockResolvedValue(undefined),
+      releaseRegistryMarker: vi.fn().mockResolvedValue('released'),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     },
     lockManager: {
@@ -173,6 +175,25 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     // Review R5-8: the command's teardown disposes ITS backend (whose client
     // `setupStateBackend`'s dispose destroys), refused or not.
     expect(setup.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rollback of a first deploy that removes the record releases its registry marker, after the record', async () => {
+    install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd'] }, true);
+    const setup = (await setupMock())!;
+    await rollbackCommand('S', { ...BASE });
+    expect(setup.stateBackend.deleteState).toHaveBeenCalledWith('S', REGION);
+    expect(setup.stateBackend.releaseRegistryMarker).toHaveBeenCalledWith('S', REGION, undefined);
+    expect(setup.stateBackend.deleteState.mock.invocationCallOrder[0]).toBeLessThan(
+      setup.stateBackend.releaseRegistryMarker.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('a rollback that keeps the record keeps the marker', async () => {
+    install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd'] }, false);
+    const setup = (await setupMock())!;
+    await rollbackCommand('S', { ...BASE });
+    expect(setup.stateBackend.deleteState).not.toHaveBeenCalled();
+    expect(setup.stateBackend.releaseRegistryMarker).not.toHaveBeenCalled();
   });
 
   it('replays as before when no other prefix records the stack', async () => {

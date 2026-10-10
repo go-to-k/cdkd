@@ -148,6 +148,10 @@ export async function doDeployWithPrefetch(
   // throws while the gate is still pending, the gate's refusal (if it
   // refuses) is the error reported -- it is the more fundamental one.
   let firstDeployStateGate: Promise<void> | undefined;
+  // go-to-k/cdkd#4705: this run found no record (a first deploy), and it
+  // failed -- the `finally` then checks whether it left one.
+  let firstDeploy = false;
+  let failed = false;
   try {
     // Started INSIDE this `try` (issue #2171): `start()` writes to stdout and
     // can throw (EPIPE on `cdkd deploy | head`), and it sits AFTER the lock
@@ -281,6 +285,7 @@ export async function doDeployWithPrefetch(
       const gate = this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
       if (currentStateData === null || currentStateData === undefined) {
         firstDeployStateGate = gate;
+        firstDeploy = true;
         gate.catch(() => undefined);
       } else {
         await gate;
@@ -1542,6 +1547,7 @@ export async function doDeployWithPrefetch(
       attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
     };
   } catch (error) {
+    failed = true;
     // G-6: the overlapped gate's refusal outranks an error from its window.
     if (firstDeployStateGate !== undefined) await firstDeployStateGate;
     throw error;
@@ -1592,6 +1598,21 @@ export async function doDeployWithPrefetch(
       await this.generatedNameGuard?.settle();
     } catch {
       // Both warn on their own failures.
+    }
+
+    // go-to-k/cdkd#4705: a first deploy that failed and left no record
+    // releases the registry marker it claimed (or found naming this prefix),
+    // under the lock, so "a marker exists" keeps meaning "a record exists".
+    // A record it did leave (a partial save) keeps the marker. Best-effort.
+    if (firstDeploy && failed && this.options.onFirstDeployLeftNoRecord && !this.options.dryRun) {
+      try {
+        const left = await this.stateBackend.getState(stackName, this.stackRegion);
+        if (left === null) await this.options.onFirstDeployLeftNoRecord(stackName);
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not check whether the failed first deploy left a record: ${describeAwsFailure(error).summary}`
+        );
+      }
     }
 
     // Always release lock

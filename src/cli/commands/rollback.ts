@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { releaseRegistryMarkerQuietly } from './registry-release.js';
 import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
 import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
@@ -1580,6 +1581,9 @@ export async function rollbackCommand(
         survivingOrphans.length === 0
       ) {
         await setup.stateBackend.deleteState(stackName, region);
+        // go-to-k/cdkd#4705: the record is gone, so its registry marker goes
+        // too (record first, then marker; non-fatal).
+        await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, region, logger);
         logger.info(
           `State for ${stackRegionShown(stackName, region)} removed (stack fully rolled back).`
         );

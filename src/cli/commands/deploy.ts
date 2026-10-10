@@ -936,6 +936,7 @@ async function deployCommand(
           bucket: stateBucket,
           recovery: refusalRecovery,
           guard: crossPrefixGuard,
+          backend: preflightStateBackend,
         });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
@@ -1126,6 +1127,9 @@ async function deployCommand(
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
           onCurrentStateLoaded: composeStateLoadedGates(crossPrefix.firstDeployGate, migrationGate),
+          ...(crossPrefix.onFirstDeployLeftNoRecord && {
+            onFirstDeployLeftNoRecord: crossPrefix.onFirstDeployLeftNoRecord,
+          }),
           onDestructivePlan: crossPrefix.onDestructivePlan,
           crossPrefixHolder: crossPrefix.crossPrefixHolder,
           // Issue #2719. Unconditional, unlike `recreateTargets` above: an

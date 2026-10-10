@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { releaseRegistryMarkerQuietly } from './registry-release.js';
 import {
   commandHole,
   pasteableCommand,
@@ -3486,7 +3487,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // Delete cdkd state for the migrated stack. Done AFTER phase 2 so a
       // phase-2 failure leaves state intact for recovery (see catch above).
       // The lock is still held; we release it inside the outer `finally`.
-      await stateBackend.deleteState(resolvedStackName, targetRegion);
+      await removeExportedStackRecord(stateBackend, resolvedStackName, targetRegion, logger);
       logger.info(
         `cdkd state for ${quotedOrNotShown(resolvedStackName)} (${quotedRegion(targetRegion)}) removed. ` +
           `Manage the stack with 'cdk deploy' or 'aws cloudformation' from here on.`
@@ -8538,6 +8539,22 @@ export interface RunPerStackImportLoopOptions {
  *
  * Exported for unit testing.
  */
+/**
+ * Remove an exported stack's cdkd record, then (go-to-k/cdkd#4705) its
+ * registry marker when it is a top-level stack -- record first, so "a marker
+ * exists" keeps meaning "a record exists under its prefix". The marker's
+ * release is non-fatal (a warning); the record's delete throws as before.
+ */
+export async function removeExportedStackRecord(
+  stateBackend: Pick<S3StateBackend, 'deleteState' | 'releaseRegistryMarker'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  await stateBackend.deleteState(stackName, region);
+  await releaseRegistryMarkerQuietly(stateBackend, stackName, region, logger);
+}
+
 export async function runPerStackImportLoop(args: {
   rootStackName: string;
   rootRegion: string;
@@ -9499,7 +9516,7 @@ export async function runPerStackImportLoop(args: {
         [];
       for (const node of leafFirst) {
         try {
-          await deps.stateBackend.deleteState(node.stackName, node.region);
+          await removeExportedStackRecord(deps.stateBackend, node.stackName, node.region, logger);
           // Same record-derived pair as the warn below, and the same rule: a
           // planted newline in a logical id forges a line here too.
           logger.info(

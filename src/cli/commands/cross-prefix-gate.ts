@@ -34,6 +34,8 @@ import {
   type CrossPrefixScanResult,
 } from '../../state/cross-prefix-stack-scan.js';
 import type { CrossPrefixGuard } from '../../state/stack-registry.js';
+import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import { releaseRegistryMarkerQuietly } from './registry-release.js';
 
 /** What a check consults: the run's guard (or, in a test, a bare scan cache). */
 export type CrossPrefixSource = Pick<CrossPrefixGuard, 'full'> &
@@ -197,9 +199,13 @@ export function crossPrefixEngineOptions(opts: {
   region: string;
   bucket: string;
   recovery?: LockRecoveryContext | undefined;
-  guard: Pick<CrossPrefixGuard, 'full' | 'firstDeploy'>;
+  guard: Pick<CrossPrefixGuard, 'full' | 'firstDeploy'> &
+    Partial<Pick<CrossPrefixGuard, 'knownMarker'>>;
+  /** Where the marker lives, to release it after a failed first deploy. */
+  backend?: Pick<S3StateBackend, 'releaseRegistryMarker'>;
 }): {
   firstDeployGate: (stackName: string, state: StackState | undefined) => Promise<void>;
+  onFirstDeployLeftNoRecord?: (stackName: string) => Promise<void>;
   onDestructivePlan: (
     stackName: string,
     destructive: readonly DestructiveChange[],
@@ -207,7 +213,17 @@ export function crossPrefixEngineOptions(opts: {
   ) => Promise<void>;
   crossPrefixHolder: (stackName: string) => Promise<ForeignHolding>;
 } {
+  const backend = opts.backend;
   return {
+    // go-to-k/cdkd#4705: a failed first deploy that left no record releases
+    // the marker it claimed, by the version this run read.
+    ...(backend !== undefined && {
+      onFirstDeployLeftNoRecord: async (stackName: string): Promise<void> => {
+        if (stackName !== opts.stackName) return;
+        const known = await opts.guard.knownMarker?.(stackName, opts.region);
+        await releaseRegistryMarkerQuietly(backend, stackName, opts.region, getLogger(), known);
+      },
+    }),
     firstDeployGate: createCrossPrefixDeployGate({
       stackName: opts.stackName,
       region: opts.region,

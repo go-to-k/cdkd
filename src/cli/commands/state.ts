@@ -120,6 +120,7 @@ import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { removeProtectionTypeList } from '../../provisioning/remove-protection-types.js';
+import { releaseRegistryMarkerQuietly } from './registry-release.js';
 
 /**
  * Detail row for a single stack when --long is requested.
@@ -2261,31 +2262,6 @@ interface StateOrphanOptions {
   profile?: string;
   roleArn?: string;
   verbose: boolean;
-}
-
-/**
- * go-to-k/cdkd#4705: delete a top-level stack's registry marker when it names
- * this prefix, after its record was removed. Best-effort: a marker left behind
- * names a prefix with no record, which another prefix's next check treats as
- * stale.
- */
-async function releaseRegistryMarkerQuietly(
-  backend: Pick<S3StateBackend, 'releaseRegistryMarker'>,
-  stackName: string,
-  region: string,
-  logger: { warn(message: string): void; debug(message: string): void }
-): Promise<void> {
-  if (stackName.includes('~')) return;
-  try {
-    const released = await backend.releaseRegistryMarker(stackName, region);
-    logger.debug(safeMsg`Stack registry marker: ${released}`);
-  } catch (error) {
-    logger.warn(
-      safeMsg`Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
-        safeMsg`(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
-        `records the stack, so a deploy under another prefix treats it as stale.`
-    );
-  }
 }
 
 /**

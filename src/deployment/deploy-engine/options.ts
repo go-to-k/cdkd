@@ -259,6 +259,14 @@ export interface DeployEngineOptions {
   onCurrentStateLoaded?: (stackName: string, state: StackState | undefined) => Promise<void>;
 
   /**
+   * go-to-k/cdkd#4705: called, under the lock, when a deploy that found no
+   * record (a first deploy) failed and left none: the CLI releases the stack
+   * registry marker it claimed. A nested child's engine calls it with the
+   * CHILD's name. Should not throw.
+   */
+  onFirstDeployLeftNoRecord?: (stackName: string) => Promise<void>;
+
+  /**
    * Issues [#615] / [#651] — user-named resources to destroy + recreate this
    * deploy, plumbed through `--recreate-via-cc-api <LogicalId>` /
    * `--recreate-via-sdk-provider <LogicalId>` (both repeatable), TOGETHER WITH

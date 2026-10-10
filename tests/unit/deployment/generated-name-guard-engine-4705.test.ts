@@ -102,6 +102,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     /** More plan rows (a DELETE, say), and the destructive-plan hook. */
     extraChanges?: ResourceChange[];
     onDestructivePlan?: () => Promise<void>;
+    onFirstDeployLeftNoRecord?: (stackName: string) => Promise<void>;
   }) {
     const levels = opts.levels ?? [['Q1'], ['Q2'], ['Q3']];
     const ids = levels.flat();
@@ -188,6 +189,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         concurrency: opts.concurrency ?? 4,
         ...(opts.stateGate && { onCurrentStateLoaded: opts.stateGate }),
         ...(opts.onDestructivePlan && { onDestructivePlan: opts.onDestructivePlan }),
+        ...(opts.onFirstDeployLeftNoRecord && { onFirstDeployLeftNoRecord: opts.onFirstDeployLeftNoRecord }),
         ...(opts.dryRun && { dryRun: true }),
         ...(opts.refusalRecovery && { refusalRecovery: opts.refusalRecovery }),
         ...(opts.approve && { requireApproval: 'any-change', approveDeployment: opts.approve }),
@@ -268,6 +270,53 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       }
     }
   );
+
+  describe('a failed first deploy and the registry marker (go-to-k/cdkd#4705)', () => {
+    const boom = () => Object.assign(new Error('validation'), { name: 'ValidationError', $metadata: { httpStatusCode: 400 } });
+    it('left no record: the hook releases the marker, under the lock', async () => {
+      const hook = vi.fn(async () => undefined);
+      const { engine, stateBackend } = buildEngine({
+        levels: [['Q1']],
+        createFails: { Q1: boom() },
+        stateGate: async () => undefined,
+        onFirstDeployLeftNoRecord: hook,
+      });
+      const releaseLock = (engine as unknown as { lockManager: { releaseLock: ReturnType<typeof vi.fn> } })
+        .lockManager.releaseLock;
+      await expect(engine.deploy(STACK, template)).rejects.toThrow();
+      // The record is read back after the failure (the harness has none).
+      expect(stateBackend.getState.mock.calls.length).toBeGreaterThan(1);
+      expect(hook).toHaveBeenCalledWith(STACK);
+      expect(hook.mock.invocationCallOrder[0]!).toBeLessThan(releaseLock.mock.invocationCallOrder[0]!);
+    });
+    it('left a record: the marker stays', async () => {
+      const hook = vi.fn(async () => undefined);
+      const { engine, stateBackend } = buildEngine({
+        levels: [['Q1']],
+        createFails: { Q1: boom() },
+        stateGate: async () => undefined,
+        onFirstDeployLeftNoRecord: hook,
+      });
+      stateBackend.getState.mockImplementation(async () =>
+        stateBackend.getState.mock.calls.length > 1 ? { state: {} as StackState, etag: 'e9' } : null
+      );
+      await expect(engine.deploy(STACK, template)).rejects.toThrow();
+      expect(hook).not.toHaveBeenCalled();
+    });
+    it('a first deploy that succeeds, and a redeploy that fails, call nothing', async () => {
+      const hook = vi.fn(async () => undefined);
+      const ok = buildEngine({ levels: [['Q1']], stateGate: async () => undefined, onFirstDeployLeftNoRecord: hook });
+      await ok.engine.deploy(STACK, template);
+      const redeploy = buildEngine({
+        levels: [['Q1']],
+        records: {},
+        createFails: { Q1: boom() },
+        onFirstDeployLeftNoRecord: hook,
+      });
+      await expect(redeploy.engine.deploy(STACK, template)).rejects.toThrow();
+      expect(hook).not.toHaveBeenCalled();
+    });
+  });
 
   it("creates a name this stack's record licenses, as before", async () => {
     const records = {

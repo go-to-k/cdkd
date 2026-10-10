@@ -280,9 +280,17 @@ belongs to. A nested stack is covered by its top-level stack's marker.
 already read) and the retained-list write run beside the exports-index
 update every destroy already makes, so they add no round trip of their own;
 when this run claimed the marker itself, it re-reads it first.
-`cdkd state orphan` of a whole stack
-  removes it, `cdkd import` claims it (after the one-time scan below when no
-  marker exists), and `cdkd state migrate` copies it with the records.
+Every other path that removes a stack's record
+  removes the marker after it the same way, non-fatally: `cdkd state orphan`
+  of a whole stack, `cdkd export` (the stack moves to CloudFormation),
+  `cdkd rollback` of a first deploy that removes the record, and a first
+  deploy that fails and leaves no record (it releases the marker it claimed,
+  under its lock). So a marker names a prefix that records the stack. After
+  `cdkd state orphan` a redeploy under the same prefix is still refused for
+  the resources it would take back: that comes from the emptied kept list,
+  not from the marker. `cdkd import` claims it (after the one-time scan below
+  when no marker exists, and only once its record is saved), and
+  `cdkd state migrate` copies it with the records.
 
 A marker naming another prefix is weighed against what that prefix holds. A
 record there that can own a resource (it lists resources or rollback-orphaned
