@@ -122,6 +122,9 @@ function install(
       setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
       deleteState: vi.fn().mockResolvedValue(undefined),
       releaseRegistryMarker: vi.fn().mockResolvedValue('released'),
+      ensureRetainedTombstone: vi.fn().mockResolvedValue(undefined),
+      loadRetainedRecord: vi.fn().mockResolvedValue(null),
+      saveRetainedResources: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     },
     lockManager: {
@@ -177,13 +180,18 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     expect(setup.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('a rollback of a first deploy that removes the record releases its registry marker, after the record', async () => {
+  it('a rollback of a first deploy that removes the record writes the tombstone, then releases its registry marker', async () => {
     install(structuredClone(orphanOp), {}, {}, { listed: ['cdkd'] }, true);
     const setup = (await setupMock())!;
     await rollbackCommand('S', { ...BASE });
     expect(setup.stateBackend.deleteState).toHaveBeenCalledWith('S', REGION);
+    expect(setup.stateBackend.ensureRetainedTombstone).toHaveBeenCalledWith('S', REGION);
     expect(setup.stateBackend.releaseRegistryMarker).toHaveBeenCalledWith('S', REGION);
+    // Record, tombstone, marker (review N1).
     expect(setup.stateBackend.deleteState.mock.invocationCallOrder[0]).toBeLessThan(
+      setup.stateBackend.ensureRetainedTombstone.mock.invocationCallOrder[0]
+    );
+    expect(setup.stateBackend.ensureRetainedTombstone.mock.invocationCallOrder[0]).toBeLessThan(
       setup.stateBackend.releaseRegistryMarker.mock.invocationCallOrder[0]
     );
   });
@@ -193,6 +201,7 @@ describe('cdkd rollback and another state prefix (go-to-k/cdkd#4705)', () => {
     const setup = (await setupMock())!;
     await rollbackCommand('S', { ...BASE });
     expect(setup.stateBackend.deleteState).not.toHaveBeenCalled();
+    expect(setup.stateBackend.ensureRetainedTombstone).not.toHaveBeenCalled();
     expect(setup.stateBackend.releaseRegistryMarker).not.toHaveBeenCalled();
   });
 

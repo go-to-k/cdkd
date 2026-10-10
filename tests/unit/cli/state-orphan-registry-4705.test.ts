@@ -130,6 +130,33 @@ describe('cdkd state orphan and the registry (go-to-k/cdkd#4705)', () => {
     expect(infoSpy).not.toHaveBeenCalledWith(expect.stringMatching(/Cleared the kept-resource record/));
   });
 
+  it('a pure legacy (region-less) record: deleted, then the tombstone and the release in each region directory the stack has here', async () => {
+    backend.listStacks.mockResolvedValue([{ stackName: 'App' }]);
+    backend.listRawKeys.mockResolvedValue([
+      'cdkd/App/state.json',
+      'cdkd/App/us-east-1/deployments/index.json',
+    ]);
+    await orphan(['App']);
+    expect(backend.deleteLegacyState).toHaveBeenCalledWith('App');
+    expect(backend.deleteState).not.toHaveBeenCalled();
+    expect(backend.saveRetainedResources.mock.calls).toEqual([['App', 'us-east-1', []]]);
+    expect(backend.releaseRegistryMarker.mock.calls).toEqual([['App', 'us-east-1']]);
+    expect(backend.deleteLegacyState.mock.invocationCallOrder[0]!).toBeLessThan(
+      backend.saveRetainedResources.mock.invocationCallOrder[0]!
+    );
+    expect(backend.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
+      backend.releaseRegistryMarker.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('a pure legacy record whose region listing fails: warned, never fatal', async () => {
+    backend.listStacks.mockResolvedValue([{ stackName: 'App' }]);
+    backend.listRawKeys.mockRejectedValueOnce(new Error('AccessDenied'));
+    await expect(orphan(['App'])).resolves.toBeUndefined();
+    expect(backend.deleteLegacyState).toHaveBeenCalledWith('App');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/Could not look for a kept-resource record of App/));
+  });
+
   it('no record and nothing kept: the idempotent skip, no write', async () => {
     await orphan(['App']);
     expect(backend.saveRetainedResources).not.toHaveBeenCalled();

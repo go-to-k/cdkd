@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { releaseRegistryMarkerQuietly } from './registry-release.js';
+import { recordRetainedForReadoption } from '../../deployment/retained-readoption.js';
 import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
 import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
@@ -1602,8 +1603,11 @@ export async function rollbackCommand(
         survivingOrphans.length === 0
       ) {
         await setup.stateBackend.deleteState(stackName, region);
-        // go-to-k/cdkd#4705: the record is gone, so its registry marker goes
-        // too (record first, then marker; non-fatal).
+        // go-to-k/cdkd#4705: the record is gone, so the empty retained.json
+        // (the tombstone that ends an older cdkd's history license) and then
+        // the registry marker follow it -- record, tombstone, marker, as on
+        // every other path that removes a record. Both non-fatal.
+        await recordRetainedForReadoption(setup.stateBackend, stackName, region, [], logger);
         await releaseRegistryMarkerQuietly(setup.stateBackend, stackName, region, logger);
         logger.info(
           `State for ${stackRegionShown(stackName, region)} removed (stack fully rolled back).`

@@ -2579,6 +2579,11 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           await warnOnLiveForeignLock(setup.lockManager, stackName, undefined, logger);
           await setup.stateBackend.deleteLegacyState(stackName);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
+          // go-to-k/cdkd#4705: no region-scoped record is left, so the
+          // tombstone, and the release of any marker naming this prefix, in
+          // every region the stack still has anything under this prefix --
+          // as the no-record path does. Non-fatal (it warns).
+          await clearRetainedWithoutRecord(setup.stateBackend, stackName, undefined, logger);
         }
         // After the operator's `y`, just below the banner's `Destroy with:`
         // row: `describedStackRef`, as the banner, since a padded region in

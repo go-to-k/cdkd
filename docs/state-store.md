@@ -133,10 +133,13 @@ stack's own evidence names that resource:
   write -- after a deploy's partial state save already dropped the
   resource's row, or after a destroy deleted its record -- leaves the kept
   resource in neither the record nor the list: its re-create is then refused
-  with the `cdkd import` remedy (the safe direction). `cdkd state orphan` empties
-  it, with or without a record left, and so do a destroy that keeps nothing
-  and `cdkd export` (whose stack CloudFormation now owns):
-  the empty list is a tombstone, never deleted. One destroy (or orphan) by this
+  with the `cdkd import` remedy (the safe direction). Every path that removes a
+  stack's record writes it, empty when nothing was kept, right after the
+  record goes: `cdkd destroy` / `cdkd state destroy`, `cdkd state orphan`
+  (also with no record left, and for a region-less legacy record in each
+  region the stack still has here), `cdkd export` (whose stack CloudFormation
+  now owns) and `cdkd rollback` of a first deploy. The empty list is a
+  tombstone, never deleted. One destroy (or orphan) by this
   cdkd therefore ends the older-cdkd history license below for that stack and
   region for good;
 - only when this prefix has NO `retained.json` for the stack (it was last
@@ -282,13 +285,14 @@ already read) and the retained-list write run beside the exports-index
 update every destroy already makes, so they add no round trip of their own;
 when this run claimed the marker itself, it re-reads it first.
 Every other path that removes a stack's record
-  removes the marker after it the same way, non-fatally: `cdkd state orphan`
-  of a whole stack, `cdkd export` (the stack moves to CloudFormation),
-  `cdkd rollback` of a first deploy that removes the record, and a first
-  deploy that fails and leaves nothing that can own a resource -- no record,
-  and no rollback journal naming one (it releases the marker it claimed,
-  under its lock; a read that fails keeps it). So a marker names a prefix
-  that records the stack. After
+  removes the marker after it the same way -- after the tombstone, and
+  non-fatally: `cdkd state orphan` of a whole stack, `cdkd export` (the stack
+  moves to CloudFormation), `cdkd rollback` of a first deploy that removes
+  the record, and a first deploy that fails and leaves nothing that can own a
+  resource -- no record, and no rollback journal naming one (it releases the
+  marker it claimed, under its lock; a read that fails keeps it). So a marker
+  names a prefix that can own the stack's resources (a record, or a rollback
+  journal naming one). After
   `cdkd state orphan` a redeploy under the same prefix is still refused for
   the resources it would take back: that comes from the emptied kept list,
   not from the marker. `cdkd import` claims it (after the one-time scan below
