@@ -2313,27 +2313,10 @@ export async function runDestroyForStack(
     // arrived while the final level was draining is still observed.
     result.interrupted = lock.interrupted;
 
-    // go-to-k/cdkd#4705: before the record goes, note what this destroy kept
-    // that the stack's next create here may take back by name. (Kept nothing:
-    // the tombstone is written below, only once the record is gone.) Run
-    // beside the incremental persists' flush (review H-2): disjoint objects,
-    // both done before the final state decision.
-    const keptWrite =
-      retainedForReadoption.length > 0
-        ? recordRetainedForReadoption(
-            ctx.stateBackend,
-            stackName,
-            regionForState,
-            retainedForReadoption,
-            logger,
-            retainedEarlier
-          )
-        : undefined;
-
     // Flush pending incremental persists BEFORE the final state decision so
     // a chained write can never land after deleteState and re-create the
     // state file. The chain never rejects (each link catches internally).
-    await Promise.all([saveChain, keptWrite]);
+    await saveChain;
 
     // Preserve state (rather than delete it) when there were delete errors OR
     // the destroy was gracefully interrupted (issue #816) OR a resource was
@@ -2352,22 +2335,31 @@ export async function runDestroyForStack(
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
-      // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
-      // marker's release, run beside the exports-index update that always
-      // followed the record's delete, so they add no round trip of their own
-      // (review P3, perf round). All three are after `deleteState` -- the
-      // marker must not be released while the record exists -- and under
-      // this stack's lock, so a same-prefix deploy cannot slip in before the
-      // release.
+      // go-to-k/cdkd#4705: what this destroy kept, which the stack's next
+      // create here may take back by name -- or, kept nothing, the tombstone
+      // (review D-1); exactly one of the two, so the tombstone is never
+      // written over a kept list. With the marker's release, run beside the
+      // exports-index update that always followed the record's delete, so
+      // they add no round trip of their own (review P3, H-2/(h)). After
+      // `deleteState` -- the marker must not be released while the record
+      // exists -- and under this stack's lock. A failure, or a crash before
+      // the kept write, leaves those resources unrecorded: warned, and their
+      // re-create is refused with the `cdkd import` remedy. (A preserved
+      // state keeps their rows instead, so it writes none of this.)
       //
       // The exports index: drop this stack's entries so the next resolver
       // lookup doesn't return stale values. Best-effort — failures don't fail
       // the destroy (state.json is the canonical record, and the index
       // self-heals on next deploy / fallback).
       await Promise.all([
-        retainedForReadoption.length === 0
-          ? recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger)
-          : Promise.resolve(),
+        recordRetainedForReadoption(
+          ctx.stateBackend,
+          stackName,
+          regionForState,
+          retainedForReadoption,
+          logger,
+          retainedEarlier
+        ),
         releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
         ctx.exportIndexStore?.removeStack(stackName, regionForState),
       ]);

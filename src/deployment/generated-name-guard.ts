@@ -83,8 +83,14 @@ export type GeneratedNameVerdict =
   | { kind: 'free' }
   /** A holder this stack's own evidence names (`via`). */
   | { kind: 'licensed'; holder: string; via: LicenseSource }
-  /** A holder nothing of this stack names: refuse. */
-  | { kind: 'held'; holder: string }
+  /**
+   * A holder nothing of this stack names: refuse. `ownIntent` (review D1):
+   * this stack's ledger does name the name, but cannot tell this holder is
+   * what its create made -- a run abandoned or a create that came back
+   * failed, for a type that reports no creation time -- so it may be this
+   * stack's own resource; the refusal says so.
+   */
+  | { kind: 'held'; holder: string; ownIntent?: 'abandoned' | 'failed' }
   /** The lookup was refused (403): create, warning once. */
   | { kind: 'unchecked'; error: unknown }
   /** The lookup, or reading this stack's evidence, failed otherwise: refuse. */
@@ -664,6 +670,9 @@ export class GeneratedNameGuard {
         continue;
       }
       const intent = recordedResult.value?.get(c.logicalId);
+      // Review D1: why the ledger's own intent did not license it, kept for
+      // the refusal when nothing else does.
+      let ownIntent: 'abandoned' | 'failed' | undefined;
       if (
         intent !== undefined &&
         intent.resourceType === c.resourceType &&
@@ -682,6 +691,7 @@ export class GeneratedNameGuard {
           out.set(c.logicalId, byIntent);
           continue;
         }
+        ownIntent = byIntent.ownIntent;
       }
       if (evidence === undefined || 'error' in evidence) {
         out.set(c.logicalId, {
@@ -699,7 +709,7 @@ export class GeneratedNameGuard {
         if (out.get(c.logicalId)!.kind === 'held') unlicensed.push(c);
         continue;
       }
-      out.set(c.logicalId, { kind: 'held', holder });
+      out.set(c.logicalId, { kind: 'held', holder, ...(ownIntent && { ownIntent }) });
       unlicensed.push(c);
     }
 
@@ -797,9 +807,16 @@ export class GeneratedNameGuard {
     const licensed: GeneratedNameVerdict = { kind: 'licensed', holder, via: 'ledger' };
     const held: GeneratedNameVerdict = { kind: 'held', holder };
     // No creation time: an intent the abandoned run left (sent or not, the
-    // ledger cannot tell) licenses nothing -- the `cdkd import` remedy is the
-    // safe direction (review G-1). Otherwise, as before.
-    const byName = abandonedAt !== undefined ? held : licensed;
+    // ledger cannot tell), or one whose create came back failed, licenses
+    // nothing -- the `cdkd import` remedy is the safe direction (review G-1,
+    // the maintainer's D1 decision; S-6 bound kept for a 403 too). Otherwise,
+    // a crash's intent licenses by name.
+    const byName: GeneratedNameVerdict =
+      abandonedAt !== undefined
+        ? { kind: 'held', holder, ownIntent: 'abandoned' }
+        : intent.failedAt !== undefined
+          ? { kind: 'held', holder, ownIntent: 'failed' }
+          : licensed;
     if (c.provider.holderCreatedAt === undefined) return byName;
     let createdAt: number | undefined;
     try {
@@ -832,7 +849,11 @@ export class GeneratedNameGuard {
     );
   }
 
-  /** The abandoned run's lease horizon: this deploy's takeover, or the ledger's record. */
+  /**
+   * The abandoned run's lease horizon: this deploy's takeover, or the
+   * ledger's record -- the later of the two (a force-unlock after this
+   * takeover can record a newer one).
+   */
   private async abandonedRunAt(): Promise<number | undefined> {
     this.abandonedRead ??= ledgerAbandonedAt()
       .catch(() => undefined)

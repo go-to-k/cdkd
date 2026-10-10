@@ -701,6 +701,26 @@ describe("a destroy's kept-resource record (retained.json, go-to-k/cdkd#4705)", 
     ]);
   });
 
+  it("(e) H-1: when S3's clock is 3s off this machine's, the entry is re-written with S3's time", async () => {
+    const realSend = client.send.getMockImplementation() as (cmd: unknown) => Promise<unknown>;
+    let s3Time = 0;
+    client.send.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof HeadObjectCommand && cmd.input.Key === KEY) {
+        s3Time = Date.now() + 3_000;
+        return { LastModified: new Date(s3Time) };
+      }
+      return realSend(cmd);
+    });
+    client.send.mockClear();
+    await backend.saveRetainedResources('App', 'us-east-1', [{ ...entry, logicalId: 'New' }]);
+    expect(client.send.mock.calls.map((c) => (c[0] as object).constructor.name)).toEqual([
+      'PutObjectCommand',
+      'HeadObjectCommand',
+      'PutObjectCommand',
+    ]);
+    expect(JSON.parse(bodies.get(KEY)!).resources[0].keptAt).toBe(s3Time);
+  });
+
   it('D-1: saving none writes the empty tombstone, which reads as present (not absent)', async () => {
     await expect(backend.loadRetainedRecord('App', 'us-east-1')).resolves.toBeNull();
     bodies.set(KEY, JSON.stringify({ retainedVersion: 1, resources: [entry] }));

@@ -247,7 +247,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     } as unknown as StackState['resources'],
   });
 
-  it('records the kept resources a later create takes back by their GENERATED name, before the record goes', async () => {
+  it('records the kept resources a later create takes back by their GENERATED name, in the tail once the record is gone', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     await runDestroyForStack('App', retainedState(), h.ctx);
     expect(h.saveRetainedResources).toHaveBeenCalledTimes(1);
@@ -259,45 +259,34 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x' },
       { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs' },
     ]);
-    expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
-      h.deleteState.mock.invocationCallOrder[0]!
+    // (h): after the record's delete, and never a tombstone over a kept list.
+    expect(h.deleteState.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.saveRetainedResources.mock.invocationCallOrder[0]!
     );
+    expect(h.ensureRetainedTombstone).not.toHaveBeenCalled();
   });
 
-  it('H-2: the kept-resource write runs beside the incremental persists, not after them', async () => {
+  it('H-2/(h): the kept-resource write runs in the tail beside the marker release, adding no round trip', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
-    const provider = { delete: vi.fn(async () => undefined) };
-    (h.ctx as unknown as { providerRegistry: unknown }).providerRegistry = {
-      getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
-      getProvider: vi.fn(() => provider),
-    };
-    let releasePersist!: () => void;
-    const persistGate = new Promise<void>((r) => (releasePersist = r));
-    const saveState = (h.ctx.stateBackend as unknown as { saveState: ReturnType<typeof vi.fn> }).saveState;
-    saveState.mockImplementation(async () => {
-      await persistGate;
-      return 'e';
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    h.saveRetainedResources.mockImplementation(async () => {
+      started++;
+      await gate;
     });
-    const state: StackState = {
-      ...emptyState(),
-      resources: {
-        Bucket: retainedState().resources['Bucket']!,
-        Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
-      } as unknown as StackState['resources'],
-    };
-    const run = runDestroyForStack('App', state, h.ctx);
-    for (let i = 0; i < 200 && h.saveRetainedResources.mock.calls.length === 0; i++) {
-      await new Promise((r) => setImmediate(r));
-    }
-    // Written while the incremental persist is still in flight.
-    expect(saveState).toHaveBeenCalled();
-    expect(h.saveRetainedResources).toHaveBeenCalledTimes(1);
-    expect(h.deleteState).not.toHaveBeenCalled();
-    releasePersist();
+    h.releaseRegistryMarker.mockImplementation(async () => {
+      started++;
+      await gate;
+      return 'released' as const;
+    });
+    const run = runDestroyForStack('App', retainedState(), h.ctx);
+    for (let i = 0; i < 200 && started < 2; i++) await new Promise((r) => setImmediate(r));
+    expect(started).toBe(2);
+    expect(h.deleteState).toHaveBeenCalledTimes(1);
+    release();
     await run;
-    expect(h.saveRetainedResources.mock.invocationCallOrder[0]!).toBeLessThan(
-      h.deleteState.mock.invocationCallOrder[0]!
-    );
+    expect(h.ensureRetainedTombstone).not.toHaveBeenCalled();
   });
 
   it('F-1: a record written whose S3 time could not be confirmed warns that it was RECORDED, not that it failed', async () => {

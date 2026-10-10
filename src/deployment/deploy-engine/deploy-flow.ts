@@ -1420,22 +1420,25 @@ export async function doDeployWithPrefetch(
     // the save's await reaches them, while the save had already taken its
     // copy.
 
-    // go-to-k/cdkd#4705 review H-1: what this deploy kept, in one write,
-    // before the record that no longer names it is saved.
-    await flushKeptForReadoption(this);
-
     // 7b. Save final state (ETag may have been updated by partial saves).
     // The legacy migration delete (when migrationPending) was already done by
     // the first per-resource save inside executeDeployment, so this final
     // save is unconditionally region-scoped.
-    const newEtag = await this.stateBackend.saveState(
-      stackName,
-      this.stackRegion,
-      // The record joins here, on the save that ends a successful deploy
-      // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
-      // field, so none of its saves carries it.
-      this.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
-    );
+    // go-to-k/cdkd#4705 review H-1/(g): what this deploy kept is recorded in
+    // one write beside it (disjoint objects). A crash leaving either alone is
+    // the documented residual: unrecorded, its re-create is refused with the
+    // `cdkd import` remedy.
+    const [newEtag] = await Promise.all([
+      this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        // The record joins here, on the save that ends a successful deploy
+        // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
+        // field, so none of its saves carries it.
+        this.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
+      ),
+      flushKeptForReadoption(this),
+    ]);
     this.logger.debug(`State saved (ETag: ${newEtag})`);
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.

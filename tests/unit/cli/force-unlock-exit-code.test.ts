@@ -52,7 +52,21 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 
-const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<number | undefined>>();
+const mockForceReleaseLock = vi.fn<
+  (
+    stackName: string,
+    region?: string,
+    beforeDelete?: (horizon: number) => Promise<void>
+  ) => Promise<number | undefined>
+>();
+/** The lock manager's real order: read the lock, hand its horizon over, then delete. */
+const events: string[] = [];
+const releasing = (horizon: number | undefined) =>
+  async (_s: string, _r?: string, beforeDelete?: (h: number) => Promise<void>) => {
+    if (horizon !== undefined && beforeDelete) await beforeDelete(horizon).catch(() => undefined);
+    events.push('delete');
+    return horizon;
+  };
 const mockNoteAbandoned = vi.fn<(at: number) => Promise<void>>(async () => undefined);
 const mockLedgerForStack = vi.fn((_backend: unknown, _stack: string, _region: string) => ({
   noteAbandoned: mockNoteAbandoned,
@@ -148,7 +162,7 @@ describe('cdkd force-unlock exit code', () => {
     // The walk must not abort on the first failure: `Third` comes after
     // `Second` and has to have been attempted.
     expect(mockForceReleaseLock).toHaveBeenCalledTimes(3);
-    expect(mockForceReleaseLock).toHaveBeenNthCalledWith(3, 'Third', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenNthCalledWith(3, 'Third', 'us-east-1', expect.any(Function));
   });
 
   it('exits 1 once when one stack fails in several regions', async () => {
@@ -165,36 +179,56 @@ describe('cdkd force-unlock exit code', () => {
     expect(mockForceReleaseLock).toHaveBeenCalledTimes(2);
   });
 
-  it("records the released lock's last renewal in the stack's create-token ledger (go-to-k/cdkd#4705)", async () => {
-    mockForceReleaseLock.mockResolvedValue(5000);
+  it("records the lock's lease horizon in the create-token ledger BEFORE the lock is deleted (go-to-k/cdkd#4705 (d))", async () => {
+    events.length = 0;
+    mockNoteAbandoned.mockImplementationOnce(async () => {
+      events.push('ledger');
+    });
+    mockForceReleaseLock.mockImplementation(releasing(5000));
 
     const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
 
     expect(code).toBeUndefined();
     expect(mockLedgerForStack).toHaveBeenCalledWith(expect.anything(), 'MyStack', 'us-east-1');
     expect(mockNoteAbandoned).toHaveBeenCalledWith(5000);
+    expect(events).toEqual(['ledger', 'delete']);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('records nothing when the lock had no LastModified', async () => {
-    mockForceReleaseLock.mockResolvedValue(undefined);
+    mockForceReleaseLock.mockImplementation(releasing(undefined));
 
     await runForceUnlock(['MyStack', '--state-bucket', 'b']);
 
     expect(mockNoteAbandoned).not.toHaveBeenCalled();
   });
 
-  it('a ledger write that fails after the release warns and still exits 0 (the lock IS released)', async () => {
-    mockForceReleaseLock.mockResolvedValue(5000);
-    mockNoteAbandoned.mockRejectedValueOnce(new Error('AccessDenied: create-tokens.json'));
+  it('(d) a ledger write that fails once is retried, and then nothing is warned', async () => {
+    mockForceReleaseLock.mockImplementation(releasing(5000));
+    mockNoteAbandoned.mockRejectedValueOnce(new Error('InternalError'));
 
     const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
 
     expect(code).toBeUndefined();
+    expect(mockNoteAbandoned).toHaveBeenCalledTimes(2);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('(c)(d) a ledger write that fails twice: the lock is still deleted, exit 0, and the warning names the permissive direction', async () => {
+    events.length = 0;
+    mockForceReleaseLock.mockImplementation(releasing(5000));
+    mockNoteAbandoned
+      .mockRejectedValueOnce(new Error('AccessDenied: create-tokens.json'))
+      .mockRejectedValueOnce(new Error('AccessDenied: create-tokens.json'));
+
+    const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(code).toBeUndefined();
+    expect(events).toEqual(['delete']);
     expect(errorSpy).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('Lock released for stack'));
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Lock released, but the create-token ledger')
+      expect.stringContaining('may take back a resource of those names that another deployment creates')
     );
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cdkd import'));
   });
 });

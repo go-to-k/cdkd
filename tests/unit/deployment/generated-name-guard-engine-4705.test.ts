@@ -237,6 +237,38 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     );
   });
 
+  it.each([
+    ['abandoned', /a deploy of this stack that was killed or force-unlocked/],
+    ['failed', /a create of this stack that came back failed/],
+  ] as const)(
+    '(a) an own-intent hold (%s) names the likely cause -- this stack\'s own resource -- and the import with the account flags',
+    async (ownIntent, why) => {
+      const { engine, provider } = buildEngine({
+        refusalRecovery: { profile: 'dev', stateBucket: 'my-bucket', statePrefix: 'team-a' },
+      });
+      const admit = vi
+        .spyOn(GeneratedNameGuard.prototype, 'admit')
+        .mockResolvedValue({ kind: 'held', holder: urlOf('App-Q1'), ownIntent });
+      try {
+        const error = await engine.deploy(STACK, template).catch((e: unknown) => e);
+        const text: string[] = [];
+        for (let e: unknown = error; e instanceof Error && text.length < 6; e = (e as { cause?: unknown }).cause) {
+          text.push(e.message);
+        }
+        const all = text.join('\n');
+        expect(provider.create).not.toHaveBeenCalled();
+        expect(all).toMatch(why);
+        expect(all).toMatch(/The likely cause: the resource is this stack's own/);
+        expect(all).toMatch(
+          /cdkd import App --resource 'Q1=https:\/\/sqs\.us-east-1\.amazonaws\.com\/123456789012\/App-Q1' --profile dev --state-bucket my-bucket --state-prefix team-a/
+        );
+        expect(all).not.toMatch(/The likely cause: this stack is also deployed under another state backend/);
+      } finally {
+        admit.mockRestore();
+      }
+    }
+  );
+
   it("creates a name this stack's record licenses, as before", async () => {
     const records = {
       Other: { physicalId: urlOf('App-Q2'), resourceType: QUEUE, properties: {} } as ResourceState,
@@ -436,7 +468,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(asks.filter((q) => !q).length).toBeGreaterThan(0);
     });
 
-    it('H-1: two Retain removals cost ONE retained.json read and ONE write, before the final state save', async () => {
+    it('H-1/(g): two Retain removals cost ONE retained.json read and ONE write, in flight beside the final state save', async () => {
       const levels = [['Q1']];
       const kept = (id: string): ResourceState =>
         ({ physicalId: urlOf(`App-${id}`), resourceType: QUEUE, properties: {}, deletionPolicy: 'Retain' }) as ResourceState;
@@ -447,13 +479,26 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
           (id) => ({ logicalId: id, changeType: 'DELETE', resourceType: QUEUE, currentProperties: {} }) as ResourceChange
         ),
       });
+      // Every save takes a tick; the kept write must start while the final
+      // one is still in flight (not after it, not serially before it).
+      const timeline: string[] = [];
+      stateBackend.saveState.mockImplementation(async () => {
+        timeline.push('save-start');
+        await new Promise((r) => setTimeout(r, 5));
+        timeline.push('save-end');
+        return 'e1';
+      });
+      stateBackend.saveRetainedResources.mockImplementation(async () => {
+        timeline.push('kept');
+      });
       await engine.deploy(STACK, templateOf(levels));
+      const lastStart = timeline.lastIndexOf('save-start');
+      expect(timeline.indexOf('kept')).toBeGreaterThan(lastStart);
+      expect(timeline.indexOf('kept')).toBeLessThan(timeline.indexOf('save-end', lastStart));
       expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveRetainedResources).toHaveBeenCalledTimes(1);
       const written = (stateBackend.saveRetainedResources.mock.calls[0] as unknown as [string, string, Array<{ logicalId: string }>])[2];
       expect(written.map((e) => e.logicalId).sort()).toEqual(['K1', 'K2']);
-      const finalSave = Math.max(...stateBackend.saveState.mock.invocationCallOrder);
-      expect(stateBackend.saveRetainedResources.mock.invocationCallOrder[0]).toBeLessThan(finalSave);
     });
 
     it('P4: a first deploy\'s registry claim overlaps the diff, and a refusal still stops it before any lookup or create', async () => {

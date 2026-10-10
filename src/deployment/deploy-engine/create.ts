@@ -410,6 +410,24 @@ async function refuseUnlicensedGeneratedName(
               recoveryCommandFlags(this.options.refusalRecovery).flags
             ).command
           }\``;
+      if (verdict.ownIntent !== undefined) {
+        // Review D1 (the maintainer's decision): this stack's ledger names the
+        // name, but cannot prove this holder is what its create made.
+        const why =
+          verdict.ownIntent === 'abandoned'
+            ? 'a deploy of this stack that was killed or force-unlocked'
+            : 'a create of this stack that came back failed (a timeout or a server error)';
+        return refuse(
+          `${subject} would be created with ${named}, which an existing resource ` +
+            `(${displaySafe(verdict.holder)}) already holds. This stack's create-token ledger ` +
+            `records that ${why} sent this name, but this type reports no creation time, so cdkd ` +
+            `cannot tell that resource is the one it made rather than another deployment's ` +
+            `created since. Since ${adoptsText}, creating it would take that resource over. ` +
+            `${displaySafe(logicalId)} was not created. The likely cause: the resource is this ` +
+            `stack's own, from that deploy. If it is, ${importLine} and re-run; if it is not, ` +
+            `this stack is also deployed under another state backend (go-to-k/cdkd#4705).`
+        );
+      }
       return refuse(
         `${subject} would be created with ${named}, which an existing resource ` +
           `(${displaySafe(verdict.holder)}) already holds, and nothing this stack records names ` +

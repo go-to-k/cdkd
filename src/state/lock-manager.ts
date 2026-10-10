@@ -1029,7 +1029,14 @@ export class LockManager {
    */
   async forceReleaseLock(
     stackName: string,
-    region: string | undefined
+    region: string | undefined,
+    /**
+     * go-to-k/cdkd#4705 review (d): handed the removed lock's lease horizon
+     * BEFORE the delete, so the caller can record it while the lock still
+     * fences the stack. Whatever it does -- a rejection included -- the
+     * delete follows: it is never gated on this.
+     */
+    beforeDelete?: (horizon: number) => Promise<void>
   ): Promise<number | undefined> {
     // The DELETE is UNCONDITIONAL, and that is this method's whole contract: a
     // stuck lock must never make a state record unremovable. `getLockInfo` is
@@ -1074,6 +1081,11 @@ export class LockManager {
       held.releasing = Promise.resolve();
     }
 
+    const horizon = record ? abandonedRunHorizon(record) : undefined;
+    if (horizon !== undefined && beforeDelete !== undefined) {
+      await beforeDelete(horizon).catch(() => undefined);
+    }
+
     try {
       await this.deleteLock(stackName, region);
     } finally {
@@ -1086,7 +1098,7 @@ export class LockManager {
       // swept; the `IsLatest` filter keeps whatever is current intact.
       await this.purgeLockVersions(key, 'reap');
     }
-    return record ? abandonedRunHorizon(record) : undefined;
+    return horizon;
   }
 
   /**

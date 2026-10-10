@@ -966,7 +966,11 @@ describe('review round G', () => {
       const input = inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': URL }) }, {
         abandonedRunAt: CRASHED,
       });
-      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({
+        kind: 'held',
+        holder: URL,
+        ownIntent: 'abandoned',
+      });
     });
 
     it('an intent written AFTER the abandonment (a later run) is not bounded by it', async () => {
@@ -1028,6 +1032,10 @@ describe('review rounds H and S', () => {
       const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(SENT + 3_600_000) });
       await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
     });
+    it('(f) a holder created 30s after the failure (inside the skew): licensed', async () => {
+      const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(SENT + 5_000 + 30_000) });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed', via: 'ledger' });
+    });
     it('a holder created between the send and the failure: licensed', async () => {
       const input = inputOf([create('A', QUEUE)], { [QUEUE]: withCreatedAt(SENT + 2_000) });
       await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toMatchObject({ kind: 'licensed', via: 'ledger' });
@@ -1068,7 +1076,24 @@ describe('review rounds H and S', () => {
     });
     it('intent path, an abandoned run: held (the G-1 bound is not bypassed)', async () => {
       const input = inputOf([create('A', QUEUE)], { [QUEUE]: denied() }, { abandonedRunAt: SENT + 60_000 });
-      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({ kind: 'held', holder: URL });
+      await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({
+        kind: 'held',
+        holder: URL,
+        ownIntent: 'abandoned',
+      });
+    });
+    it('(b) intent path, only a failed create (no abandoned run), no creation time: held, never by name', async () => {
+      ledger.recorded = new Map([
+        ['A', { resourceType: QUEUE, name: 'gen-A', firstSentAt: SENT, failedAt: SENT + 5_000 }],
+      ]) as never;
+      for (const provider of [denied(), providerOf({ 'gen-A': URL })]) {
+        const input = inputOf([create('A', QUEUE)], { [QUEUE]: provider });
+        await expect(GeneratedNameGuard.start(input)!.verdict('A')).resolves.toEqual({
+          kind: 'held',
+          holder: URL,
+          ownIntent: 'failed',
+        });
+      }
     });
   });
 

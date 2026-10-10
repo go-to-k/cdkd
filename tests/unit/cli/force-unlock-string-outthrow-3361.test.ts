@@ -100,7 +100,7 @@ describe('cdkd force-unlock (#3361)', () => {
 
     // `Second` comes after the failure and must still have been attempted.
     expect(mockForceReleaseLock).toHaveBeenCalledTimes(2);
-    expect(mockForceReleaseLock).toHaveBeenNthCalledWith(2, 'Second', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenNthCalledWith(2, 'Second', 'us-east-1', expect.any(Function));
     // Not the "No lock found" success arm: the run still reports failure.
     expect(code).toBe(1);
     const failed = errorSpy.mock.calls

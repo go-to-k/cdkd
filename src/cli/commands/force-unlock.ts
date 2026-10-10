@@ -121,23 +121,32 @@ async function forceUnlockCommand(
           : `${displayStackName(stackName)} (legacy lock key)`;
         logger.info(`Force-unlocking stack: ${where}`);
         try {
-          const abandonedAt = await lockManager.forceReleaseLock(stackName, r);
-          logger.info(`✓ Lock released for stack: ${where}`);
-          // go-to-k/cdkd#4705 review G-1/B1: the run that held it created
+          // go-to-k/cdkd#4705 review G-1/B1/(d): the run that held it created
           // nothing after its lease horizon (last renewal plus the lock's
-          // renewal interval); an adopting create it recorded must not
-          // license a resource created after that.
-          // Never fails the unlock: the lock IS released by now.
-          if (abandonedAt !== undefined && r !== undefined) {
-            try {
-              await ledgerForStack(stateBackend, stackName, r).noteAbandoned(abandonedAt);
-            } catch (ledgerError) {
-              logger.warn(
-                safeMsg`Lock released, but the create-token ledger of ${where} could not record when the ` +
-                  safeMsg`abandoned run stopped: ${describeAwsFailure(ledgerError).summary}. ` +
-                  `A later deploy may refuse a resource that run made; \`cdkd import\` adopts it.`
-              );
+          // renewal interval), recorded in the stack's create-token ledger
+          // BEFORE the lock goes, retried once. The delete never waits on it.
+          let ledgerError: unknown;
+          let recorded = false;
+          await lockManager.forceReleaseLock(stackName, r, async (horizon) => {
+            if (r === undefined) return;
+            const ledger = ledgerForStack(stateBackend, stackName, r);
+            for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
+              try {
+                await ledger.noteAbandoned(horizon);
+                recorded = true;
+              } catch (error) {
+                ledgerError = error;
+              }
             }
+          });
+          logger.info(`✓ Lock released for stack: ${where}`);
+          if (!recorded && ledgerError !== undefined) {
+            logger.warn(
+              safeMsg`Lock released, but the create-token ledger of ${where} could not record when the ` +
+                safeMsg`abandoned run stopped: ${describeAwsFailure(ledgerError).summary}. ` +
+                `A later deploy may take back a resource of those names that another deployment ` +
+                `creates.`
+            );
           }
         } catch (error) {
           const message = describeAwsFailure(error).detail;

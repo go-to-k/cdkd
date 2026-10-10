@@ -776,6 +776,36 @@ describe('LockManager', () => {
       );
     });
 
+    it('(d) hands the horizon over BEFORE the delete, and deletes even when that rejects (issue #4705)', async () => {
+      const lastRenewed = new Date(Date.now() - 5 * 60 * 1000);
+      const lockBody = () => ({
+        ETag: '"e"',
+        LastModified: lastRenewed,
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ owner: 'o@h:1', timestamp: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 })
+            ),
+        },
+      });
+      const order: string[] = [];
+      s3Client.send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        order.push(cmd.constructor.name);
+        if (cmd.constructor.name === 'GetObjectCommand') return lockBody();
+        return {};
+      });
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1', async (horizon) => {
+        order.push(`beforeDelete:${horizon - lastRenewed.getTime()}`);
+      });
+      expect(order.slice(0, 3)).toEqual(['GetObjectCommand', 'beforeDelete:120000', 'DeleteObjectCommand']);
+
+      order.length = 0;
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1', async () => {
+        throw new Error('ledger down');
+      });
+      expect(order).toContain('DeleteObjectCommand');
+    });
+
     it('deletes a lock whose body cdkd cannot read (issue #2170)', async () => {
       // The contract is that a stuck lock never makes a state record
       // unremovable. A body of `42` reads as absent through `getLockInfo` while

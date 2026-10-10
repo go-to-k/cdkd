@@ -122,11 +122,12 @@ stack's own evidence names that resource:
   prefix that creates them again takes them back, and drops them from that
   list once its record names them. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. A deploy records what it
-  kept in one write when it ends, before its final state save. A crash in
-  between -- after a removal's partial state save already dropped the
-  resource's row, before that write -- leaves the kept resource in neither
-  the record nor the list: its re-create is then refused with the
-  `cdkd import` remedy (the safe direction). `cdkd state orphan` empties
+  kept in one write when it ends, beside its final state save; a destroy,
+  once its record is gone, beside the marker's release. A crash before that
+  write -- after a deploy's partial state save already dropped the
+  resource's row, or after a destroy deleted its record -- leaves the kept
+  resource in neither the record nor the list: its re-create is then refused
+  with the `cdkd import` remedy (the safe direction). `cdkd state orphan` empties
   it, with or without a record left, and so does a destroy that keeps nothing:
   the empty list is a tombstone, never deleted. One destroy (or orphan) by this
   cdkd therefore ends the older-cdkd history license below for that stack and
@@ -294,8 +295,8 @@ naming its prefix and the `cdkd state orphan` command that removes it.
 the commands above (a destroy starts it beside its own state read); a first
 deploy adds one conditional write, overlapped with its diff. A destroy ends
 with two writes run beside the exports-index update it always made, so no
-round trip of their own: the empty `retained.json` (written only when there is
-none) and the marker's release, conditional on the version read earlier. Records written
+round trip of their own: `retained.json` -- what it kept, or, kept nothing,
+the empty one (written only when there is none) -- and the marker's release, conditional on the version read earlier. Records written
 before the registry existed have no marker: the first command that needs the
 answer for such a stack lists the bucket's top-level prefixes once (50
 listings in parallel, a single pass), then claims the marker, so every later

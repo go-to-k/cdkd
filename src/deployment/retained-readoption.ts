@@ -99,6 +99,8 @@ export async function recordRetainedForReadoption(
 export class KeptForReadoption {
   private entries: RetainedResource[] = [];
   private earlier: Promise<readonly RetainedResource[] | null> | undefined;
+  /** A flush in progress, so a later one (the deploy's `finally`) waits for it. */
+  private inFlight: Promise<void> | undefined;
 
   private readonly backend: Pick<
     S3StateBackend,
@@ -137,14 +139,18 @@ export class KeptForReadoption {
     }
   }
 
-  /** Record what was added since the last flush, in one write. Never throws. */
+  /**
+   * Record what was added since the last flush, in one write; a flush already
+   * in progress is awaited first. Never throws.
+   */
   async flush(): Promise<void> {
+    if (this.inFlight !== undefined) await this.inFlight;
     if (this.entries.length === 0) return;
     const kept = this.entries;
     const earlier = this.earlier;
     this.entries = [];
     this.earlier = undefined;
-    await recordRetainedForReadoption(
+    const write = recordRetainedForReadoption(
       this.backend,
       this.stackName,
       this.region,
@@ -152,5 +158,11 @@ export class KeptForReadoption {
       this.logger,
       earlier
     );
+    this.inFlight = write;
+    try {
+      await write;
+    } finally {
+      if (this.inFlight === write) this.inFlight = undefined;
+    }
   }
 }
