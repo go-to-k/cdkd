@@ -240,9 +240,9 @@ describe('cdkd rollback feeds the delete-first guard the failed ops it strips (g
 
   // A bare delete-first UPDATE (its create made nothing) that --revert-failed
   // handled is kept by the same rule, so a re-run still blocks.
-  // The real path: the deploy's partial save dropped Y's record with its
-  // deleted resource, so `--revert-failed` settles the bare UPDATE as
-  // skip-failed-absent (handled). A proven orphan of another resource, Z, is
+  // A shape where Y's record is absent (e.g. removed by a later op), so
+  // `--revert-failed` settles the bare UPDATE as skip-failed-absent
+  // (handled). A proven orphan of another resource, Z, is
   // handled too, so the strip is persisted and shows what it kept.
   it('keeps a handled bare delete-first UPDATE too', async () => {
     const bare = { ...Y_UPDATE, replacementOrphaned: undefined };
