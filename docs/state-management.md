@@ -3175,7 +3175,7 @@ such as an SQS `QueueName`, becomes the resource's identity. It is stored in:
 
 The resource's own properties keep the reference (`***` for a `NoEcho`
 parameter). cdkd masks the name in logs, `cdkd diff` output and the text of
-deployment events; commands that show a stored record, such as `cdkd state show`, print
+deployment events; commands that show a stored record, such as `cdkd state show` or `cdkd events`, print
 it as stored. CloudFormation behaves the same and
 [advises against](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html)
 putting a dynamic reference or other sensitive data in an identifier property.

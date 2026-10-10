@@ -77,7 +77,7 @@ Out of scope:
   embedding it, wherever a resolved `Ref`, `Fn::GetAtt` or `Fn::Sub` carries
   it into another resource's record, a stack output or the exports index; the
   `physicalId` field of a deployment event; and commands that print a stored
-  record as it is, such as `cdkd state show`. CloudFormation uses the
+  record as it is, such as `cdkd state show` or `cdkd events`. CloudFormation uses the
   plaintext value in the primary identifier the same way and
   [advises against it](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references.html);
   see [Security and Best Practices](docs/state-management.md#security-and-best-practices).
