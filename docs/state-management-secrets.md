@@ -75,7 +75,8 @@ The value is stored in:
 - another resource's resolved copy of the name, or of an identifier that
   contains it, such as the `Resource` ARN in an IAM policy, when it was
   resolved in a deploy that created or updated the queue (one resolved while
-  the queue was unchanged stores the reference in place of the name);
+  the queue was unchanged stores the reference in place of a name of four
+  characters or more);
 - stack outputs, the exports index, `rollback-journal.json`, and the queue's
   `orphans` entry if a rollback keeps the queue;
 - the `physicalId` field of a [deployment event](deployment-events.md).

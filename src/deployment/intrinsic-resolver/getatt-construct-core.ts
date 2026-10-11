@@ -147,8 +147,12 @@ export async function constructAttributeForCoreTypes(
             resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'],
             context
           ),
+          logicalId,
           context,
           `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+          // No source key: the attribute name here is the RESOLVED one, so a key
+          // built from it need not match the persist path's; the value scan
+          // positions the leaf instead.
           undefined
         );
       case 'Ipv6CidrBlocks': {

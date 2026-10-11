@@ -24,6 +24,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import {
   carriesSecretMask,
   crossStackSourceKey,
+  dynamicReferenceTokens,
   recordFreshNoEchoValuesIn,
   MIN_NEEDLE_LENGTH,
   recordLogOnlyValue,
@@ -363,6 +364,7 @@ export async function resolveGetAtt(
       }
       return await this.reresolveRecordedReferences(
         notedFlatValue,
+        logicalId,
         context,
         `${logicalId}.${this.displayLeaf(attributeName, context)}`,
         crossStackSourceKey({ 'Fn::GetAtt': getAtt })
@@ -423,6 +425,7 @@ export async function resolveGetAtt(
         // for a leaf redacted to its `{{resolve:` spelling (go-to-k/cdkd#4800).
         return await this.reresolveRecordedReferences(
           notedCursor,
+          logicalId,
           context,
           `${logicalId}.${this.displayLeaf(attributeName, context)}`,
           crossStackSourceKey({ 'Fn::GetAtt': getAtt })
@@ -737,28 +740,73 @@ export function recordSecretNamedRead(
  * that spelling to AWS whenever the producer is `NO_CHANGE`. A producer updated
  * in this run serves the provider's fresh value and never reaches here with one.
  *
- * Resolved by THIS resolver, with the context's region evidence KEPT: the
- * expression is the one this stack's own template leaf resolved, so the
- * answer (or the ambiguity refusal) is the one that leaf gets. Each plaintext
- * is recorded into the reader's bag, so the reader's record persists the
- * expression back, and a diff context (`skipDynamicReferences`) keeps the
- * secret's spelling, comparing expression with expression.
+ * Resolved by THIS resolver, and only when every token is PROVEN to be one the
+ * producer's own template leaves spell (see {@link referencesProvenLocal}): a
+ * record can also hold the expression a cross-region `Fn::GetStackOutput`
+ * handed it, which this region would answer from a same-named secret, silently,
+ * and the deploy context carries no producer-region evidence to refuse it.
+ * Each plaintext is recorded into the reader's bag, so the reader's record
+ * persists the expression back, and a diff context (`skipDynamicReferences`)
+ * keeps the secret's spelling, comparing expression with expression.
  *
  * Unchanged: a value carrying no reference; one carrying the MASK, which
- * {@link noteAttributeSecrecy} already reported for the deploy to refuse; and
- * any value in a context with no bag to record the plaintext into, since its
- * caller could persist the plaintext unredacted.
+ * {@link noteAttributeSecrecy} already reported for the deploy to refuse; a
+ * value with a token not proven local (served as before, the residual this
+ * leaves); and any value in a context with no bag to record the plaintext into,
+ * since its caller could persist the plaintext unredacted.
  */
 export async function reresolveRecordedReferences(
   this: IntrinsicFunctionResolver,
   value: unknown,
+  logicalId: string,
   context: ResolverContext,
   origin: string,
   sourceKey: string | undefined
 ): Promise<unknown> {
   if (!carriesDynamicReference(value) || carriesSecretMask(value)) return value;
   if (context.recordedSecretValues === undefined) return value;
+  if (!referencesProvenLocal(value, logicalId, context)) {
+    this.logger.debug(
+      `Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, so the region that resolved them is unknown`
+    );
+    return value;
+  }
   return await this.reresolveCrossStackValue(value, undefined, context, origin, sourceKey);
+}
+
+/**
+ * Does the producer's own template `Properties` spell, as a literal string
+ * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
+ * `Fn::GetStackOutput` anywhere in them? A literal token is resolved by the
+ * producer's template-leaf route in THIS resolver's region, so re-resolving it
+ * here reproduces the value the record was redacted from. A token assembled by
+ * an intrinsic, or read from another stack, proves nothing about its region
+ * (go-to-k/cdkd#4800 security review). The walk covers one resource's
+ * properties, so it does not scale with the stack.
+ */
+function referencesProvenLocal(
+  value: unknown,
+  logicalId: string,
+  context: ResolverContext
+): boolean {
+  const resources = context.template.Resources ?? {};
+  if (!Object.hasOwn(resources, logicalId)) return false;
+  const literals: string[] = [];
+  let crossStack = false;
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      if (node.includes('{{resolve:')) literals.push(node);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    if (!Array.isArray(node) && Object.hasOwn(node, 'Fn::GetStackOutput')) crossStack = true;
+    for (const child of Object.values(node as Record<string, unknown>)) walk(child);
+  };
+  walk(resources[logicalId]?.Properties);
+  if (crossStack) return false;
+  return [...wholeStringLeavesOf(value)].every((leaf) =>
+    dynamicReferenceTokens(leaf).every((token) => literals.some((l) => l.includes(token)))
+  );
 }
 
 /**

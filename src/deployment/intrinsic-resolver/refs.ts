@@ -188,7 +188,15 @@ export async function resolveRef(
     // A `Ref` served out of the record's `properties` / `attributes` (an
     // `AWS::S3Tables::Table`'s `TableName`) can be a leaf persisted as its
     // `{{resolve:` spelling (go-to-k/cdkd#4800).
-    return await this.reresolveRecordedReferences(refValue, context, `Ref ${logicalId}`, undefined);
+    // No source key: `crossStackSourceKey` keys no resource `Ref`, so the
+    // persist path positions this leaf through the value scan.
+    return await this.reresolveRecordedReferences(
+      refValue,
+      logicalId,
+      context,
+      `Ref ${logicalId}`,
+      undefined
+    );
   }
 
   // Check if it's a parameter

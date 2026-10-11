@@ -49,8 +49,10 @@ export async function constructAttributeForAppTypes(
             resource.properties?.['EventBusName'],
             context
           ),
+          logicalId,
           context,
           `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+          // No source key: the bus name is embedded, never the reader's whole leaf.
           undefined
         );
         const bus = typeof busRaw === 'string' && busRaw && busRaw !== 'default' ? busRaw : '';

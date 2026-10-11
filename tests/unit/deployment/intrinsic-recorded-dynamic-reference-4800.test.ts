@@ -82,6 +82,8 @@ interface Opts {
   bag?: RecordedSecretValues;
   skip?: boolean;
   reads?: RedactedAttributeRead[];
+  /** The producer's template `Properties`; its record's `properties` by default. */
+  templateProperties?: Record<string, unknown>;
 }
 
 function contextFor(
@@ -90,7 +92,12 @@ function contextFor(
 ): Record<string, unknown> {
   return {
     template: {
-      Resources: { Producer: { Type: producer.resourceType, Properties: {} } },
+      Resources: {
+        Producer: {
+          Type: producer.resourceType,
+          Properties: opts.templateProperties ?? producer.properties ?? {},
+        },
+      },
     } as CloudFormationTemplate,
     resources: { Producer: producer },
     parameters: {},
@@ -133,7 +140,7 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
   });
 
   it('Fn::GetAtt of a whole-token attribute (a custom resource Data echo)', async () => {
-    const producer = record('Custom::Thing', 'cr-phys', {}, { Name: QUEUE_REF });
+    const producer = record('Custom::Thing', 'cr-phys', { Name: QUEUE_REF }, { Name: QUEUE_REF });
     const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Name'] }, {
       bag: new Map(),
     });
@@ -141,7 +148,12 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
   });
 
   it('Fn::GetAtt through the nested-path walk', async () => {
-    const producer = record('Custom::Thing', 'cr-phys', {}, { Endpoint: { Address: RECORDED_ARN } });
+    const producer = record(
+      'Custom::Thing',
+      'cr-phys',
+      { Name: QUEUE_REF },
+      { Endpoint: { Address: RECORDED_ARN } }
+    );
     const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Endpoint.Address'] }, {
       bag: new Map(),
     });
@@ -175,6 +187,68 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     expect(resolved).toBe(QUEUE_NAME);
   });
 
+  it('two whole-token attributes resolving to one value each persist their own expression', async () => {
+    // A rotating secret's two stages during `AWSPENDING`: one plaintext, so
+    // only the per-leaf source key keeps the reader's leaves apart (#2059).
+    const cur = '{{resolve:secretsmanager:sdin:SecretString:queue:AWSCURRENT}}';
+    const prev = '{{resolve:secretsmanager:sdin:SecretString:queue:AWSPREVIOUS}}';
+    const producer = record('Custom::Thing', 'cr-phys', { Cur: cur, Prev: prev }, { Cur: cur, Prev: prev });
+    const bag: RecordedSecretValues = new Map();
+    const source = {
+      X: { 'Fn::GetAtt': ['Producer', 'Cur'] },
+      Y: { 'Fn::GetAtt': ['Producer', 'Prev'] },
+    };
+    const resolved = (await resolveWith(producer, source, { bag })) as Record<string, unknown>;
+    expect(resolved).toEqual({ X: QUEUE_NAME, Y: QUEUE_NAME });
+    const persisted = redactSecretsForState(
+      markSameGenerationBag(structuredClone(resolved)),
+      bag,
+      source
+    );
+    expect(persisted).toEqual({ X: cur, Y: prev });
+  });
+
+  it('a token the producer read from another region is served as it is, never resolved here', async () => {
+    const producer = record('AWS::SQS::Queue', 'u', {}, { Arn: RECORDED_ARN });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
+      bag: new Map(),
+      templateProperties: {
+        QueueName: {
+          'Fn::GetStackOutput': { StackName: 'P', OutputName: 'N', Region: 'us-west-2' },
+        },
+      },
+    });
+    expect(resolved).toBe(RECORDED_ARN);
+    expect(smCalls.count).toBe(0);
+  });
+
+  it('a template that also spells the token literally beside a cross-region read proves nothing', async () => {
+    const producer = record('AWS::SQS::Queue', 'u', {}, { Arn: RECORDED_ARN });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
+      bag: new Map(),
+      templateProperties: {
+        QueueName: {
+          'Fn::GetStackOutput': { StackName: 'P', OutputName: 'N', Region: 'us-west-2' },
+        },
+        Tags: [{ Key: 'k', Value: QUEUE_REF }],
+      },
+    });
+    expect(resolved).toBe(RECORDED_ARN);
+    expect(smCalls.count).toBe(0);
+  });
+
+  it('a token the template assembles with an intrinsic is served as it is', async () => {
+    const producer = record('AWS::SQS::Queue', 'u', {}, { Arn: RECORDED_ARN });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
+      bag: new Map(),
+      templateProperties: {
+        QueueName: { 'Fn::Join': ['', ['{{resolve:secretsmanager:sdin:', 'SecretString:queue::}}']] },
+      },
+    });
+    expect(resolved).toBe(RECORDED_ARN);
+    expect(smCalls.count).toBe(0);
+  });
+
   it('a diff context keeps the secret expression and fetches nothing', async () => {
     const resolved = await resolveWith(QUEUE, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
       bag: new Map(),
@@ -192,7 +266,7 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
 
   it('a value carrying the mask is left for the deploy to refuse, reported once as an attribute read', async () => {
     const data = { Password: SECRET_MASK, Queue: QUEUE_REF };
-    const producer = record('Custom::Thing', 'cr-phys', {}, { Data: data });
+    const producer = record('Custom::Thing', 'cr-phys', { Name: QUEUE_REF }, { Data: data });
     const reads: RedactedAttributeRead[] = [];
     const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Data'] }, {
       bag: new Map(),
