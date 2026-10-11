@@ -319,6 +319,11 @@ describe('the stack NoEcho values judge a pre-v11 plaintext name (go-to-k/cdkd#3
     };
     expect(masks(journaledOrphanPrintingBag([orphan], {}, noEcho()))).toBe(true);
     expect(masks(journaledOrphanPrintingBag([orphan], {}))).toBe(false);
+    // The value itself is carried, on any orphan's line.
+    const plain = { ...orphan, physicalId: 'plain-id', attemptedProperties: {} };
+    expect(maskSecretsInText(`pw ${VALUE}`, journaledOrphanPrintingBag([plain], {}, noEcho()))).toBe(
+      'pw ***'
+    );
     const reader = {
       logicalId: 'Replica',
       resourceType: 'AWS::RDS::DBInstance',
