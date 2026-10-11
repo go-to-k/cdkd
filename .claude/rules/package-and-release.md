@@ -69,8 +69,8 @@ nothing, so do not wait for a version bump after a merge, and **never merge the
 release PR unless the maintainer asked for a release** — that standing rule is
 the real protection, not a gate.
 
-**A dependency bump that delivers a fix a user can hit** — a security fix, or a
-bump of a bundled runtime dependency such as `cdk-local` — is titled
+**A dependency bump that delivers a fix a user can hit** — a security or other
+fix in a bundled runtime dependency such as `cdk-local` — is titled
 `fix(deps): …` and carries a `changelog.d/entries/` fragment. `chore(deps):` is
 hidden from release-please and publishes nothing; the PR-title check accepts
 `fix:` without a `src/**` change only with such a fragment (#3548).
