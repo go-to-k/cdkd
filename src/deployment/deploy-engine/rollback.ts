@@ -154,10 +154,15 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // leaf of that record — a reader's copy of a secret-derived physical
       // name, such as a queue policy's `Queues` URL — stays as state holds it,
       // or the restore writes the reference where a provider addresses the
-      // resource. So the journal's `previousState` holds only what
-      // `state.json` held, never a reference state did not, and the restore's
-      // own keep (`redactRollbackRecord`) leans on exactly that.
+      // resource. "As state holds it" is the record this deploy LOADED, not
+      // the working map's: `adoptRollbackOrphans` replaces an adopted id's
+      // record with one whose attributes merge a LIVE readback, and a key
+      // state never held must fall to the scan. So the journal's
+      // `previousState` keeps no plaintext the loaded state did not hold, and
+      // the restore's own keep (`redactRollbackRecord`) leans on exactly that.
       const previous = next.previousState;
+      const adoption = adoptionReplacedRecords.get(this);
+      const loaded = adoption?.has(op.logicalId) ? adoption.get(op.logicalId) : previous;
       // The `NoEcho` arms over the PREVIOUS record (review B3): its own
       // `noEchoLeaves` when it has them, else today's template positions for
       // the same logical id and type, so a pre-v11 record's plaintext does not
@@ -168,7 +173,7 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
         keepPersistedPlainRecordLeaves(
           scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
           previous,
-          previous
+          loaded ?? {}
         ),
         undefined,
         {},
@@ -195,6 +200,13 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
  * the deploy run would collide and roll back anyway, adding another orphan
  * on the way.
  */
+/**
+ * Per engine, the record each id {@link adoptRollbackOrphans} replaced in the
+ * deploy's working map, as LOADED (go-to-k/cdkd#4801). Read by
+ * {@link redactOperationsForJournal}; an id absent here was never replaced.
+ */
+const adoptionReplacedRecords = new WeakMap<DeployEngine, Map<string, ResourceState | undefined>>();
+
 export async function adoptRollbackOrphans(
   this: DeployEngine,
   currentState: StackState,
@@ -253,7 +265,12 @@ export async function adoptRollbackOrphans(
     );
   }
 
+  // go-to-k/cdkd#4801: what each adopted id held BEFORE the splice (nothing,
+  // for an id state did not manage), for the journal's keep. Reset per call.
+  const replaced = new Map<string, ResourceState | undefined>();
+  adoptionReplacedRecords.set(this, replaced);
   for (const [logicalId, record] of Object.entries(plan.adopted)) {
+    replaced.set(logicalId, currentState.resources[logicalId]);
     currentState.resources[logicalId] = record;
     this.logger.info(
       `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +

@@ -117,8 +117,16 @@ function previousState(): StackState {
  * last, so the automatic rollback reverts every update before it. Returns the
  * last state saved and the provider's `update` mock.
  */
-async function deployAndRollBack(template: Record<string, TemplateResource>) {
+async function deployAndRollBack(
+  template: Record<string, TemplateResource>,
+  options: {
+    orphans?: StackState['orphans'];
+    levels?: string[][];
+    imported?: Record<string, unknown>;
+  } = {}
+) {
   const state = previousState();
+  if (options.orphans) state.orphans = options.orphans;
   const saved: StackState[] = [];
   const segments: RollbackJournalSegment[] = [];
   const provider = {
@@ -133,6 +141,11 @@ async function deployAndRollBack(template: Record<string, TemplateResource>) {
     delete: vi.fn(),
     getAttribute: vi.fn(),
     readCurrentState: vi.fn().mockResolvedValue(undefined),
+    import: vi.fn(async (input: { knownPhysicalId?: string }) =>
+      options.imported === undefined
+        ? null
+        : { physicalId: input.knownPhysicalId, attributes: options.imported }
+    ),
   };
   const engine = new DeployEngine(
     {
@@ -151,7 +164,9 @@ async function deployAndRollBack(template: Record<string, TemplateResource>) {
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['SecretQueue'], ['Policy'], ['Breaker']]),
+      getExecutionLevels: vi
+        .fn()
+        .mockReturnValue(options.levels ?? [['SecretQueue'], ['Policy'], ['Breaker']]),
       getDirectDependencies: vi.fn((_g: unknown, id: string) =>
         id === 'Policy' ? ['SecretQueue'] : id === 'Breaker' ? ['Policy'] : []
       ),
@@ -233,6 +248,44 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
     // Premise: the policy's update was journaled.
     expect(journaled).toBeDefined();
     expect(journaled).toMatchObject(previousState().resources['Policy']!);
+  });
+
+  // An adopted orphan's record carries attribute keys a LIVE readback added,
+  // which state never held: the journal keep must not treat them as persisted.
+  it('journals an adopted orphan’s live-read attribute through the scan', async () => {
+    const { segments } = await deployAndRollBack(
+      {
+        Kept: {
+          Type: 'AWS::SSM::Parameter',
+          // No explicit name: cdkd re-adopts only a resource it names itself.
+          Properties: { Type: 'String', Value: REF },
+        },
+        Breaker: BREAKER,
+      },
+      {
+        orphans: [
+          {
+            logicalId: 'Kept',
+            orphanedAt: 0,
+            state: {
+              physicalId: '/p/kept',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Type: 'String', Value: 'old' },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+        ],
+        levels: [['Kept'], ['Breaker']],
+        imported: { Echo: NAME },
+      }
+    );
+    const journaled = segments
+      .flatMap((s) => s.operations)
+      .find((op) => op.logicalId === 'Kept')?.previousState;
+    // Premise: the orphan was adopted with the live key, and its update journaled.
+    expect(journaled?.physicalId).toBe('/p/kept');
+    expect(journaled?.attributes).toEqual({ Echo: REF });
   });
 
   it('restores the secret-named owner with its secret positions as references', async () => {
