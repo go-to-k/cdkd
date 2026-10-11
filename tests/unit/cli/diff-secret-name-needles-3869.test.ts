@@ -785,6 +785,113 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     });
   });
 
+  it("never judges a parent record named like a NoEcho value's Fn::Split fragment, for a child", async () => {
+    // The parent's walk records the fragment `AlphaQ` of the NoEcho value
+    // `AlphaQ-beta` (the Split reader). Judged by it, the ordinary queue named
+    // `AlphaQ` would hand its lower-cased spelling to the child and mask the
+    // child's ordinary stored copy of it.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: {
+            Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'no-longer-the-queue' } },
+          },
+        })
+      );
+      const tpl: CloudFormationTemplate = {
+        Parameters: { Tok: { Type: 'String', NoEcho: true, Default: 'AlphaQ-beta' } },
+        Resources: {
+          Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'AlphaQ' } },
+          Split: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: { 'Fn::Select': [0, { 'Fn::Split': ['-', { Ref: 'Tok' }] }] } },
+          },
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: {},
+          },
+        },
+      };
+      const parent: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 11,
+        resources: {
+          Queue: {
+            physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/AlphaQ',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'AlphaQ' },
+            attributes: {},
+            dependencies: [],
+          },
+          Split: {
+            physicalId: 'split',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'older' },
+            attributes: {},
+            dependencies: [],
+          },
+          Child: {
+            physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const child: StackState = {
+        stackName: 'S~Child',
+        region: 'us-east-1',
+        version: 11,
+        resources: {
+          Reader: {
+            physicalId: 'reader-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'alphaq-lowercased-copy' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: tpl,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      // Premise: the parent's walk read the fragment (its Split row masks it).
+      const splitRow = JSON.stringify(tree.changes.get('Split')?.propertyChanges);
+      expect(splitRow).toContain('"path":"Value"');
+      expect(splitRow).not.toContain('AlphaQ');
+      const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+      const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+      // Premise: the child's row is rendered.
+      expect(row).toContain('no-longer-the-queue');
+      expect(row).toContain('alphaq-lowercased-copy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
     // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
     // `inheritedSecrets`, whose needles its export-alias preview reads.
