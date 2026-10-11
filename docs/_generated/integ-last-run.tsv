@@ -51,11 +51,11 @@ codebuild-project	2026-10-11T15:19:51Z	PASS	96	verify.sh	rc ok, orph clean; #261
 codecommit	2026-10-11T09:33:22Z	PASS	175	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-08T06:25:38Z	PASS	265	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
-cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
-cognito-identity-pool	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b1; identity+user pool gone, orph clean
-cognito-lambda-triggers	2026-08-10T04:23:28Z	PASS	58	verify.sh	0810 sweep b2; post-#1395 SignInPolicy, triggers fired, 8 del 0 err, 0 orph
-cognito-resource-server	2026-08-22T19:12:07Z	PASS	90	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
-cognito-userpool-user-ref	2026-07-26T19:16:39Z	PASS	95	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
+cognito-custom-attribute-add	2026-10-11T15:20:01Z	PASS	57	verify.sh	PR #4796, rc ok, orph clean
+cognito-identity-pool	2026-10-11T15:28:51Z	PASS	57	verify.sh	PR #4796, rc ok, orph clean
+cognito-lambda-triggers	2026-10-11T15:28:51Z	PASS	78	verify.sh	PR #4796, rc ok, orph clean
+cognito-resource-server	2026-10-11T15:28:51Z	PASS	108	verify.sh	PR #4796, rc ok, orph clean
+cognito-userpool-user-ref	2026-10-11T15:28:51Z	PASS	104	verify.sh	PR #4796, rc ok, orph clean
 composite-stack	2026-07-26T18:43:33Z	PASS	39	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 conditions	2026-10-11T09:33:22Z	PASS	35	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 conditions-and-if	2026-10-03T00:30:21Z	PASS	80	verify.sh	rc ok, orph clean (#4471; pre-fix probe red at phase-2b diff --fail)
