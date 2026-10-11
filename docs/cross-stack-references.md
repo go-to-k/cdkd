@@ -5,8 +5,8 @@ description: "How cdkd resolves Fn::ImportValue and Fn::GetStackOutput: values c
 
 # Use Another Stack's Outputs
 
-A CDK app's cross-stack references work with cdkd unchanged. cdkd supports
-both intrinsics CloudFormation has, with the same meaning:
+cdkd supports both cross-stack intrinsics CloudFormation has, with the same
+meaning, so a CDK app's references within one account work unchanged:
 
 - **`Fn::ImportValue`** is a strong reference. The producer cannot be
   destroyed while a consumer imports from it.
@@ -39,6 +39,7 @@ the outputs.
 | --- | --- | --- |
 | Where a value is read from | The stack's exports and outputs in CloudFormation | The producer's state record in cdkd's state bucket |
 | What a cross-account `RoleArn` needs | `cloudformation:DescribeStacks` | Read access to the producer account's cdkd state bucket |
+| A cross-account reference CDK generates for you | Works | Does not work; write `cdk.Fn.getStackOutput()` yourself |
 | Who refuses a producer's destroy | CloudFormation | cdkd, from the imports it recorded in each consumer's state |
 | A producer the other engine manages | Not readable | Readable from CloudFormation, as a weak reference |
 
@@ -116,6 +117,15 @@ stops tracking every resource in that stack, only to break one reference.
 Use one of the two ways above.
 
 ## Reading from another account
+
+> [!WARNING]
+> A cross-account reference that CDK generates for you does not work with
+> cdkd. For a producer in another account, CDK synthesizes
+> `Fn::GetStackOutput` with a `RoleArn` naming a role it creates in the
+> producer stack, which trusts only the consumer's CloudFormation execution
+> role and allows only `cloudformation:DescribeStacks`. cdkd cannot assume
+> that role, and the role could not read cdkd's state. Write the reference
+> yourself with `cdk.Fn.getStackOutput()`, naming a role set up as below.
 
 `Fn::GetStackOutput` with a `RoleArn` reads the producer's output from cdkd's
 state in the producer's account, not from CloudFormation. cdkd assumes the

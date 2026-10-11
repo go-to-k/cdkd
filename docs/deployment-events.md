@@ -114,10 +114,9 @@ with `command: rollback`.
 
 A run that skipped a resource is recorded `FAILED` even though no operation
 failed. [Deployment Event Format](deployment-events-format.md#a-resource-that-was-not-deleted-resource-skipped)
-lists the causes of a skip and what to do about each.
+lists the causes of a skip.
 
 ## How long history is kept
-
 
 cdkd keeps the newest 20 runs of a stack. Three things delete history:
 
@@ -135,6 +134,7 @@ when the destroy fails or is interrupted. `cdkd state destroy` has no
 Deleting a run file from a versioned bucket leaves earlier versions behind.
 [Earlier versions on the versioned state bucket](cli-events.md#earlier-versions-on-the-versioned-state-bucket)
 explains what each delete removes.
+
 ## Related
 
 - [`cdkd events`](cli-events.md): flags, output formats and `prune`
