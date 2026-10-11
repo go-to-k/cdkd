@@ -209,7 +209,7 @@ describe('TemplateNoEchoReresolver.printingNoEchoValues (go-to-k/cdkd#3869)', ()
     expect(logged.join('\n')).not.toContain(VALUE);
   });
 
-  it('a nested child whose binding fails falls back to what its row hands it, never the mask', async () => {
+  it('a nested child whose binding fails falls back to what its row hands it, never a masked parameter', async () => {
     vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters').mockRejectedValue(
       new Error('boom')
     );
@@ -217,13 +217,14 @@ describe('TemplateNoEchoReresolver.printingNoEchoValues (go-to-k/cdkd#3869)', ()
       template: { Parameters: { A: { Type: 'String' }, B: { Type: 'String' } }, Resources: {} },
       stackName: 'Child',
       region: 'us-east-1',
-      parameters: { A: VALUE, B: SECRET_MASK },
+      // B: the parent could not re-resolve it (`forNestedChild` names it masked).
+      parameters: { A: VALUE, B: 'unresolved-row-value' },
       inheritedNoEchoParameters: new Set(['A', 'B']),
       maskedParameters: new Set(['B']),
     } as unknown as ConstructorParameters<typeof TemplateNoEchoReresolver>[0]).printingNoEchoValues();
     expect(maskSecretsInText(`id ${VALUE}`, bag!)).toBe('id ***');
-    // The mask itself is no needle.
-    expect(maskSecretsInText(`a ${SECRET_MASK}`, bag!)).toBe(`a ${SECRET_MASK}`);
+    // A parameter the parent could not re-resolve is no needle.
+    expect(maskSecretsInText('b unresolved-row-value', bag!)).toBe('b unresolved-row-value');
   });
 
   it.each([

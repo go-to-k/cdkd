@@ -478,7 +478,7 @@ export class TemplateNoEchoReresolver {
       }
       if (supplied !== undefined && Object.hasOwn(supplied, name)) {
         const value = supplied[name];
-        if (!this.options.maskedParameters?.has(name) && !carriesSecretMask(value)) {
+        if (!this.options.maskedParameters?.has(name)) {
           recordLogOnlyParameterValue(bag, value);
         }
         continue;
