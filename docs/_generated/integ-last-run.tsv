@@ -297,7 +297,7 @@ rollback-replacement-retain	2026-10-09T05:44:45Z	PASS	65	verify.sh	rc ok, orph c
 rollback-replay-cc-generated-name	2026-10-04T17:04:46Z	PASS	155	verify.sh	rc ok, orph clean (#4408)
 rollback-replay-effective-props	2026-10-09T05:39:24Z	PASS	230	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean (#3338/#4356)
-route53	2026-10-06T02:22:44Z	PASS	426	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+route53	2026-10-11T01:54:07Z	PASS	501	verify.sh	accept ENABLING_HOSTED_ZONE_LOCKED; rc 0, destroy clean, orph clean
 s3-analytics-inventory	2026-10-03T04:21:06Z	PASS	167	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-07T16:21:49Z	PASS	245	verify.sh	PR #4662 on #4660 (#4639 remaining-sites create client); rc 0, destroy clean, orph clean
