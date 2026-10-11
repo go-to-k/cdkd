@@ -513,6 +513,7 @@ async function diffCommand(
           ...(options.cfnFallback === false && { cfnFallback: false }),
           // Consulted lazily, by a `Fn::GetStackOutput` carrying a `RoleArn` only.
           producerLookup,
+          ...(stackInfo.account && { consumerAccount: stackInfo.account }),
           previewOrphanAdoption,
           attributeHealerFor,
           // This IS the stack the user named, so it is the one node that

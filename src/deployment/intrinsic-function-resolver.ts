@@ -106,6 +106,12 @@ export interface IntrinsicFunctionResolverOptions {
    * classified, and every `RoleArn` behaves as it always has.
    */
   producerLookup?: ProducerLookup;
+  /**
+   * The account of the stack this resolver serves, as synthesized. Only the
+   * refusal of an aws-cdk-lib-generated cross-account reference reads it, to
+   * name the account `cdk bootstrap --trust-for-lookup` must trust.
+   */
+  consumerAccount?: string;
 }
 
 /**
@@ -273,6 +279,8 @@ export class IntrinsicFunctionResolver {
   readonly cfnFallback: boolean;
   /** @internal */
   readonly producerLookup: ProducerLookup | undefined;
+  /** @internal */
+  readonly consumerAccount: string | undefined;
   /**
    * Memoized {@link classifyCdkCrossAccountRef} verdicts, keyed by producer
    * stack, account, region and role name: a stack referencing one producer
@@ -426,6 +434,7 @@ export class IntrinsicFunctionResolver {
     this.strictGetAtt = options?.strictGetAtt ?? false;
     this.cfnFallback = options?.cfnFallback ?? true;
     this.producerLookup = options?.producerLookup;
+    this.consumerAccount = options?.consumerAccount;
   }
 
   /** Unknown-attribute physicalId fallbacks recorded since the last reset. */

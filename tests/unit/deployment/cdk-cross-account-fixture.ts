@@ -7,6 +7,8 @@ import { AssemblyReader, type StackInfo } from '../../../src/synthesis/assembly-
 /** The two fake accounts every case synthesizes with. */
 export const PRODUCER_ACCOUNT = '111111111111';
 export const CONSUMER_ACCOUNT = '222222222222';
+/** The second consumer's account, for the `two-consumers` app. */
+export const SECOND_CONSUMER_ACCOUNT = '333333333333';
 
 export type FixtureKind =
   /** aws-cdk-lib's generated cross-account reference, default feature flags. */
@@ -14,7 +16,9 @@ export type FixtureKind =
   /** The same, with `@aws-cdk/core:enablePartitionLiterals` on (a literal `RoleArn`). */
   | 'generated-partition-literals'
   /** A user-written `Fn.getStackOutput` whose role ARN is built by `formatArn`. */
-  | 'user-format-arn';
+  | 'user-format-arn'
+  /** `generated`, plus a second consumer `ConsumerB` in another account (one shared producer role). */
+  | 'two-consumers';
 
 export interface SynthesizedApp {
   readonly stacks: StackInfo[];
@@ -105,6 +109,15 @@ export function synthesizeCrossAccountApp(
         type: 'AWS::SQS::Queue',
         properties: { QueueName: topic.ref },
       });
+      if (kind === 'two-consumers') {
+        const second = new cdk.Stack(app, 'ConsumerB', {
+          env: { account: SECOND_CONSUMER_ACCOUNT, region },
+        });
+        new cdk.CfnResource(second, 'Queue', {
+          type: 'AWS::SQS::Queue',
+          properties: { QueueName: topic.ref },
+        });
+      }
     }
     app.synth();
     const reader = new AssemblyReader();

@@ -2,7 +2,8 @@ import { beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 import {
   cdkCrossAccountRefRefusal,
   classifyCdkCrossAccountRef,
-  generatedReaderRoleTrust,
+  isGeneratedReaderRole,
+  isLookupRoleDenial,
   producerLookupOver,
   producerLookupRoleArn,
   refuseUnreadableCdkCrossAccountRefs,
@@ -14,6 +15,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import {
   CONSUMER_ACCOUNT,
   PRODUCER_ACCOUNT,
+  SECOND_CONSUMER_ACCOUNT,
   synthesizeCrossAccountApp,
   type SynthesizedApp,
 } from './cdk-cross-account-fixture.js';
@@ -68,7 +70,6 @@ describe('the shapes aws-cdk-lib synthesizes for a cross-account reference', () 
     expect(verdict).toEqual({
       kind: 'generated',
       shape,
-      consumerAccounts: [CONSUMER_ACCOUNT],
       lookupRoleArn: `arn:aws:iam::${PRODUCER_ACCOUNT}:role/${LOOKUP_ROLE}`,
     });
   });
@@ -167,11 +168,14 @@ describe('roleArnShape (S1) refuses every other shape', () => {
   });
 });
 
-describe('generatedReaderRoleTrust (S2)', () => {
-  const role = (principal: unknown): Parameters<typeof generatedReaderRoleTrust>[0] => ({
+describe('isGeneratedReaderRole (S2)', () => {
+  const role = (
+    principal: unknown,
+    type = 'AWS::IAM::Role'
+  ): Parameters<typeof isGeneratedReaderRole>[0] => ({
     Resources: {
       R: {
-        Type: 'AWS::IAM::Role',
+        Type: type,
         Properties: {
           RoleName: 'Gen',
           AssumeRolePolicyDocument: {
@@ -185,25 +189,40 @@ describe('generatedReaderRoleTrust (S2)', () => {
     'Fn::Sub': `arn:\${AWS::Partition}:iam::${account}:role/cdk-hnb659fds-cfn-exec-role-${account}-us-east-1`,
   });
 
-  it('answers the consumer accounts of an all-cfn-exec-role trust', () => {
-    expect(generatedReaderRoleTrust(role({ AWS: cfnExec('222222222222') }), 'Gen')).toEqual([
-      '222222222222',
-    ]);
+  it('holds for an all-cfn-exec-role trust, one consumer or several', () => {
+    expect(isGeneratedReaderRole(role({ AWS: cfnExec('222222222222') }), 'Gen')).toBe(true);
     expect(
-      generatedReaderRoleTrust(role({ AWS: [cfnExec('222222222222'), cfnExec('444444444444')] }), 'Gen')
-    ).toEqual(['222222222222', '444444444444']);
+      isGeneratedReaderRole(role({ AWS: [cfnExec('222222222222'), cfnExec('444444444444')] }), 'Gen')
+    ).toBe(true);
   });
 
   it('refuses a trust naming anything that is not a cfn-exec role', () => {
     expect(
-      generatedReaderRoleTrust(role({ AWS: [cfnExec('222222222222'), 'arn:aws:iam::222222222222:root'] }), 'Gen')
-    ).toBeUndefined();
-    expect(generatedReaderRoleTrust(role({ Service: 'lambda.amazonaws.com' }), 'Gen')).toBeUndefined();
-    expect(generatedReaderRoleTrust(role({ AWS: [] }), 'Gen')).toBeUndefined();
+      isGeneratedReaderRole(role({ AWS: [cfnExec('222222222222'), { 'Fn::Sub': 'arn:aws:iam::222222222222:root' }] }), 'Gen')
+    ).toBe(false);
+    expect(isGeneratedReaderRole(role({ Service: 'lambda.amazonaws.com' }), 'Gen')).toBe(false);
+    expect(isGeneratedReaderRole(role({ AWS: [] }), 'Gen')).toBe(false);
+  });
+
+  it('takes the Fn::Sub aws-cdk-lib writes, never a bare string principal', () => {
+    // aws-cdk-lib wraps every consumer role in `Fn::Sub`; a user-written role
+    // naming the same cfn-exec role as a plain string is not the generated one.
+    expect(
+      isGeneratedReaderRole(
+        role({ AWS: 'arn:aws:iam::222222222222:role/cdk-hnb659fds-cfn-exec-role-222222222222-us-east-1' }),
+        'Gen'
+      )
+    ).toBe(false);
   });
 
   it('matches the RoleName exactly', () => {
-    expect(generatedReaderRoleTrust(role({ AWS: cfnExec('222222222222') }), 'Other')).toBeUndefined();
+    expect(isGeneratedReaderRole(role({ AWS: cfnExec('222222222222') }), 'Other')).toBe(false);
+  });
+
+  it('requires the AWS::IAM::Role type', () => {
+    expect(isGeneratedReaderRole(role({ AWS: cfnExec('222222222222') }, 'AWS::SSO::Role'), 'Gen')).toBe(
+      false
+    );
   });
 });
 
@@ -240,7 +259,7 @@ describe('the refusal message', () => {
     region: 'us-east-1',
     producerAccount: PRODUCER_ACCOUNT,
     roleName: 'ProducerPublishGetStackOutputRole66419B34',
-    consumerAccounts: [CONSUMER_ACCOUNT],
+    consumerAccount: CONSUMER_ACCOUNT,
     reason: 'assuming the lookup role X failed: AccessDenied',
   });
 
@@ -274,7 +293,7 @@ describe('the refusal message', () => {
       region: 'us-east-1',
       producerAccount: PRODUCER_ACCOUNT,
       roleName: 'R',
-      consumerAccounts: [],
+      consumerAccount: undefined,
       reason: 'r',
     });
     expect(quoted).toContain(`cdk.Fn.getStackOutput('Producer', "a b", 'us-east-1', '<roleArn>')`);
@@ -284,6 +303,12 @@ describe('the refusal message', () => {
 });
 
 describe('the deploy pre-flight', () => {
+  const consumerOf =
+    (app: SynthesizedApp) =>
+    (name: string): { region?: string | undefined; account?: string | undefined } => {
+      const stack = app.stacks.find((s) => s.stackName === name);
+      return { region: stack?.region, account: stack?.account };
+    };
   const refsOf = (app: SynthesizedApp): RoleArnReference[] => {
     const refs: RoleArnReference[] = [];
     inferCrossStackStackDeps(app.stacks, {
@@ -322,7 +347,7 @@ describe('the deploy pre-flight', () => {
       refuseUnreadableCdkCrossAccountRefs(
         refsOf(generated),
         new Set(['Consumer']),
-        () => 'us-east-1',
+        consumerOf(generated),
         producerLookupOver(generated.stacks)
       )
     ).not.toThrow();
@@ -337,7 +362,7 @@ describe('the deploy pre-flight', () => {
       refuseUnreadableCdkCrossAccountRefs(
         refsOf(generated),
         new Set(['Consumer']),
-        () => 'us-east-1',
+        consumerOf(generated),
         producerLookupOver(stacks)
       );
     } catch (error) {
@@ -354,7 +379,7 @@ describe('the deploy pre-flight', () => {
       refuseUnreadableCdkCrossAccountRefs(
         refsOf(generated),
         new Set(['Consumer']),
-        () => 'us-east-1',
+        consumerOf(generated),
         producerLookupOver([generated.consumer])
       )
     ).toThrow(/not in this app's cloud assembly/);
@@ -363,15 +388,92 @@ describe('the deploy pre-flight', () => {
   it('checks only the stacks being deployed, and leaves user roles alone', () => {
     const lookup = producerLookupOver([generated.consumer]);
     expect(() =>
-      refuseUnreadableCdkCrossAccountRefs(refsOf(generated), new Set(['Producer']), () => 'us-east-1', lookup)
+      refuseUnreadableCdkCrossAccountRefs(refsOf(generated), new Set(['Producer']), consumerOf(generated), lookup)
     ).not.toThrow();
     expect(() =>
       refuseUnreadableCdkCrossAccountRefs(
         refsOf(userFormatArn),
         new Set(['Consumer']),
-        () => 'us-east-1',
+        consumerOf(userFormatArn),
         producerLookupOver(userFormatArn.stacks)
       )
     ).not.toThrow();
+  });
+
+  it('names the deployed consumer stack own account when one producer serves two consumers', () => {
+    const app = synthesizeCrossAccountApp('two-consumers');
+    const stacks = app.stacks.map((st) =>
+      st.stackName === 'Producer' ? { ...st, lookupRoleArn: undefined } : st
+    );
+    const refuse = (consumer: string): string => {
+      try {
+        refuseUnreadableCdkCrossAccountRefs(
+          refsOf(app),
+          new Set([consumer]),
+          consumerOf(app),
+          producerLookupOver(stacks)
+        );
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('expected a refusal');
+    };
+    const second = refuse('ConsumerB');
+    expect(second).toContain(`--trust-for-lookup ${SECOND_CONSUMER_ACCOUNT}'`);
+    expect(second).not.toContain(CONSUMER_ACCOUNT);
+    const first = refuse('Consumer');
+    expect(first).toContain(`--trust-for-lookup ${CONSUMER_ACCOUNT}'`);
+    expect(first).not.toContain(SECOND_CONSUMER_ACCOUNT);
+  }, 60_000);
+
+  it('skips a reference a deploy may never resolve (a Condition, an Fn::If, an Output)', () => {
+    const ref = generated.reference;
+    const template = {
+      Conditions: { C: { 'Fn::Equals': ['a', 'b'] }, D: { 'Fn::Equals': [{ 'Fn::GetStackOutput': ref }, 'x'] } },
+      Resources: {
+        Guarded: { Type: 'AWS::SQS::Queue', Condition: 'C', Properties: { QueueName: { 'Fn::GetStackOutput': ref } } },
+        Branch: {
+          Type: 'AWS::SQS::Queue',
+          Properties: { QueueName: { 'Fn::If': ['C', { 'Fn::GetStackOutput': ref }, 'q'] } },
+        },
+        Meta: { Type: 'AWS::SQS::Queue', Metadata: { M: { 'Fn::GetStackOutput': ref } } },
+      },
+      Outputs: { O: { Value: { 'Fn::GetStackOutput': ref } } },
+    };
+    const refs: RoleArnReference[] = [];
+    const deps = inferCrossStackStackDeps(
+      [{ stackName: 'Consumer', template }, generated.producer],
+      { onRoleArnReference: (consumer, args) => refs.push({ consumer, args }) }
+    );
+    expect(refs).toEqual([]);
+    // The ordering edge still sees every reference, as before.
+    expect([...(deps.get('Consumer') ?? [])]).toEqual(['Producer']);
+    const plain = { Resources: { Q: { Type: 'AWS::SQS::Queue', Properties: { QueueName: { 'Fn::GetStackOutput': ref } } } } };
+    inferCrossStackStackDeps([{ stackName: 'Consumer', template: plain }], {
+      onRoleArnReference: (consumer, args) => refs.push({ consumer, args }),
+    });
+    expect(refs).toHaveLength(1);
+  });
+});
+
+describe('isLookupRoleDenial', () => {
+  const sdk = (name: string, status?: number): Error =>
+    Object.assign(new Error(name), { name, ...(status && { $metadata: { httpStatusCode: status } }) });
+  it.each([
+    ['AssumeRole AccessDenied, wrapped', new Error('AssumeRole into x failed', { cause: sdk('AccessDenied') })],
+    ['a wrapped state read 403', new Error('Failed to get state', { cause: sdk('Forbidden', 403) })],
+    ['NoSuchEntity on the role', sdk('NoSuchEntity')],
+    ['AccessDeniedException', sdk('AccessDeniedException')],
+  ])('%s is a denial', (_label, error) => {
+    expect(isLookupRoleDenial(error)).toBe(true);
+  });
+  it.each([
+    ['a malformed record', new Error('State file has no body')],
+    ['a missing bucket', new Error('x', { cause: sdk('NoSuchBucket', 404) })],
+    ['throttling', sdk('ThrottlingException', 400)],
+    ['a 5xx', sdk('InternalError', 500)],
+    ['a network failure', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+  ])('%s is not', (_label, error) => {
+    expect(isLookupRoleDenial(error)).toBe(false);
   });
 });

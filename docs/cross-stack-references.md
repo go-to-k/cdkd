@@ -130,8 +130,9 @@ Use one of the two ways above.
 >   `cdk bootstrap --trust-for-lookup <consumer-account>` (or `--trust`), so
 >   the identity running cdkd can assume the lookup role.
 > - The consumer account CDK-bootstrapped too: the generated role trusts the
->   consumer's CloudFormation execution role, and IAM rejects a trust policy
->   naming a role that does not exist when cdkd deploys the producer.
+>   consumer's CloudFormation execution role, and IAM is expected to refuse a
+>   trust policy naming a role that does not exist, so deploying the producer
+>   needs that role to exist.
 >
 > When the lookup role cannot be used, cdkd refuses the reference and names
 > both remedies: bootstrap as above, or write the reference yourself with

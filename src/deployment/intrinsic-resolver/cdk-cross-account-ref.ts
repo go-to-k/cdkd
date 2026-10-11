@@ -102,60 +102,53 @@ export function roleArnOf(shape: RoleArnShape, region: string): string {
 }
 
 /** A CloudFormation execution role principal, as aws-cdk-lib writes the generated role's trust. */
-const CFN_EXEC_ROLE_PRINCIPAL_RE = /^arn:[^:]+:iam::(\d{12}):role\/[^/]*cfn-exec-role[^/]*$/;
+const CFN_EXEC_ROLE_PRINCIPAL_RE =
+  /^arn:(?:\$\{AWS::Partition\}|aws[a-z0-9-]*):iam::\d{12}:role\/[^/]*cfn-exec-role[^/]*$/;
 
-function principalText(principal: unknown): string | undefined {
-  if (typeof principal === 'string') return principal;
-  if (isExactlyKeyed(principal, 'Fn::Sub') && typeof principal['Fn::Sub'] === 'string') {
-    // `${AWS::Partition}` is the only placeholder aws-cdk-lib leaves in it.
-    return principal['Fn::Sub'].split('${AWS::Partition}').join('aws');
-  }
-  return undefined;
+/**
+ * A trust principal as aws-cdk-lib writes the generated role's: always
+ * `{"Fn::Sub": "arn:${AWS::Partition}:iam::<consumer>:role/...cfn-exec-role..."}`
+ * (`createGetStackOutputRole` wraps every consumer role in `Fn::Sub`).
+ */
+function isCfnExecRolePrincipal(principal: unknown): boolean {
+  return (
+    isExactlyKeyed(principal, 'Fn::Sub') &&
+    typeof principal['Fn::Sub'] === 'string' &&
+    CFN_EXEC_ROLE_PRINCIPAL_RE.test(principal['Fn::Sub'])
+  );
 }
 
 /**
- * The consumer accounts a trust policy names when EVERY principal it trusts is
- * a CloudFormation execution role, or `undefined` when any statement trusts
- * something else (or the document is not the shape aws-cdk-lib writes).
+ * Whether EVERY principal a trust policy names is a CloudFormation execution
+ * role (and the document is the shape aws-cdk-lib writes).
  */
-function cfnExecRoleTrustAccounts(document: unknown): string[] | undefined {
-  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
-    return undefined;
-  }
+function trustsOnlyCfnExecRoles(document: unknown): boolean {
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) return false;
   const statements: unknown = (document as Record<string, unknown>)['Statement'];
-  if (!Array.isArray(statements) || statements.length === 0) return undefined;
-  const accounts: string[] = [];
+  if (!Array.isArray(statements) || statements.length === 0) return false;
   for (const statement of statements) {
     if (statement === null || typeof statement !== 'object' || Array.isArray(statement)) {
-      return undefined;
+      return false;
     }
     const principal: unknown = (statement as Record<string, unknown>)['Principal'];
-    if (!isExactlyKeyed(principal, 'AWS')) return undefined;
+    if (!isExactlyKeyed(principal, 'AWS')) return false;
     const aws = principal['AWS'];
     const list: unknown[] = Array.isArray(aws) ? aws : [aws];
-    if (list.length === 0) return undefined;
-    for (const entry of list) {
-      const text = principalText(entry);
-      const match = text === undefined ? null : CFN_EXEC_ROLE_PRINCIPAL_RE.exec(text);
-      if (!match || !match[1]) return undefined;
-      if (!accounts.includes(match[1])) accounts.push(match[1]);
-    }
+    if (list.length === 0 || !list.every(isCfnExecRolePrincipal)) return false;
   }
-  return accounts;
+  return true;
 }
 
 /**
  * S2: the producer template declares an `AWS::IAM::Role` named `roleName`
  * whose trust principals are ALL CloudFormation execution roles — the role
- * aws-cdk-lib generates for a cross-account reference. Answers the consumer
- * accounts that role trusts, or `undefined` when there is no such role.
+ * aws-cdk-lib generates for a cross-account reference. It is ONE role per
+ * producer, trusting every consumer account, so it never says which consumer
+ * a reference belongs to: the refusal names the consumer stack's own account.
  */
-export function generatedReaderRoleTrust(
-  template: CloudFormationTemplate,
-  roleName: string
-): string[] | undefined {
+export function isGeneratedReaderRole(template: CloudFormationTemplate, roleName: string): boolean {
   const resources = template.Resources;
-  if (!resources || typeof resources !== 'object') return undefined;
+  if (!resources || typeof resources !== 'object') return false;
   // Own values only: `Object.values` never reaches an inherited member.
   for (const resource of Object.values(resources) as unknown[]) {
     if (resource === null || typeof resource !== 'object') continue;
@@ -167,10 +160,9 @@ export function generatedReaderRoleTrust(
     if (properties === null || typeof properties !== 'object') continue;
     const props = properties as Record<string, unknown>;
     if (props['RoleName'] !== roleName) continue;
-    const accounts = cfnExecRoleTrustAccounts(props['AssumeRolePolicyDocument']);
-    if (accounts) return accounts;
+    if (trustsOnlyCfnExecRoles(props['AssumeRolePolicyDocument'])) return true;
   }
-  return undefined;
+  return false;
 }
 
 /**
@@ -202,7 +194,6 @@ export type CdkCrossAccountRefVerdict =
   | {
       readonly kind: 'generated';
       readonly shape: RoleArnShape;
-      readonly consumerAccounts: readonly string[];
       readonly lookupRoleArn: string | undefined;
     };
 
@@ -224,12 +215,10 @@ export function classifyCdkCrossAccountRef(
   if (!producer) {
     return shape.form === 'join' ? { kind: 'producer-absent', shape } : { kind: 'not-generated' };
   }
-  const consumerAccounts = generatedReaderRoleTrust(producer.template, shape.roleName);
-  if (!consumerAccounts) return { kind: 'not-generated' };
+  if (!isGeneratedReaderRole(producer.template, shape.roleName)) return { kind: 'not-generated' };
   return {
     kind: 'generated',
     shape,
-    consumerAccounts,
     lookupRoleArn: producerLookupRoleArn(producer.lookupRoleArn, producerRegion, shape.accountId),
   };
 }
@@ -243,8 +232,8 @@ export interface CdkCrossAccountRefRefusalParts {
   readonly region: string;
   readonly producerAccount: string;
   readonly roleName: string;
-  /** The consumer account(s) the generated role trusts; empty when unknown. */
-  readonly consumerAccounts: readonly string[];
+  /** The consumer stack's own account, or `undefined` when unknown. */
+  readonly consumerAccount: string | undefined;
   /** Why cdkd could not read through the lookup role, as a rendered clause. */
   readonly reason: string;
 }
@@ -259,8 +248,7 @@ function quotedArg(rendered: string): string {
  * read. Every part is RENDERED by the caller through the display helpers.
  */
 export function cdkCrossAccountRefRefusal(parts: CdkCrossAccountRefRefusalParts): string {
-  const consumerAccount =
-    parts.consumerAccounts.length > 0 ? parts.consumerAccounts.join(' ') : '<consumer-account>';
+  const consumerAccount = parts.consumerAccount ?? '<consumer-account>';
   return (
     `Fn::GetStackOutput: cannot read output ${parts.output} of stack ${parts.producer} ` +
     `(region ${parts.region}, account ${parts.producerAccount})` +
@@ -296,6 +284,33 @@ export function noLookupRoleReason(producerAccount: string): string {
   );
 }
 
+/**
+ * Whether a failed read through the lookup role is the lookup role being
+ * DENIED (not trusted, no S3 permission, the role absent): an AccessDenied-class
+ * name or a 403 anywhere along a bounded `cause` chain. AssumeRole and the state
+ * read both wrap the SDK error as their `cause`. Anything else (a malformed
+ * record, a missing bucket, throttling, a network or 5xx failure) is not.
+ */
+export function isLookupRoleDenial(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current !== null && typeof current === 'object'; depth++) {
+    const name = (current as { name?: unknown }).name;
+    if (
+      name === 'AccessDenied' ||
+      name === 'AccessDeniedException' ||
+      name === 'NoSuchEntity' ||
+      name === 'NoSuchEntityException'
+    ) {
+      return true;
+    }
+    const status = (current as { $metadata?: { httpStatusCode?: unknown } }).$metadata
+      ?.httpStatusCode;
+    if (status === 403) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /** One `Fn::GetStackOutput` argument carrying a `RoleArn`, as a template holds it. */
 export interface RoleArnReference {
   readonly consumer: string;
@@ -311,12 +326,13 @@ export interface RoleArnReference {
  * the resolver, which needs credentials this point does not have.
  *
  * Only LITERAL `StackName` / `OutputName` / `Region` are checked; any other
- * reference is left to the resolver.
+ * reference is left to the resolver. Stacks are keyed by NAME (`deployed`,
+ * `consumerOf`), as everywhere in the deploy command's stack selection.
  */
 export function refuseUnreadableCdkCrossAccountRefs(
   refs: readonly RoleArnReference[],
   deployed: ReadonlySet<string>,
-  consumerRegionOf: (stackName: string) => string | undefined,
+  consumerOf: (stackName: string) => { region?: string | undefined; account?: string | undefined },
   lookup: ProducerLookup
 ): void {
   for (const { consumer, args } of refs) {
@@ -325,7 +341,8 @@ export function refuseUnreadableCdkCrossAccountRefs(
     if (shape === undefined) continue;
     const stackName = args['StackName'];
     const outputName = args['OutputName'];
-    const region = args['Region'] ?? consumerRegionOf(consumer);
+    const consumerStack = consumerOf(consumer);
+    const region = args['Region'] ?? consumerStack.region;
     if (typeof stackName !== 'string' || typeof outputName !== 'string') continue;
     if (typeof region !== 'string' || region === '') continue;
     const verdict = classifyCdkCrossAccountRef(shape, stackName, region, lookup);
@@ -344,7 +361,7 @@ export function refuseUnreadableCdkCrossAccountRefs(
           region: displayIdent(region),
           producerAccount: shape.accountId,
           roleName: displayIdent(shape.roleName),
-          consumerAccounts: verdict.kind === 'generated' ? verdict.consumerAccounts : [],
+          consumerAccount: consumerStack.account,
           reason,
         })
       )

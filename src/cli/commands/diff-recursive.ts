@@ -1276,6 +1276,8 @@ export async function computeStackDiff(
      * resolver does (`IntrinsicFunctionResolverOptions.producerLookup`).
      */
     producerLookup?: ProducerLookup;
+    /** The stack's synthesized account, named by that reference's refusal. */
+    consumerAccount?: string;
     /**
      * Force the issue #1948 "stored key the template cannot account for"
      * withholding ON, regardless of what THIS template proves.
@@ -1378,6 +1380,7 @@ export async function computeStackDiff(
     canonicalizeProperties,
     cfnFallback,
     producerLookup,
+    consumerAccount,
     inheritSecretBearingTemplate,
     inheritedSecrets,
     inheritedDerivedNames,
@@ -1403,6 +1406,7 @@ export async function computeStackDiff(
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
     ...(producerLookup && { producerLookup }),
+    ...(consumerAccount && { consumerAccount }),
   });
 
   // Issue #2740: the source the skipped-output digests are compared against,
@@ -3015,7 +3019,9 @@ async function resolveChildStackParameters(
    */
   derivedNameSink?: RecordedSecretValues,
   /** As `computeStackDiff`'s `producerLookup`. */
-  producerLookup?: ProducerLookup
+  producerLookup?: ProducerLookup,
+  /** As `computeStackDiff`'s `consumerAccount`. */
+  consumerAccount?: string
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -3024,6 +3030,7 @@ async function resolveChildStackParameters(
   const resolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
     ...(producerLookup && { producerLookup }),
+    ...(consumerAccount && { consumerAccount }),
   });
   const resolved: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
@@ -3199,6 +3206,8 @@ export async function buildDiffTree(args: {
   cfnFallback?: boolean;
   /** As `computeStackDiff`'s `producerLookup`; handed to every node of the tree. */
   producerLookup?: ProducerLookup;
+  /** As `computeStackDiff`'s `consumerAccount`; handed to every node of the tree. */
+  consumerAccount?: string;
   /**
    * Does any template ABOVE this node in the tree carry a secret-bearing
    * dynamic reference (issue #1948 review)?
@@ -3295,6 +3304,7 @@ export async function buildDiffTree(args: {
     assetRedirect,
     cfnFallback,
     producerLookup,
+    consumerAccount,
     previewOrphanAdoption,
     attributeHealerFor,
     ancestorTemplatePaths,
@@ -3360,6 +3370,7 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(producerLookup && { producerLookup }),
+        ...(consumerAccount && { consumerAccount }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
         ...(inheritedDerivedNames && { inheritedDerivedNames }),
@@ -3567,7 +3578,8 @@ export async function buildDiffTree(args: {
       childUnresolvedParameters,
       trust,
       rowDerivedNames,
-      producerLookup
+      producerLookup,
+      consumerAccount
     );
     // The parent's own secret-named records too (go-to-k/cdkd#3869): the
     // child's stored values can hold a name a row USED to pass down.
@@ -3592,6 +3604,7 @@ export async function buildDiffTree(args: {
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(producerLookup && { producerLookup }),
+        ...(consumerAccount && { consumerAccount }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(attributeHealerFor && { attributeHealerFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,

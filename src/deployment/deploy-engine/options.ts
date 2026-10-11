@@ -436,6 +436,13 @@ export interface DeployEngineOptions {
   producerLookup?: ProducerLookup;
 
   /**
+   * The deployed stack's synthesized account, for the refusal of an
+   * aws-cdk-lib-generated cross-account reference — see
+   * `IntrinsicFunctionResolverOptions.consumerAccount`.
+   */
+  consumerAccount?: string;
+
+  /**
    * `--skip-final-snapshot` (issues #1352 / #1354) — delete
    * `DeletionPolicy: Snapshot` resources (and, on the replacement paths,
    * `UpdateReplacePolicy: Snapshot` old resources) WITHOUT the final snapshot

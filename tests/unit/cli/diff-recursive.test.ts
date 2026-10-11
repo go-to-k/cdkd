@@ -1093,8 +1093,16 @@ describe('buildDiffTree producerLookup threading', () => {
         isNestedChild: false,
         producerLookup,
       });
-      const looked = new Set(producerLookup.mock.calls.map((call) => (call as unknown[])[0]));
-      expect(looked).toEqual(new Set(['ProdA', 'ProdB', 'ProdC']));
+      // Counted, not deduplicated: each resolver memoizes its own verdicts, so
+      // ProdB is looked up once by the root diff (the row's own properties)
+      // and once by the child-parameter resolution. Dropping the lookup from
+      // either site changes a count.
+      const counts: Record<string, number> = {};
+      for (const call of producerLookup.mock.calls) {
+        const name = String((call as unknown[])[0]);
+        counts[name] = (counts[name] ?? 0) + 1;
+      }
+      expect(counts).toEqual({ ProdA: 1, ProdB: 2, ProdC: 1 });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

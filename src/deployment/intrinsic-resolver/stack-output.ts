@@ -27,6 +27,7 @@ import {
   type CdkCrossAccountRefVerdict,
   cdkCrossAccountRefRefusal,
   classifyCdkCrossAccountRef,
+  isLookupRoleDenial,
   noLookupRoleReason,
   producerAbsentReason,
   roleArnOf,
@@ -379,7 +380,7 @@ export async function resolveGetStackOutput(
   if (cdkRef !== undefined) {
     const ref = cdkRef;
     const producerAccount = ref.shape.accountId;
-    const refuseCdkRef = (reason: string): Error =>
+    const refuseCdkRef = (reason: string, cause?: unknown): Error =>
       markNonRetryable(
         new Error(
           cdkCrossAccountRefRefusal({
@@ -391,9 +392,10 @@ export async function resolveGetStackOutput(
             region: displayIdent(loggedRegion),
             producerAccount,
             roleName: displayIdent(ref.shape.roleName),
-            consumerAccounts: ref.kind === 'generated' ? ref.consumerAccounts : [],
+            consumerAccount: this.consumerAccount,
             reason,
-          })
+          }),
+          cause === undefined ? undefined : { cause }
         )
       );
     if (ref.kind === 'producer-absent') {
@@ -406,12 +408,14 @@ export async function resolveGetStackOutput(
     const shownLookupRoleArn = displayIdent(readRoleArn, {
       maxCodePoints: ROLE_ARN_MAX_CODE_POINTS,
     });
-    // A denied AssumeRole or state read is the refusal naming the remedies,
-    // never a fallback to other credentials. The cause is AWS's text, sanitized.
+    // A DENIED AssumeRole or state read is the refusal naming the remedies,
+    // never a fallback to other credentials. The cause is AWS's text, sanitized,
+    // and the error itself rides along as `cause`.
     refuseCdkRead = (error: unknown): Error =>
       refuseCdkRef(
         `assuming the lookup role ${shownLookupRoleArn} or reading cdkd-state-${producerAccount} ` +
-          `with it failed: ${displayAwsMessage(error instanceof Error ? error.message : String(error))}`
+          `with it was denied: ${displayAwsMessage(error instanceof Error ? error.message : String(error))}`,
+        error
       );
     this.logger.debug(
       safeMsg`Fn::GetStackOutput: ${shownRoleArn} is the AWS CDK-generated cross-account reader role; reading through the producer account's lookup role ${shownLookupRoleArn}`
@@ -449,7 +453,9 @@ export async function resolveGetStackOutput(
       : await this.getSameAccountStackState(stackName, region, context);
   } catch (error) {
     this.maskStateReadError(
-      refuseCdkRead ? refuseCdkRead(error) : error,
+      // Any other failure (a malformed record, a missing bucket, throttling, a
+      // network or 5xx error) takes the ordinary path, as for any `RoleArn`.
+      refuseCdkRead && isLookupRoleDenial(error) ? refuseCdkRead(error) : error,
       [
         // The pair's replacement is the MASKED spelling, not the bounded
         // one: it rewrites the name inside text another module already

@@ -572,8 +572,23 @@ When `RoleArn` is set, cdkd's resolver:
   resolver layer: the context isn't guaranteed to have the producer's
   account id available at intrinsic-resolution time, and a typo'd role
   lookup is far worse than a clear template-author-time error. Inline
-  the ARN.
-  The one exception is the reference CDK generates, below.
+  the ARN. The one exception is the reference CDK generates, described
+  after this list.
+- **Producer must be on the canonical region-free bucket layout**
+  (`cdkd-state-{accountId}`). Legacy region-suffixed buckets
+  (`cdkd-state-{accountId}-{region}`) are not consulted on the
+  cross-account read path because account-wide `s3:ListAllMyBuckets` in
+  the assumed role would be required to disambiguate, for no
+  real-world benefit on long-since-migrated accounts.
+- **Assumed credentials are scoped to the state read.** The consumer's
+  normal provisioning credentials are untouched — unlike the CLI-wide
+  `--role-arn` flag, which publishes its assumed credentials to
+  `awsClientDefaults()` as an explicit `credentials` value that every
+  later SDK client under `src/**` receives (and, for the subprocesses
+  that helper cannot reach, into the `AWS_*` env vars). Cross-account
+  `Fn::GetStackOutput` is a narrow read-only operation, and the
+  spread-defaults-first order is what keeps this client's own explicit
+  credentials winning over that publication.
 
 #### The cross-account reference CDK generates
 
@@ -603,28 +618,16 @@ account with `cdk bootstrap --trust-for-lookup <consumer-account>` (or
 `sts:AssumeRole` or the state read is denied, cdkd refuses the reference and
 names that remedy and the other: a `cdk.Fn.getStackOutput()` whose role is set
 up as under [IAM permissions](#iam-permissions). It never falls back to its own
-credentials. `cdkd deploy` refuses what it can tell without credentials (no
-producer stack in the assembly for the `Fn::Join` form, or no lookup role)
-before anything is published or provisioned.
+credentials. For a top-level stack's resource that every deploy resolves (no
+`Condition`, no enclosing `Fn::If`), `cdkd deploy` refuses what it can tell
+without credentials (no producer stack in the assembly for the `Fn::Join`
+form, or no lookup role) before anything is published or provisioned. A
+reference anywhere else, a nested stack's included, is refused when it is
+resolved.
 
 A reference that matches the shape but not the producer check (a role you
-wrote) keeps the rule above: a literal ARN is assumed as written, and the
+wrote) keeps the literal-string rule under Constraints: a literal ARN is assumed as written, and the
 `Fn::Join` form is rejected.
-- **Producer must be on the canonical region-free bucket layout**
-  (`cdkd-state-{accountId}`). Legacy region-suffixed buckets
-  (`cdkd-state-{accountId}-{region}`) are not consulted on the
-  cross-account read path because account-wide `s3:ListAllMyBuckets` in
-  the assumed role would be required to disambiguate, for no
-  real-world benefit on long-since-migrated accounts.
-- **Assumed credentials are scoped to the state read.** The consumer's
-  normal provisioning credentials are untouched — unlike the CLI-wide
-  `--role-arn` flag, which publishes its assumed credentials to
-  `awsClientDefaults()` as an explicit `credentials` value that every
-  later SDK client under `src/**` receives (and, for the subprocesses
-  that helper cannot reach, into the `AWS_*` env vars). Cross-account
-  `Fn::GetStackOutput` is a narrow read-only operation, and the
-  spread-defaults-first order is what keeps this client's own explicit
-  credentials winning over that publication.
 
 #### IAM permissions
 

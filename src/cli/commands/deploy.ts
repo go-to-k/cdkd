@@ -616,13 +616,18 @@ async function deployCommand(
     // An aws-cdk-lib-generated cross-account `Fn::GetStackOutput` that cdkd can
     // already tell it cannot read is refused HERE, before any lock or engine,
     // rather than mid-provisioning. No-op unless the walk above found a
-    // `RoleArn`.
+    // `RoleArn`. Top-level templates only: a nested child's reference is
+    // refused when its row resolves it.
     if (roleArnReferences.length > 0) {
-      const regionOf = new Map(allStacks.map((s) => [s.stackName, s.region]));
+      // Keyed by stack NAME, like every other per-stack lookup in this command.
+      const stackByName = new Map(allStacks.map((s) => [s.stackName, s]));
       refuseUnreadableCdkCrossAccountRefs(
         roleArnReferences,
         new Set(targetStacks.map((s) => s.stackName)),
-        (name) => regionOf.get(name) ?? namedCliRegion(options.region),
+        (name) => ({
+          region: stackByName.get(name)?.region ?? namedCliRegion(options.region),
+          account: stackByName.get(name)?.account,
+        }),
         producerLookup
       );
     }
@@ -1178,6 +1183,7 @@ async function deployCommand(
           ...(options.strictGetatt && { strictGetAtt: true }),
           ...(options.cfnFallback === false && { cfnFallback: false }),
           producerLookup,
+          ...(stackInfo.account && { consumerAccount: stackInfo.account }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,

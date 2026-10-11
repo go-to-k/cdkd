@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite-plus/test';
 import type { ProducerLookup } from '../../../src/deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import {
+  CONSUMER_ACCOUNT,
   PRODUCER_ACCOUNT,
   synthesizeCrossAccountApp,
   type SynthesizedApp,
@@ -261,7 +262,11 @@ describe('cdkd deploy and the aws-cdk-lib-generated cross-account reference', ()
 
     expect(code).toBeUndefined();
     expect(engineCtorSpy).toHaveBeenCalledTimes(1);
-    const options = engineCtorSpy.mock.calls[0]![5] as { producerLookup?: ProducerLookup };
+    const options = engineCtorSpy.mock.calls[0]![5] as {
+      producerLookup?: ProducerLookup;
+      consumerAccount?: string;
+    };
+    expect(options.consumerAccount).toBe(CONSUMER_ACCOUNT);
     expect(options.producerLookup?.('Producer', PRODUCER_ACCOUNT, 'us-east-1')?.stackName).toBe(
       'Producer'
     );
