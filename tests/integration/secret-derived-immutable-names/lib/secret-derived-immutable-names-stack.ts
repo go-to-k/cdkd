@@ -214,9 +214,9 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       // resolve its ARN from the provider in that deploy, as in step 4. Left
       // unchanged, they hit two known bugs: a reader of a NO_CHANGE
       // secret-named resource is re-sent the recorded `{{resolve:` spelling of
-      // its ARN (go-to-k/cdkd#ISSUE_A), and the rollback that follows writes
+      // its ARN (go-to-k/cdkd#4800), and the rollback that follows writes
       // that spelling into the queue policy's recorded `Queues`
-      // (go-to-k/cdkd#ISSUE_B).
+      // (go-to-k/cdkd#4801).
       visibilityTimeout: process.env.SDIN_MOVE_FILTER === 'true' ? 45 : update ? 60 : 30,
     });
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)

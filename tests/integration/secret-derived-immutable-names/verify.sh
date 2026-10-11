@@ -64,9 +64,9 @@
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
 #      destroy below deletes with it. The same deploy updates SecretQueue's
 #      VisibilityTimeout (45), so its readers resolve its ARN from the provider,
-#      sidestepping go-to-k/cdkd#ISSUE_A (a NO_CHANGE queue's readers were sent
+#      sidestepping go-to-k/cdkd#4800 (a NO_CHANGE queue's readers were sent
 #      the recorded `{{resolve:` spelling) and the rollback after it,
-#      go-to-k/cdkd#ISSUE_B.
+#      go-to-k/cdkd#4801.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
