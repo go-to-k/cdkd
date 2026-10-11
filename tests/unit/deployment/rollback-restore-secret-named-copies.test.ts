@@ -251,7 +251,8 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
   });
 
   // An adopted orphan's record carries attribute keys a LIVE readback added,
-  // which state never held: the journal keep must not treat them as persisted.
+  // which state never held: the journal keep must not treat them as persisted,
+  // while what the orphan entry itself recorded stays as state held it.
   it('journals an adopted orphan’s live-read attribute through the scan', async () => {
     const { segments } = await deployAndRollBack(
       {
@@ -270,8 +271,9 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
             state: {
               physicalId: '/p/kept',
               resourceType: 'AWS::SSM::Parameter',
-              properties: { Type: 'String', Value: 'old' },
-              attributes: {},
+              // Plaintext copies the orphan entry itself recorded: state held them.
+              properties: { Type: 'String', Value: 'old', Copy: URL },
+              attributes: { Recorded: URL },
               dependencies: [],
             },
           },
@@ -285,7 +287,8 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
       .find((op) => op.logicalId === 'Kept')?.previousState;
     // Premise: the orphan was adopted with the live key, and its update journaled.
     expect(journaled?.physicalId).toBe('/p/kept');
-    expect(journaled?.attributes).toEqual({ Echo: REF });
+    expect(journaled?.properties['Copy']).toBe(URL);
+    expect(journaled?.attributes).toEqual({ Echo: REF, Recorded: URL });
   });
 
   it('restores the secret-named owner with its secret positions as references', async () => {
