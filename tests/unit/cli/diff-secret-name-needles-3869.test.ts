@@ -970,5 +970,37 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       expect(row).toContain(PLAIN_USER);
       expect(row.includes(SECRET_USER)).toBe(shown);
     });
+
+    it.each([
+      ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+      ['negative control, an ordinary name', SECRET_USER, true],
+    ])('judges a record the orphan adoption splices in too: %s', async (_l, userName, shown) => {
+      // The secret-named user is a rollback orphan this deploy re-adopts, so
+      // only the adoption's record says the key's stored value is its name.
+      const s = userState(userName);
+      const adopted = s.resources['SecretUser']!;
+      delete s.resources['SecretUser'];
+      s.orphans = [{ logicalId: 'SecretUser', orphanedAt: 1, state: adopted }];
+      debugLines.length = 0;
+      const result = await computeStackDiff(
+        s,
+        userTemplate(userName),
+        'us-east-1',
+        'S',
+        backend,
+        new DiffCalculator(),
+        {
+          previewOrphanAdoption: async () => ({ adopted: { SecretUser: adopted }, refusals: [] }),
+        }
+      );
+      // Premise: the record was adopted, so its row is no CREATE.
+      expect(result.adoptedOrphans).toEqual(['SecretUser']);
+      const replacement = debugLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+      expect(replacement).toContain('Property UserName of AWS::IAM::AccessKey');
+      expect(replacement.includes(SECRET_USER)).toBe(shown);
+      const row = JSON.stringify(result.changes.get('Key')?.propertyChanges);
+      expect(row).toContain(PLAIN_USER);
+      expect(row.includes(SECRET_USER)).toBe(shown);
+    });
   });
 });
