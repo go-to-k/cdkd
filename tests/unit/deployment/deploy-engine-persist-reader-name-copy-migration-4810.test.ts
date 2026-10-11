@@ -199,7 +199,8 @@ describe('a record an earlier deploy rewrote is repaired, never replaced (#4810)
           physicalId: 'reader-policy',
           resourceType: 'AWS::SQS::QueuePolicy',
           properties: { Queues: [REWRITTEN_URL], PolicyDocument: policyDocument },
-          attributes: { 'cdkd:WrittenQueues': [REWRITTEN_URL] },
+          // The provider records it comma-joined.
+          attributes: { 'cdkd:WrittenQueues': REWRITTEN_URL, Whole: REF },
           dependencies: ['SecretQueue'],
         },
       } as StackState['resources'],
@@ -216,6 +217,53 @@ describe('a record an earlier deploy rewrote is repaired, never replaced (#4810)
     expect(run.calls).toEqual([]);
     expect(run.persisted?.properties['Queues']).toEqual([QUEUE_URL]);
     expect(run.persisted?.properties['PolicyDocument']).toEqual(policyDocument);
-    expect(run.persisted?.attributes?.['cdkd:WrittenQueues']).toEqual([QUEUE_URL]);
+    expect(run.persisted?.attributes?.['cdkd:WrittenQueues']).toBe(QUEUE_URL);
+    // A whole-token attribute may be a literal reference: never rewritten.
+    expect(run.persisted?.attributes?.['Whole']).toBe(REF);
+  });
+
+  it('a stored copy that is NOT the legacy form of today\'s copy is a real change: the update is sent', async () => {
+    // The reader used to point at another queue; the template now reads the
+    // secret-named one. Only a stored leaf EQUAL to the legacy form is repaired.
+    const policyDocument = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Action: 'sqs:SendMessage',
+          Resource: `arn:aws:sqs:us-east-1:123456789012:${REF}`,
+        },
+      ],
+    };
+    const OTHER_URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/other-queue';
+    const run = await deploy(
+      {
+        SecretQueue: {
+          physicalId: QUEUE_URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: REF },
+          attributes: {},
+          dependencies: [],
+        },
+        Reader: {
+          physicalId: 'reader-policy',
+          resourceType: 'AWS::SQS::QueuePolicy',
+          properties: { Queues: [OTHER_URL], PolicyDocument: policyDocument },
+          attributes: {},
+          dependencies: ['SecretQueue'],
+        },
+      } as StackState['resources'],
+      {
+        SecretQueue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF } },
+        Reader: {
+          Type: 'AWS::SQS::QueuePolicy',
+          Properties: { Queues: [{ Ref: 'SecretQueue' }], PolicyDocument: policyDocument },
+        },
+      },
+      [['SecretQueue'], ['Reader']]
+    );
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual(['update:Reader']);
+    expect(run.persisted?.properties['Queues']).toEqual([QUEUE_URL]);
   });
 });

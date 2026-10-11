@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  embeddedPhysicalNameRewrites,
   recordPhysicalNameCopy,
   redactSecretsForState,
   scrubResourceRecord,
@@ -92,5 +93,19 @@ describe('a reader copy of a read physical id (#4810)', () => {
       Resource: `arn:aws:sqs:us-east-1:123456789012:${REF}`,
     });
     expect(scrubbed.attributes).toEqual({ Url: URL });
+  });
+
+  it('the legacy spellings repaired in attributes embed a reference, never ARE one', () => {
+    // A queue URL embeds its name: its legacy spelling is repaired.
+    const bag: RecordedSecretValues = new Map([[NAME, REF]]);
+    recordPhysicalNameCopy(bag, URL);
+    expect(embeddedPhysicalNameRewrites(bag)).toEqual([
+      [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`, URL],
+    ]);
+    // A log group's physical id IS the name: its legacy spelling is the whole
+    // token, which an attribute can hold as a literal reference.
+    const whole: RecordedSecretValues = new Map([[NAME, REF]]);
+    recordPhysicalNameCopy(whole, NAME);
+    expect(embeddedPhysicalNameRewrites(whole)).toEqual([]);
   });
 });

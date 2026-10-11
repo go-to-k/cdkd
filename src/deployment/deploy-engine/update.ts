@@ -520,11 +520,14 @@ export async function provisionUpdate(
       if (repaired !== bag[key]) bag[key] = repaired;
     }
   }
-  if (currentResource.attributes !== undefined && embeddedRewrites.length > 0) {
-    currentResource.attributes = replaceEmbeddedPhysicalNameRewrites(
-      currentResource.attributes,
-      embeddedRewrites
-    ) as Record<string, unknown>;
+  // IN PLACE, as the properties above: the rollback journal's `previousState`
+  // is a shallow copy of this record, so both halves stay repaired together.
+  const attributes = currentResource.attributes;
+  if (attributes !== undefined && attributes !== null && embeddedRewrites.length > 0) {
+    for (const key of Object.keys(attributes)) {
+      const repaired = replaceEmbeddedPhysicalNameRewrites(attributes[key], embeddedRewrites);
+      if (repaired !== attributes[key]) attributes[key] = repaired;
+    }
   }
   const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
