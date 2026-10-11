@@ -138,22 +138,11 @@ export async function constructAttributeForCoreTypes(
         // mask-only needle can still put `***` in `properties`, and served
         // unnoted it reaches the consumer's property with nothing recorded
         // for `refuseRedactedAttributeReads` to refuse.
-        // And re-resolved, like every value served from the record
-        // (go-to-k/cdkd#4800).
-        return await this.reresolveRecordedReferences(
-          this.noteAttributeSecrecy(
-            logicalId,
-            attributeName,
-            resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'],
-            context
-          ),
+        return this.noteAttributeSecrecy(
           logicalId,
-          context,
-          `${logicalId}.${this.displayLeaf(attributeName, context)}`,
-          // No source key: the attribute name here is the RESOLVED one, so a key
-          // built from it need not match the persist path's; the value scan
-          // positions the leaf instead.
-          undefined
+          attributeName,
+          resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'],
+          context
         );
       case 'Ipv6CidrBlocks': {
         // Must fetch dynamically - IPv6 CIDR is added by VPCCidrBlock resource after VPC creation.

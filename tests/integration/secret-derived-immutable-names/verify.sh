@@ -954,6 +954,23 @@ if [ "${NOOP_RC}" -ne 0 ]; then
   log_tail
   exit 1
 fi
+# PREMISE: this deploy updated the reader, so the values below were sent now.
+if ! awk 'index($0, "SecretQueueReaderPolicy") && index($0, "(AWS::SQS::QueuePolicy)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the redeploy's log has no 'SecretQueueReaderPolicy (AWS::SQS::QueuePolicy) updated' line (the reader was not re-sent, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+# The reader resolved the ARN from the record, so its own record stores the
+# reference again (the plaintext is in its secrets bag).
+SECRET_REF_RESOURCE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.SecretQueueReaderPolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
+case "${SECRET_REF_RESOURCE}" in
+  arn:*"{{resolve:secretsmanager:"*) ;;
+  *)
+    echo "FAIL: SecretQueueReaderPolicy's recorded Resource after the redeploy does not hold the {{resolve:secretsmanager: reference (go-to-k/cdkd#4800)" >&2
+    exit 1
+    ;;
+esac
 expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIVE}" \
   "$(aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" \
     --query 'Parameter.Value' --output text)"
@@ -972,7 +989,7 @@ fi
 echo "    OK: the readers of a NO_CHANGE secret-named queue got its real ARN"
 set +e
 SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${DEPLOY_LOG}" 2>&1
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
 NOOP2_RC=$?
 set -e
 if [ "${NOOP2_RC}" -ne 0 ]; then

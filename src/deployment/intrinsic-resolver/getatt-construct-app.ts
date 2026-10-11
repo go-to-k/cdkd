@@ -40,20 +40,11 @@ export async function constructAttributeForAppTypes(
         // resource's value becoming a mask-only needle) would therefore
         // register the bus name, not the built ARN; inert, since nothing
         // declares an Events rule NoEcho.
-        // Re-resolved before it is embedded too (go-to-k/cdkd#4800): a bus
-        // named from a secret persists as its `{{resolve:` spelling.
-        const busRaw = await this.reresolveRecordedReferences(
-          this.noteAttributeSecrecy(
-            logicalId,
-            attributeName,
-            resource.properties?.['EventBusName'],
-            context
-          ),
+        const busRaw = this.noteAttributeSecrecy(
           logicalId,
-          context,
-          `${logicalId}.${this.displayLeaf(attributeName, context)}`,
-          // No source key: the bus name is embedded, never the reader's whole leaf.
-          undefined
+          attributeName,
+          resource.properties?.['EventBusName'],
+          context
         );
         const bus = typeof busRaw === 'string' && busRaw && busRaw !== 'default' ? busRaw : '';
         // If EventBusName resolved to an ARN, extract the bus name segment
