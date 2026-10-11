@@ -150,6 +150,14 @@ The policy to attach to the role is under
 
 ## Which one to use
 
+cdkd deploys the template your CDK app synthesizes, so the CDK app decides
+which kind a reference is. A reference CDK creates for you, by passing one
+stack's attribute to another, is a strong `Fn::ImportValue` when the two stacks
+share an account and region; that is CDK's default. Set the feature flag
+`@aws-cdk/core:defaultCrossStackReferences` to `weak` in `cdk.json` and CDK
+generates `Fn::GetStackOutput` instead. `cdk.Fn.getStackOutput()` writes a weak
+reference explicitly, whatever the flag says.
+
 | Situation | Use |
 | --- | --- |
 | Same region, same account, and the producer should be protected | `Fn::ImportValue` |
@@ -215,15 +223,13 @@ case in full.
 
 ## Compared with CloudFormation
 
-| | CloudFormation | cdkd |
-| --- | --- | --- |
-| `Fn::ImportValue` resolves to the producer's output | Yes | Yes |
-| Producer destroy refused while a consumer imports | Yes | Yes (`StackHasActiveImportsError`) |
-| A force flag to override that | No | No |
-| A weak reference | No | Yes (`Fn::GetStackOutput`) |
-| Cross-region references | No | Yes (`Fn::GetStackOutput`) |
-| Cross-account references | Via shared bootstrap | Yes (`Fn::GetStackOutput` with `RoleArn`) |
-| A producer managed by the other engine | No | Yes (CloudFormation fallback, weak) |
+Both references behave as they do in CloudFormation: `Fn::ImportValue`
+protects the producer from a destroy, and `Fn::GetStackOutput` is weak and
+reaches other regions and accounts. cdkd adds one thing: a cdkd stack can read
+the outputs of a producer that CloudFormation still manages, as a weak
+reference, as
+[A producer managed by CloudFormation](#a-producer-managed-by-cloudformation)
+describes.
 
 ### Export names and output names share one namespace
 
