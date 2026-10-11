@@ -38,8 +38,8 @@ Both commands list each destructive change by stack, resource type, construct
 path and logical ID:
 
 ```text
-MyStack: AWS::S3::Bucket Bucket MyBucketF68F3FF0 will be replaced
-MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+MyStack: AWS::S3::Bucket MyBucket MyBucketF68F3FF0 will be replaced
+MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 ```
 
 Nested stacks are always checked. `AWS::CDK::Metadata` is never reported.
@@ -53,12 +53,15 @@ destructive changes, and exits `1` if there is at least one:
 $ cdkd diff --all --fail-on=destructive
 ...
 ❌  Found 2 destructive change(s) (--fail-on=destructive):
-  MyStack: AWS::S3::Bucket Bucket MyBucketF68F3FF0 will be replaced
-  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::S3::Bucket MyBucket MyBucketF68F3FF0 will be replaced
+  MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 ```
 
-Exit `1` also means the command itself failed, for example on an
-authentication error. A failed command prints an error instead of the report.
+When `cdkd deploy` would refuse to start, the diff exits `3` instead and
+lists the refusal, not the destructive changes, so treat any non-zero exit as
+a failed check. Exit `1` also means the command itself failed, for example on
+an authentication error; a failed command prints an error instead of the
+report.
 [`cdkd diff`](cli-diff.md#exit-codes) lists every exit code.
 
 Use `--fail-on=any-change` instead to fail on every difference.
@@ -70,15 +73,17 @@ lists the changes, and asks:
 
 ```text
 Destructive changes:
-  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 
 Stack MyStack: 0 to create, 1 to update, 1 to delete.
 Stack includes destructive updates and "--require-approval" is set to 'destructive'.
 Do you wish to deploy these changes? (y/n)
 ```
 
-Answering no fails that stack's deploy with nothing changed. A stack with no
-destructive change deploys without a question.
+Answering no fails that stack's deploy with nothing changed. A nested stack
+asks when its parent reaches it; declining fails the nested stack, and the
+parent rolls back. A stack with no destructive change deploys without a
+question.
 
 To make it the default for an app, set it in `cdk.json`, where the AWS CDK CLI
 reads it too. The flag wins over the file:

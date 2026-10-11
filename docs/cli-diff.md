@@ -332,8 +332,8 @@ Each destructive change is listed after the diff:
 $ cdkd diff --fail-on=destructive MyStack
 ...
 ❌  Found 2 destructive change(s) (--fail-on=destructive):
-  MyStack: AWS::S3::Bucket Bucket MyBucketF68F3FF0 will be replaced
-  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::S3::Bucket MyBucket MyBucketF68F3FF0 will be replaced
+  MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 ```
 
 Each line gives the stack, the resource type, the construct path, the logical

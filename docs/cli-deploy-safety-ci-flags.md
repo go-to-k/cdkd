@@ -295,7 +295,7 @@ The output:
 ```text
 ...
 Destructive changes:
-  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 
 Stack MyStack: 0 to create, 1 to update, 1 to delete.
 Stack includes destructive updates and "--require-approval" is set to 'destructive'.
