@@ -83,6 +83,7 @@ import {
 import {
   orphanRecordsPrintingBag,
   stateSecretNameNeedles,
+  storedSecretNameNeedles,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
@@ -1745,14 +1746,12 @@ export async function computeStackDiff(
       recordLogOnlyParameterValue(splitPieces, mergedParameters[name], splitDelimiters);
     }
   }
-  // go-to-k/cdkd#3869: the name spellings of every record NAMED from a secret,
-  // judged from state alone (and the `NoEcho` values above). A stored value
-  // can hold such a name that no resolution of this pass reads: a create-only
-  // property that stopped reading the resource prints its OLD side on the
-  // `--verbose` replacement line and in its row. Mask-only, like
-  // `derivedNames`: over-masking costs nothing in a command that writes
-  // nothing.
-  const stateNames = stateDerivedNames(currentState.resources ?? {}, diffSecrets);
+  // go-to-k/cdkd#3869: the name of a resource NAMED from a secret that another
+  // record STORES, judged from state alone (and the `NoEcho` values above). A
+  // property that stopped reading the resource prints that stored copy as its
+  // OLD side, on the `--verbose` replacement line and in its row, and no
+  // resolution of this pass reads it. Mask-only, like `derivedNames`.
+  const stateNames = storedSecretNameNeedles(currentState.resources ?? {}, diffSecrets);
   // ONE cached masker for the `--verbose` replacement line and the final pass
   // below; it re-reads the bags when they grow, as they do mid-walk.
   // The Outputs pass records into a bag of its OWN (go-to-k/cdkd#4043), the
@@ -1970,9 +1969,10 @@ export async function computeStackDiff(
         // it is a change to go-to-k/cdkd#2943's contract, not to this one.
         deployRefusals.push(deployRefusesPropertiesReason(tornAdopted));
       }
-      // An adopted record's names too, once its map is repaired: its row
-      // compares the stored record, as any other row does.
-      stateDerivedNames(plan.adopted, diffSecrets, stateNames);
+      // Over the spliced records too, once their maps are repaired: an
+      // adopted record's name can be what another record stores, and an
+      // adopted record can store one.
+      storedSecretNameNeedles(stateForDiff.resources, diffSecrets, stateNames);
     }
 
     // The OTHER half of KEEPING a row the writers refuse (go-to-k/cdkd#3641,
@@ -3716,18 +3716,14 @@ async function buildDeletedSubtree(
 
 /**
  * The name needles of every record in `resources` named from a secret
- * (go-to-k/cdkd#3869), as one MASK-ONLY bag of log-only needles, recorded
- * into `bag`: for what a stored value prints that no live read accounts for
- * (a deleted subtree's rows, a property's OLD side). Judged from the records
- * and `secrets` (the stack's `NoEcho` values) alone. Over-masking costs
- * nothing here; `cdkd diff` writes nothing.
+ * (go-to-k/cdkd#3869), as one MASK-ONLY bag of log-only needles, for the
+ * stored values of a nested child below (a deleted subtree's rows, a live
+ * child's OLD sides): judged from the records alone, since no live row reads
+ * them. Over-masking costs nothing here; `cdkd diff` writes nothing.
  */
-function stateDerivedNames(
-  resources: Record<string, ResourceState>,
-  secrets?: RecordedSecretValues,
-  bag: RecordedSecretValues = new Map()
-): RecordedSecretValues {
-  const needlesOf = stateSecretNameNeedles(resources, secrets);
+function stateDerivedNames(resources: Record<string, ResourceState>): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  const needlesOf = stateSecretNameNeedles(resources);
   for (const logicalId of Object.keys(resources)) {
     for (const needle of needlesOf(logicalId) ?? []) recordLogOnlyValue(bag, needle);
   }

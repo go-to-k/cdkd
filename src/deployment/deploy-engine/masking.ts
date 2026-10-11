@@ -40,7 +40,7 @@ import {
 import {
   secretNameNeedlesOf,
   secretNamesReadBy,
-  stateSecretNameNeedles,
+  storedSecretNameNeedles,
 } from '../secret-name-needles.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
@@ -138,17 +138,15 @@ export function diffLogMasker(
       judged = true;
       // Judged as `cdkd diff` judges them: a record spelling its name as a
       // `{{resolve:` reference or the mask, or one holding a `NoEcho` value
-      // whole (never a `Fn::Split` piece, which an ordinary name can hold).
+      // whole (never a `Fn::Split` piece, which an ordinary name can hold),
+      // whose name another record stores.
       const noEchoJudge: RecordedSecretValues = new Map();
       for (const name of noEchoNames) {
         if (Object.hasOwn(parameterValues, name)) {
           recordLogOnlyParameterValue(noEchoJudge, parameterValues[name]);
         }
       }
-      const needlesOf = stateSecretNameNeedles(resources, noEchoJudge);
-      for (const logicalId of Object.keys(resources)) {
-        for (const needle of needlesOf(logicalId) ?? []) recordLogOnlyValue(stateNames, needle);
-      }
+      storedSecretNameNeedles(resources, noEchoJudge, stateNames);
     }
     return union(text);
   };

@@ -257,6 +257,49 @@ export function stateSecretNameNeedles(
 }
 
 /**
+ * The needles of every resource named from a secret that a STORED value in
+ * `resources` holds (go-to-k/cdkd#3869), recorded as log-only needles into
+ * `bag`: the OLD side a diff prints for a property that stopped reading such a
+ * resource, which no read of the diff pass names. Each record is judged as
+ * {@link stateSecretNameNeedles} judges it (with `secrets`, the stack's
+ * `NoEcho` values), and a needle counts only where ANOTHER record's string
+ * leaf IS it or embeds it, as {@link secretNamesReadBy} matches: a name
+ * segment of a composite id (a secret-named metric filter's log group, which
+ * its own record stores) masks nothing another record spells. A record's own
+ * name is stored as its reference or the mask, never as a derived spelling.
+ */
+export function storedSecretNameNeedles(
+  resources: Readonly<Record<string, ResourceState>>,
+  secrets: RecordedSecretValues | undefined,
+  bag: RecordedSecretValues = new Map()
+): RecordedSecretValues {
+  const needlesOf = stateSecretNameNeedles(resources, secrets);
+  const named: Array<[string, ReadonlySet<string>]> = [];
+  for (const logicalId of Object.keys(resources)) {
+    const needles = needlesOf(logicalId);
+    if (needles !== undefined) named.push([logicalId, needles]);
+  }
+  if (named.length === 0) return bag;
+  for (const [readerId, record] of Object.entries(resources)) {
+    const leaves = [...wholeStringLeavesOf(record?.properties)].filter((leaf) => leaf !== '');
+    for (const [namedId, needles] of named) {
+      if (namedId === readerId) continue;
+      for (const needle of needles) {
+        if (
+          leaves.some(
+            (leaf) =>
+              leaf === needle || (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle))
+          )
+        ) {
+          recordLogOnlyValue(bag, needle);
+        }
+      }
+    }
+  }
+  return bag;
+}
+
+/**
  * The PRINTING bag one resource's operation runs under when a command
  * provisions from STATE (go-to-k/cdkd#3869): `cdkd destroy`'s delete and
  * `cdkd drift --revert`'s update. An empty map whose LOG-ONLY needles are the

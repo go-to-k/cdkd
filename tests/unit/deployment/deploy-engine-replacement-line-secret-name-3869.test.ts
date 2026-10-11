@@ -45,6 +45,8 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { storedSecretNameNeedles } from '../../../src/deployment/secret-name-needles.js';
+import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -184,5 +186,48 @@ describe("cdkd deploy's replacement line masks a name only the OLD state value h
     expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
     expect(line).toContain(PLAIN_USER);
     expect(line.includes('teamsecretdb')).toBe(!noEcho);
+  });
+});
+
+describe('storedSecretNameNeedles: the names a STORED value holds (go-to-k/cdkd#3869)', () => {
+  const REF = '{{resolve:secretsmanager:sdin:SecretString:filter::}}';
+  const records = (readerValue: string): StackState['resources'] => ({
+    // A metric filter named from the secret: its composite id carries its log
+    // group's ordinary name, which the judge takes as a name segment.
+    SecretFilter: {
+      physicalId: 'plain-log-group|sdin-secret-filter',
+      resourceType: 'AWS::Logs::MetricFilter',
+      properties: { FilterName: REF, LogGroupName: 'plain-log-group' },
+      attributes: {},
+      dependencies: [],
+    },
+    Reader: {
+      physicalId: 'reader',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Value: readerValue },
+      attributes: {},
+      dependencies: [],
+    },
+  });
+
+  it("records a needle another record's leaf embeds", () => {
+    const bag = storedSecretNameNeedles(records('arn:x:plain-log-group|sdin-secret-filter'), undefined);
+    expect(maskSecretsInText('old: plain-log-group|sdin-secret-filter', bag)).not.toContain(
+      'sdin-secret-filter'
+    );
+  });
+
+  it("leaves a segment only the named record's own leaf spells", () => {
+    // SecretFilter stores its own log group's name; no OTHER record does, so
+    // the group's ordinary name stays readable.
+    const bag = storedSecretNameNeedles(records('unrelated'), undefined);
+    expect(maskSecretsInText('plain-log-group', bag)).toBe('plain-log-group');
+  });
+
+  it('negative control: no record named from a secret records nothing', () => {
+    const plain = records('arn:x:plain-log-group|sdin-secret-filter');
+    (plain['SecretFilter']!.properties as Record<string, unknown>)['FilterName'] =
+      'sdin-secret-filter';
+    expect(hasMaskableValues(storedSecretNameNeedles(plain, undefined))).toBe(false);
   });
 });
