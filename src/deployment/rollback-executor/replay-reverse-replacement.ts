@@ -1020,7 +1020,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
     },
     secrets,
-    prevRecord.properties
+    prevRecord.properties,
+    prevRecord.attributes
   );
   // go-to-k/cdkd#4225: the re-create put the old resource's inline
   // policies, as the deploy's replacement create does. A re-create that

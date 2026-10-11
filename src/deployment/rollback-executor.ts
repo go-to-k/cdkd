@@ -1363,7 +1363,8 @@ async function replayFailedOperationsUnbound(
             redactRollbackRecord(
               recordAfterRollbackUpdate(prev, revertFailedResult),
               secrets,
-              prev.properties
+              prev.properties,
+              prev.attributes
             ),
             prev,
             noEcho.substituted
