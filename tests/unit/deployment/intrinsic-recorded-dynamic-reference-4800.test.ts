@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
         smCalls.count += 1;
         if (command.input?.SecretId === 'sdin') {
-          return { SecretString: JSON.stringify({ queue: 'sdin-q-1', cidr: '10.42.0.0/16' }) };
+          return { SecretString: JSON.stringify({ queue: 'sdin-q-1', cidr: '10.42.0.0/16', short: 'q1' }) };
         }
         const notFound = new Error("Secrets Manager can't find the specified secret.");
         notFound.name = 'ResourceNotFoundException';
@@ -371,6 +371,17 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     });
     expect(resolved).toBe(RECORDED_ARN);
     expect(smCalls.count).toBe(0);
+    // The reference stays unresolved here, so there is no generation to doubt.
+    expect(warnSpy.calls).toEqual([]);
+  });
+
+  it('a value under the needle floor proves nothing, even where the physical id contains it', async () => {
+    const shortRef = '{{resolve:secretsmanager:sdin:SecretString:short::}}';
+    const producer = record('Custom::Thing', 'cr-q1', { Name: shortRef }, { Name: shortRef });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Name'] }, {
+      bag: new Map(),
+    });
+    expect(resolved).toBe(shortRef);
   });
 
   it('a context with no bag to record the plaintext into is served the record as it is', async () => {
