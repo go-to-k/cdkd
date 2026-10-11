@@ -262,7 +262,7 @@ changes instead:
 touched:
 
 ```text
-Refusing to deploy MyStack: a resource changes its Type into or out of AWS::CloudFormation::Stack, which cdkd does not replace in place (issue #2668).
+Refusing to deploy MyStack: a resource changes its Type into or out of AWS::CloudFormation::Stack, which cdkd does not replace in place.
   - Thing: Type changes from AWS::SNS::Topic to AWS::CloudFormation::Stack (the existing AWS::SNS::Topic is arn:aws:sns:us-east-1:111122223333:thing).
 ```
 

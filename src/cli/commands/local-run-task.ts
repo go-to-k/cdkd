@@ -1204,11 +1204,11 @@ export function createLocalRunTaskCommand(): Command {
       new Option(
         '--ecr-role-arn <arn>',
         'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
-          'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
+          'registries. Issues sts:AssumeRole via the default credential chain and uses the ' +
           'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
           'caller does not have direct cross-account access to the target repository. ' +
           'A same-account pull in ANY region does not need this flag: the ECR client is built ' +
-          "for the image URI's own region, so crossing a region costs nothing extra (issue #2536)."
+          "for the image URI's own region, so crossing a region costs nothing extra."
       )
     )
     .addOption(

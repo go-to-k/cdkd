@@ -3066,7 +3066,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 `UpdateTable and will reject the flip naming them. Declare ` +
                 `GlobalSecondaryIndexes[].ProvisionedThroughput (both ReadCapacityUnits and ` +
                 `WriteCapacityUnits) for each. An index this deploy REMOVES is deleted BEFORE ` +
-                `the flip automatically (issue #1617), so a name here is one the template still ` +
+                `the flip automatically, so a name here is one the template still ` +
                 `keeps, one that exists in AWS but in neither the template nor cdkd state ` +
                 `(created out of band), or one whose pre-flip removal was skipped for the reason ` +
                 `warned above.`
@@ -6292,7 +6292,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       `${this.indexScopeAt(indexName, physicalId, maskSecrets)}: the requested ProvisionedThroughput is ` +
         `{ReadCapacityUnits: 0, WriteCapacityUnits: 0}, which is AWS's on-demand placeholder rather ` +
         `than a capacity DynamoDB accepts (the minimum is 1), so no per-index throughput update was ` +
-        `sent. This usually means the value came from a pre-#1767 cdkd state record — a ` +
+        `sent. This usually means the value came from a state record an older cdkd release wrote — a ` +
         `\`cdkd drift --revert\` of such a record, or a rollback replaying it. Re-run ` +
         `\`cdkd deploy\` (or \`cdkd drift --accept\`) to refresh the record.`
     );

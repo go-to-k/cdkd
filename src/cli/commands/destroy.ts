@@ -1247,8 +1247,8 @@ export function createDestroyCommand(): Command {
     .option('--all', "Destroy every top-level stack (top-level only; Stage stacks: '**')", false)
     .option(
       '--purge-events',
-      "After a clean destroy, also delete the stack's deployment-event history " +
-        "(issue #808 store), purging every earlier version under the stack's deployments/ " +
+      "After a clean destroy, also delete the stack's deployment-event history, " +
+        "purging every earlier version under the stack's deployments/ " +
         'prefix on a versioned state bucket too unless a warning says otherwise. By default ' +
         'events survive destroy as post-mortem context. ' +
         'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +

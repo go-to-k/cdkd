@@ -8192,7 +8192,7 @@ export function printRevertPlan(
               : withheldAccountClause(recovery, 'the command below prints').trimEnd();
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
-              `value from an out-of-band change and will not reset either (issue #1626). ` +
+              `value from an out-of-band change and will not reset either. ` +
               (refresh === undefined
                 ? `Re-deploy if you want them reverted too; this record's identity cannot be ` +
                   `named safely in a command, so none is offered.\n`

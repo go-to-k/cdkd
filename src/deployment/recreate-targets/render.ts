@@ -92,7 +92,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  These are fresh CREATEs on the next deploy — recreate has nothing ` +
         `to destroy first. Remove the flag for these resources; the auto-route ` +
-        `via Cloud Control (#614) handles fresh deploys for silent-drop properties, ` +
+        `via Cloud Control handles fresh deploys for silent-drop properties, ` +
         `and SDK Provider is the default for everything else.`
     );
   }

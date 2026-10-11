@@ -2719,10 +2719,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.warn(
         `UserPool ${physicalId}: the desired configuration no longer declares ` +
           `Policies.${subKey}, and no UpdateUserPool input can express that removal — ` +
-          `omitting the sub-key PRESERVES the live value (measured us-east-1 2026-08-19, ` +
-          `issue #1968), so the pool keeps its current ${label}. CloudFormation is the ` +
-          `same no-op on the identical template edit (measured us-east-1 2026-09-02, ` +
-          `issue #1979), so cdkd deliberately sends no reset. To change the live value, ` +
+          `omitting the sub-key PRESERVES the live value, ` +
+          `so the pool keeps its current ${label}. CloudFormation is the ` +
+          `same no-op on the identical template edit, ` +
+          `so cdkd deliberately sends no reset. To change the live value, ` +
           `declare Policies.${subKey} explicitly with the intended configuration (${reset}).`
       );
     }

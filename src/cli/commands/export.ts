@@ -8873,7 +8873,7 @@ export async function runPerStackImportLoop(args: {
     const ok = await confirmPrompt(
       `Create ${perStackPlans.length} CloudFormation stack(s) by importing the cdkd ` +
         `nested-stack tree rooted at ${quotedOrNotShown(rootStackName)} (${quotedRegion(rootRegion)}) — ` +
-        `leaf-first, per-stack IMPORT loop (#464 design §4.3).` +
+        `leaf-first, per-stack IMPORT loop.` +
         phase2Note +
         recreateNote +
         (totalRecreate > 0

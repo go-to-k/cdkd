@@ -2211,7 +2211,7 @@ function createStateShowCommand(): Command {
     .option('--json', 'Output the raw state and lock as JSON', false)
     .option(
       '--show-nested',
-      'Recursively show every nested-stack child under the target stack (issue #555 A4)',
+      'Recursively show every nested-stack child under the target stack',
       false
     )
     .addOption(stackRegionOption())

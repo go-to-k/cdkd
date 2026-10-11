@@ -2625,7 +2625,7 @@ export function createLocalInvokeAgentCoreCommand(): Command {
     .addOption(
       new Option(
         '--watch',
-        'Re-synth and reload the agent container on CDK source changes (follows cdk-local #270). ' +
+        'Re-synth and reload the agent container on CDK source changes. ' +
           'Supported on the HTTP / AGUI protocols, both the --ws session AND the default one-shot ' +
           'POST /invocations (the reload re-runs the single shot). An interpreted-language source ' +
           'edit inside a CodeConfiguration source tree takes a soft-reload fast path (docker cp + ' +
@@ -2717,7 +2717,7 @@ export function createLocalInvokeAgentCoreCommand(): Command {
         '--ecr-role-arn <arn>',
         'Role ARN to assume before authenticating against ECR for cross-account / centralized registries. ' +
           'A same-account pull in ANY region does not need this flag: the ECR client is built ' +
-          "for the image URI's own region, so crossing a region costs nothing extra (issue #2536)."
+          "for the image URI's own region, so crossing a region costs nothing extra."
       )
     )
     .addOption(

@@ -729,7 +729,7 @@ function refuseNestedRename(args: {
       `'${shownDesired}' (under UpdateReplacePolicy: Retain the old one is kept instead); the ` +
       `CREATE fails if a ${args.noun} named '${shownDesired}' already exists, after the DELETE. ` +
       `If the template did not change this name, the state record was left by an earlier ` +
-      `deploy that wrote to '${shownDesired}' (issue #3724): check that ${args.noun} before ` +
+      `deploy that wrote to '${shownDesired}': check that ${args.noun} before ` +
       `re-deploying. Otherwise keep the name '${shownRecorded}'`
   );
 }
@@ -3958,25 +3958,25 @@ function icebergTableInputRefusalMessage(
 ): string {
   const lead =
     mode === 'create'
-      ? `cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue (issue #1454).`
+      ? `cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue.`
       : mode === 'create-replay'
         ? `cannot be deployed by AWS in any shape, so cdkd normally refuses it before calling ` +
-          `Glue (issue #1454) — but this create is REPLAYING a historical cdkd STATE record (a ` +
+          `Glue — but this create is REPLAYING a historical cdkd STATE record (a ` +
           `rollback reverse-replacement re-creating the OLD table), not your template, and ` +
           `refusing would leave that table unrestorable with no template-side remedy, only a ` +
-          `hand-edit of state.json. cdkd therefore warns and proceeds (issue #1463). The ` +
+          `hand-edit of state.json. cdkd therefore warns and proceeds. The ` +
           `re-created table is DEGRADED exactly as the original was: under the CFn spelling ` +
-          `IcebergTableInput the AWS SDK serializer drops the unknown member (issue #1390), so ` +
+          `IcebergTableInput the AWS SDK serializer drops the unknown member, so ` +
           `the table comes back without its Iceberg metadata; under the SDK spelling ` +
           `CreateIcebergTableInput the value IS sent and Glue rejects the call, failing this ` +
           `one rollback operation. Either way, fix it forward with 'cdkd deploy' using the ` +
           `working shape below.`
         : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
           `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
-          `only warns (issue #1454). A CREATE of this table would be refused outright.`;
+          `only warns. A CREATE of this table would be refused outright.`;
   return (
     `AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ${lead}\n` +
-    `  Live-probed 2026-08-09 in us-east-1 (issue #1408): glue:CreateTable — the API cdkd ` +
+    `  Measured against AWS: glue:CreateTable — the API cdkd ` +
     `calls — rejects every Iceberg table spec ("Location information cannot be null while ` +
     `creating an iceberg table" without a TableInput.StorageDescriptor, "Table metadata ` +
     `information present at multiple parts of input request" with one), and CloudFormation ` +

@@ -468,7 +468,7 @@ export function createBootstrapCommand(): Command {
     .description(
       'Bootstrap cdkd by creating the S3 state bucket plus cdkd-owned asset storage ' +
         '(asset bucket + container-asset ECR repo) for the region. With --destroy, ' +
-        "tear down the region's asset storage instead (issue #1010)."
+        "tear down the region's asset storage instead."
     )
     .option(
       '--state-bucket <bucket>',

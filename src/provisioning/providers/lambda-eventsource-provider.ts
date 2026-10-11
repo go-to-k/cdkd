@@ -294,7 +294,7 @@ function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'upda
     `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be sent by cdkd yet — ` +
     `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
     `${mode === 'create' ? 'CreateEventSourceMapping' : 'UpdateEventSourceMapping'} request ` +
-    `without an error (issue #3848). ` +
+    `without an error. ` +
     `Remove ${KAFKA_CONSUMPTION_MODE_KEY} from ` +
     `SelfManagedKafkaEventSourceConfig to deploy the mapping without it.`
   );
