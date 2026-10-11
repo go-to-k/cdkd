@@ -6,7 +6,7 @@ import { ccProtectionRegistryTypes } from './cc-protection-properties.js';
  * [#2660](https://github.com/go-to-k/cdkd/issues/2660)).
  *
  * This is the ONE list the `--remove-protection` help strings render from, on
- * `cdkd destroy` and `cdkd state destroy`. The Cloud Control half comes from
+ * `cdkd destroy`, `cdkd state destroy` and `cdkd rollback`. The Cloud Control half comes from
  * {@link ccProtectionRegistryTypes}. Both copies of the help were hand-written
  * before, and two types the providers honour (`AWS::EMR::Cluster`,
  * `AWS::DynamoDB::GlobalTable`) were missing from both.
