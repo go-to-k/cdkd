@@ -115,8 +115,9 @@ import {
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
 import { orphanDeleteNeedsIdentity } from '../../deployment/rollback-executor/orphan-identity.js';
 import {
+  journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
-  secretNamePrintingBag,
+  secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 
@@ -1042,6 +1043,14 @@ export async function runDestroyForStack(
   // run and a nested-stack child (which the parent invokes with
   // `skipConfirmation: true`). A flagged run has declined to be ASKED, not to
   // be told that live resources stop being tracked.
+  // go-to-k/cdkd#3869: the stack's `NoEcho` values, re-bound once from the
+  // synthesized template (none under `cdkd state destroy`), judge the journal
+  // listing below and every delete's printing bag: a record or journal entry
+  // written before schema v11 holds such a value in plaintext, which nothing
+  // in it marks as secret. Awaited only where read; it never rejects.
+  const noEchoValuesPending = (
+    ctx.noEchoReresolver?.printingNoEchoValues() ?? Promise.resolve(undefined)
+  ).catch(() => undefined);
   const orphansAtDestroy = state.orphans ?? [];
   if (orphansAtDestroy.length > 0) {
     logger.info(
@@ -1100,7 +1109,14 @@ export async function runDestroyForStack(
         `keeps it in AWS, Snapshot takes the final snapshot), unless state or a later deploy may ` +
         `own it, which is warned about instead:`
     );
-    for (const line of journaledOrphanLines(journaledOrphans, logger)) logger.info(line);
+    const listing = journaledOrphanPrintingBag(
+      journaledOrphans.segments.flatMap(({ ops }) => ops),
+      state.resources,
+      await noEchoValuesPending
+    );
+    withPrintingSecrets(listing, () => {
+      for (const line of journaledOrphanLines(journaledOrphans, logger)) logger.info(line);
+    });
   }
 
   if (!ctx.skipConfirmation) {
@@ -1610,6 +1626,7 @@ export async function runDestroyForStack(
           `Nothing was deleted; re-run the destroy to act on the current journal.`
       );
     }
+    const noEchoValues = await noEchoValuesPending;
     if (journaledUnderLock.count > 0) {
       const orphanOutcome = await deleteJournaledOrphans(
         journaledUnderLock,
@@ -1636,7 +1653,7 @@ export async function runDestroyForStack(
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
         },
-        { isInterrupted: () => lock.interrupted }
+        { isInterrupted: () => lock.interrupted, noEchoValues }
       );
       result.errorCount += orphanOutcome.failures;
       journaledOrphanFailures = orphanOutcome.failures;
@@ -1742,6 +1759,10 @@ export async function runDestroyForStack(
 
     logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
 
+    // go-to-k/cdkd#3869: judged with the stack's `NoEcho` values too, each
+    // record once (see `noEchoValues` above).
+    const printingBagOf = secretNamePrintingBags(state.resources, noEchoValues);
+
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
       // Graceful SIGINT (issue #816): once draining, do not start a new
@@ -1768,7 +1789,7 @@ export async function runDestroyForStack(
       // warnings and the final-snapshot lines mask a name derived from a
       // secret. `getCurrentResourceSecrets` never returns it.
       const deletePromises = level.map((logicalId) =>
-        withPrintingSecrets(secretNamePrintingBag(logicalId, state.resources), async () => {
+        withPrintingSecrets(printingBagOf(logicalId), async () => {
           // Graceful SIGINT (issue #816): if the interrupt landed after this
           // level's promises were created but before this resource's delete was
           // dispatched, skip it. It stays in the preserved state for re-run.

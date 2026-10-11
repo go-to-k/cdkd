@@ -20,7 +20,7 @@ import {
   applyNoEchoDeleteValues,
   noEchoDeleteValuesFromResolved,
 } from '../../../src/deployment/noecho-delete-reresolution.js';
-import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { SECRET_MASK, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import {
@@ -142,6 +142,51 @@ describe('TemplateNoEchoReresolver.valuesFor (cdkd destroy)', () => {
     expect(applyNoEchoDeleteValues(r.properties, r.noEchoLeaves, values).unresolved).toEqual([
       ['Attr'],
     ]);
+  });
+});
+
+describe('TemplateNoEchoReresolver.printingNoEchoValues (go-to-k/cdkd#3869)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("binds the stack's NoEcho values once, as log-only needles", async () => {
+    const bind = vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters');
+    const reresolver = new TemplateNoEchoReresolver({
+      template: template({}),
+      stackName: 'S',
+      region: 'us-east-1',
+    });
+    const first = await reresolver.printingNoEchoValues();
+    const second = await reresolver.printingNoEchoValues();
+    expect(first).toBe(second);
+    expect(bind).toHaveBeenCalledTimes(1);
+    expect(maskSecretsInText(`id ${VALUE}`, first!)).toBe('id ***');
+    // Only the NoEcho parameter: the plain one is no needle.
+    expect(maskSecretsInText('id plain', first!)).toBe('id plain');
+    // Log-only: the persisting maskers do not read it.
+    expect(first!.size).toBe(0);
+  });
+
+  it('binds nothing for a template declaring no NoEcho parameter', async () => {
+    const bind = vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters');
+    const reresolver = new TemplateNoEchoReresolver({
+      template: { Parameters: { Plain: { Type: 'String', Default: 'plain' } }, Resources: {} },
+      stackName: 'S',
+      region: 'us-east-1',
+    } as unknown as ConstructorParameters<typeof TemplateNoEchoReresolver>[0]);
+    expect(await reresolver.printingNoEchoValues()).toBeUndefined();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('answers undefined when the parameters cannot be bound', async () => {
+    vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters').mockRejectedValue(
+      new Error('boom')
+    );
+    const reresolver = new TemplateNoEchoReresolver({
+      template: template({}),
+      stackName: 'S',
+      region: 'us-east-1',
+    });
+    expect(await reresolver.printingNoEchoValues()).toBeUndefined();
   });
 });
 

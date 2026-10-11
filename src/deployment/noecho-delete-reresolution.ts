@@ -9,6 +9,7 @@ import {
   carryLogOnlyValues,
   carryLogOnlyValuesCarriedBy,
   createSecretMasker,
+  hasMaskableValues,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordLogOnlyParameterValue,
@@ -331,6 +332,7 @@ export class TemplateNoEchoReresolver {
   private readonly logger = getLogger().child('NoEchoDeleteReresolution');
   private readonly resolver: IntrinsicFunctionResolver;
   private parametersPromise: Promise<Record<string, unknown> | undefined> | undefined;
+  private printingNoEchoPromise: Promise<RecordedSecretValues | undefined> | undefined;
   private readonly noEchoParameters: ReadonlySet<string>;
   private readonly options: TemplateNoEchoReresolverOptions;
 
@@ -424,6 +426,25 @@ export class TemplateNoEchoReresolver {
       }
     }
     return bag;
+  }
+
+  /**
+   * This stack's `NoEcho` values (and what it inherited) as the log-only
+   * needles of a bag, for the destroy's printing bags (go-to-k/cdkd#3869): a
+   * record written before schema v11 holds such a value in plaintext, which
+   * nothing else marks as secret. Bound at most once (the parameters' binding
+   * is shared with {@link valuesFor}), and only when the template declares a
+   * `NoEcho` parameter or the parent handed some. READ-ONLY to callers; a
+   * binding failure answers what was inherited.
+   */
+  printingNoEchoValues(): Promise<RecordedSecretValues | undefined> {
+    if (this.noEchoParameters.size === 0 && !hasMaskableValues(this.options.inheritedSecrets)) {
+      return Promise.resolve(undefined);
+    }
+    this.printingNoEchoPromise ??= this.noEchoNeedles().then((bag) =>
+      hasMaskableValues(bag) ? bag : undefined
+    );
+    return this.printingNoEchoPromise;
   }
 
   /**

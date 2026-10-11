@@ -204,7 +204,9 @@ describe('runDestroyForStack: a custom resource reading a NoEcho parameter (go-t
 
   it('asks the source only for the types that read the values, and hands a nested-stack row the source', async () => {
     const valuesFor = vi.fn().mockResolvedValue(undefined);
-    const source = { valuesFor } as unknown as TemplateNoEchoReresolver;
+    // go-to-k/cdkd#3869: the runner also asks it for the stack's NoEcho values.
+    const printingNoEchoValues = vi.fn().mockResolvedValue(undefined);
+    const source = { valuesFor, printingNoEchoValues } as unknown as TemplateNoEchoReresolver;
     const seen: Record<string, Record<string, unknown>> = {};
     const recording = {
       delete: vi.fn(async (id: string, _p: string, _t: string, _props: unknown, c: unknown) => {
@@ -238,6 +240,8 @@ describe('runDestroyForStack: a custom resource reading a NoEcho parameter (go-t
     );
     expect(valuesFor.mock.calls.map((c) => c[0]).sort()).toEqual(['Child', 'ParamCr']);
     expect(seen['Child']?.['noEchoReresolver']).toBe(source);
+    // Bound once for the whole stack, never per delete.
+    expect(printingNoEchoValues).toHaveBeenCalledTimes(1);
   });
 
   it('cdkd destroy whose template no longer reads the parameter there keeps the skip', async () => {
