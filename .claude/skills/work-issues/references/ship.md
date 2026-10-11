@@ -7,11 +7,11 @@ lane (`references/verify.md` §8-i — before EVERY merge, even when the lane's
 reviewers passed; go-to-k/cdkd#3906), grant it its turn only once that round is
 CLEAN (one lane at a time), then run `/run-integ` and
 `gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent. The
-auto-mode classifier refuses the PARENT's calls too: any refused call goes to
-`AskUserQuestion`, never a reworded retry (go-to-k/cdkd#4059); only
-`/run-integ` step 9's one marker retry is exempt, and the marker set and ledger
-push follow that step. While that tree is
-busy with a follow-up branch, ship from a SECOND sibling on the PR's branch
+auto-mode classifier can refuse the PARENT's calls too: any refused call goes
+to `AskUserQuestion`, never a reworded retry (go-to-k/cdkd#4059); only
+`/run-integ` step 9's one retry (marker set or ledger push) is exempt.
+While that tree is busy with a follow-up branch, ship from a SECOND sibling
+on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
 running BOTH the integ and the merge there (the marker is per tree). A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
