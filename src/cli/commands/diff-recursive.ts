@@ -1761,9 +1761,10 @@ export async function computeStackDiff(
   // property that stopped reading the resource prints that stored copy as its
   // OLD side, on the `--verbose` replacement line and in its row, and no
   // resolution of this pass reads it. Mask-only, like `derivedNames`.
-  // Judged with `diffSecrets`, as the resolver's own judge is: the `NoEcho`
-  // values, plus what the resolver later derives from one (`Fn::Base64`),
-  // which can only add needles.
+  // Judged here, before any resolution, with the stack's `NoEcho` values
+  // alone; the adoption pass and `secretNamedRecords` re-judge with
+  // `diffSecrets` as it has grown by then (the resolver's `Fn::Base64`
+  // derivations), which can only add needles.
   const stateNames = storedSecretNameNeedles(
     currentState.resources ?? {},
     diffSecrets,
