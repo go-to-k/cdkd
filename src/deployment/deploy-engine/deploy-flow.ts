@@ -719,10 +719,13 @@ export async function doDeployWithPrefetch(
       // THIS context's bag, so the calculator's replacement line masks with
       // it (and with a nested child's inherited bag). Printing only: the
       // changes it returns are unmasked.
+      // go-to-k/cdkd#3869: and the name spellings of each record named from
+      // a secret, for an OLD side no read of the diff pass names.
       this.diffLogMasker(
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
-        parameterValues
+        parameterValues,
+        currentState.resources
       ),
       // go-to-k/cdkd#4383: a recreate target is destroyed and re-created, so
       // its same-stack readers are promoted as for a property-driven
@@ -824,7 +827,8 @@ export async function doDeployWithPrefetch(
       const mask = this.diffLogMasker(
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
-        parameterValues
+        parameterValues,
+        currentState.resources
       );
       throw markNonRetryable(
         new CdkdError(

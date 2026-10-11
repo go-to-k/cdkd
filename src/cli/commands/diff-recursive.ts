@@ -1745,6 +1745,14 @@ export async function computeStackDiff(
       recordLogOnlyParameterValue(splitPieces, mergedParameters[name], splitDelimiters);
     }
   }
+  // go-to-k/cdkd#3869: the name spellings of every record NAMED from a secret,
+  // judged from state alone (and the `NoEcho` values above). A stored value
+  // can hold such a name that no resolution of this pass reads: a create-only
+  // property that stopped reading the resource prints its OLD side on the
+  // `--verbose` replacement line and in its row. Mask-only, like
+  // `derivedNames`: over-masking costs nothing in a command that writes
+  // nothing.
+  const stateNames = stateDerivedNames(currentState.resources ?? {}, diffSecrets);
   // ONE cached masker for the `--verbose` replacement line and the final pass
   // below; it re-reads the bags when they grow, as they do mid-walk.
   // The Outputs pass records into a bag of its OWN (go-to-k/cdkd#4043), the
@@ -1755,7 +1763,12 @@ export async function computeStackDiff(
   const outputsPassSecrets: RecordedSecretValues = new Map();
   const printing = createDiffPrintingMasker(
     [diffSecrets, inheritedForResolver, outputsPassSecrets],
-    [splitPieces, derivedNames, ...(inheritedDerivedNames ? [inheritedDerivedNames] : [])]
+    [
+      splitPieces,
+      derivedNames,
+      stateNames,
+      ...(inheritedDerivedNames ? [inheritedDerivedNames] : []),
+    ]
   );
   const maskForLog: MaskerFn = printing.mask;
 
@@ -1957,6 +1970,9 @@ export async function computeStackDiff(
         // it is a change to go-to-k/cdkd#2943's contract, not to this one.
         deployRefusals.push(deployRefusesPropertiesReason(tornAdopted));
       }
+      // An adopted record's names too, once its map is repaired: its row
+      // compares the stored record, as any other row does.
+      stateDerivedNames(plan.adopted, diffSecrets, stateNames);
     }
 
     // The OTHER half of KEEPING a row the writers refuse (go-to-k/cdkd#3641,
@@ -3368,6 +3384,10 @@ export async function buildDiffTree(args: {
   };
   if (!recursive) return node;
 
+  // go-to-k/cdkd#3869: this node's secret-named records, for the stored values
+  // of every child below, live or deleted, that no live read accounts for.
+  const nodeStateNames = stateDerivedNames(state.resources ?? {});
+
   // Template-present children, in template order (CREATE / UPDATE / present).
   // A condition-false row is absent here, so a child still in state falls
   // through to the state-only DELETE loop below.
@@ -3503,7 +3523,13 @@ export async function buildDiffTree(args: {
       trust,
       rowDerivedNames
     );
-    const childDerivedNames = diffPrintingSecrets([inheritedDerivedNames, rowDerivedNames]);
+    // The parent's own secret-named records too (go-to-k/cdkd#3869): the
+    // child's stored values can hold a name a row USED to pass down.
+    const childDerivedNames = diffPrintingSecrets([
+      inheritedDerivedNames,
+      rowDerivedNames,
+      nodeStateNames,
+    ]);
     const buildChild = (): Promise<DiffTreeNode> =>
       buildDiffTree({
         stackName: childStackName,
@@ -3573,7 +3599,7 @@ export async function buildDiffTree(args: {
         refusalRecovery,
         // A deleted child's stored values can hold a name this node's records
         // spell from a secret even when no live row reads it any more.
-        diffPrintingSecrets([nodeDerivedNames, stateDerivedNames(state.resources ?? {})])
+        diffPrintingSecrets([nodeDerivedNames, nodeStateNames])
       )
     );
   }
@@ -3690,13 +3716,18 @@ async function buildDeletedSubtree(
 
 /**
  * The name needles of every record in `resources` named from a secret
- * (go-to-k/cdkd#3869), as one MASK-ONLY bag of log-only needles, for a
- * deleted subtree's rows: judged from the records alone, since no live row
- * reads them. Over-masking costs nothing here; `cdkd diff` writes nothing.
+ * (go-to-k/cdkd#3869), as one MASK-ONLY bag of log-only needles, recorded
+ * into `bag`: for what a stored value prints that no live read accounts for
+ * (a deleted subtree's rows, a property's OLD side). Judged from the records
+ * and `secrets` (the stack's `NoEcho` values) alone. Over-masking costs
+ * nothing here; `cdkd diff` writes nothing.
  */
-function stateDerivedNames(resources: Record<string, ResourceState>): RecordedSecretValues {
-  const bag: RecordedSecretValues = new Map();
-  const needlesOf = stateSecretNameNeedles(resources);
+function stateDerivedNames(
+  resources: Record<string, ResourceState>,
+  secrets?: RecordedSecretValues,
+  bag: RecordedSecretValues = new Map()
+): RecordedSecretValues {
+  const needlesOf = stateSecretNameNeedles(resources, secrets);
   for (const logicalId of Object.keys(resources)) {
     for (const needle of needlesOf(logicalId) ?? []) recordLogOnlyValue(bag, needle);
   }

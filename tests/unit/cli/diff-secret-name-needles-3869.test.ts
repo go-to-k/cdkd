@@ -469,6 +469,88 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     }
   );
 
+  it.each([
+    ['a secret-named target', '{{resolve:secretsmanager:sdin:SecretString:queue::}}', false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])(
+    "masks a name a parent row USED to pass, in a live child's stored value: %s",
+    async (_l, queueName, shown) => {
+      // The row now passes a literal, so nothing this walk resolves reads the
+      // queue for the child; only the parent's state says the child's stored
+      // value is the secret-named queue's URL.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+            },
+          })
+        );
+        const parent = state(queueName);
+        parent.resources['Child'] = {
+          physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { Parameters: { QueueUrl: URL } },
+          attributes: {},
+          dependencies: ['Queue'],
+        };
+        const tpl = template(queueName);
+        // Nothing else reads the queue either, so the parent's own rows record
+        // no needle of it.
+        delete tpl.Resources['Policy'];
+        delete parent.resources['Policy'];
+        tpl.Resources['Child'] = {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': 'child.json' },
+          Properties: { Parameters: { QueueUrl: 'https://example.invalid/plain' } },
+        };
+        const child: StackState = {
+          stackName: 'S~Child',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: URL },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        };
+        const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+        const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+        // Premise: the row is rendered, its new side in the clear.
+        expect(row).toContain('"path":"Value"');
+        expect(row).toContain('https://example.invalid/plain');
+        expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
     // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
     // `inheritedSecrets`, whose needles its export-alias preview reads.
@@ -816,6 +898,77 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         expect(out).toContain('"oldValue"');
         expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
       }
+    });
+  });
+
+  describe('a name only the OLD state value holds (the replacement line)', () => {
+    // An access key moves from a user named from a secret to an ordinary one.
+    // `UserName` is create-only, so the row is a replacement whose OLD side is
+    // the record's resolved copy of the secret user's name. Nothing in the
+    // template reads that user any more, so no resolution records its name.
+    const SECRET_USER = 'sdin-diff-secret-user';
+    const PLAIN_USER = 'S-PlainUser-ABC123';
+    const userTemplate = (userName: string): CloudFormationTemplate => ({
+      Resources: {
+        SecretUser: { Type: 'AWS::IAM::User', Properties: { UserName: userName } },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'PlainUser' } } },
+      },
+    });
+    const userState = (userName: string): StackState => ({
+      stackName: 'S',
+      region: 'us-east-1',
+      version: 9,
+      resources: {
+        SecretUser: {
+          physicalId: SECRET_USER,
+          resourceType: 'AWS::IAM::User',
+          properties: { UserName: userName },
+          attributes: {},
+          dependencies: [],
+        },
+        PlainUser: {
+          physicalId: PLAIN_USER,
+          resourceType: 'AWS::IAM::User',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+        Key: {
+          physicalId: 'sdin-access-key-id-1',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: { UserName: SECRET_USER },
+          attributes: {},
+          dependencies: ['SecretUser'],
+        },
+      },
+      outputs: {},
+      exportNames: [],
+      lastModified: 0,
+    });
+
+    it.each([
+      ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+      ['negative control, an ordinary name', SECRET_USER, true],
+    ])('masks it on the replacement line and the row: %s', async (_l, userName, shown) => {
+      debugLines.length = 0;
+      const result = await computeStackDiff(
+        userState(userName),
+        userTemplate(userName),
+        'us-east-1',
+        'S',
+        backend,
+        new DiffCalculator()
+      );
+      const replacement = debugLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+      // Premise: the replacement line printed, its new side in the clear.
+      expect(replacement).toContain('Property UserName of AWS::IAM::AccessKey');
+      expect(replacement).toContain(PLAIN_USER);
+      expect(replacement.includes(SECRET_USER)).toBe(shown);
+      const row = JSON.stringify(result.changes.get('Key')?.propertyChanges);
+      expect(row).toContain('"path":"UserName"');
+      expect(row).toContain(PLAIN_USER);
+      expect(row.includes(SECRET_USER)).toBe(shown);
     });
   });
 });

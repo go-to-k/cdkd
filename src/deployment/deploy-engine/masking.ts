@@ -37,7 +37,11 @@ import {
   redactSecretsForState,
   unionOfSecretBags,
 } from '../secret-redaction.js';
-import { secretNameNeedlesOf, secretNamesReadBy } from '../secret-name-needles.js';
+import {
+  secretNameNeedlesOf,
+  secretNamesReadBy,
+  stateSecretNameNeedles,
+} from '../secret-name-needles.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
@@ -101,7 +105,15 @@ export function diffLogMasker(
   this: DeployEngine,
   diffSecrets: RecordedSecretValues | undefined,
   template: CloudFormationTemplate,
-  parameterValues: Record<string, unknown>
+  parameterValues: Record<string, unknown>,
+  /**
+   * The state records the diff compares against (go-to-k/cdkd#3869): a
+   * create-only property that stopped reading a resource NAMED from a secret
+   * prints the record's copy of that name as its OLD side, and no resolution
+   * of the diff pass reads it. Each record's name spellings are judged on the
+   * masker's FIRST call, so a deploy that prints no such line pays nothing.
+   */
+  resources: Readonly<Record<string, ResourceState>> = {}
 ): SecretMasker {
   const inherited = this.options.inheritedSecrets;
   const noEchoValues: RecordedSecretValues = new Map();
@@ -118,7 +130,28 @@ export function diffLogMasker(
       recordLogOnlyParameterValue(noEchoValues, parameterValues[name], splitDelimiters);
     }
   }
-  return createUnionSecretMasker([diffSecrets, noEchoValues, inherited]);
+  const stateNames: RecordedSecretValues = new Map();
+  const union = createUnionSecretMasker([diffSecrets, noEchoValues, stateNames, inherited]);
+  let judged = false;
+  return (text) => {
+    if (!judged) {
+      judged = true;
+      // Judged as `cdkd diff` judges them: a record spelling its name as a
+      // `{{resolve:` reference or the mask, or one holding a `NoEcho` value
+      // whole (never a `Fn::Split` piece, which an ordinary name can hold).
+      const noEchoJudge: RecordedSecretValues = new Map();
+      for (const name of noEchoNames) {
+        if (Object.hasOwn(parameterValues, name)) {
+          recordLogOnlyParameterValue(noEchoJudge, parameterValues[name]);
+        }
+      }
+      const needlesOf = stateSecretNameNeedles(resources, noEchoJudge);
+      for (const logicalId of Object.keys(resources)) {
+        for (const needle of needlesOf(logicalId) ?? []) recordLogOnlyValue(stateNames, needle);
+      }
+    }
+    return union(text);
+  };
 }
 
 /**
