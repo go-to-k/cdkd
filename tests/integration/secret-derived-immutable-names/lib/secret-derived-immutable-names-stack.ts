@@ -110,7 +110,9 @@ class QueueReaderChild extends cdk.NestedStack {
  *     read by `MovingFilter` (go-to-k/cdkd#3869). SDIN_MOVE_FILTER=true moves
  *     the filter to FilterLogGroup, a replacement of its create-only
  *     `LogGroupName`: `cdkd diff --verbose` and `cdkd deploy --dry-run
- *     --verbose` printed the OLD side, the secret group's name, in plaintext.
+ *     --verbose` printed the OLD side, the secret group's name, in plaintext,
+ *     and the deployed move printed it in the old filter's id on its delete
+ *     lines.
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
@@ -333,7 +335,7 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
 
     // go-to-k/cdkd#3869: a log group NAMED from the secret, and a metric
     // filter reading it by Ref. Under SDIN_MOVE_FILTER=true (step 5c's diff
-    // and dry-run deploy only, never deployed) the filter moves to
+    // and dry-run deploy, then step 5d's real deploy) the filter moves to
     // FilterLogGroup: its create-only `LogGroupName` makes the row a
     // replacement whose OLD side is the record's copy of the secret group's
     // name, which nothing in that template reads any more.

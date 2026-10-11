@@ -58,6 +58,11 @@
 #      the replacement line, and neither log names the group: its OLD side is
 #      the record's copy of the name, which no read of either diff pass
 #      records (go-to-k/cdkd#3869).
+#   5d. The same move, DEPLOYED: the replacement's `Deleting old MovingFilter
+#      (<old id>)` line and Cloud Control's delete line print the old id,
+#      `<LogGroupName>|<FilterName>`, and neither may name the group
+#      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
+#      destroy below deletes with it.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -142,7 +147,9 @@
 # rendered row prints `[requires replacement]` with no old value); revert
 # diffLogMasker's state-record judge in src/deployment/deploy-engine/masking.ts
 # ALONE and step 5c fails the same way on the dry-run deploy's replacement
-# line (neither yet measured on real AWS).
+# line; revert the non-DELETE arm of the old-record reads in
+# src/deployment/deploy-engine/provision.ts ALONE and step 5d fails naming it
+# on the `Deleting old MovingFilter` line (none yet measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
@@ -809,6 +816,12 @@ echo "==> Step 5c: a replacement whose OLD side is a secret-derived name no read
 # has the replacement line, naming the property and its NEW side (FilterLogGroup)
 # in the clear, so the absence below is about a printed OLD side.
 REPLACE_MARKER="Property LogGroupName of AWS::Logs::MetricFilter requires replacement (from "
+# PREMISE for the new-side check below: an empty FilterLogGroup id would make
+# that grep match every line.
+if [ -z "${FILTER_LOG_GROUP}" ]; then
+  echo "FAIL: premise: FILTER_LOG_GROUP is empty, so the replacement line's new side cannot be checked" >&2
+  exit 1
+fi
 expect_move_replacement() { # usage: expect_move_replacement <which>
   local line
   line="$(grep -F -- "${REPLACE_MARKER}" "${DEPLOY_LOG}" || true)"
@@ -850,9 +863,36 @@ if [ "${MOVE_DEPLOY_RC}" -ne 0 ]; then
   exit 1
 fi
 expect_move_replacement "cdkd deploy --dry-run"
-# PREMISE: the dry run changed nothing, so the destroy below finds the filter
-# where step 2 put it.
+# PREMISE: the dry run changed nothing, so step 5d's deploy is the one that
+# moves the filter.
 expect_eq "MovingFilter's recorded LogGroupName after the dry run" "${LOG_GROUP_NAME}" \
+  "$(state_property MovingFilter LogGroupName)"
+
+echo "==> Step 5d: the same move, deployed: the replacement's delete lines withhold the old group (go-to-k/cdkd#3869)"
+set +e
+SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+MOVE_REAL_RC=$?
+set -e
+if [ "${MOVE_REAL_RC}" -ne 0 ]; then
+  echo "FAIL: the moved cdkd deploy exited ${MOVE_REAL_RC}" >&2
+  log_tail
+  exit 1
+fi
+# PREMISE: the replacement ran and named the old filter, so the absence below
+# is about a printed old id.
+if ! grep -qF -- "Deleting old MovingFilter (" "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the moved deploy's log has no 'Deleting old MovingFilter (' line (MovingFilter was not replaced, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+if grep -qF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the moved deploy's log names SecretNamedGroup in plaintext: \${LOG_GROUP_NAME} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+echo "    OK: the moved deploy's log withholds the replaced filter's old, secret-derived log group name"
+expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
 
 echo "==> Step 6: destroy"
