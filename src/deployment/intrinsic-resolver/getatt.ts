@@ -2,6 +2,7 @@ import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.j
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   isSensitiveAttributeName,
   stringifyAttributeForLog,
@@ -767,7 +768,7 @@ export async function reresolveRecordedReferences(
   if (context.recordedSecretValues === undefined) return value;
   if (!referencesProvenLocal(value, logicalId, context)) {
     this.logger.debug(
-      `Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, so the region that resolved them is unknown`
+      safeMsg`Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, so the region that resolved them is unknown`
     );
     return value;
   }
