@@ -74,9 +74,6 @@ custom-resource-masked-service-token	2026-10-11T15:30:01Z	PASS	170	verify.sh	rc 
 custom-resource-noecho-nested	2026-10-09T06:13:03Z	PASS	1343	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 custom-resource-provider	2026-10-11T15:30:01Z	PASS	606	verify.sh	rc ok, orph clean (#4738 PR #4792)
 custom-resource-resolved-secret	2026-10-11T15:30:01Z	PASS	370	verify.sh	rc ok, orph clean (#4738 PR #4792)
-custom-resource-service-token-change	2026-10-11T15:30:01Z	PASS	140	verify.sh	rc ok, orph clean (#4738 PR #4792)
-custom-resource-provider	2026-10-11T09:33:22Z	PASS	651	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-custom-resource-resolved-secret	2026-10-11T09:33:22Z	PASS	391	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
@@ -94,7 +91,6 @@ dlm-lifecycle-policy	2026-10-08T06:25:38Z	PASS	110	verify.sh	PR #4697 (#4687 rep
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-11T15:19:51Z	PASS	310	verify.sh	rc ok, orph clean; #2613 update region guard
 drift-revert	2026-10-11T16:30:48Z	PASS	354	verify.sh	PR #4796, rc ok, orph clean
 drift-revert-arrays	2026-10-11T09:33:22Z	PASS	221	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 drift-revert-vpc	2026-10-11T16:30:48Z	PASS	395	verify.sh	PR #4796, rc ok, orph clean
@@ -188,7 +184,6 @@ kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#42
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-10-11T16:41:12Z	PASS	135	verify.sh	rc ok, orph clean (PR #4793)
-lambda	2026-10-11T16:30:48Z	PASS	120	verify.sh	PR #4796, rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -255,10 +250,8 @@ multi-resource	2026-10-09T06:36:26Z	PASS	75	standard	rc ok, orph clean (PR #4752
 multi-stack-deps	2026-10-09T07:59:51Z	PASS	90	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 neptune-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	2295	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-nested-stack	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-nested-stack-3level	2026-10-11T15:30:01Z	PASS	531	verify.sh	rc ok, orph clean (#4738 PR #4792)
 nested-stack	2026-10-11T18:48:18Z	PASS	78	verify.sh	PR #4796, rc ok, orph clean
-nested-stack-3level	2026-10-11T09:33:22Z	PASS	536	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+nested-stack-3level	2026-10-11T15:30:01Z	PASS	531	verify.sh	rc ok, orph clean (#4738 PR #4792)
 nested-stack-deep	2026-10-11T09:33:22Z	PASS	125	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack-replace-guard	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack-rollback	2026-10-11T09:33:22Z	PASS	110	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
