@@ -22,6 +22,7 @@ import {
 } from './masked-property-fingerprints.js';
 import {
   isInlinePolicyClaimedByCompletedWriter,
+  isInlinePolicyPrincipalType,
   type InlinePolicyWrite,
 } from './inline-policy-claims.js';
 import type { StackRecordsView } from './stack-records-scope.js';
@@ -1337,7 +1338,9 @@ export class DeployEngine {
 
   /**
    * go-to-k/cdkd#4156: the live predicate handed to an `AWS::IAM::Policy`
-   * update or delete, so it does not remove a name another resource of this
+   * update or delete, and to an `AWS::IAM::Role` / `Group` / `User` (only
+   * their updates read it: a principal's delete removes every inline policy
+   * with the principal), so it does not remove a name another resource of this
    * deploy has ALREADY written onto a principal
    * (`src/deployment/inline-policy-claims.ts`). It reads the writers' records
    * at call time. `undefined` for every other type.
@@ -1348,7 +1351,12 @@ export class DeployEngine {
     logicalId: string,
     stateResources: Record<string, ResourceState>
   ): InlinePolicyClaimed | undefined {
-    if (resourceType !== 'AWS::IAM::Policy') return undefined;
+    // go-to-k/cdkd#4227: a role / group / user update too — it removes the
+    // names its `Policies` drops, which a policy ordered before it may have
+    // just put there (the rollback twin already asks it).
+    if (resourceType !== 'AWS::IAM::Policy' && !isInlinePolicyPrincipalType(resourceType)) {
+      return undefined;
+    }
     const args = {
       selfLogicalId: logicalId,
       writers: this.inlinePolicyWriters,
