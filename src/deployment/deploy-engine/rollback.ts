@@ -274,11 +274,7 @@ export async function adoptRollbackOrphans(
 
   for (const [logicalId, record] of Object.entries(plan.adopted)) {
     // The entry the plan adopted, read before `orphans` is replaced below.
-    adoptedFrom.set(
-      logicalId,
-      records.find((r) => r.logicalId === logicalId && r.state?.physicalId === record.physicalId)
-        ?.state
-    );
+    adoptedFrom.set(logicalId, records.find((r) => r.logicalId === logicalId)?.state);
     currentState.resources[logicalId] = record;
     this.logger.info(
       `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
