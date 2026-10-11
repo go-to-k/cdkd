@@ -12,7 +12,7 @@ import {
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
-import { defineOwnKey, hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
+import { hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
 // `ReplayResolvers` below calls the classifier; `rollback-executor.ts`
 // re-exports it under its historical address.
 import {
@@ -437,7 +437,6 @@ export function keepPersistedPlainLeaves(
   if (typeof raw === 'string') {
     return typeof persisted === 'string' &&
       raw === persisted &&
-      redacted !== raw &&
       redacted !== SECRET_MASK &&
       dynamicReferenceTokens(persisted).length === 0
       ? persisted
@@ -461,10 +460,10 @@ export function keepPersistedPlainLeaves(
     if (!hasOwnKey(raw, key) || !hasOwnKey(persisted, key)) continue;
     const kept = keepPersistedPlainLeaves(redacted[key], raw[key], persisted[key]);
     if (kept === redacted[key]) continue;
-    // A spread copies an own `__proto__` key as DATA; `defineOwnKey` writes
-    // one without invoking the prototype setter.
+    // A spread copies an own `__proto__` key as DATA, so assigning that key
+    // writes the own property and never the prototype setter.
     out ??= { ...redacted };
-    defineOwnKey(out, key, kept);
+    out[key] = kept;
   }
   return out ?? redacted;
 }
