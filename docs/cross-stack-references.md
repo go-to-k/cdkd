@@ -239,5 +239,5 @@ when the producer deploys.
 - [Mixed Estates](mixed-estates.md): consuming a CloudFormation-managed
   producer
 - [Stack Outputs](stack-outputs.md): declaring the values a consumer reads
-- [Destroy flags & guards](cli-destroy.md): the other things that stop a
+- [cdkd destroy](cli-destroy.md): the other things that stop a
   destroy

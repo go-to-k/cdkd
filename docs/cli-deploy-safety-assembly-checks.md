@@ -1,9 +1,9 @@
 ---
-title: "Deploy: checks on the cloud assembly"
+title: "cdkd deploy: checks on the cloud assembly"
 description: "What cdkd deploy checks in a synthesized cloud assembly before it starts, which paths it refuses, and what it trusts in an assembly you did not synthesize."
 ---
 
-# Deploy: checks on the cloud assembly
+# cdkd deploy: checks on the cloud assembly
 
 The cloud assembly is the directory that synthesis writes, usually `cdk.out`.
 It holds the templates, the asset manifests and the files to upload.
@@ -23,7 +23,7 @@ cdkd deploy -a cdk.out 'MyStage/*'  # a Stage's stacks, from the app's cdk.out
 ```
 
 This page is part of
-[Deploy: safety & compatibility flags](cli-deploy-safety.md).
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md).
 
 ## Cyclic nested templates are refused
 
@@ -212,10 +212,10 @@ ahead of it (`Stage MyStage: Stack MyStage-Api ...`).
 
 ## Related
 
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): what each
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): what each
   deploy refusal means
 - [`cdkd diff`](cli-diff.md): the same nested-template check under
   `--recursive`
 - [Local Execution](local-emulation.md): the path rules in `cdkd local`
-- [Deploy safety internals](cli-deploy-safety-internals.md#cloud-assembly-checks):
+- [cdkd deploy safety internals](cli-deploy-safety-internals.md#cloud-assembly-checks):
   the exact rules of the nested-template walk and the asset path checks

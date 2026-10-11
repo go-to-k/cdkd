@@ -61,7 +61,7 @@ aws ecr batch-delete-image --repository-name my-repo \
     --query 'imageIds' --output json)"
 ```
 
-[Destroy flags & guards](cli-destroy.md) has the full rules.
+[cdkd destroy](cli-destroy.md) has the full rules.
 
 ## "has DeletionPolicy: Snapshot, but ..." refusal on delete
 
@@ -92,7 +92,7 @@ Take the snapshot yourself, then do one of:
 
 - Change the policy to `Retain` and delete the resource by hand afterwards.
 
-[Destroy flags & guards](cli-destroy.md) has the per-type behaviour.
+[cdkd destroy](cli-destroy.md) has the per-type behaviour.
 
 ## "Backing Lambda for custom resource X no longer exists" on destroy
 

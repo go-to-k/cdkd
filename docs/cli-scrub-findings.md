@@ -276,7 +276,7 @@ it selects any stack or reads any state, `--dry-run` included.
 
 Synthesize the app again so that the Stage is written, or point `--app` at a
 complete cloud assembly.
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) describes a
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) describes a
 Stage that fails to load.
 
 ## Related

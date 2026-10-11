@@ -1,9 +1,9 @@
 ---
-title: "Deploy: the stack lock"
+title: "cdkd deploy: the stack lock"
 description: "What the cdkd deploy stack lock covers, what a deploy does when the stack is locked, and what a second deploy runs into while resources are still provisioning."
 ---
 
-# Deploy: the stack lock
+# cdkd deploy: the stack lock
 
 cdkd takes a lock on a stack while it works on it, so that two runs do not
 change the same stack at once. The lock covers one stack in one region. A run
@@ -145,7 +145,7 @@ Neptune `DBInstance`.
 When a deploy that changes nothing cannot resolve an Output, the Output keeps
 the value stored for it before, and cdkd warns and names the Output. The
 Outputs that did resolve are saved.
-[Deploy internals](cli-deploy-internals.md#outputs-a-no-change-deploy-cannot-resolve)
+[cdkd deploy internals](cli-deploy-internals.md#outputs-a-no-change-deploy-cannot-resolve)
 has the rules for the Output's export name.
 
 ## The lock does not guarantee exclusion
@@ -171,7 +171,7 @@ its time limit passes, and `cdkd force-unlock` clears it immediately.
 ## Related
 
 - [`cdkd force-unlock`](cli-force-unlock.md): deleting a lock that a dead run left behind
-- [Deploy: wait mode details](cli-deploy-waits.md): what is still provisioning when a deploy returns
+- [cdkd deploy: wait mode details](cli-deploy-waits.md): what is still provisioning when a deploy returns
 - [Rollback](rollback.md): what the automatic rollback reverts
 - [State Management](state-management.md): the lock's layout, time limit and renewal
-- [Deploy: waits & concurrency](cli-deploy.md): every deploy flag
+- [cdkd deploy](cli-deploy.md): every deploy flag

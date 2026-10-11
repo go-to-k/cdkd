@@ -172,7 +172,7 @@ cdkd state destroy MyStack --remove-protection --yes
 It runs the same per-stack steps as `cdkd destroy`. The data guards, the
 `DeletionPolicy` handling, the cross-stack reference blocks, the locking and
 the exit codes are therefore the same, and
-[Destroy flags & guards](cli-destroy.md) documents them.
+[cdkd destroy](cli-destroy.md) documents them.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -184,7 +184,7 @@ the exit codes are therefore the same, and
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
 | `--stack-region <region>` | — | Act on the record in this region. |
 
-[Deploy: tuning](cli-deploy-tuning.md) documents the two duration flags.
+[cdkd deploy: tuning](cli-deploy-tuning.md) documents the two duration flags.
 
 `--stack-region` also acts on a record that names no region. A stack whose
 only record is in a different region is skipped with a warning.
@@ -323,7 +323,7 @@ this command when:
 - A stack has not been deployed for a while, and you want `cdkd drift` to
   compare against what AWS holds now.
 - The stack was deployed with `--no-capture-observed-state`, so no baseline
-  was captured ([Deploy: tuning](cli-deploy-tuning.md)).
+  was captured ([cdkd deploy: tuning](cli-deploy-tuning.md)).
 - You are about to hand the stack to CloudFormation with
   [`cdkd export`](cli-export.md).
 
@@ -418,5 +418,5 @@ cdkd state orphan MyStack   # removes the record, not the AWS resources
 - [`cdkd state`](cli-state.md): the subcommand map, the shared options and the read-only subcommands
 - [cdkd state: malformed records](cli-state-malformed.md): what a damaged record looks like in each subcommand
 - [Orphan vs Destroy](orphan-vs-destroy.md): which cleanup command to reach for
-- [Destroy flags & guards](cli-destroy.md): the guards and prompts `cdkd state destroy` shares
+- [cdkd destroy](cli-destroy.md): the guards and prompts `cdkd state destroy` shares
 - [`cdkd drift`](cli-drift.md): the comparison `state refresh-observed` supplies the baseline for

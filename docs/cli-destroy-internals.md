@@ -1,12 +1,12 @@
 ---
-title: Destroy internals
+title: cdkd destroy internals
 description: "The mechanics behind cdkd destroy: final-snapshot routing, how --remove-protection restores a guard, every cause of a skipped delete, and how a damaged state record is refused."
 unlisted: true
 ---
 
-# Destroy internals
+# cdkd destroy internals
 
-This page holds the detail behind [Destroy flags & guards](cli-destroy.md)
+This page holds the detail behind [cdkd destroy](cli-destroy.md)
 and its sub-pages: the cases those pages summarize in one line each. It is
 written for someone debugging an unusual destroy or changing cdkd itself.
 Start from the public pages; every section here is linked from the place it
@@ -14,11 +14,11 @@ expands.
 
 | Section here | Public page |
 | --- | --- |
-| [Final snapshots](#final-snapshots) | [Destroy: data guards and final snapshots](cli-destroy-guards.md) |
-| [`--remove-protection`](#remove-protection) | [Destroy: deletion protection](cli-destroy-protection.md) |
-| [Skipped resources](#skipped-resources) | [Destroy: skipped resources](cli-destroy-skipped.md) |
-| [Damaged state records](#damaged-state-records) | [Destroy: interruption and damaged state](cli-destroy-edge-cases.md) |
-| [Confirmation prompts on a non-interactive stdin](#confirmation-prompts-on-a-non-interactive-stdin) | [Destroy: confirmation prompts](cli-destroy-prompts.md) |
+| [Final snapshots](#final-snapshots) | [cdkd destroy: data guards and final snapshots](cli-destroy-guards.md) |
+| [`--remove-protection`](#remove-protection) | [cdkd destroy: deletion protection](cli-destroy-protection.md) |
+| [Skipped resources](#skipped-resources) | [cdkd destroy: skipped resources](cli-destroy-skipped.md) |
+| [Damaged state records](#damaged-state-records) | [cdkd destroy: interruption and damaged state](cli-destroy-edge-cases.md) |
+| [Confirmation prompts on a non-interactive stdin](#confirmation-prompts-on-a-non-interactive-stdin) | [cdkd destroy: confirmation prompts](cli-destroy-prompts.md) |
 
 ## Final snapshots
 
@@ -194,7 +194,7 @@ steps are:
 - **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
   protected resource — a replacement is a delete plus a create — fails at the
   delete whatever replace flags were passed. Clear the protection flag first:
-  [Deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
+  [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
 
 ### Cognito user pools
 
@@ -593,7 +593,7 @@ left standing is more than one row asks for. Inspect the record with
 `cdkd state show '<stack>' --stack-region '<region>' --json`, repair the row,
 and re-run. A row that names its type but no usable `physicalId` is not refused
 here: it is skipped on its own (see
-[Destroy: skipped resources](cli-destroy-skipped.md#a-state-record-cdkd-cannot-address)). Full per-command
+[cdkd destroy: skipped resources](cli-destroy-skipped.md#a-state-record-cdkd-cannot-address)). Full per-command
 table in
 [State Management](state-management-malformed-records.md#one-resources-entry-cannot-be-read).
 

@@ -1,9 +1,9 @@
 ---
-title: "Destroy: skipped resources"
+title: "cdkd destroy: skipped resources"
 description: "What it means when cdkd destroy reports a skipped resource, each cause, and how to finish the destroy."
 ---
 
-# Destroy: skipped resources
+# cdkd destroy: skipped resources
 
 A skipped resource is one that cdkd could not confirm it deleted. The resource
 may still exist in AWS and may still cost money. cdkd keeps its entry in the
@@ -21,7 +21,7 @@ state file to open.
 A skip is different from a failed delete. Running the destroy again retries a
 failed delete. A skipped resource is skipped again until you fix its cause,
 which is what this page covers. It is part of
-[Destroy flags & guards](cli-destroy.md).
+[cdkd destroy](cli-destroy.md).
 
 ## Custom resources
 
@@ -128,7 +128,7 @@ cdkd state orphan MyStack --stack-region us-east-1 \
 
 Every shape of damaged entry, what survives in each case, and how a principal
 list built from a secret is resolved are in
-[Destroy internals](cli-destroy-internals.md#every-cause-of-a-skip).
+[cdkd destroy internals](cli-destroy-internals.md#every-cause-of-a-skip).
 
 ## Resources only the rollback journal records
 
@@ -260,7 +260,7 @@ What the deploy does depends on which delete was skipped:
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md) — the command, its options and what can stop it
-- [Destroy: interruption and damaged state](cli-destroy-edge-cases.md) — a record cdkd refuses before it starts
+- [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
+- [cdkd destroy: interruption and damaged state](cli-destroy-edge-cases.md) — a record cdkd refuses before it starts
 - [Orphan vs Destroy](orphan-vs-destroy.md) — dropping a record without deleting the resource
 - [`cdkd rollback`](cli-rollback.md) — the rollback journal and what replays it

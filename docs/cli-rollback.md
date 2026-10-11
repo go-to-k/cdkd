@@ -321,7 +321,7 @@ The full cross-command table is in the [CLI Reference](cli-reference.md).
 ## Related
 
 - [Rollback](rollback.md) — how automatic and manual rollback fit together
-- [Destroy flags & guards](cli-destroy.md) — the other way out of a failed deploy
+- [cdkd destroy](cli-destroy.md) — the other way out of a failed deploy
 - [State Management](state-management.md) — state records, locks, and force-unlock
 - [`cdkd gc`](cli-gc.md) — the asset retention a replay depends on
 - [Troubleshooting](troubleshooting.md) — what to do when a rollback fails

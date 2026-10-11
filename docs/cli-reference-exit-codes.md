@@ -56,7 +56,7 @@ What counts as a partial failure depends on the command:
 - **`cdkd destroy`, `cdkd state destroy`.** A resource delete failed, or a
   delete was skipped. A skipped delete is one that cdkd did not confirm, so
   the resource may still exist and still be billing.
-  [Destroy: skipped resources](cli-destroy-skipped.md)
+  [cdkd destroy: skipped resources](cli-destroy-skipped.md)
   has the causes and remedies.
 - **`cdkd deploy`.** The stack deployed, but a resource was left unaddressed.
   That is a skipped delete, a replacement whose old resource survives, a
@@ -144,5 +144,5 @@ A `cdkd local` command exits `130` when you interrupt it with {kbd:ctrl+c}.
 
 - [Output streams](cli-reference-output.md): the other half of scripting cdkd
 - [`cdkd diff`](cli-diff.md): the conditions behind exit `3`
-- [Destroy flags & guards](cli-destroy.md): skipped deletes and how to clear them
+- [cdkd destroy](cli-destroy.md): skipped deletes and how to clear them
 - [CLI Reference](cli-reference.md): every command and the shared options

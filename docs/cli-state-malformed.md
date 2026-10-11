@@ -200,7 +200,7 @@ The value stays in the record, and you cannot edit it:
 ### Check whether the type moves back by itself
 
 Some types return to the default layer without any action.
-[Deploy: safety](cli-deploy-safety.md) and
+[cdkd deploy: safety](cli-deploy-safety.md) and
 [State Management](state-management.md) list them.
 
 ### Otherwise, rename the construct

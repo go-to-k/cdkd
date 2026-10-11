@@ -125,6 +125,6 @@ again to retry.
 ## Related
 
 - [`cdkd bootstrap`](cli-bootstrap.md): the asset storage this command publishes into
-- [Deploy: waits & concurrency](cli-deploy.md): the concurrency flags it shares with deploy
+- [cdkd deploy](cli-deploy.md): the concurrency flags it shares with deploy
 - [`cdkd gc`](cli-gc.md): collecting assets nothing references any more
 - [CLI Reference](cli-reference.md): every command and the shared options

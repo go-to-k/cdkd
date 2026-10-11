@@ -1,9 +1,9 @@
 ---
-title: "Deploy: strictness and approval flags"
+title: "cdkd deploy: strictness and approval flags"
 description: "Four cdkd deploy flags for pipelines: --strict-getatt, --allow-unaddressed, --no-cfn-fallback and --require-approval."
 ---
 
-# Deploy: strictness and approval flags
+# cdkd deploy: strictness and approval flags
 
 These four flags change how strict `cdkd deploy` is about an outcome it would
 otherwise let through, or let through with a warning. They matter most in a
@@ -31,7 +31,7 @@ cdkd deploy --require-approval=destructive
 | [`--require-approval`](#require-approval-deploy) | cdkd deploys without asking | cdkd asks first |
 
 This page is part of
-[Deploy: safety & compatibility flags](cli-deploy-safety.md).
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md).
 
 ## `--strict-getatt` (deploy)
 
@@ -323,7 +323,7 @@ exits `1`.
 
 ## Related
 
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): what each
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): what each
   refusal means, and the exit codes
 - [`cdkd rollback`](cli-rollback.md): the rollback journal and failed creates
 - [`cdkd diff`](cli-diff.md): `--fail-on=destructive` and `--no-cfn-fallback`

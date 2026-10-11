@@ -276,7 +276,7 @@ nothing uses it.
 
 - [`cdkd rollback`](cli-rollback.md): every flag, the journal, the
   `DeletionPolicy` table and the known limitations
-- [Destroy flags & guards](cli-destroy.md): tearing a stack down instead of
+- [cdkd destroy](cli-destroy.md): tearing a stack down instead of
   rolling it back
 - [Deployment Events](deployment-events.md): reading back what a failed run
   did

@@ -1,9 +1,9 @@
 ---
-title: "Destroy: deletion protection"
+title: "cdkd destroy: deletion protection"
 description: "How cdkd destroy --remove-protection turns deletion protection off, what it does when that fails, and how to put the protection back."
 ---
 
-# Destroy: deletion protection
+# cdkd destroy: deletion protection
 
 A resource with deletion protection on cannot be deleted until the protection
 is turned off. `cdkd destroy` leaves protection alone by default, so AWS
@@ -16,7 +16,7 @@ cdkd state destroy MyStack --remove-protection -y   # without the CDK app
 ```
 
 The types the flag covers are listed in
-[the table on Destroy flags & guards](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy).
+[the table on cdkd destroy](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy).
 This page covers how the flag behaves and how the protection is put back after
 a failed delete.
 
@@ -52,7 +52,7 @@ is the one you see.
 - **`cdkd deploy` has no such flag.** A deploy that has to replace a protected
   resource fails at the delete, whatever replace flags you passed. Turn the
   protection off first; see
-  [Deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
+  [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
 
 ### Edge cases
 
@@ -61,7 +61,7 @@ is the one you see.
   [Resources only the rollback journal records](cli-destroy-skipped.md#resources-only-the-rollback-journal-records)).
   The flag reaches it when cdkd can prove it is still the resource the failed
   deploy created. The proof rules are in
-  [Destroy internals](cli-destroy-internals.md#behaviour).
+  [cdkd destroy internals](cli-destroy-internals.md#behaviour).
 
 ## Cognito user pools
 
@@ -87,7 +87,7 @@ with `DeletionProtection='INACTIVE'`. That needs
 
 The remaining cases (an SES email configuration, throttles, a write that
 timed out) are in
-[Destroy internals](cli-destroy-internals.md#cognito-user-pools).
+[cdkd destroy internals](cli-destroy-internals.md#cognito-user-pools).
 
 ## Restoring a guard after a failed destroy
 
@@ -178,6 +178,6 @@ Adjust the commands for your case:
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md) — the command, its options and the table of covered types
-- [Destroy: data guards and final snapshots](cli-destroy-guards.md) — the guards on data
-- [Destroy internals](cli-destroy-internals.md#remove-protection) — the exact rules behind this page
+- [cdkd destroy](cli-destroy.md) — the command, its options and the table of covered types
+- [cdkd destroy: data guards and final snapshots](cli-destroy-guards.md) — the guards on data
+- [cdkd destroy internals](cli-destroy-internals.md#remove-protection) — the exact rules behind this page

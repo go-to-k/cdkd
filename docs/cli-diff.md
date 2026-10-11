@@ -410,8 +410,8 @@ declare the parameter `Type: String`.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md): applying what this previews
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): `--no-cfn-fallback` and the other guards
+- [cdkd deploy](cli-deploy.md): applying what this previews
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): `--no-cfn-fallback` and the other guards
 - [`cdkd drift`](cli-drift.md): compare state against what AWS actually holds
 - [`cdkd scrub`](cli-scrub.md): repair state records holding plaintext secrets
 - [Cross-Stack References](cross-stack-references.md): how `Fn::ImportValue` and `Fn::GetStackOutput` resolve

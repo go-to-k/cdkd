@@ -243,4 +243,4 @@ rollback.
 
 - [`cdkd rollback`](cli-rollback.md) — what a rollback reverts and how to run it
 - [cdkd rollback: limitations](cli-rollback-limitations.md) — replacements, `NoEcho` values and nested stacks
-- [Destroy: skipped resources](cli-destroy-skipped.md#resources-only-the-rollback-journal-records) — how a destroy treats a resource only the journal records
+- [cdkd destroy: skipped resources](cli-destroy-skipped.md#resources-only-the-rollback-journal-records) — how a destroy treats a resource only the journal records

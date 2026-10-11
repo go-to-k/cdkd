@@ -1,13 +1,13 @@
 ---
-title: "Destroy: confirmation prompts"
+title: "cdkd destroy: confirmation prompts"
 description: "What cdkd destroy asks before deleting, why it refuses to run unattended without --yes, and the other commands that follow the same rule."
 ---
 
-# Destroy: confirmation prompts
+# cdkd destroy: confirmation prompts
 
 `cdkd destroy` lists what it will delete and asks you to confirm. In a script
 or a CI job nobody can answer, so the command refuses to run unless you pass
-`--yes`. This page is part of [Destroy flags & guards](cli-destroy.md).
+`--yes`. This page is part of [cdkd destroy](cli-destroy.md).
 
 ## The destroy prompt
 
@@ -141,5 +141,5 @@ Every other prompt refuses after read-only work only.
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md) — the command, its options and what can stop it
+- [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
 - [CLI Reference](cli-reference.md) — the exit codes of every command

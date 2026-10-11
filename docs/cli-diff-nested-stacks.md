@@ -202,5 +202,5 @@ list-typed parameter works only for a secret that is a single plain value.
 
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
 - [Diff: secrets and NoEcho values](cli-diff-secrets.md): what the diff prints in place of a secret
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the same nested-template refusals on deploy
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the same nested-template refusals on deploy
 - [cdkd diff internals](cli-diff-internals.md): how parameters and conditions are compared

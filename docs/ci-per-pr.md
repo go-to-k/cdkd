@@ -215,7 +215,7 @@ See [Drift Detection](drift.md).
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md): the guards the teardown flags
+- [cdkd destroy](cli-destroy.md): the guards the teardown flags
   turn off, and what each one protects
 - [`cdkd state`](cli-state.md): `cdkd state destroy` and the other commands
   that work from state
