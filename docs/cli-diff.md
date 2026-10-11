@@ -410,6 +410,8 @@ declare the parameter `Type: String`.
 
 ## Related
 
+- [Stop on Destructive Changes](destructive-changes.md): using
+  `--fail-on=destructive` with `cdkd deploy --require-approval`
 - [cdkd deploy](cli-deploy.md): applying what this previews
 - [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): `--no-cfn-fallback` and the other guards
 - [`cdkd drift`](cli-drift.md): compare state against what AWS actually holds

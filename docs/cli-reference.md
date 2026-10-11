@@ -14,9 +14,15 @@ cdkd bootstrap          # once per account: state bucket and asset storage
 cdkd diff MyStack       # what a deploy would change
 cdkd deploy MyStack     # create or update the stack
 cdkd destroy MyStack    # delete its resources
+
+# stop before a change that would lose a resource
+cdkd diff --all --fail-on=destructive
+cdkd deploy MyStack --require-approval=destructive
 ```
 
-For a guided first run, see [Getting Started](getting-started.md).
+For a guided first run, see [Getting Started](getting-started.md). The last
+two commands are explained in
+[Stop on Destructive Changes](destructive-changes.md).
 
 ## CLI reference pages
 

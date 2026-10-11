@@ -323,6 +323,8 @@ exits `1`.
 
 ## Related
 
+- [Stop on Destructive Changes](destructive-changes.md): `--require-approval`
+  with `cdkd diff --fail-on=destructive`, as a guide
 - [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): what each
   refusal means, and the exit codes
 - [`cdkd rollback`](cli-rollback.md): the rollback journal and failed creates

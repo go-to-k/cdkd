@@ -97,6 +97,7 @@ const navigation: ScopedNavigationGroup[] = [
     items: [
       { title: 'Wait Modes', path: '/wait-modes' },
       { title: 'Rollback', path: '/rollback' },
+      { title: 'Stop on Destructive Changes', path: '/destructive-changes' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },
       { title: 'Stack Outputs', path: '/stack-outputs' },
