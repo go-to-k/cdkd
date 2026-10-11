@@ -63,10 +63,15 @@
 #      `<LogGroupName>|<FilterName>`, and neither may name the group
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
 #      destroy below deletes with it. The same deploy updates SecretQueue's
-#      VisibilityTimeout (45), so its readers resolve its ARN from the provider,
-#      sidestepping go-to-k/cdkd#4800 (a NO_CHANGE queue's readers were sent
-#      the recorded `{{resolve:` spelling) and the rollback after it,
-#      go-to-k/cdkd#4801.
+#      VisibilityTimeout (45), so its readers resolve its ARN from the provider
+#      and store it in plaintext: step 5e's premise.
+#   5e. LOAD-BEARING (go-to-k/cdkd#4800): the same template redeployed, so
+#      SecretQueue is NO_CHANGE and its readers resolve its ARN from the record,
+#      which holds it as `arn:...:{{resolve:secretsmanager:...}}`. They were
+#      sent that spelling: the nested child's SSM parameter refused it and the
+#      deploy failed. Now the deploy exits 0, and the SSM parameter and the
+#      queue policy's `Resource` hold the real ARN. A second redeploy is
+#      expected to change nothing (a NOTE otherwise).
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -913,6 +918,65 @@ expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
+
+echo "==> Step 5e: the same template again: SecretQueue's readers resolve its recorded ARN (go-to-k/cdkd#4800)"
+# PREMISE: the record holds SecretQueue's ARN as its `{{resolve:` spelling, so
+# the readers of the now NO_CHANGE queue are served it from the record.
+QUEUE_ARN_RECORDED="$(state_attribute SecretQueue Arn)"
+case "${QUEUE_ARN_RECORDED}" in
+  arn:*"{{resolve:secretsmanager:"*) ;;
+  *)
+    echo "FAIL: premise: SecretQueue's recorded Arn does not carry a {{resolve:secretsmanager: spelling (go-to-k/cdkd#4800 needs it)" >&2
+    exit 1
+    ;;
+esac
+QUEUE_ARN_LIVE="$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+  --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)"
+if [ "${QUEUE_ARN_LIVE##*:}" != "${QUEUE_NAME}" ]; then
+  echo "FAIL: premise: SecretQueue's live ARN '${QUEUE_ARN_LIVE}' does not end in its name" >&2
+  exit 1
+fi
+set +e
+SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+NOOP_RC=$?
+set -e
+if [ "${NOOP_RC}" -ne 0 ]; then
+  echo "FAIL: the redeploy over a NO_CHANGE SecretQueue exited ${NOOP_RC}: a reader was likely sent its recorded {{resolve: ARN (go-to-k/cdkd#4800)" >&2
+  log_tail
+  exit 1
+fi
+expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIVE}" \
+  "$(aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" \
+    --query 'Parameter.Value' --output text)"
+expect_eq "SecretQueueReaderPolicy's Resource after the redeploy" "${QUEUE_ARN_LIVE}" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names Policy --query 'Attributes.Policy' --output text \
+    | jq -r '.Statement[0].Resource')"
+expect_eq "SecretQueue's VisibilityTimeout after the redeploy" "45" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
+if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${QUEUE_NAME}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the redeploy's log names SecretQueue in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+echo "    OK: the readers of a NO_CHANGE secret-named queue got its real ARN"
+set +e
+SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${DEPLOY_LOG}" 2>&1
+NOOP2_RC=$?
+set -e
+if [ "${NOOP2_RC}" -ne 0 ]; then
+  echo "FAIL: the second redeploy exited ${NOOP2_RC}" >&2
+  log_tail
+  exit 1
+fi
+if grep -qF "No changes detected" "${DEPLOY_LOG}"; then
+  echo "    OK: a second redeploy changed nothing"
+else
+  echo "    NOTE: the second redeploy was not a no-op (go-to-k/cdkd#4800 expects the readers to be settled)"
+fi
 
 echo "==> Step 6: destroy"
 set +e
