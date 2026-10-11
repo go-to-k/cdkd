@@ -71,6 +71,7 @@ import {
   recordLogOnlyParameterValue,
   literalSplitDelimitersOf,
   recordLogOnlyValue,
+  carryLogOnlyValues,
   maskSecretsInText,
   type RecordedSecretValues,
   readsNoEchoSource,
@@ -1760,9 +1761,13 @@ export async function computeStackDiff(
   // property that stopped reading the resource prints that stored copy as its
   // OLD side, on the `--verbose` replacement line and in its row, and no
   // resolution of this pass reads it. Mask-only, like `derivedNames`.
+  // Every judge of the records takes this COPY of the `NoEcho` values, taken
+  // before the resolver can record into `diffSecrets` (an `Fn::Base64` of one).
+  const noEchoJudge: RecordedSecretValues = new Map(diffSecrets);
+  carryLogOnlyValues(diffSecrets, noEchoJudge);
   const stateNames = storedSecretNameNeedles(
     currentState.resources ?? {},
-    diffSecrets,
+    noEchoJudge,
     new Map(),
     currentState.outputs
   );
@@ -1988,7 +1993,7 @@ export async function computeStackDiff(
       // adopted record can store one.
       storedSecretNameNeedles(
         stateForDiff.resources,
-        diffSecrets,
+        noEchoJudge,
         stateNames,
         currentState.outputs
       );
@@ -2551,7 +2556,7 @@ export async function computeStackDiff(
     effectiveTemplate,
     printingSecrets,
     derivedNames: diffPrintingSecrets([derivedNames, inheritedDerivedNames]),
-    secretNamedRecords: secretNamedRecordNeedles(stateForDiff.resources, diffSecrets),
+    secretNamedRecords: secretNamedRecordNeedles(stateForDiff.resources, noEchoJudge),
     resolvedParameters: mergedParameters,
     conditions,
     knownConditions:

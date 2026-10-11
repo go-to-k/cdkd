@@ -304,6 +304,66 @@ describe("cdkd deploy's replacement line masks a name only the OLD state value h
   });
 });
 
+describe("the ServiceToken refusal's masker judges the state records too (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['a secret-named function', '{{resolve:secretsmanager:sdin:SecretString:fn::}}', false],
+    ['negative control, an ordinary name', 'sdin-deploy-secret-fn', true],
+  ])('%s', async (_l, functionName, shown) => {
+    // The refusal prints the DESIRED token. Here the template spells it as a
+    // literal ARN of a function named from a secret, which another record
+    // stores: nothing this diff resolves reads that function.
+    const secretArn = 'arn:aws:lambda:us-east-1:123456789012:function:sdin-deploy-secret-fn';
+    const state = {
+      version: 10,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Handler: {
+          physicalId: 'sdin-deploy-secret-fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { FunctionName: functionName },
+          attributes: { Arn: secretArn },
+          dependencies: [],
+        },
+        Holder: {
+          physicalId: 'holder',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: secretArn },
+          attributes: {},
+          dependencies: [],
+        },
+        Cr: {
+          physicalId: 'cr-1',
+          resourceType: 'Custom::Thing',
+          properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:plain-old' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const h = harness(state);
+    const error = await h.engine
+      .deploy('s', {
+        Resources: {
+          Handler: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: functionName } },
+          Holder: { Type: 'AWS::SSM::Parameter', Properties: { Value: secretArn } },
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: secretArn } },
+        },
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    const message = error instanceof Error ? error.message : String(error);
+    // Premise: the refusal fired, naming the row.
+    expect(message).toContain("a custom resource's ServiceToken changes");
+    expect(message).toContain('Cr: ServiceToken changes to');
+    expect(message.includes('sdin-deploy-secret-fn')).toBe(shown);
+  });
+});
+
 describe("the deploy's judge takes a NoEcho value whole (go-to-k/cdkd#3869)", () => {
   it("never judges a record by a NoEcho value's Fn::Split piece", async () => {
     // Judged by the piece `AlphaQ`, the ordinary queue's lower-cased spelling
@@ -379,6 +439,58 @@ describe("a nested stack row's child masks a name the parent's records hold (go-
     // Premise: the row's provider ran, inside the row's body.
     expect(line).toContain('requires replacement (from');
     expect(line.includes(SECRET_USER)).toBe(shown);
+  });
+});
+
+describe("a nested row judges the parent's NoEcho-named records (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['the parent NoEcho values judge it', true],
+    ['negative control, a non-NoEcho parameter', false],
+  ])('%s', async (_l, noEcho) => {
+    // A pre-v11 parent record stores the NoEcho value itself, and RDS
+    // lower-cases the identifier a child line prints.
+    const state = currentState(SECRET_USER);
+    delete state.resources['Key'];
+    delete state.resources['SecretUser'];
+    state.resources['SecretDb'] = {
+      physicalId: 'teamsecretdb',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+      attributes: {},
+      dependencies: [],
+    };
+    state.resources['Child'] = {
+      physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/s-Child/1',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: { Mode: 'a' } },
+      attributes: {},
+      dependencies: [],
+    };
+    const h = harness(state, { DbName: 'TeamSecretDb' }, {
+      dryRun: false,
+      levels: [['Child']],
+      update: () => {
+        getLogger().debug('child: requires replacement (from "teamsecretdb" to "x")');
+        return { physicalId: state.resources['Child']!.physicalId, attributes: {} };
+      },
+    });
+    await h.engine.deploy('s', {
+      Parameters: { DbName: { Type: 'String', ...(noEcho && { NoEcho: true }) } },
+      Resources: {
+        SecretDb: {
+          Type: 'AWS::RDS::DBInstance',
+          Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+        },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Mode: 'b' } },
+        },
+      },
+    });
+    const line = logLines.filter((l) => l.startsWith('child: ')).join('\n');
+    expect(line).toContain('requires replacement (from');
+    expect(line.includes('teamsecretdb')).toBe(!noEcho);
   });
 });
 

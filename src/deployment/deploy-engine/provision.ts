@@ -34,7 +34,7 @@ import {
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
-import { secretNamedRecordNeedles, secretNamesStoredIn } from '../secret-name-needles.js';
+import { secretNamesStoredIn } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
 
 /** The row type whose provider runs a nested child engine. */
@@ -229,15 +229,15 @@ export async function provisionResource(
   // names: the child's `requires replacement (from <old> ...)` line printed it
   // (go-to-k/cdkd#3869). The row's registry is bound around the child's whole
   // deploy, so every record here named from a secret goes into it, judged
-  // with the stack's `NoEcho` values: as the deploy FOUND them (a parent record
-  // replaced earlier in this run no longer spells the old name) and as they
-  // stand now. Printing only, like the rest of it.
+  // with the stack's `NoEcho` values as the deploy FOUND them: the child's
+  // stored values predate this run, and a parent record replaced earlier in it
+  // no longer spells the old name. A name the row passes down THIS run is the
+  // row's own read (`printNestedStackReadsOnly`). Printing only.
   if (resourceType === NESTED_STACK_ROW_TYPE) {
     const registry = this.secretNameBagFor(logicalId);
     for (const needle of printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()) {
       recordLogOnlyValue(registry, needle);
     }
-    secretNamedRecordNeedles(stateResources, this.fingerprintNoEchoValues, registry);
   }
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a
