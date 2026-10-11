@@ -101,6 +101,10 @@ export {
   hasMaskableValues,
 } from './secret-redaction/log-only.js';
 export {
+  physicalNameCopiesOf,
+  recordPhysicalNameCopy,
+} from './secret-redaction/physical-name-copies.js';
+export {
   embedsFreshNoEchoValue,
   carriesFreshNoEchoValue,
   type FreshNoEchoLeaf,

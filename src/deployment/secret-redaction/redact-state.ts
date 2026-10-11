@@ -23,6 +23,7 @@ import {
   isStrictlyInsideASpan,
 } from './fresh-noecho.js';
 import { refuseUncertifiedReadbackPositions } from './readback-certification.js';
+import { physicalNameCopiesOf, physicalNameSpans } from './physical-name-copies.js';
 
 /**
  * Deep-clone `bag`, replacing every occurrence of a recorded secret value with
@@ -191,6 +192,10 @@ function redactSecretsForStatePasses<T>(
   // This arm is ALSO where a mask-only entry is served: `secrets.get(s)` is
   // {@link SECRET_MASK} for one, so the leaf is replaced WHOLE.
   const wholeValueExpr = (s: string): string | undefined => (s === '' ? undefined : secrets.get(s));
+  // The physical ids this pass read (go-to-k/cdkd#4810): a copy of one stays
+  // as it is, since the id itself is stored in plaintext. See
+  // {@link physicalNameCopiesOf}.
+  const physicalNames = physicalNameCopiesOf.get(secrets);
 
   /**
    * The SUBSTRING arm for a leaf the resolver substituted INTO rather than
@@ -290,11 +295,15 @@ function redactSecretsForStatePasses<T>(
     const spans = isDynamicReferenceString(value)
       ? resolvableReferenceSpans(value, vouchedExpressions())
       : [];
+    const names = physicalNameSpans(physicalNames, value);
     // No `lastIndex` reset before `replace`: `RegExp.prototype[Symbol.replace]`
     // sets it to 0 itself for a `/g` pattern. The reset before `.test` at the
     // call site is the one that IS needed.
     return value.replace(needles, (match: string, offset: number) => {
       if (isStrictlyInsideASpan(spans, offset, offset + match.length)) return match;
+      // Inside (or equal to) an occurrence of a physical id this pass read.
+      const end = offset + match.length;
+      if (names.some((n) => n.start <= offset && end <= n.end)) return match;
       // Unreachable today: `needles` is built from {@link substringNeedlesOf},
       // i.e. from `secrets.keys()` minus the mask-only class, so every match is
       // a key. (It was `secrets.keys()` verbatim before issue #2274 narrowed
@@ -312,6 +321,7 @@ function redactSecretsForStatePasses<T>(
 
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') {
+      if (physicalNames?.has(value) === true) return value;
       const whole = wholeValueExpr(value);
       if (whole !== undefined) return whole;
       // A leaf that is ALREADY a complete `{{resolve:...}}` token is an
