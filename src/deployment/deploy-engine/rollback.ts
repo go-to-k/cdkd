@@ -46,6 +46,7 @@ import {
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
+import { keepPersistedPlainRecordLeaves } from '../rollback-executor/replay-secrets.js';
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   type RecordedSecretValues,
@@ -148,6 +149,14 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // REPLAYED baseline, not a fresh readback: its bag already sits in
       // `state.json`, so a mask here protects nothing a reader could still
       // be protected from and poisons the record a rollback rebuilds.
+      //
+      // The same holds for the value scan (go-to-k/cdkd#4801): a plaintext
+      // leaf of that record — a reader's copy of a secret-derived physical
+      // name, such as a queue policy's `Queues` URL — stays as state holds it,
+      // or the restore writes the reference where a provider addresses the
+      // resource. So the journal's `previousState` holds only what
+      // `state.json` held, never a reference state did not, and the restore's
+      // own keep (`redactRollbackRecord`) leans on exactly that.
       const previous = next.previousState;
       // The `NoEcho` arms over the PREVIOUS record (review B3): its own
       // `noEchoLeaves` when it has them, else today's template positions for
@@ -156,7 +165,11 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       next.previousState = this.applyNoEchoPersist(
         op.logicalId,
         previous,
-        scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
+        keepPersistedPlainRecordLeaves(
+          scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
+          previous,
+          previous
+        ),
         undefined,
         {},
         undefined,

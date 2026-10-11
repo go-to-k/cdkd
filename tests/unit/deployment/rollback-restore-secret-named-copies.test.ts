@@ -65,6 +65,7 @@ import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
+import type { RollbackJournalSegment } from '../../../src/types/rollback-journal.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const NAME = 'sdin-q-1';
@@ -93,7 +94,9 @@ function previousState(): StackState {
           Queues: [URL],
           PolicyDocument: { Statement: [{ Sid: 'A', Resource: ARN_REF }] },
         },
-        attributes: {},
+        // The real provider's shape: create and update return the queues they
+        // wrote, and delete reads them back (`recordedQueues`).
+        attributes: { 'cdkd:WrittenQueues': URL },
         dependencies: ['SecretQueue'],
       },
       Breaker: {
@@ -117,11 +120,15 @@ function previousState(): StackState {
 async function deployAndRollBack(template: Record<string, TemplateResource>) {
   const state = previousState();
   const saved: StackState[] = [];
+  const segments: RollbackJournalSegment[] = [];
   const provider = {
     create: vi.fn(),
     update: vi.fn(async (id: string) => {
       if (id === 'Breaker') throw new Error('deliberate failure after the other updates');
-      return { physicalId: URL, attributes: {} };
+      return {
+        physicalId: URL,
+        attributes: id === 'Policy' ? { 'cdkd:WrittenQueues': URL } : {},
+      };
     }),
     delete: vi.fn(),
     getAttribute: vi.fn(),
@@ -135,7 +142,9 @@ async function deployAndRollBack(template: Record<string, TemplateResource>) {
         return 'etag';
       }),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
-      appendRollbackJournalSegment: vi.fn(),
+      appendRollbackJournalSegment: vi.fn(async (_n: string, _r: string, seg: unknown) => {
+        segments.push(structuredClone(seg) as RollbackJournalSegment);
+      }),
       popRollbackJournalSegment: vi.fn(),
       deleteRollbackJournal: vi.fn(),
     } as never,
@@ -159,7 +168,7 @@ async function deployAndRollBack(template: Record<string, TemplateResource>) {
     'us-east-1'
   );
   await engine.deploy('s', { Resources: template }).catch(() => undefined);
-  return { last: saved[saved.length - 1]!, update: provider.update };
+  return { last: saved[saved.length - 1]!, update: provider.update, segments };
 }
 
 const BREAKER = {
@@ -169,6 +178,7 @@ const BREAKER = {
 
 describe('rollback restore of a plaintext copy of a secret-derived name (#4801)', () => {
   it('keeps a reader’s Queues URL as AWS knows it, and its secret position as the reference', async () => {
+    const resource = { 'Fn::GetAtt': ['SecretQueue', 'Arn'] };
     const { last, update } = await deployAndRollBack({
       SecretQueue: {
         Type: 'AWS::SQS::Queue',
@@ -179,7 +189,7 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
         Properties: {
           Queues: [{ Ref: 'SecretQueue' }],
           PolicyDocument: {
-            Statement: [{ Sid: 'B', Resource: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] } }],
+            Statement: [{ Sid: 'B', Resource: resource }],
           },
         },
       },
@@ -195,6 +205,34 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
     expect(policy.properties['PolicyDocument']).toEqual({
       Statement: [{ Sid: 'A', Resource: ARN_REF }],
     });
+    expect(policy.attributes).toEqual({ 'cdkd:WrittenQueues': URL });
+  });
+
+  // A template spelling the reference itself puts the queue's name in the
+  // FAILING deploy's map for the policy, so the journal's scrub of the
+  // previous record was a second writer of the reference into `Queues`; the
+  // journal is what `cdkd rollback` restores from.
+  it('journals the reader’s previous record as state held it, under a literal-reference template', async () => {
+    const { segments } = await deployAndRollBack({
+      SecretQueue: {
+        Type: 'AWS::SQS::Queue',
+        Properties: { QueueName: REF, VisibilityTimeout: 60 },
+      },
+      Policy: {
+        Type: 'AWS::SQS::QueuePolicy',
+        Properties: {
+          Queues: [{ Ref: 'SecretQueue' }],
+          PolicyDocument: { Statement: [{ Sid: 'B', Resource: ARN_REF }] },
+        },
+      },
+      Breaker: BREAKER,
+    });
+    const journaled = segments
+      .flatMap((s) => s.operations)
+      .find((op) => op.logicalId === 'Policy')?.previousState;
+    // Premise: the policy's update was journaled.
+    expect(journaled).toBeDefined();
+    expect(journaled).toMatchObject(previousState().resources['Policy']!);
   });
 
   it('restores the secret-named owner with its secret positions as references', async () => {

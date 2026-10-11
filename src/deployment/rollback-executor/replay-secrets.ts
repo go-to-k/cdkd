@@ -386,18 +386,36 @@ export function redactRollbackRecord(
             STATE_DERIVED_RULES
           ),
         };
-  const scrubbed = scrubResourceRecord(positioned, secrets);
-  // `observedProperties` stays as scanned: no provider addresses a resource by
-  // it, and `cdkd drift` resolves a reference there before comparing.
+  return keepPersistedPlainRecordLeaves(scrubResourceRecord(positioned, secrets), record, {
+    properties: journaledProps,
+    attributes: journaledAttributes,
+  });
+}
+
+/**
+ * {@link keepPersistedPlainLeaves} over a record's `properties` and
+ * `attributes` (go-to-k/cdkd#4801): `scrubbed` is `raw` after redaction,
+ * `persisted` the record state already holds. Shared by the restore above and
+ * the deploy journal's scrub of each op's `previousState`, which is the same
+ * rewrite one writer earlier.
+ *
+ * `observedProperties` stays as scanned: no provider addresses a resource by
+ * it, and `cdkd drift` resolves a reference there before comparing.
+ */
+export function keepPersistedPlainRecordLeaves<T extends ResourceState>(
+  scrubbed: T,
+  raw: Pick<ResourceState, 'properties' | 'attributes'>,
+  persisted: { properties?: unknown; attributes?: unknown }
+): T {
   const properties = keepPersistedPlainLeaves(
     scrubbed.properties,
-    record.properties,
-    journaledProps
+    raw.properties,
+    persisted.properties
   ) as Record<string, unknown>;
   const attributes =
     scrubbed.attributes === undefined
       ? undefined
-      : (keepPersistedPlainLeaves(scrubbed.attributes, record.attributes, journaledAttributes) as
+      : (keepPersistedPlainLeaves(scrubbed.attributes, raw.attributes, persisted.attributes) as
           | Record<string, unknown>
           | undefined);
   if (properties === scrubbed.properties && attributes === scrubbed.attributes) return scrubbed;
