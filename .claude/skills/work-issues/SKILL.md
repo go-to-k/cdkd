@@ -74,8 +74,8 @@ file that holds that section.
 - **Finishing (stage 9): the parent, one lane at a time.** Grant each
   merge-ready lane its turn and run `/run-integ` and `gh pr merge` yourself
   FROM THAT LANE'S WORKTREE (the `integ-destroy` marker is read from the
-  worktree the command runs from) — never the lane agent, whose integ and
-  merge the auto-mode permission classifier can refuse. Post-merge (pull →
+  worktree the command runs from) — never the lane agent; a refused call
+  goes to the user (§9). Post-merge (pull →
   rebuild → worktree cleanup) follows §9.
 - **Retro (stage 10): a subagent**, dispatched after the last merge with
   `references/retro.md` plus this run's evidence, to draft the skill edits and
