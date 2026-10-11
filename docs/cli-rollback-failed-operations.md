@@ -141,12 +141,20 @@ cdkd deletes the resource only when it can show two things:
    made. cdkd compares it with an identity the failed deploy recorded, such as
    a stream's ARN and creation time or a table's `TableId`.
 
-When cdkd cannot show both, it deletes nothing. It warns with the physical ID,
-drops the entry, and exits `2`. Look at the resource yourself and delete it by
-hand unless a state record tracks it.
+When cdkd shows that something else owns the resource, or that it is not the
+same one, it deletes nothing. It warns with the physical ID, drops the entry,
+and exits `2`. Look at the resource yourself and delete it by hand unless a
+state record tracks it.
 
-A resource that a state record already tracks is the one quiet case: cdkd
-drops its entry from the journal without a warning.
+When cdkd cannot answer at all — another stack's record cannot be read, or the
+live identity read gives no answer for a type that recorded one — it deletes
+nothing and keeps the entry in the journal as a failed operation for a re-run.
+Its failure message names `--drop-failed`, which removes only the record and leaves the
+resource in AWS.
+
+Two cases settle without a warning: a resource that a state record already
+tracks (cdkd drops its entry from the journal), and one that AWS reports gone
+(cdkd settles the entry with no delete and prints an info line).
 
 ### Edge cases
 

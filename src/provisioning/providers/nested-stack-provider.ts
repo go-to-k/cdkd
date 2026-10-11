@@ -763,19 +763,21 @@ export class NestedStackProvider implements ResourceProvider {
     }
 
     // go-to-k/cdkd#4738: a skip that is a journaled orphan keeps no record, so
-    // a child whose only skips are those has deleted its own state. On a stack
+    // a child whose only skips are those deletes its own state. On a stack
     // destroy its row is gone, not kept: report it deleted, the orphans named
     // in `leftInPlace` and their count in the destroy runner's slot, so the
-    // run still exits 2. A deploy's removal and a rollback keep the `skipped`
-    // below: their callers neither count a slot on a delete nor print
-    // `leftInPlace`, and their re-run finds the child state gone, a success.
+    // run still exits 2. Gated on the runner's own `stateDeleted`, never on a
+    // re-derivation of its preserve decision, so the row cannot be dropped
+    // while the child's state survives. A deploy's removal and a rollback
+    // keep the `skipped` below: their callers neither count a slot on a
+    // delete nor print `leftInPlace`, and their re-run finds the child state
+    // gone, a success.
     const orphanSkips = childResult.journaledOrphanSkips;
-    if (
-      deleteContext?.stackDestroy === true &&
-      !childResult.interrupted &&
-      orphanSkips > 0 &&
-      childResult.skippedCount === orphanSkips
-    ) {
+    if (deleteContext?.stackDestroy === true && childResult.stateDeleted && orphanSkips > 0) {
+      // A `stackDestroy: true` caller must bind this slot
+      // (`collectNestedChildUnaddressed`, as the destroy runner does around
+      // every delete): without it the count is not surfaced and the run can
+      // exit 0 over the resources left in AWS.
       const slot = ctx.childUnaddressed;
       if (slot) slot.last = { deleteSkipped: orphanSkips, updatePartial: 0 };
       return {

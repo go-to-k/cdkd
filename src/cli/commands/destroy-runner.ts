@@ -433,6 +433,14 @@ export interface DestroyRunnerResult {
    * Such a skip still exits 2, but never keeps the state.
    */
   journaledOrphanSkips: number;
+  /**
+   * True once this run deleted the stack's `state.json` (go-to-k/cdkd#4738).
+   * `NestedStackProvider.delete` reads it, rather than re-deriving the
+   * preserve decision from the counters, before it reports a child with
+   * skips as deleted: a parent must never drop its row while the child's
+   * state survives.
+   */
+  stateDeleted: boolean;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
   /**
@@ -623,6 +631,7 @@ export async function runDestroyForStack(
     skippedCount: 0,
     guardIndeterminateCount: 0,
     journaledOrphanSkips: 0,
+    stateDeleted: false,
     errorCount: 0,
     interrupted: false,
   };
@@ -922,6 +931,7 @@ export async function runDestroyForStack(
         );
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
+      result.stateDeleted = true;
       logger.info(`${green('✓')} State deleted`);
       // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
       // marker's release -- one round trip, concurrently (review P3).
@@ -2411,6 +2421,7 @@ export async function runDestroyForStack(
     statePreserved = preserveState;
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
+      result.stateDeleted = true;
       logger.debug('State deleted');
       // go-to-k/cdkd#4705: what this destroy kept, which the stack's next
       // create here may take back by name -- or, kept nothing, the tombstone

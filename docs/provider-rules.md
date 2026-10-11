@@ -901,7 +901,12 @@ a delete on those paths is not yet recorded anywhere.
 result.** `NestedStackProvider.delete` returns `{ outcome: 'skipped' }` when the
 child runner reports `skippedCount > 0` OR `interrupted`; without that the
 parent would print `✓ <Child> (AWS::CloudFormation::Stack) deleted` and exit 0
-over a child stack that kept a live resource. The child's third
+over a child stack that kept a live resource. The one exception is a stack
+destroy (`DeleteContext.stackDestroy`) whose child runner deleted its own state
+because every skip was a journaled orphan (`stateDeleted`): the row is
+`{ outcome: 'deleted', leftInPlace }`, and the orphan count reaches the parent
+through the `childUnaddressed` slot, so the run still exits 2
+([#4738](https://github.com/go-to-k/cdkd/issues/4738)). The child's third
 not-gone signal, `errorCount > 0`, is a **THROW** rather than a skip (issue
 [#1777](https://github.com/go-to-k/cdkd/issues/1777)): a resource was attempted
 and FAILED, so the parent's row must fail too, and calling it a skip would

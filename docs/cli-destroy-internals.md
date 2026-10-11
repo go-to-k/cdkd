@@ -474,6 +474,9 @@ figure and records the same event.
 The run-level exit message counts **entries**, not resources: a skipped
 nested-stack row is one entry however many of the child's own resources it
 covers. The per-stack summary lines above it give the exact breakdown.
+Resources a failed deploy created that were left in AWS with no state record
+(journaled orphans, including those a nested child left) are counted
+separately, as resources, and the message says no state records them.
 
 ## Damaged state records
 

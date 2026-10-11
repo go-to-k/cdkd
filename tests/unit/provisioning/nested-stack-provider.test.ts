@@ -994,7 +994,7 @@ describe('NestedStackProvider', () => {
     // orphans named in `leftInPlace`, and their count in the caller's slot so
     // the run still exits 2.
     it('reports a child whose only skips are journaled orphans as deleted, counting them in the slot (go-to-k/cdkd#4738)', async () => {
-      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2 };
+      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2, stateDeleted: true };
       const provider = new NestedStackProvider();
 
       const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
@@ -1067,7 +1067,7 @@ describe('NestedStackProvider', () => {
     // callers count no slot on a delete and print no `leftInPlace`, so the row
     // stays skipped there, and their re-run finds the child state gone.
     it('keeps the row skipped outside a stack destroy, writing no slot (go-to-k/cdkd#4738)', async () => {
-      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2 };
+      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2, stateDeleted: true };
       const provider = new NestedStackProvider();
 
       const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
@@ -1088,7 +1088,7 @@ describe('NestedStackProvider', () => {
     });
 
     it('reports deleted with no slot bound, still naming the count in leftInPlace (go-to-k/cdkd#4738)', async () => {
-      childCounts.value = { deletedCount: 1, skippedCount: 1, journaledOrphanSkips: 1 };
+      childCounts.value = { deletedCount: 1, skippedCount: 1, journaledOrphanSkips: 1, stateDeleted: true };
       const provider = new NestedStackProvider();
 
       const result = await withNestedStackContext(makeContext(), () =>
@@ -1105,6 +1105,54 @@ describe('NestedStackProvider', () => {
         outcome: 'deleted',
         leftInPlace: 'nested stack Parent~Child left 1 resource(s) a failed deploy created in AWS',
       });
+    });
+
+    // The deleted arm reads the runner's own verdict, never a re-derivation:
+    // counts that look orphan-only over a child whose state SURVIVED keep the
+    // row, so the parent cannot drop it while the child's record lives.
+    it('keeps the row skipped when the child state was not deleted, however the counts read (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2, stateDeleted: false };
+      const provider = new NestedStackProvider();
+
+      const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
+        collectNestedChildUnaddressed(() =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack',
+            undefined,
+            { stackDestroy: true }
+          )
+        )
+      );
+
+      expect(result).toEqual({
+        outcome: 'skipped',
+        reason: 'nested stack Parent~Child skipped 2 resource(s)',
+      });
+      expect(unaddressed).toBeUndefined();
+    });
+
+    // A clean child on a stack destroy is the ordinary `void` return: no
+    // `leftInPlace`, and nothing written to the slot.
+    it('returns void and writes no slot for a clean child on a stack destroy (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 0, journaledOrphanSkips: 0, stateDeleted: true };
+      const provider = new NestedStackProvider();
+
+      const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
+        collectNestedChildUnaddressed(() =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack',
+            undefined,
+            { stackDestroy: true }
+          )
+        )
+      );
+
+      expect(result).toBeUndefined();
+      expect(unaddressed).toBeUndefined();
     });
 
     it("describes a child name whose logical id is not plain, so its words cannot be a pasted clause's command (go-to-k/cdkd#4265)", async () => {

@@ -187,6 +187,7 @@ describe('cdkd destroy of a parent whose nested child left only a journaled orph
     // Exit 2: the orphan is a skip, carried up as one that keeps no record.
     expect(result.skippedCount).toBe(1);
     expect(result.journaledOrphanSkips).toBe(1);
+    expect(result.stateDeleted).toBe(true);
     expect(mockLeafDelete).toHaveBeenCalledTimes(1);
   });
 });
