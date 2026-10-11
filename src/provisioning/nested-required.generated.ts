@@ -522,7 +522,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['ContainerDefinitions.LinuxParameters.Tmpfs', ['Size']],
       ['ContainerDefinitions.LogConfiguration', ['LogDriver']],
       ['ContainerDefinitions.LogConfiguration.SecretOptions', ['Name', 'ValueFrom']],
-      ['ContainerDefinitions.ResourceRequirements', ['Type', 'Value']],
+      ['ContainerDefinitions.ResourceRequirements', ['Type']],
       ['ContainerDefinitions.Secrets', ['Name', 'ValueFrom']],
       ['ContainerDefinitions.Ulimits', ['HardLimit', 'Name', 'SoftLimit']],
       ['PlacementConstraints', ['Type']],

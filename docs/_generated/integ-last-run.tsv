@@ -302,6 +302,8 @@ rollback-replay-effective-props	2026-10-11T09:33:22Z	PASS	296	verify.sh	PR #4720
 rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean (#3338/#4356)
 route53	2026-10-11T09:33:22Z	PASS	331	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+route53	2026-10-11T01:54:07Z	PASS	501	verify.sh	accept ENABLING_HOSTED_ZONE_LOCKED; rc 0, destroy clean, orph clean
+s3-analytics-inventory	2026-10-03T04:21:06Z	PASS	167	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-11T09:33:22Z	PASS	325	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-directory-bucket	2026-10-07T13:48:36Z	PASS	106	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
