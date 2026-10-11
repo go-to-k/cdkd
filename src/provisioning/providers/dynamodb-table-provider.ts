@@ -6132,7 +6132,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         `happens next depends on the path: a CREATE gets no maximum for this half; an UPDATE ` +
         `KEEPS whatever maximum the table already carries, since only an explicit -1 removes ` +
         `one; and if NEITHER member was usable the block is sent EMPTY, which AWS ACCEPTS ` +
-        `(measured us-east-1 2026-09-17) and stores as no maximum at all, so the deploy ` +
+        `and stores as no maximum at all, so the deploy ` +
         `SUCCEEDS with no ceiling applied. cdkd's state keeps the value the template ` +
         `declared and \`cdkd drift\` reports the difference until the template is corrected; ` +
         `CloudFormation is expected to refuse the same template at properties validation. ` +

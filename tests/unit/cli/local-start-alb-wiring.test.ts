@@ -199,7 +199,7 @@ const EXPECTED_WARNING_WITH_ECS_NOTE =
   "source the Lambda path reads is --from-cfn-stack '<name>', which REPLACES --from-state " +
   '(the two are mutually exclusive) and reaches both target kinds on a ' +
   'CloudFormation-deployed stack; otherwise override the affected variables with ' +
-  '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).';
+  '--env-vars.';
 
 describe('the strategy `cdkd local start-alb` hands the engine', () => {
   // An argv-driven fence only sees the argv it drives, and a hand-written flag

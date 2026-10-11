@@ -99,8 +99,8 @@ export function createLocalStartCloudFrontCommand(): Command {
     new Option(
       '--from-state',
       "[not supported on start-cloudfront] Read cdkd's S3 state for the target stack. Refused at " +
-        'startup: the CloudFront emulator consults a state source only under --from-cfn-stack ' +
-        '(go-to-k/cdkd#2528, upstream go-to-k/cdk-local#699). Use --from-cfn-stack instead.'
+        'startup: the CloudFront emulator consults a state source only under --from-cfn-stack. Use --from-cfn-stack ' +
+        'instead.'
     ).default(false)
   );
   cmd.addOption(
@@ -177,8 +177,7 @@ function refuseUnwiredCdkdStateFlags(cmd: Command): void {
         'cdk-local, which consults a state source only under --from-cfn-stack. DROP the flag(s) above, ' +
         "then use --from-cfn-stack '<name>' for a CloudFormation-deployed stack, or --origin " +
         "'<originId>'='<dir>' to serve an origin from a local directory. Adding --from-cfn-stack while " +
-        'leaving these on hits this same refusal. Tracked as go-to-k/cdkd#2528 (upstream ' +
-        'go-to-k/cdk-local#699).',
+        'leaving these on hits this same refusal.',
       { code: 'cdkd.startCloudFrontStateFlagUnsupported' }
     );
   });

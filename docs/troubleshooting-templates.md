@@ -221,8 +221,7 @@ see
 
 ```text
 AWS::Glue::Table IcebergTable: OpenTableFormatInput.IcebergInput.IcebergTableInput
-cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue
-(issue #1454).
+cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue.
 ```
 
 AWS accepts no shape of this property: `glue:CreateTable` rejects it, and
@@ -265,7 +264,7 @@ See "Glue table Iceberg support" in
 ```text
 AWS::Lambda::EventSourceMapping MyMapping: SelfManagedKafkaEventSourceConfig.ConsumptionMode
 cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the member, so it
-would be dropped from the CreateEventSourceMapping request without an error (issue #3848).
+would be dropped from the CreateEventSourceMapping request without an error.
 Remove ConsumptionMode from SelfManagedKafkaEventSourceConfig to deploy the mapping without it.
 ```
 

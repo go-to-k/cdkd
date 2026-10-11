@@ -387,11 +387,10 @@ describe('warnUnresolvedLambdaTargetEnv (issue #2602)', () => {
     };
     const [warned] = lambdaWarnings(run(stubStrategy(plan), true).warnings);
     // The message is the whole remedy here -- cdkd cannot fix the path -- so
-    // the escape hatches and the upstream pointer are part of the contract.
+    // the escape hatches are part of the contract, and no tracker reference is.
     expect(warned).toContain('--from-cfn-stack');
     expect(warned).toContain('--env-vars');
-    expect(warned).toContain('go-to-k/cdkd#2602');
-    expect(warned).toContain('go-to-k/cdk-local#707');
+    expect(warned).not.toMatch(/#\d/);
   });
 });
 
@@ -403,7 +402,8 @@ describe('start-alb --from-state help text', () => {
       .options.find((o) => o.long === '--from-state')
       ?.description;
     expect(help).toContain('Lambda target group');
-    expect(help).toContain('go-to-k/cdk-local#707');
+    expect(help).toContain('a boot warning names the affected functions');
+    expect(help).not.toMatch(/#\d/);
   });
 });
 
@@ -568,7 +568,7 @@ describe('non-forward listener actions (issue #2602)', () => {
         "The only state source the Lambda path reads is --from-cfn-stack '<name>', which " +
         'REPLACES --from-state (the two are mutually exclusive) and reaches both target kinds ' +
         'on a CloudFormation-deployed stack; otherwise override the affected variables with ' +
-        '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).'
+        '--env-vars.'
     );
   });
 });

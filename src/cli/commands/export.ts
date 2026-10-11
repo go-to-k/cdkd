@@ -6118,7 +6118,7 @@ function typeIsImportUnsupported(entry: PrimaryIdentifierCacheEntry): boolean {
 const CFN_IMPORT_REFUSED_DESPITE_REGISTRY: ReadonlyMap<string, string> = new Map([
   [
     'AWS::AppSync::GraphQLApi',
-    'measured in us-east-1 on 2026-09-18: the registry schema declares a read handler and ' +
+    'measured against AWS: the registry schema declares a read handler and ' +
       'FULLY_MUTABLE, yet CreateChangeSet --change-set-type IMPORT rejected the type',
   ],
 ]);
