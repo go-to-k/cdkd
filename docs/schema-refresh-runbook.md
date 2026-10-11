@@ -471,8 +471,11 @@ Both carry `workflow_dispatch` for this, and it is the documented recovery path
 rather than a convenience.
 
 ```bash
-gh workflow run cfn-schema-refresh.yml      # capture, compare, open or update the PR
-gh workflow run backfill-umbrella-sync.yml  # re-render the campaign's checklist from main
+# capture, compare, open or update the PR
+gh workflow run cfn-schema-refresh.yml
+
+# re-render the campaign's checklist from main
+gh workflow run backfill-umbrella-sync.yml
 ```
 
 `cfn-schema-refresh` behaves exactly as a scheduled run: no drift means no pull

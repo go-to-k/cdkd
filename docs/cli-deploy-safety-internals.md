@@ -7,10 +7,10 @@ unlisted: true
 # Deploy safety internals
 
 The rules behind the guards that
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) summarises. That
-page says what a refusal means and which flag gets through it; this one records
-the edge cases and the reasoning, for someone changing the code or chasing an
-unusual result.
+[Deploy: safety & compatibility flags](cli-deploy-safety.md) and its sub-pages
+summarise. Those pages say what a refusal means and which flag gets through
+it. This page records the edge cases and the reasoning, for someone changing
+the code or chasing an unusual result.
 
 ## When the auto-route needs a recreate
 
@@ -33,7 +33,7 @@ and checks that tag dies, so its survival above means something.
 
 **An earlier opt-out deploy does not defeat this, with one exception.** cdkd
 records only what the SDK provider actually sent, so after a
-[`--prefer-sdk-route`](cli-deploy-safety.md#prefer-sdk-route-deploy) deploy a removable drop is
+[`--prefer-sdk-route`](cli-deploy-safety-routing.md#prefer-sdk-route-deploy) deploy a removable drop is
 simply absent from the record: the later flag-less deploy sees a genuine
 addition, re-routes the resource, and Cloud Control sends the field. The same
 `sdk-to-cc-autoroute` fixture measures that pair — its `--prefer-sdk-route`
@@ -45,7 +45,7 @@ record, so a redeploy that still passes the flag sees no difference and does not
 replace the resource. A deploy WITHOUT the flag does see one: AWS never held
 the value, and an added create-only property is a replacement. cdkd refuses
 that replacement rather than doing it on its own — see
-[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement).
+[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety-recreate.md#create-only-drop-needs-replacement).
 The same `sdk-to-cc-autoroute` fixture measures it on an `AWS::EC2::Subnet`'s
 `AvailabilityZoneId`.
 
@@ -140,7 +140,7 @@ recreate keeps the id after all, a create-only reader that the plan (and, for a
 target not known to keep it, the prompt) shows as a possible replacement is
 left in place, and a reader with nothing to change is skipped. Readers in other
 stacks are covered by
-[cross-stack reference propagation](cli-deploy-safety.md#cross-stack-reference-propagation).
+[Other stacks that read the target](cli-deploy-safety-recreate.md#other-stacks-that-read-the-target).
 
 ### Children deleted with the target
 
@@ -448,6 +448,65 @@ delete by hand. A delete-first replacement (`--recreate-via-*`, or `--replace`
 when the create collides) fails at that delete instead — unless the template
 also renames the resource, which makes `--recreate-via-*` create first and warn
 the same way.
+
+### Why each category is on the list
+
+The public table lists the types by category without comment. These are the
+reasons, for the categories where the data is not obvious:
+
+- **Data warehouse.** An `AWS::RedshiftServerless::Namespace` owns the
+  databases, and a snapshot is a copy of them.
+- **Table / vector storage.** Deleting a table bucket or a vector bucket
+  empties it first, with no opt-in. A namespace is not guarded, as described
+  above.
+- **Managed compute with local storage.** Terminating an `AWS::EMR::Cluster`
+  destroys the HDFS volumes on its core nodes, and the replacement comes back
+  empty. `AWS::EKS::Cluster` is guarded for the same reason one level up: the
+  etcd store behind it holds every Kubernetes object the user created, and
+  nothing in the template describes it. `AWS::SageMaker::Cluster` carries
+  local and tiered storage holding training checkpoints.
+- **Streaming / messaging.** Each type retains records on its own storage
+  rather than passing them straight through.
+- **Search / index / collection.** The indexed documents, face vectors and
+  geofences are written through the service API, never from the template.
+- **Identity / config.** An `AWS::AppConfig::ConfigurationProfile` whose
+  location is `hosted` owns its configuration versions.
+- **Runtime-written stores.** `AWS::CloudFront::KeyValueStore` and
+  `AWS::Connect::DataTable` are seeded from the template at most once, then
+  written through the service API.
+- **Backup vaults.** A vault holds the recovery points, the data whose whole
+  purpose is to outlive the resource it was taken from.
+- **Service domains holding records.** These hold cases, profiles, a catalog
+  and every user's home directory.
+- **Encryption keys.** Deleting an `AWS::CloudHSM::Cluster` destroys the key
+  material inside it, and every ciphertext produced under those keys with it.
+  An `AWS::KMS::Key` delete schedules the key for deletion, and once the
+  window elapses every ciphertext encrypted under it is unrecoverable,
+  including data in other stacks that merely reference the key.
+  `AWS::KMS::ReplicaKey` is guarded on the same terms, though whether a
+  destroyed replica's ciphertexts survive through another key in its
+  multi-region set is unmeasured, so the guard assumes they do not.
+- **Source control / artifacts.** An `AWS::CodeCommit::Repository` delete
+  destroys the repository's entire git history. `AWS::CodeArtifact::Repository`
+  holds the packages, and `AWS::CodeArtifact::Domain` is not a mere grouping:
+  it owns the deduplicated asset storage every repository in it references.
+- **Retained records.** `AWS::IoTSiteWise::Workspace` is guarded on an open
+  question: AWS makes encryption at rest required on it, but whether deleting
+  one cascades to the datasets inside is unmeasured.
+  `AWS::AIOps::InvestigationGroup` and `AWS::SES::MailManagerArchive` both
+  retain content for a configured period. `AWS::Rbin::Rule` joins them on the
+  fail-safe side of an open question: the rule itself is fully
+  template-declared, but what happens to the snapshots and AMIs already
+  sitting in the Recycle Bin under it when it is deleted is unmeasured.
+- **Nested stacks.** Replacing an `AWS::CloudFormation::Stack` destroys the
+  whole child stack, every resource it owns, with no per-resource guard. Its
+  `StackName` is immutable, so a `StackName` edit deployed with
+  `--prefer-sdk-route AWS::CloudFormation::Stack:StackName` is a replacement.
+- **Edge / identifier immutability.** For an `AWS::CloudFront::Distribution`
+  the URL changes, which breaks consumers, and propagation takes roughly 20
+  minutes. `AWS::SMSVOICE::PhoneNumber` and `AWS::SMSVOICE::SenderId` are the
+  same class: a release returns the identifier to the pool, the replacement
+  gets a different one, and the original may be unobtainable.
 
 ## Log group retention
 

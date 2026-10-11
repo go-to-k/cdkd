@@ -5,40 +5,49 @@ description: What cdkd is, when to use it next to the AWS CDK CLI, and where to 
 
 # Introduction
 
-cdkd is a CDK CLI that deploys your existing CDK app by calling AWS APIs
-directly, without going through CloudFormation. Deploys are up to 15x faster,
-and your CDK code does not change: you run `cdkd deploy` where you ran
-`cdk deploy`.
+cdkd is a command-line tool that deploys your existing CDK app by calling AWS
+APIs directly, without going through CloudFormation. Deploys are up to 15x
+faster, and your CDK code does not change. You run `cdkd deploy` where you ran
+`cdk deploy`:
+
+```bash
+npm i -g @go-to-k/cdkd
+cdkd bootstrap        # once per AWS account
+cdkd deploy MyStack   # from the directory that holds your cdk.json
+```
 
 ![cdk deploy vs cdkd deploy](https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/cdk-vs-cdkd.gif)
 
 ## Where the speed comes from
 
-`cdk deploy` hands a template to CloudFormation and waits for the service to
-work through it. cdkd reads the same template and does the work itself:
+`cdk deploy` turns your CDK code into a CloudFormation template, hands the
+template to the CloudFormation service, and waits while the service works
+through it. cdkd produces the same template and then does the work itself:
 
-- It calls each service's API directly, through the AWS SDK or the Cloud
-  Control API.
-- It runs resources in parallel, starting each one the moment the resources it
-  depends on are done.
-- With `--no-wait` it returns as soon as each create call returns, and lets
-  AWS finish slow resources such as CloudFront and RDS in the background.
+- It creates each resource by calling that service's API directly.
+- It runs resources in parallel, and starts each one as soon as the resources
+  it depends on are done.
+- With `--no-wait`, it returns once AWS has accepted each create call. Slow
+  resources such as CloudFront distributions and RDS instances then finish in
+  the background.
 
 `cdkd destroy` is fast for the same reasons. The [Benchmarks](benchmarks.md)
 compare cdkd with CloudFormation, CloudFormation Express mode and Terraform.
 
 ## When to use it
 
-Use cdkd where you deploy often and want the loop short: your own dev stacks,
-test environments, per-pull-request environments in CI, and the spin-up and
-tear-down loops of AI coding agents.
+Use cdkd where you deploy often and want each deploy to be short: your own dev
+stacks, test environments, per-pull-request environments in CI, and the
+deploy-and-tear-down loops of AI coding agents.
 
-Keep using the AWS CDK CLI for production. cdkd complements it and does not
-replace it: CloudFormation gives production change sets, stack policies and
-the rest of its tooling, and one CDK app can be deployed by both tools to
-different environments. You can also move a stack between them at any time,
-[importing](import.md) a CloudFormation stack into cdkd or
-[exporting](export.md) a cdkd stack back.
+Keep using the AWS CDK CLI for production, because CloudFormation gives
+production deploys change sets, stack policies and the rest of its tooling.
+The two tools work side by side: one CDK app can be deployed by cdkd to a dev
+environment and by the AWS CDK CLI to production.
+
+You can also move a stack from one tool to the other at any time.
+[Importing Existing Resources](import.md) brings a CloudFormation stack under
+cdkd, and [Exporting to CloudFormation](export.md) hands a cdkd stack back.
 
 > [!IMPORTANT]
 > cdkd is for dev and test workflows only. It is early in development and not
@@ -46,12 +55,18 @@ different environments. You can also move a stack between them at any time,
 
 ## What else it does
 
+cdkd also covers the work around a deploy:
+
 - **Local execution.** `cdkd local` runs your Lambda functions, APIs and ECS
-  tasks on your machine, and can take environment variables, secrets and
-  resource references from the real deployed stack, so you do not write a
-  `.env` file by hand. See [Local Execution](local-emulation.md).
-- **Recovery and inspection.** Rollback of a failed deploy, drift detection
-  against live AWS, and a per-run event history are built in.
+  tasks on your machine. It can take environment variables, secrets and
+  resource references from the deployed stack, so you do not write a `.env`
+  file by hand. See [Local Execution](local-emulation.md).
+- **Rollback.** When a deploy fails, cdkd undoes what that deploy did. See
+  [Rollback](rollback.md).
+- **Drift detection.** `cdkd drift` reports resources that were changed in AWS
+  outside cdkd. See [Drift Detection](drift.md).
+- **Deployment history.** `cdkd events` shows what each past deploy did. See
+  [Deployment Events](deployment-events.md).
 
 ## Find your way
 

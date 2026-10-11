@@ -530,7 +530,7 @@ by design.
   whose parameter is a `SecureString` (issue
   [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
   `StringList` parameter is public config and stays resolved in state. See
-  [`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
+  [`cdkd scrub`](cli-scrub.md#check-clean-and-gate-in-ci).
 - A **custom-resource `Data` value has no reference behind it**, so it takes a
   second channel: a handler that sets `NoEcho: true` on its cfn-response has
   every value in its `Data` persisted as `***` — in the custom resource's own
@@ -545,7 +545,7 @@ by design.
   producer still has the plaintext in memory and hands it to the consumer,
   while a producer deployed by an earlier run has none and the consumer is
   refused. See
-  [State Management](state-management.md#noecho-custom-resource-responses)
+  [State Management](state-management-secrets.md#custom-resource-responses-marked-noecho)
   and [Cross-stack reference internals](cross-stack-internals.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
 - A **`NoEcho: true` template parameter's value** is persisted as `***` too
   (state schema `version: 11`): wherever it equals or is embedded in a stored
@@ -564,7 +564,7 @@ by design.
   naming the resource): it re-resolves each position from
   today's template (issue #4682), in memory only; elsewhere that delete is
   skipped.
-  See [State Management](state-management.md#version-11-stores-noecho-values-as-current-writers).
+  See [State Management](state-management-secrets.md#noecho-parameters).
 
 ## CloudFormation macros and nested stacks
 
@@ -630,7 +630,9 @@ cdk-local's own dependencies, and the hop count is what goes stale first:
 
 ```bash
 ls node_modules/@aws-cdk/
-npm explain @aws-cdk/cdk-assets-lib   # prints the whole chain, not just the parent
+
+# prints the whole chain, not just the parent
+npm explain @aws-cdk/cdk-assets-lib
 ```
 
 Note that a strict-layout `pnpm` checkout of THIS repo shows none of them,

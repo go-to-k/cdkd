@@ -7,8 +7,9 @@ unlisted: true
 # cdkd export internals
 
 Implementation detail behind [`cdkd export`](cli-export.md), for someone
-changing the command. The user-facing behaviour is on that page; this one
-records the mechanics and the edge cases it summarizes.
+changing the command. The user-facing behaviour is on that page and the
+sub-pages it lists under "In this section"; this one records the mechanics and
+the edge cases they summarize.
 
 ## Step order
 

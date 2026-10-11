@@ -29,7 +29,7 @@ out of state — so an unannotated `[~]` reads as cdkd having quietly kept
 managing it.
 
 This check is one of the two places `cdkd diff` calls an AWS resource provider
-(the other is [a state record missing an attribute](cli-diff.md#a-state-record-missing-an-attribute)),
+(the other is [a state record missing an attribute](cli-diff-state-records.md#a-state-record-missing-an-attribute)),
 and it runs only for a stack whose state holds orphan records. A stack that has
 never had a rollback orphan anything pays nothing for it.
 
@@ -63,7 +63,7 @@ still withhold the values. The section is still omitted when:
   says the deploy may write a different value for each failed output;
 - a template parameter could not be bound for the diff, or a condition could
   not be evaluated because it depends on a parameter holding a secret
-  reference (see [Conditions over a secret-fed parameter](cli-diff.md#conditions-over-a-secret-fed-parameter));
+  reference (see [Conditions over a secret-fed parameter](cli-diff-nested-stacks.md#conditions-over-a-secret-fed-parameter));
 - an output's value came back in a shape that does not tell the diff what the
   deploy will do with it — a function the diff could not evaluate, an
   `AWS::NoValue`, an `Fn::Sub` placeholder left unsubstituted, or a list or
@@ -104,7 +104,7 @@ for the diff too — but it cannot tell that case from an output simply waiting
 on a resource this deploy will create, and before this field either one made
 it drop the whole Outputs section. So the deploy records the skipped key
 with a digest of its template inputs (`skippedOutputs` in
-[state](state-management.md#skippedoutputs-informational-no-version-bump)), and
+[state](state-management-schema-versions.md#an-output-the-deploy-could-not-resolve)), and
 the diff previews the key as absent — no row, while its sibling outputs are
 still compared as usual — as long as it is still absent from state and that
 digest is unchanged.
@@ -199,7 +199,7 @@ safeguards apply to that side of the output.
 **A previous value that may be legacy secret plaintext is withheld** from both
 the text and the `--json` output rather than printed into CI logs. The change
 itself is still reported; only the old value is replaced with a placeholder
-pointing at [`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
+pointing at [`cdkd scrub`](cli-scrub.md#check-clean-and-gate-in-ci).
 These refusal gates decide this:
 
 | Gate | Trigger | Scope |
@@ -229,7 +229,7 @@ For a nested child **removed** from its parent's template there is no template
 left to account for anything, so the refusal applies to that child's whole
 stored bag whenever the parent's template proves a secret reference. That
 population is repairable by
-[`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit); the
+[`cdkd scrub`](cli-scrub.md#check-clean-and-gate-in-ci); the
 refusal here is unchanged, because `diff` still cannot decide from a stored
 string alone whether a value is plaintext.
 
@@ -284,7 +284,7 @@ resource(s) read a NoEcho parameter, whose value state holds only as ***: the
 deploy compares it with AWS, and updates a resource whose value changed.` That
 line is informational and never counts as a change for `--fail`; the deploy
 reads each such resource back and updates the ones whose value moved (see
-[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
+[`version: 11` stores `NoEcho` values as `***`](state-management-secrets.md#noecho-parameters)).
 
 A record written before `version: 11` still holds the value it last sent in
 the clear. `cdkd diff` compares that value with the current one: an equal value
@@ -390,14 +390,14 @@ resource and a destroy delete none of them. So a `resources` preview that
 renders is followed by a refusal from either of those commands. On the stack
 you named, the preview says so itself: the refusal is reported under
 `Blocking` and the command exits `3`. See
-[when `resources` is not an object](state-management.md#when-resources-is-not-an-object).
+[when `resources` is not an object](state-management-malformed-records.md#resources-is-not-an-object).
 The `outputs` warning costs this preview's Outputs
 section, and it costs more than the preview: `cdkd deploy` and `cdkd destroy`
 refuse a record whose `outputs` map is unreadable rather than deciding from it.
 On the stack you named, the preview says so itself: the refusal is reported
 under `Blocking` and the command exits `3`. On a nested child it is the warning
 alone. See
-[when `outputs` is not an object](state-management.md#when-outputs-is-not-an-object).
+[when `outputs` is not an object](state-management-malformed-records.md#outputs-is-not-an-object).
 
 The `orphans` warning costs this preview's rollback-orphan adoption, and it
 costs the same thing beyond the preview: `cdkd deploy`, `cdkd destroy`,
@@ -407,8 +407,8 @@ no orphans — leaving the resources an earlier failed deploy left live in AWS
 unreported, or rewritten into character-shaped records by a rollback — or aborts
 the command outright with no cause named. On the stack you named, the refusal
 is reported under `Blocking` and the command exits `3`. See
-[when `orphans` is not a list](state-management.md#when-orphans-is-not-a-list), and
-[when one record cannot be read](state-management.md#when-one-orphans-record-cannot-be-read) for the row level below it.
+[when `orphans` is not a list](state-management-malformed-records.md#orphans-is-not-a-list), and
+[when one record cannot be read](state-management-malformed-records.md#one-orphans-entry-cannot-be-read) for the row level below it.
 
 The `properties` warning names the individual resource
 records it emptied — up to five of them, then a count. It costs more than the
@@ -422,7 +422,7 @@ So that warning says explicitly not to act on the preview, and that `cdkd
 deploy` refuses the record rather than performing those replacements. On the
 stack you named, that refusal is also reported under `Blocking` and exits `3`.
 See
-[when a resource `properties` map is not an object](state-management.md#when-a-resource-properties-map-is-not-an-object).
+[when a resource `properties` map is not an object](state-management-malformed-records.md#a-resource-s-properties-is-not-an-object).
 
 The same repair runs a second time on a stack that adopts a rollback orphan:
 those records come from a different part of the file and are spliced in after
@@ -442,7 +442,7 @@ still declares previews as a `CREATE`; one it no longer declares gets no row at
 all. So the dropped rows, `(resources map)` for an unreadable map and
 `(orphans container)` for an unreadable orphan list, are also named together on
 one line after the counts — up to ten names, then how many more — listed in full
-in `--json` (see [`--json`](cli-diff.md#json) for which field holds which), and counted by
+in `--json` (see [`--json`](cli-diff-json.md) for which field holds which), and counted by
 `--fail`. A container is printed from what the diff found, never from a
 key, so a dropped row's own id is printed the way every id in the preview is:
 in double quotes when making it safe to print changed it (padding, a control
@@ -604,7 +604,7 @@ removing the resource from whichever stack should not own it — and the next
 **A container this command repaired or dropped and `cdkd deploy` refuses.** A
 resource's unreadable `properties` map, or an unreadable `outputs` bag, is
 repaired to empty for the preview (see [when the state record is
-malformed](cli-diff.md#when-the-state-record-is-malformed)) while `cdkd deploy` refuses
+malformed](cli-diff-state-records.md#when-the-state-record-is-malformed)) while `cdkd deploy` refuses
 the record outright. A rollback-orphan record this diff adopted counts the same
 way, since its `properties` map is repaired after it is spliced in. The
 preview is therefore honest about the rows and wrong about what happens next,
@@ -646,7 +646,7 @@ resource's `Data`), is known
 only once that resource exists, so the preview WARNS instead: the deploy
 refuses it then, before invoking any handler, and rolls back (a replaced
 backing Lambda is re-created by that rollback, see
-[a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken)).
+[a changed custom-resource ServiceToken](cli-deploy-custom-resources.md#a-changed-custom-resource-servicetoken)).
 
 The first, fourth and fifth conditions are raised at every node the preview diffs.
 Only the TOP-LEVEL stack raises the second and third, as a

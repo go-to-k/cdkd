@@ -5,28 +5,51 @@ description: "Find out whether a deployed stack still matches what cdkd deployed
 
 # Drift detection
 
-Drift is a difference between what cdkd deployed and what is in AWS now,
-usually because someone edited or deleted a resource outside cdkd. `cdkd
-drift` reads each resource of a stack back from AWS, reports what changed,
-and can resolve it in either direction. It reads the state record only, so it
-needs no CDK app.
+Drift is a difference between what cdkd deployed and what is in AWS now. It
+usually appears because someone edited or deleted a resource outside cdkd, for
+example in the AWS console. `cdkd drift` reads each resource of a stack back
+from AWS and reports what changed. It can then resolve the difference in
+either direction.
 
 ```bash
 cdkd drift MyStack                    # report drift; exit 1 if there is any
 cdkd drift --all --json               # every stack in the bucket, for CI
 cdkd drift MyStack --revert --dry-run # preview undoing the AWS-side change
-cdkd drift MyStack --revert --yes     # AWS <- state: undo it
-cdkd drift MyStack --accept --yes     # state <- AWS: keep it
+cdkd drift MyStack --revert --yes     # undo the AWS-side change
+cdkd drift MyStack --accept --yes     # keep the AWS-side change
 ```
 
+`cdkd drift` works from cdkd's state, its record of what it deployed, so it
+does not need your CDK app.
+
+## An example
+
+Suppose someone suspends versioning on a bucket in the console and deletes a
+topic. `cdkd drift MyStack` then prints:
+
+```text
+⚠ MyStack (us-east-1): drift detected on 2 resources
+
+  - LegacyTopic (AWS::SNS::Topic) — DELETED outside cdkd: AWS reports it does not exist.
+
+  ~ AssetsBucket (AWS::S3::Bucket)
+    - VersioningConfiguration.Status: Enabled
+    + VersioningConfiguration.Status: Suspended
+```
+
+A `-` line is the value cdkd recorded, and a `+` line is the value AWS holds
+now. The command exits `1` because it found drift.
+
 ## Drift or diff?
+
+`cdkd drift` and `cdkd diff` compare different pairs of things:
 
 ```text diagram=guide-drift-vs-diff
   Template             what your CDK app asks for now
       │
       │  cdkd diff compares these two
       ▼
-  cdkd state record    what cdkd last deployed, with the properties
+  cdkd state           what cdkd last deployed, with the properties
       │                it read back from AWS then
       │  cdkd drift compares these two
       ▼
@@ -35,62 +58,92 @@ cdkd drift MyStack --accept --yes     # state <- AWS: keep it
 
 | | `cdkd diff` | `cdkd drift` |
 | --- | --- | --- |
-| Question | What will my next deploy change? | Did someone change this outside cdkd? |
-| Compares | Template with state record | State record with AWS |
+| Question | What will my next deploy change? | What changed outside cdkd? |
+| Compares | Template with state | State with AWS |
 | Needs the CDK app | Yes | No |
 
-A console edit does not show up in `cdkd diff`, because neither the template
-nor the state record changed. Use `cdkd drift` for that.
+A console edit does not show up in `cdkd diff`, because the edit changes
+neither your template nor cdkd's state. Use `cdkd drift` to find it.
 
 ## Read the result
 
-Every resource ends in one of five outcomes:
+`cdkd drift` puts every resource in one of five outcomes:
 
 | Outcome | Meaning |
 | --- | --- |
-| drifted | A property differs between state and AWS. Listed as `~ <logicalId> (<type>)` with one line per property. |
-| deleted | AWS reports the resource is gone. Counts as drift. |
-| clean | Every recorded property was compared and matched. |
-| not compared | Nothing differed, but cdkd could not compare every property. |
-| drift unknown | cdkd has no way to read this type back, or the read could not tell. |
+| drifted | A property differs between state and AWS |
+| deleted | AWS reports that the resource is gone; this counts as drift |
+| clean | Every recorded property was compared and matched |
+| not compared | Nothing differed, but cdkd could not compare every property |
+| drift unknown | cdkd cannot read this resource type back, or the read was inconclusive |
+
+A drifted resource is printed as `~ <logicalId> (<type>)`, followed by a pair
+of lines for each property that differs.
 
 The exit code tells a CI job which case it is in:
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Nothing drifted |
-| `1` | Drift on at least one resource, or the command failed |
-| `2` | Nothing drifted, but a comparison did not happen for a reason you can act on |
+| `1` | At least one resource drifted, or the command failed |
+| `2` | Nothing drifted, but a comparison is missing for a reason you can fix |
 
-Which resource types have a read-back, and the full exit-code rules, are in
-[`cdkd drift`](cli-drift.md).
+[`cdkd drift`](cli-drift.md) lists which resource types cdkd can read back and
+gives the full exit-code rules.
 
-## Resolve drift: `--accept` or `--revert`
+## Resolve drift
 
-The two flags are mutually exclusive. Both take the stack lock, and both
-prompt unless you pass `--yes`.
+Once drift is reported, you decide which side is right. `--revert` makes AWS
+match state again, and `--accept` makes state match AWS.
 
-| Flag | Direction | Use it when | Changes AWS |
-| --- | --- | --- | --- |
-| `--accept` | state ← AWS | The AWS-side change is what you want, and cdkd should stop reporting it | No |
-| `--revert` | AWS ← state | The AWS-side change was a mistake | Yes |
+```text
+--revert    AWS <- state    undo the change in AWS
+--accept    state <- AWS    keep the change and record it
+```
 
-`--revert` pushes back only the properties the report listed as drifted.
 Preview either one with `--dry-run`, which prints the planned changes and
-writes nothing.
+writes nothing. Without `--dry-run`, both flags lock the stack while they
+run, and both ask for confirmation unless you pass `--yes`. You cannot pass
+both flags in one command.
 
-## The baseline drift compares against
+### `--revert`: undo the change in AWS
 
-After each create or update, `cdkd deploy` reads the resource back from AWS
-and stores the result in the state record. This **observed state** is the
-drift baseline. Because it holds properties you never templated, drift can
-report a console change to one of them, such as an S3 public-access-block
-setting, an IAM role tag or a Lambda environment variable.
+Use `--revert` when the change in AWS was a mistake. cdkd updates the
+resource in AWS so that the drifted properties hold the recorded values
+again. It changes only the properties the report listed as drifted.
 
-A resource without observed state is compared against its templated
-properties only, so changes to other keys go unnoticed. That is the case when
-the deploy ran with `--no-capture-observed-state`. Populate the baseline
-without redeploying:
+```bash
+cdkd drift MyStack --revert --dry-run
+cdkd drift MyStack --revert
+```
+
+### `--accept`: keep the change
+
+Use `--accept` when the change in AWS is what you want, and cdkd should stop
+reporting it. cdkd writes the values AWS holds into state. It does not change
+AWS.
+
+```bash
+cdkd drift MyStack --accept
+```
+
+## What drift compares against
+
+After `cdkd deploy` creates or updates a resource, it reads the resource back
+from AWS and stores what AWS returned in state. `cdkd drift` compares a fresh
+read against that stored copy.
+
+The stored copy includes properties you never set in your template. So drift
+can report a console change to a property your CDK code does not mention,
+such as an S3 public-access-block setting, an IAM role tag or a Lambda
+environment variable.
+
+### A resource deployed without the stored copy
+
+A deploy run with `--no-capture-observed-state` skips the read-back. For such
+a resource, `cdkd drift` can only compare the properties in your template, so
+a change to any other property goes unnoticed. To store the copy without
+redeploying, run:
 
 ```bash
 cdkd state refresh-observed MyStack
@@ -102,4 +155,4 @@ cdkd state refresh-observed MyStack
   coverage, and how secret values are reported
 - [`cdkd diff`](cli-diff.md): comparing your template against state
 - [Deploy: tuning](cli-deploy-tuning.md): `--no-capture-observed-state`
-- [State Management](state-management.md): where the baseline is stored
+- [State Management](state-management.md): where the stored copy lives

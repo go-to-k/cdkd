@@ -7,8 +7,10 @@ unlisted: true
 # cdkd state internals
 
 Implementation detail behind [`cdkd state`](cli-state.md), for someone changing
-those subcommands. The user-facing behaviour is on that page; this one records
-the edge cases it summarizes.
+those subcommands. The user-facing behaviour is on that page,
+[cdkd state: writing subcommands](cli-state-writing.md) and
+[cdkd state: malformed records](cli-state-malformed.md); this one records the
+edge cases they summarize.
 
 ## Why record values are treated as untrusted text
 

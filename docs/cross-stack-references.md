@@ -5,14 +5,20 @@ description: "The two ways one cdkd stack reads another's outputs, strong Fn::Im
 
 # Cross-Stack References
 
-A cross-stack reference lets one stack (the **consumer**) use a value another
-stack (the **producer**) published as an output. cdkd supports two kinds, and
-they differ in what happens when you destroy the producer:
+A cross-stack reference lets one stack use a value that another stack
+published as an output. The stack that publishes the value is the
+**producer**, and the stack that reads it is the **consumer**.
 
-| Intrinsic | Strength | Destroying the producer | Use when |
-| --- | --- | --- | --- |
-| `Fn::ImportValue` | Strong | Refused with `StackHasActiveImportsError` while a consumer imports from it | The producer must stay as long as anything uses it. This is what CloudFormation does. |
-| `Fn::GetStackOutput` | Weak | Proceeds; the consumer fails the next time it resolves the value | The producer must be deletable on its own, or lives in another region or account |
+cdkd supports two kinds of reference. They differ in what happens when you
+try to destroy the producer while a consumer still exists:
+
+- A **strong reference**, `Fn::ImportValue`, protects the producer. cdkd
+  refuses to destroy it while any consumer imports from it. This is how
+  CloudFormation behaves.
+- A **weak reference**, `Fn::GetStackOutput`, protects nothing. You can
+  destroy the producer at any time, and the consumer fails the next time it
+  resolves the value. A weak reference can also read from another region or
+  another account.
 
 ```text diagram=guide-cross-stack
                       Producer stack
@@ -29,8 +35,8 @@ they differ in what happens when you destroy the producer:
 
 ## Strong reference: `Fn::ImportValue`
 
-The producer exports a value under a name, and the consumer imports it by
-that name:
+With a strong reference, the producer exports a value under a name, and the
+consumer imports it by that name:
 
 ```ts
 // ProducerStack
@@ -46,8 +52,9 @@ const bucketArn = cdk.Fn.importValue('BucketArn');
 CDK also generates this pair for you when you pass a construct from one stack
 to another in the same region.
 
-When the consumer deploys, cdkd records the import in the consumer's state
-record. From then on the producer is protected:
+When the consumer deploys, cdkd records the import in the consumer's state,
+its record of what it deployed. From then on the producer is protected, and a
+destroy is refused:
 
 ```bash
 cdkd destroy ProducerStack
@@ -71,21 +78,27 @@ does NOT protect the producer — use it when you intentionally want
 the producer to be deletable independently of consumers.
 ```
 
-The command exits `2` and deletes nothing. There is no `--force` to override
-it, as there is none in CloudFormation. If you want a producer that can be
-destroyed independently, use a weak reference when you write the template.
+The command exits `2` and deletes nothing. No `--force` flag overrides the
+refusal, and CloudFormation has none either.
+[Resolving a refused destroy](#resolving-a-refused-destroy) shows the two
+ways forward. If you want a producer that can be destroyed on its own, use a
+weak reference when you write the template.
 
 ## Weak reference: `Fn::GetStackOutput`
 
-`Fn::GetStackOutput` reads an output by stack name and output name. The
-output needs no `exportName`:
+With a weak reference, the consumer reads an output by the producer's stack
+name and the output's name. The output needs no `exportName`:
 
 ```ts
 // ConsumerStack, reading from ProducerStack in us-west-2
-const bucketArn = cdk.Fn.getStackOutput('ProducerStack', 'BucketArnOutput', 'us-west-2');
+const bucketArn = cdk.Fn.getStackOutput(
+  'ProducerStack',
+  'BucketArnOutput',
+  'us-west-2'
+);
 ```
 
-In the template this is:
+In the synthesized template this becomes:
 
 ```json
 {
@@ -105,12 +118,13 @@ In the template this is:
 | `RoleArn` | No | A role in the producer's account to assume for the read |
 
 Nothing protects the producer. `cdkd destroy ProducerStack` succeeds, and the
-consumer's next deploy fails when it cannot resolve the value.
+consumer's next deploy fails because it cannot resolve the value.
 
 ### Read from another account
 
-Pass a `RoleArn` to read an output from a stack in another AWS account. cdkd
-assumes the role and reads the producer account's cdkd state:
+To read an output from a stack in another AWS account, pass a `RoleArn` as
+the fourth argument. cdkd assumes that role and reads the output from cdkd's
+state in the producer's account:
 
 ```ts
 const vpcId = cdk.Fn.getStackOutput(
@@ -121,14 +135,17 @@ const vpcId = cdk.Fn.getStackOutput(
 );
 ```
 
-- The `RoleArn` must be a literal string. A `Ref` or `Fn::Sub` is rejected.
-- The role needs `s3:GetBucketLocation` on the producer's state bucket and
-  `s3:GetObject` on its state records. Its trust policy must allow the
-  identity your cdkd run uses.
-- An output that holds a secret is refused on this path. Export the secret's
-  ARN and resolve it in the consumer.
+Three rules apply:
 
-The policy to attach is under
+- The `RoleArn` must be a literal string. cdkd rejects a `Ref` or `Fn::Sub`
+  there.
+- The role needs `s3:GetBucketLocation` on the producer's state bucket and
+  `s3:GetObject` on the state files in it. The role's trust policy must allow
+  the identity that runs cdkd.
+- cdkd refuses to read an output that holds a secret this way. Export the
+  secret's ARN instead, and resolve the secret in the consumer.
+
+The policy to attach to the role is under
 [IAM permissions](cross-stack-internals.md#iam-permissions).
 
 ## Which one to use
@@ -143,8 +160,9 @@ The policy to attach is under
 
 ## Resolving a refused destroy
 
-When `cdkd destroy ProducerStack` refuses with `StackHasActiveImportsError`,
-the message names every consumer. There are two ways forward.
+When `cdkd destroy ProducerStack` is refused with
+`StackHasActiveImportsError`, the message names every consumer that still
+imports from the producer. There are two ways forward.
 
 ### Destroy the consumer first
 
@@ -174,24 +192,26 @@ cdkd deploy ConsumerStack     # the consumer no longer records the import
 cdkd destroy ProducerStack    # now succeeds
 ```
 
-### What about `cdkd state orphan`?
+### Do not use `cdkd state orphan` for this
 
-`cdkd state orphan ConsumerStack` would also clear the refusal, but it is the
-wrong tool. It removes the consumer's whole state record, so cdkd stops
-tracking every resource in that stack, in order to break one reference. Use
-one of the two paths above.
+`cdkd state orphan ConsumerStack` would also clear the refusal, but at too
+high a cost. It removes the consumer from cdkd's state entirely, so cdkd
+stops tracking every resource in that stack, only to break one reference.
+Use one of the two ways above.
 
 ## A producer managed by CloudFormation
 
-Both intrinsics also resolve against a stack that CloudFormation manages.
-When cdkd state has no match, cdkd asks CloudFormation: `ListExports` for
-`Fn::ImportValue`, and the stack's outputs for `Fn::GetStackOutput` (same
-account only; a `RoleArn` read never falls back).
+Both kinds of reference can also read from a stack that CloudFormation
+manages. When cdkd finds no matching value in its own state, it asks
+CloudFormation: `ListExports` for `Fn::ImportValue`, and the stack's outputs
+for `Fn::GetStackOutput`. This works within one account only. A read with a
+`RoleArn` never asks CloudFormation.
 
-A value found this way is always a weak reference, even through
-`Fn::ImportValue`. cdkd cannot protect a producer it does not manage.
-`--no-cfn-fallback` on `cdkd deploy` and `cdkd diff` turns the fallback off.
-[Mixed Estates](mixed-estates.md) covers this case.
+A value found this way is always a weak reference, even when the consumer
+uses `Fn::ImportValue`, because cdkd cannot protect a producer it does not
+manage. `--no-cfn-fallback` on `cdkd deploy` and `cdkd diff` turns the
+CloudFormation lookup off. [Mixed Estates](mixed-estates.md) covers this
+case in full.
 
 ## Compared with CloudFormation
 
@@ -205,15 +225,17 @@ A value found this way is always a weak reference, even through
 | Cross-account references | Via shared bootstrap | Yes (`Fn::GetStackOutput` with `RoleArn`) |
 | A producer managed by the other engine | No | Yes (CloudFormation fallback, weak) |
 
-One difference in naming: cdkd keeps export names and output names of a stack
-in one namespace. If an output's export name equals another output's name in
-the same stack, cdkd skips the export, keeps the output, and warns on the
-producer's deploy.
+### Export names and output names share one namespace
+
+In cdkd, the export names and the output names of one stack share one
+namespace. If one output's export name equals another output's name in the
+same stack, cdkd skips the export and keeps the output. It prints a warning
+when the producer deploys.
 
 ## Related
 
-- [Cross-stack reference internals](cross-stack-internals.md): the exports
-  index, the resolver flow, the destroy-time scan and what each path costs
+- [Cross-stack reference internals](cross-stack-internals.md): how
+  references are resolved and checked, for contributors
 - [Mixed Estates](mixed-estates.md): consuming a CloudFormation-managed
   producer
 - [Stack Outputs](stack-outputs.md): declaring the values a consumer reads

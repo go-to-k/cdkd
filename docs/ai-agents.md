@@ -5,40 +5,48 @@ description: "Install the cdkd skill so AI coding agents such as Claude Code, Co
 
 # Use with AI Coding Agents
 
-An AI coding agent deploys, checks the result, and tears the stack down many
-times in one session. cdkd keeps each of those turns short, with fast deploys
-and an equally fast `cdkd destroy`.
+An AI coding agent such as Claude Code, Codex or Cursor can deploy your dev
+and test stacks with cdkd. To make it do so safely, install the cdkd skill: a
+set of instructions the agent loads when a task involves cdkd.
 
-The cdkd repository ships a
+cdkd suits this work because an agent deploys, checks the result, and tears
+the stack down many times in one session. Fast deploys and an equally fast
+`cdkd destroy` keep each of those turns short.
+
+## What the skill teaches the agent
+
+The
 [`cdkd` skill](https://github.com/go-to-k/cdkd/blob/main/plugins/cdkd-skills/skills/cdkd/SKILL.md)
-that teaches an agent to use cdkd safely. It covers installing cdkd, checking
-AWS credentials before acting, previewing and deploying, choosing a wait
-mode, verifying the result, the boundary with CloudFormation-managed stacks,
-and confirming before destructive operations.
+ships in the cdkd repository. It tells the agent how to:
 
-| Your agent | Install with |
-| --- | --- |
-| Claude Code | The plugin marketplace |
-| Codex, Cursor, or any agent that reads `SKILL.md` | `gh skill` or `npx skills` |
+- install cdkd,
+- check AWS credentials before acting,
+- preview a deploy and then run it,
+- choose a wait mode,
+- verify the result,
+- avoid deploying over a stack that CloudFormation manages,
+- confirm with you before a destructive operation.
+
+How you install the skill depends on the agent.
 
 ## Claude Code
 
-Run these inside a Claude Code session. This is a one-time setup, and the
-skill is then available in every session:
+Run these two commands inside a Claude Code session:
 
 ```text
 /plugin marketplace add go-to-k/cdkd
 /plugin install cdkd-skills@cdkd
 ```
 
-Then ask Claude to deploy a dev or test CDK stack with cdkd. The skill
-triggers on its own. You can also invoke it directly with `/cdkd`.
+This is a one-time setup, and the skill is then available in every session.
+Ask Claude to deploy a dev or test CDK stack with cdkd, and the skill loads on
+its own. You can also invoke it directly with `/cdkd`.
 
 ## Other agents (Codex, Cursor, and more)
 
-Install the skill with the
+Any agent that reads `SKILL.md` files can use the skill. Install it with the
 [GitHub CLI](https://github.blog/changelog/2026-04-16-manage-agent-skills-with-github-cli/)
-(v2.90 or later) or
+(v2.90 or later) or with
 [`npx skills`](https://github.com/vercel-labs/agent-skills):
 
 ```bash
@@ -49,23 +57,24 @@ npx skills add go-to-k/cdkd --skill cdkd
 
 ## Let an agent read these docs
 
-Agents can read this documentation as Markdown:
+An agent can read this documentation as Markdown, in two ways:
 
-- The site publishes an `llms.txt` index, so an agent can find every page
-  from one entry point.
-- Every page has a raw-Markdown version, advertised by a
-  `<link rel="alternate" type="text/markdown">` tag in the page head. An
-  agent can fetch the exact source of the page it is reading.
+- The site publishes an `llms.txt` index, which lists every page. An agent
+  can start there and find the page it needs.
+- Every page has a raw-Markdown version. The page head advertises it with a
+  `<link rel="alternate" type="text/markdown">` tag, so an agent can fetch the
+  exact source of the page it is reading.
 
-## Contributors
+## Testing a cdkd checkout with Claude Code
 
-To test a cdkd checkout against another CDK project, add the cloned
-repository to a Claude Code session:
+This section is for people who work on cdkd itself. To test a cdkd checkout
+against another CDK project, add the cloned repository to a Claude Code
+session:
 
 ```bash
 claude --add-dir /path/to/cdkd
 ```
 
-The project-scoped
+The repository's
 [`/use-cdkd`](https://github.com/go-to-k/cdkd/blob/main/.claude/skills/use-cdkd/SKILL.md)
 skill then covers building and linking the checkout.

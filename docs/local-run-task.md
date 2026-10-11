@@ -6,17 +6,17 @@ description: "Run one ECS task definition from your CDK app on local Docker, wit
 # cdkd local run-task
 
 `cdkd local run-task <target>` starts every container of one ECS task
-definition on your Docker host, streams their logs, and exits with the
-essential container's exit code. It is the ECS counterpart of
-[`cdkd local invoke`](local-invoke.md).
+definition on your Docker host and streams their logs. It exits when the
+task's essential container exits, with that container's exit code. It is the
+ECS counterpart of [`cdkd local invoke`](local-invoke.md).
 
 For a service that stays up and restarts its replicas, use
 [`cdkd local start-service`](local-start-service.md).
 
 ## Run a task
 
-Given this task definition in `MyStack`, built from a `Dockerfile` in `app/`
-whose server listens on port 8080:
+Suppose `MyStack` has this task definition. Its image is built from a
+`Dockerfile` in `app/`, and the server in it listens on port 8080:
 
 ```ts
 import * as ecs from 'aws-cdk-lib/aws-ecs';
@@ -29,34 +29,43 @@ taskDef.addContainer('web', {
 });
 ```
 
-run it by its construct path:
+With Docker running, run the task by its construct path:
 
 ```bash
 cdkd local run-task MyStack/TaskDef
 ```
 
 cdkd builds the image, starts the container and streams its output with a
-`[web]` prefix. The container port is published on your machine, so from
-another terminal:
+`[web]` prefix. It also publishes the container port on your machine, so you
+can call the server from another terminal:
 
 ```bash
 curl http://127.0.0.1:8080/
 ```
 
-The command returns when the essential container exits. {kbd:ctrl+c} stops the
-task and removes its containers and network.
+The command returns when the essential container exits. Press {kbd:ctrl+c} to
+stop the task earlier; cdkd then removes its containers and network.
 
 More invocations:
 
 ```bash
-cdkd local run-task MyStack/TaskDef --env-vars overrides.json   # override container variables
-cdkd local run-task MyStack/TaskDef --from-state                # deployed values and secrets
-cdkd local run-task MyStack/Worker --assume-task-role           # containers run as the task role
-cdkd local run-task MyStack/Worker --detach                     # start and return; you clean up
-cdkd local run-task MyStack/Worker --keep-running               # keep stopped containers to inspect
+# override container variables
+cdkd local run-task MyStack/TaskDef --env-vars overrides.json
+
+# deployed values and secrets
+cdkd local run-task MyStack/TaskDef --from-state
+
+# containers run as the task role
+cdkd local run-task MyStack/Worker --assume-task-role
+
+# start and return; you clean up
+cdkd local run-task MyStack/Worker --detach
+
+# keep stopped containers to inspect
+cdkd local run-task MyStack/Worker --keep-running
 ```
 
-Docker is required. The first run also pulls the ECS metadata sidecar,
+Docker is required. The first run also pulls the ECS metadata sidecar image,
 `amazon/amazon-ecs-local-container-endpoints:latest-amd64`.
 
 ## Options
@@ -72,21 +81,31 @@ Docker is required. The first run also pulls the ECS metadata sidecar,
 | `--no-pull` | off | Skip `docker pull` for every container image and the sidecar. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for another account's registry. No effect with `--no-pull`. |
 
-It also accepts every [common flag](local-emulation.md#common-flags). On this
-command `--env-vars` is keyed by container name, `--container-host` is the IP
-published ports bind to, and `--profile` credentials are passed to the
-containers.
+The command also accepts every
+[common flag](local-emulation.md#common-flags). Three of them behave in a
+way specific to this command:
+
+- `--env-vars` is keyed by container name.
+- `--container-host` is the IP that published ports bind to.
+- `--profile` credentials are passed to the containers.
 
 This command spells the role flag `--assume-task-role` only. `start-service`
 and `start-alb` also accept `--assume-role`.
 
 ## Target resolution
 
-| Form | Example |
-| --- | --- |
-| CDK display path | `MyStack/MyService/TaskDef` |
-| Stack-qualified logical ID | `MyStack:MyServiceTaskDefXYZ1234` |
-| Bare name, single-stack apps only | `TaskDef` |
+`<target>` names the task definition. You can write it in three ways:
+
+```bash
+# CDK display path
+cdkd local run-task MyStack/MyService/TaskDef
+
+# stack name, a colon, the logical ID
+cdkd local run-task MyStack:MyServiceTaskDefXYZ1234
+
+# bare name, single-stack app only
+cdkd local run-task TaskDef
+```
 
 A path prefix is enough: `MyStack/MyService/TaskDef` finds the resource at
 `MyStack/MyService/TaskDef/Resource`. See
@@ -94,7 +113,9 @@ A path prefix is enough: `MyStack/MyService/TaskDef` finds the resource at
 
 ## Networking
 
-Each run creates one Docker network for the task:
+Each run creates one Docker network for the task. The task's containers and
+the ECS metadata sidecar join it, and the containers' ports are published on
+your machine.
 
 ```text diagram=local-run-task-network
               Your machine
@@ -113,62 +134,92 @@ Each run creates one Docker network for the task:
    network cdkd-local-task-<random>, subnet 169.254.170.0/24
 ```
 
-| What | Detail |
-| --- | --- |
-| Network | `cdkd-local-task-<random>`, or `<--cluster>-task-<random>`, on subnet `169.254.170.0/24`. |
-| Between containers | Each container is reachable by its `ContainerDefinitions[].Name`. |
-| Metadata | `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>` is set in every container. |
-| Credentials | With `--assume-task-role`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>` is also set. |
-| Your machine | Reachable as [`host.docker.internal`](local-emulation.md#reaching-a-server-on-the-host) where the daemon supports it. |
+Inside the network:
 
-The subnet is fixed, so only one `run-task` can run at a time. A second one
-fails at `docker network create` with a message naming the subnet in use.
-`start-service` shares one network across all the services in a run and is
-not affected.
+- **Container to container.** Each container reaches the others by their
+  `ContainerDefinitions[].Name`.
+- **Task metadata.** Every container has
+  `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`
+  set, as on ECS.
+- **Credentials.** With `--assume-task-role`, every container also has
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>` set.
+- **Your machine.** A container reaches it as
+  [`host.docker.internal`](local-emulation.md#reaching-a-server-on-the-host),
+  where the Docker daemon supports that name.
 
-`awsvpc` network mode becomes a Docker bridge network, with a warning. There is
-no network interface per task and security groups are not enforced.
+The network is named `cdkd-local-task-<random>`, or
+`<cluster>-task-<random>` when you pass `--cluster`. Its subnet is always
+`169.254.170.0/24`.
 
 ### Reaching a container from the host
 
-Every `PortMappings` entry is published on `--container-host` (`127.0.0.1` by
-default), on the entry's `HostPort` when it has one and on the container port
-otherwise. A task with container port `8080` answers at `127.0.0.1:8080` once
-its container is up.
+cdkd publishes every `PortMappings` entry on `--container-host`, which is
+`127.0.0.1` by default. The host port is the entry's `HostPort` when it has
+one, and the container port otherwise. A task with container port `8080`
+therefore answers at `127.0.0.1:8080` once its container is up.
 
-A host port below 1024 fails at `docker run`: publishing there needs root, and
-Docker Desktop on macOS refuses it. This command has no flag to move the port.
-Run the server on an unprivileged port, or use
+### Networking edge cases
+
+**Two tasks at once.** The subnet is fixed, so only one `run-task` can run at
+a time. A second one fails at `docker network create` with a message naming
+the subnet in use. `start-service` shares one network across all the services
+in a run, so it is not affected.
+
+**`awsvpc` network mode.** The task gets a Docker bridge network, and cdkd
+prints a warning. There is no network interface per task, and security groups
+are not enforced.
+
+**A host port below 1024.** `docker run` fails, because publishing a port
+below 1024 needs root and Docker Desktop on macOS refuses it. This command
+has no flag to move the port. Run the server on an unprivileged port, or use
 [`cdkd local start-service`](local-start-service.md), which remaps privileged
 ports and accepts `--host-port`.
 
 ## AWS credentials in containers
 
-Containers get their credentials from the metadata sidecar, as tasks do on
-ECS.
+Containers get their AWS credentials from the metadata sidecar, as tasks do
+on ECS. Which credentials the sidecar hands out depends on the flags:
 
-| You pass | The containers get |
-| --- | --- |
-| Nothing | Whatever the default credential chain resolves on your machine. |
-| `--assume-task-role` | Temporary credentials for the task definition's `TaskRoleArn`, assumed once at startup. |
-| `--assume-task-role <arn>` | Temporary credentials for that role. |
-| `--profile <p>` | The profile's credentials, from the sidecar and from a read-only credentials file mounted in every container under `[<p>]`. |
+```bash
+# your default credential chain
+cdkd local run-task MyStack/Worker
 
-`--assume-task-role` wins over `--profile`.
+# the task definition's TaskRoleArn
+cdkd local run-task MyStack/Worker --assume-task-role
+cdkd local run-task MyStack/Worker \
+  --assume-task-role arn:aws:iam::123456789012:role/WorkerRole
 
-The bare form needs a `TaskRoleArn` it can resolve: a literal ARN, or a
-reference to an `AWS::IAM::Role` in the same stack, which cdkd turns into
-`arn:aws:iam::<account>:role/<RoleLogicalId>` using your account ID. Otherwise
-it is an error telling you to pass the ARN.
+# the dev profile's credentials
+cdkd local run-task MyStack/Worker --profile dev
+```
 
-The `--profile` credentials file is in a temporary directory, mode `0600`, and
-is removed when the run ends. Under `--detach` it stays, because the
-containers still mount it. cdkd prints its path so you can delete it when the
-containers are gone.
+- With no flag, the containers get whatever the default credential chain
+  resolves on your machine.
+- `--assume-task-role` assumes the role once at startup and gives the
+  containers its temporary credentials. Use it to see IAM errors locally.
+- `--profile <name>` gives the containers the profile's credentials. They
+  come from the sidecar, and also from a read-only credentials file mounted
+  in every container, where they are stored under `[<name>]`.
+
+When you pass both, `--assume-task-role` wins over `--profile`.
+
+### Credential edge cases
+
+**A `TaskRoleArn` cdkd cannot resolve.** The bare `--assume-task-role` needs
+a `TaskRoleArn` that is a literal ARN or a reference to an `AWS::IAM::Role`
+in the same stack. cdkd turns the reference into
+`arn:aws:iam::<account>:role/<RoleLogicalId>`, using your account ID. For any
+other shape the command stops with an error telling you to pass the ARN.
+
+**The `--profile` credentials file.** cdkd writes the file to a temporary
+directory with mode `0600` and removes it when the run ends. Under `--detach`
+the file stays, because the containers still mount it. cdkd prints its path
+so that you can delete it once the containers are gone.
 
 ## Images
 
-Each container's `Image` is fetched according to where it lives:
+cdkd gets each container's image in one of three ways, depending on where
+the image lives:
 
 | Image | How cdkd gets it |
 | --- | --- |
@@ -176,79 +227,36 @@ Each container's `Image` is fetched according to where it lives:
 | A private ECR image | `docker login` to that registry, then `docker pull`. |
 | A CDK asset (`ContainerImage.fromAsset`, `DockerImageAsset`) | `docker build` from the cloud assembly, tagged `cdkd-local-run-task-<asset-hash>`. |
 
-ECR pulls work across regions. Across accounts, cdkd uses your own
-credentials, which works when the repository policy grants you access;
-otherwise pass `--ecr-role-arn <arn>` to assume a role in the target account.
+An ECR pull from another region works without extra flags. A pull from
+another account uses your own credentials, which works when the repository
+policy grants you access. When it does not, pass `--ecr-role-arn <arn>` to
+assume a role in the target account.
 
-### Images that reference the stack
-
-`ContainerImage.fromEcrRepository(repo)` synthesizes an `Fn::Sub` or
-`Fn::GetAtt`, which cdkd resolves before fetching the image:
-
-| Part of the image URI | Resolved from | Needs a state flag |
-| --- | --- | --- |
-| `${AWS::AccountId}`, `${AWS::Region}`, `${AWS::Partition}`, `${AWS::URLSuffix}` | STS and the region | No |
-| A same-stack `AWS::ECR::Repository` (`${<LogicalId>}`, or `Fn::GetAtt` of `Arn` \| `RepositoryUri`) | The deployed repository name | Yes: `--from-state` or `--from-cfn-stack` |
-
-Without a state flag, a same-stack repository reference fails with an error
-naming the two flags. The stack must have been deployed first.
-
-### Which registry hosts are treated as ECR
-
-cdkd logs in to the exact host the image names, so FIPS, dual-stack and
-cross-account images authenticate on their own endpoint.
-
-| Host shape | Recognized |
-| --- | --- |
-| `<account>.dkr.ecr.<region>.<urlSuffix>` | Yes |
-| `<account>.dkr.ecr-fips.<region>.<urlSuffix>` | In commercial and GovCloud regions |
-| `<account>.dkr-ecr[-fips].<region>.on.aws` (dual-stack) | In commercial and GovCloud regions |
-| A host whose suffix belongs to another region's partition | No |
-| A region prefix cdkd does not know yet | No. The image is pulled anonymously, and a debug line says the host looked like ECR. |
-
-Letter case in the host is ignored. A non-ASCII character in the host is
-refused.
-
-The partition and URL suffix come from the region. The same mapping fills
-`${AWS::Partition}` and `${AWS::URLSuffix}` everywhere cdkd substitutes them.
-
-| Region prefix | Partition | URL suffix |
-| --- | --- | --- |
-| `us-gov-*` | `aws-us-gov` | `amazonaws.com` |
-| `cn-*` | `aws-cn` | `amazonaws.com.cn` |
-| `us-iso-*` | `aws-iso` | `c2s.ic.gov` |
-| `us-isob-*` | `aws-iso-b` | `sc2s.sgov.gov` |
-| `eu-isoe-*` | `aws-iso-e` | `cloud.adc-e.uk` |
-| `us-isof-*` | `aws-iso-f` | `csp.hci.ic.gov` |
-| `eusc-*` | `aws-eusc` | `amazonaws.eu` |
-| everything else | `aws` | `amazonaws.com` |
-
-### Which images are built as CDK assets
-
-An image is built locally when its URI names a container-assets repository:
-
-| Repository | Recognized |
-| --- | --- |
-| `cdk-<qualifier>-container-assets-<acct>-<region>`, any qualifier | Always |
-| `cdkd-container-assets-<acct>-<region>` | Always |
-| A custom name from `cdkd bootstrap --container-repo <name>` | Under `--from-state`, when the region's bootstrap marker can be read |
-
-An asset image that is not recognized is pulled from ECR instead, which is
-slower and otherwise the same.
+An image from `ContainerImage.fromEcrRepository(repo)`, where `repo` is in
+the same stack, needs `--from-state` or `--from-cfn-stack` so that cdkd can
+find the deployed repository's name.
+[Images in cdkd local run-task](local-run-task-images.md) covers that case,
+which registry hosts count as ECR, and how an asset image is recognized.
 
 ## Environment variables and secrets
 
-Container `Environment` values and `Secrets[].ValueFrom` are usually
-references in a CDK app: `table.tableName` is a `Ref`, and
-`ecs.Secret.fromSecretsManager(secret)` is a `Ref` to the secret's ARN. They
-are resolved as
-[Where values come from](local-emulation.md#where-values-come-from) describes.
-Without a state flag the container sees an empty variable or a missing secret.
+In a CDK app, a container's `Environment` values and `Secrets` are usually
+references: `table.tableName` is a `Ref`, and
+`ecs.Secret.fromSecretsManager(secret)` is a `Ref` to the secret's ARN.
+Without a state flag cdkd cannot resolve them, so the container sees an empty
+variable or a missing secret. Pass the flag that matches how the stack was
+deployed:
 
 ```bash
-cdkd local run-task MyStack/TaskDef --from-state       # deployed with cdkd deploy
-cdkd local run-task MyStack/TaskDef --from-cfn-stack   # deployed with the AWS CDK CLI
+# deployed with cdkd deploy
+cdkd local run-task MyStack/TaskDef --from-state
+
+# deployed with the AWS CDK CLI
+cdkd local run-task MyStack/TaskDef --from-cfn-stack
 ```
+
+[Where values come from](local-emulation.md#where-values-come-from) explains
+the flags. On this command they resolve the following:
 
 | Reference | Result |
 | --- | --- |
@@ -258,56 +266,27 @@ cdkd local run-task MyStack/TaskDef --from-cfn-stack   # deployed with the AWS C
 | `{{resolve:...}}` in `Environment` | Looked up before any container starts. |
 | `{{resolve:...}}` in `Command`, `EntryPoint` or a health-check command | Refused. Move it to `Environment` or `Secrets`. |
 
-A value that cannot be resolved is dropped, a warning names it, and the run
-continues.
+When cdkd cannot resolve a value, it drops the value, prints a warning that
+names it, and continues the run.
 
-### Secrets Manager and SSM secrets
+### Secrets
 
-After substitution, each `Secrets[].ValueFrom` is fetched once at startup:
+Once the references are resolved, cdkd fetches each `Secrets` entry from
+Secrets Manager or SSM at startup and sets it as an environment variable in
+the container. A secret that cannot be fetched stops the run, with an error
+naming the container and the secret.
 
-| `ValueFrom` | Call |
-| --- | --- |
-| `arn:aws:secretsmanager:<region>:<account>:secret:<name>` | `GetSecretValue` |
-| `arn:aws:secretsmanager:<region>:<account>:secret:<name>:<json-key>::` | `GetSecretValue`, then the `<json-key>` field of the JSON value |
-| `arn:aws:ssm:<region>:<account>:parameter/<name>` | `GetParameter` with decryption |
-
-A secret that cannot be fetched stops the run, with an error naming the
-container and the secret. Fix the credentials or the IAM policy and run again.
-
-The value is passed to `docker run` through its environment, so it does not
-appear on a command line. The exception is
-[finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows),
-where a task with secrets is refused.
-
-### Secret names that are not forwarded
-
-A secret is dropped, with a warning naming it, when its name would affect the
-container client itself. Rename the secret if the container needs it.
-
-- A name that is empty or contains `=` or NUL.
-- A name, in any letter case, that the container client (Docker, podman,
-  nerdctl, finch) or one of its credential helpers reads:
-
-| Family | Examples |
-| --- | --- |
-| Docker connection, TLS and behaviour settings | `DOCKER_HOST`, `DOCKER_CONFIG`, `DOCKER_TLS_VERIFY` |
-| Process, loader and trust variables | `PATH`, `HOME`, `GCONV_PATH`, `SSL_CERT_FILE`; the `LD_` / `DYLD_` prefixes |
-| SSH helper variables | `SSH_AUTH_SOCK`, `SSH_ASKPASS` |
-| AWS variables `docker-credential-ecr-login` reads | `AWS_PROFILE`, `AWS_ECR_CACHE_DIR`; the `AWS_ENDPOINT_URL_` prefix |
-| gcloud variables `docker-credential-gcloud` reads | `GCE_METADATA_HOST`; the `CLOUDSDK_` prefix, except `CLOUDSDK_AUTH_ACCESS_TOKEN`, which is forwarded |
-| Interpreter variables of a credential helper written in a scripting language | `SHELLOPTS`, `PS4`, `PYTHONPATH`, `PYTHONWARNINGS`, `BROWSER`, `REQUESTS_CA_BUNDLE`, `NODE_OPTIONS`, `RUBYOPT`, `PERL5OPT`, `OPENSSL_CONF`; the `BASH_FUNC_` prefix |
-| podman connection and config files | `CONTAINER_HOST`, `CONTAINERS_CONF`, `REGISTRY_AUTH_FILE` |
-| nerdctl connection, config and CNI | `CONTAINERD_ADDRESS`, `NERDCTL_TOML`, `CNI_PATH` |
-| finch's Lima layer | `SSH` |
-| Base directories the above fall back to | `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`; on Windows `APPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `LOCALAPPDATA` |
-
-Forwarding such a name would let a template redirect the client. A secret
-named `DOCKER_HOST`, for example, would point it at another daemon.
+[Secrets in cdkd local run-task](local-run-task-secrets.md) lists the
+`ValueFrom` forms cdkd accepts and the secret names it refuses to forward.
 
 ## Container start ordering
 
-Containers start in `DependsOn` order. Containers with no dependency between
-them start in template order. A dependency cycle is an error naming the cycle.
+cdkd starts containers in `DependsOn` order. Containers with no dependency
+between them start in template order. A dependency cycle is an error that
+names the cycle.
+
+Before cdkd starts a container, it waits for each of the container's
+dependencies to reach the declared `Condition`:
 
 | `Condition` | cdkd waits until the dependency |
 | --- | --- |
@@ -318,36 +297,55 @@ them start in template order. A dependency cycle is an error naming the cycle.
 
 ## Volumes
 
+cdkd maps each `Volumes[]` entry of the task definition to a Docker mount:
+
 | `Volumes[]` entry | Locally |
 | --- | --- |
-| `Host: { SourcePath: '/some/path' }` | A bind mount of that host path. You create the path; a missing one warns. |
+| `Host: { SourcePath: '/some/path' }` | A bind mount of that host path. |
 | `Host` with no `SourcePath` | An anonymous Docker volume, empty for each run. |
-| `DockerVolumeConfiguration` | A Docker volume created with its `Driver` and `DriverOpts`. A `task`-scoped one is removed on exit. |
-| `EFSVolumeConfiguration` | Error. Bind-mount a local directory at the same container path. |
+| `DockerVolumeConfiguration` | A Docker volume created with its `Driver` and `DriverOpts`. |
+| `EFSVolumeConfiguration` | Error. |
 | `FSxWindowsFileServerVolumeConfiguration` | Error. |
+
+Three details:
+
+- You create the host path of a bind mount yourself. cdkd warns when it is
+  missing.
+- A `DockerVolumeConfiguration` volume scoped to the `task` is removed when
+  the task exits.
+- In place of an EFS volume, bind-mount a local directory at the same
+  container path.
 
 A `SourcePath` that is an `Fn::Sub` or `Fn::Join` is resolved like an
 environment value.
 
 ## Lifecycle and teardown
 
-The first container marked essential drives the task. When no container sets
-`essential: false`, that is the first container in the template.
+One container drives the task: the first container marked essential. When no
+container sets `essential: false`, that is the first container in the
+template. The task ends when that container exits:
 
 1. The essential container exits.
-2. The other containers are stopped with a ten-second grace period, then
-   removed.
-3. The sidecar and the network are removed.
+2. cdkd stops the other containers, giving them a ten-second grace period,
+   and removes them.
+3. cdkd removes the sidecar and the network.
 4. cdkd exits with the essential container's exit code.
 
-| Flag | Changes |
-| --- | --- |
-| `--detach` | cdkd exits once the containers are started and prints the network name. Find them with `docker ps --filter network=<name>`. Nothing is torn down. |
-| `--keep-running` | The other containers are not stopped or removed in step 2, so you can `docker exec` into them. The network and sidecar are still removed. |
+{kbd:ctrl+c} runs the same teardown, including for anything still being
+created. A second {kbd:ctrl+c} exits `130` at once and skips the remaining
+cleanup. See [Stopping a server](local-emulation.md#stopping-a-server).
 
-{kbd:ctrl+c} runs the same teardown, including anything still being created.
-A second {kbd:ctrl+c} exits `130` at once and skips the remaining cleanup. See
-[Stopping a server](local-emulation.md#stopping-a-server).
+### `--detach` and `--keep-running`
+
+Two flags change the teardown.
+
+`--detach` makes cdkd exit as soon as the containers are started. Nothing is
+torn down. cdkd prints the network name, and you find the containers with
+`docker ps --filter network=<name>` and remove them yourself.
+
+`--keep-running` skips step 2: the other containers are neither stopped nor
+removed, so you can `docker exec` into them. The network and the sidecar are
+still removed.
 
 ## Limitations
 
@@ -374,9 +372,18 @@ A second {kbd:ctrl+c} exits `130` at once and skips the remaining cleanup. See
 | `130` | {kbd:ctrl+c}. |
 | `N` | Any other code the essential container exited with. |
 
-`1` can mean either a container failure or a cdkd failure. Read the error line
-to tell them apart. The full cross-command table is in the
-[CLI Reference](cli-reference.md#exit-codes).
+Exit code `1` can mean either a container failure or a cdkd failure. Read the
+error line to tell them apart. The full cross-command table is in
+[Exit codes](cli-reference-exit-codes.md).
+
+## In this section
+
+- [Images in cdkd local run-task](local-run-task-images.md): images that
+  reference the stack, which registry hosts are treated as ECR, and which
+  images are built as CDK assets
+- [Secrets in cdkd local run-task](local-run-task-secrets.md): the
+  `ValueFrom` forms, how a secret reaches the container, and the secret names
+  that are not forwarded
 
 ## Related
 
@@ -387,5 +394,4 @@ to tell them apart. The full cross-command table is in the
 - [`cdkd local invoke`](local-invoke.md): the Lambda equivalent
 - [Local Execution](local-emulation.md): choosing a command, value
   resolution, and the flags every command shares
-- [CLI Reference](cli-reference.md): every command and the full exit-code
-  table
+- [CLI Reference](cli-reference.md): every cdkd command

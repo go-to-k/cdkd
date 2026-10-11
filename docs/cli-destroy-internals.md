@@ -6,10 +6,19 @@ unlisted: true
 
 # Destroy internals
 
-This page holds the detail behind [Destroy flags & guards](cli-destroy.md):
-the cases that page summarizes in one line each. It is written for someone
-debugging an unusual destroy or changing cdkd itself. Start from the public
-page; every section here is linked from the place it expands.
+This page holds the detail behind [Destroy flags & guards](cli-destroy.md)
+and its sub-pages: the cases those pages summarize in one line each. It is
+written for someone debugging an unusual destroy or changing cdkd itself.
+Start from the public pages; every section here is linked from the place it
+expands.
+
+| Section here | Public page |
+| --- | --- |
+| [Final snapshots](#final-snapshots) | [Destroy: data guards and final snapshots](cli-destroy-guards.md) |
+| [`--remove-protection`](#remove-protection) | [Destroy: deletion protection](cli-destroy-protection.md) |
+| [Skipped resources](#skipped-resources) | [Destroy: skipped resources](cli-destroy-skipped.md) |
+| [Damaged state records](#damaged-state-records) | [Destroy: interruption and damaged state](cli-destroy-edge-cases.md) |
+| [Confirmation prompts on a non-interactive stdin](#confirmation-prompts-on-a-non-interactive-stdin) | [Destroy: confirmation prompts](cli-destroy-prompts.md) |
 
 ## Final snapshots
 
@@ -59,7 +68,7 @@ These cases still go through Cloud Control:
 
 | Case | Delete |
 | --- | --- |
-| An RDS cluster or standalone RDS instance with no `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](cli-destroy.md#which-policy-cdkd-reads)). A Neptune cluster's absent default is `Delete`, so it goes through Neptune. |
+| An RDS cluster or standalone RDS instance with no `DeletionPolicy` | CloudFormation's default, `Snapshot`, applies: refused on the Cloud Control route unless `--skip-final-snapshot` (see [Which policy cdkd reads](cli-destroy-guards.md#which-policy-cdkd-reads)). A Neptune cluster's absent default is `Delete`, so it goes through Neptune. |
 | A Neptune cluster that sets `GlobalClusterIdentifier`, or an RDS cluster whose recorded `GlobalClusterIdentifier` is not a plain name | Through Cloud Control, whose handler removes it from the global cluster first; cdkd warns that a snapshot can be left behind. |
 | A rollback's delete of a replacement's new copy under `UpdateReplacePolicy: Snapshot` | Through Cloud Control, whose handler takes the snapshot, with or without `--skip-final-snapshot`. |
 
@@ -67,7 +76,7 @@ These cases still go through Cloud Control:
 
 `UpdateReplacePolicy: Snapshot` is honored on the deploy engine's replacement
 and recreate deletes with the same per-type mechanism as
-[the per-type table](cli-destroy.md#how-the-final-snapshot-is-created-by-type). The
+[the per-type table](cli-destroy-guards.md#how-the-final-snapshot-is-created-by-type). The
 `--force-stateful-recreation` stateful guard still applies first where the
 replacement is data-losing.
 
@@ -90,13 +99,13 @@ failing the update.
 Every delete of a failed CREATE applies the same policy matrix: `Retain`
 leaves the resource in AWS, `Snapshot` snapshots then deletes (refusing what it
 cannot snapshot), `RetainExceptOnCreate` / `Delete` delete plainly, and absent
-takes CloudFormation's default (see [Which policy cdkd reads](cli-destroy.md#which-policy-cdkd-reads)).
+takes CloudFormation's default (see [Which policy cdkd reads](cli-destroy-guards.md#which-policy-cdkd-reads)).
 `cdkd rollback --revert-failed` deletes one whose recorded physical id state
 still records. A CREATE whose provider proved it made the resource before
 failing has no state record and is deleted on the journaled policy by every
 rollback, by `cdkd destroy` and, when no state record may own it, by a later
 successful deploy (see
-[Resources only the rollback journal records](cli-destroy.md#resources-only-the-rollback-journal-records)).
+[Resources only the rollback journal records](cli-destroy-skipped.md#resources-only-the-rollback-journal-records)).
 Either way it only engages when AWS actually provisioned the resource, so the
 policy is never applied to a resource that never existed.
 
@@ -116,6 +125,27 @@ non-colliding one. EC2 Volume reuses a completed snapshot safely — its tag is
 keyed on an AWS-generated volume id that is never reused.
 
 ## `--remove-protection`
+
+### The exact call per type
+
+[The public table](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
+names the call that turns protection off. The arguments and the follow-up
+steps are:
+
+| Resource type | Call and arguments |
+| --- | --- |
+| `AWS::Logs::LogGroup` | `PutLogGroupDeletionProtection(deletionProtectionEnabled=false)` |
+| `AWS::RDS::DBInstance`, `AWS::Neptune::DBInstance` | `ModifyDBInstance(DeletionProtection=false, ApplyImmediately=true)` |
+| `AWS::RDS::DBCluster`, `AWS::DocDB::DBCluster`, `AWS::Neptune::DBCluster` | `ModifyDBCluster(DeletionProtection=false, ApplyImmediately=true)` |
+| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | `UpdateTable(DeletionProtectionEnabled=false)`, then a wait until `ACTIVE` |
+| `AWS::EC2::Instance` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | `ModifyLoadBalancerAttributes` setting `deletion_protection.enabled` to `false` |
+| `AWS::Cognito::UserPool` | `UpdateUserPool(DeletionProtection='INACTIVE')` |
+| `AWS::AutoScaling::AutoScalingGroup` | `UpdateAutoScalingGroup(DeletionProtection='none')`, the per-instance `DisableApiTermination` flip, then `DeleteAutoScalingGroup(ForceDelete=true)` |
+| `AWS::EMR::Cluster` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
+| `AWS::DSQL::Cluster`, `AWS::SMSVOICE::ProtectConfiguration` | Cloud Control `UpdateResource` patch of `DeletionProtectionEnabled` to `false`, waited, then `DeleteResource` |
+| `AWS::NeptuneGraph::Graph`, `AWS::EKS::Cluster`, `AWS::RDS::GlobalCluster`, `AWS::DocDB::GlobalCluster` | The same Cloud Control patch, of `DeletionProtection` to `false` |
+| `AWS::VerifiedPermissions::PolicyStore` | The same Cloud Control patch, of `DeletionProtection` to `{Mode: DISABLED}` |
 
 ### Behaviour
 
@@ -138,7 +168,7 @@ keyed on an AWS-generated volume id that is never reused.
   silently succeeding.
 - **It reaches a resource only the rollback journal records** too (a failed
   CREATE's resource, see
-  [Resources only the rollback journal records](cli-destroy.md#resources-only-the-rollback-journal-records)):
+  [Resources only the rollback journal records](cli-destroy-skipped.md#resources-only-the-rollback-journal-records)):
   a protected one is deleted with its protection turned off, and the prompt
   counts it when its journaled properties turn protection on. Only when cdkd
   can prove it is still the resource the failed deploy created — its type's id
@@ -283,7 +313,7 @@ The custom-resource handler causes attempted the delete. The per-resource
   | A Custom Resource with no properties, or no `ServiceToken` | Its handler never receives a `Delete` request, so whatever it manages elsewhere is untouched. |
   | A Custom Resource whose recorded `ServiceToken` is the redaction mask `***` — it read a `NoEcho` value equal to, or contained in, its own `ServiceToken` | As above. A re-deploy masks it again, so restore the ARN while the handler still exists, or tear the resource down by hand. |
   | A Custom Resource whose recorded `ServiceToken` holds a `{{resolve:...}}` reference — cdkd keeps a secret (`secretsmanager` / `ssm-secure`) reference's expression, not its value, and does not resolve it on delete | As above. A deploy of that template is refused (CloudFormation does not support secure dynamic references in custom resources), so restore the ARN while the handler still exists, or tear the resource down by hand. |
-  | A Custom Resource whose recorded properties hold `***` where a `NoEcho` value stood, and cdkd could not re-resolve it, for example: `cdkd state destroy` (no template), an attribute a producer declared `NoEcho`, or a template whose text there changed. `cdkd destroy` with the app re-resolves a `NoEcho` parameter and sends the delete; every case it refuses is in [the details](state-management.md#custom-resources-that-read-a-noecho-parameter) | As above: its handler would receive the mask in `ResourceProperties`. Tear down what it manages by hand, then drop the record with `cdkd state orphan`. |
+  | A Custom Resource whose recorded properties hold `***` where a `NoEcho` value stood, and cdkd could not re-resolve it, for example: `cdkd state destroy` (no template), an attribute a producer declared `NoEcho`, or a template whose text there changed. `cdkd destroy` with the app re-resolves a `NoEcho` parameter and sends the delete; every case it refuses is in [the details](state-management-secrets.md#custom-resources-that-read-a-noecho-parameter) | As above: its handler would receive the mask in `ResourceProperties`. Tear down what it manages by hand, then drop the record with `cdkd state orphan`. |
   | A Custom Resource whose recorded properties hold `***` at a position no `NoEcho` coordinate of the record names (a mask embedded through `Fn::Join`, or a record an earlier cdkd wrote) | As above. A `cdkd deploy` of the app (or a `cdkd scrub` of the stack) first records the `NoEcho` positions, after which `cdkd destroy` sends the delete. |
   | `AWS::IAM::Policy` with neither a policy name in its `physicalId` nor a `PolicyName` property | The policy stays attached wherever it is. |
   | `AWS::IAM::Policy` naming no `Roles` / `Groups` / `Users` | An inline policy exists only as an attachment, so a record naming no principal cannot be deleted. |
@@ -531,7 +561,7 @@ To act on the resources instead, inspect the record with `cdkd state show
 '<stack>' --stack-region '<region>' --json`, repair it, and re-run the destroy. An
 **absent** `resources` field is a defect and is refused too — a stack always has
 a resource map, even an empty one. Full per-command table in
-[State Management](state-management.md#when-resources-is-not-an-object).
+[State Management](state-management-malformed-records.md#resources-is-not-an-object).
 
 ### An unreadable resource record
 
@@ -563,9 +593,9 @@ left standing is more than one row asks for. Inspect the record with
 `cdkd state show '<stack>' --stack-region '<region>' --json`, repair the row,
 and re-run. A row that names its type but no usable `physicalId` is not refused
 here: it is skipped on its own (see
-[Skipped resources on destroy](cli-destroy.md#skipped-resources-on-destroy)). Full per-command
+[Destroy: skipped resources](cli-destroy-skipped.md#a-state-record-cdkd-cannot-address)). Full per-command
 table in
-[State Management](state-management.md#when-one-resources-record-cannot-be-read).
+[State Management](state-management-malformed-records.md#one-resources-entry-cannot-be-read).
 
 ### An unreadable `properties` map
 
@@ -626,7 +656,7 @@ cdkd state orphan '<stack>' --stack-region '<region>'
 — which orphans whatever the record described, so prefer repairing the bag when
 the resources still matter. An **absent** `outputs` field is not
 a defect and is never refused: cdkd writes such records on purpose. The full
-per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
+per-command table is in [State Management](state-management-malformed-records.md#outputs-is-not-an-object).
 
 ### A malformed `orphans` list
 
@@ -670,8 +700,8 @@ prints is sanitized, so a stored value cannot forge a row or redraw the lines
 above it — and so is the list of resources to be deleted above it.
 
 The per-command tables are in State Management — one for
-[the container](state-management.md#when-orphans-is-not-a-list), one for
-[a single record](state-management.md#when-one-orphans-record-cannot-be-read).
+[the container](state-management-malformed-records.md#orphans-is-not-a-list), one for
+[a single record](state-management-malformed-records.md#one-orphans-entry-cannot-be-read).
 
 ## Confirmation prompts on a non-interactive stdin
 

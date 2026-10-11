@@ -1,25 +1,38 @@
 ---
 title: Testing
-description: "How to run and write cdkd's unit tests, what the real-AWS integration tests are, who runs them, and how to add a fixture."
+description: "How to run and write cdkd's unit tests, what the real-AWS integration tests are, who runs them, and how to run one yourself."
 ---
 
 # How to Test cdkd
 
-cdkd has two kinds of tests. Every change needs the first. Some changes need
-the second, and the maintainer can run those for you.
+cdkd has two kinds of tests. Every change needs unit tests. Some changes also
+need an integration test, and the maintainer can run those for you.
 
 | | Unit tests | Integration tests |
 | --- | --- | --- |
 | Where | `tests/unit/` | `tests/integration/<name>/` |
-| What runs | Vitest, with the AWS SDK mocked | A CDK app deployed to a real AWS account, then destroyed |
-| Needs | Nothing beyond the toolchain | AWS credentials. Some also need Docker. |
+| What runs | Vitest, with the AWS SDK mocked | A CDK app deployed to real AWS, then destroyed |
+| Needs | The toolchain only | AWS credentials, and Docker for some |
 | Cost | None | Real AWS charges |
-| Run by | You, and CI on every pull request | You if you want to; otherwise the maintainer before merging |
+| Run by | You, and CI on every pull request | You, or the maintainer before merging |
 
-Which changes need an integration test is in
-[Contributing](contributing.md#when-is-an-integration-test-needed-and-which-one).
+[Contributing](contributing.md#when-is-an-integration-test-needed-and-which-one)
+says which changes need an integration test.
+
+## In this section
+
+- [Writing an integration fixture](testing-integration-fixtures.md) shows how
+  to add a fixture, how one fixture tests an update or a rollback, and how the
+  coverage reports are regenerated.
+- [Integration fixture conventions](integ-fixture-conventions.md) is the full
+  set of rules a `verify.sh` script follows.
+- [Testing internals](testing-internals.md) records what individual fixtures
+  assert, and why each is built the way it is.
 
 ## Unit tests
+
+Unit tests call no AWS service, so they need no credentials. Run them after
+every change.
 
 ### Run them
 
@@ -32,17 +45,21 @@ vp run test:coverage                               # with a coverage report
 vp test --ui                                       # the Vitest UI
 ```
 
-Prefer `vp test run` over `vp run test` when you want the verdict: it calls
+When you want the verdict, prefer `vp test run` over `vp run test`. It calls
 Vitest directly, with no task runner in between.
 
 ### Write one
 
-A test file mirrors the source file it covers: `src/analyzer/dag-builder.ts`
-is tested in `tests/unit/analyzer/dag-builder.test.ts`. Add tests in the same
-commit as the change, for a bug fix as well as for a feature.
+A test file mirrors the source file it covers. `src/analyzer/dag-builder.ts`,
+for example, is tested in `tests/unit/analyzer/dag-builder.test.ts`. Add the
+tests in the same commit as the change, for a bug fix as well as for a feature.
+
+This is a complete test file for one method of a provider. It replaces the SDK
+client with a mock, so that the test controls what "AWS" answers:
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { DescribeDBSubnetGroupsCommand } from '@aws-sdk/client-docdb';
 
 const mockSend = vi.fn();
 
@@ -57,29 +74,44 @@ vi.mock('@aws-sdk/client-docdb', async (importOriginal) => {
   };
 });
 
-import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
+import {
+  DocDBSubnetGroupProvider,
+} from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('DocDBSubnetGroupProvider.readCurrentState', () => {
+  let provider: DocDBSubnetGroupProvider;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    provider = new DocDBSubnetGroupProvider();
   });
 
-  it('returns RESOURCE_NOT_FOUND when DescribeDBSubnetGroups lists no group', async () => {
-    mockSend.mockResolvedValueOnce({ DBSubnetGroups: [] });
+  it('returns RESOURCE_NOT_FOUND when the group is gone', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('DBSubnetGroup my-sg not found'), {
+        name: 'DBSubnetGroupNotFoundFault',
+      })
+    );
 
-    const provider = new DocDBSubnetGroupProvider();
-    const result = await provider.readCurrentState('my-sg', 'Sg', 'AWS::DocDB::DBSubnetGroup');
+    const result = await provider.readCurrentState(
+      'my-sg',
+      'Sg',
+      'AWS::DocDB::DBSubnetGroup'
+    );
 
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(
+      DescribeDBSubnetGroupsCommand
+    );
     expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 });
 ```
 
 Import the test API from `'vite-plus/test'`. A bare `'vitest'` import resolves
-locally but fails `vp run typecheck:test`.
+locally, but it fails `vp run typecheck:test`.
 
-Which module to mock depends on where the code under test gets its AWS client:
+Which module you mock depends on where the code under test gets its AWS client:
 
 | The code | Mock |
 | --- | --- |
@@ -88,28 +120,38 @@ Which module to mock depends on where the code under test gets its AWS client:
 
 ### What the suite enforces
 
-The test setup in `tests/setup.ts` fails a test for these, even when its
-assertions pass:
+The test setup in `tests/setup.ts` enforces four rules. A test that breaks one
+fails even when its own assertions pass.
 
-| Rule | What you see | What to do |
-| --- | --- | --- |
-| No real AWS calls | The test fails with a message naming the SDK package that made the call | Mock that package. A `vi.mock` with a misspelled package name does nothing, so copy the name from the message. |
-| A passing run prints nothing | Output a test wrote to stdout or stderr is shown only when the test fails | Mock the logger, or assert on the output |
-| A `mock...Once` value is used by the test that queued it | Fails under `vp run test:once-leak`, which CI runs | Queue only what the code path consumes. `vi.clearAllMocks()` does not empty the queue. |
-| Temporary files stay in the run's own directory | `os.tmpdir()` points at a per-run directory that is removed afterwards | Use `os.tmpdir()` as usual |
+- **No real AWS calls.** A test that reaches a real SDK client fails with a
+  message that names the SDK package. Mock that package. A `vi.mock` with a
+  misspelled package name does nothing, so copy the name from the message.
+- **A passing run prints nothing.** Output that a test writes to stdout or
+  stderr is shown only when the test fails. Mock the logger, or assert on the
+  output.
+- **A `mock...Once` value is used by the test that queued it.** A leftover
+  value fails under `vp run test:once-leak`, which CI runs. Queue only what
+  the code path consumes, because `vi.clearAllMocks()` does not empty the
+  queue.
+- **Temporary files stay in the run's own directory.** `os.tmpdir()` points at
+  a per-run directory that is removed afterwards, so use `os.tmpdir()` as
+  usual.
 
-A test that spawns a process declares its own timeout, since the default of 5
-seconds is sized for in-process tests.
+The default timeout is 5 seconds, which is sized for in-process tests. A test
+that spawns a process declares its own timeout.
 
 The second and third rules are written up with examples in
 [Integration fixture conventions](integ-fixture-conventions.md#unit-tests-prime-exactly-what-the-code-path-consumes).
 
 ## Integration tests
 
-Each directory under `tests/integration/` is a **fixture**: a small CDK app
-that uses the resource types or the cdkd feature under test. There are several
-hundred. Most carry a `verify.sh` script that runs the whole cycle and checks
-the results against AWS:
+An integration test deploys a small CDK app to a real AWS account with your
+build of cdkd, checks the result, and destroys it again.
+
+Each directory under `tests/integration/` is one such app, called a
+**fixture**. A fixture uses the resource types or the cdkd feature under test.
+There are several hundred. Most carry a `verify.sh` script that runs the whole
+cycle and checks the results against AWS:
 
 ```text diagram=contrib-integ-run
 Build cdkd, install the fixture's dependencies
@@ -169,20 +211,24 @@ needs before merging it, and records each run in
 
 3. Run the fixture
 
-   With a `verify.sh`, which installs the fixture's dependencies itself:
+   A fixture with a `verify.sh` installs its own dependencies, so one command
+   runs it:
 
    ```bash
    AWS_REGION=us-east-1 bash tests/integration/drift-revert/verify.sh
    ```
 
-   Without one, deploy and destroy by hand:
+   For a fixture without one, deploy and destroy by hand:
 
    ```bash
    cd tests/integration/basic
    vp install
-   BUCKET="cdkd-state-$(aws sts get-caller-identity --query Account --output text)"
-   node ../../../dist/cli.js deploy --region us-east-1 --state-bucket "$BUCKET" --verbose
-   node ../../../dist/cli.js destroy --region us-east-1 --state-bucket "$BUCKET" --force
+   ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+   BUCKET="cdkd-state-$ACCOUNT"
+   node ../../../dist/cli.js deploy --region us-east-1 \
+     --state-bucket "$BUCKET" --verbose
+   node ../../../dist/cli.js destroy --region us-east-1 \
+     --state-bucket "$BUCKET" --force
    ```
 
    Pass `--all` to both commands when the app has more than one stack.
@@ -190,17 +236,18 @@ needs before merging it, and records each run in
 4. Check that nothing is left behind
 
    ```bash
-   aws s3 ls "s3://$BUCKET/cdkd/CdkdBasicExample/" --recursive | grep -v '/deployments/'
+   aws s3 ls "s3://$BUCKET/cdkd/CdkdBasicExample/" --recursive \
+     | grep -v '/deployments/'
    ```
 
    No output means the stack's state is gone. Objects under `deployments/` are
    the stack's event history, which a destroy keeps.
 :::
 
-A `verify.sh` typically reads `AWS_REGION` and `STATE_BUCKET` from the
-environment and falls back to `us-east-1` and `cdkd-state-<accountId>`. Read
-the header comment of a fixture's `verify.sh` before running it. It lists the
-steps, and names any region or account requirement.
+Read the header comment of a fixture's `verify.sh` before you run it. The
+comment lists the steps, and it names any region or account the fixture
+requires. A `verify.sh` typically reads `AWS_REGION` and `STATE_BUCKET` from
+the environment, and falls back to `us-east-1` and `cdkd-state-<accountId>`.
 
 > [!WARNING]
 > A run that is killed part-way can leave resources that keep costing money.
@@ -211,129 +258,11 @@ steps, and names any region or account requirement.
 > collides with them.
 
 Most `local-*` fixtures need only Docker and create nothing in AWS.
-`local-invoke-from-state` is the exception: it deploys real resources.
-
-### Write an integration fixture
-
-Add a fixture when your change adds behavior no existing fixture covers. Before
-writing one, search for the resource type under `tests/integration/*/lib`. An
-existing fixture that already deploys it is often the better place for a new
-assertion.
-
-Copy a recent fixture, such as `tests/integration/dynamodb-gsi-update/`. A
-fixture has these files:
-
-```text
-tests/integration/sqs-queue-tags/
-├── cdk.json            # { "app": "node bin/app.ts" }
-├── package.json        # "type": "module"; aws-cdk-lib and constructs
-├── tsconfig.json       # copied from the fixture you started from
-├── bin/app.ts          # creates the stack, named Cdkd<Name>Example
-├── lib/sqs-queue-tags-stack.ts
-└── verify.sh           # deploy, assert, destroy, assert
-```
-
-The app runs through Node's type stripping (`node bin/app.ts`), so the fixture
-is ESM and its relative imports carry the `.ts` extension.
-
-Keep the stack small: the resource under test and what it requires. In the
-stack class's doc comment, add one `covers:` line per resource type the
-fixture is meant to cover. The coverage report reads them:
-
-```ts
-/**
- * covers: AWS::SQS::Queue
- */
-export class SqsQueueTagsStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
-
-    new sqs.Queue(this, 'Queue', {
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-  }
-}
-```
-
-Give every stateful construct an explicit removal policy, so destroy removes
-it.
-
-A `verify.sh` has rules of its own, and most are enforced by a checker that
-fails CI. The ones that matter most:
-
-| Rule | Why |
-| --- | --- |
-| Install the three signal traps exactly as written in the conventions | `trap cleanup EXIT INT TERM` lets an interrupted script resume and report a pass |
-| Decide "gone" from a not-found error, never from any failed probe | A throttled or unauthenticated probe would read as "deleted" |
-| Assert the baseline before asserting a change | "The value is absent" also passes when the value never reached AWS |
-| Sort both sides when comparing a list read back from AWS | AWS does not preserve the order you sent |
-| Sweep the state bucket's object versions on the success path | The state bucket is versioned, and leftover versions accumulate |
-
-The full set, with the code to copy, is in
-[Integration fixture conventions](integ-fixture-conventions.md).
-
-After adding a fixture, regenerate the coverage reports and commit them:
-
-```bash
-vp run gen:all-matrices
-```
-
-### Test modes: update, removal and failure injection
-
-A fixture's stack can read three environment variables, so one fixture can
-exercise more than a create and a delete. `verify.sh` redeploys with the
-variable set.
-
-| Variable | The stack then | It tests |
-| --- | --- | --- |
-| `CDKD_TEST_UPDATE=true` | Changes a property | An in-place update |
-| `CDKD_TEST_REMOVAL=true` | Omits a property the baseline set | That the removed property is reset in AWS |
-| `CDKD_TEST_FAIL=true` | Adds a resource AWS rejects | That the resources already created are rolled back |
-
-The `basic` fixture supports the update and failure modes:
-
-```bash
-cd tests/integration/basic
-
-# Create, then update: the second deploy adds a tag to the bucket.
-node ../../../dist/cli.js deploy --region us-east-1 --state-bucket "$BUCKET"
-CDKD_TEST_UPDATE=true node ../../../dist/cli.js deploy --region us-east-1 --state-bucket "$BUCKET"
-# Changes: 0 to create, 1 to update, 0 to delete
-
-# Failure injection: an SQS queue with an out-of-range MessageRetentionPeriod
-# fails, and the resources created beside it are rolled back.
-CDKD_TEST_FAIL=true node ../../../dist/cli.js deploy --region us-east-1 --state-bucket "$BUCKET"
-```
-
-#### Removal testing (`CDKD_TEST_REMOVAL`)
-
-CloudFormation resets a property that is removed from the template to its
-default. Most AWS update APIs read a missing field as "no change". A provider
-that passes properties straight through keeps the old value in AWS, reports
-success and drops the field from state, and `cdkd diff` then reports no
-changes. Only a redeploy whose template lacks the property reaches that code,
-and a changed value never does. This variable produces that template.
-
-Two conventions keep a removal phase from passing for the wrong reason:
-
-- **Assert the baseline first.** Check that the property is set in AWS before
-  the removal deploy, then that it is reset after.
-- **Keep a sibling that is not removed,** when the property is a collection
-  such as a tag list or an attribute map. Give the sibling a value that differs
-  from AWS's default. Otherwise a provider that cleared everything would pass.
-
-To find the fixtures that use the variable:
-
-```bash
-grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh
-```
-
-`tests/integration/route53/` is the reference. The cases where these
-conventions need care, including a fixture that asserts the opposite (that AWS
-retains the value), are in
-[Testing internals](testing-internals.md#cdkd-test-removal-choosing-what-to-retain).
+`local-invoke-from-state` is the exception, because it deploys real resources.
 
 ### Fixtures worth knowing
+
+When you need a fixture for a change, start with one of these:
 
 | To test | Fixture |
 | --- | --- |
@@ -349,65 +278,41 @@ retains the value), are in
 | Rollback after a failed deploy | `rollback-failure-injection` |
 | IAM propagation races | `iam-propagation-stress` |
 
-`ls tests/integration/` lists them all.
-[Testing internals](testing-internals.md) records what the rollback, drift and
-other multi-phase fixtures assert, and why each is built the way it is.
+`ls tests/integration/` lists them all. When no fixture covers your change,
+[write one](testing-integration-fixtures.md).
 
 ## Try your build against your own CDK app
 
-For a change you want to see working outside the fixtures, run the built CLI
-from any CDK app's directory:
+To see a change working outside the fixtures, run the built CLI from any CDK
+app's directory:
 
 ```bash
 CDKD=/path/to/cdkd/dist/cli.js
 
-node "$CDKD" diff MyStack                # what would change
-node "$CDKD" deploy MyStack --dry-run    # the plan, without applying it
-node "$CDKD" deploy MyStack --verbose    # deploy, with debug logging
-node "$CDKD" state show MyStack          # what cdkd recorded
-node "$CDKD" destroy MyStack --force     # delete without the confirmation prompt
+# what would change
+node "$CDKD" diff MyStack
+
+# the plan, without applying it
+node "$CDKD" deploy MyStack --dry-run
+
+# deploy, with debug logging
+node "$CDKD" deploy MyStack --verbose
+
+# what cdkd recorded
+node "$CDKD" state show MyStack
+
+# delete without the confirmation prompt
+node "$CDKD" destroy MyStack --force
 ```
 
-`--app` and `--state-bucket` can be left out when `cdk.json` or the environment
-provides them.
-
-## Generated coverage reports
-
-Four committed files report what the fixtures cover and when they ran. CI
-reruns each task and fails when the committed copy differs.
-
-| Report | Shows | Regenerate with |
-| --- | --- | --- |
-| [Integration test coverage](integ-coverage.md) | Each registered SDK provider type and the fixtures that deploy it | `vp run integ-coverage` |
-| [CLI flag coverage](cli-flag-coverage.md) | Each CLI flag and the fixtures whose `verify.sh` passes it | `vp run cli-flag-coverage` |
-| [Scenario coverage](scenario-coverage.md) | Each named real-AWS regression scenario and the fixtures tagged with it | `vp run scenario-coverage` |
-| [Integ-run ledger](_generated/integ-last-run.tsv) | When each fixture last ran, and the result | `vp run integ-ledger-normalize` |
-
-`vp run gen:all-matrices` runs all of them.
-
-A new provider type is expected to arrive with a fixture that deploys it. The
-integration coverage report counts a fixture for a type when the fixture's
-source contains the type string, which is why a `covers:` comment works, or
-constructs the type's `Cfn<Type>` class.
-
-A fixture declares the scenarios it exercises in a `.scenarios.json` file
-beside its `verify.sh`:
-
-```json
-{
-  "scenarios": ["vpc-lambda-eni-release", "nat-gateway-cleanup"]
-}
-```
-
-The ledger is run history, so it is never edited by hand. The normalize task
-only sorts it and keeps one row per fixture. The details of each report are in
-[Testing internals](testing-internals.md#coverage-matrices-what-ci-enforces).
+You can leave out `--app` and `--state-bucket` when `cdk.json` or the
+environment provides them.
 
 ## Related
 
+- [Writing an integration fixture](testing-integration-fixtures.md)
 - [Integration fixture conventions](integ-fixture-conventions.md): the rules a
   `verify.sh` follows
-- [Testing internals](testing-internals.md): what individual fixtures assert
 - [Provider Development](provider-development.md): writing the provider a
   fixture exercises
 - [Contributing Guide](contributing.md): the toolchain, and which test a pull

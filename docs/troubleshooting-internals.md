@@ -6,7 +6,7 @@ unlisted: true
 
 # Troubleshooting internals
 
-The [Troubleshooting](troubleshooting.md) page gives the fix for each error.
+The [Troubleshooting](troubleshooting.md) pages give the fix for each error.
 This page holds the mechanism behind some of those entries, for someone
 changing cdkd or reading a run closely. Nothing here is needed to apply a fix.
 

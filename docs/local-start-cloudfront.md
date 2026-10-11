@@ -6,13 +6,15 @@ description: "Serve a CloudFront distribution from your CDK app on localhost: it
 # cdkd local start-cloudfront
 
 `cdkd local start-cloudfront [target]` serves one CloudFront distribution on a
-local port: viewer request, origin, viewer response. Use it to check a
-rewrite function, a cache-behaviour path pattern or a single-page-app fallback
-in seconds.
+local port. Each request goes through the same stages as on CloudFront: the
+viewer-request function, the origin, then the viewer-response function. Use it
+to check a rewrite function, a cache-behaviour path pattern or a
+single-page-app fallback in seconds.
 
-A distribution made of S3 origins and CloudFront Functions needs no Docker. A
-Lambda Function URL origin or a Lambda@Edge association runs in a local
-container and does.
+A distribution made of S3 origins and CloudFront Functions needs no Docker.
+Docker is needed only when the distribution has a Lambda Function URL origin
+or a Lambda@Edge function, because cdkd runs those Lambda functions in local
+containers.
 
 ## Serve a distribution
 
@@ -30,7 +32,9 @@ new s3deploy.BucketDeployment(this, 'DeploySite', {
   destinationBucket: bucket,
 });
 new cloudfront.Distribution(this, 'MyDistribution', {
-  defaultBehavior: { origin: origins.S3BucketOrigin.withOriginAccessControl(bucket) },
+  defaultBehavior: {
+    origin: origins.S3BucketOrigin.withOriginAccessControl(bucket),
+  },
   defaultRootObject: 'index.html',
 });
 ```
@@ -41,200 +45,323 @@ serve it on a fixed port:
 cdkd local start-cloudfront MyStack/MyDistribution --port 8080
 ```
 
-cdkd prints a `CloudFront distribution serving on` line with the address. The
-files come from `site/` as staged in the cloud assembly, so nothing is read
-from AWS:
+cdkd prints a `CloudFront distribution serving on` line with the address. From
+another terminal:
 
 ```bash
 curl -i http://127.0.0.1:8080/            # the default root object
 curl -i http://127.0.0.1:8080/app.js      # any file under site/
 ```
 
+The files come from the copy of `site/` that synthesis placed in the app's
+output directory (`cdk.out`), so nothing is read from AWS and the stack does
+not have to be deployed.
+
 More invocations:
 
 ```bash
-cdkd local start-cloudfront                                                   # pick a distribution from a list
-cdkd local start-cloudfront MyStack/MyDistribution --origin SiteOrigin=./dist # serve an origin from a directory
-cdkd local start-cloudfront MyStack/MyDistribution --kvs-file RoutesKvs=./routes.json  # back cf.kvs() with a file
-cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch   # deployed bucket and store, reload on edits
+# pick a distribution from a list
+cdkd local start-cloudfront
+
+# serve an origin from a directory
+cdkd local start-cloudfront MyStack/MyDistribution --origin SiteOrigin=./dist
+
+# back cf.kvs() with a file
+cdkd local start-cloudfront MyStack/MyDistribution \
+  --kvs-file RoutesKvs=./routes.json
+
+# deployed bucket and store, reload on edits
+cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch
 ```
 
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[target]` | picker | The distribution to serve. Omit in an interactive terminal to choose from a list. |
+| `[target]` | picker | The distribution to serve. |
 | `--port <port>` | `0` (auto) | Port the server listens on. |
 | `--host <host>` | `127.0.0.1` | Address the server binds to. |
-| `--origin <originId=dir>` | — | Serve one origin from a local directory. Repeatable. See [Origins](#origins). |
-| `--kvs-file <key=file.json>` | — | Back a CloudFront Function's `cf.kvs()` reads with a local JSON map. Repeatable. |
-| `--tls` | off | Serve HTTPS, with a generated self-signed certificate (needs `openssl` on `PATH`) or your own. |
-| `--tls-cert <path>` | — | PEM server certificate. Implies `--tls`. Requires `--tls-key`. |
-| `--tls-key <path>` | — | PEM private key. Implies `--tls`. Requires `--tls-cert`. |
-| `--from-cfn-stack [name]` | off | Read the deployed stack. See [State sources](#state-sources). |
-| `--cache-origin` | off | Keep objects read from a deployed S3 origin in memory for the session. |
-| `--assume-role [arn]` | off | Run a Lambda origin under its deployed execution role. Without it the container gets your credentials. |
+| `--origin <originId=dir>` | — | Serve one origin from a local directory. Repeatable. |
+| `--kvs-file <key=file.json>` | — | Answer `cf.kvs()` reads from a local JSON file. Repeatable. |
+| `--tls` | off | Serve HTTPS. |
+| `--tls-cert <path>` | — | PEM server certificate. Requires `--tls-key`. |
+| `--tls-key <path>` | — | PEM private key. Requires `--tls-cert`. |
+| `--from-cfn-stack [name]` | off | Read the deployed stack. |
+| `--cache-origin` | off | Keep objects read from a deployed S3 origin in memory. |
+| `--assume-role [arn]` | off | Run a Lambda origin under its deployed execution role. |
 | `--no-assume-role` | — | Explicitly decline the role assumption. |
-| `--watch` | off | Re-synthesize and reload the distribution when the source changes. |
-| `--no-pull` | off | Skip `docker pull` for a Lambda's base image. No effect without a Lambda. |
+| `--watch` | off | Reload the distribution when the source changes. |
+| `--no-pull` | off | Skip `docker pull` for a Lambda's base image. |
 
-It also accepts the [common flags](local-emulation.md#common-flags), with
-three differences: it does not accept `--env-vars` or `--container-host`, and
-it refuses `--from-state`, `--state-bucket` and `--state-prefix`.
+Each of these flags is explained in the section for the feature it belongs to:
+[Origins](#origins), [`cf.kvs()`](#cf-kvs-keyvaluestore-reads),
+[State sources](#state-sources) and
+[`--watch`](#watch-hot-reload-of-the-routing-model). The rest need only a
+line each:
+
+- `--tls` alone uses a self-signed certificate that cdkd generates, which
+  requires `openssl` on `PATH`. `--tls-cert` and `--tls-key` supply your own
+  certificate, and each implies `--tls`.
+- Without `--assume-role`, a Lambda container gets your own credentials.
+- `--no-pull` has no effect on a distribution without a Lambda function.
+
+The command also accepts the common flags listed in
+[Local Execution](local-emulation.md), with these differences: it does not
+accept `--env-vars` or `--container-host`, and it refuses the flags that read
+cdkd's own state, as [State sources](#state-sources) describes.
 
 > [!WARNING]
-> Do not pass `--role-arn` here without the `--profile` flag. The role's
-> credentials reach the Function URL and Lambda@Edge containers, so your code
-> runs as that role. An exported `AWS_PROFILE` does not prevent this. cdkd
-> warns at startup when this applies. See the `--role-arn` section of the
-> [CLI Reference](cli-reference.md).
-
-## State sources
-
-`--from-state` is refused on this command. Passing `--from-state`,
-`--state-bucket` or `--state-prefix` exits 1 with a message pointing at
-`--from-cfn-stack`. Nothing in the CloudFront path reads cdkd's S3 state.
-
-`--from-cfn-stack [name]` is the state source here. It:
-
-- reads a deployed S3 origin's bucket from real S3,
-- backs `cf.kvs()` reads with the deployed KeyValueStore,
-- resolves the environment of Function URL origin Lambdas and Lambda@Edge
-  functions.
-
-`--stack-region` sets the CloudFormation client's region.
+> Do not pass `--role-arn` here without the `--profile` flag. `--role-arn` is
+> the role cdkd assumes for its own AWS calls. On this command the role's
+> credentials also reach the Function URL and Lambda@Edge containers, so your
+> code runs as that role. An exported `AWS_PROFILE` does not prevent this.
+> cdkd warns at startup when this applies. See the `--role-arn` section of
+> the [CLI Reference](cli-reference.md).
 
 ## Target resolution
 
-The target names one `AWS::CloudFront::Distribution`, as a CDK construct path
-(`MyStack/MyDistribution`), a prefix of one, or a stack-qualified logical ID
-(`MyStack:MyDistribution`). One distribution is served per run. See
-[Naming the target](local-emulation.md#naming-the-target).
+The target names one `AWS::CloudFront::Distribution`. You can write it as a
+CDK construct path (`MyStack/MyDistribution`), as a prefix of one, or as a
+stack-qualified logical ID (`MyStack:MyDistribution`).
+Each run serves one distribution. [Local Execution](local-emulation.md)
+describes the target forms in full.
 
 ## What runs locally
 
+cdkd reproduces the parts of a distribution that decide which response a
+viewer gets: routing, functions and origins. It does not reproduce the
+content-delivery network itself, so nothing is cached at an edge.
+
 | Part of the distribution | How it is served | Docker |
 | --- | --- | --- |
-| CloudFront Functions (`viewer-request`, `viewer-response`) | In-process, in a sandbox | No |
+| CloudFront Functions | Inside the cdkd process, in a sandbox | No |
 | Lambda@Edge, all four stages | One warm container per function | Yes |
-| Lambda Function URL origins | The Lambda in a container | Yes |
-| S3 origins | From the staged asset directory, or real S3 under `--from-cfn-stack` | No |
-| Path routing | `DefaultCacheBehavior` and the ordered `CacheBehaviors[]`, with CloudFront's `*` / `?` matching | No |
-| `DefaultRootObject`, `CustomErrorResponses` | Applied. The error responses give the single-page-app fallback. | No |
-| Other custom origins | Not fetched: a warning at boot and `502` per request, unless `--origin` points it at a directory | — |
+| Lambda Function URL origins | The Lambda function in a container | Yes |
+| S3 origins | From local files, or from the deployed bucket | No |
+| Path routing | By the cache behaviours' path patterns | No |
+| `DefaultRootObject`, `CustomErrorResponses` | Applied | No |
+| Other custom origins | Not fetched | — |
 | CDN caching, edge locations, cache keys | Not reproduced | — |
 
-A URI ending in `/` is not auto-indexed, as on CloudFront. Only the root path
-resolves to `DefaultRootObject`.
+Routing follows the distribution: a request is matched against the ordered
+`CacheBehaviors[]` and falls back to `DefaultCacheBehavior`, with the `*` and
+`?` wildcards CloudFront uses in path patterns.
 
-### Origins
+`CustomErrorResponses` are what give a single-page app its fallback, where an
+unknown path returns `index.html`. That works locally as it does deployed.
 
-An S3 origin's content is found through the cloud assembly: the origin's
-bucket, its `BucketDeployment`, and that deployment's staged source directory.
+As on CloudFront, a URI that ends in `/` is not given an index document. Only
+the root path resolves to `DefaultRootObject`.
 
-| Origin | Result | What to do |
-| --- | --- | --- |
-| S3 bucket with a `BucketDeployment` in the app | Served from the staged files | Nothing |
-| S3 bucket with no `BucketDeployment` (files uploaded another way) | Warning at boot, `502` per request | `--origin <id>=<dir>`, or `--from-cfn-stack` to read the deployed bucket |
-| A custom domain that is neither S3 nor a Function URL | Warning at boot, `502` per request | `--origin <id>=<dir>` to serve a directory in its place |
+## Origins
 
-`<id>` in `--origin <id>=<dir>` is the distribution's `Origins[].Id`, matched
-exactly. CDK generates these with a hash suffix. The boot warning for an
-unresolved S3 origin prints the full flag, `--origin <that id>=<dir>`, ready
-to copy.
+cdkd serves an S3 origin from the files your app deploys to the bucket. It
+finds them by following the template from the origin to its bucket, from the
+bucket to the `BucketDeployment` that fills it, and from there to the copy of
+the source directory in `cdk.out`. In the example above that chain ends at
+`site/`, and no flag is needed.
 
-Under `--from-cfn-stack`, a deployed S3 origin is read from S3 on every
-request, so it is always current. `--cache-origin` keeps objects in memory
-until a `--watch` reload or a restart. Without `--from-cfn-stack`,
-`--cache-origin` does nothing and a warning says so.
+When the chain cannot be followed, cdkd prints a warning at startup and
+answers requests for that origin with `502`. There are two such cases, and the
+same flag handles both:
 
-A file is served only when it resolves inside its origin directory, so `../`
-and symbolic links leading out are not followed. The origin directory itself
-must be inside the app's output directory, with one exception described next.
-[What cdkd trusts in the assembly](local-emulation.md#what-cdkd-trusts-in-the-assembly)
-has the rules for every command.
+- **An S3 bucket with no `BucketDeployment` in the app**, because the files
+  are uploaded some other way.
+- **A custom origin that is neither S3 nor a Lambda Function URL**, such as
+  an API on another domain. cdkd does not fetch from it.
+
+`--origin <id>=<dir>` serves that origin from a local directory:
+
+```bash
+cdkd local start-cloudfront MyStack/MyDistribution --origin SiteOrigin=./dist
+```
+
+`<id>` is the origin's `Origins[].Id` in the distribution, matched exactly.
+CDK generates these IDs with a hash suffix, so copy the ID from the startup
+warning: for an unresolved S3 origin, the warning prints the whole flag with
+the ID filled in.
+
+For an S3 bucket you can also pass `--from-cfn-stack`, which reads the files
+from the deployed bucket. See [State sources](#state-sources).
+
+### Files outside the origin directory
+
+A file is served only when it resolves inside its origin directory. A `../` in
+the request path and a symbolic link that leads out of the directory are not
+followed.
+
+The origin directory itself must be inside the app's output directory, with
+the one exception described next. [Local Execution](local-emulation.md) has
+the rules on what cdkd trusts in the synthesized output for every command.
 
 ### Absolute `BucketDeployment` sources
 
-`cdk synth --no-staging` writes a `BucketDeployment` source as an absolute
-path outside the output directory. Such an origin is served, with a warning
-naming it, only when all of these hold:
+This section applies only if you synthesize with `cdk synth --no-staging`.
+That option makes a `BucketDeployment` source an absolute path to your
+original folder, outside the output directory, where a normal synthesis copies
+the folder in.
 
-- It is inside your project: the git work tree holding the output directory,
-  or the current directory when that contains the output directory or is
-  itself a git work-tree root.
-- The project root is not your home directory or a directory containing it.
-- No directory between the project root and the folder is a credential or
-  version-control directory: `.git`, `.hg`, `.svn`, `.ssh`, `.aws`, `.gnupg`,
-  `.docker`, `.kube`, `.config`, `.azure`, `.gcloud`, `.terraform`, `.npm`,
-  `.pnpm-store`, `.yarn`, `.cache`, `.local` (compared case-insensitively).
-  Other hidden build folders, such as `docs/.vitepress/dist`, are accepted.
-- It is not `/`, your home directory or a directory containing it, the project
-  root itself, or a directory containing the output directory. All of these
-  are judged on real paths.
+cdkd serves such an origin, with a warning that names it, only when the folder
+passes all four of these checks:
+
+1. The folder is inside your project. The project is the git work tree that
+   holds the output directory. It can also be the current directory, when the
+   current directory contains the output directory or is itself the root of a
+   git work tree.
+2. The project root is not your home directory or a directory that contains
+   it.
+3. No directory between the project root and the folder is a credential or
+   version-control directory. The list is given below.
+4. The folder is not one of these: `/`, your home directory or a directory
+   that contains it, the project root itself, or a directory that contains
+   the output directory. These are compared as real paths, after symbolic
+   links are resolved.
+
+The directories in check 3 are `.git`, `.hg`, `.svn`, `.ssh`, `.aws`,
+`.gnupg`, `.docker`, `.kube`, `.config`, `.azure`, `.gcloud`, `.terraform`,
+`.npm`, `.pnpm-store`, `.yarn`, `.cache` and `.local`, compared without regard
+to letter case. Other hidden build folders, such as `docs/.vitepress/dist`,
+are accepted.
 
 An origin accepted this way never serves a hidden entry such as `/.env` or
-`/.git/...`, except a `.well-known` path segment.
+`/.git/...`. The one exception is a `.well-known` path segment.
 
-The rule limits the folder without proving it is yours. Running from a folder
-that holds several repositories puts a sibling repository's folders in scope,
-and the credential list is not exhaustive.
+> [!WARNING]
+> These checks limit which folder can be served. They do not prove the folder
+> is yours. If you run cdkd from a folder that holds several repositories, a
+> sibling repository's folders are in scope, and the list of credential
+> directories is not exhaustive.
 
-### CloudFront Functions
+## CloudFront Functions
 
-Both `cloudfront-js-1.0` and `cloudfront-js-2.0` run, and a `2.0` async
-handler is awaited.
+cdkd runs the distribution's CloudFront Functions inside its own process, so
+they need no Docker and no deployment. Both the `cloudfront-js-1.0` and
+`cloudfront-js-2.0` runtimes are supported, and an `async` handler under `2.0`
+is awaited.
 
-| Function behaviour | Result |
-| --- | --- |
-| `viewer-request` returns an object with a `statusCode` | That response is sent (a redirect or fixed body). The origin is not contacted. |
-| `viewer-request` returns a request | The rewritten request goes to the origin. |
-| `viewer-response` | Runs over the origin's response. |
-| Returns a non-object, or nothing | The request or response continues unchanged. |
-| No `handler` function is declared | Fails to compile, naming the function. |
-| Synchronous code runs longer than 5 seconds | That request fails. The server keeps running. |
+A `viewer-request` function runs before the origin, and what it returns
+decides what happens next:
 
-### `cf.kvs()`: KeyValueStore reads
+- **A request object.** The request, as the function rewrote it, goes to the
+  origin.
+- **An object with a `statusCode`.** cdkd sends that response, for example a
+  redirect or a fixed body, and does not contact the origin.
+
+A `viewer-response` function runs on the origin's response before it is sent
+to the client.
+
+### Function errors and limits
+
+- **A function returns nothing, or something that is not an object.** The
+  request or response continues unchanged.
+- **The code declares no `handler` function.** It fails to compile, and the
+  error names the function.
+- **Synchronous code runs longer than 5 seconds.** That request fails. The
+  server keeps running.
+- **The code calls `cf.fetch`.** This `cloudfront-js-2.0` API is not
+  available locally.
+
+## `cf.kvs()`: KeyValueStore reads
+
+A CloudFront Function reads its KeyValueStore through `cf.kvs()`. Locally you
+choose where those reads are answered from:
 
 | Source | Flag |
 | --- | --- |
-| A local JSON map, with no AWS calls | `--kvs-file <key>=<file.json>` |
+| A local JSON file, with no AWS calls | `--kvs-file <key>=<file.json>` |
 | The deployed store, read on demand | `--from-cfn-stack` |
 
-`<key>` names the `AWS::CloudFront::KeyValueStore`: its logical ID, its
-construct path (`MyStack/RoutesKvs`) or its construct ID (`RoutesKvs`). An
-unknown key, or an ambiguous construct ID, fails at boot with the list of
-candidates.
+The file is one JSON object that maps each key to its value:
 
 ```json
 { "/old-path": "/new-path", "/promo": "/campaigns/2026" }
 ```
 
-With neither source, `cf.kvs()` still returns a handle and the error appears
-on the first read. `get` and `exists` are supported. `meta()` and `count()`
-reject with an error.
+```bash
+cdkd local start-cloudfront MyStack/MyDistribution \
+  --kvs-file RoutesKvs=./routes.json
+```
+
+`<key>` in the flag names the `AWS::CloudFront::KeyValueStore` resource. It
+can be the resource's logical ID, its construct path (`MyStack/RoutesKvs`) or
+its construct ID (`RoutesKvs`).
+
+### Edge cases
+
+- **The key matches no store, or a construct ID matches several.** cdkd fails
+  at startup and lists the candidates.
+- **Neither flag is given.** `cf.kvs()` still returns a handle, and the error
+  appears on the first read.
+- **Methods other than `get` and `exists`.** `meta()` and `count()` reject
+  with an error.
+
+## State sources
+
+`--from-cfn-stack [name]` makes cdkd read the deployed CloudFormation stack,
+for the parts of a distribution that exist only after a deploy. With it, cdkd:
+
+- reads an S3 origin's files from the deployed bucket,
+- answers `cf.kvs()` reads from the deployed KeyValueStore,
+- resolves the environment variables of Function URL origin Lambda functions
+  and Lambda@Edge functions.
+
+```bash
+cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack
+```
+
+`--stack-region` sets the region of the CloudFormation client that reads the
+stack.
+
+### Caching objects from the deployed bucket
+
+Under `--from-cfn-stack`, cdkd reads an S3 origin's object from S3 on every
+request, so you always see the bucket's current content. `--cache-origin`
+keeps each object in memory after the first read, which is faster. The cache
+lasts until a `--watch` reload or a restart.
+
+Without `--from-cfn-stack` there is nothing to cache, so `--cache-origin` does
+nothing and a warning says so.
+
+### `--from-state` is refused
+
+Other local commands can read deployed values from cdkd's own state with
+`--from-state`. This command reads nothing from that state. Passing
+`--from-state`, `--state-bucket` or `--state-prefix` therefore exits with
+code 1 and a message that points at `--from-cfn-stack`.
 
 ## `--watch`: hot reload of the routing model
 
-`--watch` re-synthesizes on every source change and swaps in the new routing
-without closing the port. `cdk.out`, `node_modules` and `.git` are ignored,
-and `watch.include` / `watch.exclude` in `cdk.json` are honoured.
+`--watch` synthesizes the app again on every source change and swaps in the
+new routing without closing the port, so a browser tab or a test run keeps its
+address.
 
-| On reload | Result |
-| --- | --- |
-| Behaviours, origins, CloudFront Functions | Replaced. |
-| `--kvs-file` files | Read again. |
-| The `--cache-origin` cache | Cleared. |
-| Lambda containers (Function URL origins, Lambda@Edge) | Not rebuilt. Restart to pick up changes. |
-| A Lambda@Edge association added since startup | Skipped with a warning. Restart to pick it up. |
-| Synthesis fails | The previous version keeps serving, with a warning. |
+```bash
+cdkd local start-cloudfront MyStack/MyDistribution --port 8080 --watch
+```
+
+A reload replaces the cache behaviours, the origins and the CloudFront
+Functions. It also reads the `--kvs-file` files again and clears the
+`--cache-origin` cache.
+
+Changes under `cdk.out`, `node_modules` and `.git` are ignored. The
+`watch.include` and `watch.exclude` settings in `cdk.json` are honoured.
+
+### What a reload does not change
+
+- **Lambda containers.** The containers behind Function URL origins and
+  Lambda@Edge functions are not rebuilt. Restart the command to pick up a
+  change to their code.
+- **A Lambda@Edge association added since startup.** It is skipped with a
+  warning. Restart to pick it up.
+- **Anything, when synthesis fails.** cdkd prints a warning and the previous
+  version keeps serving.
 
 ## Limitations
 
 - Custom origins that are neither S3 nor a Lambda Function URL are not
-  fetched.
+  fetched. Point `--origin` at a directory to stand in for one.
 - The `cloudfront-js-2.0` `cf.fetch` API is not available.
-- A Lambda@Edge function that cannot be booted is skipped with a warning and
+- A Lambda@Edge function that cannot be started is skipped with a warning, and
   its stage does not run. The rest of the distribution is served.
 - CloudFront's caching, edge locations and cache keys are not modelled.
   `--cache-origin` is a read cache for S3 objects only.
@@ -244,11 +371,15 @@ and `watch.include` / `watch.exclude` in `cdk.json` are honoured.
 | Code | Meaning |
 | --- | --- |
 | `0` | Stopped by `SIGTERM`. |
-| `1` | An error: no such distribution, synthesis failure, an unresolvable `--kvs-file` key, a Lambda container that failed to boot, or a refused state flag. |
+| `1` | An error. |
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
 
-Stopping closes the server and removes every Lambda container. The full
-cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+An error here is a distribution that does not exist, a synthesis failure, a
+`--kvs-file` key that cannot be resolved, a Lambda container that failed to
+start, or a refused state flag.
+
+Stopping the command closes the server and removes every Lambda container. The
+[CLI Reference](cli-reference.md) has the exit-code table for every command.
 
 ## Related
 

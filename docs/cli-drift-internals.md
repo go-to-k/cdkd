@@ -70,7 +70,7 @@ in which nothing was compared does not get a reassuring `✓`. The **exit code
 is still `0`** — only the claim about coverage changes. The same applies to a
 stack whose resources are all Custom Resources, which are reported as
 `skipped`. A parent whose only rows are nested stacks is the exception: each is
-checked in its own block, so it gets a `✓` (see [Nested stacks](cli-drift.md#nested-stacks)).
+checked in its own block, so it gets a `✓` (see [Nested stacks](cli-drift-nested-stacks.md)).
 
 Both the `N checked` and the `N of M fully checked` spellings count only
 resources a comparison was attempted for. In the `N of M` spelling the
@@ -89,7 +89,7 @@ state side of each change (from the record, which a hand edit can fill with
 anything `JSON.parse` accepts), each changed property's path, and the AWS side
 of each change (whatever the service returns). The report treats all of them
 as untrusted text, the way the [`cdkd state` human
-views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
+views](cli-state-malformed.md#what-the-human-views-do-to-a-malformed-record) do:
 
 - **No field passes terminal control to the terminal.** That covers a
   newline, a C0 control, an escape sequence, LINE SEPARATOR and the bidi
@@ -168,7 +168,7 @@ crash case go through the same error handler; drift detection emits the full
 human report before throwing, so that report is the only output for it.
 
 **Exit `2` on detection is narrower than `notCompared`, deliberately.** Seven of
-the causes in the [table above](cli-drift.md#why-a-resource-was-not-compared) produce it: a
+the causes in the [table above](cli-drift-not-compared.md#why-a-resource-was-not-compared) produce it: a
 resource cdkd `refused` to compare, one whose read or comparison `readFailed`,
 one cdkd stopped reading after repeated read failures (`readAborted`),
 one whose baseline an import refused (`baselineRefused`), one whose baseline
@@ -208,7 +208,7 @@ WITHOUT `--accept` / `--revert` and read its exit code, or read `--json`'s
 
 **Exit `2` on `--revert`** (`PartialFailureError`) covers four shapes: a
 resource refused because it was deleted outside cdkd (see
-[Deleted resources](cli-drift.md#deleted-resources)), a
+[Deleted resources](cli-drift-accept-revert.md#deleted-resources)), a
 `provider.update` call that failed, one that threw
 `ResourceUpdateNotSupportedError`, and — counted and reported separately,
 since it never reached `provider.update` at all — a resource whose recorded
@@ -222,7 +222,7 @@ outside a deploy — for both, no AWS call is made and the message names the
 remedy.
 
 A resource whose baseline a
-[`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused is
+[`cdkd import`](import-after.md#the-drift-baseline-an-import-records) run refused is
 **not** in that tally: detection declines to compare it at all, so it never
 becomes drifted and `--revert` never considers it. It is reported under
 `notCompared` with the cause `baselineRefused`, which a detection-only run
@@ -235,7 +235,7 @@ positioned against properties the import already found untrustworthy — which
 can persist a resolved secret in plaintext. `--revert` has the mirror problem:
 it would push those properties to AWS, overwriting whatever the resource really
 holds. Both decline, name the resource, and point at the remedy
-[below](cli-drift.md#clearing-a-baseline-refusal). Such a resource is **not reported as drifted either**: detection declines to
+[below](cli-drift-not-compared.md#clearing-a-baseline-refusal). Such a resource is **not reported as drifted either**: detection declines to
 compare it at all and reports it under `notCompared` with the cause
 `baselineRefused`. Comparing it would have meant rendering the live AWS value —
 including a decrypted secret — as one side of a drift row that nothing could
@@ -378,13 +378,13 @@ baseline, so `--accept` keeps refusing such a position.
 
 A property whose real value happens to BE the string `***` is treated the same
 way, since nothing in state distinguishes the two — see
-[State Management](state-management.md#noecho-custom-resource-responses).
+[State Management](state-management-secrets.md#custom-resource-responses-marked-noecho).
 
 ## A masked position cdkd could not certify
 
 The mask also reaches a baseline where cdkd could not tell a secret apart. When cdkd
 refreshes `observedProperties` — during a deploy, from
-[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed),
+[`cdkd state refresh-observed`](cli-state-writing.md#cdkd-state-refresh-observed),
 from the baseline [`cdkd import`](import.md) captures for each resource it
 adopts, from `cdkd drift --accept` on a record that has one, or from the
 narrowing `--revert` records when a provider reports it delivered something
@@ -473,7 +473,7 @@ resolvable baseline.
 
 `cdkd drift --accept` does not write this mask itself — it records what AWS
 reported. For a resource that has no baseline yet, that write lands in
-`properties` — the fallback described under [`--accept`](cli-drift.md#accept-state-aws) — where a mask
+`properties` — the fallback described under [`--accept`](cli-drift-accept-revert.md#accept-state-aws) — where a mask
 would block [`cdkd export`](cli-export.md) and the rollback replay rather than
 protect anything. For a resource that already has a baseline, `--accept` writes
 the baseline.
@@ -556,7 +556,7 @@ the fallback:
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under
-   [Nested stacks](cli-drift.md#nested-stacks)), and
+   [Nested stacks](cli-drift-nested-stacks.md)), and
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
    `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
@@ -743,4 +743,4 @@ Neither `cdkd list` nor [`cdkd state list`](cli-state.md#cdkd-state-list) is in
 that set, because their reservation is not conditional: they reserve stdout in
 EVERY mode, `--json` or not, along with `cdkd synth`,
 `cdkd local invoke` and `cdkd local invoke-agentcore` — see
-[Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
+[Output streams](cli-reference-output.md).

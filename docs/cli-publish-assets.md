@@ -11,14 +11,23 @@ and pushes images to ECR. Use it when one CI job builds and uploads the assets
 and a separate job deploys.
 
 ```bash
-cdkd publish-assets                          # the only stack in the app
-cdkd publish-assets MyStack ApiStack         # specific stacks
-cdkd publish-assets --all                    # every stack, Stage stacks included
-cdkd publish-assets 'MyStage/*'              # the stacks inside one stage
-cdkd publish-assets -a cdk.out               # skip synthesis; read an existing assembly
+# the only stack in the app
+cdkd publish-assets
+
+# specific stacks
+cdkd publish-assets MyStack ApiStack
+
+# every stack, Stage stacks included
+cdkd publish-assets --all
+
+# the stacks inside one stage
+cdkd publish-assets 'MyStage/*'
+
+# skip synthesis; read an existing assembly
+cdkd publish-assets -a cdk.out
 ```
 
-It provisions nothing, writes no state and takes no stack lock.
+The command provisions nothing, writes no state and takes no stack lock.
 
 ## Options
 
@@ -45,7 +54,8 @@ The two concurrency flags have the same defaults as on
 
 ## Stack selection
 
-Stack names are matched as on `deploy`, `diff` and `destroy`. See
+Name the stacks whose assets you want published. cdkd matches the names as it
+does on `deploy`, `diff` and `destroy`; see
 [Selecting stacks](cli-list.md#selecting-stacks).
 
 | You pass | What is published |
@@ -55,33 +65,39 @@ Stack names are matched as on `deploy`, `diff` and `destroy`. See
 | Stack names or patterns | The matching stacks' assets. |
 | `--all` | Every stack's assets, Stage stacks included. |
 
-`--all` here matches `cdk publish-assets --all`. On `deploy`, `destroy` and
-`diff`, `--all` takes the top-level stacks only.
+`--all` behaves here as it does on `cdk publish-assets --all`. That differs
+from `deploy`, `destroy` and `diff`, where `--all` takes the top-level stacks
+only.
 
-A CDK Stage that failed to load stops the run, whatever was selected. See
-[A pre-synthesized assembly is trusted input](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input).
+A CDK Stage that failed to load stops the run, whatever you selected. See
+[A pre-synthesized assembly is trusted input](cli-deploy-safety-assembly-checks.md#a-pre-synthesized-assembly-is-trusted-input).
 
 ## Publishing from an existing assembly
 
-`-a` / `--app` takes a shell command or a directory, as on `cdkd deploy`:
-
-| Value | What cdkd does |
-| --- | --- |
-| A command, such as `"node app.ts"` | Runs it to synthesize the app. |
-| A synthesized assembly directory, such as `cdk.out` | Skips synthesis and reads the manifest. |
+To publish without running the CDK app, point `-a` / `--app` at a directory
+that `cdkd synth` already wrote:
 
 ```bash
 cdkd synth --output build/assembly
 cdkd publish-assets --all -a build/assembly
 ```
 
+`-a` takes a shell command or a directory, as on `cdkd deploy`:
+
+| Value | What cdkd does |
+| --- | --- |
+| A command, such as `"node app.ts"` | Runs it to synthesize the app. |
+| A synthesized assembly directory, such as `cdk.out` | Skips synthesis and reads the manifest. |
+
 There is no separate flag for a manifest path.
 
 ## Asset destinations
 
-Where assets go depends on whether the region is opted in to cdkd asset
-storage. The command reads the region's bootstrap marker from the state bucket
-to find out.
+Assets go either to storage that cdkd owns or to the destinations the CDK app
+named in its asset manifest. Which one depends on whether the region is opted
+in to cdkd asset storage. A region is opted in when `cdkd bootstrap`, or a
+first deploy, wrote a bootstrap marker for it in the state bucket, and
+`publish-assets` reads that marker to find out.
 
 | Situation | Destination |
 | --- | --- |
@@ -99,13 +115,16 @@ The full rules are under
 | --- | --- |
 | `0` | Every selected stack's assets were published. |
 | `1` | The command failed: auth, a synthesis crash, bad arguments. |
-| `2` | Partial failure. One or more stacks failed and the rest published. The run summary lists each stack's outcome; run again to retry. |
+| `2` | Partial failure. One or more stacks failed and the rest published. |
 
-The table for every command is in the [CLI Reference](cli-reference.md#exit-codes).
+After exit `2`, the run summary lists each stack's outcome. Run the command
+again to retry.
+
+[Exit codes](cli-reference-exit-codes.md) has the table for every command.
 
 ## Related
 
 - [`cdkd bootstrap`](cli-bootstrap.md): the asset storage this command publishes into
 - [Deploy: waits & concurrency](cli-deploy.md): the concurrency flags it shares with deploy
 - [`cdkd gc`](cli-gc.md): collecting assets nothing references any more
-- [CLI Reference](cli-reference.md): every command and the exit-code table
+- [CLI Reference](cli-reference.md): every command and the shared options

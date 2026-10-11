@@ -52,7 +52,7 @@ for a second producer:
   responses. `ResourceState` has no durable field for it, which is why cdkd
   REFUSES rather than guessing when a later deploy has to write a value it can
   only read back as the mask — see
-  [State Management](state-management.md#noecho-custom-resource-responses)
+  [State Management](state-management-secrets.md#custom-resource-responses-marked-noecho)
   for the user-facing consequences, and issue
   [#2449](https://github.com/go-to-k/cdkd/issues/2449) for the schema bump that
   would close it.

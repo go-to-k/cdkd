@@ -299,7 +299,8 @@ variable once the resource exists, and append it to the mode list of every later
 deploy.
 
 ```bash
-OD_MODE_SUFFIX=""                               # seeded with the other run vars
+# seeded with the other run vars
+OD_MODE_SUFFIX=""
 ...
 OD_MODE_SUFFIX=",cross-region-ondemand-dropped" # set right after the rounds
 ...

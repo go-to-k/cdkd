@@ -7,8 +7,11 @@ unlisted: true
 # Deploy internals
 
 Background for contributors on three behaviours of `cdkd deploy`. The
-user-facing description of each is on
-[Deploy: waits & concurrency](cli-deploy.md).
+user-facing descriptions are on
+[Deploy: waits & concurrency](cli-deploy.md) for the wait defaults,
+[Deploy: a damaged state record](cli-deploy-damaged-state.md) for the refusal,
+and [Deploy: the stack lock](cli-deploy-lock.md#an-output-that-cannot-be-resolved)
+for the Outputs of a deploy that changes nothing.
 
 ## Why the wait defaults are where they are
 
@@ -126,5 +129,7 @@ Two shapes keep all of the previously stored Outputs instead:
 ## Related
 
 - [Deploy: waits & concurrency](cli-deploy.md)
+- [Deploy: a damaged state record](cli-deploy-damaged-state.md)
+- [Deploy: the stack lock](cli-deploy-lock.md)
 - [State Management](state-management.md)
 - [Wait Modes](wait-modes.md)

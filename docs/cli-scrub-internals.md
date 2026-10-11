@@ -6,11 +6,14 @@ unlisted: true
 
 # cdkd scrub internals
 
-This page holds the detail behind [`cdkd scrub`](cli-scrub.md): the matching
-rules, the reasoning for each refusal, and the cases that page summarizes in
+This page holds the detail behind [`cdkd scrub`](cli-scrub.md) and its
+sub-pages ([What cdkd scrub covers](cli-scrub-what-it-covers.md),
+[cdkd scrub across stacks](cli-scrub-multi-stack.md) and
+[cdkd scrub findings and refusals](cli-scrub-findings.md)): the matching
+rules, the reasoning for each refusal, and the cases those pages summarize in
 one line. It is written for someone debugging an unexpected scrub result or
-changing cdkd itself. Start from the public page; every section here is linked
-from the place it expands.
+changing cdkd itself. Start from the public pages; every section here is
+linked from the place it expands.
 
 ## Rollback-orphan records
 
@@ -378,7 +381,7 @@ warning. Run
 `cdkd scrub --verbose` when a stack you expect findings from reports clean.
 
 A reference built from a parameter has the limit described in
-[A reference built from a parameter](cli-scrub.md#a-reference-built-from-a-parameter).
+[A reference built from a parameter](cli-scrub-what-it-covers.md#a-reference-built-from-a-parameter).
 
 ### A read cdkd declines by design is a finding
 
@@ -541,7 +544,7 @@ resource.
 ## How a `NoEcho` parameter value is masked
 
 A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
-[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)):
+[`version: 11` stores `NoEcho` values as `***`](state-management-secrets.md#noecho-parameters)):
 
 - **By position.** Every property today's template fills from a `NoEcho`
   parameter holds `***`, whatever the value's type or length, and the record
@@ -618,7 +621,7 @@ other key a possible alias. An alias key an older cdkd published under such a
 value is reported as a key that renders a secret (scrub cannot rewrite a key;
 a deploy drops it).
 A dropped export alias leaves the record's export set too; its entry in the
-[exports index](cli-scrub.md#the-exports-index) is reported as a name `state.outputs` no
+[exports index](cli-scrub-multi-stack.md#the-exports-index) is reported as a name `state.outputs` no
 longer holds, and a redeploy rewrites the index.
 
 The drop runs only when this run recorded at least one secret for the stack —
@@ -628,7 +631,7 @@ secret is not rewritten, and its undeclared keys stay as they are.
 These keys are **kept**:
 
 - one a pass rewrote, whole or in part — it now carries the reference, and the
-  [exports index](cli-scrub.md#the-exports-index) entry of that name is converged to it.
+  [exports index](cli-scrub-multi-stack.md#the-exports-index) entry of that name is converged to it.
   Text a part-rewritten value keeps beside the reference
   (`postgres://u:{{resolve:...}}@host`) is withheld by `cdkd diff` itself;
 - one no string of which can be a plaintext — only whole `{{resolve:...}}`
@@ -724,7 +727,7 @@ into a CONSUMER stack's AWS call. Hence three rules:
   as well — the value is never rewritten onto a reference and no key is
   invented. A key the template still names is left exactly as it is; one it
   cannot name is dropped, as
-  [above](cli-scrub.md#a-key-the-template-can-no-longer-name-is-dropped), which ships no
+  [above](cli-scrub-what-it-covers.md#outputs-the-template-no-longer-declares), which ships no
   token to a consumer — a key another stack reads is kept. ROTATE the secret and redeploy; that rewrites the record. A
   degenerately short plaintext, under 4 characters, is excluded from the
   WIDENED match specifically: it is never used as a cross-resource needle,
@@ -792,7 +795,7 @@ do not affect the exit code, with one exception noted under the second.
   value to converge it to, so it keeps what it holds. Redeploy that producer,
   which rewrites the index from its own outputs. When that entry's value still
   holds a secret this run recorded — typically after scrub
-  [dropped the key](cli-scrub.md#a-key-the-template-can-no-longer-name-is-dropped) — it is
+  [dropped the key](cli-scrub-what-it-covers.md#outputs-the-template-no-longer-declares) — it is
   a FINDING instead: the stack is not reported clean and `--fail` exits `1`.
   An alias-shaped name this run dropped or kept is withheld on these lines,
   as it was on the drop line; and an absent entry's name that carries a

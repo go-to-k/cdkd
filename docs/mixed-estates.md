@@ -5,18 +5,21 @@ description: "A stack deployed with cdkd can read the outputs of a stack CloudFo
 
 # Reference CloudFormation-managed stacks (mixed estates)
 
-A mixed estate is an account where some stacks are deployed with `cdk deploy`
-(CloudFormation) and others with cdkd. The usual split keeps shared
-infrastructure such as the VPC, domains and IAM on the CDK CLI, and iterates
-on dev and test application stacks with cdkd.
+A mixed estate is an AWS account where some stacks are deployed with
+`cdk deploy`, through CloudFormation, and others with cdkd. A common split
+keeps shared infrastructure such as the VPC, domains and IAM on the AWS CDK
+CLI, and uses cdkd for the dev and test application stacks you redeploy
+often.
 
-A cdkd stack can read the outputs of a CloudFormation-managed stack directly.
-You change nothing on the CloudFormation side and use the same CDK code you
-would use between two CloudFormation stacks.
+In such an account, a cdkd stack can read the outputs of a stack that
+CloudFormation manages. You change nothing on the CloudFormation side, and
+you write the same CDK code you would write between two CloudFormation
+stacks.
 
-## Example: consume a shared VPC
+## Example: use a shared VPC
 
-The producer stays on CloudFormation and exports a value:
+`SharedStack` stays on CloudFormation and exports the VPC's ID. It is the
+**producer**, the stack that publishes a value:
 
 ```ts
 // SharedStack, deployed with `cdk deploy`
@@ -26,19 +29,25 @@ new cdk.CfnOutput(this, 'SharedVpcId', {
 });
 ```
 
-The consumer imports it and is deployed with cdkd:
+`AppStack` imports the value and is deployed with cdkd. It is the
+**consumer**:
 
 ```ts
 // AppStack, deployed with `cdkd deploy`
 const vpcId = cdk.Fn.importValue('SharedVpcId');
 ```
 
+Deploy each stack with its own tool:
+
 ```bash
 cdk deploy SharedStack
 cdkd deploy AppStack
 ```
 
-## How the value is found
+## How cdkd finds the value
+
+cdkd looks for the value in its own state first, and asks CloudFormation only
+when it is not there:
 
 ```text diagram=guide-mixed-estates
   Fn::ImportValue / Fn::GetStackOutput in a stack cdkd deploys
@@ -55,42 +64,68 @@ cdkd deploy AppStack
   The deploy fails: not found
 ```
 
-cdkd looks in its own state first. Only on a miss does it ask CloudFormation:
-`ListExports` for `Fn::ImportValue`, and the stack's outputs through
-`DescribeStacks` for `Fn::GetStackOutput`. Each reference is resolved on its
-own, so one stack can read some values from cdkd producers and others from
-CloudFormation producers.
+The CloudFormation lookup depends on how the consumer refers to the value.
+For `Fn::ImportValue`, which is what `cdk.Fn.importValue` produces, cdkd
+calls `ListExports`. For `Fn::GetStackOutput`, which reads an output by stack
+name, cdkd reads the stack's outputs with `DescribeStacks`.
+[Cross-Stack References](cross-stack-references.md) explains both.
 
-If a cdkd stack and a CloudFormation stack export the same name, the cdkd one
-is used.
+cdkd resolves each reference separately. One stack can therefore read some
+values from stacks cdkd deployed and others from CloudFormation stacks. If a
+cdkd stack and a CloudFormation stack export the same name, cdkd uses the one
+from the cdkd stack.
 
-## What to watch for
+## Nothing protects the CloudFormation producer
 
 > [!WARNING]
-> Nothing stops you from deleting a CloudFormation producer that cdkd stacks
-> still read. cdkd does not record a value it got from CloudFormation, and
-> CloudFormation's own export-in-use protection cannot see cdkd consumers.
-> The consumer fails the next time it resolves the value. Check for cdkd
-> consumers before you delete a producer.
+> You can delete a CloudFormation producer while cdkd stacks still read from
+> it, and nothing stops you. The consumer then fails the next time it
+> resolves the value. Check for cdkd consumers before you delete a producer.
 
-| Topic | Behavior |
-| --- | --- |
-| IAM | The deploying credentials need `cloudformation:ListExports` and `cloudformation:DescribeStacks`. Without them cdkd warns and fails with the ordinary not-found error. |
-| Cross-account | `Fn::GetStackOutput` with a `RoleArn` reads the producer account's cdkd state only and never falls back. |
-| After `cdkd export` | Consumers of a stack you exported to CloudFormation keep resolving its outputs through the fallback. |
+Between two CloudFormation stacks, CloudFormation refuses to delete a stack
+whose export is in use. That protection does not reach a cdkd consumer, for
+two reasons. CloudFormation cannot see stacks that cdkd deployed. And cdkd
+does not record a value it got from CloudFormation, so cdkd has no list of
+consumers to check either. A reference that nothing protects like this is
+called a weak reference.
 
-## Turn the fallback off: `--no-cfn-fallback`
+## Edge cases
+
+### The deploy role lacks CloudFormation permissions
+
+The credentials that deploy the consumer need `cloudformation:ListExports`
+and `cloudformation:DescribeStacks`. Without them, cdkd prints a warning and
+then fails with the same not-found error it gives for a value that does not
+exist.
+
+### The producer is in another account
+
+`Fn::GetStackOutput` with a `RoleArn` reads cdkd's state in the producer's
+account. It never asks CloudFormation, so the producer in that account must
+be a cdkd stack.
+
+### A stack you moved to CloudFormation with `cdkd export`
+
+After you export a cdkd stack to CloudFormation, the stacks that consume its
+outputs keep working. They now find the values through the CloudFormation
+lookup.
+
+## Turn the CloudFormation lookup off: `--no-cfn-fallback`
 
 ```bash
 cdkd deploy AppStack --no-cfn-fallback
 cdkd diff AppStack --no-cfn-fallback
 ```
 
-With the flag, cdkd resolves cross-stack references from cdkd state only. Use
-it to keep the deploy role's IAM permissions minimal, or to make a mistyped
-export name fail immediately when it might otherwise match an unrelated
-CloudFormation export. Pass it to `cdkd diff` as well, so the preview and the
-deploy resolve the same way.
+With `--no-cfn-fallback`, cdkd resolves cross-stack references from its own
+state only. There are two reasons to use it:
+
+- The deploy role can do without the two CloudFormation permissions.
+- A mistyped export name fails immediately. Without the flag, the mistyped
+  name could match an unrelated CloudFormation export.
+
+Pass the flag to `cdkd diff` as well, so that the preview and the deploy
+resolve references the same way.
 
 ## Related
 

@@ -6,8 +6,11 @@ unlisted: true
 
 # Import internals
 
-Detail behind [Importing Existing Resources](import.md) that you need only
-when debugging an import or changing `cdkd import` itself.
+Detail behind [Importing Existing Resources](import.md) and its sub-pages
+([Import Options and the Import Plan](import-reference.md),
+[Importing by Resource Type](import-resource-types.md) and
+[After an Import](import-after.md)) that you need only when debugging an
+import or changing `cdkd import` itself.
 
 ## Nested-stack migration
 

@@ -6,14 +6,14 @@ unlisted: true
 
 # Supported Resources internals
 
-Detail behind two sections of [Supported Resources](supported-resources.md)
-that you need only when changing the Glue provider or debugging one of these
-paths.
+Detail behind the two Glue sections of
+[Per-Type Behaviour Notes](supported-resources-type-notes.md) that you need
+only when changing the Glue provider or debugging one of these paths.
 
 ## Glue Iceberg refusal
 
 The user-facing summary is
-[Glue table Iceberg support](supported-resources.md#glue-table-iceberg-support-icebergtableinput-is-refused).
+[Glue table Iceberg support](supported-resources-type-notes.md#glue-table-iceberg-support-icebergtableinput-is-refused).
 
 **A `cdkd rollback` never hits that refusal.** A rollback replays from cdkd
 state rather than from your template, so refusing would leave you with no
@@ -64,7 +64,7 @@ integ fixture.
 ## Glue parameter preservation
 
 The user-facing summary is
-[Glue table / database: AWS-managed `Parameters` survive an update](supported-resources.md#glue-table-database-aws-managed-parameters-survive-an-update).
+[Glue table / database: AWS-managed `Parameters` survive an update](supported-resources-type-notes.md#glue-table-database-aws-managed-parameters-survive-an-update).
 
 Glue's `UpdateTable` / `UpdateDatabase` replace `TableInput` / `DatabaseInput`
 **wholesale** — whatever the payload omits is erased. `Parameters` is a

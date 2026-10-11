@@ -65,7 +65,7 @@ drops the record and leaves the live resources standing.
 
 ## Sidecar objects in the state bucket
 
-The layout is drawn in [State Management](state-management.md#directory-layout). This section covers the lifecycle of each object that sits beside `state.json`.
+The layout is drawn in [State Management](state-management.md#what-is-in-the-bucket). This section covers the lifecycle of each object that sits beside `state.json`.
 
 ### Custom-resource response placeholders
 
@@ -109,14 +109,14 @@ That purge is conditional on `s3:ListBucketVersions` and
 noncurrent-version purge cdkd runs (the rollback journal and the bootstrap
 marker below, the transient CFn template upload, and the `deployments/` event
 store) — see
-[Bucket Policy with Least Privilege](state-management.md#recommended-bucket-policy-with-least-privilege)
+[IAM actions cdkd needs on the bucket](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket)
 — older recommended policies did not grant either. It fails soft by design, because it
 runs on a cleanup path that must never abort the operation it follows: without
 those actions the deploy, destroy or `cdkd gc` run still succeeds, a warning
 names the two grants, and the body stays retrievable by `VersionId`. A purge
 that SUCCEEDS still leaves the bodies behind if the state bucket is replicated
 — see
-[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+[S3 replication keeps copies cdkd cannot delete](state-management-backup-and-security.md#s3-replication-keeps-copies-cdkd-cannot-delete).
 
 ### Create-token ledger (`create-tokens.json`)
 
@@ -195,7 +195,7 @@ journal too: before its state write, it records each resource it adopts, as its
 logical id, physical id and type, on every segment holding an op of that logical id
 (`importedResources`, additive, no `journalVersion` bump), and supersedes each
 marked id on the newest segment. `cdkd rollback` then runs none of a marked
-segment's ops of that id. It warns about any op that recorded another resource ([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). A failed op refused because the
+segment's ops of that id. It warns about any op that recorded another resource ([`cdkd rollback`](cli-rollback-limitations.md#interaction-with-cdkd-import)). A failed op refused because the
 resource it met belongs to someone else, or whose write AWS provably did not
 apply (one send answered with a 4xx or a throttle), is recorded WITHOUT its
 attempted properties, so it is never read back as an attempt; any other
@@ -335,7 +335,7 @@ The legacy fallback is **temporary**. It will be dropped in a future
 release together with the `cdkd-state-{accountId}-{region}` legacy
 bucket name. Users who already bootstrapped under that name should
 migrate via
-[`cdkd state migrate`](state-management.md#migration-path-cdkd-state-migrate).
+[`cdkd state migrate`](state-management.md#move-off-the-old-bucket-name-with-cdkd-state-migrate).
 
 ### State bucket region probe
 
@@ -461,7 +461,7 @@ over a placeholder literal, for example. Secret redaction rewrites a value
 only where the template spells a `{{resolve:...}}` reference, so such a value
 is stored as AWS returned it, by design; see
 [`cdkd import`'s note on it](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it)
-and [Security and Best Practices](state-management.md#security-and-best-practices).
+and [Values that are stored in the clear](state-management-secrets.md#values-that-are-stored-in-the-clear).
 
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
 deploy engine loads state and finds resources without
@@ -509,7 +509,7 @@ standalone `AWS::RDS::DBInstance` takes CloudFormation's default, `Snapshot`.
 `DeletionPolicy: Snapshot` is honored on the same
 paths: cdkd creates the final snapshot CloudFormation
 promises before deleting (see the "DeletionPolicy: Snapshot" section in
-[Destroy flags & guards](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
+[Destroy flags & guards](cli-destroy-guards.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
 `--skip-final-snapshot` opt-out).
 
 > **Upgrade note (v4 → v5)** — the **first** `cdkd deploy` after
@@ -925,7 +925,7 @@ report it" row above:
 
 | request | what the handler receives |
 | --- | --- |
-| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position. A `ServiceToken` fed this way is not compared with the record, so a changed value is not refused ([a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken)) |
+| `Update` | sent on every deploy: `ResourceProperties` holds the real value, `OldResourceProperties` holds `***` at that position. A `ServiceToken` fed this way is not compared with the record, so a changed value is not refused ([a changed custom-resource ServiceToken](cli-deploy-custom-resources.md#a-changed-custom-resource-servicetoken)) |
 | `Delete` | `cdkd destroy` with the app: `ResourceProperties` holds the real value, re-resolved from today's template and parameters. `cdkd deploy --recreate-via-cc-api <logicalId>` re-resolves it the same way: it is the one deploy route that replaces a custom resource still in the template (deleting through its recorded handler and creating through the template's, on the custom-resource provider, so the record stays `provisionedBy: sdk`). No other deploy does (a changed `ServiceToken` is refused, and a `Type` change keeps the skip). Otherwise not sent: the delete is skipped, as for any resource whose DELETE needs a `NoEcho`-filled property (below) |
 
 On a `Delete`, cdkd re-resolves a position only while today's template still
@@ -1005,7 +1005,7 @@ count as a change for `--fail`.
   either side and without affecting the exit code. `cdkd drift --accept` /
   `--revert` leave such a position alone: the baseline either one rebuilds
   holds `***` there, and `--revert` keeps AWS's value rather than sending the
-  mask (see [Redacted (`NoEcho`) baselines](cli-drift.md#redacted-noecho-baselines)).
+  mask (see [Redacted (`NoEcho`) baselines](cli-drift-secrets.md#redacted-noecho-baselines)).
   A custom-resource mask is still refused by `--accept`; `--revert` refuses it only when it cannot
   tell which live value belongs there. `cdkd export` exports a record whose only masks sit at `NoEcho`
   positions: the exported template reads the parameter.
@@ -1033,7 +1033,7 @@ count as a change for `--fail`.
   the deploy warns once per such resource. Other resources' resolved copies of
   that name, and the outputs, exports index and rollback journal that carry
   it, hold it in the clear too; see
-  [A name derived from a secret is stored as resolved](state-management.md#security-and-best-practices).
+  [A resource named after a secret keeps that name in state](state-management-secrets.md#a-resource-named-after-a-secret-keeps-that-name-in-state).
 - A resource whose DELETE needs a property a `NoEcho` parameter fills (a name,
   a policy target, or any property of a custom resource, whose handler would
   receive `***`) cannot be addressed from its record, which holds `***`
@@ -1221,7 +1221,7 @@ value, and a value carrying a secret is never an input, except a value equal
 to the parameter's `Default`, which is template text. `cdkd diff` reuses a
 verdict only when the fingerprint it recomputes is equal; otherwise it takes
 the condition's FALSE branch, as before
-([`cdkd diff`](cli-diff.md#conditions-over-a-secret-fed-parameter)).
+([`cdkd diff`](cli-diff-nested-stacks.md#conditions-over-a-secret-fed-parameter)).
 
 - **Written** by a deploy's final save and by its no-change save (the latter
   also when only the record changed). Only a nested child records anything,
@@ -1456,8 +1456,8 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd orphan`, `cdkd import`, `cdkd rollback` | **Refuse** (`STATE_RESOURCES_MALFORMED`, exit `1`) — each carries the bag into a save |
 | `cdkd export` | **Refuses** the named stack at the load, before the lock, and every nested child record before any changeset (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too — a child whose map cannot be read contributes no nested stacks of its own, so migrating past it would leave that subtree out |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
-| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
-| `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff-state-records.md#when-the-state-record-is-malformed) |
+| `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state-malformed.md#when-resources-is-not-an-object) |
 | `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
 | `cdkd local *` (`--from-state`) | **Repairs** in memory and warns — it writes no state record; every `Ref` / `Fn::GetAtt` in the run's environment that names a resource of this record resolves to nothing and is dropped, and a bare `--assume-role` falls back to the developer's credentials |
 
@@ -1506,8 +1506,8 @@ deploy that applies it to a live system:
 | `cdkd import` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) — it carries the bag into a save |
 | A nested stack's child record | **Refuses** the parent's deploy AND its destroy (`STATE_RESOURCES_MALFORMED`, exit `1`) — the parent's `Outputs.<Key>` attributes are rebuilt from the child's bag and persisted into the parent's record, and the parent's destroy reaches the child through `runDestroyForStack`, which carries the same refusal |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
-| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
-| `cdkd state show` / `state resources` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3`; see [`cdkd diff`](cli-diff-state-records.md#when-the-state-record-is-malformed) |
+| `cdkd state show` / `state resources` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state-malformed.md#when-resources-is-not-an-object) |
 | `cdkd local *` (`--from-state`) | **Repairs** in memory and warns — it writes no state record, so the run continues with no outputs from that record |
 | An `Fn::GetStackOutput` read of that record | **Refuses the reference** — the deploy fails rather than resolving a fabricated value into the consumer's template |
 | The exports index rebuild | Publishes **nothing** from that record, warns, and indexes every other producer — see [cross-stack internals](cross-stack-internals.md#an-unreadable-producer-record-contributes-nothing-and-says-so) |
@@ -1555,7 +1555,7 @@ it answers the way it answers a damaged map:
 | Command | Answer |
 | --- | --- |
 | `cdkd deploy` | **Refuses** at the load (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the rows — under `--dry-run` too. The same refusal runs on the pre-lock `--recreate-via-cc-api` / `--recreate-via-sdk-provider` check, which reads the record itself: without it a `null` named row was reported as *missing from state*, with advice to drop the flag for it |
-| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock, and again on the record the empty-stack path re-reads under the lock, naming the rows — a falsy row was skipped as "not found in state" and the record removed with its resource live; a row with no type was routed to a provider on no type with a physical id nothing checked; see [`cdkd destroy`](cli-destroy.md#an-unreadable-resource-record-refuses-the-destroy) |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock, and again on the record the empty-stack path re-reads under the lock, naming the rows — a falsy row was skipped as "not found in state" and the record removed with its resource live; a row with no type was routed to a provider on no type with a physical id nothing checked; see [`cdkd destroy`](cli-destroy-edge-cases.md#an-unreadable-resource-record-refuses-the-destroy) |
 | `cdkd import` | **Refuses** a SELECTIVE merge over an unreadable row it does NOT re-import (`STATE_RESOURCES_MALFORMED`, exit `1`) — it copies every such row into the record it saves. A row named by `--resource` / `--resource-mapping` is replaced from the provider's answer, so `cdkd import <stack> --resource <id>=<physicalId> --force` is the repair of that row and is not refused pre-flight — if that row's import then does not succeed, the import refuses before saving rather than writing the row back; a whole-stack `--force` import or `--migrate-from-cloudformation` REPLACES the map from the template and is not refused either |
 | `cdkd orphan` | **Refuses** for a row on a record it would **keep**, under `--dry-run` too; a row you are orphaning is dropped as usual |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`) — the rewrite reads each row and saves the rebuilt map; under `--dry-run` it DROPS the rows, warns, and reports them in the audited-record refusal — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
@@ -1590,7 +1590,7 @@ act on. A string map adds one fabricated change per character on top.
 | `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison, so it would show the replacement as though the template asked for it |
 | `cdkd orphan` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) for a map on a record it would **keep**, under `--dry-run` and `--force` too — but never for one on a record you are orphaning, which it removes as usual |
 | `cdkd export` | **Refuses** the named stack at the load, before any lock, and every nested child record before any child stack is planned or locked — after the root's plan (under `--dry-run` too), and on a real run under the root lock, which it releases (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too — the export reads the map to build import identifiers and the phase-2 pre-deletes, then deletes the record |
-| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the records it could not read — a retained row included, since its `Ref` / `Fn::GetAtt` edges still order the deletes. The map is handed to each resource's delete, which reads keys off it (an RDS final snapshot, emptying an ECR repository first), and reading it as empty answers each of those keys as absent. A nested child record reached through its parent's destroy inherits it. See [cdkd destroy](cli-destroy.md#an-unreadable-properties-map-refuses-the-destroy) |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the records it could not read — a retained row included, since its `Ref` / `Fn::GetAtt` edges still order the deletes. The map is handed to each resource's delete, which reads keys off it (an RDS final snapshot, emptying an ECR repository first), and reading it as empty answers each of those keys as absent. A nested child record reached through its parent's destroy inherits it. See [cdkd destroy](cli-destroy-edge-cases.md#an-unreadable-properties-map-refuses-the-destroy) |
 | `cdkd diff` | **Repairs** those maps to empty in memory and warns, naming the same records — it writes nothing, and a preview of the rest of the stack is worth more than an abort; on the stack you named it also reports the deploy's refusal under `Blocking` and exits `3` |
 
 Reading the map as empty is **not** the safe answer here, which is why deploy
@@ -1638,7 +1638,7 @@ records that would **survive**. Three ways out, and the order matters:
    ```
 
    It makes the same scoped refusals and the same rewrite as `cdkd orphan`
-   ([`--resource`](cli-state.md#removing-one-resource-from-the-record)).
+   ([`--resource`](cli-state-writing.md#removing-one-resource-from-the-record)).
 
 A **legacy** record (`<prefix>/<stack>/state.json`) that `cdkd state list`
 shows with no region (its body names none, or could not be read) is the
@@ -1849,13 +1849,13 @@ interface ResourceState {
 everything the template declared. A provider that deliberately narrows what
 it sends records the narrowed bag, and a top-level property the SDK provider
 has no wiring for is likewise absent whenever
-[`--prefer-sdk-route`](cli-deploy-safety.md#the-override) kept the
+[`--prefer-sdk-route`](cli-deploy-safety-routing.md#prefer-sdk-route-deploy) kept the
 resource on the SDK route (that flag is the opt-in to the property not being
 written at all) — unless the property is create-only, which cdkd keeps in the
 record because removing it would classify the next deploy as a replacement,
 and names in `acceptedCreateOnlyDrops`. That name is what lets a later deploy
 without the flag refuse the replacement instead of reporting no change
-([`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement)).
+([`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety-recreate.md#create-only-drop-needs-replacement)).
 One key is never sent: a nested stack's `AWS::CloudFormation::Stack` row
 carries `cdkd:PendingChildDeletes` while its child stack (or one below it)
 still holds a DELETE cdkd skipped, so the next `cdkd deploy` re-runs that
@@ -1892,7 +1892,7 @@ is in two cases. The first is a value that occurs only inside the text of a
 so it can be resolved again, which means a reference NAME built from a
 `NoEcho` value stores that value in the clear when the reference resolves to a
 public value. One that resolves to a secret is refused instead: see
-[the troubleshooting entry](troubleshooting.md#refusing-to-resolve-a-reference-whose-name-was-built-from-a-secret). The second is a value that IS
+[the troubleshooting entry](troubleshooting-references.md#refusing-to-resolve-a-reference-whose-name-was-built-from-a-secret). The second is a value that IS
 public text state already holds: the region, the stack name, one of the custom
 resource's literal template properties, its `ServiceToken` or one of that
 ARN's `:`-separated parts (its account id, for example). For a value read
@@ -2071,7 +2071,7 @@ The composite value is what state records, what `cdkd state show` /
 `cdkd state resources` print, and what
 `cdkd import --resource '<logicalId>=<physicalId>'` expects. A few types also
 accept a looser form on import — see
-[Importing Existing Resources](./import.md#auto-resolved-no-resource-flag-needed) for the
+[Importing Existing Resources](import.md#found-without-a-flag) for the
 per-type notes.
 
 | Resource Type | physicalId format |
@@ -2235,7 +2235,7 @@ CloudFormation itself refuses `AWS::Glue::Table`,
 `AWS::Route53::RecordSet`, `AWS::AppSync::ApiKey` and
 `AWS::EC2::NetworkAclEntry` in IMPORT changesets. `cdkd export` detects
 that up front and names every affected resource — see
-[`cdkd export`](cli-export.md#resource-types-cloudformation-cannot-import).
+[`cdkd export`](cli-export-blocks.md#resource-types-cloudformation-cannot-import).
 
 Two more types **accept** a composite id without producing one:
 
@@ -2325,7 +2325,7 @@ const arn = bucketState.attributes['Arn'];
    other field of the record is touched. `--dry-run` reads but records nothing.
    `cdkd diff` issues the same read for its preview and records nothing; other
    read-only commands (`cdkd drift`) never re-read. See
-   ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
+   ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting-references.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
 
 ```typescript
 // IAM Role Provider example
@@ -2389,7 +2389,7 @@ next check in.
 ## Lock implementation
 
 The lock is an S3 object written and deleted with conditional requests. Its
-behaviour as a user sees it is in [State Management](state-management.md#locking).
+behaviour as a user sees it is in [State locking](state-management-locking.md).
 
 Like the state backend, the lock manager resolves the state bucket's
 actual region via `GetBucketLocation` before its first S3 operation and
@@ -2601,7 +2601,7 @@ Two consequences worth knowing:
   `s3:ListBucketVersions` / `s3:DeleteObjectVersion` does not get a warning at
   the tail of every mutating command about a heartbeat record. The two rare
   reap paths (takeover, `force-unlock`) do warn, matching the cost profile the
-  [bucket-policy section](state-management.md#recommended-bucket-policy-with-least-privilege)
+  [bucket-policy section](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket)
   describes -- that section is also where the two grants and the never-throw
   contract are spelled out. Nothing fails either way.
 
@@ -2735,7 +2735,7 @@ marker and leaves every earlier version of the key readable through
 transient by design, it also purges that key's noncurrent versions. The purge
 needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion`; the policy that
 grants them is in
-[State Management](state-management.md#recommended-bucket-policy-with-least-privilege).
+[State backup and bucket security](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket).
 
 **Six kinds of object need those two version actions, not one** — the five in
 this table and the `deployments/**` event store below it, plus `state.json` and
@@ -2767,7 +2767,7 @@ noncurrent versions of the keys it deletes, and `cdkd events prune --all` /
 `deployments/` prefix. Each run's stream is re-written in
 full per flush, so one run leaves one version per flush, and the repo classes
 this content as sensitive: see
-[Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions)
+[Deleting a run stream also purges its earlier versions](cli-events.md#earlier-versions-on-the-versioned-state-bucket)
 for what that purge does not reach.
 
 **One other key family is not in the table either.** Short of deleting the
@@ -2780,7 +2780,7 @@ stay readable:
   previous body as a noncurrent version of a key SHARED by every
   cdkd-managed stack in the region; `cdkd scrub` purges the key's noncurrent
   versions once per region whose entries it wrote. See
-  [`cdkd scrub`](cli-scrub.md#the-exports-index).
+  [`cdkd scrub`](cli-scrub-multi-stack.md#the-exports-index).
 
 **Without the two grants, nothing fails — and that is the point to
 understand.** The purge runs on a cleanup path and must never abort the
@@ -2864,7 +2864,7 @@ Destination(s): cdkd-state-replica
 Four things about that check, all deliberate:
 
 - **It needs `s3:GetReplicationConfiguration`.** The action is in the
-  [least-privilege policy](state-management.md#recommended-bucket-policy-with-least-privilege), marked as the one DIAGNOSTIC entry: removing it
+  [least-privilege policy](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket), marked as the one DIAGNOSTIC entry: removing it
   costs you this check and nothing else. Without it the probe is denied, logs at
   `debug`, and never warns — most state buckets are not replicated, so warning
   there would demand a permission from everyone in order to inform almost
