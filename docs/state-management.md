@@ -1,9 +1,9 @@
 ---
-title: State Management
+title: State Store
 description: "Reference for the cdkd state store: which S3 bucket holds state, what is in it, how to read a state record, and where locking, secrets, upgrades, repair and bucket security are documented."
 ---
 
-# cdkd State Management Specification
+# State Store
 
 cdkd records what it deployed in an S3 bucket, as one JSON document per stack
 and region. That document is the stack's **state record**. This page says
@@ -25,7 +25,7 @@ cdkd state show MyStack
 cdkd state show MyStack --json
 ```
 
-[State Store](state-store.md) is the task-level introduction, and
+[Manage Stacks Without the App](state-store.md) is the task-level introduction, and
 [`cdkd state`](cli-state.md) documents every subcommand and flag.
 
 ## Where state lives
@@ -395,9 +395,9 @@ versions and what the first deploy after an upgrade does.
 
 ## Related
 
-- [State Store](state-store.md): the introduction to the state store
+- [Manage Stacks Without the App](state-store.md): the introduction to the state store
 - [`cdkd state`](cli-state.md): every subcommand and flag
-- [Orphan vs Destroy](orphan-vs-destroy.md): the commands that remove a
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): the commands that remove a
   record, with and without deleting the resources
 - [State schema internals](state-schema-internals.md): contributor page with
   the version history, the full field reference and the implementation

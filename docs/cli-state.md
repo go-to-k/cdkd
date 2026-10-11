@@ -75,7 +75,7 @@ Should the AWS resources be deleted?
                              deletes the whole record; nothing stays tracked
 ```
 
-[Orphan vs Destroy](orphan-vs-destroy.md) compares these two with `cdkd
+[Orphan Instead of Destroy](orphan-vs-destroy.md) compares these two with `cdkd
 destroy` and `cdkd orphan`, which need the CDK app.
 
 ## In this section
@@ -354,7 +354,7 @@ No mode of this subcommand prints resource properties. Use
 
 AWS identifies some resource types by more than one field. For those types the
 physical id is several values joined with `|`, and it is not the value `Ref`
-returns. [State Management](state-management.md) explains these ids.
+returns. [State Store](state-management.md) explains these ids.
 
 ## `cdkd state show`
 
@@ -490,9 +490,9 @@ prompt every writing subcommand shows.
 
 ## Related
 
-- [State Store](state-store.md): the same subject, summarised for a first read
-- [State Management](state-management.md): the record schema, the key layout and the lock
-- [Orphan vs Destroy](orphan-vs-destroy.md): which cleanup command to reach for
+- [Manage Stacks Without the App](state-store.md): the same subject, summarised for a first read
+- [State Store](state-management.md): the record schema, the key layout and the lock
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): which cleanup command to reach for
 - [CLI Reference](cli-reference.md): every command and the full exit-code table
 - [Troubleshooting](troubleshooting.md): what to do when a state record and AWS disagree
 - [cdkd state internals](cli-state-internals.md): rendering and refusal rules, for contributors

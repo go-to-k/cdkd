@@ -150,7 +150,7 @@ reference.
 
 When another stack's reference blocks a destroy, removing the referenced
 resource from the record does not help.
-[Cross-Stack References](cross-stack-references.md) explains why.
+[Use Another Stack's Outputs](cross-stack-references.md) explains why.
 
 ## `cdkd state destroy`
 
@@ -283,7 +283,7 @@ bucket, because a lock means a deploy or destroy may be writing there. The
 error names the lock keys. Wait for that operation to finish, or clear a stale
 lock with [`cdkd force-unlock`](cli-force-unlock.md).
 
-[State Management](state-management.md) covers the destination bucket's
+[State Store](state-management.md) covers the destination bucket's
 settings and a manual `aws s3 sync` alternative.
 
 ## `cdkd state refresh-observed`
@@ -417,6 +417,6 @@ cdkd state orphan MyStack   # removes the record, not the AWS resources
 
 - [`cdkd state`](cli-state.md): the subcommand map, the shared options and the read-only subcommands
 - [cdkd state: malformed records](cli-state-malformed.md): what a damaged record looks like in each subcommand
-- [Orphan vs Destroy](orphan-vs-destroy.md): which cleanup command to reach for
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): which cleanup command to reach for
 - [cdkd destroy](cli-destroy.md): the guards and prompts `cdkd state destroy` shares
 - [`cdkd drift`](cli-drift.md): the comparison `state refresh-observed` supplies the baseline for

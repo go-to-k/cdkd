@@ -15,7 +15,7 @@ cdkd state resources MyStack    # the resources recorded for a stack
 cdkd state show MyStack         # the full record, with properties and outputs
 ```
 
-This page is part of [State Management](state-management.md).
+This page is part of [State Store](state-management.md).
 
 ## What a physical ID is
 
@@ -142,8 +142,8 @@ attribute, then export again.
 
 ## Related
 
-- [State Management](state-management.md): where state lives and what a
+- [State Store](state-management.md): where state lives and what a
   record contains
-- [Importing Existing Resources](import.md): where you pass a physical ID to
+- [Import Existing Resources](import.md): where you pass a physical ID to
   cdkd
 - [`cdkd state`](cli-state.md): `state show` and `state resources`

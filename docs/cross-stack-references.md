@@ -1,9 +1,9 @@
 ---
-title: Cross-Stack References
+title: "Use Another Stack's Outputs"
 description: "The two ways one cdkd stack reads another's outputs, strong Fn::ImportValue and weak Fn::GetStackOutput, and what to do when a destroy is refused because of one."
 ---
 
-# Cross-Stack References
+# Use Another Stack's Outputs
 
 A cross-stack reference lets one stack use a value that another stack
 published as an output. The stack that publishes the value is the
@@ -156,7 +156,7 @@ The policy to attach to the role is under
 | The producer is in another region | `Fn::GetStackOutput` with `Region` |
 | The producer is in another account | `Fn::GetStackOutput` with `RoleArn` |
 | The producer must be destroyable while consumers exist | `Fn::GetStackOutput` |
-| The producer is managed by CloudFormation | Either; see [Mixed Estates](mixed-estates.md) |
+| The producer is managed by CloudFormation | Either; see [Run Beside CloudFormation](mixed-estates.md) |
 
 ## Resolving a refused destroy
 
@@ -210,7 +210,7 @@ for `Fn::GetStackOutput`. This works within one account only. A read with a
 A value found this way is always a weak reference, even when the consumer
 uses `Fn::ImportValue`, because cdkd cannot protect a producer it does not
 manage. `--no-cfn-fallback` on `cdkd deploy` and `cdkd diff` turns the
-CloudFormation lookup off. [Mixed Estates](mixed-estates.md) covers this
+CloudFormation lookup off. [Run Beside CloudFormation](mixed-estates.md) covers this
 case in full.
 
 ## Compared with CloudFormation
@@ -236,8 +236,8 @@ when the producer deploys.
 
 - [Cross-stack reference internals](cross-stack-internals.md): how
   references are resolved and checked, for contributors
-- [Mixed Estates](mixed-estates.md): consuming a CloudFormation-managed
+- [Run Beside CloudFormation](mixed-estates.md): consuming a CloudFormation-managed
   producer
-- [Stack Outputs](stack-outputs.md): declaring the values a consumer reads
+- [Read Stack Outputs](stack-outputs.md): declaring the values a consumer reads
 - [cdkd destroy](cli-destroy.md): the other things that stop a
   destroy

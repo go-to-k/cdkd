@@ -107,7 +107,7 @@ five parts:
 - the logical ids the resource depends on.
 
 The full schema and its version history are in
-[State Management](state-management.md).
+[State Store](state-management.md).
 
 ## How the stack lock works
 
@@ -134,5 +134,5 @@ To clear a stuck lock by hand, run
 
 - [Architecture](architecture.md): the layers and the overview of a deploy
 - [The deploy pipeline](architecture-deploy-pipeline.md)
-- [State Management](state-management.md): the state schema
-- [Rollback](rollback.md)
+- [State Store](state-management.md): the state schema
+- [Roll Back a Failed Deploy](rollback.md)

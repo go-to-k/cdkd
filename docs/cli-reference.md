@@ -36,9 +36,9 @@ two commands are explained in
 | | | [cdkd deploy: tuning](cli-deploy-tuning.md): timeouts, resource names and CDK annotations. |
 | | | [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): replacements and the guards around them. |
 | | [`cdkd publish-assets`](cli-publish-assets.md) | Build and upload assets without deploying. |
-| | `cdkd import` | [Importing Existing Resources](import.md): adopt resources that already exist. |
+| | `cdkd import` | [Import Existing Resources](import.md): adopt resources that already exist. |
 | **Tear down** | `cdkd destroy` | [cdkd destroy](cli-destroy.md): data guards, snapshots and prompts. |
-| | `cdkd orphan` | [Orphan vs Destroy](orphan-vs-destroy.md): stop managing a resource without deleting it. |
+| | `cdkd orphan` | [Orphan Instead of Destroy](orphan-vs-destroy.md): stop managing a resource without deleting it. |
 | **Recover** | [`cdkd rollback`](cli-rollback.md) | Revert a deploy that failed or was interrupted. |
 | | [`cdkd force-unlock`](cli-force-unlock.md) | Delete a lock that a crashed or cancelled run left behind. |
 | **Inspect** | [`cdkd events`](cli-events.md) | Read what past deploys and destroys did. |

@@ -165,8 +165,8 @@ A lock that is no longer renewed expires after 30 minutes, so a killed
 process cannot block a stack for long.
 [`cdkd force-unlock`](cli-force-unlock.md) clears a lock sooner.
 
-[State Store](state-store.md) is the guide to working with state, and
-[State Management](state-management.md) is the full reference.
+[Manage Stacks Without the App](state-store.md) is the guide to working with state, and
+[State Store](state-management.md) is the full reference.
 
 ## Terms the docs use
 
@@ -183,17 +183,17 @@ process cannot block a stack for long.
 - **Destroy.** Delete a stack's AWS resources and its state.
 - **Orphan.** Remove a resource or a stack from state only. The AWS resources
   stay, and cdkd no longer manages them. See
-  [Orphan vs Destroy](orphan-vs-destroy.md).
+  [Orphan Instead of Destroy](orphan-vs-destroy.md).
 - **Drift.** A difference between state and what is in AWS, caused by a
-  change made outside cdkd. See [Drift Detection](drift.md).
+  change made outside cdkd. See [Detect and Fix Drift](drift.md).
 - **Rollback.** Undoing what a failed deploy did, so the stack returns to how
-  it was before that deploy. See [Rollback](rollback.md).
+  it was before that deploy. See [Roll Back a Failed Deploy](rollback.md).
 - **Wait mode.** How long a deploy waits for a slow resource to become ready.
-  See [Wait Modes](wait-modes.md).
+  See [Choose a Wait Mode](wait-modes.md).
 
 ## Where to go next
 
 - [Getting Started](getting-started.md): install cdkd and deploy a first stack.
-- [Wait Modes](wait-modes.md): choose what "done" means for slow resources.
-- [Stack Outputs](stack-outputs.md): read a deployed stack's outputs back.
+- [Choose a Wait Mode](wait-modes.md): choose what "done" means for slow resources.
+- [Read Stack Outputs](stack-outputs.md): read a deployed stack's outputs back.
 - [Architecture](architecture.md): the pipeline layer by layer, for contributors.

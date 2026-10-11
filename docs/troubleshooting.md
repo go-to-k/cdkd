@@ -309,7 +309,7 @@ Pick the fix that matches who owns the existing resource:
 When the colliding name is one cdkd generated, the error is followed by a
 message that prints the adoption command. See
 [Recovering from Orphaned Resources](troubleshooting-failed-deploy.md#recovering-from-orphaned-resources).
-[Importing Existing Resources](import.md) has the import flags.
+[Import Existing Resources](import.md) has the import flags.
 
 #### Types that do not fail on a collision
 
@@ -504,7 +504,7 @@ above. Questions are welcome there too.
 ## Related
 
 - [CLI Reference](cli-reference.md): every command and the exit codes
-- [State Management](state-management.md): the state record, the lock and the
+- [State Store](state-management.md): the state record, the lock and the
   bucket layout
 - [Troubleshooting internals](troubleshooting-internals.md): retry schedules
   and other mechanisms behind the entries in this section

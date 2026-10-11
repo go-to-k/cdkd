@@ -545,7 +545,7 @@ by design.
   producer still has the plaintext in memory and hands it to the consumer,
   while a producer deployed by an earlier run has none and the consumer is
   refused. See
-  [State Management](state-management-secrets.md#custom-resource-responses-marked-noecho)
+  [State Store](state-management-secrets.md#custom-resource-responses-marked-noecho)
   and [Cross-stack reference internals](cross-stack-internals.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
 - A **`NoEcho: true` template parameter's value** is persisted as `***` too
   (state schema `version: 11`): wherever it equals or is embedded in a stored
@@ -564,7 +564,7 @@ by design.
   naming the resource): it re-resolves each position from
   today's template (issue #4682), in memory only; elsewhere that delete is
   skipped.
-  See [State Management](state-management-secrets.md#noecho-parameters).
+  See [State Store](state-management-secrets.md#noecho-parameters).
 
 ## CloudFormation macros and nested stacks
 
@@ -643,6 +643,6 @@ question.
 ## Related
 
 - [Architecture](architecture.md)
-- [State Management](state-management.md)
+- [State Store](state-management.md)
 - [Cross-stack reference internals](cross-stack-internals.md)
 - [Provider implementation rules](provider-rules.md)

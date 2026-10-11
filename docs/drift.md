@@ -1,9 +1,9 @@
 ---
-title: Drift Detection
+title: Detect and Fix Drift
 description: "Find out whether a deployed stack still matches what cdkd deployed, and accept or revert the difference, with cdkd drift."
 ---
 
-# Drift detection
+# Detect and Fix Drift
 
 Drift is a difference between what cdkd deployed and what is in AWS now. It
 usually appears because someone edited or deleted a resource outside cdkd, for
@@ -155,4 +155,4 @@ cdkd state refresh-observed MyStack
   coverage, and how secret values are reported
 - [`cdkd diff`](cli-diff.md): comparing your template against state
 - [cdkd deploy: tuning](cli-deploy-tuning.md): `--no-capture-observed-state`
-- [State Management](state-management.md): where the stored copy lives
+- [State Store](state-management.md): where the stored copy lives

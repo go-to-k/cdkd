@@ -132,4 +132,4 @@ warning under
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
 - [cdkd diff: nested stacks](cli-diff-nested-stacks.md): nested-stack parameters that hold a secret
 - [`cdkd scrub`](cli-scrub.md): repair state records holding plaintext secrets
-- [State Management](state-management.md): how state stores secret values
+- [State Store](state-management.md): how state stores secret values

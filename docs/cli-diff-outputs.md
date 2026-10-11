@@ -111,5 +111,5 @@ Three details:
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
 - [cdkd diff: JSON output](cli-diff-json.md): the `outputChanges` array
 - [cdkd diff: secrets and NoEcho values](cli-diff-secrets.md): when an output's value or name is hidden
-- [Cross-Stack References](cross-stack-references.md): how `Fn::ImportValue` and `Fn::GetStackOutput` resolve
+- [Use Another Stack's Outputs](cross-stack-references.md): how `Fn::ImportValue` and `Fn::GetStackOutput` resolve
 - [cdkd diff internals](cli-diff-internals.md): the rules for skipped and partially resolved outputs

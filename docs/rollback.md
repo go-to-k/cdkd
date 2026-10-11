@@ -1,9 +1,9 @@
 ---
-title: Rollback
+title: Roll Back a Failed Deploy
 description: "What cdkd undoes when a deploy fails, how to keep the partial stack with --no-rollback, and how to revert it later with cdkd rollback."
 ---
 
-# Rollback behavior
+# Roll Back a Failed Deploy
 
 When a resource fails partway through `cdkd deploy`, cdkd undoes what that
 deploy had already done to the stack and exits with a non-zero code. The
@@ -278,5 +278,5 @@ nothing uses it.
   `DeletionPolicy` table and the known limitations
 - [cdkd destroy](cli-destroy.md): tearing a stack down instead of
   rolling it back
-- [Deployment Events](deployment-events.md): reading back what a failed run
+- [Review Past Deploys](deployment-events.md): reading back what a failed run
   did

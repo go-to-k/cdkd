@@ -33,7 +33,7 @@ Three related questions have their own pages:
   something behind on destroy. See
   [Per-Type Behaviour Notes](supported-resources-type-notes.md).
 - Whether `cdkd import` can adopt a type is answered in
-  [Importing Existing Resources](import.md#which-resource-types-can-be-imported).
+  [Import Existing Resources](import.md#which-resource-types-can-be-imported).
 - The [provider coverage matrix](_generated/provider-coverage.md) lists every
   public CloudFormation resource type with its tier: Tier 1 (SDK provider),
   Tier 2 (Cloud Control) or Tier 3 (unsupported). It is generated, and it has
@@ -202,7 +202,7 @@ leave something behind on destroy. Each links to its note in
   in full
 - [Provisioning Layers](provisioning-layers.md): how cdkd chooses between an
   SDK provider and Cloud Control for one resource
-- [Importing Existing Resources](import.md): which types `cdkd import` can
+- [Import Existing Resources](import.md): which types `cdkd import` can
   adopt
 - [Feature Parity](supported-features.md): intrinsic functions, pseudo
   parameters and the rest of the CloudFormation surface

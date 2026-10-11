@@ -416,6 +416,6 @@ declare the parameter `Type: String`.
 - [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): `--no-cfn-fallback` and the other guards
 - [`cdkd drift`](cli-drift.md): compare state against what AWS actually holds
 - [`cdkd scrub`](cli-scrub.md): repair state records holding plaintext secrets
-- [Cross-Stack References](cross-stack-references.md): how `Fn::ImportValue` and `Fn::GetStackOutput` resolve
+- [Use Another Stack's Outputs](cross-stack-references.md): how `Fn::ImportValue` and `Fn::GetStackOutput` resolve
 - [CLI Reference](cli-reference.md): the flags every command shares
 - [cdkd diff internals](cli-diff-internals.md): the rules behind the edge cases

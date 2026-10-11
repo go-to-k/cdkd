@@ -1,9 +1,9 @@
 ---
-title: Orphan vs Destroy
+title: Orphan Instead of Destroy
 description: "cdkd destroy deletes a stack's AWS resources and its state record; cdkd orphan removes only the state record, for one resource or a whole stack, and leaves the AWS resources running."
 ---
 
-# Orphan vs Destroy
+# Orphan Instead of Destroy
 
 Both commands make cdkd stop managing something, and they differ in what
 happens to the AWS resources:
@@ -90,5 +90,5 @@ This removes the stack from state entirely. Every resource stays in AWS.
   commands that work from state
 - [cdkd destroy](cli-destroy.md): what `cdkd destroy` deletes and
   what it refuses to
-- [State Store](state-store.md): why the commands that work from state need
+- [Manage Stacks Without the App](state-store.md): why the commands that work from state need
   no CDK app

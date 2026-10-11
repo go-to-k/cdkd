@@ -236,5 +236,5 @@ be read back, so it needs one deploy that updates it.
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
 - [cdkd drift: what was not compared](cli-drift-not-compared.md): the `noEchoParameter`, `uncertifiedBaseline` and `unresolvedToken` causes
 - [`cdkd scrub`](cli-scrub.md): finding and removing secret plaintext in state
-- [State Management](state-management.md): how state stores secret values
+- [State Store](state-management.md): how state stores secret values
 - [cdkd drift internals](cli-drift-internals.md): the rules behind the edge cases

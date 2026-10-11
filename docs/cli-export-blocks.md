@@ -122,7 +122,7 @@ the resource at deploy time.
 
 `AWS::AppSync::GraphQLApi` reaches this table only when you pass
 `--skip-import-support-preflight`, because it is blocked by default.
-[State Management](state-management.md) describes the `|`-joined physical ids.
+[State Store](state-management.md) describes the `|`-joined physical ids.
 
 ### When the record lacks the attribute
 
@@ -248,4 +248,4 @@ the export refuses the tree because that record is missing.
 - [`cdkd export`](cli-export.md): the command, its common blocks and its options
 - [cdkd export: custom resources and IAM policies](cli-export-two-phase.md): the types cdkd migrates in a second phase
 - [`cdkd import`](import.md): the command most remedies on this page use
-- [State Management](state-management.md): state records and composite physical ids
+- [State Store](state-management.md): state records and composite physical ids

@@ -455,8 +455,8 @@ print alike. The full rules are in
 
 ## Related
 
-- [Drift Detection](drift.md): the same subject, summarised for a first read
-- [State Management](state-management.md): the state schema, `observedProperties`, and `cdkd state refresh-observed`
+- [Detect and Fix Drift](drift.md): the same subject, summarised for a first read
+- [State Store](state-management.md): the state schema, `observedProperties`, and `cdkd state refresh-observed`
 - [`cdkd scrub`](cli-scrub.md): keeping secret plaintext out of the state records drift compares against
 - [`cdkd diff`](cli-diff.md): the template-vs-state comparison
 - [CLI Reference](cli-reference.md): every command and the full exit-code table

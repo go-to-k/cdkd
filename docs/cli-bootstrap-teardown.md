@@ -107,4 +107,4 @@ bucket would switch that region back to legacy mode without notice.
 - [`cdkd bootstrap`](cli-bootstrap.md): creating the storage, and the refusal codes
 - [`cdkd gc`](cli-gc.md): deleting unreferenced assets and keeping the storage
 - [Region resolution](cli-reference-region.md): which region a bare `--destroy` acts on
-- [State Management](state-management.md): what the state bucket holds
+- [State Store](state-management.md): what the state bucket holds

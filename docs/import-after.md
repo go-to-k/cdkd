@@ -15,7 +15,7 @@ cdkd deploy MyStack
 cdkd drift MyStack     # later: has anything changed outside cdkd?
 ```
 
-To start an import, see [Importing Existing Resources](import.md).
+To start an import, see [Import Existing Resources](import.md).
 
 ## Check the first diff
 
@@ -312,9 +312,9 @@ which writes every property back.
 
 ## Related
 
-- [Importing Existing Resources](import.md): the walkthroughs
+- [Import Existing Resources](import.md): the walkthroughs
 - [`cdkd drift`](cli-drift.md): how the baseline is compared
 - [`cdkd scrub`](cli-scrub.md): finding and removing secrets in state
-- [State Management](state-management.md): who can read the state bucket
+- [State Store](state-management.md): who can read the state bucket
 - [Import internals](import-internals.md): older baseline decisions and
   re-importing a Cloud Control resource

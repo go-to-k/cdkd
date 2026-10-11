@@ -102,5 +102,5 @@ each command, part by part:
 
 - [`cdkd state`](cli-state.md): inspecting and editing the state record
 - [`cdkd diff`](cli-diff.md): the preview that still runs against a damaged record
-- [State Management](state-management.md): the state record's layout
+- [State Store](state-management.md): the state record's layout
 - [cdkd deploy](cli-deploy.md): every deploy flag

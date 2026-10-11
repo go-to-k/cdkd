@@ -132,4 +132,4 @@ rules for each part of the record are in
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
 - [cdkd diff: JSON output](cli-diff-json.md): the `unreadable` fields
 - [`cdkd state`](cli-state.md): inspecting a state record
-- [State Management](state-management.md): the state schema and how deploy treats a damaged record
+- [State Store](state-management.md): the state schema and how deploy treats a damaged record

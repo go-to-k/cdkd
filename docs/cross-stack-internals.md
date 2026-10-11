@@ -12,7 +12,7 @@ what each path costs.
 
 For what a user sees — which intrinsic to reach for, what a refused destroy
 means, and how to resolve one — see
-[Cross-Stack References](cross-stack-references.md).
+[Use Another Stack's Outputs](cross-stack-references.md).
 
 ## Architecture
 
@@ -112,7 +112,7 @@ version of the same collision — a plain output in one stack shadowing an
 export of the same name in another — is closed by schema v9's
 `exportNames`, which narrows what the index derives from the bag to the
 aliases the producer actually declared; see the v9 section in
-[State Management](state-management-schema-versions.md#exportnames-which-outputs-are-exports).) Rename the export (or
+[State Store](state-management-schema-versions.md#exportnames-which-outputs-are-exports).) Rename the export (or
 the colliding output) and redeploy the producer — there is no
 configuration that restores the old behavior, and the old behavior was
 order-dependent anyway.
@@ -497,7 +497,7 @@ exists:
 
 The values themselves are still delivered to AWS in the clear on the runs that
 succeed; only what cdkd writes down changes. See
-[State Management](state-management-secrets.md#custom-resource-responses-marked-noecho).
+[State Store](state-management-secrets.md#custom-resource-responses-marked-noecho).
 
 ### `Fn::GetStackOutput` does NOT recordImport — it records to a separate bag
 
@@ -792,7 +792,7 @@ repair.
 
 ## CloudFormation fallback
 
-What a user sees of the fallback is in [Mixed Estates](mixed-estates.md).
+What a user sees of the fallback is in [Run Beside CloudFormation](mixed-estates.md).
 The design points behind it:
 
 - **`Fn::ImportValue`**: when the export is in no cdkd state record, the
@@ -897,7 +897,7 @@ path and is dominated by AWS-side resource deletion latency anyway.
 
 ## Related
 
-- [Cross-Stack References](cross-stack-references.md) — the user-facing guide
-- [State Management](state-management.md) — the state record these mechanisms
+- [Use Another Stack's Outputs](cross-stack-references.md) — the user-facing guide
+- [State Store](state-management.md) — the state record these mechanisms
   read and write
-- [Mixed Estates](mixed-estates.md) — referencing a CloudFormation-managed stack
+- [Run Beside CloudFormation](mixed-estates.md) — referencing a CloudFormation-managed stack

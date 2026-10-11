@@ -7,7 +7,7 @@ description: "Every cdkd import flag, when --force is needed, how to read the im
 
 This page is the reference for `cdkd import`: its flags, the plan it prints,
 and the details of a CloudFormation migration. For the walkthroughs, start at
-[Importing Existing Resources](import.md).
+[Import Existing Resources](import.md).
 
 ```bash
 # print the plan, write nothing
@@ -90,7 +90,7 @@ cdkd import MyStack --resource <logicalId>=<physicalId> --force
 
 If the import of that resource fails, cdkd refuses again before saving. An
 import of everything and `--migrate-from-cloudformation` rebuild all records
-and are not refused. [State Management](state-management.md) describes how
+and are not refused. [State Store](state-management.md) describes how
 other commands treat a damaged record.
 
 ## Read the import plan
@@ -230,7 +230,7 @@ names them.
 The cleanup reaches the state bucket only. If the bucket is replicated, the
 template's content survives in the destination bucket, and cdkd warns when it
 can read the replication configuration.
-[State Management](state-management.md) has a bucket policy that grants both
+[State Store](state-management.md) has a bucket policy that grants both
 actions and explains the replication limit.
 
 ## `cdkd import` vs upstream `cdk import`
@@ -271,7 +271,7 @@ If your scripts rely on the upstream behaviour:
 
 ## Related
 
-- [Importing Existing Resources](import.md): the walkthroughs
+- [Import Existing Resources](import.md): the walkthroughs
 - [Importing by resource type](import-resource-types.md): the `--resource`
   value for each type
 - [After an import](import-after.md): the first diff, the drift baseline, and

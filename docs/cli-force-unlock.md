@@ -155,4 +155,4 @@ The two kinds of failure differ in how much of the run continues:
 - [cdkd deploy: the stack lock](cli-deploy-lock.md): what the lock covers and how a deploy takes it
 - [`cdkd state`](cli-state.md): inspecting the state record the lock guards
 - [`cdkd events`](cli-events.md): checking whether a run is still active
-- [State Management](state-management.md): the state bucket layout and the locking model
+- [State Store](state-management.md): the state bucket layout and the locking model

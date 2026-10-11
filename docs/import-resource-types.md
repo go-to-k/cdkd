@@ -295,10 +295,10 @@ nested stack (`AWS::CloudFormation::Stack`) can be imported only with
 
 ## Related
 
-- [Importing Existing Resources](import.md): the walkthroughs and the list of
+- [Import Existing Resources](import.md): the walkthroughs and the list of
   importable types
 - [Import options and the import plan](import-reference.md): flags and the
   plan
-- [State Management](state-management.md): the physical id format cdkd stores
+- [State Store](state-management.md): the physical id format cdkd stores
   for each type
 - [Supported Resources](supported-resources.md): which types cdkd deploys

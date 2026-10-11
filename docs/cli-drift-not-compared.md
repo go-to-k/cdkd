@@ -267,5 +267,5 @@ template and deploy.
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
 - [cdkd drift: secrets and redacted values](cli-drift-secrets.md): the causes that involve a secret
 - [cdkd drift: JSON output](cli-drift-json.md): the `notCompared` array
-- [Importing Existing Resources](import.md): what `cdkd import` records for drift
+- [Import Existing Resources](import.md): what `cdkd import` records for drift
 - [cdkd drift internals](cli-drift-internals.md): the rules behind the edge cases

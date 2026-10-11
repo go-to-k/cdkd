@@ -207,7 +207,7 @@ It does not change the exit code. A destroy that shows `1 unverified` and
 Treat the figure as unconfirmed and not as harmless, because a check can be
 made to fail by denying the permission it needs. A warning under the summary
 names the resources. A `RESOURCE_GUARD_INDETERMINATE` event records each one;
-see [Deployment Events](deployment-events.md).
+see [Deployment Event Format](deployment-events-format.md#a-delete-cdkd-could-not-verify-resource-guard-indeterminate).
 
 ## A nested stack whose child failed is an error
 
@@ -274,5 +274,5 @@ What the deploy does depends on which delete was skipped:
 
 - [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
 - [cdkd destroy: interruption and damaged state](cli-destroy-edge-cases.md) — a record cdkd refuses before it starts
-- [Orphan vs Destroy](orphan-vs-destroy.md) — dropping a record without deleting the resource
+- [Orphan Instead of Destroy](orphan-vs-destroy.md) — dropping a record without deleting the resource
 - [`cdkd rollback`](cli-rollback.md) — the rollback journal and what replays it

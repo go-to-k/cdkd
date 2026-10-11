@@ -1,9 +1,9 @@
 ---
-title: Use with AI Coding Agents
+title: Use cdkd with AI Coding Agents
 description: "Install the cdkd skill so AI coding agents such as Claude Code, Codex and Cursor deploy dev and test CDK stacks with cdkd safely."
 ---
 
-# Use with AI Coding Agents
+# Use cdkd with AI Coding Agents
 
 An AI coding agent such as Claude Code, Codex or Cursor can deploy your dev
 and test stacks with cdkd. To make it do so safely, install the cdkd skill: a

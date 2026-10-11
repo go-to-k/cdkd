@@ -81,4 +81,4 @@ Both flags refuse a `RECORD MISSING` row by name, as they refuse any
 
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
 - [cdkd drift: JSON output](cli-drift-json.md): the `nestedStackRecordMissing` field
-- [State Management](state-management.md): the state bucket layout and the state schema
+- [State Store](state-management.md): the state bucket layout and the state schema

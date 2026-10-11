@@ -220,7 +220,7 @@ in AWS.
 
 - [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the flags
   above, in full
-- [State Management](state-management.md): how the layer is stored in state
+- [State Store](state-management.md): how the layer is stored in state
 - [Supported Resources](supported-resources.md): which types have an SDK
   provider
 - [Troubleshooting](troubleshooting.md): what to do when a deploy is slow

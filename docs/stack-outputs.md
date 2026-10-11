@@ -1,9 +1,9 @@
 ---
-title: Stack Outputs
+title: Read Stack Outputs
 description: "How cdkd resolves CDK CfnOutput values, prints them after a deploy and stores them in the stack's state record, and where that differs from CloudFormation."
 ---
 
-# Stack Outputs
+# Read Stack Outputs
 
 A stack output is a value a stack publishes after it is deployed, such as a
 bucket's ARN or an API's URL. You declare one with a CDK `CfnOutput`. With
@@ -81,7 +81,7 @@ outputs.
 
 ## Related
 
-- [Cross-Stack References](cross-stack-references.md): using another stack's
+- [Use Another Stack's Outputs](cross-stack-references.md): using another stack's
   outputs
-- [State Management](state-management.md): the state file that holds them
+- [State Store](state-management.md): the state file that holds them
 - [`cdkd state`](cli-state.md): `cdkd state show` and its flags

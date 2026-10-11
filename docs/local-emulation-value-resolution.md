@@ -214,5 +214,5 @@ an `Environment` variable or a `Secrets` entry.
 
 - [Local Execution](local-emulation.md): choosing a command and the flags
   every command shares
-- [State Management](state-management.md): what `--from-state` reads
+- [State Store](state-management.md): what `--from-state` reads
 - [`cdkd state show`](cli-state.md): print the state record a command reads

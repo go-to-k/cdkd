@@ -289,7 +289,7 @@ used to schedule anything.
 When one operation fails, the resources downstream of the failed one are
 skipped. Operations that are already in flight finish, and nothing new starts.
 The engine then rolls back what this run changed, unless the deploy ran with
-`--no-rollback`. [Rollback](rollback.md) describes what a rollback undoes.
+`--no-rollback`. [Roll Back a Failed Deploy](rollback.md) describes what a rollback undoes.
 
 ### How the diff decides what changed
 
@@ -352,4 +352,4 @@ two kinds of provider.
 - [Providers and intrinsic functions](architecture-provisioning.md)
 - [Architecture internals](architecture-internals.md): the detailed rules
   behind the diff and asset storage
-- [Rollback](rollback.md)
+- [Roll Back a Failed Deploy](rollback.md)

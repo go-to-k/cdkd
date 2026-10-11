@@ -21,7 +21,7 @@ only what cdkd writes down changes.
 
 This page covers what the record stores. To remove secrets from records that
 already hold them, use [`cdkd scrub`](cli-scrub.md). This page is part of
-[State Management](state-management.md).
+[State Store](state-management.md).
 
 ## What cdkd stores for a secret
 
@@ -46,7 +46,7 @@ its earlier object versions. cdkd cannot recognise every secret, and
   cdkd records what AWS reports in `observedProperties`, which is the baseline
   `cdkd drift` compares against. For a resource provisioned through Cloud
   Control it also records the reported values in `attributes`.
-  [Importing Existing Resources](import.md) describes this case.
+  [Import Existing Resources](import.md) describes this case.
 - A credential that a provider records in `attributes` so that `Fn::GetAtt`
   can return it, such as the `SecretAccessKey` of an `AWS::IAM::AccessKey`.
 - A `NoEcho` parameter's value in a record written before schema version 11.
@@ -329,5 +329,5 @@ contributor page
   audit a stack
 - [State backup and bucket security](state-management-backup-and-security.md):
   who can read the bucket, and what earlier object versions keep
-- [State Management](state-management.md): where state lives and what a
+- [State Store](state-management.md): where state lives and what a
   record contains

@@ -284,6 +284,6 @@ More detail is in
 - [Supported Resources](supported-resources.md): the list of types
 - [cdkd destroy](cli-destroy.md): `--remove-protection` and the
   other destroy flags
-- [Importing Existing Resources](import.md): adopting existing resources,
+- [Import Existing Resources](import.md): adopting existing resources,
   nested stacks included
-- [Exporting to CloudFormation](export.md): handing a stack back
+- [Hand a Stack to CloudFormation](export.md): handing a stack back

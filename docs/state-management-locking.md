@@ -21,7 +21,7 @@ cdkd state show MyStack --json
 cdkd force-unlock MyStack --stack-region us-east-1
 ```
 
-This page is part of [State Management](state-management.md).
+This page is part of [State Store](state-management.md).
 
 ## Which commands take the lock
 
@@ -162,5 +162,5 @@ not clear by itself.
 - [`cdkd force-unlock`](cli-force-unlock.md): the command that deletes a lock
 - [Troubleshooting](troubleshooting.md): lock errors and what to do about
   them
-- [State Management](state-management.md): where `lock.json` sits in the
+- [State Store](state-management.md): where `lock.json` sits in the
   bucket, and how a deploy uses the lock

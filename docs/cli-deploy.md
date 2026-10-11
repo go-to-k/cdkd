@@ -78,7 +78,7 @@ These six flags are explained on this page.
 | --- | --- | --- |
 | `--dry-run` | `false` | Show the changes without applying them. |
 | `--skip-assets` | `false` | Skip asset publishing. |
-| `--no-rollback` | rollback on | Leave a failed deploy in place and skip the automatic rollback. See [Rollback](rollback.md). |
+| `--no-rollback` | rollback on | Leave a failed deploy in place and skip the automatic rollback. See [Roll Back a Failed Deploy](rollback.md). |
 | `--require-approval <level>` | `never` | Ask before `any-change` or `destructive` changes. See [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md). |
 
 ### Assets
@@ -262,7 +262,7 @@ every command.
 
 ## Related
 
-- [Wait Modes](wait-modes.md): the same choice, summarized for a first read
-- [Rollback](rollback.md): what the automatic rollback reverts when a deploy fails
-- [State Management](state-management.md): the lock's layout, TTL and renewal
+- [Choose a Wait Mode](wait-modes.md): the same choice, summarized for a first read
+- [Roll Back a Failed Deploy](rollback.md): what the automatic rollback reverts when a deploy fails
+- [State Store](state-management.md): the lock's layout, TTL and renewal
 - [Benchmarks](benchmarks.md): what the wait modes cost in wall-clock time

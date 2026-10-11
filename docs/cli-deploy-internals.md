@@ -131,5 +131,5 @@ Two shapes keep all of the previously stored Outputs instead:
 - [cdkd deploy](cli-deploy.md)
 - [cdkd deploy: a damaged state record](cli-deploy-damaged-state.md)
 - [cdkd deploy: the stack lock](cli-deploy-lock.md)
-- [State Management](state-management.md)
-- [Wait Modes](wait-modes.md)
+- [State Store](state-management.md)
+- [Choose a Wait Mode](wait-modes.md)

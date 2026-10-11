@@ -319,6 +319,6 @@ the paths cdkd refuses to use and the ones it accepts with a warning.
 - [CLI Reference](cli-reference.md): every cdkd command
 - [Deploy safety](cli-deploy-safety.md): what cdkd refuses to read out of a
   cloud assembly on the deploy path
-- [State Management](state-management.md): what `--from-state` reads
+- [State Store](state-management.md): what `--from-state` reads
 - [Getting Started](getting-started.md): installing cdkd and deploying a first
   stack

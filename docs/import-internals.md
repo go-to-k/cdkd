@@ -6,7 +6,7 @@ unlisted: true
 
 # Import internals
 
-Detail behind [Importing Existing Resources](import.md) and its sub-pages
+Detail behind [Import Existing Resources](import.md) and its sub-pages
 ([Import options and the import plan](import-reference.md),
 [Importing by resource type](import-resource-types.md) and
 [After an import](import-after.md)) that you need only when debugging an

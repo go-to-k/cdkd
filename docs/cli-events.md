@@ -28,7 +28,7 @@ cdkd events prune MyStack --keep 5
 ```
 
 The command reads from the state bucket. It does not synthesize the app and
-takes no stack lock. [Deployment Events](deployment-events.md) explains what
+takes no stack lock. [Review Past Deploys](deployment-events.md) explains what
 is recorded and how to read a run.
 
 ## Options
@@ -79,7 +79,7 @@ repaint a line. The default output cleans every stored value before printing
 it, so that cannot happen.
 
 Cleaning can leave nothing to print.
-[Placeholders in the output](deployment-events.md#placeholders-in-the-output)
+[Placeholders in the output](deployment-events-format.md#placeholders-in-the-output)
 lists what you see then.
 
 The run listing is stricter, because it sits above a command you may copy. It
@@ -188,7 +188,7 @@ only its earlier saves.
 
 Removing earlier versions needs `s3:ListBucketVersions` and
 `s3:DeleteObjectVersion` on the state bucket.
-[State Management](state-management.md) has a bucket policy that grants them.
+[State Store](state-management.md) has a bucket policy that grants them.
 
 Without them the prune or destroy still succeeds, and a warning that names
 the two actions prints before the summary line. The automatic cleanup after a
@@ -211,7 +211,7 @@ than 20 runs can print the same warning each time.
   summaries and never event contents. `--all` deletes the index and removes
   them.
 - **The destination of a replicated bucket**, which keeps its own copies. See
-  [State Management](state-management.md).
+  [State Store](state-management.md).
 
 After an `--all` prune that found no current run, the summary line reads
 `No runs matched`. It adds that it found no earlier versions, and names the
@@ -259,7 +259,9 @@ The codes of every command are listed in [Exit codes](cli-reference-exit-codes.m
 
 ## Related
 
-- [Deployment Events](deployment-events.md): event types, how to read a run,
-  and where history is stored
+- [Review Past Deploys](deployment-events.md): how to read a run and how long
+  history is kept
+- [Deployment Event Format](deployment-events-format.md): every field, the skip
+  and guard events, and where history is stored
 - [cdkd destroy](cli-destroy.md#purge-events-also-delete-deployment-event-history-on-destroy): `--purge-events`, the destroy-time equivalent of a full prune
 - [CLI Reference](cli-reference.md): every command and the exit-code table

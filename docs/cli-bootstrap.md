@@ -319,4 +319,4 @@ the CDK CLI's own prerequisite again.
 - [Tearing down asset storage](cli-bootstrap-teardown.md): `--destroy` in full
 - [`cdkd gc`](cli-gc.md): collecting the storage this command creates
 - [`cdkd publish-assets`](cli-publish-assets.md): publishing assets without deploying
-- [State Management](state-management.md): what the state bucket holds
+- [State Store](state-management.md): what the state bucket holds
