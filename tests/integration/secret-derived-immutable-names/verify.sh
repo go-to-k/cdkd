@@ -936,6 +936,14 @@ if [ "${QUEUE_ARN_LIVE##*:}" != "${QUEUE_NAME}" ]; then
   echo "FAIL: premise: SecretQueue's live ARN '${QUEUE_ARN_LIVE}' does not end in its name" >&2
   exit 1
 fi
+# PREMISE: a reader holds the plaintext ARN step 5d wrote, so this deploy
+# re-sends it (an UPDATE) instead of being a no-op that would pass with the
+# fix reverted. Holding the expression already is go-to-k/cdkd#4802 fixed:
+# this step then needs another way to make a reader UPDATE.
+expect_eq "premise: SecretQueueReaderPolicy's recorded Resource after step 5d (go-to-k/cdkd#4802)" \
+  "${QUEUE_ARN_LIVE}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r '.resources.SecretQueueReaderPolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
 set +e
 SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
@@ -972,6 +980,13 @@ if [ "${NOOP2_RC}" -ne 0 ]; then
   log_tail
   exit 1
 fi
+if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the second redeploy's log names SecretQueue in plaintext (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+# A NOTE until a real run shows this fixture can reach a no-op at all (the
+# nested QueueReaderChild row may redeploy on its own); the unit test
+# deploy-engine-getatt-recorded-dynamic-reference-4800 pins the settled readers.
 if grep -qF "No changes detected" "${DEPLOY_LOG}"; then
   echo "    OK: a second redeploy changed nothing"
 else

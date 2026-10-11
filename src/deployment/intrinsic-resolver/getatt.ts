@@ -776,16 +776,6 @@ export async function reresolveRecordedReferences(
 }
 
 /**
- * Does the producer's own template `Properties` spell, as a literal string
- * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
- * read of another stack anywhere in them ({@link readsAnotherStack})? A literal token is resolved by the
- * producer's template-leaf route in THIS resolver's region, so re-resolving it
- * here reproduces the value the record was redacted from. A token assembled by
- * an intrinsic, or read from another stack, proves nothing about its region
- * (go-to-k/cdkd#4800 security review). The walk covers one resource's
- * properties, so it does not scale with the stack.
- */
-/**
  * Is `node` a read whose value another stack resolved, possibly in another
  * region: `Fn::ImportValue`, `Fn::GetStackOutput`, or a nested stack's
  * `Fn::GetAtt Child.Outputs.X`? Such a read can hand the producer's record a
@@ -810,6 +800,17 @@ function readsAnotherStack(node: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * Does the producer's own template `Properties` spell, as a literal string
+ * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
+ * read of another stack anywhere in them ({@link readsAnotherStack})? A literal
+ * token is resolved by the producer's template-leaf route in THIS resolver's
+ * region, so re-resolving it
+ * here reproduces the value the record was redacted from. A token assembled by
+ * an intrinsic, or read from another stack, proves nothing about its region
+ * (go-to-k/cdkd#4800 security review). The walk covers one resource's
+ * properties, so it does not scale with the stack.
+ */
 function referencesProvenLocal(
   value: unknown,
   logicalId: string,
