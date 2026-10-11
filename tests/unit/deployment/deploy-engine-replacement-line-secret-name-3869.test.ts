@@ -114,6 +114,7 @@ function harness(
     levels?: string[][];
     update?: () => unknown;
     beforeDag?: () => void;
+    options?: Record<string, unknown>;
   } = {}
 ) {
   const provider = {
@@ -151,7 +152,12 @@ function harness(
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: extra.dryRun ?? true, forceStatefulRecreation: true, parameters },
+    {
+      dryRun: extra.dryRun ?? true,
+      forceStatefulRecreation: true,
+      parameters,
+      ...extra.options,
+    },
     'us-east-1'
   );
   return { engine };
@@ -174,6 +180,70 @@ describe("cdkd deploy's replacement line masks a name only the OLD state value h
     expect(line).toContain(PLAIN_USER);
     expect(line.includes(SECRET_USER)).toBe(shown);
   });
+
+  it.each([
+    ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+    ['negative control, an ordinary name', SECRET_USER, true],
+  ])(
+    "masks the OLD id on a real replacement's delete line: %s",
+    async (_l, userName, shown) => {
+      // Not a dry run: the key IS replaced, and its old id embeds the old
+      // user's name (an id like a metric filter's `<LogGroupName>|<name>`).
+      const state = currentState(userName);
+      state.resources['Key']!.physicalId = `${SECRET_USER}|key-1`;
+      const h = harness(state, {}, { dryRun: false });
+      await h.engine.deploy('s', template(userName));
+      const all = logLines.join('\n');
+      // Premise: the replacement ran and named the old resource.
+      expect(all).toContain('Deleting old Key (');
+      expect(all.includes(SECRET_USER)).toBe(shown);
+    }
+  );
+
+  it.each([
+    ['the parent passed it from a NoEcho source', true],
+    ['negative control, an ordinary parent value', false],
+  ])(
+    "judges a nested child's record named from a parent-passed NoEcho value: %s",
+    async (_l, inheritedNoEcho) => {
+      // A nested child's parameter never says NoEcho; only the parent's bag
+      // knows the value. A pre-v11 child record stores it in plaintext, and
+      // RDS lower-cases the identifier the key's old side holds.
+      const inherited = new Map<string, string>();
+      if (inheritedNoEcho) recordLogOnlyValue(inherited, 'TeamSecretDb');
+      const state = currentState(SECRET_USER);
+      delete state.resources['SecretUser'];
+      state.resources['SecretDb'] = {
+        physicalId: 'teamsecretdb',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+        attributes: {},
+        dependencies: [],
+      };
+      (state.resources['Key']!.properties as Record<string, unknown>)['UserName'] = 'teamsecretdb';
+      const h = harness(state, { DbName: 'TeamSecretDb' }, {
+        options: {
+          ...(inheritedNoEcho && { inheritedSecrets: inherited }),
+          parentStackInfo: { parentStack: 'P', parentLogicalId: 'C', parentRegion: 'us-east-1' },
+        },
+      });
+      await h.engine.deploy('s', {
+        Parameters: { DbName: { Type: 'String' } },
+        Resources: {
+          SecretDb: {
+            Type: 'AWS::RDS::DBInstance',
+            Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+          },
+          PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+          Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'PlainUser' } } },
+        },
+      });
+      const line = logLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+      expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
+      expect(line).toContain(PLAIN_USER);
+      expect(line.includes('teamsecretdb')).toBe(!inheritedNoEcho);
+    }
+  );
 
   it.each([
     ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],

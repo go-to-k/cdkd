@@ -348,6 +348,20 @@ export function storedSecretNameNeedles(
 }
 
 /**
+ * Which of `needles` (names of records judged secret-named) one of `record`'s
+ * string leaves holds (go-to-k/cdkd#3869): what that record READ from them,
+ * which its old id or old values can still print.
+ */
+export function secretNamesStoredIn(
+  record: { properties?: unknown } | undefined,
+  needles: Iterable<string>
+): string[] {
+  const leaves = [...wholeStringLeavesOf(record?.properties)].filter((leaf) => leaf !== '');
+  if (leaves.length === 0) return [];
+  return [...needles].filter((needle) => leavesHoldNeedle(leaves, needle));
+}
+
+/**
  * The needles of EVERY record in `resources` named from a secret, judged by
  * {@link storedRecordNameNeedles}, recorded into `bag` (go-to-k/cdkd#3869):
  * for stored values the caller cannot see, a nested child's, which can hold a

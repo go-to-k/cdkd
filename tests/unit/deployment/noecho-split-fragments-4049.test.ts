@@ -379,10 +379,11 @@ describe('the up-front record of a NoEcho value records its split pieces (go-to-
         diffLogMasker: (
           d: RecordedSecretValues | undefined,
           t: CloudFormationTemplate,
-          p: Record<string, unknown>
+          p: Record<string, unknown>,
+          r: Record<string, unknown>
         ) => (text: string) => string;
       }
-    ).diffLogMasker(new Map(), splitTemplate(true), { Secret: NOECHO });
+    ).diffLogMasker(new Map(), splitTemplate(true), { Secret: NOECHO }, {});
     expect(masker(`requires replacement ("${SECOND}" -> "new")`)).toBe(
       `requires replacement ("${SECRET_MASK}" -> "new")`
     );
@@ -393,7 +394,8 @@ describe('the up-front record of a NoEcho value records its split pieces (go-to-
         diffLogMasker: (
           d: RecordedSecretValues | undefined,
           t: CloudFormationTemplate,
-          p: Record<string, unknown>
+          p: Record<string, unknown>,
+          r: Record<string, unknown>
         ) => (text: string) => string;
       }
     ).diffLogMasker(
@@ -402,7 +404,8 @@ describe('the up-front record of a NoEcho value records its split pieces (go-to-
         Parameters: { Secret: { Type: 'String', NoEcho: true } },
         Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
       },
-      { Secret: NOECHO }
+      { Secret: NOECHO },
+      {}
     );
     expect(noSplit(`("${SECOND}" -> "new")`)).toBe(`("${SECOND}" -> "new")`);
   });

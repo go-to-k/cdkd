@@ -34,7 +34,7 @@ import {
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
-import { secretNamedRecordNeedles } from '../secret-name-needles.js';
+import { secretNamedRecordNeedles, secretNamesStoredIn } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
 
 /** The row type whose provider runs a nested child engine. */
@@ -203,11 +203,26 @@ export async function provisionResource(
   // record here; the new name is judged right after it resolves, in
   // `create.ts` / `update.ts`, and a replacement's new id before `was replaced`.
   this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
-  // A DELETE resolves nothing, so what its record read from a secret-named
-  // resource is carried here; CREATE / UPDATE record it as they resolve, and
-  // register their own new name right after resolving (create.ts / update.ts).
+  // What the record READ from a secret-named resource, carried for every row
+  // with a record: a DELETE resolves nothing, and an UPDATE resolves only
+  // what it reads NOW, while a replacement's `Deleting old <id> (<old id>)`
+  // and `was replaced: <old> -> <new>` lines print the OLD id, which can embed
+  // a name the template no longer reads (a metric filter moved off a
+  // secret-named log group; go-to-k/cdkd#3869). CREATE / UPDATE record their
+  // new reads as they resolve, and their own new name right after
+  // (create.ts / update.ts).
   if (change.changeType === 'DELETE') {
     this.noteSecretNamedReads(logicalId, stateResources[logicalId], stateResources);
+  } else {
+    // Against the needles judged once for the deploy, not a per-row walk of
+    // every record: a leaf scan of this record alone.
+    const registry = this.secretNameBagFor(logicalId);
+    for (const needle of secretNamesStoredIn(
+      stateResources[logicalId],
+      printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()
+    )) {
+      recordLogOnlyValue(registry, needle);
+    }
   }
   // A nested stack's child judges only its OWN records, and its stored values
   // can hold a name this stack's row used to pass, one no read of this deploy

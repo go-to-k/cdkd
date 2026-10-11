@@ -42,7 +42,6 @@ import {
   secretNamesReadBy,
   storedSecretNameNeedles,
 } from '../secret-name-needles.js';
-import { isWholeDynamicReferenceValue } from '../outputs-export-alias.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
@@ -114,7 +113,7 @@ export function diffLogMasker(
    * of the diff pass reads it (`storedSecretNameNeedles`). Judged on the
    * masker's FIRST call, so a deploy that prints no such line pays nothing.
    */
-  resources: Readonly<Record<string, ResourceState>> = {}
+  resources: Readonly<Record<string, ResourceState>>
 ): SecretMasker {
   const inherited = this.options.inheritedSecrets;
   const noEchoValues: RecordedSecretValues = new Map();
@@ -137,21 +136,12 @@ export function diffLogMasker(
   return (text) => {
     if (!judged) {
       judged = true;
-      // Judged as `cdkd diff` judges them: a record spelling its name as a
-      // `{{resolve:` reference or the mask, or one holding a `NoEcho` value
-      // whole (never a `Fn::Split` piece, which an ordinary name can hold;
-      // never a value that IS a `{{resolve:` token, an expression the diff
-      // prints as written), whose name another record stores.
-      const noEchoJudge: RecordedSecretValues = new Map();
-      for (const name of noEchoNames) {
-        if (
-          Object.hasOwn(parameterValues, name) &&
-          !isWholeDynamicReferenceValue(parameterValues[name])
-        ) {
-          recordLogOnlyParameterValue(noEchoJudge, parameterValues[name]);
-        }
-      }
-      storedSecretNameNeedles(resources, noEchoJudge, stateNames);
+      // Judged with the stack's `NoEcho` values as every other deploy judge
+      // is (`fingerprintNoEchoValues`, set before the diff pass): whole values
+      // only, never a `Fn::Split` piece an ordinary name can hold nor a value
+      // that IS a `{{resolve:` token, and a nested child's parent-passed ones
+      // too. Records still spelling a reference or the mask need none.
+      storedSecretNameNeedles(resources, this.fingerprintNoEchoValues, stateNames);
     }
     return union(text);
   };
