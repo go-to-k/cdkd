@@ -521,7 +521,7 @@ export class AssemblyReader {
     // Parse environment
     let env: ArtifactEnvironment | undefined;
     if (artifact.environment) {
-      env = parseEnvironment(artifact.environment);
+      env = parseEnvironment(artifact.environment, stackName);
     }
 
     // Index nested templates by logical id. CDK encodes the child template's
