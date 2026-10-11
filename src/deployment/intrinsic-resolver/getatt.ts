@@ -778,13 +778,38 @@ export async function reresolveRecordedReferences(
 /**
  * Does the producer's own template `Properties` spell, as a literal string
  * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
- * `Fn::GetStackOutput` anywhere in them? A literal token is resolved by the
+ * read of another stack anywhere in them ({@link readsAnotherStack})? A literal token is resolved by the
  * producer's template-leaf route in THIS resolver's region, so re-resolving it
  * here reproduces the value the record was redacted from. A token assembled by
  * an intrinsic, or read from another stack, proves nothing about its region
  * (go-to-k/cdkd#4800 security review). The walk covers one resource's
  * properties, so it does not scale with the stack.
  */
+/**
+ * Is `node` a read whose value another stack resolved, possibly in another
+ * region: `Fn::ImportValue`, `Fn::GetStackOutput`, or a nested stack's
+ * `Fn::GetAtt Child.Outputs.X`? Such a read can hand the producer's record a
+ * region-less expression spelled like a literal token beside it.
+ */
+function readsAnotherStack(node: Record<string, unknown>): boolean {
+  if (Object.hasOwn(node, 'Fn::ImportValue') || Object.hasOwn(node, 'Fn::GetStackOutput')) {
+    return true;
+  }
+  if (!Object.hasOwn(node, 'Fn::GetAtt')) return false;
+  const getAtt = node['Fn::GetAtt'];
+  const attributeName =
+    typeof getAtt === 'string'
+      ? splitGetAttStringForm(getAtt)?.attributeName
+      : Array.isArray(getAtt)
+        ? getAtt[1]
+        : undefined;
+  // A non-literal attribute name proves nothing either.
+  return (
+    typeof attributeName !== 'string' ||
+    attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX)
+  );
+}
+
 function referencesProvenLocal(
   value: unknown,
   logicalId: string,
@@ -800,7 +825,8 @@ function referencesProvenLocal(
       return;
     }
     if (node === null || typeof node !== 'object') return;
-    if (!Array.isArray(node) && Object.hasOwn(node, 'Fn::GetStackOutput')) crossStack = true;
+    if (!Array.isArray(node) && readsAnotherStack(node as Record<string, unknown>))
+      crossStack = true;
     for (const child of Object.values(node as Record<string, unknown>)) walk(child);
   };
   walk(resources[logicalId]?.Properties);

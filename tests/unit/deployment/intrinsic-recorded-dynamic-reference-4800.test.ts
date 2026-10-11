@@ -237,6 +237,33 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     expect(smCalls.count).toBe(0);
   });
 
+  it.each([
+    ['Fn::ImportValue', { 'Fn::ImportValue': 'X' }],
+    ['a nested stack output', { 'Fn::GetAtt': ['Child', 'Outputs.N'] }],
+    ['a nested stack output, string form', { 'Fn::GetAtt': 'Child.Outputs.N' }],
+    ['a GetAtt with a non-literal attribute name', { 'Fn::GetAtt': ['Child', { Ref: 'P' }] }],
+  ])('a literal token beside %s proves nothing', async (_l, read) => {
+    const producer = record('AWS::SQS::Queue', 'u', {}, { Arn: RECORDED_ARN });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
+      bag: new Map(),
+      templateProperties: { QueueName: read, Tags: [{ Key: 'k', Value: QUEUE_REF }] },
+    });
+    expect(resolved).toBe(RECORDED_ARN);
+    expect(smCalls.count).toBe(0);
+  });
+
+  it('a literal token beside an ordinary GetAtt is still resolved', async () => {
+    const producer = record('AWS::SQS::Queue', 'u', {}, { Arn: RECORDED_ARN });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
+      bag: new Map(),
+      templateProperties: {
+        QueueName: QUEUE_REF,
+        Policy: { 'Fn::GetAtt': ['Other', 'Arn'] },
+      },
+    });
+    expect(resolved).toBe(PLAIN_ARN);
+  });
+
   it('a token the template assembles with an intrinsic is served as it is', async () => {
     const producer = record('AWS::SQS::Queue', 'u', {}, { Arn: RECORDED_ARN });
     const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Arn'] }, {
