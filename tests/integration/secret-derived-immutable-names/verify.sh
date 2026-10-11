@@ -138,7 +138,8 @@
 # `Parameter QueueUrl:` line (not yet measured on real AWS).
 # Revert the `stateNames` bag of computeStackDiff in
 # src/cli/commands/diff-recursive.ts ALONE (go-to-k/cdkd#3869) and step 5c fails
-# naming ${LOG_GROUP_NAME} on the diff's replacement line and its row; revert
+# naming ${LOG_GROUP_NAME} on the diff's --verbose replacement line (the
+# rendered row prints `[requires replacement]` with no old value); revert
 # diffLogMasker's state-record judge in src/deployment/deploy-engine/masking.ts
 # ALONE and step 5c fails the same way on the dry-run deploy's replacement
 # line (neither yet measured on real AWS).

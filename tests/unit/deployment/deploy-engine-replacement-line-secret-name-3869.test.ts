@@ -45,7 +45,11 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { storedSecretNameNeedles } from '../../../src/deployment/secret-name-needles.js';
+import {
+  secretNamedRecordNeedles,
+  storedSecretNameNeedles,
+} from '../../../src/deployment/secret-name-needles.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -98,13 +102,19 @@ function currentState(userName: string): StackState {
   } as StackState;
 }
 
-function harness(state: StackState, parameters: Record<string, string> = {}) {
+function harness(
+  state: StackState,
+  parameters: Record<string, string> = {},
+  extra: { dryRun?: boolean; levels?: string[][]; update?: () => unknown } = {}
+) {
   const provider = {
     create: vi.fn().mockResolvedValue({ physicalId: 'sdin-access-key-id-2' }),
-    update: vi.fn(),
+    update: vi.fn(extra.update),
     delete: vi.fn().mockResolvedValue(undefined),
     getAttribute: vi.fn(),
     readCurrentState: vi.fn().mockResolvedValue(undefined),
+    // The orphan-adoption pre-pass confirms a kept record still exists.
+    import: vi.fn(async () => ({ physicalId: SECRET_USER })),
   };
   const engine = new DeployEngine(
     {
@@ -118,7 +128,9 @@ function harness(state: StackState, parameters: Record<string, string> = {}) {
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['SecretUser', 'PlainUser'], ['Key']]),
+      getExecutionLevels: vi
+        .fn()
+        .mockReturnValue(extra.levels ?? [['SecretUser', 'PlainUser'], ['Key']]),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     } as never,
     new DiffCalculator(),
@@ -129,7 +141,7 @@ function harness(state: StackState, parameters: Record<string, string> = {}) {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: true, forceStatefulRecreation: true, parameters },
+    { dryRun: extra.dryRun ?? true, forceStatefulRecreation: true, parameters },
     'us-east-1'
   );
   return { engine };
@@ -148,6 +160,29 @@ describe("cdkd deploy's replacement line masks a name only the OLD state value h
     await h.engine.deploy('s', template(userName));
     const line = logLines.filter((l) => l.includes('requires replacement (from')).join('\n');
     // Premise: the replacement line printed, its new side in the clear.
+    expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
+    expect(line).toContain(PLAIN_USER);
+    expect(line.includes(SECRET_USER)).toBe(shown);
+  });
+
+  it.each([
+    ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+    ['negative control, an ordinary name', SECRET_USER, true],
+  ])('judges a record the orphan adoption splices in too: %s', async (_l, userName, shown) => {
+    // The secret-named user is a rollback orphan this deploy re-adopts before
+    // its diff (adoption takes only a record the template no longer names), so
+    // only the adopted record says the key's stored value is its name.
+    const state = currentState(userName);
+    const adopted = state.resources['SecretUser']!;
+    delete state.resources['SecretUser'];
+    state.orphans = [{ logicalId: 'SecretUser', orphanedAt: 1, state: adopted }];
+    const h = harness(state);
+    const tpl = template(userName);
+    tpl.Resources['SecretUser']!.Properties = {};
+    await h.engine.deploy('s', tpl);
+    const line = logLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+    // Premise: the record was adopted (its row is no CREATE) and the line printed.
+    expect(logLines.join('\n')).not.toContain('CREATE: SecretUser');
     expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
     expect(line).toContain(PLAIN_USER);
     expect(line.includes(SECRET_USER)).toBe(shown);
@@ -189,6 +224,84 @@ describe("cdkd deploy's replacement line masks a name only the OLD state value h
   });
 });
 
+describe("the deploy's judge takes a NoEcho value whole (go-to-k/cdkd#3869)", () => {
+  it("never judges a record by a NoEcho value's Fn::Split piece", async () => {
+    // Judged by the piece `AlphaQ`, the ordinary queue's lower-cased spelling
+    // would become a needle and mask the key's stored copy of it.
+    const state = currentState(SECRET_USER);
+    delete state.resources['SecretUser'];
+    state.resources['Queue'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/AlphaQ',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'AlphaQ' },
+      attributes: {},
+      dependencies: [],
+    };
+    (state.resources['Key']!.properties as Record<string, unknown>)['UserName'] =
+      'alphaq-lowercased-copy';
+    const h = harness(state, { Tok: 'AlphaQ-beta' }, { levels: [['Queue', 'PlainUser'], ['Key']] });
+    await h.engine.deploy('s', {
+      Parameters: { Tok: { Type: 'String', NoEcho: true } },
+      Resources: {
+        Queue: {
+          Type: 'AWS::SQS::Queue',
+          Properties: {
+            QueueName: 'AlphaQ',
+            Tags: [{ Key: 't', Value: { 'Fn::Select': [1, { 'Fn::Split': ['-', { Ref: 'Tok' }] }] } }],
+          },
+        },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'PlainUser' } } },
+      },
+    });
+    const line = logLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+    expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
+    expect(line).toContain('alphaq-lowercased-copy');
+  });
+});
+
+describe("a nested stack row's child masks a name the parent's records hold (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+    ['negative control, an ordinary name', SECRET_USER, true],
+  ])('%s', async (_l, userName, shown) => {
+    // The row's provider runs the child engine, whose stored values can hold a
+    // name the row used to pass; a line it logs (the child's replacement line)
+    // prints under the row's bound registry. The provider stands in for it.
+    const state = currentState(userName);
+    delete state.resources['Key'];
+    state.resources['Child'] = {
+      physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/s-Child/1',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: { Mode: 'a' } },
+      attributes: {},
+      dependencies: [],
+    };
+    const h = harness(state, {}, {
+      dryRun: false,
+      levels: [['SecretUser', 'PlainUser'], ['Child']],
+      update: () => {
+        getLogger().debug(`child: requires replacement (from "${SECRET_USER}" to "x")`);
+        return { physicalId: state.resources['Child']!.physicalId, attributes: {} };
+      },
+    });
+    await h.engine.deploy('s', {
+      Resources: {
+        SecretUser: { Type: 'AWS::IAM::User', Properties: { UserName: userName } },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Mode: 'b' } },
+        },
+      },
+    });
+    const line = logLines.filter((l) => l.startsWith('child: ')).join('\n');
+    // Premise: the row's provider ran, inside the row's body.
+    expect(line).toContain('requires replacement (from');
+    expect(line.includes(SECRET_USER)).toBe(shown);
+  });
+});
+
 describe('storedSecretNameNeedles: the names a STORED value holds (go-to-k/cdkd#3869)', () => {
   const REF = '{{resolve:secretsmanager:sdin:SecretString:filter::}}';
   const records = (readerValue: string): StackState['resources'] => ({
@@ -222,6 +335,25 @@ describe('storedSecretNameNeedles: the names a STORED value holds (go-to-k/cdkd#
     // the group's ordinary name stays readable.
     const bag = storedSecretNameNeedles(records('unrelated'), undefined);
     expect(maskSecretsInText('plain-log-group', bag)).toBe('plain-log-group');
+  });
+
+  it("leaves the named record's own public segment where another record embeds it too", () => {
+    // A log-group ARN in another record holds the ordinary group name, which
+    // SecretFilter's own LogGroupName stores in the clear: it is public.
+    const r = records('arn:aws:logs:us-east-1:123:log-group:plain-log-group:*');
+    const arn = 'arn:aws:logs:us-east-1:123:log-group:plain-log-group:*';
+    expect(maskSecretsInText(arn, storedSecretNameNeedles(r, undefined))).toBe(arn);
+    expect(maskSecretsInText(arn, secretNamedRecordNeedles(r, undefined))).toBe(arn);
+  });
+
+  it("records a needle a stored OUTPUT holds", () => {
+    const r = records('unrelated');
+    const out = 'plain-log-group|sdin-secret-filter';
+    // Premise: no record holds it, so only the outputs bag can.
+    expect(maskSecretsInText(out, storedSecretNameNeedles(r, undefined))).toBe(out);
+    expect(
+      maskSecretsInText(out, storedSecretNameNeedles(r, undefined, new Map(), { Out: out }))
+    ).not.toContain('sdin-secret-filter');
   });
 
   it('negative control: no record named from a secret records nothing', () => {

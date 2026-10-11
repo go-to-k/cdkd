@@ -29,7 +29,11 @@ import {
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
+
+/** The row type whose provider runs a nested child engine. */
+const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -199,6 +203,19 @@ export async function provisionResource(
   // register their own new name right after resolving (create.ts / update.ts).
   if (change.changeType === 'DELETE') {
     this.noteSecretNamedReads(logicalId, stateResources[logicalId], stateResources);
+  }
+  // A nested stack's child judges only its OWN records, and its stored values
+  // can hold a name this stack's row used to pass, one no read of this deploy
+  // names: the child's `requires replacement (from <old> ...)` line printed it
+  // (go-to-k/cdkd#3869). The row's registry is bound around the child's whole
+  // deploy, so every record here named from a secret goes into it, judged
+  // with the stack's `NoEcho` values. Printing only, like the rest of it.
+  if (resourceType === NESTED_STACK_ROW_TYPE) {
+    secretNamedRecordNeedles(
+      stateResources,
+      this.fingerprintNoEchoValues,
+      this.secretNameBagFor(logicalId)
+    );
   }
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a

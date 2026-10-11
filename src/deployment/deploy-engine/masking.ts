@@ -42,6 +42,7 @@ import {
   secretNamesReadBy,
   storedSecretNameNeedles,
 } from '../secret-name-needles.js';
+import { isWholeDynamicReferenceValue } from '../outputs-export-alias.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
@@ -138,11 +139,15 @@ export function diffLogMasker(
       judged = true;
       // Judged as `cdkd diff` judges them: a record spelling its name as a
       // `{{resolve:` reference or the mask, or one holding a `NoEcho` value
-      // whole (never a `Fn::Split` piece, which an ordinary name can hold),
-      // whose name another record stores.
+      // whole (never a `Fn::Split` piece, which an ordinary name can hold;
+      // never a value that IS a `{{resolve:` token, an expression the diff
+      // prints as written), whose name another record stores.
       const noEchoJudge: RecordedSecretValues = new Map();
       for (const name of noEchoNames) {
-        if (Object.hasOwn(parameterValues, name)) {
+        if (
+          Object.hasOwn(parameterValues, name) &&
+          !isWholeDynamicReferenceValue(parameterValues[name])
+        ) {
           recordLogOnlyParameterValue(noEchoJudge, parameterValues[name]);
         }
       }

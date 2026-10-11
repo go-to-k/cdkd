@@ -1024,6 +1024,81 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     it.each([
       ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
       ['negative control, an ordinary name', SECRET_USER, true],
+    ])("masks an OUTPUT's stored old value no record holds: %s", async (_l, userName, shown) => {
+      // The output moves off the secret-named user; only the stored outputs
+      // bag still spells its name (the key already reads the ordinary user).
+      const s = userState(userName);
+      (s.resources['Key']!.properties as Record<string, unknown>)['UserName'] = PLAIN_USER;
+      s.outputs = { UserOut: SECRET_USER };
+      const tpl = userTemplate(userName);
+      tpl.Outputs = { UserOut: { Value: { Ref: 'PlainUser' } } };
+      const result = await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator());
+      const out = JSON.stringify(result.outputChanges.find((c) => c.name === 'UserOut'));
+      // Premise: the output row is rendered, its new side in the clear.
+      expect(out).toContain(PLAIN_USER);
+      expect(out.includes(SECRET_USER)).toBe(shown);
+    });
+
+    it("never judges a record by a NoEcho value's Fn::Split piece", async () => {
+      // An ordinary queue named `AlphaQ`, and a NoEcho value `AlphaQ-beta`
+      // split on `-`: the piece is masked where it prints, as written, but it
+      // is no evidence the queue's name came from the value. Judged by it,
+      // the queue's lower-cased spelling would become a needle and mask a
+      // copy another record stores.
+      const tpl: CloudFormationTemplate = {
+        Parameters: { Tok: { Type: 'String', NoEcho: true, Default: 'AlphaQ-beta' } },
+        Resources: {
+          Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'AlphaQ' } },
+          Split: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: { 'Fn::Select': [1, { 'Fn::Split': ['-', { Ref: 'Tok' }] }] } },
+          },
+          Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'no-longer-the-queue' } },
+        },
+      };
+      const s: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 11,
+        resources: {
+          Queue: {
+            physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/AlphaQ',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'AlphaQ' },
+            attributes: {},
+            dependencies: [],
+          },
+          Split: {
+            physicalId: 'split',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: '***' },
+            attributes: {},
+            dependencies: [],
+          },
+          Reader: {
+            physicalId: 'reader',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'alphaq-lowercased-copy' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const result = await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator(), {
+        parameters: { Tok: 'AlphaQ-beta' },
+      });
+      const row = JSON.stringify(result.changes.get('Reader')?.propertyChanges);
+      // Premise: the row is rendered.
+      expect(row).toContain('no-longer-the-queue');
+      expect(row).toContain('alphaq-lowercased-copy');
+    });
+
+    it.each([
+      ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+      ['negative control, an ordinary name', SECRET_USER, true],
     ])('judges a record the orphan adoption splices in too: %s', async (_l, userName, shown) => {
       // The secret-named user is a rollback orphan this deploy re-adopts, so
       // only the adoption's record says the key's stored value is its name.
