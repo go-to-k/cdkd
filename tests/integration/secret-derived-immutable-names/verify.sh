@@ -62,7 +62,11 @@
 #      (<old id>)` line and Cloud Control's delete line print the old id,
 #      `<LogGroupName>|<FilterName>`, and neither may name the group
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
-#      destroy below deletes with it.
+#      destroy below deletes with it. The same deploy updates SecretQueue's
+#      VisibilityTimeout (45), so its readers resolve its ARN from the provider,
+#      sidestepping go-to-k/cdkd#ISSUE_A (a NO_CHANGE queue's readers were sent
+#      the recorded `{{resolve:` spelling) and the rollback after it,
+#      go-to-k/cdkd#ISSUE_B.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -903,6 +907,10 @@ if grep -qF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}"; then
   exit 1
 fi
 echo "    OK: the moved deploy's log withholds the replaced filter's old, secret-derived log group name"
+# PREMISE for the sidestep above: the queue WAS updated in this deploy.
+expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
 

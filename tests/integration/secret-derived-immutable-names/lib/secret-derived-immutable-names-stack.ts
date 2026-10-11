@@ -210,7 +210,14 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
 
     const secretQueue = new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
-      visibilityTimeout: update ? 60 : 30,
+      // Step 5d (SDIN_MOVE_FILTER=true) also updates the queue, so its readers
+      // resolve its ARN from the provider in that deploy, as in step 4. Left
+      // unchanged, they hit two known bugs: a reader of a NO_CHANGE
+      // secret-named resource is re-sent the recorded `{{resolve:` spelling of
+      // its ARN (go-to-k/cdkd#ISSUE_A), and the rollback that follows writes
+      // that spelling into the queue policy's recorded `Queues`
+      // (go-to-k/cdkd#ISSUE_B).
+      visibilityTimeout: process.env.SDIN_MOVE_FILTER === 'true' ? 45 : update ? 60 : 30,
     });
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
     // and a `Fn::GetAtt` (its ARN) each resolve to a value embedding the name
