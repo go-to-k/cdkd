@@ -519,9 +519,10 @@ describe('the success settle with DynamoDBGlobalTableProvider (go-to-k/cdkd#4606
 
   /**
    * `fixForward`: the fix-forward's record under the orphan's logical id holds
-   * `orders-b` (this deploy's CREATE), read live under `recordTableId`.
+   * `orders-b` (this deploy's CREATE), read live under `recordTableId` (an
+   * `Error` makes that read fail).
    */
-  async function settle(liveEntry: Entry, fixForward?: { recordTableId: string }) {
+  async function settle(liveEntry: Entry, fixForward?: { recordTableId: Entry }) {
     const provider = new DynamoDBGlobalTableProvider();
     const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
     live({
@@ -629,6 +630,39 @@ describe('the success settle with DynamoDBGlobalTableProvider (go-to-k/cdkd#4606
     expect(r.infos).toContain('Orphan (AWS::DynamoDB::GlobalTable)');
     expect(r.infos).toContain('is already gone: nothing to delete');
     expect(r.warned).toBe('');
+  });
+
+  // A read that cannot answer (a throttle, a denied DescribeTable) never
+  // reads as `'different'` or gone: `isSameResource` / `resourceIdentity`
+  // throw, the settle reads the throw as unproven, and the orphan is kept
+  // with a warning (exit 2), no DeleteTable sent.
+  it.each([
+    ['a throttle', () => Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })],
+    ['AccessDenied', () => denied('DescribeTable')],
+  ])(
+    'the fix-forward: keeps it when the identity read fails with %s',
+    async (_label, failure) => {
+      const r = await settle(failure(), { recordTableId: 'tid-NEW' });
+      expect(r.del).not.toHaveBeenCalled();
+      expect(mockSend.mock.calls.every(([cmd]) => cmd instanceof DescribeTableCommand)).toBe(true);
+      expect(r.out.unaddressed).toBe(1);
+      expect(r.warned).toContain('Orphan (AWS::DynamoDB::GlobalTable)');
+      expect(r.infos).not.toContain('already gone');
+    }
+  );
+
+  it("the fix-forward: keeps it when the record's own read fails, whatever the journaled one reads", async () => {
+    const r = await settle('tid-ORPHAN', { recordTableId: denied('DescribeTable') });
+    expect(r.del).not.toHaveBeenCalled();
+    expect(r.out.unaddressed).toBe(1);
+    expect(r.warned).toContain('Orphan (AWS::DynamoDB::GlobalTable)');
+  });
+
+  it('with no record under the id: keeps it when the identity read fails', async () => {
+    const r = await settle(denied('DescribeTable'));
+    expect(r.del).not.toHaveBeenCalled();
+    expect(r.out.unaddressed).toBe(1);
+    expect(r.warned).toContain('Orphan (AWS::DynamoDB::GlobalTable)');
   });
 
   it('with no record under the id: deletes it when the name still reads back under the journaled TableId (control)', async () => {
