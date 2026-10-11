@@ -325,7 +325,7 @@ schema-v9-to-v10-migration	2026-10-07T18:40:43Z	PASS	146	verify.sh	rc ok, orph c
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-11T09:33:22Z	PASS	231	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-secret-derived-immutable-names	2026-10-11T16:41:12Z	FAIL	255	verify.sh	step 5d real deploy: nested ChildQueueArn got unresolved {{resolve:}}; cleanup destroy failed on QueuePolicy, state hand-orphaned, AWS clean (PR #4793)
+secret-derived-immutable-names	2026-10-11T17:39:42Z	PASS	466	verify.sh	rc ok, orph clean; 5c/5d arms each red pre-fix (stateNames, diffLogMasker, provision scan) (PR #4793)
 secrets-array-nested	2026-10-09T10:13:13Z	PASS	401	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 secrets-dynamic-ref	2026-10-11T09:33:22Z	PASS	857	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
