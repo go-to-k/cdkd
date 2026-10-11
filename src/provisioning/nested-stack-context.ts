@@ -120,12 +120,15 @@ export interface NestedStackProviderContext {
   };
 
   /**
-   * Deploy-only: where a nested child's DEPLOY reports what it left
-   * unaddressed, so the parent engine's counters see it (issue
+   * Where a nested child reports what it left unaddressed, so the parent's
+   * counters see it (issue
    * [#1989](https://github.com/go-to-k/cdkd/issues/1989)). Bound per
-   * resource by the parent engine through
+   * resource by the parent engine, and by the destroy runner, through
    * {@link collectNestedChildUnaddressed}; `NestedStackProvider` writes it
-   * after its child `DeployEngine` returns.
+   * after its child `DeployEngine` returns, and, on a stack destroy
+   * (`DeleteContext.stackDestroy`), after a child destroy whose only skips
+   * were resources a failed deploy created, left in AWS with no record
+   * (go-to-k/cdkd#4738), as `deleteSkipped`.
    *
    * Carried here rather than on `ResourceCreateResult` /
    * `ResourceUpdateResult`, a type every provider implements. Recursion holds
@@ -137,7 +140,7 @@ export interface NestedStackProviderContext {
   childUnaddressed?: NestedChildUnaddressedSlot | undefined;
 }
 
-/** What a nested child's deploy left unaddressed: `DeployResult`'s two counters. */
+/** What a nested child left unaddressed: `DeployResult`'s two counters. */
 export interface NestedChildUnaddressed {
   deleteSkipped: number;
   updatePartial: number;
@@ -182,11 +185,11 @@ export function getCurrentNestedStackContext(): NestedStackProviderContext | und
 /**
  * Run one resource's provisioning `fn` with a fresh
  * {@link NestedStackProviderContext.childUnaddressed} slot bound, and return
- * what a nested child's deploy reported into it (issue #1989). Outside any
+ * what a nested child reported into it (issue #1989). Outside any
  * nested-stack context `fn` runs as-is: `NestedStackProvider` refuses to run
  * there, so nothing could report.
  *
- * `unaddressed` is `undefined` when no child deploy reported, i.e. for every
+ * `unaddressed` is `undefined` when no child reported, i.e. for every
  * resource that is not an `AWS::CloudFormation::Stack` row.
  */
 export async function collectNestedChildUnaddressed<T>(

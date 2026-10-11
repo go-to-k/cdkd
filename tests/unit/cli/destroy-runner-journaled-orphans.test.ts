@@ -212,6 +212,8 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     const result = await runDestroyForStack('TestStack', makeState({}), makeCtx());
     expect(result.skippedEmpty).toBe(true);
     expect(mockProviderDelete).not.toHaveBeenCalled();
+    // The empty-stack fast path deletes the state too.
+    expect(result.stateDeleted).toBe(true);
   });
 
   it('preserves the state (and so the journal) when the delete fails', async () => {
@@ -315,6 +317,10 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(mockResourceIdentity).not.toHaveBeenCalled();
     expect(result.errorCount).toBe(0);
     expect(result.skippedCount).toBe(1);
+    // The share a nested parent and the CLI read (go-to-k/cdkd#4738).
+    expect(result.journaledOrphanSkips).toBe(1);
+    // ...and the verdict a nested parent gates on: this run deleted the state.
+    expect(result.stateDeleted).toBe(true);
     expect(mockDeleteState).toHaveBeenCalledOnce();
     // The run exits 2: its summary is the ⚠ line with the skip, never ✓.
     expect(info()).toMatch(/⚠.*Stack TestStack destroyed, with resources left in AWS.*skipped/);
@@ -794,6 +800,32 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(warn()).toContain('cdkd state show');
     expect(warn()).not.toContain('cdkd state orphan');
     expect(warn()).not.toContain("'cdkd rollback'");
+  });
+
+  // go-to-k/cdkd#4738: a recorded skip keeps the state; the orphan beside it
+  // is not one of the records kept, so the preserve line counts only the other.
+  it('keeps the state for a recorded skip beside a kept orphan, counting each apart', async () => {
+    mockLoadJournal.mockResolvedValue(
+      journalOf([
+        {
+          logicalId: 'Q',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/orders',
+          provisionedBy: 'sdk',
+          physicalIdRecoveredFromError: true,
+          attemptedProperties: { QueueName: 'orders' },
+        },
+      ])
+    );
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(result.skippedCount).toBe(2);
+    expect(result.journaledOrphanSkips).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(result.stateDeleted).toBe(false);
+    expect(warn()).toContain('1 resource(s) skipped — cdkd did not confirm they were deleted');
+    expect(warn()).toContain('1 resource(s) a failed deploy created were left in AWS');
   });
 
   it('refuses a same-size journal that now records different resources', async () => {

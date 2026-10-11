@@ -1,9 +1,9 @@
 ---
-title: "Diff: secrets and NoEcho values"
+title: "cdkd diff: secrets and NoEcho values"
 description: "Why cdkd diff prints *** or withholds a value, what it shows for secret references and NoEcho parameters, and what a hidden value can hide."
 ---
 
-# Diff: secrets and NoEcho values
+# cdkd diff: secrets and NoEcho values
 
 `cdkd diff` does not print a secret that reaches your template as a secret
 reference or a `NoEcho` parameter, and it does not look such a secret up. In
@@ -130,6 +130,6 @@ warning under
 ## Related
 
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
-- [Diff: nested stacks](cli-diff-nested-stacks.md): nested-stack parameters that hold a secret
+- [cdkd diff: nested stacks](cli-diff-nested-stacks.md): nested-stack parameters that hold a secret
 - [`cdkd scrub`](cli-scrub.md): repair state records holding plaintext secrets
 - [State Management](state-management.md): how state stores secret values

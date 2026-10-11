@@ -1,13 +1,13 @@
 ---
-title: Deploy safety internals
+title: cdkd deploy safety internals
 description: "The exact rules behind cdkd deploy's guards: recreate propagation, name-collision proofs, the stateful list's derivation, the emptiness probes and assembly path checks."
 unlisted: true
 ---
 
-# Deploy safety internals
+# cdkd deploy safety internals
 
 The rules behind the guards that
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) and its sub-pages
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) and its sub-pages
 summarise. Those pages say what a refusal means and which flag gets through
 it. This page records the edge cases and the reasoning, for someone changing
 the code or chasing an unusual result.

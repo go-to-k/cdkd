@@ -30,6 +30,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -498,9 +499,22 @@ export class CodeBuildProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CodeBuild Project ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would act on a same-named resource cdkd
+    // does not manage. Refuse before any call; the client's region is
+    // resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
 
     try {
       const input = this.mapProperties(logicalId, properties);

@@ -179,7 +179,7 @@ process cannot block a stack for long.
 - **Stateful resource.** A resource that holds data, such as a bucket, a
   table or a log group. Replacing one loses the data, so cdkd refuses unless
   you pass `--force-stateful-recreation`. See
-  [Deploy: safety & compatibility flags](cli-deploy-safety.md#stateful-resource-guard).
+  [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md#stateful-resource-guard).
 - **Destroy.** Delete a stack's AWS resources and its state.
 - **Orphan.** Remove a resource or a stack from state only. The AWS resources
   stay, and cdkd no longer manages them. See

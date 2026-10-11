@@ -555,3 +555,62 @@ describe('ECRProvider ImageTagMutabilityExclusionFilters', () => {
     expect(state).not.toHaveProperty('ImageTagMutabilityExclusionFilters');
   });
 });
+
+describe('ECRProvider update region guard (issue #2613)', () => {
+  let provider: ECRProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ECRProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::ECR::Repository',
+        { RepositoryName: 'my-repo', ImageTagMutability: 'IMMUTABLE' },
+        { RepositoryName: 'my-repo', ImageTagMutability: 'MUTABLE' },
+        { expectedRegion: 'us-west-2' }
+      )
+    ).rejects.toThrow(/Refusing to update MyRepo .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ repositories: [{ repositoryArn: 'arn:x', repositoryUri: 'u' }] });
+    await provider.update(
+      'MyRepo',
+      'my-repo',
+      'AWS::ECR::Repository',
+      { RepositoryName: 'my-repo', ImageTagMutability: 'IMMUTABLE' },
+      { RepositoryName: 'my-repo', ImageTagMutability: 'MUTABLE' },
+      { expectedRegion: 'us-east-1' }
+    );
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutImageTagMutabilityCommand);
+    expect(mockSend.mock.calls[1]![0]).toBeInstanceOf(DescribeRepositoriesCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient: () => { config: { region: unknown } } })
+      .getClient().config.region = region;
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ repositories: [{ repositoryArn: 'arn:x', repositoryUri: 'u' }] });
+    await provider.update(
+      'MyRepo',
+      'my-repo',
+      'AWS::ECR::Repository',
+      { RepositoryName: 'my-repo', ImageTagMutability: 'IMMUTABLE' },
+      { RepositoryName: 'my-repo', ImageTagMutability: 'MUTABLE' }
+    );
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutImageTagMutabilityCommand);
+  });
+});

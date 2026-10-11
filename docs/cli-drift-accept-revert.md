@@ -1,9 +1,9 @@
 ---
-title: "Drift: accept and revert in detail"
+title: "cdkd drift: accept and revert in detail"
 description: "What cdkd drift --accept and --revert write, what each one declines, how to read the revert summary, and how to recover a resource deleted outside cdkd."
 ---
 
-# Drift: accept and revert in detail
+# cdkd drift: accept and revert in detail
 
 `cdkd drift --accept` and `cdkd drift --revert` resolve the drift a report
 found. This page covers what each flag writes, the cases each one declines,
@@ -49,7 +49,7 @@ each one.
   `***`, or a value it cannot identify, into state.
 - **A property state holds only as `***`.** Accepting would replace the mask
   with the live plaintext. See
-  [Drift: secrets and redacted values](cli-drift-secrets.md).
+  [cdkd drift: secrets and redacted values](cli-drift-secrets.md).
 - **A resource whose snapshot a `cdkd import` refused to record.** See
   [Clearing a baseline refusal](cli-drift-not-compared.md#clearing-a-baseline-refusal).
 - **A deleted resource.** See [Deleted resources](#deleted-resources).
@@ -151,7 +151,7 @@ one. Only a deploy renames the resource.
 **A property held as `***`.** The revert keeps the value AWS has. It refuses
 the whole resource when it cannot tell which live value belongs at the masked
 position. The cases are in
-[Drift: secrets and redacted values](cli-drift-secrets.md#redacted-noecho-baselines).
+[cdkd drift: secrets and redacted values](cli-drift-secrets.md#redacted-noecho-baselines).
 
 ### A revert that re-creates the resource
 
@@ -221,6 +221,6 @@ cdkd state show MyStack --json
 ## Related
 
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
-- [Drift: what was not compared](cli-drift-not-compared.md): the reasons a resource was not compared
-- [Drift: secrets and redacted values](cli-drift-secrets.md): secret properties under `--accept` and `--revert`
+- [cdkd drift: what was not compared](cli-drift-not-compared.md): the reasons a resource was not compared
+- [cdkd drift: secrets and redacted values](cli-drift-secrets.md): secret properties under `--accept` and `--revert`
 - [cdkd drift internals](cli-drift-internals.md): how a revert builds its update

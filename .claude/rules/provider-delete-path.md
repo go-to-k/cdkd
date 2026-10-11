@@ -22,7 +22,7 @@ A delete bag CAN carry plaintext and `delete()` has no masker: thread one before
 
 ## Outcomes
 
-Returning normally means THE RESOURCE IS GONE. An arm that issued no AWS call, or whose call failed, must not: the runner would print a deleted row, DROP the state record and exit 0. A lenient `catch` is that defect through a throw, since `undefined` reads as DELETED. The one exception is a resource ANOTHER record of the stack still holds and outlives the operation with (a shared `SecurityGroupIngress` rule, #4492): dropping this record is the delete, so it returns normally without a call.
+Returning normally means THE RESOURCE IS GONE. An arm that issued no AWS call, or whose call failed, must not: the runner would print a deleted row, DROP the state record and exit 0. A lenient `catch` is the same defect. The one exception is a resource ANOTHER record of the stack still holds and outlives the operation with (a shared `SecurityGroupIngress` rule, #4492): dropping this record is the delete, so it returns normally without a call.
 
 - `{ outcome: 'skipped', reason }` (`compositeIdSkipResult()`, `composite-id.ts`) — the premise is "NOT destroyed", never "no AWS call was issued". The runner warns, counts `skippedCount`, emits `RESOURCE_SKIPPED`, KEEPS the record and exits 2 (a deploy too, unless `--allow-unaddressed`); never skip when the resource is known gone.
 - `{ outcome: 'partial', reason }` on `ResourceUpdateResult` — a create-then-delete replacement whose delete did not land; the engine records the survivor.
@@ -32,9 +32,9 @@ Keep `reason` a FIXED constant with the AWS message in the warning: a reason is 
 
 ## Recursion and delegation
 
-`NestedStackProvider.delete` returns `skipped` on `childResult.skippedCount > 0` or `interrupted`, and THROWS on `errorCount > 0`: an attempted-and-failed child must fail the parent's row. The split is decided by what was ATTEMPTED. Both callers read an UNMARKED message holding an already-deleted needle (`deleteSkippedMessage` in `delete-outcome.ts` lists them) as success and DROP the state row, and the child name is template-controlled, so the throw avoids the needles in its wording AND is `markNonRetryable` (#1889). Its remedy must name the CHILD's state file.
+`NestedStackProvider.delete` returns `skipped` on `interrupted` or a child skip a record holds, and THROWS on `errorCount > 0` (an attempted-and-failed child fails the parent's row). On a `stackDestroy`, journaled-orphan-only skips: `deleted` + `leftInPlace`, count via `childUnaddressed` (#4738). Both callers read an UNMARKED message holding an already-deleted needle (`deleteSkippedMessage` in `delete-outcome.ts` lists them) as success and DROP the state row, and the child name is template-controlled, so the throw avoids the needles in its wording AND is `markNonRetryable` (#1889). Its remedy must name the CHILD's state file.
 
-A provider that DELEGATES a delete must `return await` it. A REPLACE inside `update()` splits on ORDERING: create-then-delete cannot abort, so it warns in orphan wording and reports `partial`; delete-then-create must ABORT before creating the replacement, on BOTH the skip and the throw arm, since cdkd must not issue a CREATE whose precondition it failed to establish.
+A DELEGATING delete must `return await`. A REPLACE inside `update()` splits on ORDERING: create-then-delete cannot abort, so it warns in orphan wording and reports `partial`; delete-then-create must ABORT before creating the replacement, on BOTH the skip and the throw arm, since cdkd must not issue a CREATE whose precondition it failed to establish.
 
 Never interpolate a provider-supplied `reason` into a thrown message: `retryable-errors.ts` classifies by SUBSTRING, so `does not exist` or `Rate exceeded` inside it burns the backoff schedule. Interpolate the TEMPLATE logical id only, and `markNonRetryable` it.
 

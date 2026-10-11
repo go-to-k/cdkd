@@ -16,9 +16,11 @@ import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import {
   deleteIndeterminateGuards,
+  deleteLeftInPlace,
   deleteSkipReason,
   UNSPECIFIED_SKIP_REASON,
 } from '../../deployment/delete-outcome.js';
+import { collectNestedChildUnaddressed } from '../../provisioning/nested-stack-context.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import {
@@ -422,6 +424,23 @@ export interface DestroyRunnerResult {
    * wired the deploy engine and the rollback executor, not this path.
    */
   guardIndeterminateCount: number;
+  /**
+   * The share of `skippedCount` that keeps no state record
+   * (go-to-k/cdkd#4658, #4738): a resource a failed deploy created that the
+   * destroy left in AWS with a warning, recorded only in the rollback journal,
+   * whose entry is settled. Includes those a nested child left: that child
+   * deleted its own state, so its row counts as deleted and its orphans here.
+   * Such a skip still exits 2, but never keeps the state.
+   */
+  journaledOrphanSkips: number;
+  /**
+   * True once this run deleted the stack's `state.json` (go-to-k/cdkd#4738).
+   * `NestedStackProvider.delete` reads it, rather than re-deriving the
+   * preserve decision from the counters, before it reports a child with
+   * skips as deleted: a parent must never drop its row while the child's
+   * state survives.
+   */
+  stateDeleted: boolean;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
   /**
@@ -611,6 +630,8 @@ export async function runDestroyForStack(
     retainedCount: 0,
     skippedCount: 0,
     guardIndeterminateCount: 0,
+    journaledOrphanSkips: 0,
+    stateDeleted: false,
     errorCount: 0,
     interrupted: false,
   };
@@ -910,6 +931,7 @@ export async function runDestroyForStack(
         );
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
+      result.stateDeleted = true;
       logger.info(`${green('✓')} State deleted`);
       // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
       // marker's release -- one round trip, concurrently (review P3).
@@ -1278,8 +1300,6 @@ export async function runDestroyForStack(
   // go-to-k/cdkd#4584: the share of `errorCount` that is journaled orphans,
   // whose remedy differs (the summary never offers `cdkd state orphan`).
   let journaledOrphanFailures = 0;
-  // go-to-k/cdkd#4658: the journaled orphans left in AWS with a warning.
-  let journaledOrphanSkips = 0;
   const lock = await acquireStackLock({
     ...stackLockBase,
     // Route the notice through the live renderer so it doesn't collide with
@@ -1625,7 +1645,7 @@ export async function runDestroyForStack(
       // cleaned up: the destroy must not report success over it (exit 2). It
       // holds no state record, so it does not keep the state (see below).
       result.skippedCount += orphanOutcome.skipped;
-      journaledOrphanSkips = orphanOutcome.skipped;
+      result.journaledOrphanSkips += orphanOutcome.skipped;
       // Mirror `cdkd rollback`'s per-op strip: a later failure keeps the
       // journal for a re-run, which must not re-send a settled delete.
       // Best-effort: a failed strip only makes that re-run repeat it, which
@@ -1945,6 +1965,10 @@ export async function runDestroyForStack(
             // back-compat `void` return) means "deleted"; a `'skipped'` outcome
             // means no AWS call was issued and the resource may still be alive.
             let deleteResult: ResourceDeleteResult | undefined;
+            // go-to-k/cdkd#4738: what a nested child left in AWS with no
+            // record (its journaled orphans), reported through the #1989 slot
+            // by a nested-stack row that is otherwise deleted.
+            let childLeftInAws = 0;
             // go-to-k/cdkd#4150: ONE opt-in object per resource, so every retry
             // below shares its `retryMemo`.
             const secretPrincipalOptIn =
@@ -1980,42 +2004,46 @@ export async function runDestroyForStack(
                     // Issue #4318: the attempt scope tells a `--remove-protection`
                     // compensation whether this is the LAST attempt, where a
                     // retryable failure still ends the delete.
-                    const outcome = await runDeleteAttempt(attempt >= maxAttempts, () =>
-                      // go-to-k/cdkd#4492: only a RETAINED record outlives the
-                      // destroy, so a resource it shares stays in place.
-                      withStackRecords(destroyStackRecordsView(state.resources), () =>
-                        provider.delete(
-                          logicalId,
-                          resource.physicalId,
-                          resource.resourceType,
-                          resource.properties,
-                          {
-                            ...(state.region !== undefined && { expectedRegion: state.region }),
-                            ...(ctx.removeProtection === true && { removeProtection: true }),
-                            ...(finalSnapshotIdentifier !== undefined && {
-                              finalSnapshotIdentifier,
-                            }),
-                            // Issue #4029: the EFFECTIVE policy, absent read as
-                            // CloudFormation's `Delete` (RDS's `Snapshot` default is
-                            // already in `policy`).
-                            deletionPolicy: policy ?? 'Delete',
-                            ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-                            ...(secretPrincipalOptIn !== undefined && {
-                              resolveSecretDerivedPrincipals: secretPrincipalOptIn,
-                            }),
-                            // Issue #4157: the identity evidence of the record deleted.
-                            recordedAttributes: resource.attributes,
-                            // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-                            recordedNoEchoLeaves: resource.noEchoLeaves,
-                            ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
-                            ...(ctx.noEchoReresolver !== undefined && {
-                              noEchoReresolver: ctx.noEchoReresolver,
-                            }),
-                            // go-to-k/cdkd#2115: only a whole-stack teardown.
-                            ...(ctx.stackDestroy === true && { stackDestroy: true }),
-                          }
+                    const { value: outcome, unaddressed } = await runDeleteAttempt(
+                      attempt >= maxAttempts,
+                      () =>
+                        // go-to-k/cdkd#4492: only a RETAINED record outlives the
+                        // destroy, so a resource it shares stays in place.
+                        collectNestedChildUnaddressed(() =>
+                          withStackRecords(destroyStackRecordsView(state.resources), () =>
+                            provider.delete(
+                              logicalId,
+                              resource.physicalId,
+                              resource.resourceType,
+                              resource.properties,
+                              {
+                                ...(state.region !== undefined && { expectedRegion: state.region }),
+                                ...(ctx.removeProtection === true && { removeProtection: true }),
+                                ...(finalSnapshotIdentifier !== undefined && {
+                                  finalSnapshotIdentifier,
+                                }),
+                                // Issue #4029: the EFFECTIVE policy, absent read as
+                                // CloudFormation's `Delete` (RDS's `Snapshot` default is
+                                // already in `policy`).
+                                deletionPolicy: policy ?? 'Delete',
+                                ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                                ...(secretPrincipalOptIn !== undefined && {
+                                  resolveSecretDerivedPrincipals: secretPrincipalOptIn,
+                                }),
+                                // Issue #4157: the identity evidence of the record deleted.
+                                recordedAttributes: resource.attributes,
+                                // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+                                recordedNoEchoLeaves: resource.noEchoLeaves,
+                                ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+                                ...(ctx.noEchoReresolver !== undefined && {
+                                  noEchoReresolver: ctx.noEchoReresolver,
+                                }),
+                                // go-to-k/cdkd#2115: only a whole-stack teardown.
+                                ...(ctx.stackDestroy === true && { stackDestroy: true }),
+                              }
+                            )
+                          )
                         )
-                      )
                     );
                     // Assign INSIDE the loop, not after it: the loop can
                     // reach this line on a LATER attempt after an earlier one
@@ -2023,6 +2051,7 @@ export async function runDestroyForStack(
                     // never overwrite a previous non-throwing attempt — the
                     // `break` below ends the loop on the first one.)
                     deleteResult = outcome ?? undefined;
+                    childLeftInAws = unaddressed?.deleteSkipped ?? 0;
                     lastDeleteError = null;
                     break;
                   } catch (retryError) {
@@ -2198,7 +2227,28 @@ export async function runDestroyForStack(
               return;
             }
 
-            logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
+            // go-to-k/cdkd#4738: a nested child that left resources in AWS
+            // with no record. The child stack is gone, state included, so its
+            // row is dropped like any deleted one; what it left counts as
+            // skips that keep no record (exit 2). `formatResourceLine` passes
+            // the verb through `displaySafe`.
+            const leftInAws =
+              childLeftInAws > 0
+                ? (deleteLeftInPlace(deleteResult) ??
+                  `${childLeftInAws} resource(s) a failed deploy created were left in AWS`)
+                : undefined;
+            const deletedLine =
+              leftInAws !== undefined
+                ? formatResourceLine(
+                    'skipped',
+                    logicalId,
+                    resource.resourceType,
+                    `deleted (${leftInAws})`
+                  )
+                : formatResourceLine('deleted', logicalId, resource.resourceType);
+            logger.info(`  ${deletedLine}`);
+            result.skippedCount += childLeftInAws;
+            result.journaledOrphanSkips += childLeftInAws;
             result.deletedCount++;
             recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_SUCCEEDED',
@@ -2210,6 +2260,22 @@ export async function runDestroyForStack(
               ...(resource.physicalId && { physicalId: resource.physicalId }),
               durationMs: Date.now() - resourceStartedAt,
             });
+            if (leftInAws !== undefined) {
+              // Beside the row's own success, as #1819's partial update: the
+              // child's run records no events, so this is the durable trace of
+              // the skips RUN_FINISHED counts. No `physicalId`: the survivors
+              // are the child's, named only in its warnings.
+              recordDestroyEvent(ctx.eventRecorder, {
+                eventType: 'RESOURCE_SKIPPED',
+                stackName,
+                operation: 'DELETE',
+                logicalId,
+                resourceType: resource.resourceType,
+                ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+                reason: leftInAws,
+                durationMs: Date.now() - resourceStartedAt,
+              });
+            }
             delete remainingResources[logicalId];
             persistStateAfterDelete(logicalId);
           } catch (error) {
@@ -2346,13 +2412,16 @@ export async function runDestroyForStack(
     // A journaled orphan's skip keeps nothing: no state row held it, and its
     // journal entry was settled above, so the state would be kept empty.
     const preserveState =
-      result.errorCount > 0 || result.interrupted || result.skippedCount > journaledOrphanSkips;
+      result.errorCount > 0 ||
+      result.interrupted ||
+      result.skippedCount > result.journaledOrphanSkips;
     // Publish the per-stack "is there work left in this stack" answer to the
     // outer `finally` BEFORE the branch below acts on it, so the re-sync there
     // can never contradict a `deleteState` that has already happened.
     statePreserved = preserveState;
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
+      result.stateDeleted = true;
       logger.debug('State deleted');
       // go-to-k/cdkd#4705: what this destroy kept, which the stack's next
       // create here may take back by name -- or, kept nothing, the tombstone
@@ -2431,8 +2500,10 @@ export async function runDestroyForStack(
             `. State preserved.`
         );
       } else {
+        // Only the skips a record holds: the journaled orphans have their own
+        // line below.
         logger.warn(
-          `${result.skippedCount} resource(s) skipped — cdkd did not confirm they were deleted, ` +
+          `${result.skippedCount - result.journaledOrphanSkips} resource(s) skipped — cdkd did not confirm they were deleted, ` +
             `so they may still exist in AWS. State preserved (the records are kept so the ` +
             `resources stay traceable).`
         );
@@ -2493,9 +2564,9 @@ export async function runDestroyForStack(
           `unconfirmed rather than benign. ${durablePointer}`
       );
     }
-    if (journaledOrphanSkips > 0) {
+    if (result.journaledOrphanSkips > 0) {
       logger.warn(
-        safeMsg`${journaledOrphanSkips} resource(s) a failed deploy created were left in AWS (each named in a ` +
+        safeMsg`${result.journaledOrphanSkips} resource(s) a failed deploy created were left in AWS (each named in a ` +
           'warning above, which says what to do with it). This stack no longer records them.'
       );
     }
@@ -2503,7 +2574,7 @@ export async function runDestroyForStack(
       // go-to-k/cdkd#4658: with resources the failed deploy created left in
       // AWS the state is gone but the run exits 2, so not the green line:
       // the warning glyph, a heading that says so, and the skip count.
-      const leftInAws = journaledOrphanSkips > 0;
+      const leftInAws = result.journaledOrphanSkips > 0;
       logger.info(
         `\n${leftInAws ? yellow('⚠') : green('✓')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} ${leftInAws ? 'destroyed, with resources left in AWS' : 'destroyed'}`)} (${green(result.deletedCount)} deleted${retainedSuffix}${leftInAws ? skippedSuffix : ''}${guardSuffix}, ${result.errorCount} errors)`
       );

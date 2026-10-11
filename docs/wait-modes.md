@@ -89,7 +89,7 @@ the background. Until then, you may see these:
 - An ACM certificate is still in `PENDING_VALIDATION`.
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 
-[Deploy: waits & concurrency](cli-deploy.md) lists what each mode does for
+[cdkd deploy](cli-deploy.md) lists what each mode does for
 every affected resource type, next to what CloudFormation and Terraform do.
 
 ## Destroy always waits
@@ -109,7 +109,7 @@ stack can start while resources from the first are still coming up.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md): the per-type wait table, the
+- [cdkd deploy](cli-deploy.md): the per-type wait table, the
   concurrency flags, and what the stack lock covers
-- [Deploy: tuning](cli-deploy-tuning.md): per-resource timeout overrides
+- [cdkd deploy: tuning](cli-deploy-tuning.md): per-resource timeout overrides
 - [Benchmarks](benchmarks.md): how much time each mode saves

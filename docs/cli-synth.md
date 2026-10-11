@@ -165,5 +165,5 @@ the detail these flags share with `cdkd deploy`.
 
 - [`cdkd list`](cli-list.md): reads the same app and prints stack names
 - [`cdkd diff`](cli-diff.md): the synthesized template compared against cdkd state
-- [Deploy: tuning](cli-deploy-tuning.md): `--strict` and `--ignore-errors` in full
+- [cdkd deploy: tuning](cli-deploy-tuning.md): `--strict` and `--ignore-errors` in full
 - [Output streams](cli-reference-output.md): the commands whose stdout you can pipe

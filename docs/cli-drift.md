@@ -138,7 +138,7 @@ cdkd reports a resource as deleted only when AWS itself answers that the
 resource is not there. A read that was denied or throttled is reported as not
 compared, never as deleted.
 
-[Drift: what was not compared](cli-drift-not-compared.md) explains each reason
+[cdkd drift: what was not compared](cli-drift-not-compared.md) explains each reason
 on a `!` line and how to clear it.
 
 ### When there is no drift but not everything was compared
@@ -294,7 +294,7 @@ state. To bring a deleted resource back, see
 
 Each flag also declines a few specific properties and resource types, and the
 plan names every one before you confirm. The lists are in
-[Drift: accept and revert in detail](cli-drift-accept-revert.md).
+[cdkd drift: accept and revert in detail](cli-drift-accept-revert.md).
 
 ## Options
 
@@ -302,7 +302,7 @@ plan names every one before you confirm. The lists are in
 | --- | --- | --- |
 | `[stacks...]` | — | Stack name(s) to check, as physical CloudFormation names. Each stack's [nested stacks](cli-drift-nested-stacks.md) are checked with it. |
 | `--all` | off | Check every stack in the state bucket. |
-| `--json` | off | Emit the structured per-stack report on stdout, and nothing else. See [Drift: JSON output](cli-drift-json.md). |
+| `--json` | off | Emit the structured per-stack report on stdout, and nothing else. See [cdkd drift: JSON output](cli-drift-json.md). |
 | `--accept` | off | Write the AWS-current values into cdkd state. Mutually exclusive with `--revert`. |
 | `--revert` | off | Push cdkd state values back into AWS. Mutually exclusive with `--accept`. |
 | `--dry-run` | off | With `--accept` or `--revert`: print the planned mutations and exit, without taking a lock or writing. |
@@ -392,7 +392,7 @@ drift reads them through Cloud Control: `AWS::Budgets::Budget`,
 `AWS::EMR::InstanceFleetConfig` and `AWS::EMR::InstanceGroupConfig`.
 
 An `AWS::CloudFormation::Stack` row is a nested stack, and drift handles it as
-described under [Drift: nested stacks](cli-drift-nested-stacks.md).
+described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md).
 
 ### Types that are always drift unknown
 
@@ -438,19 +438,19 @@ print alike. The full rules are in
 [cdkd drift internals](cli-drift-internals.md#what-the-human-report-does-to-a-malformed-value).
 
 `--json` output is not altered this way; see
-[Drift: JSON output](cli-drift-json.md#streams-under-json).
+[cdkd drift: JSON output](cli-drift-json.md#streams-under-json).
 
 ## In this section
 
-- [Drift: what was not compared](cli-drift-not-compared.md): each reason on a
+- [cdkd drift: what was not compared](cli-drift-not-compared.md): each reason on a
   `!` line, how to clear it, and the differences drift ignores on purpose.
-- [Drift: accept and revert in detail](cli-drift-accept-revert.md): what each
+- [cdkd drift: accept and revert in detail](cli-drift-accept-revert.md): what each
   flag declines, the revert summary, and recovering a deleted resource.
-- [Drift: secrets and redacted values](cli-drift-secrets.md): how drift
+- [cdkd drift: secrets and redacted values](cli-drift-secrets.md): how drift
   compares a property that holds a secret, and why some show `***`.
-- [Drift: nested stacks](cli-drift-nested-stacks.md): how nested stacks appear
+- [cdkd drift: nested stacks](cli-drift-nested-stacks.md): how nested stacks appear
   in the report, and a nested stack whose record is missing.
-- [Drift: JSON output](cli-drift-json.md): the `--json` schema and what goes
+- [cdkd drift: JSON output](cli-drift-json.md): the `--json` schema and what goes
   to stdout and stderr.
 
 ## Related

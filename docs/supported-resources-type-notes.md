@@ -282,7 +282,7 @@ More detail is in
 ## Related
 
 - [Supported Resources](supported-resources.md): the list of types
-- [Destroy flags & guards](cli-destroy.md): `--remove-protection` and the
+- [cdkd destroy](cli-destroy.md): `--remove-protection` and the
   other destroy flags
 - [Importing Existing Resources](import.md): adopting existing resources,
   nested stacks included

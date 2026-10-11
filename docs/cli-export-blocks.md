@@ -45,7 +45,7 @@ For each such resource, do one of these before you export:
 
 Custom Resources and `AWS::IAM::Policy` cannot be imported either, but cdkd
 migrates them in a second phase. See
-[cdkd export: Custom Resources and IAM policies](cli-export-two-phase.md).
+[cdkd export: custom resources and IAM policies](cli-export-two-phase.md).
 
 ### The list is not what cdkd checks
 
@@ -246,6 +246,6 @@ the export refuses the tree because that record is missing.
 ## Related
 
 - [`cdkd export`](cli-export.md): the command, its common blocks and its options
-- [cdkd export: Custom Resources and IAM policies](cli-export-two-phase.md): the types cdkd migrates in a second phase
+- [cdkd export: custom resources and IAM policies](cli-export-two-phase.md): the types cdkd migrates in a second phase
 - [`cdkd import`](import.md): the command most remedies on this page use
 - [State Management](state-management.md): state records and composite physical ids

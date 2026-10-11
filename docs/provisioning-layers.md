@@ -187,7 +187,7 @@ a resource back when its type does not move back on its own.
 not stored, so it does not set a lasting preference. It has no effect on a
 type that moves back because Cloud Control cannot manage it.
 
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) documents each
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) documents each
 flag in full, with its guards and refusals.
 
 ## Edge cases
@@ -218,7 +218,7 @@ in AWS.
 
 ## Related
 
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the flags
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the flags
   above, in full
 - [State Management](state-management.md): how the layer is stored in state
 - [Supported Resources](supported-resources.md): which types have an SDK

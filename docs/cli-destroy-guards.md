@@ -1,9 +1,9 @@
 ---
-title: "Destroy: data guards and final snapshots"
+title: "cdkd destroy: data guards and final snapshots"
 description: "Why cdkd destroy fails on a bucket or ECR repository that still holds data, and how DeletionPolicy: Snapshot and --skip-final-snapshot work."
 ---
 
-# Destroy: data guards and final snapshots
+# cdkd destroy: data guards and final snapshots
 
 Two rules keep a destroy from losing data you did not agree to lose. A bucket
 or image repository that still holds data is not deleted unless the resource
@@ -12,7 +12,7 @@ snapshot before it is deleted.
 
 Both rules match CloudFormation, and both apply to `cdkd destroy` and
 `cdkd state destroy`. This page is part of
-[Destroy flags & guards](cli-destroy.md).
+[cdkd destroy](cli-destroy.md).
 
 ## Non-empty S3 buckets and ECR repositories
 
@@ -273,12 +273,12 @@ depends on the type:
   new timestamp, and AWS bills for both. Their snapshot names can be reused,
   so an existing snapshot with that name could hold older data.
 
-[Destroy internals](cli-destroy-internals.md#final-snapshots) has the rest:
+[cdkd destroy internals](cli-destroy-internals.md#final-snapshots) has the rest:
 per-type notes, what each delete does when a snapshot fails part-way, and how
 a Cloud Control delete behaves under `DeletionPolicy: Delete`.
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md) — the command, its options and what can stop it
-- [Destroy: deletion protection](cli-destroy-protection.md) — `--remove-protection`
+- [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
+- [cdkd destroy: deletion protection](cli-destroy-protection.md) — `--remove-protection`
 - [`cdkd rollback`](cli-rollback.md#deletionpolicy-on-a-rolled-back-create) — the same policy on a rolled-back create

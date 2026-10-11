@@ -25,6 +25,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceNotFound,
   ResourceImportResult,
@@ -185,9 +186,22 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudWatch alarm ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would act on a same-named resource cdkd
+    // does not manage. Refuse before any call; the client's region is
+    // resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.cloudWatchClient.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

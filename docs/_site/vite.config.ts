@@ -97,6 +97,7 @@ const navigation: ScopedNavigationGroup[] = [
     items: [
       { title: 'Wait Modes', path: '/wait-modes' },
       { title: 'Rollback', path: '/rollback' },
+      { title: 'Stop on Destructive Changes', path: '/destructive-changes' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },
       { title: 'Stack Outputs', path: '/stack-outputs' },
@@ -149,18 +150,18 @@ const navigation: ScopedNavigationGroup[] = [
         path: '/cli-diff-state-records',
         under: '/cli-diff',
       },
-      { title: 'Deploy: waits & concurrency', path: '/cli-deploy' },
+      { title: 'cdkd deploy', path: '/cli-deploy' },
       { title: 'Wait mode details', path: '/cli-deploy-waits', under: '/cli-deploy' },
       { title: 'The stack lock', path: '/cli-deploy-lock', under: '/cli-deploy' },
       { title: 'Custom resources', path: '/cli-deploy-custom-resources', under: '/cli-deploy' },
       { title: 'A damaged state record', path: '/cli-deploy-damaged-state', under: '/cli-deploy' },
-      { title: 'Deploy: tuning', path: '/cli-deploy-tuning' },
+      { title: 'cdkd deploy: tuning', path: '/cli-deploy-tuning' },
       {
         title: 'Names prefixed before v0.94.0',
         path: '/cli-deploy-tuning-name-migration',
         under: '/cli-deploy-tuning',
       },
-      { title: 'Deploy: safety & compatibility flags', path: '/cli-deploy-safety' },
+      { title: 'cdkd deploy: safety & compatibility flags', path: '/cli-deploy-safety' },
       {
         title: 'Provisioning route flags',
         path: '/cli-deploy-safety-routing',
@@ -186,7 +187,7 @@ const navigation: ScopedNavigationGroup[] = [
         path: '/cli-deploy-safety-assembly-checks',
         under: '/cli-deploy-safety',
       },
-      { title: 'Destroy flags & guards', path: '/cli-destroy' },
+      { title: 'cdkd destroy', path: '/cli-destroy' },
       {
         title: 'Data guards and final snapshots',
         path: '/cli-destroy-guards',
@@ -224,7 +225,7 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'cdkd export', path: '/cli-export' },
       { title: 'What blocks an export', path: '/cli-export-blocks', under: '/cli-export' },
       {
-        title: 'Custom Resources and IAM policies',
+        title: 'Custom resources and IAM policies',
         path: '/cli-export-two-phase',
         under: '/cli-export',
       },

@@ -1,14 +1,14 @@
 ---
-title: "Deploy: tuning"
+title: "cdkd deploy: tuning"
 description: "cdkd deploy tuning flags: per-resource warn and timeout budgets, physical name prefixing, observed-state capture, VPC dependency relaxation, and CDK annotation handling."
 ---
 
-# Deploy: tuning
+# cdkd deploy: tuning
 
 These `cdkd deploy` flags change how long one resource may run, what cdkd
 names resources, how much it records for drift detection, and how it orders
 VPC work. None of them change what the template means. For the full list of
-deploy flags, see [Deploy: waits & concurrency](cli-deploy.md#options).
+deploy flags, see [cdkd deploy](cli-deploy.md#options).
 
 ```bash
 # abort a stuck resource sooner
@@ -221,7 +221,7 @@ cdkd uses the first one that is set, in that order.
 - **A stack first deployed before v0.94.0.** Earlier versions prefixed
   declared names by default, so the first deploy on a newer version proposes
   replacements. See
-  [Deploy: names prefixed before v0.94.0](cli-deploy-tuning-name-migration.md).
+  [cdkd deploy: names prefixed before v0.94.0](cli-deploy-tuning-name-migration.md).
 
 ## `--no-capture-observed-state`
 
@@ -379,7 +379,7 @@ wins, and both warnings and errors fail the run.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md): every deploy flag, and the wait modes
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the guards and their escape hatches
-- [Destroy flags & guards](cli-destroy.md): the destroy side of the timeout flags
+- [cdkd deploy](cli-deploy.md): every deploy flag, and the wait modes
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the guards and their escape hatches
+- [cdkd destroy](cli-destroy.md): the destroy side of the timeout flags
 - [Drift Detection](drift.md): what the observed-state baseline is for

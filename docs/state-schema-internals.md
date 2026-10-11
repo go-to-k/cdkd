@@ -509,7 +509,7 @@ standalone `AWS::RDS::DBInstance` takes CloudFormation's default, `Snapshot`.
 `DeletionPolicy: Snapshot` is honored on the same
 paths: cdkd creates the final snapshot CloudFormation
 promises before deleting (see the "DeletionPolicy: Snapshot" section in
-[Destroy flags & guards](cli-destroy-guards.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
+[cdkd destroy](cli-destroy-guards.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
 `--skip-final-snapshot` opt-out).
 
 > **Upgrade note (v4 → v5)** — the **first** `cdkd deploy` after

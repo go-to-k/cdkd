@@ -810,3 +810,68 @@ describe('CodeBuildProvider', () => {
     });
   });
 });
+
+describe('CodeBuildProvider update region guard (issue #2613)', () => {
+  let provider: CodeBuildProvider;
+  const base = {
+    Name: 'my-project',
+    Source: { Type: 'NO_SOURCE', BuildSpec: 'version: 0.2' },
+    Environment: {
+      Type: 'LINUX_CONTAINER',
+      ComputeType: 'BUILD_GENERAL1_SMALL',
+      Image: 'aws/codebuild/standard:7.0',
+    },
+    ServiceRole: 'arn:aws:iam::123456789012:role/codebuild-role',
+    Artifacts: { Type: 'NO_ARTIFACTS' },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new CodeBuildProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update(
+        'MyProject',
+        'my-project',
+        'AWS::CodeBuild::Project',
+        { ...base, Description: 'new' },
+        base,
+        { expectedRegion: 'us-west-2' }
+      )
+    ).rejects.toThrow(/Refusing to update MyProject .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'MyProject',
+      'my-project',
+      'AWS::CodeBuild::Project',
+      { ...base, Description: 'new' },
+      base,
+      { expectedRegion: 'us-east-1' }
+    );
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateProjectCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient: () => { config: { region: unknown } } })
+      .getClient().config.region = region;
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'MyProject',
+      'my-project',
+      'AWS::CodeBuild::Project',
+      { ...base, Description: 'new' },
+      base
+    );
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateProjectCommand);
+  });
+});

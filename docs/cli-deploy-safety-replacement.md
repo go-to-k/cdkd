@@ -1,9 +1,9 @@
 ---
-title: "Deploy: replacements and name collisions"
+title: "cdkd deploy: replacements and name collisions"
 description: "When cdkd deploy replaces a resource instead of updating it, what --replace adds, and what to do when the replacement or a create collides with a name that is already taken."
 ---
 
-# Deploy: replacements and name collisions
+# cdkd deploy: replacements and name collisions
 
 A replacement creates a new physical resource and deletes the old one. cdkd
 replaces a resource when a change cannot be applied to the existing one. Some
@@ -29,7 +29,7 @@ cdkd deploy MyStack --replace --force-stateful-recreation
 When the resource being replaced holds data, the
 [stateful-resource guard](cli-deploy-safety.md#stateful-resource-guard)
 refuses the deploy until you pass `--force-stateful-recreation`. This page is
-part of [Deploy: safety & compatibility flags](cli-deploy-safety.md).
+part of [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md).
 
 ## `--replace` (deploy)
 
@@ -154,7 +154,7 @@ suggest `--replace`. Remove or rename whatever holds the name if it is yours.
 If the holder is the resource being replaced, delete it by hand. Then re-run.
 
 The rules for each case are in
-[Deploy safety internals](cli-deploy-safety-internals.md#how-replace-proves-the-old-resource-holds-the-name).
+[cdkd deploy safety internals](cli-deploy-safety-internals.md#how-replace-proves-the-old-resource-holds-the-name).
 
 ## A create under a name that is already taken
 
@@ -237,7 +237,7 @@ clusters, instances and subnet groups, and DynamoDB tables and global tables.
 Any other pair fails with nothing deleted.
 
 How cdkd tells apart two equal physical IDs of different types is in
-[Deploy safety internals](cli-deploy-safety-internals.md#equal-physical-ids-across-a-type-change).
+[cdkd deploy safety internals](cli-deploy-safety-internals.md#equal-physical-ids-across-a-type-change).
 
 ### Rolling back a type change
 
@@ -308,13 +308,13 @@ would leave state naming the old database.
 
 ## Related
 
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the
   stateful-resource guard, `--force-stateful-recreation` and deletion
   protection
-- [Deploy: recreating a resource on the other route](cli-deploy-safety-recreate.md):
+- [cdkd deploy: recreating a resource on the other route](cli-deploy-safety-recreate.md):
   replacing one named resource to change its route
 - [`cdkd rollback`](cli-rollback.md): reversing a replacement after a failed
   deploy
 - [`cdkd import`](import.md): adopting an existing resource into a stack
-- [Deploy safety internals](cli-deploy-safety-internals.md): the exact
+- [cdkd deploy safety internals](cli-deploy-safety-internals.md): the exact
   name-collision rules

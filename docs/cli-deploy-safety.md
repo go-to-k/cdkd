@@ -1,9 +1,9 @@
 ---
-title: "Deploy: safety & compatibility flags"
+title: "cdkd deploy: safety & compatibility flags"
 description: "What cdkd deploy refuses by default, whether your data is at risk when it does, and the flag that gets each refusal through."
 ---
 
-# Deploy: safety & compatibility flags
+# cdkd deploy: safety & compatibility flags
 
 `cdkd deploy` refuses a few things up front instead of failing halfway or
 losing data: an unsupported resource type, a replacement that would delete a
@@ -30,8 +30,8 @@ cdkd deploy --require-approval=destructive
 ```
 
 The other deploy flags are under
-[Deploy: waits & concurrency](cli-deploy.md) and
-[Deploy: tuning](cli-deploy-tuning.md).
+[cdkd deploy](cli-deploy.md) and
+[cdkd deploy: tuning](cli-deploy-tuning.md).
 
 ## When a deploy is refused
 
@@ -85,19 +85,19 @@ resource and create a new one, and that can cost you something:
 
 ## In this section
 
-- [Deploy: provisioning route flags](cli-deploy-safety-routing.md): how cdkd
+- [cdkd deploy: provisioning route flags](cli-deploy-safety-routing.md): how cdkd
   chooses between its SDK providers and Cloud Control, and the flags that
   change the choice.
-- [Deploy: recreating a resource on the other route](cli-deploy-safety-recreate.md):
+- [cdkd deploy: recreating a resource on the other route](cli-deploy-safety-recreate.md):
   when you need `--recreate-via-cc-api` or `--recreate-via-sdk-provider`, and
   what a recreate costs.
-- [Deploy: replacements and name collisions](cli-deploy-safety-replacement.md):
+- [cdkd deploy: replacements and name collisions](cli-deploy-safety-replacement.md):
   when cdkd replaces a resource, what `--replace` adds, and what to do about a
   name that is already taken.
-- [Deploy: strictness and approval flags](cli-deploy-safety-ci-flags.md):
+- [cdkd deploy: strictness and approval flags](cli-deploy-safety-ci-flags.md):
   `--strict-getatt`, `--allow-unaddressed`, `--no-cfn-fallback` and
   `--require-approval`.
-- [Deploy: checks on the cloud assembly](cli-deploy-safety-assembly-checks.md):
+- [cdkd deploy: checks on the cloud assembly](cli-deploy-safety-assembly-checks.md):
   what cdkd checks in `cdk.out` before a deploy starts.
 
 ## Stateful-resource guard
@@ -376,7 +376,7 @@ six types print the command that turns protection off. The note can be
 missing when protection was enabled outside cdkd, while AWS still refuses the
 delete. For an Auto Scaling group only the `prevent-all-deletion` level blocks
 a replacement. The details are in
-[Deploy safety internals](cli-deploy-safety-internals.md#deletion-protection-what-each-refusal-reads).
+[cdkd deploy safety internals](cli-deploy-safety-internals.md#deletion-protection-what-each-refusal-reads).
 
 ### Always-stateful types
 
@@ -426,7 +426,7 @@ Some entries are less obvious than a database:
 The list only grows, and [the changelog](changelog-cdkd.md) records when each
 type joined. When cdkd cannot know from outside whether a delete destroys
 data, it guards the type. The reason for every category is in
-[Deploy safety internals](cli-deploy-safety-internals.md#why-each-category-is-on-the-list).
+[cdkd deploy safety internals](cli-deploy-safety-internals.md#why-each-category-is-on-the-list).
 
 #### Types that are not guarded
 
@@ -498,7 +498,7 @@ as holding data, even when the stream is empty.
 
 The exact rules of the two checks, and how `RetentionInDays` values are read,
 are in
-[Deploy safety internals](cli-deploy-safety-internals.md#the-emptiness-probes).
+[cdkd deploy safety internals](cli-deploy-safety-internals.md#the-emptiness-probes).
 
 ## Exit codes
 
@@ -514,9 +514,9 @@ by it.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md): concurrency flags and the wait-semantics table
-- [Deploy: tuning](cli-deploy-tuning.md): timeouts, name prefixing, observed-state capture
-- [Destroy flags & guards](cli-destroy.md): the destroy-side data guards and `--remove-protection`
+- [cdkd deploy](cli-deploy.md): concurrency flags and the wait-semantics table
+- [cdkd deploy: tuning](cli-deploy-tuning.md): timeouts, name prefixing, observed-state capture
+- [cdkd destroy](cli-destroy.md): the destroy-side data guards and `--remove-protection`
 - [Provisioning Layers](provisioning-layers.md): the SDK provider and Cloud Control routes
 - [Supported Resources](supported-resources.md): the per-type tier table and property-level coverage
-- [Deploy safety internals](cli-deploy-safety-internals.md): the exact rules behind the guards on this page
+- [cdkd deploy safety internals](cli-deploy-safety-internals.md): the exact rules behind the guards on this page

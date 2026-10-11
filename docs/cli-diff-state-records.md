@@ -1,9 +1,9 @@
 ---
-title: "Diff: incomplete or malformed state"
+title: "cdkd diff: incomplete or malformed state"
 description: "What cdkd diff does when a state record lacks an attribute a reference needs, and what it shows when the state record is damaged."
 ---
 
-# Diff: incomplete or malformed state
+# cdkd diff: incomplete or malformed state
 
 `cdkd diff` compares your app with the state record the last deploy wrote.
 This page covers two cases where that record is not what the diff expects. In
@@ -69,7 +69,7 @@ Beyond the warning, the diff reports the damage in four ways:
   section is named `(resources map)` or `(orphans container)`.
 - `--json` lists them in `unreadable`, `unreadableContainers` and
   `unreadableOrphans`; see
-  [Diff: JSON output](cli-diff-json.md#the-three-unreadable-fields).
+  [cdkd diff: JSON output](cli-diff-json.md#the-three-unreadable-fields).
 - `--fail` counts them as a change.
 - On the stack you named, the diff lists the damage under `Blocking` and exits
   `3`. A damaged `exportNames` list is the one exception: it only warns.
@@ -130,6 +130,6 @@ rules for each part of the record are in
 ## Related
 
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
-- [Diff: JSON output](cli-diff-json.md): the `unreadable` fields
+- [cdkd diff: JSON output](cli-diff-json.md): the `unreadable` fields
 - [`cdkd state`](cli-state.md): inspecting a state record
 - [State Management](state-management.md): the state schema and how deploy treats a damaged record

@@ -1,9 +1,9 @@
 ---
-title: What cdkd scrub covers
+title: "cdkd scrub: what it covers"
 description: "Which stored values cdkd scrub treats as secrets, where in a state file it looks, which values it leaves alone and why, and which secrets it cannot see."
 ---
 
-# What cdkd scrub covers
+# cdkd scrub: what it covers
 
 [`cdkd scrub`](cli-scrub.md) rewrites a stored value only when your template
 names that value through a `{{resolve:...}}` reference. It learns the secret
@@ -334,6 +334,6 @@ reference. Both apply to `{{resolve:secretsmanager:...}}` and to a
 ## Related
 
 - [`cdkd scrub`](cli-scrub.md): the commands, options and exit codes
-- [cdkd scrub across stacks](cli-scrub-multi-stack.md): `--all`, nested stacks and values read from other stacks
-- [cdkd scrub findings and refusals](cli-scrub-findings.md): each message and code, with what to do
+- [cdkd scrub: across stacks](cli-scrub-multi-stack.md): `--all`, nested stacks and values read from other stacks
+- [cdkd scrub: findings and refusals](cli-scrub-findings.md): each message and code, with what to do
 - [State Management](state-management.md): what a state file stores

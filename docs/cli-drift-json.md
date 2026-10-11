@@ -1,9 +1,9 @@
 ---
-title: "Drift: JSON output"
+title: "cdkd drift: JSON output"
 description: "The shape of cdkd drift --json, how to gate CI on it, and what the command writes to stdout and stderr."
 ---
 
-# Drift: JSON output
+# cdkd drift: JSON output
 
 `cdkd drift --json` prints the drift report as JSON on stdout, for a script or
 a CI job to read. The output is an array with one object per stack.
@@ -79,7 +79,7 @@ Details the table leaves out:
   value in state (`stateValue`) and the value in AWS (`awsValue`).
 - A `deleted` entry for a nested stack whose state record is gone carries
   `"nestedStackRecordMissing": true`. See
-  [Drift: nested stacks](cli-drift-nested-stacks.md#a-nested-stack-whose-record-is-missing).
+  [cdkd drift: nested stacks](cli-drift-nested-stacks.md#a-nested-stack-whose-record-is-missing).
 - A `clean` entry always has `referencesUnresolved: false`.
 - `skipped` includes the parent's row for a nested stack, because the nested
   stack has a report of its own in the array.
@@ -161,5 +161,5 @@ Which other commands reserve stdout for a payload is under
 ## Related
 
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
-- [Drift: what was not compared](cli-drift-not-compared.md): every `cause` value
+- [cdkd drift: what was not compared](cli-drift-not-compared.md): every `cause` value
 - [CLI Reference](cli-reference.md): exit codes and output streams for every command

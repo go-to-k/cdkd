@@ -109,7 +109,7 @@ property that sent the resource to Cloud Control. Remove the property, or
 pass `--prefer-sdk-route <Type>:<Prop>` to accept that the property is
 dropped.
 [Provisioning Layers](provisioning-layers.md) explains the two layers, and
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) the flags.
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) the flags.
 
 ## Cloud Control API Rate Limit
 

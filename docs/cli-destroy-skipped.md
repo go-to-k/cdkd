@@ -1,9 +1,9 @@
 ---
-title: "Destroy: skipped resources"
+title: "cdkd destroy: skipped resources"
 description: "What it means when cdkd destroy reports a skipped resource, each cause, and how to finish the destroy."
 ---
 
-# Destroy: skipped resources
+# cdkd destroy: skipped resources
 
 A skipped resource is one that cdkd could not confirm it deleted. The resource
 may still exist in AWS and may still cost money. cdkd keeps its entry in the
@@ -21,7 +21,7 @@ state file to open.
 A skip is different from a failed delete. Running the destroy again retries a
 failed delete. A skipped resource is skipped again until you fix its cause,
 which is what this page covers. It is part of
-[Destroy flags & guards](cli-destroy.md).
+[cdkd destroy](cli-destroy.md).
 
 ## Custom resources
 
@@ -128,7 +128,7 @@ cdkd state orphan MyStack --stack-region us-east-1 \
 
 Every shape of damaged entry, what survives in each case, and how a principal
 list built from a secret is resolved are in
-[Destroy internals](cli-destroy-internals.md#every-cause-of-a-skip).
+[cdkd destroy internals](cli-destroy-internals.md#every-cause-of-a-skip).
 
 ## Resources only the rollback journal records
 
@@ -161,9 +161,21 @@ for confirmation.
 
 ### Edge cases
 
-- **The resource may belong to something else.** cdkd warns and leaves the
-  resource alone when the state record, a later deploy or a record of a
-  resource a rollback kept may own it.
+- **The resource may belong to something else, or may not be the same one.**
+  cdkd warns, names the physical ID and leaves the resource in AWS when the
+  state record, a later deploy, a record of a resource a rollback kept or
+  another stack's state record may own it, or when nothing proves it is the
+  one the failed deploy created (the checks a
+  [rollback](cli-rollback-failed-operations.md#when-cdkd-deletes-the-resource-and-when-it-does-not)
+  makes). Delete it by hand if it is not in use. The destroy exits `2`, but no
+  state record holds the resource, so the state and the journal are still
+  removed, and the final message does not say the state was preserved. If a
+  record or the live identity cannot be read, cdkd counts a failure and keeps
+  the state and the journal.
+- **The resource is in a nested stack.** When the nested stack's only skips
+  are such resources, its own state is deleted, and the parent deletes the
+  nested stack's entry and its own state in the same run. The nested stack's
+  line in the parent says how many resources it left in AWS.
 - **The delete fails.** The summary counts it separately. cdkd keeps the state
   record and the journal, so run the destroy again.
 - **The delete can never succeed.** Check the resource by hand, then drop that
@@ -260,7 +272,7 @@ What the deploy does depends on which delete was skipped:
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md) — the command, its options and what can stop it
-- [Destroy: interruption and damaged state](cli-destroy-edge-cases.md) — a record cdkd refuses before it starts
+- [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
+- [cdkd destroy: interruption and damaged state](cli-destroy-edge-cases.md) — a record cdkd refuses before it starts
 - [Orphan vs Destroy](orphan-vs-destroy.md) — dropping a record without deleting the resource
 - [`cdkd rollback`](cli-rollback.md) — the rollback journal and what replays it

@@ -136,7 +136,7 @@ cdkd deploy MyStack --prefer-sdk-route AWS::ApiGatewayV2::Api:Body
 ```
 
 The named property is then not written to AWS. See
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) for this flag
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) for this flag
 and its exceptions, and [Provisioning Layers](provisioning-layers.md) for how
 a resource moves between the two paths.
 
@@ -206,5 +206,5 @@ leave something behind on destroy. Each links to its note in
   adopt
 - [Feature Parity](supported-features.md): intrinsic functions, pseudo
   parameters and the rest of the CloudFormation surface
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the flags for
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the flags for
   an unsupported type or property

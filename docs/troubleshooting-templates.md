@@ -67,7 +67,7 @@ What you can do:
   cdkd's per-type coverage, and AWS lists
   [what Cloud Control supports](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html).
 
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) documents
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) documents
 `--allow-unsupported-types`.
 
 ## "The following resources declare mutually exclusive properties"

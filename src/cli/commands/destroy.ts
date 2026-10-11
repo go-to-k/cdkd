@@ -71,6 +71,7 @@ import {
   type StackLike,
 } from '../stack-matcher.js';
 import { runDestroyForStack } from './destroy-runner.js';
+import { skippedDestroyMessage } from './destroy-skip-message.js';
 import { TemplateNoEchoReresolver } from '../../deployment/noecho-delete-reresolution.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
@@ -578,6 +579,9 @@ async function destroyCommand(
     // preserved state, so reporting success would tell CI the stack is gone
     // when it is not.
     let totalSkipped = 0;
+    // The share of `totalSkipped` that keeps no state record: resources a
+    // failed deploy created, left in AWS (go-to-k/cdkd#4738).
+    let totalOrphanSkips = 0;
     // Set true when a per-stack destroy was gracefully interrupted (issue
     // #816) — the PER-STACK outcome, as the runner reported it.
     let interrupted = false;
@@ -1063,6 +1067,7 @@ async function destroyCommand(
         );
         totalErrors += result.errorCount;
         totalSkipped += result.skippedCount;
+        totalOrphanSkips += result.journaledOrphanSkips;
         stackInterrupted = result.interrupted;
         stackCancelled = result.cancelled === true;
         if (result.interrupted) interrupted = true;
@@ -1206,26 +1211,11 @@ async function destroyCommand(
     }
     if (totalSkipped > 0) {
       // Issue #1752: nothing FAILED, but cdkd left resources it could not
-      // address. Exit 2 rather than 0 — this is the same "state preserved,
-      // stack not destroyed" contract the two branches above carry, and
-      // exiting 0 is exactly the mis-report this issue was filed for.
-      //
-      // Counted in ENTRIES, not resources, and deliberately so: a skipped
-      // nested-stack row contributes exactly 1 however many of the child's
-      // resources were actually skipped, so "N resource(s)" would state a
-      // number that is wrong precisely in the nested case. Summing the child
-      // count through would mean widening `ResourceDeleteResult` with a count
-      // field for the sake of one message; the accurate per-stack breakdown is
-      // already printed by each stack's own summary line just above.
+      // address. Exit 2 rather than 0 — exiting 0 is exactly the mis-report
+      // this issue was filed for. The message, and why it counts entries
+      // rather than resources, is `skippedDestroyMessage`'s.
       throw new PartialFailureError(
-        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} whose delete cdkd ` +
-          `did not confirm, so the underlying resources may still exist in AWS. A skipped nested stack ` +
-          `counts as ONE entry and may cover several of its own resources — the per-stack ` +
-          `summaries above give the exact breakdown. State preserved (the records are kept). ` +
-          `The per-resource 'skipped (...)' lines and their warnings name each cause and whether ` +
-          `repairing the record in state.json helps: where it does, repair it and re-run 'cdkd destroy'; ` +
-          `otherwise (for example a custom-resource Delete handler that reported FAILED), delete ` +
-          `the resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
+        skippedDestroyMessage(totalSkipped, totalOrphanSkips, 'cdkd destroy')
       );
     }
   } finally {

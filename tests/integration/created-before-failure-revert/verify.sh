@@ -33,11 +33,26 @@
 #         CREATE recorded no physical id, so the rollback skips it with a
 #         warning and exits 2 (a skipped op is a partial rollback). The topic
 #         is still gone, the journal and state.json are gone.
+#   PHASE N (go-to-k/cdkd#4738, a nested child whose only skip is a journaled
+#   orphan):
+#     N1. Deploy the nested stack clean: the parent records `Child`, and the
+#         child `<Parent>~Child` has its own state.
+#     N2. Deploy it again with NESTED_ORPHAN=1 --no-rollback: the child's
+#         update creates the ECR arm's repository and fails at its lifecycle
+#         policy, so the CHILD's journal names the repository.
+#     N3. `cdkd destroy` the parent: exit 2, the repository is KEPT (nothing
+#         proves it is the one the failed CREATE made), the child's state is
+#         deleted, and -- the fix -- the parent's state is deleted in the SAME
+#         run, with the `Child` row reported as deleted leaving 1 resource in
+#         AWS and no "State preserved" claim. Before the fix the parent kept
+#         its state and needed a second destroy. The fixture then deletes the
+#         repository by hand.
 #
 # After a run killed with SIGKILL (no trap runs), delete by hand the ECR
-# repository `cdkdcreatedbeforefailurerevertecrexample-orphan-repo` and the SNS
-# topic `CdkdCreatedBeforeFailureRevertSnsExample-topic` — the next run's
-# pre-run sweep also removes both.
+# repositories `cdkdcreatedbeforefailurerevertecrexample-orphan-repo` and
+# `cdkdcreatedbeforefailurerevertnestedexample-orphan-repo` and the SNS topic
+# `CdkdCreatedBeforeFailureRevertSnsExample-topic` — the next run's pre-run
+# sweep also removes them.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -84,13 +99,20 @@ export AWS_REGION="${REGION}"
 
 ECR_STACK="CdkdCreatedBeforeFailureRevertEcrExample"
 SNS_STACK="CdkdCreatedBeforeFailureRevertSnsExample"
+NESTED_STACK="CdkdCreatedBeforeFailureRevertNestedExample"
+NESTED_CHILD="${NESTED_STACK}~Child"
 # The names the stacks derive from their own ids (lib/*-stack.ts).
 REPO_NAME="cdkdcreatedbeforefailurerevertecrexample-orphan-repo"
 TOPIC_NAME="${SNS_STACK}-topic"
+NESTED_REPO_NAME="cdkdcreatedbeforefailurerevertnestedexample-orphan-repo"
 ECR_STATE_KEY="cdkd/${ECR_STACK}/${REGION}/state.json"
 ECR_JOURNAL_KEY="cdkd/${ECR_STACK}/${REGION}/rollback-journal.json"
 SNS_STATE_KEY="cdkd/${SNS_STACK}/${REGION}/state.json"
 SNS_JOURNAL_KEY="cdkd/${SNS_STACK}/${REGION}/rollback-journal.json"
+NESTED_STATE_KEY="cdkd/${NESTED_STACK}/${REGION}/state.json"
+NESTED_JOURNAL_KEY="cdkd/${NESTED_STACK}/${REGION}/rollback-journal.json"
+CHILD_STATE_KEY="cdkd/${NESTED_CHILD}/${REGION}/state.json"
+CHILD_JOURNAL_KEY="cdkd/${NESTED_CHILD}/${REGION}/rollback-journal.json"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbf-revert.XXXXXX")"
@@ -116,7 +138,7 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${PARTITION}" ]; then
 fi
 TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 
-echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK} state-bucket=${STATE_BUCKET}"
+echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK} state-bucket=${STATE_BUCKET}"
 
 # Best-effort removal of everything this fixture can leave: the two named
 # resources first (neither is ever in state, so the state destroy cannot reach
@@ -127,8 +149,9 @@ sweep() {
   (
   set +eu
   aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
+  aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws sns delete-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1
-  for s in "${ECR_STACK}" "${SNS_STACK}"; do
+  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}"; do
     node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1
@@ -162,8 +185,9 @@ wait_gone() { # usage: wait_gone <description> aws <service> <read-verb> [args..
   done
 }
 
-# The ECR repository's and SNS topic's read probes.
+# The ECR repositories' and SNS topic's read probes.
 repo_probe() { echo "aws ecr describe-repositories --repository-names ${REPO_NAME} --region ${REGION}"; }
+nested_repo_probe() { echo "aws ecr describe-repositories --repository-names ${NESTED_REPO_NAME} --region ${REGION}"; }
 topic_probe() { echo "aws sns get-topic-attributes --topic-arn ${TOPIC_ARN} --region ${REGION}"; }
 
 # cdkd colours its output whatever the terminal, so every grep reads a copy
@@ -186,7 +210,10 @@ sweep
 wait_gone "pre-run: ${REPO_NAME} still exists after the sweep" $(repo_probe)
 # shellcheck disable=SC2046
 wait_gone "pre-run: ${TOPIC_ARN} still exists after the sweep" $(topic_probe)
-for key in "${ECR_STATE_KEY}" "${ECR_JOURNAL_KEY}" "${SNS_STATE_KEY}" "${SNS_JOURNAL_KEY}"; do
+# shellcheck disable=SC2046
+wait_gone "pre-run: ${NESTED_REPO_NAME} still exists after the sweep" $(nested_repo_probe)
+for key in "${ECR_STATE_KEY}" "${ECR_JOURNAL_KEY}" "${SNS_STATE_KEY}" "${SNS_JOURNAL_KEY}" \
+  "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}"; do
   assert_gone "pre-run: s3://${STATE_BUCKET}/${key} still exists after the sweep" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
@@ -365,16 +392,111 @@ assert_gone "phase S2: state.json is still present after the initial-deploy roll
 echo "[verify] phase S2 ok: nothing deleted, the skip reported, journal and state gone"
 
 # ---------------------------------------------------------------------------
+# PHASE N: a nested child whose only skip is a journaled orphan (go-to-k/cdkd#4738)
+# ---------------------------------------------------------------------------
+echo "[verify] phase N1: deploy ${NESTED_STACK} (clean, so Child exists)"
+N1_RC=0
+node "${LOCAL_DIST}" deploy "${NESTED_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --yes > "${LOG_DIR}/n1.log.raw" 2>&1 || N1_RC=$?
+strip_ansi "${LOG_DIR}/n1.log.raw" "${LOG_DIR}/n1.log"
+if [ "${N1_RC}" -ne 0 ]; then
+  sed 's/^/  /' "${LOG_DIR}/n1.log" >&2 || true
+  echo "[verify] FAIL: phase N1: the clean nested deploy exited ${N1_RC}" >&2
+  exit 1
+fi
+if [ "$(state_has_resource "${NESTED_STATE_KEY}" Child)" != "true" ]; then
+  echo "[verify] FAIL: phase N1: the parent's state does not record Child" >&2
+  exit 1
+fi
+if [ "$(state_has_resource "${CHILD_STATE_KEY}" ChildAnchor)" != "true" ]; then
+  echo "[verify] FAIL: phase N1: the child's state does not record ChildAnchor" >&2
+  exit 1
+fi
+echo "[verify] phase N1 ok: parent records Child, the child has its own state"
+
+echo "[verify] phase N2: deploy ${NESTED_STACK} NESTED_ORPHAN=1 --no-rollback (expect FAILURE in the child at PutLifecyclePolicy)"
+export NESTED_ORPHAN=1
+deploy_expect_failure "${NESTED_STACK}" "${LOG_DIR}/n2.log"
+unset NESTED_ORPHAN
+if ! grep -qF "Failed to create ECR Repository OrphanRepo" "${LOG_DIR}/n2.log"; then
+  echo "[verify] FAIL: phase N2: the deploy did not fail in the child's OrphanRepo create (or the wording drifted)" >&2
+  exit 1
+fi
+if ! aws ecr describe-repositories --repository-names "${NESTED_REPO_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: phase N2: ${NESTED_REPO_NAME} does not exist after the failed deploy, so this phase tests nothing" >&2
+  exit 1
+fi
+if ! CHILD_OP="$(journal_failed_op "${CHILD_JOURNAL_KEY}" OrphanRepo)"; then
+  echo "[verify] FAIL: phase N2: the child's rollback journal could not be read (s3://${STATE_BUCKET}/${CHILD_JOURNAL_KEY})" >&2
+  exit 1
+fi
+CHILD_OP_FIELDS="$(printf '%s' "${CHILD_OP}" \
+  | jq -r '[.changeType // "<absent>", .physicalId // "<absent>", (.physicalIdRecoveredFromError | tostring)] | join(" ")')"
+if [ "${CHILD_OP_FIELDS}" != "CREATE ${NESTED_REPO_NAME} true" ]; then
+  echo "[verify] FAIL: phase N2: the child's journal op for OrphanRepo is '${CHILD_OP_FIELDS}' (expected 'CREATE ${NESTED_REPO_NAME} true')" >&2
+  exit 1
+fi
+echo "[verify] phase N2 ok: the child's journal names the repository its failed CREATE made"
+
+echo "[verify] phase N3: cdkd destroy ${NESTED_STACK} --force (expect exit 2, the repository KEPT, BOTH states deleted in one run)"
+N3_RC=0
+node "${LOCAL_DIST}" destroy "${NESTED_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --force > "${LOG_DIR}/n3.log.raw" 2>&1 || N3_RC=$?
+strip_ansi "${LOG_DIR}/n3.log.raw" "${LOG_DIR}/n3.log"
+sed 's/^/  /' "${LOG_DIR}/n3.log" || true
+if [ "${N3_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: phase N3: the destroy exited ${N3_RC} (expected 2: the kept repository is a skip)" >&2
+  exit 1
+fi
+# PREMISE: the child kept the repository as an unproven journaled orphan.
+if ! grep -q "Skipping failed CREATE of OrphanRepo.*the journal recorded no identity for it" "${LOG_DIR}/n3.log"; then
+  echo "[verify] FAIL: phase N3: the child destroy did not keep OrphanRepo as an unproven journaled orphan" >&2
+  exit 1
+fi
+assert_gone "phase N3: the child's state.json is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
+# The fix: before go-to-k/cdkd#4738 the parent kept its Child row and state.
+assert_gone "phase N3: the parent's state.json is still present -- the parent kept its Child row (go-to-k/cdkd#4738)" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_STATE_KEY}"
+# Each state delete sweeps that stack's rollback journal with it.
+assert_gone "phase N3: the child's rollback journal is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}"
+assert_gone "phase N3: the parent's rollback journal is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_JOURNAL_KEY}"
+if ! grep -qF "Child (AWS::CloudFormation::Stack) deleted (nested stack ${NESTED_CHILD} left 1 resource(s) a failed deploy created in AWS)" "${LOG_DIR}/n3.log"; then
+  echo "[verify] FAIL: phase N3: the parent's Child line does not say the child left 1 resource in AWS" >&2
+  exit 1
+fi
+if ! grep -qF "Destroy finished, but 1 resource(s) a failed deploy created were left in AWS" "${LOG_DIR}/n3.log"; then
+  echo "[verify] FAIL: phase N3: the final message does not name the resource left in AWS" >&2
+  exit 1
+fi
+if grep -qF "State preserved" "${LOG_DIR}/n3.log"; then
+  echo "[verify] FAIL: phase N3: the destroy claims state was preserved, but none was" >&2
+  exit 1
+fi
+if ! aws ecr describe-repositories --repository-names "${NESTED_REPO_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: phase N3: ${NESTED_REPO_NAME} is gone after the destroy that warned it was kept" >&2
+  exit 1
+fi
+aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null
+# shellcheck disable=SC2046
+wait_gone "phase N3: ${NESTED_REPO_NAME} still exists after the fixture deleted it" $(nested_repo_probe)
+echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven repository (exit 2)"
+
+# ---------------------------------------------------------------------------
 # FINAL: nothing left
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2046
 assert_gone "${REPO_NAME} still exists at the end of the run" $(repo_probe)
 # shellcheck disable=SC2046
 assert_gone "${TOPIC_ARN} still exists at the end of the run" $(topic_probe)
-for s in "${ECR_STACK}" "${SNS_STACK}"; do
+# shellcheck disable=SC2046
+assert_gone "${NESTED_REPO_NAME} still exists at the end of the run" $(nested_repo_probe)
+for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}"; do
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1 || true
 done
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM
-echo "[verify] PASS — a created-before-failure resource is journaled and reverted; a self-cleaned one is left alone"
+echo "[verify] PASS — a created-before-failure resource is journaled and reverted; a self-cleaned one is left alone; a nested child's kept orphan does not keep its parent's state"

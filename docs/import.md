@@ -61,12 +61,12 @@ The examples assume cdkd reads the CDK app command from `cdk.json`. Pass
 
 ## In this section
 
-- [Import Options and the Import Plan](import-reference.md): every flag, when
+- [Import options and the import plan](import-reference.md): every flag, when
   `--force` is needed, how to read the plan, and how `cdkd import` differs
   from `cdk import`.
-- [Importing by Resource Type](import-resource-types.md): the value
+- [Importing by resource type](import-resource-types.md): the value
   `--resource` expects for each type, and the types with special behaviour.
-- [After an Import](import-after.md): what the first `cdkd diff` shows, what
+- [After an import](import-after.md): what the first `cdkd diff` shows, what
   cdkd records for drift detection, and how to remove a secret that reached
   state.
 
@@ -257,7 +257,7 @@ cdkd import MyStack \
 
 A `--resource-mapping` JSON file needs no escaping. The joined form is what
 `cdkd state show` and `cdkd state resources` print, and it is not always the
-id CloudFormation shows. [Importing by Resource Type](import-resource-types.md)
+id CloudFormation shows. [Importing by resource type](import-resource-types.md)
 lists the form for each type.
 
 ## Adopt every resource cdkd can find
@@ -349,7 +349,7 @@ What orphaning leaves you with depends on how you imported:
 Run `cdkd diff MyStack` before the first deploy. A property that differs
 between AWS and the template shows as a change the next `cdkd deploy` applies,
 and a resource you did not import shows as `to create`.
-[After an Import](import-after.md) covers the less common cases.
+[After an import](import-after.md) covers the less common cases.
 
 ## A value your template never references is recorded as AWS holds it
 
@@ -391,7 +391,7 @@ its type. Search this section for your type, for example
 | Any other type | `--resource`, when the Cloud Control API supports the type |
 | [Cannot be imported](#cannot-be-imported) | Nothing works; the plan reports `unsupported` |
 
-[Importing by Resource Type](import-resource-types.md) lists the `--resource`
+[Importing by resource type](import-resource-types.md) lists the `--resource`
 value each type expects and describes the Cloud Control API fallback.
 
 ### Found without a flag

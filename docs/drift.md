@@ -154,5 +154,5 @@ cdkd state refresh-observed MyStack
 - [`cdkd drift`](cli-drift.md): every flag, the exit codes, the per-type
   coverage, and how secret values are reported
 - [`cdkd diff`](cli-diff.md): comparing your template against state
-- [Deploy: tuning](cli-deploy-tuning.md): `--no-capture-observed-state`
+- [cdkd deploy: tuning](cli-deploy-tuning.md): `--no-capture-observed-state`
 - [State Management](state-management.md): where the stored copy lives

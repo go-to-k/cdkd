@@ -36,6 +36,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -198,8 +199,22 @@ export class KMSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: an alias's physical id is a NAME and a multi-region
+    // key shares its id across regions, so a client in another region than
+    // the state record would act on a resource cdkd does not manage. Refuse
+    // before any call; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     switch (resourceType) {
       case 'AWS::KMS::Key':
         return this.updateKey(logicalId, physicalId, resourceType, properties, _previousProperties);

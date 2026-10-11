@@ -1,9 +1,9 @@
 ---
-title: cdkd scrub findings and refusals
+title: "cdkd scrub: findings and refusals"
 description: "Each message behind cdkd scrub's exit code 1 and each refusal code behind exit code 2, with what it means and what to do."
 ---
 
-# cdkd scrub findings and refusals
+# cdkd scrub: findings and refusals
 
 [`cdkd scrub`](cli-scrub.md) fails in two different ways, and they call for
 different responses.
@@ -276,12 +276,12 @@ it selects any stack or reads any state, `--dry-run` included.
 
 Synthesize the app again so that the Stage is written, or point `--app` at a
 complete cloud assembly.
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) describes a
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) describes a
 Stage that fails to load.
 
 ## Related
 
 - [`cdkd scrub`](cli-scrub.md): the commands, options and exit codes
-- [What cdkd scrub covers](cli-scrub-what-it-covers.md): which values scrub rewrites and which it cannot see
-- [cdkd scrub across stacks](cli-scrub-multi-stack.md): `--all`, nested stacks and values read from other stacks
+- [cdkd scrub: what it covers](cli-scrub-what-it-covers.md): which values scrub rewrites and which it cannot see
+- [cdkd scrub: across stacks](cli-scrub-multi-stack.md): `--all`, nested stacks and values read from other stacks
 - [cdkd scrub internals](cli-scrub-internals.md): the matching rules behind each finding

@@ -191,7 +191,9 @@ describe('provider UpdateContext fence — the real tree', () => {
       'AppSyncProvider',
       'BudgetsBudgetProvider',
       'CloudTrailProvider',
+      'CloudWatchAlarmProvider',
       'CloudWatchAnomalyDetectorProvider',
+      'CodeBuildProvider',
       'CodeCommitRepositoryProvider',
       'CognitoUserPoolProvider',
       'CustomResourceProvider',
@@ -199,6 +201,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'DynamoDBGlobalTableProvider',
       'DynamoDBTableProvider',
       'EC2Provider',
+      'ECRProvider',
       'ECSProvider',
       'EFSProvider',
       'ELBv2Provider',
@@ -219,6 +222,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'IAMPolicyProvider',
       'IAMRoleProvider',
       'IAMUserGroupProvider',
+      'KMSProvider',
       'KinesisStreamConsumerProvider',
       'KinesisStreamProvider',
       'LambdaEventInvokeConfigProvider',
@@ -499,49 +503,49 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
   }, SPAWN_TIMEOUT_MS);
 
   it('an OMITTING provider that gains the parameter fails with the good news', () => {
-    // Subject: `CloudWatchAlarmProvider`, an omitter whose file carries the
+    // Subject: `EventBridgeBusProvider`, an omitter whose file carries the
     // five-parameter header and the import tail once each. It was
-    // `LogsLogGroupProvider` until that provider gained the parameter (issue
-    // #2699 reads `desiredFromAwsReadback`) and left the omitting set.
+    // `CloudWatchAlarmProvider` until that provider gained the parameter
+    // (issue #2613 remedy 2) and left the omitting set.
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'cloudwatch-alarm-provider.ts',
-      `  ResourceImportResult,
+      'eventbridge-bus-provider.ts',
+      `  ResourceNotFound,
 } from '../../types/resource.js';`,
-      `  ResourceImportResult,
+      `  ResourceNotFound,
   UpdateContext,
 } from '../../types/resource.js';`
     );
-    mutate(dir, 'cloudwatch-alarm-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
+    mutate(dir, 'eventbridge-bus-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[newly-declaring]');
     expect(result.stderr).toContain('good news');
-    expect(result.stderr).toContain('CloudWatchAlarmProvider');
+    expect(result.stderr).toContain('EventBridgeBusProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a RENAMED provider leaves a stale allow-list entry and fails', () => {
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'kms-provider.ts',
-      'export class KMSProvider implements ResourceProvider {',
-      'export class KMSKeyProvider implements ResourceProvider {'
+      'sqs-queue-provider.ts',
+      'export class SQSQueueProvider implements ResourceProvider {',
+      'export class SQSStandardQueueProvider implements ResourceProvider {'
     );
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[stale-entry]');
-    expect(result.stderr).toContain('KMSProvider');
+    expect(result.stderr).toContain('SQSQueueProvider');
     // ...and the renamed class is itself an unrecorded omitter.
-    expect(result.stderr).toContain('KMSKeyProvider');
+    expect(result.stderr).toContain('SQSStandardQueueProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a 6th parameter typed `unknown` is REFUSED, not counted as declaring', () => {
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'cloudwatch-alarm-provider.ts',
+      'eventbridge-bus-provider.ts',
       FIVE_PARAM_UPDATE,
       `  async update(
     logicalId: string,
@@ -555,7 +559,7 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[refusal]');
-    expect(result.stderr).toContain('CloudWatchAlarmProvider');
+    expect(result.stderr).toContain('EventBridgeBusProvider');
     expect(result.stderr).toContain('not `UpdateContext`');
     // The refusal must NOT quietly reclassify it as declaring.
     expect(result.stderr).not.toContain('[newly-declaring]');

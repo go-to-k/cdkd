@@ -1,9 +1,9 @@
 ---
-title: "Deploy: custom resources"
+title: "cdkd deploy: custom resources"
 description: "How cdkd deploy handles a custom resource whose ServiceToken changed, and what to do when it skipped a custom-resource delete."
 ---
 
-# Deploy: custom resources
+# cdkd deploy: custom resources
 
 A custom resource is a resource whose create, update and delete are carried
 out by a handler you supply, usually a Lambda function. The resource's
@@ -143,6 +143,6 @@ send the handler a new create.
 ## Related
 
 - [`cdkd state`](cli-state.md): dropping one resource's record
-- [Destroy flags & guards](cli-destroy.md): the same skip on `cdkd destroy`
+- [cdkd destroy](cli-destroy.md): the same skip on `cdkd destroy`
 - [`cdkd diff`](cli-diff.md): previewing what a deploy would change
-- [Deploy: waits & concurrency](cli-deploy.md): every deploy flag
+- [cdkd deploy](cli-deploy.md): every deploy flag

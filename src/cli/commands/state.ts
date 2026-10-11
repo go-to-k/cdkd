@@ -102,6 +102,7 @@ import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './dri
 import { printRewriteSummary, printUnresolvable } from './orphan.js';
 import { rewriteResourceReferences } from '../../analyzer/orphan-rewriter.js';
 import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
+import { skippedDestroyMessage } from './destroy-skip-message.js';
 import { startRunRecorder, recordRunFailed, recordRunOutcome } from './deployment-events-run.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { createStateMigrateCommand } from './state-migrate.js';
@@ -3071,6 +3072,9 @@ async function stateDestroyCommand(
     // preserved state, so reporting success would tell CI the stack is gone
     // when it is not.
     let totalSkipped = 0;
+    // The share of `totalSkipped` that keeps no state record: resources a
+    // failed deploy created, left in AWS (go-to-k/cdkd#4738).
+    let totalOrphanSkips = 0;
     // Set true when a per-stack destroy was gracefully interrupted (issue
     // #816) — the PER-STACK outcome, as the runner reported it.
     let interrupted = false;
@@ -3317,6 +3321,7 @@ async function stateDestroyCommand(
         }
         totalErrors += result.errorCount;
         totalSkipped += result.skippedCount;
+        totalOrphanSkips += result.journaledOrphanSkips;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
         // Issue #2117: read LIVE — see the twin in `destroy.ts`. `stoppedEarly`
@@ -3363,19 +3368,11 @@ async function stateDestroyCommand(
       );
     }
     if (totalSkipped > 0) {
-      // Issue #1752 — see the twin branch in destroy.ts, including why this
-      // counts ENTRIES rather than resources. Nothing FAILED, but cdkd left
-      // resources whose delete it did not confirm and preserved their state records, so
-      // exiting 0 would report a destroy that did not happen.
+      // Issue #1752 — see the twin branch in destroy.ts. Nothing FAILED, but
+      // cdkd left resources whose delete it did not confirm, so exiting 0
+      // would report a destroy that did not happen.
       throw new PartialFailureError(
-        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} whose delete cdkd ` +
-          `did not confirm, so the underlying resources may still exist in AWS. A skipped nested stack ` +
-          `counts as ONE entry and may cover several of its own resources — the per-stack ` +
-          `summaries above give the exact breakdown. State preserved (the records are kept). ` +
-          `The per-resource 'skipped (...)' lines and their warnings name each cause and whether ` +
-          `repairing the record in state.json helps: where it does, repair it and re-run 'cdkd state destroy'; ` +
-          `otherwise (for example a custom-resource Delete handler that reported FAILED), delete ` +
-          `the resources by hand and drop the records with 'cdkd state orphan <stack> --stack-region <region>'.`
+        skippedDestroyMessage(totalSkipped, totalOrphanSkips, 'cdkd state destroy')
       );
     }
   } finally {

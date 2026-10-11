@@ -111,12 +111,14 @@ CloudFormation's rollback deletes a failed create:
 | --- | --- |
 | The deploy's automatic rollback | Deleted, before the completed operations are reverted |
 | Nothing, under `--no-rollback` | Kept; the journal keeps the entry for later |
-| `cdkd rollback`, with or without `--revert-failed` | Deleted |
-| `cdkd destroy` | Deleted first, before the journal is removed with the state |
+| `cdkd rollback`, with or without `--revert-failed` | Deleted, after the checks below |
+| `cdkd destroy` | Deleted first, after the same checks, before the journal is removed with the state |
 | A later successful `cdkd deploy` | Deleted before the deploy removes the journal, when nothing else owns it |
 
-Every delete in the table follows the resource's `DeletionPolicy`. Other
-failed operations in the same journal still need `--revert-failed`.
+Every delete in the table follows the resource's `DeletionPolicy`. The
+automatic rollback skips the checks below: it runs inside the failed deploy,
+over that attempt's own operations. Other failed operations in the same
+journal still need `--revert-failed`.
 
 A replacement whose new resource was made before the failure is recorded the
 same way, beside the replacement's failed update, and every row above applies
@@ -139,12 +141,20 @@ cdkd deletes the resource only when it can show two things:
    made. cdkd compares it with an identity the failed deploy recorded, such as
    a stream's ARN and creation time or a table's `TableId`.
 
-When cdkd cannot show both, it deletes nothing. It warns with the physical ID,
-drops the entry, and exits `2`. Look at the resource yourself and delete it by
-hand unless a state record tracks it.
+When cdkd shows that something else owns the resource, or that it is not the
+same one, it deletes nothing. It warns with the physical ID, drops the entry,
+and exits `2`. Look at the resource yourself and delete it by hand unless a
+state record tracks it.
 
-A resource that a state record already tracks is the one quiet case: cdkd
-drops its entry from the journal without a warning.
+When cdkd cannot answer at all — another stack's record cannot be read, or the
+live identity read gives no answer for a type that recorded one — it deletes
+nothing and keeps the entry in the journal as a failed operation for a re-run.
+Its failure message names `--drop-failed`, which removes only the record and leaves the
+resource in AWS.
+
+Two cases settle without a warning: a resource that a state record already
+tracks (cdkd drops its entry from the journal), and one that AWS reports gone
+(cdkd settles the entry with no delete and prints an info line).
 
 ### Edge cases
 
@@ -243,4 +253,4 @@ rollback.
 
 - [`cdkd rollback`](cli-rollback.md) — what a rollback reverts and how to run it
 - [cdkd rollback: limitations](cli-rollback-limitations.md) — replacements, `NoEcho` values and nested stacks
-- [Destroy: skipped resources](cli-destroy-skipped.md#resources-only-the-rollback-journal-records) — how a destroy treats a resource only the journal records
+- [cdkd destroy: skipped resources](cli-destroy-skipped.md#resources-only-the-rollback-journal-records) — how a destroy treats a resource only the journal records
