@@ -96,7 +96,7 @@ function currentState(userName: string): StackState {
   } as StackState;
 }
 
-function harness(state: StackState) {
+function harness(state: StackState, parameters: Record<string, string> = {}) {
   const provider = {
     create: vi.fn().mockResolvedValue({ physicalId: 'sdin-access-key-id-2' }),
     update: vi.fn(),
@@ -127,7 +127,7 @@ function harness(state: StackState) {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: true, forceStatefulRecreation: true },
+    { dryRun: true, forceStatefulRecreation: true, parameters },
     'us-east-1'
   );
   return { engine };
@@ -149,5 +149,40 @@ describe("cdkd deploy's replacement line masks a name only the OLD state value h
     expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
     expect(line).toContain(PLAIN_USER);
     expect(line.includes(SECRET_USER)).toBe(shown);
+  });
+
+  it.each([
+    ['the NoEcho values judge it', true],
+    ['negative control, a non-NoEcho parameter', false],
+  ])('judges a record holding a NoEcho value in plaintext: %s', async (_l, noEcho) => {
+    // A pre-v11 record stores the NoEcho value itself, and RDS lower-cases the
+    // identifier, so the old side is no substring of the value the masker
+    // holds; only the judged record's spellings cover it.
+    const state = currentState(SECRET_USER);
+    delete state.resources['SecretUser'];
+    state.resources['SecretDb'] = {
+      physicalId: 'teamsecretdb',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+      attributes: {},
+      dependencies: [],
+    };
+    (state.resources['Key']!.properties as Record<string, unknown>)['UserName'] = 'teamsecretdb';
+    const h = harness(state, { DbName: 'TeamSecretDb' });
+    await h.engine.deploy('s', {
+      Parameters: { DbName: { Type: 'String', ...(noEcho && { NoEcho: true }) } },
+      Resources: {
+        SecretDb: {
+          Type: 'AWS::RDS::DBInstance',
+          Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+        },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'PlainUser' } } },
+      },
+    });
+    const line = logLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+    expect(line).toContain('Property UserName of AWS::IAM::AccessKey');
+    expect(line).toContain(PLAIN_USER);
+    expect(line.includes('teamsecretdb')).toBe(!noEcho);
   });
 });

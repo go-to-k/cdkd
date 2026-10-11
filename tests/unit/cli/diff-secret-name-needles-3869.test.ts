@@ -972,6 +972,56 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     });
 
     it.each([
+      ['the stack-wide NoEcho values judge it', true],
+      ['negative control, a non-NoEcho parameter', false],
+    ])('judges a record holding a NoEcho value in plaintext: %s', async (_l, noEcho) => {
+      // A pre-v11 record stores the NoEcho value itself, and RDS lower-cases
+      // the identifier: the reader's stored copy is no substring of the value
+      // the diff masks, and nothing reads the instance any more.
+      const tpl: CloudFormationTemplate = {
+        Parameters: {
+          DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) },
+        },
+        Resources: {
+          Db: {
+            Type: 'AWS::RDS::DBInstance',
+            Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+          },
+          Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'no-longer-the-db' } },
+        },
+      };
+      const s: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 9,
+        resources: {
+          Db: {
+            physicalId: 'teamsecretdb',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+            attributes: {},
+            dependencies: [],
+          },
+          Reader: {
+            physicalId: 'reader',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'teamsecretdb' },
+            attributes: {},
+            dependencies: ['Db'],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const result = await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator());
+      const row = JSON.stringify(result.changes.get('Reader')?.propertyChanges);
+      // Premise: the row is rendered, its new side in the clear.
+      expect(row).toContain('no-longer-the-db');
+      expect(row.includes('teamsecretdb')).toBe(!noEcho);
+    });
+
+    it.each([
       ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
       ['negative control, an ordinary name', SECRET_USER, true],
     ])('judges a record the orphan adoption splices in too: %s', async (_l, userName, shown) => {
