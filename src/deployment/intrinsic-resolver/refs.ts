@@ -185,7 +185,10 @@ export async function resolveRef(
     this.logger.debug(
       `Resolved Ref to resource: ${this.logRender(logicalId, context)} resolved to ${this.logRender(String(refValue), context)}`
     );
-    return refValue;
+    // A `Ref` served out of the record's `properties` / `attributes` (an
+    // `AWS::S3Tables::Table`'s `TableName`) can be a leaf persisted as its
+    // `{{resolve:` spelling (go-to-k/cdkd#4800).
+    return await this.reresolveRecordedReferences(refValue, context, `Ref ${logicalId}`, undefined);
   }
 
   // Check if it's a parameter

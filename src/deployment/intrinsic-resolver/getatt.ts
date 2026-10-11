@@ -46,6 +46,8 @@ declare module '../intrinsic-function-resolver.js' {
     /** @internal */
     noteAttributeSecrecy: OmitThisParameter<typeof noteAttributeSecrecy>;
     /** @internal */
+    reresolveRecordedReferences: OmitThisParameter<typeof reresolveRecordedReferences>;
+    /** @internal */
     rejectPlaceholderArnAttribute: OmitThisParameter<typeof rejectPlaceholderArnAttribute>;
     /** @internal */
     constructAttribute: OmitThisParameter<typeof constructAttribute>;
@@ -359,7 +361,12 @@ export async function resolveGetAtt(
           crossStackSourceKey({ 'Fn::GetAtt': getAtt })
         );
       }
-      return notedFlatValue;
+      return await this.reresolveRecordedReferences(
+        notedFlatValue,
+        context,
+        `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+        crossStackSourceKey({ 'Fn::GetAtt': getAtt })
+      );
     }
 
     // Issue #381: nested-path fallback. CC API providers store CFn nested
@@ -412,8 +419,14 @@ export async function resolveGetAtt(
         // resource's `Data` is written into `attributes` verbatim, so a
         // handler answering `{"Data": {"Endpoint": {"Password": "..."}}}`
         // lands a sensitive leaf on exactly this walk. Serving one branch and
-        // not the other is how a redaction ships half-applied.
-        return notedCursor;
+        // not the other is how a redaction ships half-applied. The same holds
+        // for a leaf redacted to its `{{resolve:` spelling (go-to-k/cdkd#4800).
+        return await this.reresolveRecordedReferences(
+          notedCursor,
+          context,
+          `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+          crossStackSourceKey({ 'Fn::GetAtt': getAtt })
+        );
       }
     }
   }
@@ -712,6 +725,39 @@ export function recordSecretNamedRead(
       }
     }
   }
+}
+
+/**
+ * Re-resolve the `{{resolve:...}}` references in a value served out of a
+ * PERSISTED record of this stack (go-to-k/cdkd#4800). State stores a secret
+ * plaintext as the expression that produced it, in `attributes` too (an SQS
+ * `Arn` around a queue NAMED from a secret persists as
+ * `arn:...:{{resolve:secretsmanager:...}}`), so serving the leaf as it is sends
+ * that spelling to AWS whenever the producer is `NO_CHANGE`. A producer updated
+ * in this run serves the provider's fresh value and never reaches here with one.
+ *
+ * Resolved by THIS resolver, with the context's region evidence KEPT: the
+ * expression is the one this stack's own template leaf resolved, so the
+ * answer (or the ambiguity refusal) is the one that leaf gets. Each plaintext
+ * is recorded into the reader's bag, so the reader's record persists the
+ * expression back, and a diff context (`skipDynamicReferences`) keeps the
+ * secret's spelling, comparing expression with expression.
+ *
+ * Unchanged: a value carrying no reference; one carrying the MASK, which
+ * {@link noteAttributeSecrecy} already reported for the deploy to refuse; and
+ * any value in a context with no bag to record the plaintext into, since its
+ * caller could persist the plaintext unredacted.
+ */
+export async function reresolveRecordedReferences(
+  this: IntrinsicFunctionResolver,
+  value: unknown,
+  context: ResolverContext,
+  origin: string,
+  sourceKey: string | undefined
+): Promise<unknown> {
+  if (!carriesDynamicReference(value) || carriesSecretMask(value)) return value;
+  if (context.recordedSecretValues === undefined) return value;
+  return await this.reresolveCrossStackValue(value, undefined, context, origin, sourceKey);
 }
 
 /**
