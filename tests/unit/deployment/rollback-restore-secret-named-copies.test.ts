@@ -284,6 +284,16 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     expect(out.properties).toEqual({ Name: REF, Copy: URL });
   });
 
+  it('never keeps a persisted reference-bearing leaf the restore reproduced exactly', () => {
+    // The no-`effectiveProperties` arm: the restored leaf IS the persisted one,
+    // a reference beside a plaintext copy. A leaf carrying a reference stays
+    // the redaction's, whatever it held.
+    const mixed = `${REF}-${NAME}`;
+    const prev: ResourceState = { ...previous(), properties: { Mixed: mixed }, attributes: {} };
+    const out = redactRollbackRecord(prev, secrets(), prev.properties, prev.attributes);
+    expect(out.properties).toEqual({ Mixed: `${REF}-${REF}` });
+  });
+
   it('leaves a whole-leaf mask in place', () => {
     const masked = 'mask-only-generated-value';
     const prev: ResourceState = { ...previous(), properties: { Data: masked }, attributes: {} };
