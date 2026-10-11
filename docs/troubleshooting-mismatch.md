@@ -77,7 +77,7 @@ replacement. The refusal names the remedies:
 | `--force-stateful-recreation` | Also required when the type is stateful |
 | `--prefer-sdk-route` with the list the refusal prints | Keeps dropping the property; the list can name more than your original flag did |
 
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) says what each
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) says what each
 remedy costs, and [Provisioning Layers](provisioning-layers.md) how to choose a
 flag.
 

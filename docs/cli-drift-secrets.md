@@ -1,9 +1,9 @@
 ---
-title: "Drift: secrets and redacted values"
+title: "cdkd drift: secrets and redacted values"
 description: "How cdkd drift compares a property that holds a secret, why some properties show *** in the report, and what --accept and --revert do with them."
 ---
 
-# Drift: secrets and redacted values
+# cdkd drift: secrets and redacted values
 
 cdkd avoids storing secret values in its state file, so drift cannot compare a
 secret property by reading state alone. For a property that refers to a
@@ -234,7 +234,7 @@ be read back, so it needs one deploy that updates it.
 ## Related
 
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
-- [Drift: what was not compared](cli-drift-not-compared.md): the `noEchoParameter`, `uncertifiedBaseline` and `unresolvedToken` causes
+- [cdkd drift: what was not compared](cli-drift-not-compared.md): the `noEchoParameter`, `uncertifiedBaseline` and `unresolvedToken` causes
 - [`cdkd scrub`](cli-scrub.md): finding and removing secret plaintext in state
 - [State Management](state-management.md): how state stores secret values
 - [cdkd drift internals](cli-drift-internals.md): the rules behind the edge cases

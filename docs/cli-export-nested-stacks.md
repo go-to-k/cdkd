@@ -97,7 +97,7 @@ error prints:
   the error names for that stack.
 - If the failed stack has a phase 2, run the inline-policy deletes the error
   lists before that phase.
-  [cdkd export: Custom Resources and IAM policies](cli-export-two-phase.md)
+  [cdkd export: custom resources and IAM policies](cli-export-two-phase.md)
   explains phase 2.
 - Migrate the stacks that were not imported yet with a CloudFormation IMPORT
   by hand. Adopt nested children as AWS's "Nest an existing stack" procedure

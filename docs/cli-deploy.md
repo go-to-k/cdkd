@@ -1,9 +1,9 @@
 ---
-title: "Deploy: waits & concurrency"
+title: cdkd deploy
 description: "What cdkd deploy does, every cdkd deploy flag and where it is explained, the concurrency flags, and how long a deploy waits for each resource type."
 ---
 
-# Deploy: waits & concurrency
+# cdkd deploy
 
 `cdkd deploy` creates or updates the stacks of a CDK app. This page is the
 entry to the deploy pages: it lists every deploy flag with a link to where the
@@ -79,7 +79,7 @@ These six flags are explained on this page.
 | `--dry-run` | `false` | Show the changes without applying them. |
 | `--skip-assets` | `false` | Skip asset publishing. |
 | `--no-rollback` | rollback on | Leave a failed deploy in place and skip the automatic rollback. See [Rollback](rollback.md). |
-| `--require-approval <level>` | `never` | Ask before `any-change` or `destructive` changes. See [Deploy: safety & compatibility flags](cli-deploy-safety.md). |
+| `--require-approval <level>` | `never` | Ask before `any-change` or `destructive` changes. See [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md). |
 
 ### Assets
 
@@ -101,9 +101,9 @@ These six flags are explained on this page.
 
 ### Safety and compatibility
 
-[Deploy: safety & compatibility flags](cli-deploy-safety.md) explains every
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md) explains every
 flag in this group, except `--skip-final-snapshot`, which is on
-[Destroy flags & guards](cli-destroy.md).
+[cdkd destroy](cli-destroy.md).
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -182,7 +182,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
 
-[Deploy: wait mode details](cli-deploy-waits.md) explains what each early
+[cdkd deploy: wait mode details](cli-deploy-waits.md) explains what each early
 return leaves unfinished, and what `--full-wait` does when a wait runs out.
 
 ### Edge cases
@@ -223,19 +223,19 @@ explains why.
 
 ## In this section
 
-- [Deploy: wait mode details](cli-deploy-waits.md): what `--no-wait` leaves
+- [cdkd deploy: wait mode details](cli-deploy-waits.md): what `--no-wait` leaves
   unfinished for each resource type, what `--full-wait` adds, and the waits a
   destroy always performs.
-- [Deploy: the stack lock](cli-deploy-lock.md): what the lock covers, why a
+- [cdkd deploy: the stack lock](cli-deploy-lock.md): what the lock covers, why a
   second deploy can start while resources are still coming up, and what that
   deploy runs into.
-- [Deploy: a damaged state record](cli-deploy-damaged-state.md): why a deploy
+- [cdkd deploy: a damaged state record](cli-deploy-damaged-state.md): why a deploy
   refuses with `STATE_RESOURCES_MALFORMED`, and how to recover.
-- [Deploy: custom resources](cli-deploy-custom-resources.md): a changed
+- [cdkd deploy: custom resources](cli-deploy-custom-resources.md): a changed
   `ServiceToken`, and a custom-resource delete that cdkd skipped.
-- [Deploy: tuning](cli-deploy-tuning.md): timeouts, resource names, the drift
+- [cdkd deploy: tuning](cli-deploy-tuning.md): timeouts, resource names, the drift
   baseline and CDK annotations.
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): replacements
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): replacements
   and the guards around them.
 
 ## Exit codes

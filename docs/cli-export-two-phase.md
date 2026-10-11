@@ -1,9 +1,9 @@
 ---
-title: "cdkd export: Custom Resources and IAM policies"
+title: "cdkd export: custom resources and IAM policies"
 description: "How cdkd export migrates the two kinds of resource CloudFormation cannot import, Custom Resources and AWS::IAM::Policy, in a second phase, and how to recover when that phase fails."
 ---
 
-# cdkd export: Custom Resources and IAM policies
+# cdkd export: custom resources and IAM policies
 
 CloudFormation cannot import two kinds of resource that CDK stacks often
 contain: Custom Resources and `AWS::IAM::Policy`. [`cdkd export`](cli-export.md)

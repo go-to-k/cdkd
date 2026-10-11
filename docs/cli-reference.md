@@ -14,9 +14,15 @@ cdkd bootstrap          # once per account: state bucket and asset storage
 cdkd diff MyStack       # what a deploy would change
 cdkd deploy MyStack     # create or update the stack
 cdkd destroy MyStack    # delete its resources
+
+# stop before a change that would lose a resource
+cdkd diff --all --fail-on=destructive
+cdkd deploy MyStack --require-approval=destructive
 ```
 
-For a guided first run, see [Getting Started](getting-started.md).
+For a guided first run, see [Getting Started](getting-started.md). The last
+two commands are explained in
+[Stop on Destructive Changes](destructive-changes.md).
 
 ## CLI reference pages
 
@@ -26,12 +32,12 @@ For a guided first run, see [Getting Started](getting-started.md).
 | **Preview** | [`cdkd list`](cli-list.md) | List the stacks in the app. Also explains how stack arguments are matched. |
 | | [`cdkd synth`](cli-synth.md) | Synthesize the app and print a stack's template. |
 | | [`cdkd diff`](cli-diff.md) | Show what a deploy would change. |
-| **Deploy** | `cdkd deploy` | [Deploy: waits & concurrency](cli-deploy.md): every flag, and how long a deploy waits. |
-| | | [Deploy: tuning](cli-deploy-tuning.md): timeouts, resource names and CDK annotations. |
-| | | [Deploy: safety & compatibility flags](cli-deploy-safety.md): replacements and the guards around them. |
+| **Deploy** | `cdkd deploy` | [cdkd deploy](cli-deploy.md): every flag, and how long a deploy waits. |
+| | | [cdkd deploy: tuning](cli-deploy-tuning.md): timeouts, resource names and CDK annotations. |
+| | | [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): replacements and the guards around them. |
 | | [`cdkd publish-assets`](cli-publish-assets.md) | Build and upload assets without deploying. |
 | | `cdkd import` | [Importing Existing Resources](import.md): adopt resources that already exist. |
-| **Tear down** | `cdkd destroy` | [Destroy flags & guards](cli-destroy.md): data guards, snapshots and prompts. |
+| **Tear down** | `cdkd destroy` | [cdkd destroy](cli-destroy.md): data guards, snapshots and prompts. |
 | | `cdkd orphan` | [Orphan vs Destroy](orphan-vs-destroy.md): stop managing a resource without deleting it. |
 | **Recover** | [`cdkd rollback`](cli-rollback.md) | Revert a deploy that failed or was interrupted. |
 | | [`cdkd force-unlock`](cli-force-unlock.md) | Delete a lock that a crashed or cancelled run left behind. |

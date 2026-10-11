@@ -1,9 +1,9 @@
 ---
-title: cdkd scrub across stacks
+title: "cdkd scrub: across stacks"
 description: "How cdkd scrub handles more than one stack: --all and its order, nested stacks, values one stack reads from another, and the shared exports index."
 ---
 
-# cdkd scrub across stacks
+# cdkd scrub: across stacks
 
 [`cdkd scrub`](cli-scrub.md) cleans one stack's state file at a time, but
 stacks are connected. A nested stack has its own state file under its parent.
@@ -272,6 +272,6 @@ The comparison rules and the wording of each report are in
 ## Related
 
 - [`cdkd scrub`](cli-scrub.md): the commands, options and exit codes
-- [What cdkd scrub covers](cli-scrub-what-it-covers.md): which values scrub rewrites and which it cannot see
-- [cdkd scrub findings and refusals](cli-scrub-findings.md): each message and code, with what to do
+- [cdkd scrub: what it covers](cli-scrub-what-it-covers.md): which values scrub rewrites and which it cannot see
+- [cdkd scrub: findings and refusals](cli-scrub-findings.md): each message and code, with what to do
 - [Cross-Stack References](cross-stack-references.md): how exports, imports and the exports index work

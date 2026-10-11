@@ -1,9 +1,9 @@
 ---
-title: "Deploy: names prefixed before v0.94.0"
+title: "cdkd deploy: names prefixed before v0.94.0"
 description: "Why the first cdkd deploy on v0.94.0 or later proposes to replace resources whose declared names an older cdkd prefixed with the stack name, and the three ways to handle it."
 ---
 
-# Deploy: names prefixed before v0.94.0
+# cdkd deploy: names prefixed before v0.94.0
 
 If a stack was first deployed with a cdkd older than v0.94.0, the first deploy
 on v0.94.0 or later can propose to replace some of its resources. This page
@@ -85,5 +85,5 @@ of the name you declared.
 
 ## Related
 
-- [Deploy: tuning](cli-deploy-tuning.md#prefix-user-supplied-names): the flag and where to set it
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the other guards around replacements
+- [cdkd deploy: tuning](cli-deploy-tuning.md#prefix-user-supplied-names): the flag and where to set it
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the other guards around replacements

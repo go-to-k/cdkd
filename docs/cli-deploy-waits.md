@@ -1,14 +1,14 @@
 ---
-title: "Deploy: wait mode details"
+title: "cdkd deploy: wait mode details"
 description: "What cdkd deploy --no-wait leaves unfinished for each resource type, what --full-wait adds for ECS and CloudFront, and the waits a destroy always performs."
 ---
 
-# Deploy: wait mode details
+# cdkd deploy: wait mode details
 
 `cdkd deploy` has three wait modes: the default, `--no-wait` and
 `--full-wait`. This page describes, resource by resource, what a mode leaves
 unfinished when the deploy returns, and what happens when a wait runs out.
-[Deploy: waits & concurrency](cli-deploy.md#wait-modes) explains the modes and
+[cdkd deploy](cli-deploy.md#wait-modes) explains the modes and
 has the table of affected resource types.
 
 ```bash
@@ -207,7 +207,7 @@ on them.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md): the modes and the table of affected types
+- [cdkd deploy](cli-deploy.md): the modes and the table of affected types
 - [Wait Modes](wait-modes.md): the same choice, summarized for a first read
-- [Deploy: tuning](cli-deploy-tuning.md#per-resource-timeout): `--resource-timeout` in full
-- [Deploy: the stack lock](cli-deploy-lock.md): why a second deploy can start during these waits
+- [cdkd deploy: tuning](cli-deploy-tuning.md#per-resource-timeout): `--resource-timeout` in full
+- [cdkd deploy: the stack lock](cli-deploy-lock.md): why a second deploy can start during these waits

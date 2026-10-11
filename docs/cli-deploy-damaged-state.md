@@ -1,9 +1,9 @@
 ---
-title: "Deploy: a damaged state record"
+title: "cdkd deploy: a damaged state record"
 description: "Why cdkd deploy refuses a hand-edited or truncated state record with STATE_RESOURCES_MALFORMED, which parts of the record it checks, and how to recover."
 ---
 
-# Deploy: a damaged state record
+# cdkd deploy: a damaged state record
 
 `cdkd deploy` refuses to run against a state record whose structure is broken.
 The refusal carries the code `STATE_RESOURCES_MALFORMED` and exits `1`.
@@ -57,7 +57,7 @@ Reading a damaged part as empty would be worse than refusing. A `resources`
 value that is not a map, for example, lists no resources. cdkd would conclude
 that nothing is deployed, and the deploy would try to create a stack that is
 already standing.
-[Deploy internals](cli-deploy-internals.md#why-a-damaged-record-is-refused-and-not-repaired)
+[cdkd deploy internals](cli-deploy-internals.md#why-a-damaged-record-is-refused-and-not-repaired)
 walks through each part.
 
 ## Details for each part
@@ -103,4 +103,4 @@ each command, part by part:
 - [`cdkd state`](cli-state.md): inspecting and editing the state record
 - [`cdkd diff`](cli-diff.md): the preview that still runs against a damaged record
 - [State Management](state-management.md): the state record's layout
-- [Deploy: waits & concurrency](cli-deploy.md): every deploy flag
+- [cdkd deploy](cli-deploy.md): every deploy flag

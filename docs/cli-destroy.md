@@ -1,9 +1,9 @@
 ---
-title: Destroy flags & guards
+title: cdkd destroy
 description: "What cdkd destroy deletes, what it keeps or refuses to delete, how to preview it, and what is left afterwards."
 ---
 
-# Destroy flags & guards
+# cdkd destroy
 
 `cdkd destroy` deletes the AWS resources of a stack and then removes cdkd's
 record of that stack. It asks for confirmation first. It also refuses to
@@ -255,7 +255,7 @@ Without a terminal (a piped, redirected or CI run) cdkd cannot ask, so it
 refuses with `NON_INTERACTIVE_CONFIRM` and exit `1` unless you passed `--yes`.
 Piping `y` into the command does not work.
 
-[Destroy: confirmation prompts](cli-destroy-prompts.md) covers the wording of
+[cdkd destroy: confirmation prompts](cli-destroy-prompts.md) covers the wording of
 the prompt, what a refused run has and has not done, and the other commands
 that follow the same rule. No refused prompt leaves a partial change or a held
 lock behind.
@@ -321,7 +321,7 @@ Two rows do more than the table says:
 
 A DocDB instance has no protection field, so only the DocDB cluster is listed.
 
-[Destroy: deletion protection](cli-destroy-protection.md) covers what happens
+[cdkd destroy: deletion protection](cli-destroy-protection.md) covers what happens
 when turning the protection off fails, how cdkd puts the protection back after
 a failed delete, and the commands to put it back by hand.
 
@@ -371,16 +371,16 @@ The full cross-command table is in the [CLI Reference](cli-reference.md).
 
 ## In this section
 
-- [Destroy: data guards and final snapshots](cli-destroy-guards.md): why a
+- [cdkd destroy: data guards and final snapshots](cli-destroy-guards.md): why a
   non-empty bucket or repository fails the destroy, and how
   `DeletionPolicy: Snapshot` and `--skip-final-snapshot` work.
-- [Destroy: deletion protection](cli-destroy-protection.md): how
+- [cdkd destroy: deletion protection](cli-destroy-protection.md): how
   `--remove-protection` behaves, and how to put a guard back.
-- [Destroy: confirmation prompts](cli-destroy-prompts.md): the prompt, CI
+- [cdkd destroy: confirmation prompts](cli-destroy-prompts.md): the prompt, CI
   runs, and every other command that prompts before a change.
-- [Destroy: skipped resources](cli-destroy-skipped.md): what `N skipped`
+- [cdkd destroy: skipped resources](cli-destroy-skipped.md): what `N skipped`
   means, each cause, and how to finish the destroy.
-- [Destroy: interruption and damaged state](cli-destroy-edge-cases.md):
+- [cdkd destroy: interruption and damaged state](cli-destroy-edge-cases.md):
   {kbd:ctrl+c}, a state record cdkd refuses to read, and destroying without a
   working CDK app.
 

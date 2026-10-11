@@ -88,7 +88,7 @@ This removes the stack from state entirely. Every resource stays in AWS.
 
 - [`cdkd state`](cli-state.md): flags, prompts and exit codes of the two
   commands that work from state
-- [Destroy flags & guards](cli-destroy.md): what `cdkd destroy` deletes and
+- [cdkd destroy](cli-destroy.md): what `cdkd destroy` deletes and
   what it refuses to
 - [State Store](state-store.md): why the commands that work from state need
   no CDK app

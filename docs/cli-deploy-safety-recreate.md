@@ -1,9 +1,9 @@
 ---
-title: "Deploy: recreating a resource on the other route"
+title: "cdkd deploy: recreating a resource on the other route"
 description: "When cdkd deploy needs --recreate-via-cc-api or --recreate-via-sdk-provider to move one resource between routes, what the recreate costs, and what follows it."
 ---
 
-# Deploy: recreating a resource on the other route
+# cdkd deploy: recreating a resource on the other route
 
 `--recreate-via-cc-api` and `--recreate-via-sdk-provider` delete one resource
 and create it again in the same deploy, on the other
@@ -37,7 +37,7 @@ cdkd deploy MyStack --recreate-via-sdk-provider MyLambda --yes
 > loses its data.
 
 This page is part of
-[Deploy: safety & compatibility flags](cli-deploy-safety.md).
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md).
 
 ## Check whether you need a recreate
 
@@ -253,7 +253,7 @@ Managed policies and group memberships attached to a recreated IAM principal
 are detached first and attached again. A Lambda function URL is not handled
 this way.
 
-[Deploy safety internals](cli-deploy-safety-internals.md#resources-that-follow-a-recreated-resource)
+[cdkd deploy safety internals](cli-deploy-safety-internals.md#resources-that-follow-a-recreated-resource)
 has the exact rules for readers and children, including what state holds if
 the deploy fails between the parent and a child.
 
@@ -302,11 +302,11 @@ that stack. A resource inside a nested stack cannot be recreated with them.
 
 ## Related
 
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the
   stateful-resource guard and `--force-stateful-recreation`
-- [Deploy: provisioning route flags](cli-deploy-safety-routing.md): how cdkd
+- [cdkd deploy: provisioning route flags](cli-deploy-safety-routing.md): how cdkd
   picks a route, `--prefer-sdk-route` and `--pin-cc-api`
-- [Deploy: replacements and name collisions](cli-deploy-safety-replacement.md):
+- [cdkd deploy: replacements and name collisions](cli-deploy-safety-replacement.md):
   `--replace`
-- [Deploy safety internals](cli-deploy-safety-internals.md): the exact rules
+- [cdkd deploy safety internals](cli-deploy-safety-internals.md): the exact rules
   behind a recreate

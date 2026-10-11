@@ -1,9 +1,9 @@
 ---
-title: "Diff: JSON output"
+title: "cdkd diff: JSON output"
 description: "The shape of cdkd diff --json: one record per stack, its changes, output changes, destructive changes and nested stacks."
 ---
 
-# Diff: JSON output
+# cdkd diff: JSON output
 
 `cdkd diff --json` prints the diff as JSON for a script or a CI job to read.
 The output is an array with one record per stack you selected. Progress
@@ -131,7 +131,7 @@ cdkd withholds an old value, or masks a name, when it may hold a secret. In
 that case `oldValue` is replaced by `oldValueRedacted: true`. A name that
 holds a secret is masked or withheld and carries `nameRedacted: true`, and two
 withheld rows can then have the same `name`. The reasons are under
-[Diff: secrets and NoEcho values](cli-diff-secrets.md).
+[cdkd diff: secrets and NoEcho values](cli-diff-secrets.md).
 
 ## `destructiveChanges`
 
@@ -175,7 +175,7 @@ list. Each element of `unreadableOrphans` is the leftover's `logicalId`, or
 A rollback leftover is a resource a failed deploy left in AWS, which state
 remembers so that the next deploy can adopt it. What the diff does with each
 kind of damage is under
-[Diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
+[cdkd diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
 
 ## Control characters in the payload
 
@@ -186,5 +186,5 @@ printing the raw payload cannot run a terminal control sequence.
 ## Related
 
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
-- [Diff: stack outputs](cli-diff-outputs.md): what an output change is
-- [Diff: incomplete or malformed state](cli-diff-state-records.md): the `unreadable` fields in context
+- [cdkd diff: stack outputs](cli-diff-outputs.md): what an output change is
+- [cdkd diff: incomplete or malformed state](cli-diff-state-records.md): the `unreadable` fields in context

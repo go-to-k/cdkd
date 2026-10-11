@@ -1,9 +1,9 @@
 ---
-title: After an Import
+title: After an import
 description: "What to check after cdkd import: the first diff, a cdkd-assets region, a pending rollback, the drift baseline the import recorded, and how to remove a secret that reached state."
 ---
 
-# After an Import
+# After an import
 
 After `cdkd import`, compare the adopted state with your template and then
 deploy. The rest of this page covers what the import recorded and the cases

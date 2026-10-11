@@ -1,9 +1,9 @@
 ---
-title: "Drift: what was not compared"
+title: "cdkd drift: what was not compared"
 description: "Each reason cdkd drift gives for not comparing a resource, which ones exit 2, how to clear them, and the differences drift ignores on purpose."
 ---
 
-# Drift: what was not compared
+# cdkd drift: what was not compared
 
 A `!` line in a `cdkd drift` report means cdkd could not compare a resource,
 or could compare only part of it. The resource may have drifted and cdkd
@@ -265,7 +265,7 @@ template and deploy.
 ## Related
 
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
-- [Drift: secrets and redacted values](cli-drift-secrets.md): the causes that involve a secret
-- [Drift: JSON output](cli-drift-json.md): the `notCompared` array
+- [cdkd drift: secrets and redacted values](cli-drift-secrets.md): the causes that involve a secret
+- [cdkd drift: JSON output](cli-drift-json.md): the `notCompared` array
 - [Importing Existing Resources](import.md): what `cdkd import` records for drift
 - [cdkd drift internals](cli-drift-internals.md): the rules behind the edge cases

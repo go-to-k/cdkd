@@ -1,14 +1,14 @@
 ---
-title: "Destroy: interruption and damaged state"
+title: "cdkd destroy: interruption and damaged state"
 description: "What happens when you interrupt cdkd destroy, why a damaged state record is refused and how to repair it, and how to destroy when the CDK app does not synthesize."
 ---
 
-# Destroy: interruption and damaged state
+# cdkd destroy: interruption and damaged state
 
 This page covers three situations in which a destroy does not run from start
 to finish: you interrupt it, the stack's state record is damaged, or the CDK
 app does not synthesize. It is part of
-[Destroy flags & guards](cli-destroy.md).
+[cdkd destroy](cli-destroy.md).
 
 ## Interrupting a destroy (Ctrl-C / SIGTERM)
 
@@ -103,7 +103,7 @@ the same way.
 
 The sections below say what each check protects. The reasoning and the
 behaviour for each shape are in
-[Destroy internals](cli-destroy-internals.md#damaged-state-records). What
+[cdkd destroy internals](cli-destroy-internals.md#damaged-state-records). What
 every other command does with the same record is in
 [State Management](state-management.md).
 
@@ -219,7 +219,7 @@ that command; see
 
 ## Related
 
-- [Destroy flags & guards](cli-destroy.md) — the command, its options and what can stop it
-- [Destroy: skipped resources](cli-destroy-skipped.md) — a resource the destroy could not confirm it deleted
+- [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
+- [cdkd destroy: skipped resources](cli-destroy-skipped.md) — a resource the destroy could not confirm it deleted
 - [State Management](state-management.md) — state records, locks, and force-unlock
 - [`cdkd force-unlock`](cli-force-unlock.md) — clearing a lock a forced quit left behind

@@ -1,16 +1,16 @@
 ---
-title: Deploy internals
+title: cdkd deploy internals
 description: "Why cdkd deploy's wait defaults are where they are, why it refuses a damaged state record, and how a no-change deploy merges Outputs it cannot resolve."
 unlisted: true
 ---
 
-# Deploy internals
+# cdkd deploy internals
 
 Background for contributors on three behaviours of `cdkd deploy`. The
 user-facing descriptions are on
-[Deploy: waits & concurrency](cli-deploy.md) for the wait defaults,
-[Deploy: a damaged state record](cli-deploy-damaged-state.md) for the refusal,
-and [Deploy: the stack lock](cli-deploy-lock.md#an-output-that-cannot-be-resolved)
+[cdkd deploy](cli-deploy.md) for the wait defaults,
+[cdkd deploy: a damaged state record](cli-deploy-damaged-state.md) for the refusal,
+and [cdkd deploy: the stack lock](cli-deploy-lock.md#an-output-that-cannot-be-resolved)
 for the Outputs of a deploy that changes nothing.
 
 ## Why the wait defaults are where they are
@@ -128,8 +128,8 @@ Two shapes keep all of the previously stored Outputs instead:
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md)
-- [Deploy: a damaged state record](cli-deploy-damaged-state.md)
-- [Deploy: the stack lock](cli-deploy-lock.md)
+- [cdkd deploy](cli-deploy.md)
+- [cdkd deploy: a damaged state record](cli-deploy-damaged-state.md)
+- [cdkd deploy: the stack lock](cli-deploy-lock.md)
 - [State Management](state-management.md)
 - [Wait Modes](wait-modes.md)

@@ -1,9 +1,9 @@
 ---
-title: Importing by Resource Type
+title: Importing by resource type
 description: "The physical id cdkd import expects for each resource type, the types with special import behaviour, and how the Cloud Control API fallback imports any other type."
 ---
 
-# Importing by Resource Type
+# Importing by resource type
 
 This page lists the value `--resource` expects for each resource type, and
 the types whose import behaves in a way worth knowing. Search it for your
@@ -297,7 +297,7 @@ nested stack (`AWS::CloudFormation::Stack`) can be imported only with
 
 - [Importing Existing Resources](import.md): the walkthroughs and the list of
   importable types
-- [Import Options and the Import Plan](import-reference.md): flags and the
+- [Import options and the import plan](import-reference.md): flags and the
   plan
 - [State Management](state-management.md): the physical id format cdkd stores
   for each type

@@ -87,7 +87,7 @@ can run: a deploy that takes two hours stays locked for two hours.
 The lock is released when cdkd's own work ends, which can be before the
 resources have finished coming up. A second deploy can therefore start while
 resources from the first are still provisioning.
-[Deploy: waits & concurrency](cli-deploy.md) describes what that second deploy
+[cdkd deploy](cli-deploy.md) describes what that second deploy
 meets.
 
 ## When another command holds the lock

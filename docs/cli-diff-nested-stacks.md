@@ -1,9 +1,9 @@
 ---
-title: "Diff: nested stacks"
+title: "cdkd diff: nested stacks"
 description: "What cdkd diff --recursive shows for nested stacks, the nested templates it refuses to load, and how it handles nested-stack parameters that hold a secret."
 ---
 
-# Diff: nested stacks
+# cdkd diff: nested stacks
 
 `cdkd diff --recursive` looks inside nested stacks. Each nested stack is
 compared with its own state, and its changes are printed in a block of their
@@ -46,7 +46,7 @@ evaluate the condition; see
 [Conditions over a secret-fed parameter](#conditions-over-a-secret-fed-parameter).
 
 A nested stack whose state record is damaged is reported with a warning; see
-[Diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
+[cdkd diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
 
 ### Parameters passed to a nested stack
 
@@ -201,6 +201,6 @@ list-typed parameter works only for a secret that is a single plain value.
 ## Related
 
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
-- [Diff: secrets and NoEcho values](cli-diff-secrets.md): what the diff prints in place of a secret
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the same nested-template refusals on deploy
+- [cdkd diff: secrets and NoEcho values](cli-diff-secrets.md): what the diff prints in place of a secret
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the same nested-template refusals on deploy
 - [cdkd diff internals](cli-diff-internals.md): how parameters and conditions are compared

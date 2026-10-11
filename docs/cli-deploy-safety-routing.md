@@ -1,9 +1,9 @@
 ---
-title: "Deploy: provisioning route flags"
+title: "cdkd deploy: provisioning route flags"
 description: "How cdkd deploy chooses between its SDK providers and Cloud Control API for each resource, and the flags that change the choice."
 ---
 
-# Deploy: provisioning route flags
+# cdkd deploy: provisioning route flags
 
 cdkd creates and updates each resource through one of two routes. An **SDK
 provider** is cdkd's own code for one resource type, and it is the faster
@@ -23,7 +23,7 @@ cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh
 ```
 
 This page is part of
-[Deploy: safety & compatibility flags](cli-deploy-safety.md).
+[cdkd deploy: safety & compatibility flags](cli-deploy-safety.md).
 [Provisioning Layers](provisioning-layers.md) explains the two routes in
 depth.
 
@@ -252,9 +252,9 @@ The cdkd release that refreshes that data makes the flag unnecessary.
 
 ## Related
 
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md): what each
+- [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): what each
   refusal means, and the stateful-resource guard
-- [Deploy: recreating a resource on the other route](cli-deploy-safety-recreate.md):
+- [cdkd deploy: recreating a resource on the other route](cli-deploy-safety-recreate.md):
   `--recreate-via-cc-api` and `--recreate-via-sdk-provider`
 - [Provisioning Layers](provisioning-layers.md): the two routes in depth
 - [Supported Resources](supported-resources.md): which types have an SDK

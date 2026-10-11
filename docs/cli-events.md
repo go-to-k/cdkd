@@ -261,5 +261,5 @@ The codes of every command are listed in [Exit codes](cli-reference-exit-codes.m
 
 - [Deployment Events](deployment-events.md): event types, how to read a run,
   and where history is stored
-- [Destroy flags & guards](cli-destroy.md#purge-events-also-delete-deployment-event-history-on-destroy): `--purge-events`, the destroy-time equivalent of a full prune
+- [cdkd destroy](cli-destroy.md#purge-events-also-delete-deployment-event-history-on-destroy): `--purge-events`, the destroy-time equivalent of a full prune
 - [CLI Reference](cli-reference.md): every command and the exit-code table
