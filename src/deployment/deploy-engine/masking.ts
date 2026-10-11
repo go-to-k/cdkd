@@ -110,7 +110,7 @@ export function diffLogMasker(
    * The state records the diff compares against (go-to-k/cdkd#3869): a
    * create-only property that stopped reading a resource NAMED from a secret
    * prints the record's copy of that name as its OLD side, and no resolution
-   * of the diff pass reads it. Each record's name spellings are judged on the
+   * of the diff pass reads it (`storedSecretNameNeedles`). Judged on the
    * masker's FIRST call, so a deploy that prints no such line pays nothing.
    */
   resources: Readonly<Record<string, ResourceState>> = {}
