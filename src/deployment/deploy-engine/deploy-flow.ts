@@ -86,6 +86,7 @@ import {
   noteAbandonedRun,
   noteDeployStateRecord,
 } from '../../provisioning/providers/create-token-ledger.js';
+import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -540,6 +541,13 @@ export async function doDeployWithPrefetch(
     // below persists it; the carried-forward spreads read this same object.
     const orphanCountBeforeAdoption = (currentState.orphans ?? []).length;
     const orphanPlan = await this.adoptRollbackOrphans(currentState, effectiveTemplate);
+    // go-to-k/cdkd#3869: the secret-named records as this deploy found them,
+    // adopted ones included, before any replacement re-points one. Printing
+    // only (a nested stack row's registry, provision.ts).
+    this.preDeploySecretNamedRecords = secretNamedRecordNeedles(
+      currentState.resources,
+      this.fingerprintNoEchoValues
+    );
     // Issue #3468: an adopted record entered `resources` AFTER the deploy-start
     // stamp. No writer produces a marked orphan record today; re-reading here
     // keeps that from becoming load-bearing. Idempotent, and handed the same

@@ -281,11 +281,23 @@ function storedRecordNameNeedles(
   if (needles === undefined) return undefined;
   const bag = secrets !== undefined && hasMaskableValues(secrets) ? secrets : undefined;
   const mask = (text: string): string => (bag === undefined ? text : maskSecretsInText(text, bag));
+  // Case-folded too: a service that folds case (an RDS identifier) stores the
+  // lower-cased spelling, which the literal mask does not match.
+  const folded: RecordedSecretValues = new Map();
+  if (bag !== undefined) {
+    for (const needle of printingCorpusOf(bag).keys()) {
+      recordLogOnlyValue(folded, needle.toLowerCase());
+    }
+  }
+  const maskFolded = (text: string): string =>
+    hasMaskableValues(folded) ? maskSecretsInText(text.toLowerCase(), folded) : text.toLowerCase();
   const publicLeaves = [...wholeStringLeavesOf(record?.properties)].filter(
     (leaf) =>
       leaf !== '' &&
       !leaf.includes('{{resolve:') &&
       leaf !== SECRET_MASK &&
+      // The folded test first: `isSecretDerivedValue` narrows its argument.
+      !isSecretDerivedValue(leaf.toLowerCase(), maskFolded) &&
       !isSecretDerivedValue(leaf, mask)
   );
   for (const needle of [...needles]) {

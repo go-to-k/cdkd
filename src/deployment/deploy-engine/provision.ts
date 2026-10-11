@@ -17,7 +17,12 @@ import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { DEFAULT_RESOURCE_TIMEOUT_MS, DEFAULT_RESOURCE_WARN_AFTER_MS } from './options.js';
 import { isReplacementCeiling } from '../deploy-value-equality.js';
 import { withResourceDeadline } from '../resource-deadline.js';
-import { maskSecretsInError, maskSecretsInText } from '../secret-redaction.js';
+import {
+  maskSecretsInError,
+  maskSecretsInText,
+  printingCorpusOf,
+  recordLogOnlyValue,
+} from '../secret-redaction.js';
 import {
   type NestedChildUnaddressed,
   collectNestedChildUnaddressed,
@@ -209,13 +214,15 @@ export async function provisionResource(
   // names: the child's `requires replacement (from <old> ...)` line printed it
   // (go-to-k/cdkd#3869). The row's registry is bound around the child's whole
   // deploy, so every record here named from a secret goes into it, judged
-  // with the stack's `NoEcho` values. Printing only, like the rest of it.
+  // with the stack's `NoEcho` values: as the deploy FOUND them (a parent record
+  // replaced earlier in this run no longer spells the old name) and as they
+  // stand now. Printing only, like the rest of it.
   if (resourceType === NESTED_STACK_ROW_TYPE) {
-    secretNamedRecordNeedles(
-      stateResources,
-      this.fingerprintNoEchoValues,
-      this.secretNameBagFor(logicalId)
-    );
+    const registry = this.secretNameBagFor(logicalId);
+    for (const needle of printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()) {
+      recordLogOnlyValue(registry, needle);
+    }
+    secretNamedRecordNeedles(stateResources, this.fingerprintNoEchoValues, registry);
   }
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a

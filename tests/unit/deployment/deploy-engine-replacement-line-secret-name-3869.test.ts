@@ -50,7 +50,11 @@ import {
   storedSecretNameNeedles,
 } from '../../../src/deployment/secret-name-needles.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
+import {
+  hasMaskableValues,
+  maskSecretsInText,
+  recordLogOnlyValue,
+} from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -105,7 +109,12 @@ function currentState(userName: string): StackState {
 function harness(
   state: StackState,
   parameters: Record<string, string> = {},
-  extra: { dryRun?: boolean; levels?: string[][]; update?: () => unknown } = {}
+  extra: {
+    dryRun?: boolean;
+    levels?: string[][];
+    update?: () => unknown;
+    beforeDag?: () => void;
+  } = {}
 ) {
   const provider = {
     create: vi.fn().mockResolvedValue({ physicalId: 'sdin-access-key-id-2' }),
@@ -128,9 +137,10 @@ function harness(
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi
-        .fn()
-        .mockReturnValue(extra.levels ?? [['SecretUser', 'PlainUser'], ['Key']]),
+      getExecutionLevels: vi.fn(() => {
+        extra.beforeDag?.();
+        return extra.levels ?? [['SecretUser', 'PlainUser'], ['Key']];
+      }),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     } as never,
     new DiffCalculator(),
@@ -302,6 +312,51 @@ describe("a nested stack row's child masks a name the parent's records hold (go-
   });
 });
 
+describe("a nested row masks a name a parent record replaced earlier in the run held (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+    ['negative control, an ordinary name', SECRET_USER, true],
+  ])('%s', async (_l, userName, shown) => {
+    // A parent record replaced before the nested row runs re-points to its new
+    // id: only the records as the deploy FOUND them still spell the old name.
+    // The re-point is simulated once the plan is made, as a replacement's is.
+    const state = currentState(userName);
+    delete state.resources['Key'];
+    state.resources['Child'] = {
+      physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/s-Child/1',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: { Parameters: { Mode: 'a' } },
+      attributes: {},
+      dependencies: [],
+    };
+    const h = harness(state, {}, {
+      dryRun: false,
+      levels: [['Child']],
+      beforeDag: () => {
+        delete state.resources['SecretUser'];
+      },
+      update: () => {
+        // Premise: no parent record spells the old name any more.
+        expect(JSON.stringify(state.resources)).not.toContain(SECRET_USER);
+        getLogger().debug(`child: requires replacement (from "${SECRET_USER}" to "x")`);
+        return { physicalId: state.resources['Child']!.physicalId, attributes: {} };
+      },
+    });
+    await h.engine.deploy('s', {
+      Resources: {
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Mode: 'b' } },
+        },
+      },
+    });
+    const line = logLines.filter((l) => l.startsWith('child: ')).join('\n');
+    expect(line).toContain('requires replacement (from');
+    expect(line.includes(SECRET_USER)).toBe(shown);
+  });
+});
+
 describe('storedSecretNameNeedles: the names a STORED value holds (go-to-k/cdkd#3869)', () => {
   const REF = '{{resolve:secretsmanager:sdin:SecretString:filter::}}';
   const records = (readerValue: string): StackState['resources'] => ({
@@ -344,6 +399,32 @@ describe('storedSecretNameNeedles: the names a STORED value holds (go-to-k/cdkd#
     const arn = 'arn:aws:logs:us-east-1:123:log-group:plain-log-group:*';
     expect(maskSecretsInText(arn, storedSecretNameNeedles(r, undefined))).toBe(arn);
     expect(maskSecretsInText(arn, secretNamedRecordNeedles(r, undefined))).toBe(arn);
+  });
+
+  it("keeps a needle the record's own case-folded copy of a NoEcho value spells", () => {
+    // A pre-v11 record holding its NoEcho name in plaintext AND a lower-cased
+    // copy of it: the copy is the secret, not a public segment.
+    const noEcho = new Map<string, string>();
+    recordLogOnlyValue(noEcho, 'TeamSecretDb');
+    const r: StackState['resources'] = {
+      Db: {
+        physicalId: 'teamsecretdb',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { DBInstanceIdentifier: 'TeamSecretDb', Tags: [{ Key: 'id', Value: 'teamsecretdb' }] },
+        attributes: {},
+        dependencies: [],
+      },
+      Reader: {
+        physicalId: 'reader',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: 'teamsecretdb' },
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    expect(maskSecretsInText('teamsecretdb', storedSecretNameNeedles(r, noEcho))).not.toContain(
+      'teamsecretdb'
+    );
   });
 
   it("records a needle a stored OUTPUT holds", () => {
