@@ -1021,6 +1021,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     },
     secrets,
     prevRecord.properties,
+    // Read only as evidence of what was persisted, never copied in: a new
+    // attribute identical to a plaintext old one stays plaintext (#4801).
     prevRecord.attributes
   );
   // go-to-k/cdkd#4225: the re-create put the old resource's inline
