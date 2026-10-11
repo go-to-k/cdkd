@@ -125,9 +125,10 @@ export interface NestedStackProviderContext {
    * [#1989](https://github.com/go-to-k/cdkd/issues/1989)). Bound per
    * resource by the parent engine, and by the destroy runner, through
    * {@link collectNestedChildUnaddressed}; `NestedStackProvider` writes it
-   * after its child `DeployEngine` returns, and after a child destroy whose
-   * only skips were resources a failed deploy created, left in AWS with no
-   * record (go-to-k/cdkd#4738), as `deleteSkipped`.
+   * after its child `DeployEngine` returns, and, on a stack destroy
+   * (`DeleteContext.stackDestroy`), after a child destroy whose only skips
+   * were resources a failed deploy created, left in AWS with no record
+   * (go-to-k/cdkd#4738), as `deleteSkipped`.
    *
    * Carried here rather than on `ResourceCreateResult` /
    * `ResourceUpdateResult`, a type every provider implements. Recursion holds
