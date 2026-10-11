@@ -115,9 +115,12 @@
 # from the run's persisted deployment event).
 # Revert src/deployment/intrinsic-resolver/{refs,getatt}.ts ALONE
 # (go-to-k/cdkd#3869) and step 2 fails "the deploy log names a value read from
-# a secret-named resource in plaintext: ${QUEUE_NAME}": the `resolved to` line
-# of SecretQueueReaderPolicy's Ref / Fn::GetAtt prints the queue URL and ARN
-# raw (not yet measured on real AWS).
+# a secret-named resource in plaintext: ${POLICY_PATH}": the `resolved to` line
+# of PlainScheduleRole's Ref prints SecretPolicy's ARN, path and all, raw (not
+# yet measured on real AWS). ${QUEUE_NAME} no longer discriminates that probe:
+# SecretQueueReaderPolicy's literal reference (go-to-k/cdkd#4810) records the
+# queue name as a secret of the policy's own resolution, which may mask its
+# Ref / Fn::GetAtt lines with or without the go-to-k/cdkd#3869 fix.
 # Revert the `withPrintingSecrets` wrap in
 # src/deployment/rollback-executor/journaled-orphans.ts ALONE (go-to-k/cdkd#3869)
 # and step 6b fails naming the repository on the ECR provider's

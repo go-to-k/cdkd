@@ -28,7 +28,11 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isSecretDerivedValue, maskerOrIdentity } from '../masked-retry-logger.js';
-import { SECRET_MASK, redactSecretsForState } from '../../deployment/secret-redaction.js';
+import {
+  SECRET_MASK,
+  redactSecretsForState,
+  withoutPhysicalNameCopies,
+} from '../../deployment/secret-redaction.js';
 import {
   isThrottlingError,
   markNonRetryable,
@@ -610,7 +614,13 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     const bag = getCurrentResourceSecrets();
     if (bag === undefined || typeof desiredGroup !== 'string') return false;
     if (typeof recordedGroup !== 'string' || !recordedGroup.includes('{{resolve:')) return false;
-    return redactSecretsForState(desiredGroup, bag) !== recordedGroup;
+    // The way the record was WRITTEN for a reference: a read physical id's
+    // copy is kept as plaintext since go-to-k/cdkd#4810, and re-redacting
+    // with that rule would read every `Ref`'d group as re-pointed.
+    return (
+      withoutPhysicalNameCopies(bag, () => redactSecretsForState(desiredGroup, bag)) !==
+      recordedGroup
+    );
   }
 
   async update(

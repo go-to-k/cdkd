@@ -46,6 +46,10 @@ import {
   type FreshNoEchoLeaf,
   markSameGenerationBag,
   maskAtCoordinates,
+  withoutPhysicalNameCopies,
+  repairPhysicalNameCopyLeaves,
+  embeddedPhysicalNameRewrites,
+  replaceEmbeddedPhysicalNameRewrites,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
@@ -481,6 +485,43 @@ export async function provisionUpdate(
     redactSecretsForState(markSameGenerationBag({ ...resolvedProps }), updateSecrets, desiredProps),
     comparisonCoordinates
   );
+  // go-to-k/cdkd#4810: a record written before the persist walk kept a read
+  // physical id's copy in plaintext holds that copy rewritten into its
+  // `{{resolve:` form. Repaired here, before anything compares or sends it:
+  // left as it is, the copy reads as MOVED (a create-only one REPLACED the
+  // reader with no template change) and reaches the provider as a previous
+  // value (an SQS queue policy cleared `https://sqs.../{{resolve:...}}`).
+  // Position-wise against what today's value persisted the old way, so a
+  // literal reference the template spells is never touched; a provider's
+  // recorded attribute has no desired side and takes the embedded spellings
+  // only. The repaired record is what this deploy persists.
+  const legacyDesired = withoutPhysicalNameCopies(updateSecrets, () =>
+    maskAtCoordinates(
+      redactSecretsForState(
+        markSameGenerationBag({ ...resolvedProps }),
+        updateSecrets,
+        desiredProps
+      ),
+      comparisonCoordinates
+    )
+  );
+  const embeddedRewrites = embeddedPhysicalNameRewrites(updateSecrets);
+  for (const bag of new Set([currentProps, currentResource.properties])) {
+    for (const key of Object.keys(bag)) {
+      const repaired = repairPhysicalNameCopyLeaves(
+        bag[key],
+        legacyDesired[key],
+        desiredForSkipCheck[key]
+      );
+      if (repaired !== bag[key]) bag[key] = repaired;
+    }
+  }
+  if (currentResource.attributes !== undefined && embeddedRewrites.length > 0) {
+    currentResource.attributes = replaceEmbeddedPhysicalNameRewrites(
+      currentResource.attributes,
+      embeddedRewrites
+    ) as Record<string, unknown>;
+  }
   const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
     currentResource.provisionedBy !== 'cc-api' && allowedSilentDrops
