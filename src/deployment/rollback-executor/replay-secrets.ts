@@ -387,6 +387,8 @@ export function redactRollbackRecord(
           ),
         };
   const scrubbed = scrubResourceRecord(positioned, secrets);
+  // `observedProperties` stays as scanned: no provider addresses a resource by
+  // it, and `cdkd drift` resolves a reference there before comparing.
   const properties = keepPersistedPlainLeaves(
     scrubbed.properties,
     record.properties,
@@ -413,7 +415,7 @@ export function redactRollbackRecord(
  * The replay re-resolves the record's own `{{resolve:...}}` references, so its
  * map holds the plaintext of a secret that NAMES a resource. A normal deploy
  * stores a reader's copy of that physical name (an SQS queue policy's `Queues`
- * URL, the queue's own `QueueUrl` attribute) in plaintext, and providers
+ * URL) in plaintext, and providers
  * address the resource by it; the scan rewrote every copy into the reference,
  * and the next destroy deleted by an address AWS does not know.
  *
