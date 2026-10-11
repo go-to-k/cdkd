@@ -1986,7 +1986,12 @@ export async function computeStackDiff(
       // Over the spliced records too, once their maps are repaired: an
       // adopted record's name can be what another record stores, and an
       // adopted record can store one.
-      storedSecretNameNeedles(stateForDiff.resources, diffSecrets, stateNames, currentState.outputs);
+      storedSecretNameNeedles(
+        stateForDiff.resources,
+        diffSecrets,
+        stateNames,
+        currentState.outputs
+      );
     }
 
     // The OTHER half of KEEPING a row the writers refuse (go-to-k/cdkd#3641,

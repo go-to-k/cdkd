@@ -551,6 +551,108 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     }
   );
 
+  it.each([
+    ['the parent NoEcho values judge it', true],
+    ['negative control, a non-NoEcho parameter', false],
+  ])(
+    "masks a parent's NoEcho-named record in a live child's stored value: %s",
+    async (_l, noEcho) => {
+      // A pre-v11 parent record stores the NoEcho value itself, and RDS
+      // lower-cases the identifier the child's row used to receive.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { DbId: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'DbId' } } },
+            },
+          })
+        );
+        const tpl: CloudFormationTemplate = {
+          Parameters: {
+            DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) },
+          },
+          Resources: {
+            Db: {
+              Type: 'AWS::RDS::DBInstance',
+              Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+            },
+            Child: {
+              Type: 'AWS::CloudFormation::Stack',
+              Metadata: { 'aws:asset:path': 'child.json' },
+              Properties: { Parameters: { DbId: 'plain-db-id' } },
+            },
+          },
+        };
+        const parent: StackState = {
+          stackName: 'S',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            Db: {
+              physicalId: 'teamsecretdb',
+              resourceType: 'AWS::RDS::DBInstance',
+              properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+              attributes: {},
+              dependencies: [],
+            },
+            Child: {
+              physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+              resourceType: 'AWS::CloudFormation::Stack',
+              properties: { Parameters: { DbId: 'teamsecretdb' } },
+              attributes: {},
+              dependencies: ['Db'],
+            },
+          },
+          outputs: {},
+          exportNames: [],
+          lastModified: 0,
+        };
+        const child: StackState = {
+          stackName: 'S~Child',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: 'teamsecretdb' },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        };
+        const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+        const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+        // Premise: the child's row is rendered, its new side in the clear.
+        expect(row).toContain('plain-db-id');
+        expect(row.includes('teamsecretdb')).toBe(!noEcho);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
     // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
     // `inheritedSecrets`, whose needles its export-alias preview reads.
