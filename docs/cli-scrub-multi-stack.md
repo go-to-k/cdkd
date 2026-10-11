@@ -1,5 +1,5 @@
 ---
-title: cdkd scrub: across stacks
+title: "cdkd scrub: across stacks"
 description: "How cdkd scrub handles more than one stack: --all and its order, nested stacks, values one stack reads from another, and the shared exports index."
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: cdkd scrub: what it covers
+title: "cdkd scrub: what it covers"
 description: "Which stored values cdkd scrub treats as secrets, where in a state file it looks, which values it leaves alone and why, and which secrets it cannot see."
 ---
 

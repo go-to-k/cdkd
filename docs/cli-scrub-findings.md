@@ -1,5 +1,5 @@
 ---
-title: cdkd scrub: findings and refusals
+title: "cdkd scrub: findings and refusals"
 description: "Each message behind cdkd scrub's exit code 1 and each refusal code behind exit code 2, with what it means and what to do."
 ---
 
