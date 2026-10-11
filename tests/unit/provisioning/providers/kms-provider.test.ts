@@ -290,3 +290,85 @@ describe('KMSProvider', () => {
     });
   });
 });
+
+describe('KMSProvider update region guard (issue #2613)', () => {
+  let provider: KMSProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new KMSProvider();
+  });
+
+  it('refuses a Key update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update(
+        'MyKey',
+        'key-1234',
+        'AWS::KMS::Key',
+        { Description: 'new', EnableKeyRotation: true },
+        { Description: 'old', EnableKeyRotation: false },
+        { expectedRegion: 'us-west-2' }
+      )
+    ).rejects.toThrow(/Refusing to update MyKey .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses an Alias update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update(
+        'MyAlias',
+        'alias/my-key',
+        'AWS::KMS::Alias',
+        { AliasName: 'alias/my-key', TargetKeyId: 'key-new' },
+        { AliasName: 'alias/my-key', TargetKeyId: 'key-old' },
+        { expectedRegion: 'us-west-2' }
+      )
+    ).rejects.toThrow(/Refusing to update MyAlias .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates the Key when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'MyKey',
+      'key-1234',
+      'AWS::KMS::Key',
+      { Description: 'new' },
+      { Description: 'old' },
+      { expectedRegion: 'us-east-1' }
+    );
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateKeyDescriptionCommand);
+  });
+
+  it('updates the Alias when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'MyAlias',
+      'alias/my-key',
+      'AWS::KMS::Alias',
+      { AliasName: 'alias/my-key', TargetKeyId: 'key-new' },
+      { AliasName: 'alias/my-key', TargetKeyId: 'key-old' },
+      { expectedRegion: 'us-east-1' }
+    );
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateAliasCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient: () => { config: { region: unknown } } })
+      .getClient().config.region = region;
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'MyAlias',
+      'alias/my-key',
+      'AWS::KMS::Alias',
+      { AliasName: 'alias/my-key', TargetKeyId: 'key-new' },
+      { AliasName: 'alias/my-key', TargetKeyId: 'key-old' }
+    );
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateAliasCommand);
+  });
+});

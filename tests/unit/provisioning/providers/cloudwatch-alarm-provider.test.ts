@@ -44,7 +44,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { CloudWatchAlarmProvider } from '../../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
-import { DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
+import { DescribeAlarmsCommand, PutMetricAlarmCommand } from '@aws-sdk/client-cloudwatch';
 
 describe('CloudWatchAlarmProvider import', () => {
   let provider: CloudWatchAlarmProvider;
@@ -170,5 +170,79 @@ describe('CloudWatchAlarmProvider ARN fallback partition (issue #1815)', () => {
   it('keeps the commercial wildcard-region ARN when AWS_REGION is unset', async () => {
     clientRegion.reject = true;
     expect(await createWithFailedDescribe()).toBe('arn:aws:cloudwatch:*:*:alarm:my-alarm');
+  });
+});
+
+describe('CloudWatchAlarmProvider update region guard (issue #2613)', () => {
+  let provider: CloudWatchAlarmProvider;
+  const desired = {
+    AlarmName: 'my-alarm',
+    MetricName: 'Errors',
+    Namespace: 'AWS/Lambda',
+    Statistic: 'Sum',
+    Period: 60,
+    EvaluationPeriods: 1,
+    Threshold: 2,
+    ComparisonOperator: 'GreaterThanThreshold',
+  };
+  const previous = { ...desired, Threshold: 1 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
+    clientRegion.reject = false;
+    provider = new CloudWatchAlarmProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyAlarm', 'my-alarm', 'AWS::CloudWatch::Alarm', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyAlarm .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses an update when the client region cannot be resolved', async () => {
+    clientRegion.value = undefined;
+    await expect(
+      provider.update('MyAlarm', 'my-alarm', 'AWS::CloudWatch::Alarm', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyAlarm .*region is unknown/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ MetricAlarms: [{ AlarmArn: 'arn:aws:cloudwatch:us-east-1:1:alarm:my-alarm' }] });
+    await provider.update('MyAlarm', 'my-alarm', 'AWS::CloudWatch::Alarm', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutMetricAlarmCommand);
+    expect(mockSend.mock.calls[1]![0]).toBeInstanceOf(DescribeAlarmsCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    // A rejecting region() would fail the update if it were awaited.
+    clientRegion.reject = true;
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ MetricAlarms: [{ AlarmArn: 'arn:aws:cloudwatch:us-east-1:1:alarm:my-alarm' }] });
+    await provider.update('MyAlarm', 'my-alarm', 'AWS::CloudWatch::Alarm', desired, previous);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutMetricAlarmCommand);
+  });
+
+  it('stops before any call when the client region lookup itself fails', async () => {
+    clientRegion.reject = true;
+    await expect(
+      provider.update('MyAlarm', 'my-alarm', 'AWS::CloudWatch::Alarm', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/no region configured/);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
