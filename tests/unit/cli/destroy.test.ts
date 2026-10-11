@@ -591,6 +591,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       deletedCount: 2,
       retainedCount: 0,
       skippedCount: 1,
+      journaledOrphanSkips: 0,
       errorCount: 0,
       interrupted: false,
     });
@@ -634,6 +635,68 @@ describe('cdkd destroy: terminationProtection guard', () => {
     // listing nothing that failed.
     expect(finished['counts']).toMatchObject({ deleted: 2, skipped: 1 });
     expect((finished['counts'] as Record<string, unknown>)['failed']).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#4738: a skip that is a journaled orphan keeps no record, so
+  // a run whose every skip is one must not say the state was preserved.
+  it('exits 2 without claiming preserved state when every skip is a journaled orphan (go-to-k/cdkd#4738)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Orphaned', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Orphaned', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Orphaned'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Orphaned',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 2,
+      journaledOrphanSkips: 2,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await expect(runDestroy(['Orphaned', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain(
+      'Destroy finished, but 2 resource(s) a failed deploy created were left in AWS, and no state records them any more.'
+    );
+    expect(message).not.toContain('State preserved');
+    expect(message).not.toContain('entr');
+  });
+
+  it('counts only the recorded skips as entries when a journaled orphan was skipped beside them (go-to-k/cdkd#4738)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Mixed', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Mixed', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Mixed'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Mixed',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 3,
+      journaledOrphanSkips: 1,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await expect(runDestroy(['Mixed', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('Destroy skipped 2 entries whose delete cdkd did not confirm');
+    expect(message).toContain('State preserved (the records are kept).');
+    expect(message).toContain(
+      'Separately, 1 resource(s) a failed deploy created were left in AWS, and no state records them any more.'
+    );
   });
 
   it('still exits 0 when nothing was skipped (no behavior change, issue #1752)', async () => {

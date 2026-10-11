@@ -762,6 +762,25 @@ export class NestedStackProvider implements ResourceProvider {
       throw markNonRetryable(failure);
     }
 
+    // go-to-k/cdkd#4738: a skip that is a journaled orphan keeps no record, so
+    // a child whose only skips are those has deleted its own state. Its row is
+    // gone, not kept: report it deleted, the orphans named in `leftInPlace`
+    // and their count in the caller's slot (both destroy runners and the
+    // deploy engine bind one), so the run still exits 2.
+    const orphanSkips = childResult.journaledOrphanSkips;
+    if (!childResult.interrupted && orphanSkips > 0 && childResult.skippedCount === orphanSkips) {
+      const slot = ctx.childUnaddressed;
+      if (slot) {
+        slot.last = { deleteSkipped: orphanSkips, updatePartial: slot.last?.updatePartial ?? 0 };
+      }
+      return {
+        outcome: 'deleted',
+        leftInPlace:
+          `nested stack ${plainOrDescribed(childStackName, 'stack name')} left ${orphanSkips} ` +
+          `resource(s) a failed deploy created in AWS`,
+      };
+    }
+
     if (childResult.skippedCount > 0 || childResult.interrupted) {
       const causes: string[] = [];
       if (childResult.skippedCount > 0) {

@@ -989,6 +989,74 @@ describe('NestedStackProvider', () => {
       expect(reason).toContain('was interrupted');
     });
 
+    // go-to-k/cdkd#4738: a child whose only skips are journaled orphans has
+    // deleted its own state, so the row is gone, not kept: `'deleted'` with the
+    // orphans named in `leftInPlace`, and their count in the caller's slot so
+    // the run still exits 2.
+    it('reports a child whose only skips are journaled orphans as deleted, counting them in the slot (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2 };
+      const provider = new NestedStackProvider();
+
+      const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
+        collectNestedChildUnaddressed(() =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+        )
+      );
+
+      expect(result).toEqual({
+        outcome: 'deleted',
+        leftInPlace: 'nested stack Parent~Child left 2 resource(s) a failed deploy created in AWS',
+      });
+      expect(unaddressed).toEqual({ deleteSkipped: 2, updatePartial: 0 });
+    });
+
+    it('keeps the row skipped when the child skipped a recorded resource beside its journaled orphans (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = { deletedCount: 0, skippedCount: 3, journaledOrphanSkips: 2 };
+      const provider = new NestedStackProvider();
+
+      const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
+        collectNestedChildUnaddressed(() =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+        )
+      );
+
+      expect(result).toEqual({
+        outcome: 'skipped',
+        reason: 'nested stack Parent~Child skipped 3 resource(s)',
+      });
+      // The kept row is counted by the caller as its own skip.
+      expect(unaddressed).toBeUndefined();
+    });
+
+    it('keeps the row skipped when an interrupted child left only journaled orphans (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = {
+        deletedCount: 0,
+        skippedCount: 1,
+        journaledOrphanSkips: 1,
+        interrupted: true,
+      };
+      const provider = new NestedStackProvider();
+
+      const result = await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack'
+        )
+      );
+
+      expect(result).toMatchObject({ outcome: 'skipped' });
+      expect((result as { reason: string }).reason).toMatch(/ was interrupted$/);
+    });
+
     it("describes a child name whose logical id is not plain, so its words cannot be a pasted clause's command (go-to-k/cdkd#4265)", async () => {
       childCounts.value = { deletedCount: 0, skippedCount: 1, interrupted: true };
       const provider = new NestedStackProvider();

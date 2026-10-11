@@ -79,6 +79,16 @@ import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js'
 // pulls in destroy-runner -> register-providers -> every provider, which both
 // closes an import cycle and drags the whole registry into this unit test.
 import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
+import {
+  getCurrentNestedStackContext,
+  withNestedStackContext,
+  type NestedStackProviderContext,
+} from '../../../src/provisioning/nested-stack-context.js';
+
+/** The context `cdkd destroy` wraps the runner in; only its presence matters here. */
+function nestedCtx(): NestedStackProviderContext {
+  return {} as NestedStackProviderContext;
+}
 
 const REGION = 'us-east-1';
 const NESTED_TYPE = 'AWS::CloudFormation::Stack';
@@ -354,6 +364,63 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     expect(result.skippedCount).toBe(0);
     expect(mockDeleteState).toHaveBeenCalled();
     expect(mockRemoveStack).toHaveBeenCalledWith('TestStack', REGION);
+  });
+
+  // go-to-k/cdkd#4738: a child whose only skips are journaled orphans deleted
+  // its own state, so the provider reports the row deleted and the orphans
+  // through the #1989 slot. The parent drops the row and its own state in
+  // ONE run, and still counts the orphans as skips (exit 2).
+  it('drops the row and the state when the child left only journaled orphans, still counting them', async () => {
+    mockProviderDelete.mockImplementation(async (logicalId: string) => {
+      if (logicalId !== 'Child') return undefined;
+      const slot = getCurrentNestedStackContext()?.childUnaddressed;
+      if (slot) slot.last = { deleteSkipped: 2, updatePartial: 0 };
+      return {
+        outcome: 'deleted',
+        leftInPlace: 'nested stack TestStack~Child left 2 resource(s) a failed deploy created in AWS',
+      };
+    });
+
+    const result = await withNestedStackContext(nestedCtx(), () =>
+      runDestroyForStack('TestStack', makeState({ Child: nestedRes(), Bucket: res() }), makeCtx())
+    );
+
+    expect(result.deletedCount).toBe(2);
+    expect(result.errorCount).toBe(0);
+    expect(result.skippedCount).toBe(2);
+    expect(result.journaledOrphanSkips).toBe(2);
+    expect(mockDeleteState).toHaveBeenCalledWith('TestStack', REGION);
+    expect(mockRemoveStack).toHaveBeenCalledWith('TestStack', REGION);
+    const info = infoSpy.mock.calls.map((c) => stripAnsi(String(c[0]))).join('\n');
+    expect(info).toContain(
+      '⚠ Child (AWS::CloudFormation::Stack) deleted (nested stack TestStack~Child left 2 resource(s) a failed deploy created in AWS)'
+    );
+    expect(info).toContain('Stack TestStack destroyed, with resources left in AWS (2 deleted, 2 skipped');
+    expect(allWarn()).toContain('2 resource(s) a failed deploy created were left in AWS');
+    expect(allWarn()).not.toContain('State preserved');
+  });
+
+  it('control: a slot written for one row is not read for the next', async () => {
+    mockProviderDelete.mockImplementation(async (logicalId: string) => {
+      if (logicalId === 'Child') {
+        const slot = getCurrentNestedStackContext()?.childUnaddressed;
+        if (slot) slot.last = { deleteSkipped: 1, updatePartial: 0 };
+        return { outcome: 'deleted', leftInPlace: 'nested stack TestStack~Child left 1 resource(s)' };
+      }
+      return undefined;
+    });
+
+    const result = await withNestedStackContext(nestedCtx(), () =>
+      runDestroyForStack(
+        'TestStack',
+        makeState({ Child: nestedRes(), A: res(), B: res({ physicalId: 'phys-b' }) }),
+        makeCtx()
+      )
+    );
+
+    expect(result.deletedCount).toBe(3);
+    expect(result.skippedCount).toBe(1);
+    expect(result.journaledOrphanSkips).toBe(1);
   });
 
   it('a failed child does not stop a sibling from being deleted, but the sibling stays trimmed', async () => {

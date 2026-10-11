@@ -632,6 +632,7 @@ describe('cdkd state destroy', () => {
       deletedCount: 2,
       retainedCount: 0,
       skippedCount: 1,
+      journaledOrphanSkips: 0,
       errorCount: 0,
       interrupted: false,
     });
@@ -662,6 +663,33 @@ describe('cdkd state destroy', () => {
     expect(message).toContain(
       "drop the records with 'cdkd state orphan <stack> --stack-region <region>'."
     );
+  });
+
+  it('exits 2 without claiming preserved state when every skip is a journaled orphan (go-to-k/cdkd#4738)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Orphaned', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: makeStackState('Orphaned', 'us-east-1'),
+      etag: '"x"',
+    });
+    mockRunDestroyForStack.mockResolvedValueOnce({
+      stackName: 'Orphaned',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 1,
+      journaledOrphanSkips: 1,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await expect(runStateDestroy(['destroy', 'Orphaned', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain(
+      'Destroy finished, but 1 resource(s) a failed deploy created were left in AWS, and no state records them any more.'
+    );
+    expect(message).not.toContain('State preserved');
   });
 
   it('iterates over multiple positional stack names in order', async () => {
@@ -761,6 +789,7 @@ describe('cdkd state destroy', () => {
         deletedCount: 2,
         retainedCount: 0,
         skippedCount: 1,
+        journaledOrphanSkips: 0,
         errorCount: 0,
         interrupted: false,
       });
