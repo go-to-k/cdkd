@@ -18,6 +18,7 @@ cdkd rollback MyStack --force                 # skip the confirmation prompt
 cdkd rollback MyStack --orphan MyBucket           # leave a resource out of the replay
 cdkd rollback MyStack --revert-failed         # also revert the resource that failed mid-deploy
 cdkd rollback MyStack --skip-final-snapshot   # DeletionPolicy: Snapshot -> delete without the snapshot
+cdkd rollback MyStack --remove-protection     # also delete protected resources the failed deploy left
 cdkd rollback MyStack --stack-region us-west-2 # disambiguate a multi-region stack
 cdkd rollback MyStack --drop-failed MyQueuePolicy # forget one failed CREATE cdkd can never delete
 ```
@@ -32,6 +33,7 @@ cdkd rollback MyStack --drop-failed MyQueuePolicy # forget one failed CREATE cdk
 | `--revert-failed` | off | Also attempt to revert the resource whose operation FAILED mid-deploy. |
 | `--drop-failed <logicalId>` | — | Remove one journaled failed CREATE that made its resource from the journal, after you check that resource by hand. Replays nothing and deletes nothing in AWS. See [below](#dropping-one-entry-cdkd-cannot-act-on). |
 | `--skip-final-snapshot` | off | Delete a rolled-back CREATE whose `DeletionPolicy` is `Snapshot` without the final snapshot (data loss). |
+| `--remove-protection` | off | Turn deletion protection off before the rollback deletes a resource the failed deploy left: a completed CREATE the stack's state records, or a failed CREATE's resource (a journaled orphan, or the failed CREATE itself under `--revert-failed`) once cdkd proves it is that resource and no other stack holds it. A nested stack it deletes or reverts carries the flag to its own resources. The types covered are those of `cdkd destroy --remove-protection`. |
 | `--stack-region <region>` | — | Region of the target stack, when the same name has state in more than one. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state records and the journal. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
