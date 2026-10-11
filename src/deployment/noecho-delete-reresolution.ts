@@ -633,7 +633,8 @@ export class TemplateNoEchoReresolver {
               rowTemplate?.Properties?.Parameters,
               this.inputSources(parameters0)
             ).catch(() => undefined);
-      const printingSeed = await this.printingNoEchoValues();
+      // A masking-only failure must not drop the child's delete re-resolution.
+      const printingSeed = await this.printingNoEchoValues().catch(() => undefined);
       return new TemplateNoEchoReresolver({
         ...(passedClasses !== undefined && { passedClasses }),
         ...(printingSeed !== undefined && { printingSeed }),
