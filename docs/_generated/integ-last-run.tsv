@@ -146,6 +146,7 @@ full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness r
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
 getatt-fallback-guard	2026-10-03T05:59:55Z	PASS	185	verify.sh	rc ok, orph clean (#4497)
 getstackoutput-crossregion	2026-10-02T23:48:01Z	PASS	105	verify.sh	rc ok, orph clean (#4475)
+globaltable-fix-forward-orphan	2026-10-11T15:56:32Z	PASS	200	verify.sh	rc ok, orph clean; pre-fix arm red at step 2 (journal lacks TableId)
 glue-securityconfig-replace	2026-10-07T13:48:36Z	PASS	75	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 glue-update-hardening	2026-10-11T09:33:22Z	PASS	291	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 healthimaging-stateful-update-fallback	2026-10-02T09:33:03Z	PASS	226	verify.sh	rc ok, orph clean (#4414)
