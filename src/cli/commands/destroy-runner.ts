@@ -2222,16 +2222,18 @@ export async function runDestroyForStack(
             // row is dropped like any deleted one; what it left counts as
             // skips that keep no record (exit 2). `formatResourceLine` passes
             // the verb through `displaySafe`.
-            const deletedLine =
+            const leftInAws =
               childLeftInAws > 0
+                ? (deleteLeftInPlace(deleteResult) ??
+                  `${childLeftInAws} resource(s) a failed deploy created were left in AWS`)
+                : undefined;
+            const deletedLine =
+              leftInAws !== undefined
                 ? formatResourceLine(
                     'skipped',
                     logicalId,
                     resource.resourceType,
-                    `deleted (${
-                      deleteLeftInPlace(deleteResult) ??
-                      `${childLeftInAws} resource(s) a failed deploy created were left in AWS`
-                    })`
+                    `deleted (${leftInAws})`
                   )
                 : formatResourceLine('deleted', logicalId, resource.resourceType);
             logger.info(`  ${deletedLine}`);
@@ -2248,6 +2250,22 @@ export async function runDestroyForStack(
               ...(resource.physicalId && { physicalId: resource.physicalId }),
               durationMs: Date.now() - resourceStartedAt,
             });
+            if (leftInAws !== undefined) {
+              // Beside the row's own success, as #1819's partial update: the
+              // child's run records no events, so this is the durable trace of
+              // the skips RUN_FINISHED counts. No `physicalId`: the survivors
+              // are the child's, named only in its warnings.
+              recordDestroyEvent(ctx.eventRecorder, {
+                eventType: 'RESOURCE_SKIPPED',
+                stackName,
+                operation: 'DELETE',
+                logicalId,
+                resourceType: resource.resourceType,
+                ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+                reason: leftInAws,
+                durationMs: Date.now() - resourceStartedAt,
+              });
+            }
             delete remainingResources[logicalId];
             persistStateAfterDelete(logicalId);
           } catch (error) {

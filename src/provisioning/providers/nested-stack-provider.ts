@@ -763,16 +763,21 @@ export class NestedStackProvider implements ResourceProvider {
     }
 
     // go-to-k/cdkd#4738: a skip that is a journaled orphan keeps no record, so
-    // a child whose only skips are those has deleted its own state. Its row is
-    // gone, not kept: report it deleted, the orphans named in `leftInPlace`
-    // and their count in the caller's slot (both destroy runners and the
-    // deploy engine bind one), so the run still exits 2.
+    // a child whose only skips are those has deleted its own state. On a stack
+    // destroy its row is gone, not kept: report it deleted, the orphans named
+    // in `leftInPlace` and their count in the destroy runner's slot, so the
+    // run still exits 2. A deploy's removal and a rollback keep the `skipped`
+    // below: their callers neither count a slot on a delete nor print
+    // `leftInPlace`, and their re-run finds the child state gone, a success.
     const orphanSkips = childResult.journaledOrphanSkips;
-    if (!childResult.interrupted && orphanSkips > 0 && childResult.skippedCount === orphanSkips) {
+    if (
+      deleteContext?.stackDestroy === true &&
+      !childResult.interrupted &&
+      orphanSkips > 0 &&
+      childResult.skippedCount === orphanSkips
+    ) {
       const slot = ctx.childUnaddressed;
-      if (slot) {
-        slot.last = { deleteSkipped: orphanSkips, updatePartial: slot.last?.updatePartial ?? 0 };
-      }
+      if (slot) slot.last = { deleteSkipped: orphanSkips, updatePartial: 0 };
       return {
         outcome: 'deleted',
         leftInPlace:

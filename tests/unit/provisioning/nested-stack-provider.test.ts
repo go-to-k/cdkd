@@ -1002,7 +1002,9 @@ describe('NestedStackProvider', () => {
           provider.delete(
             'Child',
             'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
-            'AWS::CloudFormation::Stack'
+            'AWS::CloudFormation::Stack',
+            undefined,
+            { stackDestroy: true }
           )
         )
       );
@@ -1023,7 +1025,9 @@ describe('NestedStackProvider', () => {
           provider.delete(
             'Child',
             'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
-            'AWS::CloudFormation::Stack'
+            'AWS::CloudFormation::Stack',
+            undefined,
+            { stackDestroy: true }
           )
         )
       );
@@ -1049,12 +1053,58 @@ describe('NestedStackProvider', () => {
         provider.delete(
           'Child',
           'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
-          'AWS::CloudFormation::Stack'
+          'AWS::CloudFormation::Stack',
+          undefined,
+          { stackDestroy: true }
         )
       );
 
       expect(result).toMatchObject({ outcome: 'skipped' });
       expect((result as { reason: string }).reason).toMatch(/ was interrupted$/);
+    });
+
+    // A deploy's removal and a rollback delete with no `stackDestroy`: their
+    // callers count no slot on a delete and print no `leftInPlace`, so the row
+    // stays skipped there, and their re-run finds the child state gone.
+    it('keeps the row skipped outside a stack destroy, writing no slot (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 2, journaledOrphanSkips: 2 };
+      const provider = new NestedStackProvider();
+
+      const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
+        collectNestedChildUnaddressed(() =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+        )
+      );
+
+      expect(result).toEqual({
+        outcome: 'skipped',
+        reason: 'nested stack Parent~Child skipped 2 resource(s)',
+      });
+      expect(unaddressed).toBeUndefined();
+    });
+
+    it('reports deleted with no slot bound, still naming the count in leftInPlace (go-to-k/cdkd#4738)', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 1, journaledOrphanSkips: 1 };
+      const provider = new NestedStackProvider();
+
+      const result = await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          undefined,
+          { stackDestroy: true }
+        )
+      );
+
+      expect(result).toEqual({
+        outcome: 'deleted',
+        leftInPlace: 'nested stack Parent~Child left 1 resource(s) a failed deploy created in AWS',
+      });
     });
 
     it("describes a child name whose logical id is not plain, so its words cannot be a pasted clause's command (go-to-k/cdkd#4265)", async () => {

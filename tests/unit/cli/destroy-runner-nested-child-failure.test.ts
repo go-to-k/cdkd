@@ -381,10 +381,24 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
       };
     });
 
+    const record = vi.fn();
     const result = await withNestedStackContext(nestedCtx(), () =>
-      runDestroyForStack('TestStack', makeState({ Child: nestedRes(), Bucket: res() }), makeCtx())
+      runDestroyForStack('TestStack', makeState({ Child: nestedRes(), Bucket: res() }), {
+        ...makeCtx(),
+        eventRecorder: { record } as never,
+      })
     );
 
+    // The durable trace of the skips RUN_FINISHED counts: the row's success,
+    // then a RESOURCE_SKIPPED naming what the child left.
+    const childEvents = record.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e['logicalId'] === 'Child' && e['eventType'] !== 'RESOURCE_STARTED');
+    expect(childEvents.map((e) => e['eventType'])).toEqual(['RESOURCE_SUCCEEDED', 'RESOURCE_SKIPPED']);
+    expect(childEvents[1]).toMatchObject({
+      reason: 'nested stack TestStack~Child left 2 resource(s) a failed deploy created in AWS',
+    });
+    expect(childEvents[1]).not.toHaveProperty('physicalId');
     expect(result.deletedCount).toBe(2);
     expect(result.errorCount).toBe(0);
     expect(result.skippedCount).toBe(2);
@@ -398,6 +412,24 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     expect(info).toContain('Stack TestStack destroyed, with resources left in AWS (2 deleted, 2 skipped');
     expect(allWarn()).toContain('2 resource(s) a failed deploy created were left in AWS');
     expect(allWarn()).not.toContain('State preserved');
+  });
+
+  it('names the count itself when the provider reported the slot but no leftInPlace', async () => {
+    mockProviderDelete.mockImplementation(async () => {
+      const slot = getCurrentNestedStackContext()?.childUnaddressed;
+      if (slot) slot.last = { deleteSkipped: 3, updatePartial: 0 };
+      return undefined;
+    });
+
+    const result = await withNestedStackContext(nestedCtx(), () =>
+      runDestroyForStack('TestStack', makeState({ Child: nestedRes() }), makeCtx())
+    );
+
+    expect(result.skippedCount).toBe(3);
+    const info = infoSpy.mock.calls.map((c) => stripAnsi(String(c[0]))).join('\n');
+    expect(info).toContain(
+      '⚠ Child (AWS::CloudFormation::Stack) deleted (3 resource(s) a failed deploy created were left in AWS)'
+    );
   });
 
   it('control: a slot written for one row is not read for the next', async () => {

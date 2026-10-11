@@ -110,6 +110,7 @@ ECR_JOURNAL_KEY="cdkd/${ECR_STACK}/${REGION}/rollback-journal.json"
 SNS_STATE_KEY="cdkd/${SNS_STACK}/${REGION}/state.json"
 SNS_JOURNAL_KEY="cdkd/${SNS_STACK}/${REGION}/rollback-journal.json"
 NESTED_STATE_KEY="cdkd/${NESTED_STACK}/${REGION}/state.json"
+NESTED_JOURNAL_KEY="cdkd/${NESTED_STACK}/${REGION}/rollback-journal.json"
 CHILD_STATE_KEY="cdkd/${NESTED_CHILD}/${REGION}/state.json"
 CHILD_JOURNAL_KEY="cdkd/${NESTED_CHILD}/${REGION}/rollback-journal.json"
 
@@ -212,7 +213,7 @@ wait_gone "pre-run: ${TOPIC_ARN} still exists after the sweep" $(topic_probe)
 # shellcheck disable=SC2046
 wait_gone "pre-run: ${NESTED_REPO_NAME} still exists after the sweep" $(nested_repo_probe)
 for key in "${ECR_STATE_KEY}" "${ECR_JOURNAL_KEY}" "${SNS_STATE_KEY}" "${SNS_JOURNAL_KEY}" \
-  "${NESTED_STATE_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}"; do
+  "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}"; do
   assert_gone "pre-run: s3://${STATE_BUCKET}/${key} still exists after the sweep" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
@@ -457,6 +458,11 @@ assert_gone "phase N3: the child's state.json is still present" \
 # The fix: before go-to-k/cdkd#4738 the parent kept its Child row and state.
 assert_gone "phase N3: the parent's state.json is still present -- the parent kept its Child row (go-to-k/cdkd#4738)" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_STATE_KEY}"
+# Each state delete sweeps that stack's rollback journal with it.
+assert_gone "phase N3: the child's rollback journal is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_JOURNAL_KEY}"
+assert_gone "phase N3: the parent's rollback journal is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_JOURNAL_KEY}"
 if ! grep -qF "Child (AWS::CloudFormation::Stack) deleted (nested stack ${NESTED_CHILD} left 1 resource(s) a failed deploy created in AWS)" "${LOG_DIR}/n3.log"; then
   echo "[verify] FAIL: phase N3: the parent's Child line does not say the child left 1 resource in AWS" >&2
   exit 1
