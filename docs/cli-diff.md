@@ -103,7 +103,7 @@ deploy will treat that property.
 - `[masked input or expression changed]`: the property is stored as `***`
   because it carries a secret. Both sides print `***`, and the deploy sends
   the property again. See
-  [Diff: secrets and NoEcho values](cli-diff-secrets.md#a-property-stored-as).
+  [cdkd diff: secrets and NoEcho values](cli-diff-secrets.md#a-property-stored-as).
 
 ### Properties that change because another resource changes
 
@@ -214,7 +214,7 @@ Running the diff again does not clear exit `3`. One of these has to be fixed:
 
 In CDK, a new logical ID means a new construct ID or a call to
 `overrideLogicalId`. The second and third rows are described under
-[Diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
+[cdkd diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
 
 Two cases are warnings and do not exit `3`:
 
@@ -239,7 +239,7 @@ The full rules are in
 | `--recursive` | off | Diff every nested stack against its own state. See [`--recursive`](#recursive-nested-stacks). |
 | `--fail-on <kind>` | `never` | Exit `1` on `any-change` or `destructive` changes. See [`--fail-on`](#fail-on). |
 | `--fail` / `--no-fail` | off | Aliases for `--fail-on=any-change` / `--fail-on=never`. Cannot be combined with `--fail-on`. |
-| `--json` | off | Emit the diff as JSON. See [Diff: JSON output](cli-diff-json.md). |
+| `--json` | off | Emit the diff as JSON. See [cdkd diff: JSON output](cli-diff-json.md). |
 | `--use-cdk-bootstrap-assets` | off | Compare against the CDK bootstrap asset destinations verbatim, skipping cdkd's asset-storage redirection. |
 | `--no-cfn-fallback` | fallback on | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. See [`--no-cfn-fallback` (deploy / diff)](cli-deploy-safety-ci-flags.md#no-cfn-fallback-deploy-diff). |
 | `--region <region>` | AWS profile / `AWS_REGION` | Deprecated, still honored. Prefer `AWS_REGION` or your AWS profile. |
@@ -374,7 +374,7 @@ no changes are checked and print nothing.
 
 What a new or removed nested stack looks like, the templates the diff refuses
 to load, and nested stacks whose parameters hold secrets are covered in
-[Diff: nested stacks](cli-diff-nested-stacks.md).
+[cdkd diff: nested stacks](cli-diff-nested-stacks.md).
 
 ## List-typed parameters in `Fn::Equals`
 
@@ -398,14 +398,14 @@ declare the parameter `Type: String`.
 
 ## In this section
 
-- [Diff: JSON output](cli-diff-json.md): the `--json` schema, field by field.
-- [Diff: stack outputs](cli-diff-outputs.md): how output changes are shown,
+- [cdkd diff: JSON output](cli-diff-json.md): the `--json` schema, field by field.
+- [cdkd diff: stack outputs](cli-diff-outputs.md): how output changes are shown,
   and why the Outputs section is sometimes missing.
-- [Diff: secrets and NoEcho values](cli-diff-secrets.md): why a value prints
+- [cdkd diff: secrets and NoEcho values](cli-diff-secrets.md): why a value prints
   as `***` or is withheld.
-- [Diff: nested stacks](cli-diff-nested-stacks.md): `--recursive` in detail,
+- [cdkd diff: nested stacks](cli-diff-nested-stacks.md): `--recursive` in detail,
   refused nested templates, and secret-fed nested parameters.
-- [Diff: incomplete or malformed state](cli-diff-state-records.md): what the
+- [cdkd diff: incomplete or malformed state](cli-diff-state-records.md): what the
   diff does when the state record lacks a value or is damaged.
 
 ## Related

@@ -1,9 +1,9 @@
 ---
-title: "Diff: stack outputs"
+title: "cdkd diff: stack outputs"
 description: "How cdkd diff reports changes to stack outputs and exports, why the Outputs section is sometimes missing, and the AWS calls it makes to resolve them."
 ---
 
-# Diff: stack outputs
+# cdkd diff: stack outputs
 
 `cdkd diff` compares the stack's outputs as well as its resources. It works
 out the value each output in your template would have and compares it with
@@ -109,7 +109,7 @@ Three details:
 ## Related
 
 - [`cdkd diff`](cli-diff.md): the text output, the exit codes and the options
-- [Diff: JSON output](cli-diff-json.md): the `outputChanges` array
-- [Diff: secrets and NoEcho values](cli-diff-secrets.md): when an output's value or name is hidden
+- [cdkd diff: JSON output](cli-diff-json.md): the `outputChanges` array
+- [cdkd diff: secrets and NoEcho values](cli-diff-secrets.md): when an output's value or name is hidden
 - [Cross-Stack References](cross-stack-references.md): how `Fn::ImportValue` and `Fn::GetStackOutput` resolve
 - [cdkd diff internals](cli-diff-internals.md): the rules for skipped and partially resolved outputs

@@ -1,9 +1,9 @@
 ---
-title: "Drift: nested stacks"
+title: "cdkd drift: nested stacks"
 description: "How cdkd drift checks nested stacks, how they appear in the report, and what a RECORD MISSING row means."
 ---
 
-# Drift: nested stacks
+# cdkd drift: nested stacks
 
 `cdkd drift` checks a stack's nested stacks whenever it checks the stack. You
 do not pass a flag for it, and each nested stack gets its own block in the
@@ -80,5 +80,5 @@ Both flags refuse a `RECORD MISSING` row by name, as they refuse any
 ## Related
 
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
-- [Drift: JSON output](cli-drift-json.md): the `nestedStackRecordMissing` field
+- [cdkd drift: JSON output](cli-drift-json.md): the `nestedStackRecordMissing` field
 - [State Management](state-management.md): the state bucket layout and the state schema

@@ -225,7 +225,7 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'cdkd export', path: '/cli-export' },
       { title: 'What blocks an export', path: '/cli-export-blocks', under: '/cli-export' },
       {
-        title: 'Custom Resources and IAM policies',
+        title: 'Custom resources and IAM policies',
         path: '/cli-export-two-phase',
         under: '/cli-export',
       },

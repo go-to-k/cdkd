@@ -1,9 +1,9 @@
 ---
-title: Import Options and the Import Plan
+title: Import options and the import plan
 description: "Every cdkd import flag, when --force is needed, how to read the import plan, the details of a CloudFormation migration, and how cdkd import differs from cdk import."
 ---
 
-# Import Options and the Import Plan
+# Import options and the import plan
 
 This page is the reference for `cdkd import`: its flags, the plan it prints,
 and the details of a CloudFormation migration. For the walkthroughs, start at
@@ -272,9 +272,9 @@ If your scripts rely on the upstream behaviour:
 ## Related
 
 - [Importing Existing Resources](import.md): the walkthroughs
-- [Importing by Resource Type](import-resource-types.md): the `--resource`
+- [Importing by resource type](import-resource-types.md): the `--resource`
   value for each type
-- [After an Import](import-after.md): the first diff, the drift baseline, and
+- [After an import](import-after.md): the first diff, the drift baseline, and
   removing a secret from state
 - [Import internals](import-internals.md): how the nested-stack migration
   works

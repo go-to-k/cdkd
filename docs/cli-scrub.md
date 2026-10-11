@@ -104,7 +104,7 @@ stay in memory and are never printed.
                 values the template does not reference
 ```
 
-[What cdkd scrub covers](cli-scrub-what-it-covers.md) lists every place scrub
+[cdkd scrub: what it covers](cli-scrub-what-it-covers.md) lists every place scrub
 looks and every value it leaves alone.
 
 ## Check, clean, and gate in CI
@@ -383,12 +383,12 @@ The table for every command is in the
 
 ## In this section
 
-- [What cdkd scrub covers](cli-scrub-what-it-covers.md): which values scrub
+- [cdkd scrub: what it covers](cli-scrub-what-it-covers.md): which values scrub
   treats as secrets, where in a state file it looks, what it leaves alone, and
   what it cannot see.
-- [cdkd scrub across stacks](cli-scrub-multi-stack.md): `--all`, nested
+- [cdkd scrub: across stacks](cli-scrub-multi-stack.md): `--all`, nested
   stacks, values one stack reads from another, and the exports index.
-- [cdkd scrub findings and refusals](cli-scrub-findings.md): each message
+- [cdkd scrub: findings and refusals](cli-scrub-findings.md): each message
   behind exit code `1`, and each `SCRUB_...` code behind exit code `2`, with
   what to do.
 

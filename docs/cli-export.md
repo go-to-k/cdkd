@@ -141,7 +141,7 @@ blocks, including a damaged state record and a recorded value of `***`.
 
 - [cdkd export: what blocks an export](cli-export-blocks.md): every reason an
   export is refused, and the remedy for each.
-- [cdkd export: Custom Resources and IAM policies](cli-export-two-phase.md):
+- [cdkd export: custom resources and IAM policies](cli-export-two-phase.md):
   the two kinds of resource that need a second phase, and what that phase
   does to them.
 - [cdkd export: nested stacks](cli-export-nested-stacks.md): how a tree of
@@ -216,7 +216,7 @@ for the whole run.
 Most stacks need only phase 1. Phase 2 runs when the stack has Custom
 Resources or `AWS::IAM::Policy` resources, which CloudFormation cannot import
 and has to create instead.
-[cdkd export: Custom Resources and IAM policies](cli-export-two-phase.md)
+[cdkd export: custom resources and IAM policies](cli-export-two-phase.md)
 describes it.
 
 cdkd deletes its state record only after the last changeset completes. A

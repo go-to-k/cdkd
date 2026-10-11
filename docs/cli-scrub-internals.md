@@ -7,9 +7,9 @@ unlisted: true
 # cdkd scrub internals
 
 This page holds the detail behind [`cdkd scrub`](cli-scrub.md) and its
-sub-pages ([What cdkd scrub covers](cli-scrub-what-it-covers.md),
-[cdkd scrub across stacks](cli-scrub-multi-stack.md) and
-[cdkd scrub findings and refusals](cli-scrub-findings.md)): the matching
+sub-pages ([cdkd scrub: what it covers](cli-scrub-what-it-covers.md),
+[cdkd scrub: across stacks](cli-scrub-multi-stack.md) and
+[cdkd scrub: findings and refusals](cli-scrub-findings.md)): the matching
 rules, the reasoning for each refusal, and the cases those pages summarize in
 one line. It is written for someone debugging an unexpected scrub result or
 changing cdkd itself. Start from the public pages; every section here is
