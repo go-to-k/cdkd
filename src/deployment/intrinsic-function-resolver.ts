@@ -36,6 +36,10 @@ import * as paramsConditionsMixin from './intrinsic-resolver/params-conditions.j
 import * as parameterSecretsMixin from './intrinsic-resolver/parameter-secrets.js';
 import * as refsMixin from './intrinsic-resolver/refs.js';
 import * as clientsMixin from './intrinsic-resolver/clients.js';
+import type {
+  CdkCrossAccountRefVerdict,
+  ProducerLookup,
+} from './intrinsic-resolver/cdk-cross-account-ref.js';
 export {
   AWS_NO_VALUE,
   isStalePlaceholderArnAttribute,
@@ -93,6 +97,15 @@ export interface IntrinsicFunctionResolverOptions {
    * protection cannot see cdkd consumers).
    */
   cfnFallback?: boolean;
+  /**
+   * The producer artifacts of the cloud assembly the command holds, consulted
+   * LAZILY and only by an `Fn::GetStackOutput` carrying a `RoleArn`, to
+   * recognize the cross-account reference aws-cdk-lib generates and read it
+   * through the producer account's CDK lookup role
+   * (`intrinsic-resolver/cdk-cross-account-ref.ts`). Absent: nothing is
+   * classified, and every `RoleArn` behaves as it always has.
+   */
+  producerLookup?: ProducerLookup;
 }
 
 /**
@@ -258,6 +271,15 @@ export class IntrinsicFunctionResolver {
   readonly strictGetAtt: boolean;
   /** @internal */
   readonly cfnFallback: boolean;
+  /** @internal */
+  readonly producerLookup: ProducerLookup | undefined;
+  /**
+   * Memoized {@link classifyCdkCrossAccountRef} verdicts, keyed by producer
+   * stack, account, region and role name: a stack referencing one producer
+   * from many sites classifies it once.
+   */
+  /** @internal */
+  readonly cdkCrossAccountRefVerdicts = new Map<string, CdkCrossAccountRefVerdict>();
   /**
    * Per-region CloudFormation clients for the cross-stack fallback
    * lookups (issue #1697). Keyed by region because `Fn::GetStackOutput`
@@ -403,6 +425,7 @@ export class IntrinsicFunctionResolver {
     this.explicitRegion = region || undefined;
     this.strictGetAtt = options?.strictGetAtt ?? false;
     this.cfnFallback = options?.cfnFallback ?? true;
+    this.producerLookup = options?.producerLookup;
   }
 
   /** Unknown-attribute physicalId fallbacks recorded since the last reset. */

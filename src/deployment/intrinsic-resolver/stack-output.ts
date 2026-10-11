@@ -5,9 +5,11 @@ import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
 import {
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
+  displayAwsMessage,
   displayIdent,
   displaySafe,
   displayStackName,
+  safeMsg,
 } from '../../utils/display-safe.js';
 import {
   CrossAccountSecretRefusalError,
@@ -21,6 +23,15 @@ import {
   quotedRender,
 } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import {
+  type CdkCrossAccountRefVerdict,
+  cdkCrossAccountRefRefusal,
+  classifyCdkCrossAccountRef,
+  noLookupRoleReason,
+  producerAbsentReason,
+  roleArnOf,
+  roleArnShape,
+} from './cdk-cross-account-ref.js';
 import {
   SECRET_MASK,
   crossStackSourceKey,
@@ -183,15 +194,21 @@ export async function resolveGetStackOutput(
   // cross-account intent. The error message is specific so template
   // authors know to inline the ARN.
   let roleArn: string | undefined;
+  // The aws-cdk-lib-generated cross-account reference (`cdk-cross-account-ref.ts`),
+  // classified ONLY here, inside the `RoleArn` branch: a reference without a
+  // `RoleArn` runs none of it.
+  let cdkRef:
+    | Extract<CdkCrossAccountRefVerdict, { kind: 'generated' | 'producer-absent' }>
+    | undefined;
   if ('RoleArn' in args && args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
     const raw = args['RoleArn'];
-    if (typeof raw !== 'string' || raw === '') {
+    const refuseNonLiteral = (): Error =>
       // The shape through the builder (issue #3441), for the reason the
       // `Invalid Fn::GetAtt format` echo takes it: being pre-resolution
       // answers the secret question, not the control-character one, and
       // `JSON.stringify` escapes C0 controls but passes `U+2028` / `U+2029`
       // and the bidi overrides through as written.
-      throw markNonRetryable(
+      markNonRetryable(
         new Error(
           `Fn::GetStackOutput: RoleArn must be a literal string in the template ` +
             `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
@@ -200,8 +217,30 @@ export async function resolveGetStackOutput(
             }${typeof raw === 'object' ? ` (intrinsic shape: ${this.displayMasked(JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
         )
       );
+    // S1: a literal role ARN, or EXACTLY aws-cdk-lib's `Fn::Join` over
+    // `AWS::Partition`. Any other non-literal keeps the refusal above.
+    const shape = roleArnShape(raw);
+    if ((typeof raw !== 'string' || raw === '') && shape === undefined) throw refuseNonLiteral();
+    if (shape !== undefined) {
+      // S2, memoized per resolver instance.
+      const key = JSON.stringify([
+        shape.form,
+        stackName,
+        shape.accountId,
+        canonicalizeRegion(region),
+        shape.roleName,
+      ]);
+      let verdict = this.cdkCrossAccountRefVerdicts.get(key);
+      if (verdict === undefined) {
+        verdict = classifyCdkCrossAccountRef(shape, stackName, region, this.producerLookup);
+        this.cdkCrossAccountRefVerdicts.set(key, verdict);
+      }
+      // A user-written `Fn::Join` of this shape keeps today's refusal; a
+      // literal `RoleArn` that is not the generated one is used as written.
+      if (verdict.kind === 'not-generated' && typeof raw !== 'string') throw refuseNonLiteral();
+      if (verdict.kind !== 'not-generated') cdkRef = verdict;
     }
-    roleArn = raw;
+    roleArn = typeof raw === 'string' ? raw : shape && roleArnOf(shape, region);
   }
 
   // Reject obvious self-reference (same stack AND same region AND
@@ -330,6 +369,59 @@ export async function resolveGetStackOutput(
       `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
 
+  // The aws-cdk-lib-generated cross-account reference: its role trusts only the
+  // consumer's CloudFormation execution role, so the producer's state is read
+  // through the producer account's CDK lookup role instead, by the same
+  // assume-then-read path. Never the run's own credentials: when the lookup
+  // role cannot be used, the reference is REFUSED with both remedies.
+  let readRoleArn = roleArn;
+  let refuseCdkRead: ((error: unknown) => Error) | undefined;
+  if (cdkRef !== undefined) {
+    const ref = cdkRef;
+    const producerAccount = ref.shape.accountId;
+    const refuseCdkRef = (reason: string): Error =>
+      markNonRetryable(
+        new Error(
+          cdkCrossAccountRefRefusal({
+            consumer: context.stackName
+              ? this.displayMaskedIdent(context.stackName, context, STACK_REF_MAX_CODE_POINTS)
+              : undefined,
+            output: loggedOutputName,
+            producer: loggedStackName,
+            region: displayIdent(loggedRegion),
+            producerAccount,
+            roleName: displayIdent(ref.shape.roleName),
+            consumerAccounts: ref.kind === 'generated' ? ref.consumerAccounts : [],
+            reason,
+          })
+        )
+      );
+    if (ref.kind === 'producer-absent') {
+      throw refuseCdkRef(producerAbsentReason(producerAccount));
+    }
+    if (ref.lookupRoleArn === undefined) {
+      throw refuseCdkRef(noLookupRoleReason(producerAccount));
+    }
+    readRoleArn = ref.lookupRoleArn;
+    const shownLookupRoleArn = displayIdent(readRoleArn, {
+      maxCodePoints: ROLE_ARN_MAX_CODE_POINTS,
+    });
+    // A denied AssumeRole or state read is the refusal naming the remedies,
+    // never a fallback to other credentials. The cause is AWS's text, sanitized.
+    refuseCdkRead = (error: unknown): Error =>
+      refuseCdkRef(
+        `assuming the lookup role ${shownLookupRoleArn} or reading cdkd-state-${producerAccount} ` +
+          `with it failed: ${displayAwsMessage(error instanceof Error ? error.message : String(error))}`
+      );
+    this.logger.debug(
+      safeMsg`Fn::GetStackOutput: ${shownRoleArn} is the AWS CDK-generated cross-account reader role; reading through the producer account's lookup role ${shownLookupRoleArn}`
+    );
+  }
+  const shownReadRoleArn =
+    readRoleArn === roleArn
+      ? shownRoleArn
+      : displayIdent(readRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+
   // Cross-account branch: assume the role, derive the producer's
   // state bucket from the role ARN's account ID, build an ephemeral
   // S3StateBackend pointed at it with the assumed credentials, then
@@ -352,12 +444,12 @@ export async function resolveGetStackOutput(
   // catching up to.
   let stateData: Awaited<ReturnType<S3StateBackend['getState']>>;
   try {
-    stateData = roleArn
-      ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
+    stateData = readRoleArn
+      ? await this.getCrossAccountStackState(readRoleArn, stackName, region, context)
       : await this.getSameAccountStackState(stackName, region, context);
   } catch (error) {
     this.maskStateReadError(
-      error,
+      refuseCdkRead ? refuseCdkRead(error) : error,
       [
         // The pair's replacement is the MASKED spelling, not the bounded
         // one: it rewrites the name inside text another module already
@@ -430,7 +522,7 @@ export async function resolveGetStackOutput(
     // swallowed transient failure.
     throw new Error(
       `Fn::GetStackOutput: stack ${loggedStackName} not found in region ${displayIdent(loggedRegion)}${
-        roleArn ? ` (cross-account via ${shownRoleArn})` : ''
+        roleArn ? ` (cross-account via ${shownReadRoleArn})` : ''
       }. ${
         !roleArn && this.cfnFallback
           ? `Searched cdkd state and CloudFormation stacks. Make sure the producer stack ` +

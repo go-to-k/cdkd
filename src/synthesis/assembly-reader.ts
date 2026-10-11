@@ -134,6 +134,14 @@ export interface StackInfo {
    * absent is equivalent to "no messages".
    */
   messages?: StackMessage[];
+
+  /**
+   * `properties.lookupRole.arn` of the stack artifact, as synthesized (it may
+   * still carry `${AWS::Partition}`). Read, never assumed here: the resolver
+   * uses it only to read this stack's cdkd state for an aws-cdk-lib-generated
+   * cross-account `Fn::GetStackOutput` whose producer this stack is.
+   */
+  lookupRoleArn?: string | undefined;
 }
 
 /**
@@ -591,6 +599,10 @@ export class AssemblyReader {
       nestedTemplates[logicalId] = resolvedNested.path;
     }
 
+    // `?.` on every hop: the manifest is parsed JSON, so `lookupRole` may be
+    // any value, and a non-object simply has no string `arn`.
+    const lookupRoleArn: unknown = props?.lookupRole?.arn;
+
     return {
       stackName,
       displayName: artifact.displayName ?? stackName,
@@ -605,6 +617,7 @@ export class AssemblyReader {
         terminationProtection: props.terminationProtection,
       }),
       ...(Object.keys(nestedTemplates).length > 0 && { nestedTemplates }),
+      ...(typeof lookupRoleArn === 'string' && { lookupRoleArn }),
       messages: collectStackMessages(assemblyDir, artifact),
     };
   }

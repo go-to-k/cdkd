@@ -39,6 +39,13 @@ export interface InferCrossStackStackDepsOptions {
    * deploy.
    */
   kinds?: readonly CrossStackRefKind[];
+  /**
+   * Called with every `Fn::GetStackOutput` argument that carries a `RoleArn`,
+   * as the walk meets it (whatever `kinds` says), so `deploy` can check the
+   * cross-account references before anything is provisioned without a second
+   * walk of every template. A reference without a `RoleArn` never calls it.
+   */
+  onRoleArnReference?: (consumerStackName: string, args: Record<string, unknown>) => void;
 }
 
 /**
@@ -126,6 +133,15 @@ export function inferCrossStackStackDeps(
           producer = exportOwner.get(value);
         }
       } else {
+        if (
+          opts?.onRoleArnReference &&
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          Object.hasOwn(value, 'RoleArn')
+        ) {
+          opts.onRoleArnReference(stack.stackName, value as Record<string, unknown>);
+        }
         if (!wantGetStackOutput) return;
         // Fn::GetStackOutput arg is an object whose StackName names the
         // producer stack directly.
