@@ -114,6 +114,13 @@ import {
   type StackTreeNode,
 } from './state-list-tree.js';
 import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
+import {
+  acceptRefusedAssertion,
+  collectAcceptRefused,
+  confirmAcceptRefused,
+  judgeAcceptRefused,
+  readAcceptRefusedTemplate,
+} from './state-refresh-observed.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
@@ -3895,6 +3902,8 @@ async function stateRefreshObservedCommand(
     all?: boolean;
     yes?: boolean;
     dryRun?: boolean;
+    acceptRefused?: string[];
+    template?: string;
     stateBucket?: string;
     statePrefix: string;
     region?: string;
@@ -3909,6 +3918,33 @@ async function stateRefreshObservedCommand(
   const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  // Issue #3466: the override is per RESOURCE of one stack, so every breadth
+  // is refused before anything is read, and the template it is judged against
+  // is parsed here so an unreadable file fails first.
+  let accept: AcceptRefusedRequest | undefined;
+  if (options.acceptRefused !== undefined) {
+    if (options.acceptRefused.length !== 1) {
+      throw new Error('--accept-refused takes exactly one logical id per run.');
+    }
+    if (options.all || stackArgs.length !== 1) {
+      throw new Error(
+        '--accept-refused applies to one resource of ONE stack: pass a single stack name, not --all.'
+      );
+    }
+    if (options.template === undefined) {
+      throw new Error(
+        '--accept-refused requires --template <file>: the synthesized template this stack was last deployed from.'
+      );
+    }
+    accept = {
+      logicalId: options.acceptRefused[0]!,
+      template: readAcceptRefusedTemplate(options.template),
+      yes: options.yes ?? false,
+    };
+  } else if (options.template !== undefined) {
+    throw new Error('--template is used only with --accept-refused.');
+  }
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
@@ -4002,7 +4038,9 @@ async function stateRefreshObservedCommand(
       }
     }
 
-    if (!options.yes && !options.dryRun) {
+    // `--accept-refused` asks its own question, naming the assertion, once the
+    // record has passed the gate (in `refreshObservedForStack`).
+    if (!options.yes && !options.dryRun && accept === undefined) {
       // The same rendering as the `state orphan` prompt above, for the same
       // reason: this file's OTHER confirmation prompt, built from the same S3
       // key segments (every name, under `--all`) and printed ahead of the
@@ -4107,6 +4145,7 @@ async function stateRefreshObservedCommand(
             dryRun: options.dryRun ?? false,
             logger,
             lockRecovery,
+            ...(accept && { accept }),
           }
         )
       );
@@ -4246,6 +4285,15 @@ async function warnOnLiveForeignLock(
   }
 }
 
+/** A `--accept-refused` run's target (issue #3466). */
+interface AcceptRefusedRequest {
+  logicalId: string;
+  /** The parsed `--template` file the gate judges against. */
+  template: Record<string, unknown>;
+  /** `-y` / `--yes`: the assertion is logged instead of asked. */
+  yes: boolean;
+}
+
 /** Per-stack tallies of `cdkd state refresh-observed`. */
 interface RefreshObservedCounts {
   refreshed: number;
@@ -4284,9 +4332,11 @@ async function refreshObservedForStack(
     // call was working on, rather than whatever `force-unlock` would re-resolve
     // from the ambient profile (issue #2170).
     lockRecovery?: LockRecoveryContext;
+    /** Issue #3466: refresh ONLY this refused resource, clearing its refusal. */
+    accept?: AcceptRefusedRequest;
   }
 ): Promise<RefreshObservedCounts> {
-  const { logger, lockRecovery } = opts;
+  const { logger, lockRecovery, accept } = opts;
   // `stackName` is an S3 key segment under `--all` and `region` always is, so
   // every line naming this record takes `formatStackRefSafe`'s boundary rather
   // than cdkd's own ` (region)` beside a raw value (go-to-k/cdkd#3179).
@@ -4336,7 +4386,47 @@ async function refreshObservedForStack(
   // covered, so a fallback here could no longer fire and would only make a later
   // reader think the guard is at the loop rather than at the load. Same rule the
   // read-only sites in this file apply.
-  const entries = Object.entries(state.resources);
+  let entries = Object.entries(state.resources);
+
+  // Issue #3466. The gate runs on the record as loaded, ahead of the dry-run
+  // branch so a plan and a run refuse alike, and the run then touches only
+  // this one resource.
+  const acceptId = accept?.logicalId;
+  if (accept !== undefined) {
+    const record = Object.hasOwn(state.resources, accept.logicalId)
+      ? state.resources[accept.logicalId]
+      : undefined;
+    const verdict = judgeAcceptRefused(record, accept.logicalId, accept.template, {
+      stackName,
+      region,
+      resources: state.resources,
+    });
+    if (!verdict.ok) {
+      throw new Error(safeMsg`${ref}: ${verdict.reason}`);
+    }
+    entries = [[accept.logicalId, record!]];
+    if (!opts.dryRun) {
+      const assertion = acceptRefusedAssertion(
+        accept.logicalId,
+        record!.resourceType,
+        ref,
+        verdict.legacy
+      );
+      if (accept.yes) {
+        logger.warn(safeMsg`${assertion} (asserted with --yes)`);
+      } else if (!(await confirmAcceptRefused(assertion))) {
+        logger.info('Aborted.');
+        return {
+          refreshed: 0,
+          unsupported: 0,
+          failed: 0,
+          notFound: 0,
+          refusedBaseline: 0,
+          refusedSticky: 0,
+        };
+      }
+    }
+  }
 
   if (entries.length === 0) {
     logger.info(safeMsg`✓ ${ref}: no resources in state, skipping`);
@@ -4355,13 +4445,14 @@ async function refreshObservedForStack(
     let wouldUnsupported = 0;
     let wouldRefuse = 0;
     let wouldRefuseSticky = 0;
-    for (const [, resource] of entries) {
+    for (const [logicalId, resource] of entries) {
       // Issue #2944, and this arm is the reason the dry run has its own loop
       // rather than sharing the real one: it must apply the SAME gate in the
       // SAME order, or the plan promises a refresh the run then declines. It is
       // first here for the same reason it is first there — a refused resource
       // is supported and would otherwise be counted as one that WOULD refresh.
-      if (resource.observedBaselineRefused === true) {
+      // The one `--accept-refused` names passed its own gate (issue #3466).
+      if (resource.observedBaselineRefused === true && logicalId !== acceptId) {
         wouldRefuse++;
         if (refusedBaselineRemedy(resource) !== undefined) wouldRefuseSticky++;
         continue;
@@ -4378,6 +4469,13 @@ async function refreshObservedForStack(
       }
       if (provider.readCurrentState) wouldRefresh++;
       else wouldUnsupported++;
+    }
+    if (accept !== undefined && wouldRefresh === 0) {
+      // The plan refuses as the run does (issue #3466).
+      throw new Error(
+        safeMsg`${ref}: cdkd cannot read ${displayIdent(accept.logicalId)} back from AWS, so no ` +
+          `baseline can be captured and its refusal stands.`
+      );
     }
     logger.info(
       safeMsg`Plan ${ref}: ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
@@ -4460,7 +4558,8 @@ async function refreshObservedForStack(
         // Counted apart from `unsupported`: a refused resource IS supported and
         // WOULD have been refreshed, so folding it into that tally would report
         // a security refusal as missing provider coverage.
-        if (resource.observedBaselineRefused === true) {
+        // The one `--accept-refused` names passed its gate (issue #3466).
+        if (resource.observedBaselineRefused === true && logicalId !== acceptId) {
           refusedBaseline++;
           if (refusedBaselineRemedy(resource) !== undefined) refusedSticky++;
           return;
@@ -4625,6 +4724,13 @@ async function refreshObservedForStack(
             resource.properties ?? {},
             STATE_SOURCED_BASELINE_RULES
           );
+          // Issue #3466: BOTH fields, and only once a baseline was captured —
+          // a marker left without its reason is re-stamped by the next deploy,
+          // and a failed read keeps the refusal.
+          if (logicalId === acceptId) {
+            delete resource.observedBaselineRefused;
+            delete resource.observedBaselineRefusalReason;
+          }
           refreshed++;
         } catch (err) {
           failed++;
@@ -4638,6 +4744,18 @@ async function refreshObservedForStack(
       await Promise.all(tasks);
     });
 
+    if (accept !== undefined && refreshed === 0) {
+      // Nothing was captured, so the refusal stands and nothing is written. A
+      // failed or not-found read is reported by the caller (exit 2); a type
+      // with no read path has no other report.
+      if (unsupported > 0) {
+        throw new Error(
+          safeMsg`${ref}: cdkd cannot read ${displayIdent(accept.logicalId)} back from AWS, so no ` +
+            `baseline was captured and its refusal stands.`
+        );
+      }
+      return { refreshed, unsupported, failed, notFound, refusedBaseline, refusedSticky };
+    }
     state.lastModified = Date.now();
     // `skippedOutputs` (issue #2740) is dropped, as every writer that rebuilds
     // state outside a deploy drops it. This one only rewrites
@@ -4663,6 +4781,12 @@ async function refreshObservedForStack(
         // refused record renders byte-identically to the pre-v10 line.
         (refusedBaseline > 0 ? safeMsg`, ${refusedBaseline} refused (import baseline refusal)` : '')
     );
+    if (accept !== undefined) {
+      logger.info(
+        safeMsg`Accepted: the observed-baseline refusal on ${displayIdent(accept.logicalId)} was cleared ` +
+          `and a baseline was captured.`
+      );
+    }
 
     return { refreshed, unsupported, failed, notFound, refusedBaseline, refusedSticky };
   } finally {
@@ -4735,6 +4859,17 @@ function createStateRefreshObservedCommand(): Command {
     .argument('[stacks...]', 'Stack name(s) to refresh (physical CloudFormation names)')
     .option('--all', 'Refresh every stack in the state bucket', false)
     .option('--dry-run', 'Print the per-stack refresh count without writing state', false)
+    .option(
+      '--accept-refused <logicalId>',
+      'Clear the observed-baseline refusal on ONE resource and capture its baseline, asserting ' +
+        'that AWS holds no secret the template does not spell as a dynamic reference. ' +
+        'Requires --template and a single stack; prompts unless -y / --yes',
+      collectAcceptRefused
+    )
+    .option(
+      '--template <file>',
+      'With --accept-refused: the synthesized template (JSON or YAML) this stack was last deployed from'
+    )
     .addOption(stackRegionOption())
     .action(withErrorHandling(stateRefreshObservedCommand));
 

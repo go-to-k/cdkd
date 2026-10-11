@@ -1914,6 +1914,7 @@
   ],
   "unknownFlagsInIntegs": [
     "--accept",
+    "--accept-refused",
     "--access-key-id",
     "--access-point-id",
     "--account-id",
@@ -2299,6 +2300,7 @@
     "--target-group-name",
     "--target-type",
     "--task-definition",
+    "--template",
     "--template-file",
     "--timeout",
     "--topic-arn",
