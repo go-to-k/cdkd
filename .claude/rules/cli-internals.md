@@ -60,7 +60,7 @@ and the long-running `local start-*` servers deliberately keep human stdout. On
 the two `local invoke*` commands the reservation covers cdkd's logger and the
 container's log pipe; cdk-local's separate logger still reaches stdout, so their
 payload is the LAST stdout line, not the whole stream. Contract in
-`docs/cli-reference.md`, "Output streams: when stdout is a payload".
+`docs/cli-reference-output.md`.
 
 ## Concurrency and per-resource deadlines
 

@@ -6,7 +6,7 @@ const destroyFlow: Diagram = {
   id: 'destroy-flow',
   title: 'What cdkd destroy does, in order',
   description:
-    'cdkd destroy selects the stacks, a consumer before the producers it reads from. It then runs the checks that refuse before anything changes: terminationProtection, an output another stack still imports, a damaged state record, and a missing --yes on a non-interactive stdin. It lists the resources and asks to confirm, takes the stack lock, and deletes the resources, dependents first. A resource with DeletionPolicy Retain is left in AWS and its record dropped; one with Snapshot gets a final snapshot and is then deleted. When every delete is confirmed, state.json and lock.json are removed and the run exits 0, with the event history kept unless --purge-events is passed. When a delete failed or was skipped, or the run was interrupted, state.json is kept with what is left and the run exits 2.',
+    "cdkd destroy selects the stacks; a stack that reads another stack's outputs goes before the stack it reads from. It then runs the checks that refuse before anything changes: terminationProtection, an output another stack still imports, a damaged state record, and a missing --yes on a non-interactive stdin. It lists the resources and asks to confirm, takes the stack lock, and deletes the resources, dependents first. A resource with DeletionPolicy Retain is left in AWS and its record dropped; one with Snapshot gets a final snapshot and is then deleted. When every delete is confirmed, state.json and lock.json are removed and the run exits 0, with the event history kept unless --purge-events is passed. When a delete failed or was skipped, or the run was interrupted, state.json is kept with what is left and the run exits 2.",
   rows: [['select'], ['checks'], ['confirm'], ['delete'], ['clean', 'partial']],
   edges: [
     { from: 'select', to: 'checks' },
@@ -19,7 +19,7 @@ const destroyFlow: Diagram = {
     {
       id: 'select',
       title: 'Select stacks',
-      note: 'A consumer before the producers it reads from',
+      note: "A stack that reads another stack's outputs goes first",
     },
     {
       id: 'checks',
@@ -59,55 +59,50 @@ const scrubTouches: Diagram = {
   id: 'scrub-touches',
   title: 'What cdkd scrub reads and what it rewrites',
   description:
-    'cdkd scrub synthesizes the CDK app, because only the template names the {{resolve:...}} references. It resolves each reference to learn the current secret value, held in memory only. It then rewrites, under each stack lock, the state.json of each target stack and of every nested stack under it: resource properties, attributes and observed properties, rollback-orphan records, outputs and cross-stack read names. After the lock is released it rewrites the entries those stacks publish in the exports index of each region. On a versioned state bucket it finally purges the earlier S3 versions of each key it rewrote. It never touches AWS resources, a rollback journal, a physical id, or a value the template does not reference.',
+    "cdkd scrub synthesizes the CDK app, because only the template says which values are {{resolve:...}} references. It looks up each reference to learn the secret's current value, which it keeps in memory. It then rewrites the state.json of each stack you named and of its nested stacks: resource properties and attributes, stack outputs, and the names of values read from other stacks. Next it updates the exports index, the per-region list of exported values. On a versioned state bucket it finally deletes the earlier S3 versions of the files this run rewrote. It never changes AWS resources, resource names and IDs, or values the template does not reference.",
   rows: [['template'], ['resolve'], ['state'], ['index'], ['purge'], ['untouched']],
   edges: [
     { from: 'template', to: 'resolve' },
     { from: 'resolve', to: 'state' },
-    { from: 'state', to: 'index', label: 'after the lock is released' },
+    { from: 'state', to: 'index' },
     { from: 'index', to: 'purge', label: 'versioned bucket' },
   ],
   nodes: [
     {
       id: 'template',
       title: 'Synthesize the CDK app',
-      note: 'Only the template names the {{resolve:...}} references',
+      note: 'Only the template says which values are {{resolve:...}} references',
     },
     {
       id: 'resolve',
-      title: 'Resolve each reference',
-      note: 'The current secret value, held in memory only',
+      title: 'Look up each reference',
+      note: "The secret's current value, kept in memory",
     },
     {
       id: 'state',
-      title: 'Rewrite state.json, under the stack lock',
+      title: 'Rewrite state.json',
       route: true,
       detail: [
-        'Each target stack and every nested stack under it',
-        'properties, attributes, observedProperties',
-        'Rollback-orphan records',
-        'Outputs and cross-stack read names',
+        'Each stack you named and its nested stacks',
+        'Resource properties and attributes',
+        'Stack outputs',
+        'Names read from other stacks',
       ],
     },
     {
       id: 'index',
-      title: 'Rewrite the exports index entries',
-      note: 'One exports.json per region',
+      title: 'Update the exports index',
+      note: 'The per-region list of exported values',
     },
     {
       id: 'purge',
-      title: 'Purge earlier S3 versions',
-      note: 'Only of the keys this run rewrote',
+      title: 'Delete earlier S3 versions',
+      note: 'Only of the files this run rewrote',
     },
     {
       id: 'untouched',
-      title: 'Never touched',
-      detail: [
-        'AWS resources',
-        'rollback-journal.json',
-        'Physical ids',
-        'Values the template does not reference',
-      ],
+      title: 'Never changed',
+      detail: ['AWS resources', 'Resource names and IDs', 'Values the template does not reference'],
     },
   ],
 };

@@ -52,6 +52,51 @@ const replacementGuard: Diagram = {
   ],
 };
 
+const routeChoice: Diagram = {
+  id: 'safety-route-choice',
+  title: 'How cdkd picks the route for a resource',
+  description:
+    'A resource is about to be created or updated. If its type has no SDK provider, it goes through Cloud Control. If it has one but the resource is already recorded on Cloud Control, it stays on Cloud Control. Otherwise, if the template sets no property the SDK provider does not write, it uses the SDK provider. If the template sets such a property and not every one of them is named in --prefer-sdk-route, it goes through Cloud Control. If every one is named, it uses the SDK provider and the named properties are not written to AWS.',
+  rows: [
+    ['resource', null],
+    ['has-provider', 'cc-no-provider'],
+    ['recorded-cc', 'cc-recorded'],
+    ['unwritten', 'sdk-plain'],
+    ['preferred', 'cc-auto'],
+    ['sdk-dropped', null],
+  ],
+  edges: [
+    { from: 'resource', to: 'has-provider' },
+    { from: 'has-provider', to: 'cc-no-provider', label: 'no' },
+    { from: 'has-provider', to: 'recorded-cc', label: 'yes' },
+    { from: 'recorded-cc', to: 'cc-recorded', label: 'yes' },
+    { from: 'recorded-cc', to: 'unwritten', label: 'no' },
+    { from: 'unwritten', to: 'sdk-plain', label: 'no' },
+    { from: 'unwritten', to: 'preferred', label: 'yes' },
+    { from: 'preferred', to: 'cc-auto', label: 'no' },
+    { from: 'preferred', to: 'sdk-dropped', label: 'yes' },
+  ],
+  nodes: [
+    { id: 'resource', title: 'A resource is about to be created or updated' },
+    { id: 'has-provider', title: 'Does its type have an SDK provider?' },
+    { id: 'cc-no-provider', title: 'Cloud Control', route: true },
+    { id: 'recorded-cc', title: 'Is it already recorded on Cloud Control?' },
+    { id: 'cc-recorded', title: 'Cloud Control', route: true },
+    {
+      id: 'unwritten',
+      title: 'Does the template set a property the SDK provider does not write?',
+    },
+    { id: 'sdk-plain', title: 'SDK provider' },
+    { id: 'preferred', title: 'Is every such property named in --prefer-sdk-route?' },
+    { id: 'cc-auto', title: 'Cloud Control', route: true },
+    {
+      id: 'sdk-dropped',
+      title: 'SDK provider',
+      detail: ['The named properties are not written to AWS'],
+    },
+  ],
+};
+
 const rollbackReplay: Diagram = {
   id: 'rollback-replay',
   title: 'What cdkd rollback reverts and what it leaves',
@@ -102,4 +147,4 @@ const rollbackReplay: Diagram = {
   ],
 };
 
-export const cliSafetyDiagrams: Diagram[] = [replacementGuard, rollbackReplay];
+export const cliSafetyDiagrams: Diagram[] = [replacementGuard, routeChoice, rollbackReplay];

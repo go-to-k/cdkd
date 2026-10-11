@@ -126,22 +126,33 @@ function breakWord(word: string, fit: number): string[] {
 
 export function wrap(text: string, maxWidth: number, advance: number): string[] {
   const fit = Math.max(1, Math.floor(maxWidth / advance));
-  const lines: string[] = [];
-  let line = '';
   const words = text
     .split(/\s+/)
     .filter(Boolean)
     .flatMap((word) => (word.length > fit ? breakWord(word, fit) : [word]));
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (next.length <= fit || !line) {
-      line = next;
-    } else {
-      lines.push(line);
-      line = word;
+  const fill = (limit: number): string[] => {
+    const filled: string[] = [];
+    let line = '';
+    for (const word of words) {
+      const next = line ? `${line} ${word}` : word;
+      if (next.length <= limit || !line) {
+        line = next;
+      } else {
+        filled.push(line);
+        line = word;
+      }
     }
+    if (line) filled.push(line);
+    return filled;
+  };
+  // The same number of lines, as even as they go: filling each line to the
+  // width leaves one word alone on the last ("Release the" / "lock").
+  let lines = fill(fit);
+  for (let limit = fit - 1; lines.length > 1 && limit > 0; limit--) {
+    const narrower = fill(limit);
+    if (narrower.length > lines.length || narrower.some((line) => line.length > limit)) break;
+    lines = narrower;
   }
-  if (line) lines.push(line);
   return lines;
 }
 
@@ -344,10 +355,22 @@ export function renderSvg(diagram: Diagram, variant: Variant): string {
     // The turn is made above the room the row's labels take, so that a label
     // beside one arrow is never under the branch to the next.
     const yMid = y2 - (labelRooms.get(edge.to) ?? 0) - Math.min(m.rowGap / 2, (y2 - y1) / 2);
+    // An arrow to a row further down passes the rows between. Where a box of
+    // those rows is in its way, it goes down the nearest gap between boxes.
+    const between = [...boxes.values()].filter((box) => box.y > y1 && box.y + box.h < y2);
+    const blocked = (x: number) => between.some((box) => x > box.x - 4 && x < box.x + box.w + 4);
+    const gaps = between.flatMap((box) => [box.x - m.colGap / 2, box.x + box.w + m.colGap / 2]);
+    const xGap = blocked(x1)
+      ? gaps
+          .filter((x) => x > m.pad && x < m.width - m.pad && !blocked(x))
+          .sort((p, q) => Math.abs(p - x1) - Math.abs(q - x1))[0]
+      : undefined;
     const d =
-      Math.abs(x1 - x2) < 1
-        ? `M${fmt(x1)} ${fmt(y1)}V${fmt(y2 - 1)}`
-        : `M${fmt(x1)} ${fmt(y1)}V${fmt(yMid)}H${fmt(x2)}V${fmt(y2 - 1)}`;
+      xGap !== undefined
+        ? `M${fmt(x1)} ${fmt(y1)}V${fmt(y1 + m.rowGap / 2)}H${fmt(xGap)}V${fmt(yMid)}H${fmt(x2)}V${fmt(y2 - 1)}`
+        : Math.abs(x1 - x2) < 1
+          ? `M${fmt(x1)} ${fmt(y1)}V${fmt(y2 - 1)}`
+          : `M${fmt(x1)} ${fmt(y1)}V${fmt(yMid)}H${fmt(x2)}V${fmt(y2 - 1)}`;
     parts.push(`<path class="d-edge" d="${d}"/>`);
     parts.push(arrowHead(x2, y2, 'down'));
     const lines = edgeLabels.get(edge);

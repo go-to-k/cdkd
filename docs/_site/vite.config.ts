@@ -8,7 +8,7 @@ import type { SsgNavigationGroup } from '@ox-content/vite-plugin';
 import { oxContentVue } from '@ox-content/vite-plugin-vue';
 import vize from '@vizejs/vite-plugin';
 import { homeTitlePlugin } from './plugins/home-title.js';
-import { navToggleScript } from './plugins/nav-toggle.js';
+import { navOpenCurrentScript, navToggleScript } from './plugins/nav-toggle.js';
 import {
   type SearchScope,
   scopeShortcutsScript,
@@ -73,7 +73,12 @@ const SEARCH_SCOPES: SearchScope[] = [
   { id: 'contributing', label: 'the contributor docs' },
 ];
 
-type ScopedNavigationGroup = SsgNavigationGroup & { scope: string };
+/** A page under another page: `under` names its parent's path in the same group. */
+type NavigationItem = SsgNavigationGroup['items'][number] & { under?: string };
+type ScopedNavigationGroup = Omit<SsgNavigationGroup, 'items'> & {
+  scope: string;
+  items: NavigationItem[];
+};
 
 const navigation: ScopedNavigationGroup[] = [
   {
@@ -98,6 +103,9 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'Cross-Stack References', path: '/cross-stack-references' },
       { title: 'State Store', path: '/state-store' },
       { title: 'Import & CFn Migration', path: '/import' },
+      { title: 'Options and the import plan', path: '/import-reference', under: '/import' },
+      { title: 'By resource type', path: '/import-resource-types', under: '/import' },
+      { title: 'After an import', path: '/import-after', under: '/import' },
       { title: 'Export to CloudFormation', path: '/export' },
       { title: 'Mixed Estates', path: '/mixed-estates' },
       { title: 'CI: Per-PR Environments', path: '/ci-per-pr' },
@@ -109,20 +117,121 @@ const navigation: ScopedNavigationGroup[] = [
     title: 'CLI Reference',
     items: [
       { title: 'Overview', path: '/cli-reference' },
+      {
+        title: 'Credentials and --role-arn',
+        path: '/cli-reference-credentials',
+        under: '/cli-reference',
+      },
+      { title: 'Region resolution', path: '/cli-reference-region', under: '/cli-reference' },
+      { title: 'Output streams', path: '/cli-reference-output', under: '/cli-reference' },
+      { title: 'Exit codes', path: '/cli-reference-exit-codes', under: '/cli-reference' },
       { title: 'cdkd bootstrap', path: '/cli-bootstrap' },
+      {
+        title: 'Tearing down asset storage',
+        path: '/cli-bootstrap-teardown',
+        under: '/cli-bootstrap',
+      },
       { title: 'cdkd list', path: '/cli-list' },
       { title: 'cdkd synth', path: '/cli-synth' },
       { title: 'cdkd diff', path: '/cli-diff' },
+      { title: 'JSON output', path: '/cli-diff-json', under: '/cli-diff' },
+      { title: 'Stack outputs', path: '/cli-diff-outputs', under: '/cli-diff' },
+      { title: 'Secrets and NoEcho values', path: '/cli-diff-secrets', under: '/cli-diff' },
+      { title: 'Nested stacks', path: '/cli-diff-nested-stacks', under: '/cli-diff' },
+      {
+        title: 'Incomplete or malformed state',
+        path: '/cli-diff-state-records',
+        under: '/cli-diff',
+      },
       { title: 'Deploy: waits & concurrency', path: '/cli-deploy' },
+      { title: 'Wait mode details', path: '/cli-deploy-waits', under: '/cli-deploy' },
+      { title: 'The stack lock', path: '/cli-deploy-lock', under: '/cli-deploy' },
+      { title: 'Custom resources', path: '/cli-deploy-custom-resources', under: '/cli-deploy' },
+      { title: 'A damaged state record', path: '/cli-deploy-damaged-state', under: '/cli-deploy' },
       { title: 'Deploy: tuning', path: '/cli-deploy-tuning' },
+      {
+        title: 'Names prefixed before v0.94.0',
+        path: '/cli-deploy-tuning-name-migration',
+        under: '/cli-deploy-tuning',
+      },
       { title: 'Deploy: safety & compatibility flags', path: '/cli-deploy-safety' },
+      {
+        title: 'Provisioning route flags',
+        path: '/cli-deploy-safety-routing',
+        under: '/cli-deploy-safety',
+      },
+      {
+        title: 'Recreating on the other route',
+        path: '/cli-deploy-safety-recreate',
+        under: '/cli-deploy-safety',
+      },
+      {
+        title: 'Replacements and name collisions',
+        path: '/cli-deploy-safety-replacement',
+        under: '/cli-deploy-safety',
+      },
+      {
+        title: 'Strictness and approval flags',
+        path: '/cli-deploy-safety-ci-flags',
+        under: '/cli-deploy-safety',
+      },
+      {
+        title: 'Checks on the cloud assembly',
+        path: '/cli-deploy-safety-assembly-checks',
+        under: '/cli-deploy-safety',
+      },
       { title: 'Destroy flags & guards', path: '/cli-destroy' },
+      {
+        title: 'Data guards and final snapshots',
+        path: '/cli-destroy-guards',
+        under: '/cli-destroy',
+      },
+      { title: 'Deletion protection', path: '/cli-destroy-protection', under: '/cli-destroy' },
+      { title: 'Confirmation prompts', path: '/cli-destroy-prompts', under: '/cli-destroy' },
+      { title: 'Skipped resources', path: '/cli-destroy-skipped', under: '/cli-destroy' },
+      {
+        title: 'Interruption and damaged state',
+        path: '/cli-destroy-edge-cases',
+        under: '/cli-destroy',
+      },
       { title: 'cdkd rollback', path: '/cli-rollback' },
+      {
+        title: 'Failed operations',
+        path: '/cli-rollback-failed-operations',
+        under: '/cli-rollback',
+      },
+      { title: 'Limitations', path: '/cli-rollback-limitations', under: '/cli-rollback' },
       { title: 'cdkd drift', path: '/cli-drift' },
+      {
+        title: 'Accept and revert in detail',
+        path: '/cli-drift-accept-revert',
+        under: '/cli-drift',
+      },
+      { title: 'What was not compared', path: '/cli-drift-not-compared', under: '/cli-drift' },
+      { title: 'Secrets and redacted values', path: '/cli-drift-secrets', under: '/cli-drift' },
+      { title: 'Nested stacks', path: '/cli-drift-nested-stacks', under: '/cli-drift' },
+      { title: 'JSON output', path: '/cli-drift-json', under: '/cli-drift' },
       { title: 'cdkd state', path: '/cli-state' },
+      { title: 'Writing subcommands', path: '/cli-state-writing', under: '/cli-state' },
+      { title: 'Malformed records', path: '/cli-state-malformed', under: '/cli-state' },
       { title: 'cdkd events', path: '/cli-events' },
       { title: 'cdkd export', path: '/cli-export' },
+      { title: 'What blocks an export', path: '/cli-export-blocks', under: '/cli-export' },
+      {
+        title: 'Custom Resources and IAM policies',
+        path: '/cli-export-two-phase',
+        under: '/cli-export',
+      },
+      { title: 'Nested stacks', path: '/cli-export-nested-stacks', under: '/cli-export' },
+      {
+        title: 'The template CloudFormation receives',
+        path: '/cli-export-template',
+        under: '/cli-export',
+      },
       { title: 'cdkd scrub', path: '/cli-scrub' },
+      { title: 'What scrub covers', path: '/cli-scrub-what-it-covers', under: '/cli-scrub' },
+      { title: 'Across stacks', path: '/cli-scrub-multi-stack', under: '/cli-scrub' },
+      { title: 'Findings and refusals', path: '/cli-scrub-findings', under: '/cli-scrub' },
       { title: 'cdkd gc', path: '/cli-gc' },
       { title: 'cdkd publish-assets', path: '/cli-publish-assets' },
       { title: 'cdkd force-unlock', path: '/cli-force-unlock' },
@@ -133,10 +242,46 @@ const navigation: ScopedNavigationGroup[] = [
     title: 'Local Execution',
     items: [
       { title: 'Overview', path: '/local-emulation' },
+      {
+        title: 'Value resolution',
+        path: '/local-emulation-value-resolution',
+        under: '/local-emulation',
+      },
+      {
+        title: 'Assembly paths',
+        path: '/local-emulation-assembly-trust',
+        under: '/local-emulation',
+      },
       { title: 'local invoke', path: '/local-invoke' },
+      { title: 'Layers', path: '/local-invoke-layers', under: '/local-invoke' },
       { title: 'local start-api', path: '/local-start-api' },
+      {
+        title: 'Routing and request handling',
+        path: '/local-start-api-routing',
+        under: '/local-start-api',
+      },
+      { title: 'Authorizers', path: '/local-start-api-authorizers', under: '/local-start-api' },
+      { title: 'Mutual TLS', path: '/local-start-api-mtls', under: '/local-start-api' },
+      { title: 'WebSocket APIs', path: '/local-start-api-websocket', under: '/local-start-api' },
+      {
+        title: 'REST v1 integrations',
+        path: '/local-start-api-rest-integrations',
+        under: '/local-start-api',
+      },
+      {
+        title: 'Containers, reloading and debugging',
+        path: '/local-start-api-containers',
+        under: '/local-start-api',
+      },
       { title: 'local run-task', path: '/local-run-task' },
+      { title: 'Images', path: '/local-run-task-images', under: '/local-run-task' },
+      { title: 'Secrets', path: '/local-run-task-secrets', under: '/local-run-task' },
       { title: 'local start-service', path: '/local-start-service' },
+      {
+        title: 'Image overrides',
+        path: '/local-start-service-image-overrides',
+        under: '/local-start-service',
+      },
       { title: 'local start-alb', path: '/local-start-alb' },
       { title: 'local start-cloudfront', path: '/local-start-cloudfront' },
       { title: 'local invoke-agentcore', path: '/local-invoke-agentcore' },
@@ -148,16 +293,54 @@ const navigation: ScopedNavigationGroup[] = [
     title: 'Reference',
     items: [
       { title: 'Supported Resources', path: '/supported-resources' },
+      {
+        title: 'Per-type behaviour notes',
+        path: '/supported-resources-type-notes',
+        under: '/supported-resources',
+      },
       { title: 'Feature Parity', path: '/supported-features' },
       { title: 'Provisioning Layers', path: '/provisioning-layers' },
       { title: 'State Management', path: '/state-management' },
+      { title: 'Physical IDs', path: '/state-management-physical-ids', under: '/state-management' },
+      { title: 'Secrets in state', path: '/state-management-secrets', under: '/state-management' },
+      { title: 'Locking', path: '/state-management-locking', under: '/state-management' },
+      {
+        title: 'Schema versions and upgrades',
+        path: '/state-management-schema-versions',
+        under: '/state-management',
+      },
+      {
+        title: 'Malformed records',
+        path: '/state-management-malformed-records',
+        under: '/state-management',
+      },
+      {
+        title: 'Backup and bucket security',
+        path: '/state-management-backup-and-security',
+        under: '/state-management',
+      },
       { title: 'Deployment Events', path: '/deployment-events' },
     ],
   },
   {
     scope: 'help',
     title: 'Help',
-    items: [{ title: 'Troubleshooting', path: '/troubleshooting' }],
+    items: [
+      { title: 'Troubleshooting', path: '/troubleshooting' },
+      { title: 'Credential and permission errors', path: '/troubleshooting-permissions' },
+      { title: 'Lock and state errors', path: '/troubleshooting-locks-state' },
+      { title: 'Templates cdkd refuses', path: '/troubleshooting-templates' },
+      { title: 'Failures during a deploy', path: '/troubleshooting-deploy' },
+      { title: 'References cdkd cannot resolve', path: '/troubleshooting-references' },
+      { title: 'Slow deploys, throttling and retries', path: '/troubleshooting-slow-deploys' },
+      { title: 'AWS does not match the template', path: '/troubleshooting-mismatch' },
+      { title: 'Asset publishing errors', path: '/troubleshooting-assets' },
+      { title: 'Problems destroying a stack', path: '/troubleshooting-destroy' },
+      { title: 'After a failed or interrupted deploy', path: '/troubleshooting-failed-deploy' },
+      { title: 'Possible duplicates after a server error', path: '/troubleshooting-duplicates' },
+      { title: 'Proxies and corporate networks', path: '/troubleshooting-proxy' },
+      { title: 'Frequently asked questions', path: '/troubleshooting-faq' },
+    ],
   },
   {
     scope: 'contributing',
@@ -165,8 +348,43 @@ const navigation: ScopedNavigationGroup[] = [
     items: [
       { title: 'Contributing Guide', path: '/contributing' },
       { title: 'Architecture', path: '/architecture' },
+      {
+        title: 'The deploy pipeline',
+        path: '/architecture-deploy-pipeline',
+        under: '/architecture',
+      },
+      {
+        title: 'Destroy, state and locking',
+        path: '/architecture-destroy-and-state',
+        under: '/architecture',
+      },
+      {
+        title: 'Providers and intrinsic functions',
+        path: '/architecture-provisioning',
+        under: '/architecture',
+      },
       { title: 'Provider Development', path: '/provider-development' },
+      {
+        title: 'Import and drift support',
+        path: '/provider-development-import-and-drift',
+        under: '/provider-development',
+      },
+      {
+        title: 'Testing and shipping',
+        path: '/provider-development-testing',
+        under: '/provider-development',
+      },
+      {
+        title: 'Provider reference',
+        path: '/provider-development-reference',
+        under: '/provider-development',
+      },
       { title: 'Testing', path: '/testing' },
+      {
+        title: 'Writing an integration fixture',
+        path: '/testing-integration-fixtures',
+        under: '/testing',
+      },
     ],
   },
 ];
@@ -190,7 +408,21 @@ const sidebar = navigation.map((group) => ({
   text: group.title,
   collapsed: false,
   stickyCollapsed: true,
-  items: group.items.map((item) => ({ text: item.title, link: item.path ?? item.href ?? '' })),
+  items: group.items
+    .filter((item) => item.under === undefined)
+    .map((item) => {
+      const link = item.path ?? item.href ?? '';
+      const children = group.items.filter((child) => child.under === item.path);
+      if (children.length === 0) return { text: item.title, link };
+      // A page with pages under it: its title opens the page, and the pages
+      // under it fold away until the reader is in that section.
+      return {
+        text: item.title,
+        link,
+        collapsed: true,
+        items: children.map((child) => ({ text: child.title, link: child.path ?? '' })),
+      };
+    }),
 }));
 
 // Islands: one small module on every page, which loads Vue and the
@@ -331,11 +563,21 @@ const theme = (command: 'build' | 'serve') =>
       '    }',
       '  });',
       '})();',
+      // Output and error messages quoted in a `text` fence wrap rather than
+      // scroll sideways: their lines are as long as the tool printed them.
+      // A fence that draws (a tree, a flow) keeps its lines, since wrapping
+      // one would break the drawing.
+      '(function () {',
+      '  document.querySelectorAll(\'.content pre[data-language="text"]\').forEach(function (pre) {',
+      "    if (!/[\u2500-\u257f\u25b2-\u25c4]/.test(pre.textContent)) pre.classList.add('cdkd-pre-wrap');",
+      '  });',
+      '})();',
       // One button per search scope under the search input
       // (plugins/search-scopes.ts).
       scopeShortcutsScript(SEARCH_SCOPES),
       // The sidebar groups' open and close, where CSS alone cannot animate
       // it (plugins/nav-toggle.ts).
+      navOpenCurrentScript(),
       navToggleScript(Number.parseInt(tokens.motion.duration.normal, 10), tokens.motion.ease),
     ].join('\n'),
     embed: {

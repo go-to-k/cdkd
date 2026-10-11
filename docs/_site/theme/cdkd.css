@@ -289,6 +289,33 @@ body {
       }
     }
 
+  }
+
+  /* A page with pages under it: its title is the link to the page, and the
+     chevron at the end of the row folds the pages under it. */
+  & .nav-details > .nav-summary {
+    align-items: center;
+    justify-content: space-between;
+    border-radius: var(--cdkd-radius-sm);
+
+    & > .nav-link {
+      flex: 1;
+      min-inline-size: 0;
+    }
+
+    &::before {
+      order: 1;
+      flex: none;
+      margin: 0 0.6875rem 0 var(--cdkd-space-2);
+      inline-size: 0.3125rem;
+      block-size: 0.3125rem;
+      border-width: 0 1.5px 1.5px 0;
+      color: var(--cdkd-color-text-muted);
+      transition: transform var(--cdkd-motion-normal) var(--cdkd-motion-ease);
+    }
+  }
+
+  & :is(.nav-section--collapsible, .nav-details) {
     &::details-content {
       block-size: 0;
       overflow: clip;
@@ -980,6 +1007,28 @@ body {
     outline: var(--cdkd-border-focus-width) solid var(--cdkd-color-focus);
     outline-offset: 1px;
   }
+}
+
+/* -- Line breaks ---------------------------------------------------------------- */
+
+/* A heading breaks into lines of like length, never one word on its own; body
+   text avoids a short last line. Both fall back to the browser's default. */
+.content :is(h1, h2, h3, h4, h5),
+.content .ox-card-title,
+.sidebar .nav-link,
+.toc .toc-link {
+  text-wrap: balance;
+}
+
+.content :is(p, li, dd, blockquote, td, figcaption) {
+  text-wrap: pretty;
+}
+
+/* Quoted output wraps where it would scroll (set by the theme script). */
+.content pre.cdkd-pre-wrap,
+.content pre.cdkd-pre-wrap code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* -- Steps and cards ---------------------------------------------------------- */

@@ -7,9 +7,10 @@ paths:
 # `cdkd scrub` — src/cli/commands/scrub.ts
 
 The redaction machinery this command drives:
-[layout-deployment-secrets.md](layout-deployment-secrets.md). Exit codes and
-every exit-1 arm live in [docs/cli-scrub.md](../../docs/cli-scrub.md), which is
-the ONE copy — do not restate them here.
+[layout-deployment-secrets.md](layout-deployment-secrets.md). Exit codes live in
+[docs/cli-scrub.md](../../docs/cli-scrub.md) and every exit-1 arm in
+[docs/cli-scrub-findings.md](../../docs/cli-scrub-findings.md), each the ONE
+copy — do not restate them here.
 
 `cdkd scrub [STACK...]` is the permanent state secret-hygiene command (clean +
 audit), not incident-only tooling. It rewrites persisted state so a resolved

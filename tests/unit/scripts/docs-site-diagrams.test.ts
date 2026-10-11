@@ -165,6 +165,42 @@ describe('layout', () => {
     for (const label of beside) expect(label.x + label.text.length * 6.3).toBeLessThan(right!.x);
   });
 
+  // A tree two rows deep: the root points at every box, the last row too.
+  const tree: Diagram = {
+    id: 'tree',
+    title: 'Tree',
+    description: 'A root and five boxes in two rows under it.',
+    rows: [['root'], ['a', 'b'], ['c', 'd', 'e']],
+    edges: ['a', 'b', 'c', 'd', 'e'].map((to) => ({ from: 'root', to })),
+    nodes: ['root', 'a', 'b', 'c', 'd', 'e'].map((id) => ({ id, title: id })),
+  };
+
+  it.each(VARIANTS)('passes an arrow between the boxes of a row it skips (%s)', (variant) => {
+    const { boxes } = layout(tree, variant);
+    const skipped = [boxes.get('a')!, boxes.get('b')!];
+    const paths = [...renderSvg(tree, variant).matchAll(/<path class="d-edge" d="([^"]+)"/g)].map(
+      (match) => match[1]!,
+    );
+    expect(paths).toHaveLength(5);
+    for (const d of paths) {
+      // Walk the path's vertical runs: `M x y`, then `V y` and `H x` in turn.
+      let [x, y] = d.slice(1).split(/[VH]/)[0]!.split(' ').map(Number) as [number, number];
+      for (const [, command, value] of d.matchAll(/([VH])([\d.]+)/g)) {
+        if (command === 'H') {
+          x = Number(value);
+          continue;
+        }
+        const [top, bottom] = [Math.min(y, Number(value)), Math.max(y, Number(value))];
+        for (const box of skipped) {
+          const insideColumn = x > box.x && x < box.x + box.w;
+          const throughRow = top < box.y && bottom > box.y + box.h;
+          expect(insideColumn && throughRow).toBe(false);
+        }
+        y = Number(value);
+      }
+    }
+  });
+
   it('draws the narrow and the wide drawing in one figure', () => {
     const figure = renderFigure(tiny);
     expect(figure).toMatch(/^<figure class="cdkd-diagram"><svg [^>]*cdkd-diagram__svg--wide/);

@@ -82,7 +82,7 @@ const driftVsDiff: Diagram = {
   id: 'guide-drift-vs-diff',
   title: 'What cdkd diff and cdkd drift each compare',
   description:
-    'Three things describe a stack. The template is what your CDK app asks for now. The cdkd state record is what cdkd last deployed, with the properties it read back from AWS at that time. AWS holds what exists now. cdkd diff compares the template with the state record and needs the CDK app. cdkd drift compares the state record with AWS and needs no CDK app.',
+    'Three things describe a stack. The template is what your CDK app asks for now. cdkd state is what cdkd last deployed, with the properties it read back from AWS at that time. AWS holds what exists now. cdkd diff compares the template with state and needs the CDK app. cdkd drift compares state with AWS and needs no CDK app.',
   rows: [['template'], ['state'], ['aws']],
   edges: [
     { from: 'template', to: 'state', label: 'cdkd diff compares these two' },
@@ -92,7 +92,7 @@ const driftVsDiff: Diagram = {
     { id: 'template', title: 'Template', note: 'What your CDK app asks for now.' },
     {
       id: 'state',
-      title: 'cdkd state record',
+      title: 'cdkd state',
       route: true,
       note: 'What cdkd last deployed, with the properties it read back from AWS then.',
     },
@@ -104,7 +104,7 @@ const orphanVsDestroy: Diagram = {
   id: 'guide-orphan-vs-destroy',
   title: 'What destroy and orphan each remove',
   description:
-    'A deployed stack is two things: the AWS resources and the cdkd state record that tracks them. A destroy deletes the AWS resources and then the state record. An orphan removes only the state record, or one resource entry in it, and leaves the AWS resources running and untracked.',
+    'A deployed stack is two things: the AWS resources and the cdkd state that tracks them. A destroy deletes the AWS resources and then the state. An orphan removes only the state, or one resource entry in it, and leaves the AWS resources running and untracked.',
   rows: [['stack'], ['destroy', 'orphan']],
   edges: [
     { from: 'stack', to: 'destroy', label: 'destroy' },
@@ -114,12 +114,12 @@ const orphanVsDestroy: Diagram = {
     {
       id: 'stack',
       title: 'A deployed stack',
-      detail: ['AWS resources', 'The cdkd state record that tracks them'],
+      detail: ['AWS resources', 'The cdkd state that tracks them'],
     },
     {
       id: 'destroy',
       title: 'Nothing is left',
-      detail: ['AWS resources: deleted', 'State record: deleted'],
+      detail: ['AWS resources: deleted', 'State: deleted'],
     },
     {
       id: 'orphan',
@@ -127,7 +127,7 @@ const orphanVsDestroy: Diagram = {
       route: true,
       detail: [
         'AWS resources: untouched',
-        'State record or entry: removed',
+        'State, or one entry in it: removed',
         'cdkd no longer tracks them',
       ],
     },
@@ -138,7 +138,7 @@ const provisioningRoute: Diagram = {
   id: 'guide-provisioning-route',
   title: 'How cdkd picks the layer for a resource',
   description:
-    'cdkd asks three questions about a resource on every deploy. Is it already recorded as cc-api in state? If yes, it stays on the Cloud Control API, apart from a few exempt types. If no: does an SDK provider exist for its type? If none exists, the Cloud Control API handles it. If one exists: does the provider cover every top-level property in the template? If a property would be dropped, the resource is auto-routed through the Cloud Control API. Otherwise the SDK provider handles it.',
+    'cdkd asks three questions about a resource on every deploy. Is it already recorded as cc-api in state? If yes, it stays on the Cloud Control API, apart from a few types that move back. If no: does an SDK provider exist for its type? If none exists, the Cloud Control API handles it. If one exists: does the provider handle every top-level property in the template? If it would leave a property out, the resource goes through the Cloud Control API. Otherwise the SDK provider handles it.',
   rows: [['recorded'], ['exists'], ['covers'], ['sdk']],
   edges: [
     { from: 'recorded', to: 'exists', label: 'no' },
@@ -149,7 +149,7 @@ const provisioningRoute: Diagram = {
     {
       id: 'recorded',
       title: 'Already recorded as cc-api in state?',
-      note: 'Yes: it stays on the Cloud Control API, apart from a few exempt types.',
+      note: 'Yes: it stays on the Cloud Control API, apart from a few types that move back.',
     },
     {
       id: 'exists',
@@ -158,8 +158,8 @@ const provisioningRoute: Diagram = {
     },
     {
       id: 'covers',
-      title: 'Does it cover every top-level property in the template?',
-      note: 'No: auto-routed through the Cloud Control API, so the property reaches AWS.',
+      title: 'Does it handle every top-level property in the template?',
+      note: 'No: it goes through the Cloud Control API, so the property reaches AWS.',
     },
     { id: 'sdk', title: 'SDK provider', route: true, note: 'The fast path.' },
   ],
