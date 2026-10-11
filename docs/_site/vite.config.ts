@@ -8,6 +8,11 @@ import type { SsgNavigationGroup } from '@ox-content/vite-plugin';
 import { oxContentVue } from '@ox-content/vite-plugin-vue';
 import vize from '@vizejs/vite-plugin';
 import { homeTitlePlugin } from './plugins/home-title.js';
+import {
+  type SearchScope,
+  scopeShortcutsScript,
+  searchScopesPlugin,
+} from './plugins/search-scopes.js';
 import { registryName } from './islands/html.js';
 import { islandSsrPlugin } from './islands/ssr-plugin.js';
 import { codeSpans } from './plugins/code-spans.js';
@@ -52,58 +57,78 @@ const SITE_OUT_DIR = 'dist/site';
 // internal material (docs/design/**, docs/plans/**,
 // docs/_generated/**, coverage matrices, changelog-cdkd.md) simply gets
 // no navigation entry.
-const navigation: SsgNavigationGroup[] = [
+//
+// The groups follow a reader from first deploy to reference: getting
+// started, then one guide per task, then the pages looked things up in.
+// Each group names the search scope its pages belong to (`@cli deploy`
+// searches the CLI reference only); plugins/search-scopes.ts carries that
+// into the search index.
+const SEARCH_SCOPES: SearchScope[] = [
+  { id: 'guide', label: 'the guides' },
+  { id: 'cli', label: 'the CLI reference' },
+  { id: 'local', label: 'local execution' },
+  { id: 'reference', label: 'the reference pages' },
+  { id: 'help', label: 'troubleshooting' },
+  { id: 'contributing', label: 'the contributor docs' },
+];
+
+type ScopedNavigationGroup = SsgNavigationGroup & { scope: string };
+
+const navigation: ScopedNavigationGroup[] = [
   {
-    title: 'Guide',
+    scope: 'guide',
+    title: 'Get Started',
     items: [
       { title: 'Introduction', path: '/introduction' },
       { title: 'Getting Started', path: '/getting-started' },
-      { title: 'Using with AI Agents', path: '/ai-agents' },
       { title: 'Core Concepts', path: '/concepts' },
       { title: 'Benchmarks', path: '/benchmarks' },
     ],
   },
   {
-    title: 'Features',
+    scope: 'guide',
+    title: 'Guides',
     items: [
       { title: 'Wait Modes', path: '/wait-modes' },
       { title: 'Rollback', path: '/rollback' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },
+      { title: 'Stack Outputs', path: '/stack-outputs' },
+      { title: 'Cross-Stack References', path: '/cross-stack-references' },
       { title: 'State Store', path: '/state-store' },
       { title: 'Import & CFn Migration', path: '/import' },
       { title: 'Export to CloudFormation', path: '/export' },
       { title: 'Mixed Estates', path: '/mixed-estates' },
-      { title: 'Stack Outputs', path: '/stack-outputs' },
-      { title: 'Provisioning Layers', path: '/provisioning-layers' },
-      { title: 'Deployment Events', path: '/deployment-events' },
       { title: 'CI: Per-PR Environments', path: '/ci-per-pr' },
+      { title: 'Using with AI Agents', path: '/ai-agents' },
     ],
   },
   {
+    scope: 'cli',
     title: 'CLI Reference',
     items: [
       { title: 'Overview', path: '/cli-reference' },
-      { title: 'Deploy: waits & concurrency', path: '/cli-deploy' },
-      { title: 'Deploy: tuning', path: '/cli-deploy-tuning' },
-      { title: 'Deploy: safety & compatibility flags', path: '/cli-deploy-safety' },
+      { title: 'cdkd bootstrap', path: '/cli-bootstrap' },
       { title: 'cdkd list', path: '/cli-list' },
       { title: 'cdkd synth', path: '/cli-synth' },
       { title: 'cdkd diff', path: '/cli-diff' },
-      { title: 'cdkd drift', path: '/cli-drift' },
+      { title: 'Deploy: waits & concurrency', path: '/cli-deploy' },
+      { title: 'Deploy: tuning', path: '/cli-deploy-tuning' },
+      { title: 'Deploy: safety & compatibility flags', path: '/cli-deploy-safety' },
       { title: 'Destroy flags & guards', path: '/cli-destroy' },
-      { title: 'cdkd bootstrap', path: '/cli-bootstrap' },
-      { title: 'cdkd gc', path: '/cli-gc' },
       { title: 'cdkd rollback', path: '/cli-rollback' },
-      { title: 'cdkd force-unlock', path: '/cli-force-unlock' },
+      { title: 'cdkd drift', path: '/cli-drift' },
+      { title: 'cdkd state', path: '/cli-state' },
+      { title: 'cdkd events', path: '/cli-events' },
       { title: 'cdkd export', path: '/cli-export' },
       { title: 'cdkd scrub', path: '/cli-scrub' },
+      { title: 'cdkd gc', path: '/cli-gc' },
       { title: 'cdkd publish-assets', path: '/cli-publish-assets' },
-      { title: 'cdkd events', path: '/cli-events' },
-      { title: 'cdkd state', path: '/cli-state' },
+      { title: 'cdkd force-unlock', path: '/cli-force-unlock' },
     ],
   },
   {
+    scope: 'local',
     title: 'Local Execution',
     items: [
       { title: 'Overview', path: '/local-emulation' },
@@ -118,19 +143,23 @@ const navigation: SsgNavigationGroup[] = [
     ],
   },
   {
+    scope: 'reference',
     title: 'Reference',
     items: [
       { title: 'Supported Resources', path: '/supported-resources' },
       { title: 'Feature Parity', path: '/supported-features' },
+      { title: 'Provisioning Layers', path: '/provisioning-layers' },
       { title: 'State Management', path: '/state-management' },
-      { title: 'Cross-Stack References', path: '/cross-stack-references' },
+      { title: 'Deployment Events', path: '/deployment-events' },
     ],
   },
   {
+    scope: 'help',
     title: 'Help',
     items: [{ title: 'Troubleshooting', path: '/troubleshooting' }],
   },
   {
+    scope: 'contributing',
     title: 'Contributing',
     items: [
       { title: 'Contributing Guide', path: '/contributing' },
@@ -198,6 +227,7 @@ const theme = (command: 'build' | 'serve') =>
     nav: [
       { text: 'Guide', link: '/getting-started/' },
       { text: 'Reference', link: '/cli-reference/' },
+      { text: 'Troubleshooting', link: '/troubleshooting/' },
       { text: 'GitHub', link: 'https://github.com/go-to-k/cdkd' },
     ],
     socialLinks: {
@@ -301,6 +331,9 @@ const theme = (command: 'build' | 'serve') =>
       '    }',
       '  });',
       '})();',
+      // One button per search scope under the search input
+      // (plugins/search-scopes.ts).
+      scopeShortcutsScript(SEARCH_SCOPES),
     ].join('\n'),
     embed: {
       head: [
@@ -394,6 +427,14 @@ export default defineConfig(({ command }) => ({
       codeGroups: true,
       siteMaps: true,
       publishState: true,
+      // Authoring blocks the pages use beyond GFM: `::: steps` around a
+      // numbered procedure, `::: card-grid` / `::: card` for the hubs that
+      // send a reader on, and `{kbd:...}` for a key to press. Notes use
+      // GitHub's `> [!NOTE]` alerts, which need no option and also render
+      // on GitHub.
+      steps: true,
+      cards: true,
+      keyboardKeys: true,
       ogImage: true,
       ogImageOptions: {
         // A Vue SFC, compiled with vize like the site's components.
@@ -458,5 +499,8 @@ export default defineConfig(({ command }) => ({
       outDir: SITE_OUT_DIR,
       indexMarkdownPath: HOME_MARKDOWN,
     }),
+    // After the SSG: give each document in the search index the scope of its
+    // sidebar group (plugins/search-scopes.ts).
+    searchScopesPlugin({ outDir: SITE_OUT_DIR, groups: navigation }),
   ],
 }));

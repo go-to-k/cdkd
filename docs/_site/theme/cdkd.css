@@ -932,6 +932,137 @@ body {
   & .search-result:is(.selected, :hover) {
     background: var(--cdkd-color-selected);
   }
+
+  /* The scope a result came from, beside its title. */
+  & .search-result-scope {
+    margin-inline-start: var(--cdkd-space-2);
+    color: var(--cdkd-color-text-muted);
+    font-family: var(--cdkd-font-mono);
+    font-size: var(--cdkd-type-caption-size);
+    font-weight: 400;
+  }
+}
+
+/* One button per search scope, under the input (plugins/search-scopes.ts). */
+.cdkd-search-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cdkd-space-2);
+  padding: var(--cdkd-space-2) var(--cdkd-space-4);
+  border-block-end: 1px solid var(--cdkd-color-border-subtle);
+}
+
+.cdkd-search-scope {
+  padding: var(--cdkd-space-1) var(--cdkd-space-2);
+  border: 1px solid var(--cdkd-color-border-subtle);
+  border-radius: var(--cdkd-radius-sm);
+  background: transparent;
+  color: var(--cdkd-color-text-secondary);
+  font-family: var(--cdkd-font-mono);
+  font-size: var(--cdkd-type-caption-size);
+  cursor: pointer;
+  transition:
+    background var(--cdkd-motion-fast) var(--cdkd-motion-ease),
+    color var(--cdkd-motion-fast) var(--cdkd-motion-ease);
+
+  &:hover {
+    background: var(--cdkd-color-surface-alt);
+    color: var(--cdkd-color-text);
+  }
+
+  &[aria-pressed='true'] {
+    border-color: var(--cdkd-color-border);
+    background: var(--cdkd-color-selected);
+    color: var(--cdkd-color-text);
+  }
+
+  &:focus-visible {
+    outline: var(--cdkd-border-focus-width) solid var(--cdkd-color-focus);
+    outline-offset: 1px;
+  }
+}
+
+/* -- Steps and cards ---------------------------------------------------------- */
+
+/* `::: steps`: a numbered procedure, each step hung off a rule down the side. */
+.content .ox-steps__list {
+  margin: var(--cdkd-space-6) 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: cdkd-step;
+}
+
+.content .ox-steps__item {
+  position: relative;
+  margin: 0;
+  padding: 0 0 var(--cdkd-space-6) var(--cdkd-space-8);
+  border-inline-start: 1px solid var(--cdkd-color-border-subtle);
+  margin-inline-start: var(--cdkd-space-3);
+  counter-increment: cdkd-step;
+
+  &:last-child {
+    padding-block-end: 0;
+    border-inline-start-color: transparent;
+  }
+
+  &::before {
+    content: counter(cdkd-step);
+    position: absolute;
+    inset-inline-start: calc(var(--cdkd-space-3) * -1);
+    inset-block-start: 0;
+    display: grid;
+    place-items: center;
+    inline-size: var(--cdkd-space-6);
+    block-size: var(--cdkd-space-6);
+    border: 1px solid var(--cdkd-color-border);
+    border-radius: 50%;
+    background: var(--cdkd-color-bg);
+    color: var(--cdkd-color-text);
+    font-size: var(--cdkd-type-caption-size);
+    font-weight: var(--cdkd-weight-semibold);
+    font-variant-numeric: tabular-nums;
+  }
+
+  & > :first-child {
+    margin-block-start: 0;
+    font-weight: var(--cdkd-weight-semibold);
+  }
+
+  & > :last-child {
+    margin-block-end: 0;
+  }
+}
+
+/* `::: card-grid` of `::: card`: where a hub page sends its reader next. */
+.content .ox-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  gap: var(--cdkd-space-3);
+  margin: var(--cdkd-space-6) 0;
+}
+
+.content .ox-card {
+  padding: var(--cdkd-space-4);
+  border: 1px solid var(--cdkd-color-border-subtle);
+  border-radius: var(--cdkd-radius-md);
+  background: var(--cdkd-color-surface);
+
+  & .ox-card-title {
+    margin: 0 0 var(--cdkd-space-2);
+    color: var(--cdkd-color-text);
+    font-weight: var(--cdkd-weight-semibold);
+  }
+
+  & > :not(.ox-card-title) {
+    margin: 0;
+    color: var(--cdkd-color-text-secondary);
+    font-size: var(--cdkd-type-small-size);
+    line-height: var(--cdkd-type-small-leading);
+  }
+
+  & > :not(.ox-card-title) + :not(.ox-card-title) {
+    margin-block-start: var(--cdkd-space-2);
+  }
 }
 
 /* -- Phone chrome ------------------------------------------------------------- */

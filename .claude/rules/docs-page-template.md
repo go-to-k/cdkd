@@ -82,6 +82,30 @@ page's own table of contents, which is how a browser reader navigates.
 **Show the command.** A page documenting a command that contains no example
 invocation is not finished.
 
+## Blocks beyond GFM
+
+Pages are read on GitHub too, so reach for these only where they earn it.
+
+- **A note the reader must not miss** is a GitHub alert (`> [!NOTE]`,
+  `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`), which renders in both
+  places. A few per page; an aside is a sentence.
+- **A procedure followed in order** is a numbered list inside `::: steps` /
+  `:::`. The first line of each item is the step's title. `<pm>` tabs do not
+  render inside a list item.
+- **A hub sending the reader on** is one `::: card-grid` of `::: card Title`
+  blocks, each a sentence and a link.
+- **A flow, a decision or a layout** is a diagram: a text fence the reader can
+  follow on GitHub, named in its info string (`` ```text diagram=<id> ``) and
+  drawn from data in `docs/_site/diagrams/`. Keep the two in agreement.
+
+## Search scopes
+
+A page's search scope (`@cli deploy`) is its sidebar group's `scope` in
+`docs/_site/vite.config.ts`; `docs/_site/plugins/search-scopes.ts` writes it
+into the search index, and the build stops on an indexed page no group lists. Pages
+stay flat in `docs/` because their URLs and anchors are linked from released
+binaries. A new scope is added to `SEARCH_SCOPES` too.
+
 ## Voice
 
 **Describe current behaviour.** Not how it got that way. "Previously...",
