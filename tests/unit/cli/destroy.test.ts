@@ -722,13 +722,14 @@ describe('cdkd destroy: terminationProtection guard', () => {
     const snaps: Array<{ destroyClient: number; awsDestroy: number; sigintArmed: boolean; sigtermArmed: boolean }> = [];
     return Object.assign(snaps, {
       snap(backend: { destroyClient: ReturnType<typeof vi.fn> }) {
-        const results = (AwsClients as unknown as ReturnType<typeof vi.fn>).mock.results;
+        const results = (AwsClients as unknown as ReturnType<typeof vi.fn>).mock.results as Array<{
+          value: { destroy: ReturnType<typeof vi.fn> };
+        }>;
+        let awsDestroy = 0;
+        for (const r of results) awsDestroy += r.value.destroy.mock.calls.length;
         snaps.push({
           destroyClient: backend.destroyClient.mock.calls.length,
-          awsDestroy: results.reduce(
-            (n: number, r: { value: { destroy: ReturnType<typeof vi.fn> } }) => n + r.value.destroy.mock.calls.length,
-            0
-          ),
+          awsDestroy,
           sigintArmed: process.listenerCount('SIGINT') > sigint0,
           sigtermArmed: process.listenerCount('SIGTERM') > sigterm0,
         });
