@@ -123,8 +123,8 @@ verify, clean up.
 
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell
-   # Budget: 2x the LONGEST PASS in the ledger's history, floor 1500s — not the
-   # last: one fixture's PASSes vary ~2x on AWS-side waits (go-to-k/cdkd#4720),
+   # Budget: 2x the LONGEST PASS in the ledger's last 300 commits, floor 1500s —
+   # not the last: PASS durations vary with AWS-side waits (go-to-k/cdkd#4720),
    # and a FAIL row times the failure, not a pass.
    L=../../../docs/_generated/integ-last-run.tsv; T="<test-name>"
    P='$1==t && $3=="PASS" && $4~/^[0-9]+$/{print $4; exit}'
