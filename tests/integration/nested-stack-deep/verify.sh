@@ -94,11 +94,13 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # deploy that was NOT refused writes `~Child`, `~Child~Grandchild`,
 # `~Child~Grandchild~Grandchild`, ... so the sweep is by PREFIX, not by a key
 # list. The literal `~` keeps the prefix from widening past this fixture.
+# The retained.json tombstone persists after a clean destroy by design (#4705),
+# like deployments/, so neither is a state record a deploy wrote.
 list_nested_state_keys() {
   aws s3api list-objects-v2 \
     --bucket "${STATE_BUCKET}" \
     --prefix "cdkd/${STACK}~" \
-    --query 'Contents[].Key' \
+    --query "Contents[?!ends_with(Key, '/retained.json') && !contains(Key, '/deployments/')].Key" \
     --output text
 }
 
