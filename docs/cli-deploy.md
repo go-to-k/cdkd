@@ -196,6 +196,31 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   applies only to the first route. A resource of either type that is routed
   through Cloud Control waits for its final state whatever the flag.
 
+## The same stack name under another state prefix
+
+A stack name is one deployment per account and region, as in CloudFormation.
+A deploy enforces that in two places, and refuses when a check fails:
+
+- **Before a create under a generated name.** For a queue, topic, log group,
+  alarm, EventBridge rule, S3 bucket, ECS cluster, load balancer, target
+  group or state machine, the deploy looks the name up first. If a resource
+  holds the name and nothing this stack records names it, that create is
+  refused with `GENERATED_NAME_HELD`. See
+  [Name check before a create](state-store-name-check.md).
+- **Against the stack registry.** A first deploy claims the stack's marker in
+  the state bucket, and refuses when the marker names another prefix. A later
+  deploy reads the marker only when its plan deletes or replaces a resource,
+  or adds or updates a nested stack. See
+  [Stack registry](state-store-registry.md).
+
+An ordinary redeploy pays for neither check: it looks no name up and makes no
+registry request.
+
+When the deploy fails, its automatic rollback keeps a resource it created,
+and does not delete it, if another prefix holds the stack or the check cannot
+run. [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
+explains why.
+
 ## In this section
 
 - [Deploy: wait mode details](cli-deploy-waits.md): what `--no-wait` leaves
@@ -225,8 +250,9 @@ Exit `1` covers bad arguments (including `--no-wait` with `--full-wait`), an
 auth failure, a synthesis crash, a refused state record, and a resource
 failure that the automatic rollback then handled.
 
-Exit `2` means a delete was skipped, or a replacement's old resource
-survives. cdkd keeps the state, and running the deploy again usually clears
+Exit `2` means a delete was skipped, a replacement's old resource survives,
+or a replacement was refused because another state prefix records the stack
+(or that check could not run). cdkd keeps the state, and running the deploy again usually clears
 the code. `--allow-unaddressed` turns this exit into `0`.
 
 Under `--full-wait`, an ECS service that never stabilizes fails the deploy, so

@@ -361,7 +361,8 @@ or expired credentials, a failed `sts:AssumeRole`, and less common grants.
 ### Locks and state
 
 [Lock and state errors](troubleshooting-locks-state.md): a lock nobody holds
-any more, a corrupted state file, and state that disagrees with AWS.
+any more, a corrupted state file, state that disagrees with AWS, and a stack
+name that two state prefixes record.
 
 ### A template cdkd refuses
 

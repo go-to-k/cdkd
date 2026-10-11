@@ -16,13 +16,14 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -46,11 +47,33 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 const mockListStacks = vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     listStacks: mockListStacks,
   })),
 }));
 
-const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<void>>();
+const mockForceReleaseLock = vi.fn<
+  (
+    stackName: string,
+    region?: string,
+    beforeDelete?: (horizon: number) => Promise<void>
+  ) => Promise<number | undefined>
+>();
+/** The lock manager's real order: read the lock, hand its horizon over, then delete. */
+const events: string[] = [];
+const releasing = (horizon: number | undefined) =>
+  async (_s: string, _r?: string, beforeDelete?: (h: number) => Promise<void>) => {
+    if (horizon !== undefined && beforeDelete) await beforeDelete(horizon).catch(() => undefined);
+    events.push('delete');
+    return horizon;
+  };
+const mockNoteAbandoned = vi.fn<(at: number) => Promise<void>>(async () => undefined);
+const mockLedgerForStack = vi.fn((_backend: unknown, _stack: string, _region: string) => ({
+  noteAbandoned: mockNoteAbandoned,
+}));
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', () => ({
+  ledgerForStack: (...args: [unknown, string, string]) => mockLedgerForStack(...args),
+}));
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
@@ -139,7 +162,7 @@ describe('cdkd force-unlock exit code', () => {
     // The walk must not abort on the first failure: `Third` comes after
     // `Second` and has to have been attempted.
     expect(mockForceReleaseLock).toHaveBeenCalledTimes(3);
-    expect(mockForceReleaseLock).toHaveBeenNthCalledWith(3, 'Third', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenNthCalledWith(3, 'Third', 'us-east-1', expect.any(Function));
   });
 
   it('exits 1 once when one stack fails in several regions', async () => {
@@ -154,5 +177,58 @@ describe('cdkd force-unlock exit code', () => {
     expect(code).toBe(1);
     // Both regions attempted — a failure in the first must not skip the second.
     expect(mockForceReleaseLock).toHaveBeenCalledTimes(2);
+  });
+
+  it("records the lock's lease horizon in the create-token ledger BEFORE the lock is deleted (go-to-k/cdkd#4705 (d))", async () => {
+    events.length = 0;
+    mockNoteAbandoned.mockImplementationOnce(async () => {
+      events.push('ledger');
+    });
+    mockForceReleaseLock.mockImplementation(releasing(5000));
+
+    const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(code).toBeUndefined();
+    expect(mockLedgerForStack).toHaveBeenCalledWith(expect.anything(), 'MyStack', 'us-east-1');
+    expect(mockNoteAbandoned).toHaveBeenCalledWith(5000);
+    expect(events).toEqual(['ledger', 'delete']);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('records nothing when the lock had no LastModified', async () => {
+    mockForceReleaseLock.mockImplementation(releasing(undefined));
+
+    await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(mockNoteAbandoned).not.toHaveBeenCalled();
+  });
+
+  it('(d) a ledger write that fails once is retried, and then nothing is warned', async () => {
+    mockForceReleaseLock.mockImplementation(releasing(5000));
+    mockNoteAbandoned.mockRejectedValueOnce(new Error('InternalError'));
+
+    const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(code).toBeUndefined();
+    expect(mockNoteAbandoned).toHaveBeenCalledTimes(2);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('(c)(d) a ledger write that fails twice: the lock is still deleted, exit 0, and the warning names the permissive direction', async () => {
+    events.length = 0;
+    mockForceReleaseLock.mockImplementation(releasing(5000));
+    mockNoteAbandoned
+      .mockRejectedValueOnce(new Error('AccessDenied: create-tokens.json'))
+      .mockRejectedValueOnce(new Error('AccessDenied: create-tokens.json'));
+
+    const code = await runForceUnlock(['MyStack', '--state-bucket', 'b']);
+
+    expect(code).toBeUndefined();
+    expect(events).toEqual(['delete']);
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('Lock released for stack'));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('may take back a resource of those names that another deployment creates')
+    );
   });
 });

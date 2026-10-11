@@ -157,12 +157,23 @@ const mockGetState = vi.fn<
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 // go-to-k/cdkd#4523: the import marks its ids on the rollback journal first.
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
+// go-to-k/cdkd#4705: the stack registry the import claims after writing.
+const registry = vi.hoisted(() => ({
+  getRegistryMarker: vi.fn(async () => null),
+  claimRegistryMarker: vi.fn(async () => 'claimed' as const),
+  listTopLevelPrefixes: vi.fn(async () => [] as string[]),
+}));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    prefix: 'cdkd',
+    destroyClient: vi.fn(),
     verifyBucketExists: mockVerifyBucketExists,
     getState: mockGetState,
     saveState: mockSaveState,
     markRollbackJournalImported: mockMarkRollbackJournalImported,
+    getRegistryMarker: registry.getRegistryMarker,
+    claimRegistryMarker: registry.claimRegistryMarker,
+    listTopLevelPrefixes: registry.listTopLevelPrefixes,
   })),
 }));
 
@@ -1140,6 +1151,28 @@ describe('cdkd import', () => {
     await expect(runImport(['import', 'NonExistent', '--app', 'x'])).rejects.toThrow();
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(
       /No stacks matching NonExistent found in assembly\. Available: A, B/
+    );
+  });
+
+  it('D-7: after writing the record, claims the stack registry marker through the guard (scan once, then claim)', async () => {
+    registry.getRegistryMarker.mockClear();
+    registry.claimRegistryMarker.mockClear();
+    registry.listTopLevelPrefixes.mockClear();
+    const tmpl = template({
+      MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockReturnValue({ import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })) });
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    expect(registry.getRegistryMarker).toHaveBeenCalledWith('S', expect.any(String));
+    expect(registry.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
+    expect(registry.claimRegistryMarker).toHaveBeenCalledTimes(1);
+    expect(registry.claimRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      mockSaveState.mock.invocationCallOrder[0]!
     );
   });
 

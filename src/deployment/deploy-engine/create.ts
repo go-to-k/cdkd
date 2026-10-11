@@ -1,13 +1,16 @@
+import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import type { DeployEngine } from '../deploy-engine.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
 import { acceptedCreateOnlyDropsField } from './record-shape.js';
-import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
+import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
+import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import {
@@ -196,6 +199,16 @@ export async function provisionCreate(
       ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
+  // go-to-k/cdkd#4705: likewise a resource already holding the name cdkd
+  // GENERATES for it, unless this stack's own evidence names that resource.
+  await refuseUnlicensedGeneratedName.call(this, {
+    logicalId,
+    resourceType,
+    stackName,
+    createdVia: createDecision.provisionedBy,
+    resolvedProps,
+  });
+
   // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
   // already holding its explicit name must not run onto one.
   await refuseTakenCreateName.call(this, {
@@ -209,27 +222,40 @@ export async function provisionCreate(
     stateResources,
   });
 
-  const result = await this.withRetry(
-    () =>
-      // Issue #1903: the SAME bag, bound to this call's async chain so
-      // `NestedStackProvider` can seed it into the child engine it
-      // builds. Inside the retry arrow, so every attempt is scoped.
-      withCurrentResourceSecrets(createSecrets, () =>
-        createProvider.create(logicalId, resourceType, createProps, {
-          // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
-          // so a `{{resolve:secretsmanager:...}}` property is plaintext by
-          // now; a provider that echoes one into its own warn is outside
-          // both existing masking boundaries (this engine's error/reason
-          // text and the resolver's debug line). Give it the capability
-          // rather than the bag — see `SecretMaskingContext`.
-          maskSecrets: createSecretMasker(createSecrets),
-        })
-      ),
-    logicalId,
-    undefined,
-    undefined,
-    createProvider
-  );
+  // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent
+  // whose outcome is unknown) and drops (not sent, returned, or rejected).
+  this.generatedNameGuard?.noteSent(logicalId);
+  let result: Awaited<ReturnType<typeof createProvider.create>>;
+  try {
+    result = await this.withRetry(
+      () =>
+        // Issue #1903: the SAME bag, bound to this call's async chain so
+        // `NestedStackProvider` can seed it into the child engine it
+        // builds. Inside the retry arrow, so every attempt is scoped.
+        withCurrentResourceSecrets(createSecrets, () =>
+          createProvider.create(logicalId, resourceType, createProps, {
+            // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+            // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+            // now; a provider that echoes one into its own warn is outside
+            // both existing masking boundaries (this engine's error/reason
+            // text and the resolver's debug line). Give it the capability
+            // rather than the bag — see `SecretMaskingContext`.
+            maskSecrets: createSecretMasker(createSecrets),
+          })
+        ),
+      logicalId,
+      undefined,
+      undefined,
+      createProvider
+    );
+  } catch (error) {
+    // go-to-k/cdkd#4705: a create rejected outright made nothing, so its
+    // intent is dropped at the deploy's end; an unknown outcome keeps it.
+    this.generatedNameGuard?.noteFailed(logicalId, error);
+    throw error;
+  }
+
+  this.generatedNameGuard?.noteReturned(logicalId);
 
   // Issue #2274: BEFORE the record is built, so the needles exist by the
   // time anything is persisted, and before any dependent resolves against
@@ -305,6 +331,117 @@ export async function provisionCreate(
   renderer.removeTask(logicalId);
   this.logger.info(`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`);
   return;
+}
+
+/**
+ * go-to-k/cdkd#4705: act on the verdict for this create's cdkd-generated name
+ * (`GeneratedNameGuard.admit`, which also records the name as this stack's
+ * intent right before the create). A free name, or a holder this stack's own
+ * evidence names, creates as before; a lookup the service refused (403) warns
+ * and creates; any other holder, or a lookup that failed otherwise, refuses
+ * this create before it is sent -- CloudFormation fails a create whose name is
+ * taken with "already exists", and cdkd's create of these types would instead
+ * take the resource over and record it as this stack's.
+ */
+async function refuseUnlicensedGeneratedName(
+  this: DeployEngine,
+  input: {
+    logicalId: string;
+    resourceType: string;
+    stackName: string;
+    createdVia: ProvisionedBy | undefined;
+    resolvedProps: Record<string, unknown>;
+  }
+): Promise<void> {
+  const { logicalId, resourceType } = input;
+  const asked = this.generatedNameGuard?.candidate(logicalId);
+  // Routed to Cloud Control at create time after all: its handlers refuse an
+  // existing name themselves.
+  if (asked === undefined || input.createdVia === 'cc-api') return;
+  const verdict = await this.generatedNameGuard!.admit(logicalId, input.resolvedProps);
+  if (verdict === undefined) return;
+  const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
+  const named = `the cdkd-generated ${asked.property ?? 'name'} ${displaySafe(asked.name)}`;
+  const adoptsText =
+    `its create API hands back or overwrites an existing resource of that name instead of ` +
+    `refusing it`;
+  const refuse = (message: string): never => {
+    throw markNonRetryable(
+      markRefusedBeforeApplying(new CdkdError(message, 'GENERATED_NAME_HELD'))
+    );
+  };
+  switch (verdict.kind) {
+    case 'free':
+    case 'licensed':
+      return;
+    case 'unchecked':
+      this.logger.warn(
+        safeMsg`${subject} is created with ${named} without checking whether another resource already ` +
+          safeMsg`holds it: the lookup was refused (${describeAwsFailure(verdict.error).summary}). ` +
+          `Grant this identity the type's Describe / List permission to have cdkd refuse ` +
+          `taking over another deployment's resource.`
+      );
+      return;
+    case 'failed':
+      // go-to-k/cdkd#4705 review H-4: a Ctrl-C ended the deletion cooldown --
+      // an interrupt, never a refusal (and never a rollback trigger).
+      if (isInterruptedWaitError(verdict.error)) throw verdict.error;
+      return refuse(
+        `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
+          `whether another resource already holds it (${describeAwsFailure(verdict.error).summary}). ` +
+          `${displaySafe(logicalId)} was not created. Re-run the deploy once the check can succeed.`
+      );
+    case 'held': {
+      const nested = input.stackName.includes('~');
+      const top = input.stackName.split('~')[0]!;
+      const importLine = nested
+        ? `adopt it through the top-level stack ${quotedOrDescribed(top, 'stack name')} with \`cdkd import\``
+        : `adopt it with \`${
+            pasteableCommand(
+              'cdkd import',
+              [
+                { value: input.stackName, hole: 'stack' },
+                {
+                  flag: '--resource',
+                  value: `${logicalId}=${verdict.holder}`,
+                  hole: 'logicalId=physicalId',
+                },
+              ],
+              recoveryCommandFlags(this.options.refusalRecovery).flags
+            ).command
+          }\``;
+      if (verdict.ownIntent !== undefined) {
+        // Review D1 (the maintainer's decision): this stack's ledger names the
+        // name, but cannot prove this holder is what its create made.
+        const why =
+          verdict.ownIntent === 'abandoned'
+            ? 'a deploy of this stack that was killed or force-unlocked'
+            : 'a create of this stack that came back failed (a timeout or a server error)';
+        return refuse(
+          `${subject} would be created with ${named}, which an existing resource ` +
+            `(${displaySafe(verdict.holder)}) already holds. This stack's create-token ledger ` +
+            `records that ${why} sent this name, but this type reports no creation time, so cdkd ` +
+            `cannot tell that resource is the one it made rather than another deployment's ` +
+            `created since. Since ${adoptsText}, creating it would take that resource over. ` +
+            `${displaySafe(logicalId)} was not created. The likely cause: the resource is this ` +
+            `stack's own, from that deploy. If it is, ${importLine} and re-run; if it is not, ` +
+            `this stack is also deployed under another state backend (go-to-k/cdkd#4705).`
+        );
+      }
+      return refuse(
+        `${subject} would be created with ${named}, which an existing resource ` +
+          `(${displaySafe(verdict.holder)}) already holds, and nothing this stack records names ` +
+          `that resource: not its state, its rollback journal or create-token ledger, nor what a ` +
+          `destroy of it under this state prefix kept. Since ${adoptsText}, creating it would take ` +
+          `that resource over, as CloudFormation refuses with "already exists". ` +
+          `${displaySafe(logicalId)} was not created. The likely cause: this stack is also deployed under another state backend ` +
+          `(another --state-prefix, --state-bucket or account), where cdkd generates the same ` +
+          `names. One stack name per account and region is supported (go-to-k/cdkd#4705): ` +
+          `deploy it under one backend only, or give this stack another name. If the resource ` +
+          `is this stack's own, ${importLine} and re-run.`
+      );
+    }
+  }
 }
 
 /**

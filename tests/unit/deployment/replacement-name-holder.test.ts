@@ -664,10 +664,17 @@ describe('replacementOldHoldsSentName', () => {
       // (`|| ` / `?? ` after the name property), not a copy elsewhere.
       expect(text.split(source).length - 1, `${type}: ${file} occurrences of ${source}`).toBe(1);
       const at = text.indexOf(source);
-      expect(
-        /as string \| undefined\)\s*(\|\||\?\?)\s*$/.test(text.slice(Math.max(0, at - 120), at)),
-        `${type}: ${source} is not the create's name fallback in ${file}`
-      ).toBe(true);
+      const before = text.slice(Math.max(0, at - 120), at);
+      // The create's name fallback itself, or (go-to-k/cdkd#4705) the return of
+      // the provider's `generatedCreateName`, which its create then calls.
+      const asFallback = /as string \| undefined\)\s*(\|\||\?\?)\s*$/.test(before);
+      const asGenerated =
+        /\breturn\s*$/.test(before) &&
+        /generatedCreateName\(/.test(text.slice(Math.max(0, at - 400), at)) &&
+        /as string \| undefined\)\s*\|\|\s*\(this\.generatedCreateName\(/.test(text);
+      expect(asFallback || asGenerated, `${type}: ${source} is not the create's name fallback in ${file}`).toBe(
+        true
+      );
       // Never also trusted as verbatim: one table owns a type.
       expect(reverseReplacementTrustsGeneratedName(type), type).toBe(false);
     }

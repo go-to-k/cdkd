@@ -95,3 +95,25 @@ describe('ProviderRegistry --allow-unsupported-types escape hatch', () => {
     expect(() => registry.getProvider('AWS::AppMesh::Route')).toThrow();
   });
 });
+
+describe('getProviderFor quiet (go-to-k/cdkd#4705 review H-6)', () => {
+  it('routes the same, without the debug line, when quiet', () => {
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry, providerClasses);
+    const debug = (registry as unknown as { logger: { debug: (...a: unknown[]) => void } }).logger;
+    const calls: unknown[][] = [];
+    const real = debug.debug;
+    debug.debug = (...a: unknown[]) => {
+      calls.push(a);
+    };
+    try {
+      const quiet = registry.getProviderFor({ resourceType: 'AWS::SQS::Queue', properties: {}, quiet: true });
+      expect(calls).toEqual([]);
+      const loud = registry.getProviderFor({ resourceType: 'AWS::SQS::Queue', properties: {} });
+      expect(loud).toEqual(quiet);
+      expect(calls.map((c) => String(c[0]))).toContain('Using specific SDK provider for AWS::SQS::Queue');
+    } finally {
+      debug.debug = real;
+    }
+  });
+});

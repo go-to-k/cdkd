@@ -65,6 +65,10 @@ function install(segments: unknown[] = [segment(1, orphanOp('orphan-stream', 'or
     stateBackend: {
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
+      // go-to-k/cdkd#4705: no registry marker yet; the claim succeeds.
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+      getRegistryMarker: vi.fn().mockResolvedValue(null),
+      claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
       getState: vi.fn().mockResolvedValue({
         state: {
           version: 8,

@@ -15,8 +15,10 @@ import {
   displayIdent,
   displaySafe,
   displayStackName,
+  safeMsg,
 } from '../../utils/display-safe.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { ledgerForStack } from '../../provisioning/providers/create-token-ledger.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -119,8 +121,33 @@ async function forceUnlockCommand(
           : `${displayStackName(stackName)} (legacy lock key)`;
         logger.info(`Force-unlocking stack: ${where}`);
         try {
-          await lockManager.forceReleaseLock(stackName, r);
+          // go-to-k/cdkd#4705 review G-1/B1/(d): the run that held it created
+          // nothing after its lease horizon (last renewal plus the lock's
+          // renewal interval), recorded in the stack's create-token ledger
+          // BEFORE the lock goes, retried once. The delete never waits on it.
+          let ledgerError: unknown;
+          let recorded = false;
+          await lockManager.forceReleaseLock(stackName, r, async (horizon) => {
+            if (r === undefined) return;
+            const ledger = ledgerForStack(stateBackend, stackName, r);
+            for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
+              try {
+                await ledger.noteAbandoned(horizon);
+                recorded = true;
+              } catch (error) {
+                ledgerError = error;
+              }
+            }
+          });
           logger.info(`✓ Lock released for stack: ${where}`);
+          if (!recorded && ledgerError !== undefined) {
+            logger.warn(
+              safeMsg`Lock released, but the create-token ledger of ${where} could not record when the ` +
+                safeMsg`abandoned run stopped: ${describeAwsFailure(ledgerError).summary}. ` +
+                `A later deploy may take back a resource of those names that another deployment ` +
+                `creates.`
+            );
+          }
         } catch (error) {
           const message = describeAwsFailure(error).detail;
           if (message.includes('No lock found') || message.includes('NoSuchKey')) {

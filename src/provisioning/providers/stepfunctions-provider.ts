@@ -113,7 +113,7 @@ export class StepFunctionsProvider implements ResourceProvider {
 
     const stateMachineName =
       (properties['StateMachineName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 80 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     const roleArn = properties['RoleArn'] as string | undefined;
 
     if (!roleArn) {
@@ -481,12 +481,36 @@ export class StepFunctionsProvider implements ResourceProvider {
    * fallback to `Properties.<NameField>` in `resolveExplicitPhysicalId`
    * is skipped here.
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['StateMachineName']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 80 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: the state machine's `creationDate` (epoch ms), so a
+   * kept one licenses only a holder created no later than it was kept.
+   */
+  async holderCreatedAt(_resourceType: string, physicalId: string): Promise<number | undefined> {
+    const resp = await this.getClient().send(
+      new DescribeStateMachineCommand({ stateMachineArn: physicalId })
+    );
+    return resp.creationDate instanceof Date ? resp.creationDate.getTime() : undefined;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
         const resp = await this.getClient().send(
           new DescribeStateMachineCommand({ stateMachineArn: input.knownPhysicalId })
         );
+        // go-to-k/cdkd#4705: a machine being deleted holds nothing to take
+        // over (a create of its name waits the deletion out itself).
+        if (resp.status === 'DELETING') return null;
         // Issue #3627: the map `create()` / `update()` record; the resolver
         // served the ARN for `Name` and `StateMachineRevisionId`.
         return {

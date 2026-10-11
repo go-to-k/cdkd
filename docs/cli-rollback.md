@@ -224,6 +224,22 @@ path that deletes one.
   rollback then fails that one operation and keeps the journal. See
   [When cdkd refuses to delete](cli-destroy-guards.md#when-cdkd-refuses-to-delete).
 
+## The same stack name under another state prefix
+
+`cdkd rollback` refuses when the state bucket also records the stack and
+region under another `--state-prefix`. It refuses under the lock, before the
+plan, the prompt and any replay.
+
+A rollback deletes what the failed deploy created. When two prefixes record
+one stack name, a create may have been handed the other deployment's
+resource, so deleting it is not safe.
+
+Drop the record you are not keeping with the `cdkd state orphan ...
+--state-prefix <prefix>` command the refusal prints, and run the rollback
+again. The answer comes from the [stack registry](state-store-registry.md).
+If S3 denies access to the stack's marker, the rollback warns and falls back
+to listing the bucket's prefixes.
+
 ## Known limitations
 
 A rollback cannot undo everything. The plan shows each of these before you

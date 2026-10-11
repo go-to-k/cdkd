@@ -77,6 +77,7 @@ vi.mock('../../../src/utils/bucket-region-client.js', () => ({
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     verifyBucketExists: mockVerifyBucketExists,
   })),
 }));

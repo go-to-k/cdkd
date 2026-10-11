@@ -34,6 +34,12 @@ import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 import {
+  CrossPrefixReadError,
+  isNotImplemented,
+  recordCanOwnResources,
+  type RecordUnderPrefix,
+} from './cross-prefix-stack-scan.js';
+import {
   displayIdent,
   displaySafe,
   displayStackName,
@@ -47,8 +53,11 @@ import { UNRENDERABLE } from './lock-contention-message.js';
 // module that reaches `error-handler` / `retryable-errors` /
 // `lock-contention-message` for nothing.
 import { producerRecordKey } from './record-keys.js';
+import { readEarlierStateResources, type EarlierStateRecord } from './earlier-state-versions.js';
+import { RetainedTimeUnconfirmedError } from './retained-time.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import {
   purgeNoncurrentKeyVersions,
   purgeNoncurrentVersionsUnderPrefix,
@@ -180,6 +189,13 @@ function legacyProbeBelongsTo(probe: LegacyStateProbe, region: string): boolean 
 }
 
 /**
+ * go-to-k/cdkd#4705 review H-1: how far this machine's clock may be from S3's
+ * before a kept resource's time is re-written with S3's (LastModified has
+ * one-second resolution).
+ */
+const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
+
+/**
  * S3-based state backend using conditional writes for optimistic locking.
  *
  * State keys are region-scoped (`{prefix}/{stackName}/{region}/state.json`)
@@ -201,6 +217,7 @@ export class S3StateBackend {
   private config: StateBackendConfig;
   private clientOpts: S3ClientOptions;
   private clientResolved = false;
+  private scanClient: S3Client | undefined;
   private resolveInFlight: Promise<void> | null = null;
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
@@ -230,6 +247,29 @@ export class S3StateBackend {
    */
   destroyClient(): void {
     this.s3Client.destroy();
+    this.scanClient?.destroy();
+  }
+
+  /**
+   * The S3 client the cross-prefix scan probes through (go-to-k/cdkd#4705): a
+   * second client for the same bucket region and credentials, so its up to
+   * `PROBE_CONCURRENCY` probes in flight hold sockets of THEIR pool, never
+   * the deploy's. A client whose region cannot be read (a test double) is used
+   * as it is.
+   */
+  private async clientForScan(): Promise<S3Client> {
+    await this.ensureClientForBucket();
+    if (this.scanClient !== undefined) return this.scanClient;
+    // Built the way a bucket-region rebuild builds one, and only from a real
+    // client: anything else (a test double) is used as it is.
+    if (!(this.s3Client instanceof S3Client)) return this.s3Client;
+    const region = await this.s3Client.config.region();
+    this.scanClient = new S3Client({
+      ...awsClientDefaults(this.clientOpts.profile ? { profile: this.clientOpts.profile } : {}),
+      region,
+      credentials: this.s3Client.config.credentials,
+    });
+    return this.scanClient;
   }
 
   get prefix(): string {
@@ -888,6 +928,133 @@ export class S3StateBackend {
   }
 
   /**
+   * The bucket's top-level key prefixes, decoded and without their trailing
+   * `/` (`ListObjectsV2` with `Delimiter: '/'`, every page). An empty
+   * `--state-prefix` keys records under `/`, which lists here as `''`. One
+   * that will not decode is skipped. Errors propagate (go-to-k/cdkd#4705).
+   */
+  async listTopLevelPrefixes(): Promise<string[]> {
+    const client = await this.clientForScan();
+    const out: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Delimiter: '/',
+          EncodingType: LISTING_ENCODING_TYPE,
+          ...(continuationToken && { ContinuationToken: continuationToken }),
+        })
+      );
+      for (const cp of response.CommonPrefixes ?? []) {
+        // A prefix S3 returned in a form that will not decode cannot be
+        // addressed, so it is skipped rather than failing the whole scan.
+        let decoded: string | undefined;
+        try {
+          decoded = decodeListingKey(cp.Prefix);
+        } catch {
+          this.logger.debug(
+            safeMsg`Skipping a top-level prefix of bucket ${this.config.bucket} that is not valid URL encoding: ${cp.Prefix ?? ''}`
+          );
+          continue;
+        }
+        if (decoded === undefined || !decoded.endsWith('/')) continue;
+        // The registry's own root is no state prefix (go-to-k/cdkd#4705).
+        if (decoded === `${REGISTRY_ROOT}/`) continue;
+        out.push(decoded.slice(0, -1));
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return out;
+  }
+
+  /**
+   * What `prefix` (another prefix of this bucket) holds for the stack in
+   * `region` (go-to-k/cdkd#4705). First ONE listing of `<prefix>/<stack>/`
+   * (`MaxKeys: 1`): nothing there is `absent`, the common case, at one request.
+   * Otherwise the region-scoped record, the legacy region-less record and the
+   * rollback journal are read in parallel, STRICTLY, unlike {@link stateExists}:
+   * a 404 is "not there", and every other answer (a 403, a 5xx, a body that
+   * will not parse, a zero-byte object cdkd never writes) throws a
+   * `CrossPrefixReadError` naming the key, so the scan can tell "nothing there"
+   * from "could not look". A legacy record counts only for its own region, by the
+   * read gate `getState` applies. What was found is then classified by
+   * `recordCanOwnResources`.
+   */
+  async recordUnderPrefix(
+    prefix: string,
+    stackName: string,
+    region: string
+  ): Promise<RecordUnderPrefix> {
+    const client = await this.clientForScan();
+    const sibling = new S3StateBackend(client, { ...this.config, prefix }, this.clientOpts);
+    sibling.clientResolved = true;
+    const stackDir = `${prefix}/${stackName}/`;
+    let listed: { KeyCount?: number | undefined; Contents?: unknown[] | undefined };
+    try {
+      listed = await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Prefix: stackDir,
+          MaxKeys: 1,
+          EncodingType: LISTING_ENCODING_TYPE,
+        })
+      );
+    } catch (error) {
+      throw new CrossPrefixReadError(stackDir, error);
+    }
+    if ((listed.KeyCount ?? listed.Contents?.length ?? 0) === 0) return 'absent';
+    const read = async (key: string): Promise<Record<string, unknown> | null> => {
+      let body: string | null;
+      try {
+        body = await sibling.getRawObject(key);
+      } catch (error) {
+        throw new CrossPrefixReadError(key, error);
+      }
+      if (body === null) return null;
+      // cdkd never writes an empty object: it proves nothing, so it is a
+      // failure that names the key (and refuses), never an "empty" record.
+      if (body.trim() === '') {
+        throw new CrossPrefixReadError(
+          key,
+          Object.assign(new Error('empty object'), { name: 'EmptyObject' })
+        );
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(body);
+      } catch (error) {
+        throw new CrossPrefixReadError(key, error);
+      }
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new CrossPrefixReadError(key, new TypeError('not a JSON object'));
+      }
+      return value as Record<string, unknown>;
+    };
+    const [scoped, legacy, journal] = await Promise.all([
+      read(sibling.getStateKey(stackName, region)),
+      read(sibling.getLegacyStateKey(stackName)),
+      read(sibling.getRollbackJournalKey(stackName, region)),
+    ]);
+    let record: Record<string, unknown> | undefined;
+    if (scoped !== null) {
+      record = scoped;
+    } else if (legacy !== null) {
+      // `tryGetLegacy`'s gate: a falsy region is readable from any region, a
+      // string one only from its own.
+      const bodyRegion = legacy['region'];
+      if (!bodyRegion || bodyRegion === region) record = legacy;
+    }
+    if (record === undefined && journal === null) return 'absent';
+    // The record as read: a missing, null or non-object `resources` proves
+    // nothing and classifies as a holder. Only a journal with NO record stands
+    // in for an empty one.
+    return recordCanOwnResources(record ?? { resources: {} }, journal) ? 'holder' : 'empty';
+  }
+
+  /**
    * Raw sidecar-object write under the state bucket. Used for non-state
    * auxiliary files that share the bucket + region-resolution plumbing
    * (e.g. deployment-event JSONL streams + their `index.json`, issue
@@ -907,6 +1074,307 @@ export class S3StateBackend {
         ContentType: contentType,
       })
     );
+  }
+
+  /**
+   * go-to-k/cdkd#4705: the `resources` maps of this stack's EARLIER records
+   * under this prefix -- the newest `max` noncurrent versions of its
+   * `state.json` on a versioned bucket (a destroy leaves a delete marker over
+   * the last one) -- newest first. Read only to prove that a resource holding
+   * a generated name is one this stack kept before `retained.json` existed.
+   * A version whose body will not parse is skipped; any request error throws.
+   */
+  async earlierStateResources(
+    stackName: string,
+    region: string,
+    max = 10
+  ): Promise<EarlierStateRecord[]> {
+    await this.ensureClientForBucket();
+    return readEarlierStateResources(
+      this.s3Client,
+      this.config.bucket,
+      await this.ownerParam(),
+      this.getStateKey(stackName, region),
+      max
+    );
+  }
+
+  /** The key of a stack's retained-resource record (go-to-k/cdkd#4705). */
+  private getRetainedKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/retained.json`;
+  }
+
+  /**
+   * The resources a destroy of this stack under THIS prefix kept
+   * (`DeletionPolicy: Retain`) that a later create of the same stack here may
+   * take back by name (go-to-k/cdkd#4705). A sibling of `state.json` that a
+   * destroy does not delete. `[]` when there is none. A body that will not read
+   * as such a record throws, naming the key.
+   */
+  async loadRetainedResources(stackName: string, region: string): Promise<RetainedResource[]> {
+    return (await this.loadRetainedRecord(stackName, region)) ?? [];
+  }
+
+  /**
+   * As {@link loadRetainedResources}, but `null` when there is NO record at
+   * all -- a stack this cdkd never destroyed or orphaned here, the only case
+   * in which an older cdkd's history may still license a kept resource. An
+   * empty record (`[]`) is the tombstone `state orphan` and a destroy that
+   * kept nothing write (go-to-k/cdkd#4705 review D-1).
+   */
+  async loadRetainedRecord(stackName: string, region: string): Promise<RetainedResource[] | null> {
+    const key = this.getRetainedKey(stackName, region);
+    let body: string | null;
+    try {
+      body = await this.getRawObject(key);
+    } catch (error) {
+      throw new CrossPrefixReadError(key, error);
+    }
+    if (body === null) return null;
+    const entries = parseRetainedResources(body);
+    if (entries === undefined) {
+      throw new CrossPrefixReadError(
+        key,
+        Object.assign(new Error('not a retained-resource record'), { name: 'MalformedRecord' })
+      );
+    }
+    return entries;
+  }
+
+  /**
+   * go-to-k/cdkd#4705 review P3: write the empty retained-resource record
+   * (the tombstone) only when there is none, in ONE conditional write
+   * (`If-None-Match: *`); an existing record is left as it is. An endpoint
+   * without conditional writes falls back to a read, then the write. Errors
+   * throw.
+   */
+  async ensureRetainedTombstone(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getRetainedKey(stackName, region);
+    const put = async (): Promise<unknown> =>
+      this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          Body: JSON.stringify({ retainedVersion: 1, resources: [] }),
+          ContentType: 'application/json',
+          IfNoneMatch: '*',
+        })
+      );
+    try {
+      try {
+        await put();
+      } catch (error) {
+        // Review S-4: 409 ConditionalRequestConflict is a concurrent write
+        // in flight, not "a record exists": asked once more, it answers.
+        if (!isConditionalConflict(error)) throw error;
+        await put();
+      }
+    } catch (error) {
+      if (isConditionFailure(error) && !isConditionalConflict(error)) return;
+      if (!isNotImplemented(error)) throw error;
+      if ((await this.loadRetainedRecord(stackName, region)) === null) {
+        await this.saveRetainedResources(stackName, region, []);
+      }
+    }
+  }
+
+  /**
+   * Replace the stack's retained-resource record with `entries`. An empty list
+   * is written, not deleted: it is the tombstone that ends the history license
+   * (go-to-k/cdkd#4705 review D-1). Errors throw.
+   */
+  async saveRetainedResources(
+    stackName: string,
+    region: string,
+    entries: readonly RetainedResource[]
+  ): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getRetainedKey(stackName, region);
+    const put = (resources: readonly RetainedResource[]) =>
+      this.ownerParam().then((owner) =>
+        this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...owner,
+            Key: key,
+            Body: JSON.stringify({ retainedVersion: 1, resources }),
+            ContentType: 'application/json',
+          })
+        )
+      );
+    const fresh = new Set(entries.filter((e) => e.keptAt === undefined));
+    // A new entry is written with this machine's clock (review F-1): a crash
+    // or a failure before the S3 stamp below then leaves a skewed bound,
+    // never no bound at all.
+    const provisional = Date.now();
+    await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt: provisional } : e)));
+    if (fresh.size === 0) return;
+    // Then S3's own clock (review E-8): the time of the write that recorded
+    // it, read back from the object. A holder created later is not the
+    // resource kept. Re-written only when this machine's clock is off by more
+    // than S3's one-second resolution allows (review H-1): usually one write
+    // and one HEAD.
+    try {
+      const head = await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+        })
+      );
+      const keptAt = head.LastModified instanceof Date ? head.LastModified.getTime() : undefined;
+      if (keptAt === undefined) throw new Error('S3 reported no LastModified');
+      if (Math.abs(keptAt - provisional) <= KEPT_AT_CLOCK_TOLERANCE_MS) return;
+      await put(entries.map((e) => (fresh.has(e) ? { ...e, keptAt } : e)));
+    } catch (error) {
+      throw new RetainedTimeUnconfirmedError(error);
+    }
+  }
+
+  /**
+   * The bucket-root key of a stack's registry marker (go-to-k/cdkd#4705):
+   * `_cdkd-registry/<region>/<stack>.json`, holding `{ "prefix": "<p>" }`, the
+   * one state prefix of this bucket the stack and region belong to. Outside
+   * every prefix, so no `--state-prefix` can address it.
+   */
+  registryMarkerKey(stackName: string, region: string): string {
+    return `${REGISTRY_ROOT}/${region}/${stackName}.json`;
+  }
+
+  /**
+   * The stack's registry marker, or `null` when there is none. A marker that
+   * does not read as `{ prefix: <a state prefix> }` throws a
+   * `CrossPrefixReadError` naming the key, as does any error but a 404 (a 403
+   * included: the caller tells "denied" from "failed").
+   */
+  async getRegistryMarker(
+    stackName: string,
+    region: string
+  ): Promise<{ prefix: string; etag: string } | null> {
+    await this.ensureClientForBucket();
+    const key = this.registryMarkerKey(stackName, region);
+    let body: string | undefined;
+    let etag: string | undefined;
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, ...(await this.ownerParam()), Key: key })
+      );
+      body = await response.Body?.transformToString();
+      etag = response.ETag;
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return null;
+      throw new CrossPrefixReadError(key, error);
+    }
+    const prefix = registryMarkerPrefix(body);
+    if (prefix === undefined || etag === undefined) {
+      throw new CrossPrefixReadError(
+        key,
+        Object.assign(new Error('not a registry marker'), { name: 'MalformedMarker' })
+      );
+    }
+    return { prefix, etag };
+  }
+
+  /**
+   * Point the stack's marker at THIS prefix: create it (`If-None-Match: *`),
+   * or, with `ifMatch`, replace exactly that version. `'conflict'` when the
+   * condition failed (another writer got there first). Other errors throw.
+   */
+  async claimRegistryMarker(
+    stackName: string,
+    region: string,
+    ifMatch?: string
+  ): Promise<'claimed' | 'conflict'> {
+    await this.ensureClientForBucket();
+    const key = this.registryMarkerKey(stackName, region);
+    try {
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          Body: JSON.stringify({ prefix: this.config.prefix }),
+          ContentType: 'application/json',
+          ...(ifMatch === undefined ? { IfNoneMatch: '*' } : { IfMatch: ifMatch }),
+        })
+      );
+      return 'claimed';
+    } catch (error) {
+      if (isConditionFailure(error)) return 'conflict';
+      throw new CrossPrefixReadError(key, error);
+    }
+  }
+
+  /**
+   * Delete the stack's marker when it points at THIS prefix, conditionally on
+   * the version read (`If-Match`), so another prefix's re-claim between the
+   * read and the delete is left alone (`'elsewhere'`). An endpoint that does
+   * not implement the condition gets a re-read of the same version right
+   * before an unconditional delete: the window then shrinks to one request,
+   * and a lost re-claim is re-made by that prefix's next guarded command (no
+   * marker is a scan, then a claim). Errors throw.
+   */
+  async releaseRegistryMarker(
+    stackName: string,
+    region: string,
+    known?: { prefix: string; etag: string } | null
+  ): Promise<'released' | 'absent' | 'elsewhere'> {
+    // The version this run already read (review P3): no second GET. Without
+    // its ETag (a marker this run claimed), read it.
+    const marker =
+      known !== undefined && (known === null || known.etag !== '')
+        ? known
+        : await this.getRegistryMarker(stackName, region);
+    if (marker === null) return 'absent';
+    if (marker.prefix !== this.config.prefix) return 'elsewhere';
+    const key = this.registryMarkerKey(stackName, region);
+    try {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          IfMatch: marker.etag,
+        })
+      );
+      return 'released';
+    } catch (error) {
+      if (isConditionFailure(error)) return 'elsewhere';
+      if (!isNotImplemented(error)) throw error;
+    }
+    const again = await this.getRegistryMarker(stackName, region);
+    if (again === null) return 'absent';
+    if (again.prefix !== this.config.prefix || again.etag !== marker.etag) return 'elsewhere';
+    await this.s3Client.send(
+      new DeleteObjectCommand({
+        Bucket: this.config.bucket,
+        ...(await this.ownerParam()),
+        Key: key,
+      })
+    );
+    return 'released';
+  }
+
+  /**
+   * Does `prefix` (another prefix of this bucket) hold the stack's lock, in
+   * either layout? A 404 is no; any other error throws a
+   * `CrossPrefixReadError` naming the key.
+   */
+  async lockUnderPrefix(prefix: string, stackName: string, region: string): Promise<boolean> {
+    await this.ensureClientForBucket();
+    const keys = [`${prefix}/${stackName}/${region}/lock.json`, `${prefix}/${stackName}/lock.json`];
+    const held = await Promise.all(
+      keys.map(async (key) => {
+        try {
+          return await this.headObject(key);
+        } catch (error) {
+          throw new CrossPrefixReadError(key, error);
+        }
+      })
+    );
+    return held.some(Boolean);
   }
 
   /**
@@ -2114,6 +2582,101 @@ export class S3StateBackend {
  * `GetObject` and `{name: 'NoSuchKey'}` from low-level callsites; HeadObject
  * raises `{name: 'NotFound'}` instead.
  */
+/**
+ * A resource a destroy kept that a later create of the same stack, under the
+ * same prefix, may take back by its cdkd-generated name (go-to-k/cdkd#4705).
+ */
+export interface RetainedResource {
+  logicalId: string;
+  resourceType: string;
+  physicalId: string;
+  /**
+   * When this stack let the resource go (epoch ms): S3's clock, the write
+   * that recorded it -- or, when that read-back failed, this machine's clock
+   * at the write. A holder created after it is not the resource that was kept
+   * (go-to-k/cdkd#4705 review D-2). cdkd always writes one; an entry without
+   * one (only a hand edit makes one) is trusted by name alone.
+   */
+  keptAt?: number;
+}
+
+/** The entries of a `retained.json` body, or `undefined` when it is not one. */
+export function parseRetainedResources(body: string): RetainedResource[] | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const doc = value as { retainedVersion?: unknown; resources?: unknown };
+  if (doc.retainedVersion !== 1 || !Array.isArray(doc.resources)) return undefined;
+  const out: RetainedResource[] = [];
+  for (const entry of doc.resources) {
+    const e = entry as Partial<RetainedResource> | null;
+    if (
+      typeof e?.logicalId === 'string' &&
+      typeof e.resourceType === 'string' &&
+      typeof e.physicalId === 'string' &&
+      e.physicalId !== ''
+    ) {
+      out.push({
+        logicalId: e.logicalId,
+        resourceType: e.resourceType,
+        physicalId: e.physicalId,
+        ...(typeof e.keptAt === 'number' && Number.isFinite(e.keptAt) && { keptAt: e.keptAt }),
+      });
+    }
+  }
+  return out;
+}
+
+/** The bucket-root segment registry markers live under (go-to-k/cdkd#4705). */
+export const REGISTRY_ROOT = '_cdkd-registry';
+
+/**
+ * The state prefix a registry marker body names, or `undefined` when it is
+ * not `{ "prefix": <string> }` with a prefix cdkd could have written: at most
+ * 1024 characters, no control character, no `<` or `>` (the placeholder
+ * `parseStatePrefix` refuses). Validated before it is used as a key or shown.
+ */
+export function registryMarkerPrefix(body: string | undefined): string | undefined {
+  if (body === undefined) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const prefix = (value as { prefix?: unknown }).prefix;
+  if (typeof prefix !== 'string' || prefix.length > 1024) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f<>]/.test(prefix)) return undefined;
+  return prefix;
+}
+
+/** S3's 409 ConditionalRequestConflict: a conflicting write is in flight. */
+function isConditionalConflict(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
+    ?.httpStatusCode;
+  return name === 'ConditionalRequestConflict' || (status === 409 && name !== 'PreconditionFailed');
+}
+
+/** A conditional write that lost: 412, or the 409 S3 answers for a concurrent one. */
+function isConditionFailure(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata
+    ?.httpStatusCode;
+  return (
+    name === 'PreconditionFailed' ||
+    name === 'ConditionalRequestConflict' ||
+    status === 412 ||
+    status === 409
+  );
+}
+
 function isNoSuchKey(error: unknown): boolean {
   if (error instanceof NoSuchKey) return true;
   const name = (error as { name?: string } | null)?.name;

@@ -59,8 +59,10 @@ What counts as a partial failure depends on the command:
   [Destroy: skipped resources](cli-destroy-skipped.md)
   has the causes and remedies.
 - **`cdkd deploy`.** The stack deployed, but a resource was left unaddressed.
-  That is a skipped delete, a replacement whose old resource survives, or a
-  resource that a failed create made and whose delete then failed. Under
+  That is a skipped delete, a replacement whose old resource survives, a
+  replacement refused because another state prefix records the stack (or the
+  check could not run), or a resource that a failed create made and whose
+  delete then failed. Under
   [`--allow-unaddressed`](cli-deploy-safety-ci-flags.md#allow-unaddressed-deploy) the
   deploy exits `0` in that case.
 - **`cdkd publish-assets`.** The assets of one or more stacks failed to

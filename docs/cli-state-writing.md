@@ -53,6 +53,13 @@ cdkd state orphan MyStack --stack-region us-east-1 --resource MyQueue
 Orphaning a stack that has no record does nothing and exits `0`, so you can
 run the command again safely.
 
+Orphaning a whole stack also hands the stack name over. It removes the
+stack's marker in the [stack registry](state-store-registry.md), when the
+marker names this prefix, and empties the stack's `retained.json`. Another
+prefix can then deploy the stack, and a deploy here no longer takes back the
+resources left running. cdkd does this in every region that still holds
+anything of the stack, even when no record is left.
+
 > [!WARNING]
 > Do not remove the whole record of a stack you still deploy. The next
 > `cdkd deploy` finds no record, so it creates every resource again or
@@ -151,6 +158,10 @@ resource from the record does not help.
 is [`cdkd destroy`](cli-destroy.md) for a stack whose CDK app you no longer
 have: it takes the list of resources from the record.
 
+Like `cdkd destroy`, it refuses when another `--state-prefix` of the bucket
+records the same stack and region. See
+[The same stack name under another state prefix](cli-destroy.md#the-same-stack-name-under-another-state-prefix).
+
 ```bash
 cdkd state destroy MyStack                       # asks for confirmation
 cdkd state destroy MyStack OtherStack --yes
@@ -213,7 +224,9 @@ The current default is `cdkd-state-{account}`, without the region.
 `state migrate` copies an older bucket into the current one. Run it when
 [`cdkd state info`](cli-state.md#cdkd-state-info) reports the legacy name.
 
-The copy is key for key. No record is rewritten.
+The copy is key for key. No record is rewritten. The
+[stack registry](state-store-registry.md) markers under `_cdkd-registry/` are
+copied with the records.
 
 ::: steps
 1. Preview

@@ -6,6 +6,7 @@ import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
+import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import {
   NESTED_PENDING_PARENT_REASON,
   type SettledNestedRows,
@@ -41,6 +42,7 @@ import {
   secretNamesReadBy,
 } from '../secret-name-needles.js';
 import {
+  type ForeignHolding,
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
@@ -395,7 +397,34 @@ export async function performRollback(
     [{ operations: completedOperations, failedOperations: orphanOps }],
     priorOrphans
   );
-  const ctx = this.rollbackExecutorContext(previousState, stackName);
+  // go-to-k/cdkd#4705: a create may have been handed a resource that existed
+  // under its generated name, which only the SAME stack name deployed under
+  // another state prefix shares. So each delete asks the cross-prefix holder
+  // alone (memoized, run only when something is to be deleted). Not the
+  // same-prefix scan the settle runs: another stack there has other generated
+  // names, and that scan fails closed on any unreadable record, which would
+  // turn every rollback in the prefix into keep-everything.
+  const crossPrefixHolder = this.options.crossPrefixHolder;
+  let crossPrefixAnswer: Promise<ForeignHolding> | undefined;
+  const ctx = {
+    ...this.rollbackExecutorContext(previousState, stackName),
+    // A `cdkd rollback` replays the journal the keep leaves, from the
+    // top-level stack (a nested child's journal included).
+    createdResourceRetryCommand: pasteableCommand(
+      'cdkd rollback',
+      [
+        {
+          value: (this.options.parentStackInfo?.parentStack ?? stackName).split('~')[0]!,
+          hole: 'stack',
+        },
+      ],
+      recoveryCommandFlags(this.options.refusalRecovery).flags
+    ).command,
+    createdResourceHolder:
+      crossPrefixHolder === undefined
+        ? undefined
+        : (): Promise<ForeignHolding> => (crossPrefixAnswer ??= crossPrefixHolder(stackName)),
+  };
   // go-to-k/cdkd#4225: one record of completed writes across both replays.
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
   // Issue #3754: a nested-stack row reverted here replays its child's
@@ -463,6 +492,33 @@ export async function performRollback(
 }
 
 /**
+ * Who else holds a resource, for the success settle: one same-prefix scan of the bucket's other stacks
+ * (`makeForeignHolderScan`, made lazily on the first question), then, only
+ * when it found no holder, the bucket's OTHER state prefixes
+ * (`options.crossPrefixHolder`, go-to-k/cdkd#4705), asked once per stack.
+ */
+function foreignHolderResolver(
+  engine: DeployEngine
+): (self: {
+  stackName: string;
+  region: string;
+}) => (resourceType: string, physicalId: string) => Promise<ForeignHolding> {
+  const sameBucketHolderFor = makeForeignHolderScan(engine.stateBackend);
+  const crossPrefixHolder = engine.options.crossPrefixHolder;
+  const crossPrefixAnswers = new Map<string, Promise<ForeignHolding>>();
+  return (self) => async (resourceType, physicalId) => {
+    const held = await sameBucketHolderFor(self)(resourceType, physicalId);
+    if (held !== undefined || crossPrefixHolder === undefined) return held;
+    let answer = crossPrefixAnswers.get(self.stackName);
+    if (answer === undefined) {
+      answer = crossPrefixHolder(self.stackName);
+      crossPrefixAnswers.set(self.stackName, answer);
+    }
+    return answer;
+  };
+}
+
+/**
  * The journal on a SUCCESSFUL deploy (issue #3754 split the one answer in
  * two).
  *
@@ -522,8 +578,7 @@ export async function settleJournalAfterSuccess(
     return 0;
   }
   let nestedLeft = 0;
-  // One bucket scan, made only when some journal holds an orphan to delete.
-  const foreignHolderFor = makeForeignHolderScan(this.stateBackend);
+  const foreignHolderFor = foreignHolderResolver(this);
   const deployRunId = this.options.eventRecorder?.runId;
   const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([

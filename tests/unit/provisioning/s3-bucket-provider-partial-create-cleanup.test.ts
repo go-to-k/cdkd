@@ -50,6 +50,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 
@@ -180,6 +181,13 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
       mockSend.mockRejectedValueOnce(new Error('wiring boom'));
       mockSend.mockRejectedValueOnce(new Error('DeleteBucket boom'));
       expect(createdBeforeFailure(await failure(), 'MyBucket', RESOURCE_TYPE)).toBe('my-test-bucket-xxx');
+    });
+
+    it('go-to-k/cdkd#4705 E-3: a 4xx on the wiring with the bucket left behind keeps the intent', async () => {
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(Object.assign(new Error('ValidationException: bad input'), { name: 'ValidationException', $metadata: { httpStatusCode: 400 } }));
+      mockSend.mockRejectedValueOnce(new Error('DeleteBucket boom'));
+      expect(provenNothingCreated(await failure(), 'MyBucket', RESOURCE_TYPE)).toBe(false);
     });
 
     it('does not mark when the cleanup delete succeeded', async () => {

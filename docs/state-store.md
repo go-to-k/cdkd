@@ -96,6 +96,45 @@ Use `cdkd state orphan` for a stack or resource that cdkd should stop
 managing. [Orphan vs Destroy](orphan-vs-destroy.md) says which cleanup command
 applies to your situation.
 
+## One stack name per account and region
+
+A stack name identifies one deployment in an account and region, as it does
+in CloudFormation. Deploying the same stack name a second time there, under
+another `--state-prefix` or another `--state-bucket`, is unsupported.
+
+The reason is resource names. When your template leaves a resource unnamed,
+cdkd builds the name from the stack name and the logical ID alone. Two
+deployments of one stack name therefore ask AWS for the same names. For some
+resource types, such as an SQS queue or a log group, a create call under a
+taken name hands back the existing resource. Both records then list that one
+resource, and a destroy or a rollback of either deployment deletes it for
+both.
+
+To run two copies of an app in one account and region, give their stacks
+different names. A CDK `Stage` does this, and so does a suffix:
+
+```ts
+new ApiStack(app, 'ApiStack-alice');
+new ApiStack(app, 'ApiStack-bob');
+```
+
+A `--state-prefix` separates the records. It does not separate the deployed
+resources.
+
+cdkd guards against the accident with two checks:
+
+| Check | Runs | Refuses |
+| --- | --- | --- |
+| [Name check](state-store-name-check.md) | Before a create under a generated name | A create that would take over a resource this stack has no record of |
+| [Stack registry](state-store-registry.md) | On a first deploy, a destructive deploy, a destroy and a rollback | A command on a stack that another prefix of the bucket holds |
+
+Each refusal prints the command that resolves it.
+[Lock and state errors](troubleshooting-locks-state.md) has an entry for both.
+
+> [!NOTE]
+> The two checks are a safety net against an accident. They are not an access
+> control: an identity that can write to the state bucket can defeat both.
+
 ## Upgrading cdkd does not require migrating records
 
 A newer cdkd reads records written by every older version, and saves a record
@@ -119,4 +158,7 @@ shows the command.
   a record
 - [State locking](state-management-locking.md): the stack lock and how to
   clear one
+- [Name check before a create](state-store-name-check.md) and
+  [Stack registry](state-store-registry.md): the two checks behind one stack
+  name per account and region
 - [Orphan vs Destroy](orphan-vs-destroy.md): choosing a cleanup command

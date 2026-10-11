@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import {
   commandHole,
   pasteableCommand,
@@ -161,6 +162,26 @@ export function orderConsumersBeforeProducers(
  * from the destroy loop so the gating is unit-testable without the full
  * synth / AWS-client harness.
  */
+/**
+ * The region `cdkd destroy` destroys a stack in, from its state records: the
+ * only one (a legacy record with no region falls back to the CLI region), or,
+ * with several, the synthesized stack's region when one of them matches.
+ * `undefined` when there is no record, or several and none is chosen (the
+ * loop refuses). The cross-prefix pre-start (go-to-k/cdkd#4705) and the loop
+ * share it, so a scan never runs for a region the run will not destroy.
+ */
+export function plannedDestroyRegion(
+  refs: ReadonlyArray<{ region?: string | undefined }>,
+  synthRegion: string | undefined,
+  cliRegion: string
+): string | undefined {
+  if (refs.length === 1) return refs[0]?.region || cliRegion;
+  if (refs.length > 1 && synthRegion && refs.some((r) => r.region === synthRegion)) {
+    return synthRegion;
+  }
+  return undefined;
+}
+
 export async function purgeEventsAfterDestroy(
   reader: Pick<DeploymentEventsReader, 'pruneRuns'>,
   stackName: string,
@@ -319,6 +340,13 @@ async function destroyCommand(
     throw error;
   }
 
+  // go-to-k/cdkd#4705 (review R4-2): the backend may REPLACE its client with a
+  // bucket-region one, which `awsClients.destroy()` does not reach.
+  let stateBackendForCleanup: S3StateBackend | undefined;
+  // go-to-k/cdkd#4705: each stack's post-record writes and lock release, when
+  // several stacks are destroyed (`deferRegistryTail`); awaited in `finally`.
+  const deferredTails: Array<Promise<void>> = [];
+  let deferRegistryTail: ((released: Promise<void>) => void) | undefined;
   try {
     // 1. Initialize components
     const stateConfig = {
@@ -331,6 +359,7 @@ async function destroyCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });
+    stateBackendForCleanup = stateBackend;
     // Fail fast if the state bucket is missing, before synth or any destructive work.
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
@@ -759,6 +788,25 @@ async function destroyCommand(
     // 3. Process each stack via the shared destroy runner. The cross-stack
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
+    // go-to-k/cdkd#4705: every target stack's scan starts NOW, before the
+    // sequential loop (one listing, one run-wide probe cap), prioritized in
+    // the loop's order; each stack's destroy then awaits its own memoized
+    // result, which promotes it ahead of the rest.
+    // Only in the region the loop will destroy, and not for a stack its
+    // termination protection skips.
+    const crossPrefixCheck = { cache: new CrossPrefixGuard(stateBackend) };
+    // go-to-k/cdkd#4705: with several stacks, each one's post-record writes
+    // (kept list or tombstone, marker release) finish under its held lock
+    // while the next stack is destroyed, and are all awaited before the
+    // command ends (the `finally` below) -- nothing costs a round trip per
+    // stack.
+    if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
+    for (const name of stackNames) {
+      const synth = appStacks.find((s) => s.stackName === name);
+      if (synth?.terminationProtection === true && !options.removeProtection) continue;
+      const planned = plannedDestroyRegion(stateRefsByName.get(name) ?? [], synth?.region, region);
+      if (planned !== undefined) void crossPrefixCheck.cache.full(name, planned, 'prestart');
+    }
     for (const [stackIndex, stackName] of stackNames.entries()) {
       logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
 
@@ -794,20 +842,13 @@ async function destroyCommand(
           continue;
         }
       }
+      const plannedRegion = plannedDestroyRegion(refs, synthRegion, region);
       let stackTargetRegion: string;
       if (refs.length === 0) {
         logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
-      } else if (refs.length === 1) {
-        const onlyRegion = refs[0]?.region;
-        if (!onlyRegion) {
-          // Legacy state with no recorded region: fall back to the CLI region.
-          stackTargetRegion = region;
-        } else {
-          stackTargetRegion = onlyRegion;
-        }
-      } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
-        stackTargetRegion = synthRegion;
+      } else if (plannedRegion !== undefined) {
+        stackTargetRegion = plannedRegion;
       } else {
         // Regions come from S3 KEY segments and sit beside a labelled line, so
         // each is named only when it is a plain identifier (go-to-k/cdkd#3759).
@@ -981,6 +1022,9 @@ async function destroyCommand(
                 // cannot confirm keeps its record (CloudFormation DELETE_FAILED);
                 // a deploy-engine delete never sets it.
                 stackDestroy: true,
+                // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
+                crossPrefixCheck,
+                ...(deferRegistryTail !== undefined && { deferRegistryTail }),
                 exportIndexStore,
                 // go-to-k/cdkd#4682: the synthesized template, so a custom
                 // resource reading a NoEcho parameter gets its value back on
@@ -1185,6 +1229,9 @@ async function destroyCommand(
       );
     }
   } finally {
+    // go-to-k/cdkd#4705: every stack's deferred post-record writes and lock
+    // release, before any handler or client goes away.
+    await Promise.allSettled(deferredTails);
     unforwardSigterm();
     // Issue #2117: disposed LAST of the destroy-side handlers — the runner
     // drops its own listener before its lock release and its `return`, so this
@@ -1193,6 +1240,7 @@ async function destroyCommand(
     interruptWatch.dispose();
     // Cleanup AWS clients
     awsClients.destroy();
+    stateBackendForCleanup?.destroyClient();
   }
 }
 

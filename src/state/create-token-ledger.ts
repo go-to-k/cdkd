@@ -49,6 +49,12 @@ export interface SentCreateToken {
   token: string;
   /** Local epoch ms of the create's first send. */
   firstSentAt: number;
+  /**
+   * go-to-k/cdkd#4705 review S-6: local epoch ms at which a name-adopting
+   * create whose outcome is unknown (a timeout, a 5xx) came back failed. A
+   * resource it made was made by then.
+   */
+  failedAt?: number;
 }
 
 /** A ledger with a fresh nonce and nothing pending. */
@@ -76,6 +82,13 @@ export interface CreateTokenLedgerDoc {
    * state save never set it, so its re-run still resumes.
    */
   stateRecorded?: boolean;
+  /**
+   * go-to-k/cdkd#4705 review G-1: when a run of this stack was abandoned (its
+   * lock force-released or taken over after it expired): the lock's lease
+   * horizon -- its last renewal plus its renewal interval -- epoch ms. The
+   * abandoned run created nothing after it.
+   */
+  abandonedAt?: number;
 }
 
 const isSent = (value: unknown): value is SentCreateToken => {
@@ -118,6 +131,10 @@ export function parseCreateTokenLedger(body: string): CreateTokenLedgerDoc | nul
           base: entry.base,
           token: entry.token,
           firstSentAt: entry.firstSentAt,
+          ...(typeof (entry as { failedAt?: unknown }).failedAt === 'number' &&
+            Number.isFinite((entry as { failedAt: number }).failedAt) && {
+              failedAt: (entry as { failedAt: number }).failedAt,
+            }),
         };
       }
     }
@@ -127,6 +144,8 @@ export function parseCreateTokenLedger(body: string): CreateTokenLedgerDoc | nul
     nonce: doc['nonce'],
     sent,
     ...(doc['stateRecorded'] === true && { stateRecorded: true }),
+    ...(typeof doc['abandonedAt'] === 'number' &&
+      Number.isFinite(doc['abandonedAt']) && { abandonedAt: doc['abandonedAt'] }),
   };
 }
 

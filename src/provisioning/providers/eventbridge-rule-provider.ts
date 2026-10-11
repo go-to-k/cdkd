@@ -18,6 +18,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -239,7 +240,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
     const ruleName =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      (this.generatedCreateName(resourceType, logicalId, properties) as string);
     const targets = properties['Targets'] as RuleTarget[] | undefined;
 
     // go-to-k/cdkd#4583: the ARN of a rule this create made and the wiring
@@ -787,6 +788,75 @@ export class EventBridgeRuleProvider implements ResourceProvider {
    *     name lookup, then verify with `DescribeRule` and return the
    *     rule's ARN as physicalId.
    */
+  /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
+  generatedCreateName(
+    _resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined {
+    if (properties['Name']) return undefined;
+    return generateResourceName(logicalId, { maxLength: 64 });
+  }
+
+  /**
+   * go-to-k/cdkd#4705: a rule's lookup reads its own event bus, so a bus
+   * given as an intrinsic waits for the create's resolved properties.
+   */
+  lookupNeedsResolvedProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): boolean {
+    const bus = properties['EventBusName'];
+    return bus !== undefined && bus !== null && bus !== '' && typeof bus !== 'string';
+  }
+
+  /**
+   * go-to-k/cdkd#4705: one exact `DescribeRule` per name on its own event bus,
+   * never `ListRules` (an eventually consistent listing can omit a rule just
+   * created). Any failure but `ResourceNotFoundException` throws, which
+   * refuses the create. A rule's physical id is its ARN.
+   */
+  async lookupNames(
+    _resourceType: string,
+    names: readonly string[],
+    context: { propertiesByName: ReadonlyMap<string, Record<string, unknown>> }
+  ): Promise<Map<string, string>> {
+    const busOf = (name: string): string | undefined => {
+      const bus = context.propertiesByName.get(name)?.['EventBusName'];
+      if (bus === undefined || bus === null || bus === '') return undefined;
+      // Never the default bus for one not yet known: the guard defers such a
+      // lookup to the create (`lookupNeedsResolvedProperties`).
+      if (typeof bus !== 'string') throw new Error(`EventBusName of rule ${name} is not resolved`);
+      return bus;
+    };
+    const byBus = new Map<string | undefined, string[]>();
+    for (const name of names) {
+      const bus = busOf(name);
+      byBus.set(bus, [...(byBus.get(bus) ?? []), name]);
+    }
+    const found = new Map<string, string>();
+    await Promise.all(
+      [...byBus].map(async ([bus, group]) => {
+        const each = await lookupEachName(group, 'events:DescribeRule', 5, async (name) => {
+          try {
+            const resp = await this.eventBridgeClient.send(
+              new DescribeRuleCommand({
+                Name: name,
+                ...(bus !== undefined && { EventBusName: bus }),
+              })
+            );
+            return resp.Arn;
+          } catch (err) {
+            if (err instanceof ResourceNotFoundException) return undefined;
+            throw err;
+          }
+        });
+        for (const [name, arn] of each) found.set(name, arn);
+      })
+    );
+    return found;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const eventBusName = input.properties['EventBusName'] as string | undefined;
     if (input.knownPhysicalId) {

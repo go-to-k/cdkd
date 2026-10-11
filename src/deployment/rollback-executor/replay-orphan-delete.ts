@@ -6,6 +6,7 @@ import {
   recordRollbackSkip,
   rollbackCannotAddress,
   skipUnaddressableReplay,
+  keptForAnotherHolder,
 } from './messages.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
@@ -216,6 +217,9 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     skipUnaddressableReplay(s, logger, op, 'delete created resource');
     return;
   }
+  // go-to-k/cdkd#4705: the automatic rollback keeps a created resource another
+  // record holds (the create may have adopted it).
+  if (await keptForAnotherHolder(s, logger, op, op.physicalId)) return;
   s.createRollbackRoute = deleteProvisionedBy;
   const snapshotPolicy = action === 'delete-with-final-snapshot';
   const takeFinalSnapshot = snapshotPolicy && ctx.skipFinalSnapshot !== true;

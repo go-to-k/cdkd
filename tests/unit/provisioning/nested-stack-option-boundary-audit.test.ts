@@ -47,7 +47,10 @@ const AUDITED_MEMBERS = [
   'recreateTargets', // self-scoped: matched only while deploying its `stackName`
   'pinCcApi', // self-scoped: same shape and same reason as recreateTargets (#2719)
   'onCurrentStateLoaded', // self-scoped: the prefix gate returns early on a mismatch
+  'onFirstDeployLeftNoRecord', // self-scoped: the registry release returns early on a mismatch (#4705)
   'parentStackInfo', // overwritten by the spread site, must describe THIS child
+  'onDestructivePlan', // overwritten to undefined by the spread site: the top-level check covers children (#4705)
+  'crossPrefixHolder', // inherited: called with the CHILD's own stack name by its automatic rollback; a child never settles (#4705 R6-2)
   'eventRecorder', // carries the top-level run's stack name, by design
   // --- names no resource ------------------------------------------------------
   'concurrency',

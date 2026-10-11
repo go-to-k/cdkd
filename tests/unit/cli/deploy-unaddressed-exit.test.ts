@@ -79,6 +79,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
     getState: vi.fn(async () => null),
@@ -176,6 +177,7 @@ const engineResults = vi.hoisted(
         updatePartial: number;
         nestedUpdatePartial?: number;
         updated?: number;
+        crossPrefixKept?: number;
       }
     >()
 );
@@ -206,6 +208,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
         ...(counts.nestedUpdatePartial !== undefined && {
           nestedUpdatePartial: counts.nestedUpdatePartial,
         }),
+        ...(counts.crossPrefixKept !== undefined && { crossPrefixKept: counts.crossPrefixKept }),
         unchanged: 0,
         durationMs: 10,
         outputs: {},
@@ -306,6 +309,18 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     expect(message).toContain('1 resource(s) unaddressed');
   });
 
+  it('an ordinary exit 2 reads as before: no cross-prefix sentence (go-to-k/cdkd#4705 review R7-2)', async () => {
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 1 });
+    const code = await runDeploy(['--yes']);
+    expect(code).toBe(2);
+    const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(message).toContain('The two cases differ in what happens next');
+    expect(message).toContain(
+      'delete it by hand. The per-stack summaries above give the breakdown'
+    );
+    expect(message).not.toContain('another state prefix');
+  });
+
   it('exits 2 when a replacement left an orphaned predecessor', async () => {
     engineResults.set('StackA', { deleteSkipped: 0, updatePartial: 1 });
     const code = await runDeploy(['--yes']);
@@ -322,6 +337,24 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     // 2 + 1 + 0 + 3 — a per-stack throw would have reported 3 and never
     // reached StackB; a counter that only read one field would report 2 or 4.
     expect(message).toContain('6 resource(s) unaddressed');
+  });
+
+  // go-to-k/cdkd#4705 (review R6-5): a late replacement the cross-prefix
+  // check refused has its own row and its own clause, not "Skipped (not deleted)".
+  it('exits 2 when the cross-prefix check kept a replacement, and says so in its own words', async () => {
+    engineResults.set('StackA', { deleteSkipped: 0, updatePartial: 0, crossPrefixKept: 1 });
+    const code = await runDeploy(['--yes']);
+    expect(code).toBe(2);
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain(
+      'Kept (replacement refused: another state prefix records the stack, or the check could not run):'
+    );
+    expect(info).not.toContain('Skipped (not deleted)');
+    const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(message).toContain('1 resource(s) unaddressed');
+    expect(message).toContain(
+      'A replacement kept because another state prefix records the stack, or the check could not run'
+    );
   });
 
   it('exits 0 for the same run when --allow-unaddressed is passed', async () => {

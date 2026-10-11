@@ -161,6 +161,20 @@ This bucket policy grants them to one role:
 | `s3:DeleteObjectVersion` | Objects | Remove those versions |
 | `s3:GetReplicationConfiguration` | Bucket | Optional; lets cdkd warn about [replication](#s3-replication-keeps-copies-cdkd-cannot-delete) |
 
+### A policy scoped to one state prefix
+
+Some policies limit an identity to its own state prefix, with a resource such
+as `arn:aws:s3:::cdkd-state-123456789012/team-a/*`. Such a policy must also
+grant `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on the bucket's
+[stack registry](state-store-registry.md#permissions):
+
+```text
+arn:aws:s3:::cdkd-state-123456789012/_cdkd-registry/*
+```
+
+Without that grant, cdkd warns and falls back to a check that needs
+`s3:ListBucket` on the whole bucket.
+
 ## Earlier versions of deleted objects
 
 On a versioned bucket, deleting an object only adds a delete marker. Every

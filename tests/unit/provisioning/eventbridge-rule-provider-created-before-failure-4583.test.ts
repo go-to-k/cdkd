@@ -39,6 +39,7 @@ import {
 } from '@aws-sdk/client-eventbridge';
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 // go-to-k/cdkd#4583: create() self-cleans a PutTargets failure; only a rule
 // the name was free for and that cleanup failed to delete is named (by ARN,
@@ -60,14 +61,14 @@ async function caught(p: Promise<unknown>): Promise<unknown> {
   throw new Error('expected create() to throw');
 }
 
-function fakeAws(opts: { held: boolean; deleteFails: boolean }): void {
+function fakeAws(opts: { held: boolean; deleteFails: boolean; wiringError?: Error }): void {
   mockSend.mockImplementation(async (cmd: unknown) => {
     if (cmd instanceof DescribeRuleCommand) {
       if (opts.held) return { Name: 'MyRule', Arn: ARN };
       throw new ResourceNotFoundException({ $metadata: {}, message: 'not found' });
     }
     if (cmd instanceof PutRuleCommand) return { RuleArn: ARN };
-    if (cmd instanceof PutTargetsCommand) throw new Error('PutTargets boom');
+    if (cmd instanceof PutTargetsCommand) throw opts.wiringError ?? new Error('PutTargets boom');
     if (cmd instanceof DeleteRuleCommand && opts.deleteFails) throw new Error('AccessDenied');
     return { Targets: [] };
   });
@@ -85,6 +86,12 @@ describe('EventBridgeRuleProvider.create created-before-failure mark (#4583)', (
     fakeAws({ held: false, deleteFails: true });
     const err = await caught(provider.create('Rule', TYPE, PROPS));
     expect(createdBeforeFailure(err, 'Rule', TYPE)).toBe(ARN);
+  });
+
+  it('go-to-k/cdkd#4705 E-3: a 4xx on PutTargets with the rule left behind keeps the intent', async () => {
+    fakeAws({ held: false, deleteFails: true, wiringError: Object.assign(new Error('ValidationException: bad input'), { name: 'ValidationException', $metadata: { httpStatusCode: 400 } }) });
+    const err = await caught(provider.create('Rule', TYPE, PROPS));
+    expect(provenNothingCreated(err, 'Rule', TYPE)).toBe(false);
   });
 
   it('does not mark when the wiring cleanup deleted the rule', async () => {

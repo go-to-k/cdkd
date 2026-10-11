@@ -102,6 +102,20 @@ The next deploy takes the resource back only when all of these hold:
 For a resource type that cdkd cannot take back this way, cdkd reports the
 resource and leaves it for you to delete.
 
+### A stack that another state prefix also records
+
+The rollback keeps a resource the failed deploy created, and does not delete
+it, in one more case: the same stack is also recorded under another state
+prefix, or cdkd cannot check whether it is. For a nested stack, the check is
+on its `Parent~Child` record.
+
+The reason is that a create can take over a resource that already existed
+under the same generated name. That resource may belong to the other
+deployment. cdkd warns, names the other prefix when it found one, and leaves
+the resource in the rollback journal.
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
+explains the rule and the fix.
+
 ### A replacement under `UpdateReplacePolicy: Retain`
 
 When the resource declares `UpdateReplacePolicy: Retain`, the rollback
@@ -230,10 +244,14 @@ deploy that ran after the import are rolled back as usual.
 A create call can fail after AWS has already made the resource. Such a
 resource is not in the stack's state, and only the journal lists it.
 
-The automatic rollback deletes it, following its `DeletionPolicy`. When the
-automatic rollback did not run, a later `cdkd rollback`, `cdkd destroy` or
-successful deploy deletes it instead, but only when cdkd can tell that the
-resource in AWS is the one the failed create made. That requires two things:
+The automatic rollback deletes it, following its `DeletionPolicy`. The one
+exception is a stack that
+[another state prefix also records](#a-stack-that-another-state-prefix-also-records).
+
+When the automatic rollback did not run, a later `cdkd rollback`,
+`cdkd destroy` or successful deploy deletes it instead, but only when cdkd
+can tell that the resource in AWS is the one the failed create made. That
+requires two things:
 
 - no other stack's state holds the resource,
 - for a resource identified by a name you can choose, AWS still reports the

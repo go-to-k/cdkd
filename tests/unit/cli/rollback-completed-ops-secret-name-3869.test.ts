@@ -80,6 +80,9 @@ const POLICY_ARN = `arn:aws:iam::123456789012:policy${PATH}CompletedPolicy`;
 function install(resources: Record<string, unknown>, segments: unknown[]): void {
   setupMock.mockResolvedValue({
     stateBackend: {
+      listTopLevelPrefixes: vi.fn().mockResolvedValue([]),
+      getRegistryMarker: vi.fn().mockResolvedValue(null),
+      claimRegistryMarker: vi.fn().mockResolvedValue('claimed'),
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
       listRawKeys: vi.fn().mockResolvedValue([]),
       getState: vi.fn().mockResolvedValue({

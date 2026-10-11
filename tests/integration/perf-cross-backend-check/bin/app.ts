@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+import * as cdk from 'aws-cdk-lib';
+import { AdoptingMixStack, CloudWatchHeavyStack } from '../lib/adopting-stacks.ts';
+import { PerfStack } from '../lib/perf-stack.ts';
+
+// verify.sh names every stack per run, so each timed deploy is a first deploy.
+const base = process.env.PERF_STACK_BASE;
+if (!base) throw new Error('PERF_STACK_BASE must be set (verify.sh sets it per run)');
+const count = Number(process.env.PERF_STACK_COUNT ?? '1');
+// basic (PerfStack), adopting (20 name-adopting resources) or cloudwatch
+// (many alarms and log groups).
+const variant = process.env.PERF_VARIANT ?? 'basic';
+
+const app = new cdk.App();
+const env = {
+  account: process.env.CDK_DEFAULT_ACCOUNT,
+  region: process.env.CDK_DEFAULT_REGION,
+};
+if (variant === 'adopting') {
+  new AdoptingMixStack(app, base, { env });
+} else if (variant === 'cloudwatch') {
+  new CloudWatchHeavyStack(app, base, { env });
+} else if (variant !== 'basic') {
+  throw new Error(`PERF_VARIANT must be basic, adopting or cloudwatch (got '${variant}')`);
+} else if (count <= 1) {
+  new PerfStack(app, base, { env });
+} else {
+  for (let i = 1; i <= count; i++) new PerfStack(app, `${base}S${i}`, { env });
+}

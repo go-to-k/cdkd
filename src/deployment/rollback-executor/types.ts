@@ -272,6 +272,24 @@ export interface RollbackExecutorContext {
     | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
     | undefined;
   /**
+   * go-to-k/cdkd#4705: who else holds a resource the failed deploy created,
+   * asked by a deploy's AUTOMATIC rollback (`performRollback`, its only
+   * setter) before it deletes a completed CREATE or a proven failed-CREATE
+   * orphan. A create can be handed a resource that already existed under its
+   * generated name, so the same stack under another state prefix may own it
+   * (`DeployEngineOptions.crossPrefixHolder` only). `held` or `unreadable`
+   * keeps the resource: a skip, which keeps the journal and warns.
+   */
+  createdResourceHolder?:
+    | ((resourceType: string, physicalId: string) => Promise<ForeignHolding>)
+    | undefined;
+  /**
+   * The pasteable `cdkd rollback` (with the run's account flags) that finishes
+   * a rollback {@link createdResourceHolder} kept a resource from because its
+   * check failed (a `retryable` answer). Set with it, by `performRollback`.
+   */
+  createdResourceRetryCommand?: string | undefined;
+  /**
    * The journaled orphans the success settle already proved deletable (holder
    * scan and identity, go-to-k/cdkd#4655): the replay's delete does not ask
    * them again.

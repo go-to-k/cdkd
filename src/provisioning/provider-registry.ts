@@ -103,6 +103,11 @@ export interface GetProviderForInput {
    */
   previousProperties?: Record<string, unknown> | undefined;
   /**
+   * go-to-k/cdkd#4705 review H-6: route without the debug lines -- the caller
+   * asks ahead of the create, which routes (and logs) again.
+   */
+  quiet?: boolean;
+  /**
    * Suppress the `'sdk-coverage'` exemption for this call, keeping the sticky
    * CC route. Set by `--pin-cc-api` and -- required for correctness -- by
    * `--recreate-via-cc-api`, whose whole purpose is to force the CC layer:
@@ -553,12 +558,17 @@ export class ProviderRegistry {
    * @throws Error if no provider can be found for the type.
    */
   getProviderFor(input: GetProviderForInput): ProviderRoutingDecision {
+    // go-to-k/cdkd#4705 review H-6: a plan-time ask (`quiet`) routes the same
+    // resource again at its create, which logs the decision once.
+    const debug = (message: string): void => {
+      if (input.quiet !== true) this.logger.debug(message);
+    };
     const { resourceType, properties, provisionedBy } = input;
 
     // 1. Custom Resource — has no SDK/CC dichotomy, but we record it as
     //    `'sdk'` so the state field is always populated on v7+ writes.
     if (isCustomResource(resourceType)) {
-      this.logger.debug(`Using Custom Resource provider for ${resourceType}`);
+      debug(`Using Custom Resource provider for ${resourceType}`);
       return { provider: this.customResourceProvider, provisionedBy: 'sdk' };
     }
 
@@ -584,9 +594,7 @@ export class ProviderRegistry {
         forceCcApi: input.forceCcApi === true,
       });
       if (!canReturn) {
-        this.logger.debug(
-          `Routing ${resourceType} via Cloud Control (state-recorded provisionedBy=cc-api)`
-        );
+        debug(`Routing ${resourceType} via Cloud Control (state-recorded provisionedBy=cc-api)`);
         return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
       }
       returningToSdk = true;
@@ -604,13 +612,13 @@ export class ProviderRegistry {
       );
       if (actionableDrops.length === 0) {
         // No silent drops, or every drop is in the allow set → SDK Provider.
-        this.logger.debug(`Using specific SDK provider for ${resourceType}`);
+        debug(`Using specific SDK provider for ${resourceType}`);
         if (returningToSdk) {
           // The only place `sdkMigration` is set. It marks a TRANSITION, so it
           // is attached here rather than to every SDK decision: the state
           // record says 'sdk' from the next write on, and this branch is not
           // reached again for the same resource.
-          this.logger.debug(
+          debug(
             `${resourceType} is returning to its SDK provider from a ` +
               `state-recorded cc-api route; physical id is preserved`
           );
@@ -635,7 +643,7 @@ export class ProviderRegistry {
       // Silent drops exist that the user has NOT opted into via the override
       // → auto-route through Cloud Control (which forwards the full property
       // map to AWS, closing the silent-drop bug). Closes issue #614.
-      this.logger.debug(
+      debug(
         `Auto-routing ${resourceType} via Cloud Control (silent-drop properties: ${actionableDrops
           .map((d) => d.property)
           .join(', ')})`
@@ -649,16 +657,14 @@ export class ProviderRegistry {
 
     // 6. No SDK Provider — try Cloud Control if it supports the type.
     if (CloudControlProvider.isSupportedResourceType(resourceType)) {
-      this.logger.debug(`Using Cloud Control API provider for ${resourceType}`);
+      debug(`Using Cloud Control API provider for ${resourceType}`);
       return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
     }
 
     // 7. Escape hatch: user explicitly allowed this unsupported type — try
     //    Cloud Control optimistically (likely fails for NON_PROVISIONABLE).
     if (this.allowedUnsupportedTypes.has(resourceType)) {
-      this.logger.debug(
-        `Routing escape-hatch-allowed type ${resourceType} through Cloud Control API`
-      );
+      debug(`Routing escape-hatch-allowed type ${resourceType} through Cloud Control API`);
       return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
     }
 

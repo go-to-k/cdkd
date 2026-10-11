@@ -69,6 +69,8 @@ import {
 import { printNestedStackReadsOnly } from './resolver-context.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
+import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
+import { STACK_UNDER_OTHER_PREFIX } from '../../state/cross-prefix-stack-scan.js';
 import {
   diffMovedServiceToken,
   renderServiceTokenRefusal,
@@ -767,30 +769,60 @@ export async function provisionUpdate(
   // A resource another path replaces anyway (a create-only template edit, a
   // `--recreate-via-*` target), the up-front prompt already asked about: it is
   // replaced without a second question, and nothing says it is kept.
+  // go-to-k/cdkd#4705: the plan-time cross-prefix check never saw this
+  // replacement either, so it is asked first (`stage` 'late'). Its refusal
+  // (another prefix records the stack, or the check failed) is warned in full
+  // and keeps the resource, as a "no" does, but counts as unaddressed
+  // (`crossPrefixKept`): the deploy exits 2 unless --allow-unaddressed. A 403
+  // warns and proceeds.
   let replacedAnyway = false;
   let lateApproval: Promise<boolean> | undefined;
+  let lateCrossPrefixRefused = false;
   const approveReplacementOf = (pc: PropertyChange): Promise<boolean> => {
     if (replacedAnyway) return Promise.resolve(true);
     const { noEchoPromoted: _promoted, ...asReplacement } = pc;
-    lateApproval ??= approveLateReplacement({
-      options: this.options,
-      stackName,
-      change: {
-        ...change,
-        changeType: 'UPDATE',
-        propertyChanges: [{ ...asReplacement, requiresReplacement: true }],
-      },
-      records: stateResources,
-      template,
-    });
+    const asChange: ResourceChange = {
+      ...change,
+      changeType: 'UPDATE',
+      propertyChanges: [{ ...asReplacement, requiresReplacement: true }],
+    };
+    lateApproval ??= (async () => {
+      const crossPrefixGate = this.options.onDestructivePlan;
+      if (crossPrefixGate !== undefined) {
+        try {
+          await crossPrefixGate(
+            stackName,
+            findDestructiveChanges(stackName, [asChange], stateResources, template),
+            'late'
+          );
+        } catch (error) {
+          if (!(error instanceof CdkdError) || error.code !== STACK_UNDER_OTHER_PREFIX) throw error;
+          lateCrossPrefixRefused = true;
+          if (counts) counts.crossPrefixKept = (counts.crossPrefixKept ?? 0) + 1;
+          this.logger.warn(error.message);
+          return false;
+        }
+      }
+      return approveLateReplacement({
+        options: this.options,
+        stackName,
+        change: asChange,
+        records: stateResources,
+        template,
+        // go-to-k/cdkd#4705: the prompt may have waited, as the up-front one.
+        onAsked: () => this.generatedNameGuard?.noteApprovalPrompted(),
+      });
+    })();
     return lateApproval;
   };
   const lateReplacementDeclined = new Set<string>();
   // Why a `differs` on such a path is not acted on: the warning names it.
   const differsWhy = (key: string): string =>
-    lateReplacementDeclined.has(key)
-      ? `differs; the replacement was not approved (--require-approval=${this.options.requireApproval ?? 'never'})`
-      : 'differs; the provider is not known to report this property exactly, so the difference may be its normalization';
+    !lateReplacementDeclined.has(key)
+      ? 'differs; the provider is not known to report this property exactly, so the difference may be its normalization'
+      : lateCrossPrefixRefused
+        ? 'differs; the replacement was refused: see the state-prefix warning above'
+        : `differs; the replacement was not approved (--require-approval=${this.options.requireApproval ?? 'never'})`;
   // go-to-k/cdkd#4656: the MIGRATION deploy of a pre-v11 record takes the
   // echo-fidelity readback even when its witness settles every value (so no
   // block below would read), before the skip just below can return.

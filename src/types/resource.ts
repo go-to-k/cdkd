@@ -1578,6 +1578,62 @@ export interface ResourceProvider {
    * skipped with a warning.
    */
   import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
+
+  /**
+   * go-to-k/cdkd#4705: the name `create()` sends for `logicalId` of
+   * `resourceType` when the template supplies NONE (a cdkd-generated name),
+   * evaluated in the caller's stack-name scope exactly as `create()` evaluates
+   * it; `undefined` when the template supplies a name, or the type takes none.
+   * Implemented by the name-adopting SDK types only
+   * (`NAME_ADOPTING_SDK_CREATE_TYPES`), whose create hands back or overwrites
+   * an existing resource of that name instead of failing.
+   */
+  generatedCreateName?(
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): string | undefined;
+
+  /**
+   * go-to-k/cdkd#4705: which of `names` (each the generated name of one
+   * planned create of `resourceType`) a resource holds right now, as name →
+   * that resource's physical id in `import()`'s format. An EXACT read by
+   * name: a batch read by name where the service has one, else one read per
+   * name -- never a listing, which is eventually consistent and can omit a
+   * resource just created. A resource being deleted reads as absent (its
+   * create waits out the deletion itself). Throws when it cannot tell; a 403
+   * throws as one. `properties` gives each name's create properties (by
+   * name), for a type whose lookup depends on one (an EventBridge rule's
+   * bus). Without it, the guard reads each name through `import()`.
+   */
+  lookupNames?(
+    resourceType: string,
+    names: readonly string[],
+    context: {
+      region: string;
+      stackName: string;
+      propertiesByName: ReadonlyMap<string, Record<string, unknown>>;
+    }
+  ): Promise<Map<string, string>>;
+
+  /**
+   * go-to-k/cdkd#4705: `true` when the lookup of this create's name needs a
+   * property the plan does not know yet (an intrinsic still unresolved, such
+   * as an EventBridge rule's `EventBusName`): the guard then looks it up at
+   * the create, with the resolved properties, rather than guess.
+   */
+  lookupNeedsResolvedProperties?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): boolean;
+
+  /**
+   * go-to-k/cdkd#4705: when the resource `physicalId` (a holder `lookupNames`
+   * or `import()` found) was created, epoch ms, or `undefined` when the type
+   * does not say. A kept resource licenses only a holder created no later
+   * than it was kept. Throws when it cannot read it (a 403 as one).
+   */
+  holderCreatedAt?(resourceType: string, physicalId: string): Promise<number | undefined>;
 }
 
 /**

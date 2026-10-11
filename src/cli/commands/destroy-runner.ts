@@ -31,10 +31,16 @@ import {
   isFinalSnapshotError,
   unsupportedFinalSnapshotError,
 } from '../../provisioning/final-snapshot.js';
-import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { RetainedResource, S3StateBackend } from '../../state/s3-state-backend.js';
+import {
+  keptForReadoption,
+  recordRetainedForReadoption,
+} from '../../deployment/retained-readoption.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { acquireStackLock } from './stack-lock-guard.js';
+import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
+import type { CrossPrefixSource } from './cross-prefix-gate.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -208,6 +214,27 @@ export interface DestroyRunnerContext {
    * the parent's producer regions, which its own state does not record.
    */
   resolveSecretDerivedPrincipals?: { inheritedProducerRegions?: readonly string[] };
+
+  /**
+   * go-to-k/cdkd#4705: refuse when the bucket also records this stack and
+   * region under ANOTHER state prefix. Set by `cdkd destroy` and
+   * `cdkd state destroy` for a top-level stack; never for a nested child,
+   * whose parent was checked (`src/state/cross-prefix-stack-scan.ts`). The
+   * `cache` is the command run's: its caller pre-starts every target stack's
+   * scan before the sequential loop (one listing, one run-wide probe cap), and
+   * this awaits the stack's own memoized result.
+   */
+  crossPrefixCheck?: { cache: CrossPrefixSource };
+
+  /**
+   * go-to-k/cdkd#4705: when set (`destroy --all`), the writes that follow a
+   * stack's record delete -- its kept list or tombstone, then its registry
+   * marker's release -- are handed here instead of awaited, with that stack's
+   * lock held until they settle, so they overlap the next stack's destroy and
+   * nothing costs a round trip per stack. The caller MUST await every promise
+   * it collects before the command ends.
+   */
+  deferRegistryTail?: (released: Promise<void>) => void;
 
   /**
    * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
@@ -510,6 +537,34 @@ export function countProtectedJournaledOrphans(
 }
 
 /**
+ * go-to-k/cdkd#4705: once a top-level stack's record is gone (deleted FIRST, so
+ * the registry never names a prefix for a stack it no longer records), delete
+ * its registry marker when it names this prefix. Only for `cdkd destroy` /
+ * `cdkd state destroy` of a top-level stack (`crossPrefixCheck` is set exactly
+ * then). Best-effort: a marker left behind names a prefix with no record, which
+ * another prefix's next check treats as stale and re-claims.
+ */
+async function releaseRegistryMarkerAfterDestroy(
+  ctx: Pick<DestroyRunnerContext, 'crossPrefixCheck' | 'stateBackend'>,
+  stackName: string,
+  region: string,
+  logger: { warn(message: string): void; debug(message: string): void }
+): Promise<void> {
+  if (ctx.crossPrefixCheck === undefined) return;
+  try {
+    const known = await ctx.crossPrefixCheck.cache.knownMarker?.(stackName, region);
+    const released = await ctx.stateBackend.releaseRegistryMarker(stackName, region, known);
+    logger.debug(safeMsg`Stack registry marker: ${released}`);
+  } catch (error) {
+    logger.warn(
+      safeMsg`Could not delete the stack registry marker of ${displayStackName(stackName)} ` +
+        safeMsg`(${describeAwsFailure(error).summary}). It names this state prefix, which no longer ` +
+        `records the stack, so a deploy under another prefix treats it as stale.`
+    );
+  }
+}
+
+/**
  * Run the destroy lifecycle for one stack against an already-loaded
  * `StackState`, reusing the caller's state backend / lock manager.
  *
@@ -559,6 +614,11 @@ export async function runDestroyForStack(
     errorCount: 0,
     interrupted: false,
   };
+  // go-to-k/cdkd#4705: the kept resources a later create takes back by name.
+  const retainedForReadoption: RetainedResource[] = [];
+  // Review H-2: their record's read, started with the first one, off the
+  // critical path.
+  let retainedEarlier: Promise<readonly RetainedResource[] | null> | undefined;
   // Issue #2301: the logical ids whose delete proceeded with a guard that
   // could not answer. Named in the aggregate warning so the operator can go
   // straight to `cdkd events` for the reason rather than scrolling back.
@@ -569,6 +629,9 @@ export async function runDestroyForStack(
   // recorded one. Resolved HERE, above the two refusals, because both name the
   // record they refuse and neither may be reached with the count already taken.
   const regionForState = state.region ?? ctx.baseRegion;
+  // go-to-k/cdkd#4705: started now, awaited before anything is deleted or
+  // prompted for. Never rejects.
+  const crossPrefixScan = ctx.crossPrefixCheck?.cache.full(stackName, regionForState);
   // The account every pasteable command in the malformed-record refusals below
   // must address (go-to-k/cdkd#3909): without it the `cdkd state show` /
   // `cdkd state list --json` lines they print read the DEFAULT profile's
@@ -710,6 +773,20 @@ export async function runDestroyForStack(
   // refused separately just above (go-to-k/cdkd#3161) so the message a user
   // sees names the container that is actually broken.
   refuseMalformedOutputsForDestroy(state, stackName, regionForState, refusalRecovery);
+  if (crossPrefixScan) {
+    applyCrossPrefixScan(
+      await crossPrefixScan,
+      {
+        stackName,
+        region: regionForState,
+        bucket: ctx.stateBucket,
+        recovery: { profile: ctx.profile, stateBucket: ctx.stateBucket },
+      },
+      'destroy',
+      (message) => logger.warn(message),
+      (message) => logger.info(message)
+    );
+  }
   if (resourceCount === 0 && orphanCount === 0 && journaledOrphans.count === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
@@ -834,6 +911,12 @@ export async function runDestroyForStack(
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.info(`${green('✓')} State deleted`);
+      // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
+      // marker's release -- one round trip, concurrently (review P3).
+      await Promise.all([
+        recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger),
+        releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
+      ]);
     } finally {
       await emptyLock.release({
         failureMessage: 'Failed to release lock after empty-state cleanup',
@@ -1184,6 +1267,14 @@ export async function runDestroyForStack(
   // point must therefore NOT be able to report this stack as interrupted; see
   // the re-sync's own comment for the window that made it possible.
   let statePreserved = false;
+  // go-to-k/cdkd#4705: the writes that follow the record's delete and must
+  // finish under this stack's lock -- the kept list or tombstone, then the
+  // marker's release -- when the caller lets them overlap its next stack
+  // (`ctx.deferRegistryTail`); `undefined` when they were awaited here.
+  let heldTail: Promise<void> | undefined;
+  // Set once this stack's destroy has ended: a first Ctrl-C while its lock is
+  // still held for `heldTail` has nothing of this stack to drain.
+  let stackFinished = false;
   // go-to-k/cdkd#4584: the share of `errorCount` that is journaled orphans,
   // whose remedy differs (the summary never offers `cdkd state orphan`).
   let journaledOrphanFailures = 0;
@@ -1194,6 +1285,7 @@ export async function runDestroyForStack(
     // Route the notice through the live renderer so it doesn't collide with
     // the in-flight task display.
     onFirstSignal: () => {
+      if (stackFinished) return;
       renderer.printAbove(() => {
         process.stderr.write(
           '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
@@ -1682,6 +1774,21 @@ export async function runDestroyForStack(
               `  ⊘ ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
             );
             result.retainedCount++;
+            // go-to-k/cdkd#4705: a kept resource a later create of this stack
+            // takes back by its generated name is recorded for that create.
+            if (keptForReadoption(resource)) {
+              retainedForReadoption.push({
+                logicalId,
+                resourceType: resource.resourceType,
+                physicalId: resource.physicalId,
+              });
+              if (retainedEarlier === undefined) {
+                retainedEarlier = Promise.resolve().then(() =>
+                  ctx.stateBackend.loadRetainedRecord(stackName, regionForState)
+                );
+                retainedEarlier.catch(() => undefined);
+              }
+            }
             recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_RETAINED',
               stackName,
@@ -2247,12 +2354,54 @@ export async function runDestroyForStack(
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
-      // Drop this stack's entries from the exports index so the next
-      // resolver lookup doesn't return stale values. Best-effort —
-      // failures don't fail the destroy (state.json is the canonical
-      // record, and the index self-heals on next deploy / fallback).
-      if (ctx.exportIndexStore) {
-        await ctx.exportIndexStore.removeStack(stackName, regionForState);
+      // go-to-k/cdkd#4705: what this destroy kept, which the stack's next
+      // create here may take back by name -- or, kept nothing, the tombstone
+      // (review D-1); exactly one of the two, so the tombstone is never
+      // written over a kept list. With the marker's release, run beside the
+      // exports-index update that always followed the record's delete, so
+      // they add no round trip of their own (review P3, H-2/(h)). After
+      // `deleteState` -- the marker must not be released while the record
+      // exists -- and under this stack's lock. A failure, or a crash before
+      // the kept write, leaves those resources unrecorded: warned, and their
+      // re-create is refused with the `cdkd import` remedy. (A preserved
+      // state keeps their rows instead, so it writes none of this.)
+      //
+      // The exports index: drop this stack's entries so the next resolver
+      // lookup doesn't return stale values. Best-effort — failures don't fail
+      // the destroy (state.json is the canonical record, and the index
+      // self-heals on next deploy / fallback).
+      //
+      // With `ctx.deferRegistryTail` (`destroy --all`), the kept-list /
+      // tombstone write and the marker's release are not awaited here: this
+      // stack's lock is held until they settle (`holdUntil` below) while the
+      // command moves on, so they cost no round trip per stack. The exports
+      // index is still awaited here.
+      const writeKept = (): Promise<void> =>
+        recordRetainedForReadoption(
+          ctx.stateBackend,
+          stackName,
+          regionForState,
+          retainedForReadoption,
+          logger,
+          retainedEarlier
+        );
+      const releaseMarker = (): Promise<void> =>
+        releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
+      if (ctx.deferRegistryTail !== undefined) {
+        // Off the critical path, so serialized as orphan, export and rollback
+        // do: the kept list or tombstone, then the marker (review nit). Both
+        // never throw.
+        heldTail = writeKept().then(releaseMarker);
+        await ctx.exportIndexStore?.removeStack(stackName, regionForState);
+      } else {
+        // A single destroy runs them concurrently with the exports-index
+        // update it always awaited, so they cost no round trip of their own;
+        // serializing them here would add one per stack.
+        await Promise.all([
+          writeKept(),
+          releaseMarker(),
+          ctx.exportIndexStore?.removeStack(stackName, regionForState),
+        ]);
       }
     } else {
       // Final authoritative write of the remaining state (not-yet-deleted +
@@ -2477,6 +2626,10 @@ export async function runDestroyForStack(
     try {
       await lock.release({
         failureMessage: `Failed to release lock for stack ${displayStackName(stackName)}`,
+        ...(heldTail !== undefined &&
+          ctx.deferRegistryTail !== undefined && {
+            holdUntil: { work: heldTail, defer: ctx.deferRegistryTail },
+          }),
         beforeRelease: async () => {
           // Stop live renderer before releasing the lock so any pending
           // in-flight task lines are cleared cleanly.
@@ -2506,6 +2659,7 @@ export async function runDestroyForStack(
           logger.debug('Releasing lock...');
         },
       });
+      stackFinished = true;
     } finally {
       // Restore the cross-region switch HERE, in a guaranteed `finally`, so a
       // throwing release step cannot skip it and leak the target region /

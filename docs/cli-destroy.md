@@ -138,11 +138,36 @@ says what to do.
 | Deletion protection on a resource | That resource fails with the AWS error, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
 | A `Snapshot` resource cdkd cannot snapshot | That resource is refused, exit `2` | [When cdkd refuses to delete](cli-destroy-guards.md#when-cdkd-refuses-to-delete) |
 | A nested stack named directly | Refused, exit `2` | [Nested stacks](#nested-stacks) |
+| Another `--state-prefix` records the same stack | Refused before any prompt or delete | [The same stack name under another state prefix](#the-same-stack-name-under-another-state-prefix) |
 | A damaged state record | `STATE_RESOURCES_MALFORMED`, exit `1` | [A damaged state record](cli-destroy-edge-cases.md#a-damaged-state-record-refuses-the-destroy) |
 
 For `terminationProtection`, the other way through is to set it to `false` in
 your CDK code and redeploy. For an imported output, destroy the importing
 stack first.
+
+## The same stack name under another state prefix
+
+`cdkd destroy` and `cdkd state destroy` read the stack's marker in the
+[stack registry](state-store-registry.md) before any prompt or delete. They
+refuse when the marker names another `--state-prefix` that holds the stack,
+because that record may name the same resources.
+
+Decide which record you are keeping, and drop the other with the command the
+refusal prints. `cdkd state orphan` never deletes a resource:
+
+```bash
+cdkd state orphan MyStack --stack-region us-east-1 --state-prefix team-a
+```
+
+Then run the destroy again.
+
+A successful destroy removes the marker with the record. A resource the
+destroy keeps (`RemovalPolicy.RETAIN`) is listed in `retained.json` beside
+the record's key, so the next deploy under the same prefix takes it back and
+does not refuse its name. `cdkd state orphan` empties that list.
+
+If S3 denies access to the marker, the destroy warns and falls back to
+listing the bucket's prefixes.
 
 ## Options
 

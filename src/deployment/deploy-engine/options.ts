@@ -3,6 +3,7 @@ import type { PreDeleteSnapshotClients } from '../../provisioning/final-snapshot
 import type { DeploymentEventRecorder } from '../../types/deployment-events.js';
 import type { StackState } from '../../types/state.js';
 import type { DestructiveChange } from '../../analyzer/destructive-changes.js';
+import type { ForeignHolding } from '../rollback-executor/journaled-orphans.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -258,6 +259,14 @@ export interface DeployEngineOptions {
   onCurrentStateLoaded?: (stackName: string, state: StackState | undefined) => Promise<void>;
 
   /**
+   * go-to-k/cdkd#4705: called, under the lock, when a deploy that found no
+   * record (a first deploy) failed and left none: the CLI releases the stack
+   * registry marker it claimed. A nested child's engine calls it with the
+   * CHILD's name. Should not throw.
+   */
+  onFirstDeployLeftNoRecord?: (stackName: string) => Promise<void>;
+
+  /**
    * Issues [#615] / [#651] — user-named resources to destroy + recreate this
    * deploy, plumbed through `--recreate-via-cc-api <LogicalId>` /
    * `--recreate-via-sdk-provider <LogicalId>` (both repeatable), TOGETHER WITH
@@ -460,11 +469,52 @@ export interface DeployEngineOptions {
    * request, serializes prompts across concurrent stacks and handles `--yes`
    * and a non-interactive stdin.
    */
-  approveDeployment?: (request: DeploymentApprovalRequest) => Promise<boolean>;
+  approveDeployment?: DeploymentApprover;
+
+  /**
+   * go-to-k/cdkd#4705: called after the diff and the `--dry-run` return, BEFORE
+   * the approval prompt and any provider call, only when the plan may destroy
+   * (`WILL_DESTROY` / `WILL_REPLACE` / `MAY_REPLACE`) or adds or updates a
+   * nested-stack row (`checkDestructivePlan`). Throwing
+   * aborts the stack before anything changes. Called again with `stage`
+   * `'late'` for a replacement the deploy decides only on reading a resource
+   * back (`approveLateReplacement`, #4656): there a throw keeps that resource
+   * and the deploy goes on. NOT inherited by nested children: the spread site
+   * sets it to `undefined`.
+   */
+  onDestructivePlan?:
+    | ((
+        stackName: string,
+        destructive: readonly DestructiveChange[],
+        stage?: 'late'
+      ) => Promise<void>)
+    | undefined;
+
+  /**
+   * go-to-k/cdkd#4705: asked, after the same-prefix foreign-holder scan finds
+   * nothing, before a SUCCESSFUL deploy's settle deletes a proven journaled
+   * orphan of `stackName` (`settleJournalAfterSuccess`): whether the bucket
+   * records that stack under ANOTHER state prefix, whose record may hold the
+   * resource. A holding keeps the orphan, with the settle's existing warning.
+   * Also asked, alone, by a failed deploy's AUTOMATIC rollback before it
+   * deletes a resource the deploy created (`performRollback`). Absent: no
+   * cross-prefix check. A nested child inherits it and asks by its own stack
+   * name (`Parent~Child`); only the root engine settles.
+   */
+  crossPrefixHolder?: ((stackName: string) => Promise<ForeignHolding>) | undefined;
 }
 
 /** The `--require-approval` levels cdkd implements (CDK's `broadening` needs a security diff cdkd has none of). */
 export type RequireApprovalLevel = 'never' | 'any-change' | 'destructive';
+
+/**
+ * {@link DeployEngineOptions.approveDeployment}. `autoApproves` (go-to-k/cdkd#4705
+ * review H-3): it answers yes without asking anyone (`--yes`), so no wait
+ * passed and the generated-name lookups are not read again.
+ */
+export type DeploymentApprover = ((request: DeploymentApprovalRequest) => Promise<boolean>) & {
+  readonly autoApproves?: boolean;
+};
 
 /** What {@link DeployEngineOptions.approveDeployment} is asked to approve. */
 export interface DeploymentApprovalRequest {
@@ -537,6 +587,13 @@ export interface DeployResult {
    * no-change returns) and in older test doubles: read as 0.
    */
   nestedUpdatePartial?: number;
+  /**
+   * go-to-k/cdkd#4705: late replacements the cross-prefix check refused, each
+   * keeping its old resource (`ProvisionCounts.crossPrefixKept`). Unaddressed:
+   * `deploy.ts` adds it to the exit-2 total. Only a top-level engine runs that
+   * check. Absent means 0.
+   */
+  crossPrefixKept?: number;
   /** Number of resources unchanged */
   unchanged: number;
   /** Total deployment time in milliseconds */

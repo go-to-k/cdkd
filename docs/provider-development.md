@@ -252,6 +252,10 @@ role that has not propagated yet. If you do add a `withRetry` call of your
 own, it must pass an interrupt watch so that {kbd:ctrl+c} stops the wait. See
 [A retry loop inside a provider must honor Ctrl-C](provider-development-reference.md#a-retry-loop-inside-a-provider-must-honor-ctrl-c).
 
+If the create API of your type hands back an existing resource of the same
+name, the provider needs two more methods. See
+[A create that adopts an existing name](provider-development-reference.md#a-create-that-adopts-an-existing-name).
+
 ### 4. `update`
 
 `update` receives the new properties and the previous ones, and changes the

@@ -104,6 +104,7 @@ import {
   recordRollbackSkip,
   rollbackCannotAddress,
   skipUnaddressableReplay,
+  keptForAnotherHolder,
 } from './rollback-executor/messages.js';
 import {
   resolveReplayProps,
@@ -950,6 +951,12 @@ async function replayFailedOperationsUnbound(
               'delete partially-created resource',
               failedCreateRecord ? 'record' : 'journal'
             );
+            break;
+          }
+          // go-to-k/cdkd#4705: as on the completed-CREATE arm. Kept in the
+          // journal (`pending`), so a later `cdkd rollback` still sees it.
+          if (await keptForAnotherHolder(skipScope, logger, op, op.physicalId!)) {
+            pending.add(op);
             break;
           }
           // go-to-k/cdkd#4696 / #4658: a replay of an earlier run's journal

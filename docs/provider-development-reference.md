@@ -116,6 +116,42 @@ try {
 `vp run audit:withretry-interrupt:check` fails on a `withRetry` call under
 `src/provisioning/` that does not pass both options.
 
+## A create that adopts an existing name
+
+Some create APIs do not fail when the name is taken. They hand back the
+existing resource, or overwrite it. `CreateQueue`, `CreateTopic`,
+`PutMetricAlarm` and `PutRule` behave this way. A deploy must not record
+another deployment's resource as its own, so such a type needs two more
+methods.
+
+Add the type to `NAME_ADOPTING_SDK_CREATE_TYPES`
+(`src/deployment/replacement-name-holder/deploy-name.ts`) and implement:
+
+| Method | Returns |
+| --- | --- |
+| `generatedCreateName(resourceType, logicalId, properties)` | The name `create()` sends when the template declares none, and `undefined` when it declares one |
+| `lookupNames(resourceType, names, ctx)` | A `Map<name, physicalId>` of the names a resource already holds |
+
+Three rules keep the check sound:
+
+- **`create()` calls `generatedCreateName`**, so the name it sends and the
+  name cdkd looks up cannot drift apart.
+- **`lookupNames` reads by exact name**, in a batch call where the service
+  has one and otherwise one read per name. It never lists: a listing is
+  eventually consistent and can omit a resource created a moment ago.
+- **A resource that is being deleted reads as absent**, and each API call
+  goes through `withApiLimit` (`src/provisioning/name-lookup.ts`).
+
+Without `lookupNames`, cdkd calls `import()` once per name. If the lookup
+needs a property the plan cannot know yet, also implement
+`lookupNeedsResolvedProperties`.
+
+A deploy then refuses a create whose generated name another resource holds,
+unless the stack's own records name that resource. See
+[Name check before a create](state-store-name-check.md).
+`tests/unit/deployment/generated-name-guard-types-4705.test.ts` checks that
+every listed type has both methods.
+
 ## A provider that waits for stabilization
 
 Some creates return before the resource is usable, so the provider polls until

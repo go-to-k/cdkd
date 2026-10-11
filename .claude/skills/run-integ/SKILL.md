@@ -57,8 +57,8 @@ verify, clean up.
 
    ```bash
    # Always:
-   # deployments/** is retained history, not an orphan (below).
-   aws s3 ls s3://<bucket>/cdkd/<StackName>/ --recursive --region us-east-1 | grep -v '/deployments/'
+   # Retained, not orphans (below).
+   aws s3 ls s3://<bucket>/cdkd/<StackName>/ --recursive --region us-east-1 | grep -vE '/deployments/|/retained\.json$'
    aws iam list-roles --query 'Roles[?contains(RoleName, `<StackName>`)].RoleName' --output text
    aws lambda list-functions --region us-east-1 \
      --query 'Functions[?contains(FunctionName, `<StackName>`)].FunctionName' --output text
@@ -75,13 +75,13 @@ verify, clean up.
 
    **Any orphan found → abort** with the orphan list and cleanup commands; do NOT
    deploy on top of orphans. Under the S3 prefix every key outside `deployments/`
-   counts (`state.json`, `lock.json`, `rollback-journal.json`, a legacy
-   region-less `state.json`); `deployments/**` is event-log history a clean
-   destroy RETAINS unless `--purge-events`. **Except a `lock.json` whose
-   `expiresAt` is in the future: a LIVE peer on the same fixture** — wait, then
-   re-scan. Expired: a killed run's orphan. The LAST call before step 5 re-runs
-   the S3 listing (a batch's earlier scan is stale, #4080) and, since a peer
-   BETWEEN commands or not yet deployed holds no lock, checks this host: a
+   and `retained.json` counts (`state.json`, `lock.json`, `rollback-journal.json`,
+   a legacy region-less `state.json`); a clean destroy keeps `deployments/**`
+   (unless `--purge-events`) and its `retained.json` tombstone. **Except a
+   `lock.json` whose `expiresAt` is in the future: a LIVE peer on the same
+   fixture** — wait, re-scan. Expired: a killed run's orphan. The LAST call
+   before step 5 re-runs the S3 listing (earlier scans go stale, #4080) and,
+   as a peer between commands or not yet deployed holds no lock, checks this host: a
    `pgrep -f verify.sh` PID whose cwd (`lsof -a -p <pid> -d cwd`) ends
    in `tests/integration/<test-name>` is a live peer — wait for it to exit.
 
@@ -161,7 +161,7 @@ verify, clean up.
 
 6. **Verify cleanup**
    - Step 4's S3 listing, re-run per stack — empty = no leftover state (a bare
-     `aws s3 ls s3://<bucket>/cdkd/` is never empty: retained `deployments/`).
+     `aws s3 ls s3://<bucket>/cdkd/` is never empty: kept history).
    - **The state bucket is VERSIONED**, so that listing shows nothing while every
      prior version stays readable (`aws s3 rm` writes a delete marker). For a
      fixture that WRITES a secret into state (redaction / scrub / drift ones do,

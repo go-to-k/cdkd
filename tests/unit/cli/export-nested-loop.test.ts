@@ -313,8 +313,11 @@ function buildStateBackend(
 ): {
   backend: S3StateBackend;
   deleted: Array<{ stackName: string; region: string }>;
+  /** `delete:` / `tombstone:` / `release:<stack>`, in order (go-to-k/cdkd#4705). */
+  events: string[];
 } {
   const deleted: Array<{ stackName: string; region: string }> = [];
+  const events: string[] = [];
   const backend = {
     async getState(stackName: string, region: string) {
       const s = initialStates[`${stackName}|${region}`];
@@ -327,9 +330,17 @@ function buildStateBackend(
     async deleteState(stackName: string, region: string) {
       if (deleteStateFn) await deleteStateFn(stackName, region);
       deleted.push({ stackName, region });
+      events.push(`delete:${stackName}`);
+    },
+    async releaseRegistryMarker(stackName: string) {
+      events.push(`release:${stackName}`);
+      return 'released';
+    },
+    async ensureRetainedTombstone(stackName: string) {
+      events.push(`tombstone:${stackName}`);
     },
   } as unknown as S3StateBackend;
-  return { backend, deleted };
+  return { backend, deleted, events };
 }
 
 function buildLockManager(opts?: { acquireFn?: (stackName: string) => Promise<boolean> }): {
@@ -903,7 +914,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
       parentStack: 'Root',
       parentLogicalId: 'Child',
     });
-    const { backend: stateBackend, deleted } = buildStateBackend({
+    const { backend: stateBackend, deleted, events } = buildStateBackend({
       'Root|us-east-1': root,
       'Root~Child|us-east-1': child,
     });
@@ -1052,6 +1063,16 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
     expect(deleted).toEqual([
       { stackName: 'Root~Child', region: 'us-east-1' },
       { stackName: 'Root', region: 'us-east-1' },
+    ]);
+    // go-to-k/cdkd#4705: the top-level stack's registry marker goes once its
+    // record is gone; a nested child has none.
+    // m1: each removed record gets its tombstone, before the release.
+    expect(events).toEqual([
+      'delete:Root~Child',
+      'tombstone:Root~Child',
+      'delete:Root',
+      'tombstone:Root',
+      'release:Root',
     ]);
   });
 

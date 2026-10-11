@@ -7,6 +7,7 @@ import {
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { prependPostCleanupSigintListener } from '../../utils/interrupt-signals.js';
 
 /**
  * The stack lock plus the SIGINT handler that guards it, as ONE unit.
@@ -66,6 +67,15 @@ export interface ReleaseOptions {
    * the listener is still removed.
    */
   beforeRelease?: () => Promise<void> | void;
+  /**
+   * go-to-k/cdkd#4705: keep the lock until `work` settles, without making the
+   * caller wait for it: `release()` returns once `beforeRelease` ran, and the
+   * S3 release (then the handler's removal) follows `work`, as one promise
+   * handed to `defer`. Whoever collects it MUST await it before the command
+   * ends. `destroy --all` uses it so one stack's post-record writes, which
+   * must stay under that stack's lock, overlap the next stack's destroy.
+   */
+  holdUntil?: { work: Promise<unknown>; defer: (released: Promise<void>) => void };
 }
 
 export interface HeldStackLock {
@@ -164,11 +174,10 @@ export async function acquireStackLock(opts: StackLockOptions): Promise<HeldStac
     get interrupted() {
       return interrupted;
     },
-    async release({ failureMessage, beforeRelease }: ReleaseOptions): Promise<void> {
+    async release({ failureMessage, beforeRelease, holdUntil }: ReleaseOptions): Promise<void> {
       if (released) return;
       released = true;
-      try {
-        await beforeRelease?.();
+      const releaseNow = async (): Promise<void> => {
         try {
           await lockManager.releaseLock(stackName, region);
           // Cleared so a signal arriving after the release cannot fire the
@@ -182,12 +191,54 @@ export async function acquireStackLock(opts: StackLockOptions): Promise<HeldStac
           // a lock that lapses on its own.
           getLogger().warn(safeMsg`${failureMessage}: ${describeAwsFailure(releaseErr).detail}`);
         }
+      };
+      let deferred = false;
+      try {
+        await beforeRelease?.();
+        if (holdUntil !== undefined) {
+          // go-to-k/cdkd#4705 review P1: this stack's work is over, so its
+          // handler must not be the one that exits -- Node runs listeners in
+          // registration order, and an exit here would stop the stack in
+          // flight from releasing ITS lock. Swapped for a post-cleanup one,
+          // run first: a second Ctrl-C best-effort releases THIS lock and
+          // prints its recovery line, and the exit is left to the stack in
+          // flight's handler or the command's.
+          process.removeListener('SIGINT', sigintHandler);
+          let forced = false;
+          const removeDeferred = prependPostCleanupSigintListener(() => {
+            if (!interrupted) {
+              interrupted = true;
+              return;
+            }
+            if (forced || !lockHeld) return;
+            forced = true;
+            void lockManager.releaseLock(stackName, region).catch(() => {
+              /* best-effort: the recovery line below is the real guarantee */
+            });
+            process.stderr.write(
+              `\nForce-quit (post-destroy cleanup): stack lock may not be released.` +
+                `${forceQuitRecoveryClause(stackName, region, recovery)}\n`
+            );
+          });
+          holdUntil.defer(
+            holdUntil.work
+              .then(
+                () => undefined,
+                () => undefined
+              )
+              .then(releaseNow)
+              .finally(removeDeferred)
+          );
+          deferred = true;
+          return;
+        }
+        await releaseNow();
       } finally {
         // DO NOT add an `await` between this removal and the caller's return:
         // once this handler is gone a second Ctrl-C is answered by
         // `watchCommandInterrupt` (issue #2117), which has no per-stack context
         // and prints only a hedged `cdkd force-unlock <stack-name>`.
-        process.removeListener('SIGINT', sigintHandler);
+        if (!deferred) process.removeListener('SIGINT', sigintHandler);
       }
     },
   };

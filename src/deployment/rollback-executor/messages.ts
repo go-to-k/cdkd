@@ -39,6 +39,7 @@ import {
   type RollbackExecutorContext,
   type RollbackReplayResult,
 } from './types.js';
+import type { ForeignHolding } from './journaled-orphans.js';
 
 /**
  * Issue [#1762](https://github.com/go-to-k/cdkd/issues/1762): turn a
@@ -352,6 +353,51 @@ export function skipUnaddressableReplay(
       `re-converge it with \`cdkd deploy\`.`
   );
   recordRollbackSkip(scope, op, UNADDRESSABLE_SKIP_CAUSE);
+}
+
+/**
+ * go-to-k/cdkd#4705: ask `ctx.createdResourceHolder` (the automatic rollback
+ * only) before deleting a resource the failed deploy created. `true` when
+ * another record holds it, or the check could not answer: the resource is
+ * kept, warned about naming who holds it, and recorded as a skip (the journal
+ * keeps it). A thrown check is an unreadable answer (fail closed).
+ */
+export async function keptForAnotherHolder(
+  scope: Parameters<typeof recordRollbackSkip>[0] & {
+    ctx: Pick<RollbackExecutorContext, 'createdResourceHolder' | 'createdResourceRetryCommand'>;
+  },
+  logger: Pick<RollbackExecutorContext['logger'], 'warn'>,
+  op: Parameters<typeof recordRollbackSkip>[1],
+  physicalId: string
+): Promise<boolean> {
+  const ask = scope.ctx.createdResourceHolder;
+  if (ask === undefined) return false;
+  let holding: ForeignHolding;
+  try {
+    holding = await ask(op.resourceType, physicalId);
+  } catch {
+    holding = { kind: 'unreadable', what: "the other stacks' state records (the check failed)" };
+  }
+  if (holding === undefined) return false;
+  const why =
+    holding.kind === 'held'
+      ? `${holding.by} holds it`
+      : `${holding.what}, so it is not known whether another deployment owns it`;
+  const retry =
+    holding.kind === 'unreadable' && holding.retryable === true
+      ? scope.ctx.createdResourceRetryCommand
+      : undefined;
+  logger.warn(
+    safeMsg`  Rollback: Keeping created resource ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) ` +
+      safeMsg`\u2014 ${why}. The failed deploy may have adopted a resource that existed under its name, so the rollback does not delete it; the rollback journal keeps it.` +
+      (retry === undefined ? '' : safeMsg` Once S3 can be read, finish the rollback with: ${retry}`)
+  );
+  recordRollbackSkip(
+    scope,
+    op,
+    'Another state record holds this resource, or it could not be checked, so the rollback did not delete it.'
+  );
+  return true;
 }
 
 /**

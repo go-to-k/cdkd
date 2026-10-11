@@ -1,13 +1,14 @@
 ---
 title: Lock and state errors
-description: "Fix a stale cdkd lock, a corrupted state file, state that disagrees with AWS, and state bucket region errors."
+description: "Fix a stale cdkd lock, a corrupted state file, state that disagrees with AWS, state bucket region errors, and a stack name that two state prefixes record."
 ---
 
 # Lock and state errors
 
 cdkd keeps one state file and one lock for each stack and region in the
-state bucket. The entries here are for a lock nobody holds any more, and for
-a state file that is broken or out of step with AWS.
+state bucket. The entries here are for a lock nobody holds any more, for a
+state file that is broken or out of step with AWS, and for a stack name that
+two state prefixes record.
 
 On this page:
 
@@ -18,6 +19,8 @@ On this page:
 - [State File is Corrupted](#state-file-is-corrupted)
 - [State and Resources Don't Match](#state-and-resources-don-t-match)
 - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
+- ["Refusing to deploy stack X: it is already recorded under another state prefix"](#refusing-to-deploy-stack-x-it-is-already-recorded-under-another-state-prefix)
+- ["X would be created with the cdkd-generated name N, which an existing resource already holds"](#x-would-be-created-with-the-cdkd-generated-name-n-which-an-existing-resource-already-holds)
 
 The lock error itself, and the two steps that fix it, are under
 ["Failed to acquire lock" Error](troubleshooting.md#failed-to-acquire-lock-error)
@@ -316,6 +319,78 @@ command re-run under `--verbose`.
 `AWS_REGION` or your AWS profile sets the region resources are provisioned in.
 `--region` is an option of `cdkd bootstrap`, where it picks the new bucket's
 region; on other commands it is deprecated but still honored.
+
+## "Refusing to deploy stack X: it is already recorded under another state prefix"
+
+A command stops with one of these, and names a bucket and a prefix:
+
+```text
+Refusing to deploy stack ... recorded under another state prefix of bucket ...
+Refusing to destroy stack ... recorded under another state prefix of bucket ...
+Refusing to roll back stack ... recorded under another state prefix of bucket ...
+```
+
+`cdkd deploy` refuses this way on a stack's first deploy under a prefix, and
+on a deploy that deletes or replaces resources. `cdkd destroy`,
+`cdkd state destroy` and `cdkd rollback` refuse every time. No resource of
+the stack is created, changed, reverted or deleted. Assets may already have
+been published.
+
+The same stack name and region is recorded under another `--state-prefix` of
+the state bucket. A stack name is one deployment per account and region, as
+in CloudFormation. Two deployments of one name share every generated resource
+name, so each can delete the other's resources.
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
+explains the rule.
+
+Keep one deployment for each stack name and region:
+
+| You were | Do this |
+| --- | --- |
+| Deploying | Use the prefix that already records the stack, or give this stack another name |
+| Deploying, and the other deployment is unwanted | Remove it first with the `cdkd state destroy` or `cdkd state orphan` command the message prints |
+| Destroying or rolling back | Decide which record you keep, drop the other with the `cdkd state orphan ... --state-prefix <prefix>` command the message prints, and run the command again |
+
+`cdkd state destroy` deletes the other deployment's resources.
+`cdkd state orphan` drops only its record and never deletes a resource.
+
+### A note about a record that owns no resource
+
+Only a record that can own a resource causes the refusal. A failed first
+deploy that created nothing leaves an empty record under its prefix. cdkd
+does not refuse for that record. It prints a note that names the prefix and
+the `cdkd state orphan` command that removes it.
+
+## "X would be created with the cdkd-generated name N, which an existing resource already holds"
+
+`cdkd deploy` stops with this message, error code `GENERATED_NAME_HELD`,
+before it creates a queue, topic, log group, alarm, EventBridge rule, S3
+bucket, ECS cluster, load balancer, target group or state machine. Nothing
+was created for that resource.
+
+For these types, a create call under a taken name does not fail. It hands
+back the existing resource, or overwrites it. A resource already holds the
+name cdkd generated, and nothing this stack records names that resource.
+
+Most often, the same stack name is also deployed under another state backend:
+another `--state-prefix`, another `--state-bucket` or another account's
+bucket. That deployment generates the same names.
+
+| Whose resource it is | Do this |
+| --- | --- |
+| Another deployment's | Deploy this stack under that backend only, or give this stack another name |
+| This stack's own | Adopt it with the `cdkd import` command the message prints, then deploy again |
+
+The message prints the import command with the names filled in:
+
+```bash
+cdkd import MyStack --resource MyQueue=<physicalId>
+```
+
+A resource is "this stack's own" without a record when, for example, a
+destroy kept it before this check existed, or it was kept under another
+prefix. [Name check before a create](state-store-name-check.md) lists what
+cdkd counts as a record.
 
 ## Related
 

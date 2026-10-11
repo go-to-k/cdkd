@@ -296,7 +296,7 @@ export const DERIVED_GENERATED_NAMES: Readonly<
   'AWS::S3::Bucket': {
     file: 's3-bucket-provider.ts',
     source:
-      'generateResourceName(logicalId, {\n        maxLength: 63,\n        lowercase: true,\n        allowedPattern: /[^a-z0-9.-]/g,\n      })',
+      'generateResourceName(logicalId, {\n      maxLength: 63,\n      lowercase: true,\n      allowedPattern: /[^a-z0-9.-]/g,\n    })',
     derive: (id) =>
       generateResourceName(id, { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g }),
   },

@@ -69,6 +69,7 @@ const mockGetState = vi.fn<(stackName: string, region: string) => Promise<unknow
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
     verifyBucketExists: mockVerifyBucketExists,

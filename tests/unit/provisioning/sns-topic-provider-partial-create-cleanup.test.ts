@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
@@ -421,6 +422,13 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
         (e: unknown) => e
       );
     }
+
+    it('go-to-k/cdkd#4705 E-3: a 4xx on the wiring with the topic left behind keeps the intent', async () => {
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockRejectedValueOnce(Object.assign(new Error('ValidationException: bad input'), { name: 'ValidationException', $metadata: { httpStatusCode: 400 } }));
+      mockSend.mockRejectedValueOnce(new Error('DeleteTopic boom'));
+      expect(provenNothingCreated(await failure(), 'MyTopic', RESOURCE_TYPE)).toBe(false);
+    });
 
     it('marks the topic ARN when the wiring fails and the cleanup delete fails', async () => {
       mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });

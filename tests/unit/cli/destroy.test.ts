@@ -50,6 +50,7 @@ const mockGetState =
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
+    destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
     verifyBucketExists: mockVerifyBucketExists,
@@ -450,7 +451,35 @@ describe('cdkd destroy: terminationProtection guard', () => {
       etag: '"x"',
     }));
 
+    // go-to-k/cdkd#4705 (review R4-3): every target stack's scan starts before
+    // the first stack's destroy, through the run's one cache.
+    const { CrossPrefixGuard } = await import('../../../src/state/stack-registry.js');
+    const order: string[] = [];
+    const fullSpy = vi
+      .spyOn(CrossPrefixGuard.prototype, 'full')
+      .mockImplementation(async (name: string) => {
+        order.push(`scan:${name}`);
+        return { kind: 'clear' };
+      });
+    mockRunDestroyForStack.mockImplementation(async (name: string) => {
+      order.push(`destroy:${name}`);
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+
     await runDestroy(['--all', '--yes']);
+    fullSpy.mockRestore();
+
+    // Present (a removed pre-start loop leaves -1, which is "less than" too).
+    expect(order.filter((o) => o.startsWith('scan:'))).toEqual(['scan:Plain', 'scan:Unguarded']);
+    expect(order.indexOf('scan:Plain')).toBeLessThan(order.findIndex((o) => o.startsWith('destroy:')));
+    expect(order.indexOf('scan:Unguarded')).toBeLessThan(order.findIndex((o) => o.startsWith('destroy:')));
+    const caches = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].crossPrefixCheck?.cache));
+    expect(caches.size).toBe(1);
+    // Review R5-8: the command's finally destroys the client of the backend
+    // the destroys (and the scans) ran on, once.
+    const backends = new Set(mockRunDestroyForStack.mock.calls.map((c) => c[2].stateBackend));
+    expect(backends.size).toBe(1);
+    expect([...backends][0].destroyClient).toHaveBeenCalledTimes(1);
 
     // Both stacks flow through the runner — guard does not fire.
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
@@ -460,6 +489,60 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(dispatched).toEqual(new Set(['Plain', 'Unguarded']));
     // No partial-failure exit on the happy path.
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('pre-starts a scan only in the region the run destroys, and none for a protected stack (go-to-k/cdkd#4705 review R5-5)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [
+        makeStackInfo('Multi', 'eu-west-1'),
+        makeStackInfo('Guarded', 'us-east-1', true),
+      ],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Multi', region: 'us-east-1' },
+      { stackName: 'Multi', region: 'eu-west-1' },
+      { stackName: 'Guarded', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name),
+      etag: '"x"',
+    }));
+    const { CrossPrefixGuard } = await import('../../../src/state/stack-registry.js');
+    const fullSpy = vi
+      .spyOn(CrossPrefixGuard.prototype, 'full')
+      .mockResolvedValue({ kind: 'clear' });
+    mockRunDestroyForStack.mockImplementation(async (name: string) => ({
+      stackName: name,
+      cancelled: false,
+      deletedCount: 0,
+      errorCount: 0,
+      skippedCount: 0,
+      retainedCount: 0,
+      guardIndeterminateCount: 0,
+      skippedEmpty: false,
+      interrupted: false,
+    }));
+
+    await runDestroy(['--all', '--yes']).catch(() => undefined);
+    const calls = fullSpy.mock.calls.map((c) => [c[0], c[1]]);
+    fullSpy.mockRestore();
+
+    expect(calls).toEqual([['Multi', 'eu-west-1']]);
+  });
+
+  it('plannedDestroyRegion: the only region, the CLI region for a legacy record, the synth region among several, else none', async () => {
+    const { plannedDestroyRegion } = await import('../../../src/cli/commands/destroy.js');
+    expect(plannedDestroyRegion([{ region: 'eu-west-1' }], 'us-east-1', 'ap-1')).toBe('eu-west-1');
+    expect(plannedDestroyRegion([{}], undefined, 'ap-1')).toBe('ap-1');
+    expect(
+      plannedDestroyRegion([{ region: 'us-east-1' }, { region: 'eu-west-1' }], 'eu-west-1', 'ap-1')
+    ).toBe('eu-west-1');
+    expect(
+      plannedDestroyRegion([{ region: 'us-east-1' }, { region: 'eu-west-1' }], 'ap-1', 'ap-1')
+    ).toBeUndefined();
+    expect(plannedDestroyRegion([], 'us-east-1', 'ap-1')).toBeUndefined();
   });
 
   it('names a region-scoped state orphan when resources failed (go-to-k/cdkd#3996)', async () => {
@@ -617,6 +700,8 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].resolveSecretDerivedPrincipals).toEqual({});
     // go-to-k/cdkd#2115: a top-level destroy is a whole-stack teardown.
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].stackDestroy).toBe(true);
+    // go-to-k/cdkd#4705: a top-level destroy checks the bucket's other state prefixes.
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2].crossPrefixCheck?.cache).toBeDefined();
 
     // No exit-2 on the bypass path.
     expect(exitSpy).not.toHaveBeenCalled();
@@ -627,6 +712,93 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(warnMessages).toMatch(/--remove-protection/);
     // Restored, so later cases see the file-level logger mock again.
     getLoggerSpy.mockRestore();
+  });
+
+  /** What of the command's teardown had already run when a deferred release ran (go-to-k/cdkd#4705 Y-1). */
+  async function trackTeardown() {
+    const { AwsClients } = await import('../../../src/utils/aws-clients.ts');
+    const sigint0 = process.listenerCount('SIGINT');
+    const sigterm0 = process.listenerCount('SIGTERM');
+    const snaps: Array<{ destroyClient: number; awsDestroy: number; sigintArmed: boolean; sigtermArmed: boolean }> = [];
+    return Object.assign(snaps, {
+      snap(backend: { destroyClient: ReturnType<typeof vi.fn> }) {
+        const results = (AwsClients as unknown as ReturnType<typeof vi.fn>).mock.results as Array<{
+          value: { destroy: ReturnType<typeof vi.fn> };
+        }>;
+        let awsDestroy = 0;
+        for (const r of results) awsDestroy += r.value.destroy.mock.calls.length;
+        snaps.push({
+          destroyClient: backend.destroyClient.mock.calls.length,
+          awsDestroy,
+          sigintArmed: process.listenerCount('SIGINT') > sigint0,
+          sigtermArmed: process.listenerCount('SIGTERM') > sigterm0,
+        });
+      },
+    });
+  }
+
+  it('go-to-k/cdkd#4705 Y-1: a LATER stack that throws still lets every deferred release finish before teardown', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Plain', 'us-east-1'), makeStackInfo('Unguarded', 'us-east-1', false)],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Plain', region: 'us-east-1' },
+      { stackName: 'Unguarded', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({ state: makeStackState(name), etag: '"x"' }));
+    const teardownAtRelease = await trackTeardown();
+    let first = true;
+    mockRunDestroyForStack.mockImplementation(async (name: string, _state: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void; stateBackend: { destroyClient: ReturnType<typeof vi.fn> } }) => {
+      if (!first) throw new Error(`boom in ${name}`);
+      first = false;
+      ctx.deferRegistryTail?.(
+        new Promise<void>((r) => setTimeout(r, 5)).then(() => teardownAtRelease.snap(ctx.stateBackend))
+      );
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+    await runDestroy(['--all', '--yes']).catch(() => undefined);
+    expect([...teardownAtRelease]).toEqual([{ destroyClient: 0, awsDestroy: 0, sigintArmed: true, sigtermArmed: true }]);
+  });
+
+  it('go-to-k/cdkd#4705 perf: --all hands each stack a deferRegistryTail, and awaits every deferred release before the client goes', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Plain', 'us-east-1'), makeStackInfo('Unguarded', 'us-east-1', false)],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Plain', region: 'us-east-1' },
+      { stackName: 'Unguarded', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({ state: makeStackState(name), etag: '"x"' }));
+    const order: string[] = [];
+    const teardownAtRelease = await trackTeardown();
+    mockRunDestroyForStack.mockImplementation(async (name: string, _state: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void; stateBackend: { destroyClient: ReturnType<typeof vi.fn> } }) => {
+      order.push(`destroy:${name}`);
+      ctx.deferRegistryTail?.(
+        new Promise<void>((r) => setTimeout(r, 5)).then(() => {
+          order.push(`released:${name}`);
+          teardownAtRelease.snap(ctx.stateBackend);
+        })
+      );
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+    await runDestroy(['--all', '--yes']);
+    expect(mockRunDestroyForStack.mock.calls.every((c) => typeof c[2].deferRegistryTail === 'function')).toBe(true);
+    // Y-1: each release ran while the clients, the interrupt watch and the
+    // SIGTERM forwarder were all still live.
+    expect([...teardownAtRelease]).toEqual([
+      { destroyClient: 0, awsDestroy: 0, sigintArmed: true, sigtermArmed: true },
+      { destroyClient: 0, awsDestroy: 0, sigintArmed: true, sigtermArmed: true },
+    ]);
+    // Both stacks were destroyed before the first deferred release finished...
+    expect(order.indexOf('destroy:Unguarded')).toBeLessThan(order.findIndex((o) => o.startsWith('released:')));
+    // ...and every release finished before the command's client was destroyed.
+    expect(order.filter((o) => o.startsWith('released:'))).toHaveLength(2);
+    const backend = mockRunDestroyForStack.mock.calls[0]![2].stateBackend;
+    expect(backend.destroyClient).toHaveBeenCalledTimes(1);
   });
 
   it('--all with one protected + one unprotected: unprotected destroys, protected counts as failure (exit 2)', async () => {

@@ -367,7 +367,11 @@ export async function deleteJournaledOrphans(
 /** What another stack's record says about a resource (`makeForeignHolderScan`). */
 export type ForeignHolding =
   | { kind: 'held'; by: string }
-  | { kind: 'unreadable'; what: string }
+  /**
+   * `retryable`: the check itself failed (go-to-k/cdkd#4705), so re-running
+   * once it can succeed may settle the answer.
+   */
+  | { kind: 'unreadable'; what: string; retryable?: true }
   | undefined;
 
 /** The outcome of {@link settleJournaledOrphansOnSuccess}. */

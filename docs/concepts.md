@@ -140,12 +140,16 @@ Inside the bucket, every key starts with a prefix, `cdkd` by default.
 
 ### One bucket serves every app in the account
 
-cdkd finds a stack's state by the stack's name and region. This has three
+cdkd finds a stack's state by the stack's name and region. This has four
 consequences:
 
 - The same stack deployed to two regions has two independent state files.
-- Two CDK apps must not use the same stack name in the same region, unless
-  you give the apps different `--state-prefix` values.
+- Apps with different stack names share the bucket without any setting.
+- One stack name is one deployment per account and region, as in
+  CloudFormation. `--state-prefix` separates the records and not the deployed
+  resources, so deploying one stack name under a second prefix or a second
+  bucket is unsupported. See
+  [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 - `cdkd destroy --all` targets only the stacks of the app you run it in. It
   does not touch other apps' stacks in the same bucket.
 

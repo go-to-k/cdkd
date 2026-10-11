@@ -100,6 +100,16 @@ Three of these need a word more:
 - `create-tokens.json` lets a re-run find an EFS, FSx or CloudFront origin
   access identity that an interrupted create already made. It holds no secret.
 
+Two more objects exist to keep one stack name to one deployment. They are
+described with the checks that use them:
+
+- `_cdkd-registry/{region}/{stackName}.json`, at the top of the bucket, is
+  the stack's marker in the [stack registry](state-store-registry.md).
+- `retained.json`, beside `state.json`, lists resources the stack kept in AWS
+  when it let go of them. The
+  [name check](state-store-name-check.md#when-a-taken-name-is-allowed) reads
+  it.
+
 A custom resource response that is left in the bucket, because the deploy that
 would have deleted it died, is collected by [`cdkd gc`](cli-gc.md).
 
@@ -112,6 +122,11 @@ deployed to two regions has two independent records:
 cdkd/DatabaseStack/us-east-1/state.json
 cdkd/DatabaseStack/us-west-2/state.json
 ```
+
+The same stack name under two state prefixes, or in two buckets, is a
+different matter. In one account and region it is unsupported, and cdkd
+refuses it where it can see it. See
+[One stack name per account and region](state-store.md#one-stack-name-per-account-and-region).
 
 A nested stack has its own record. Its key joins the parent stack name and the
 child's logical ID with `~`:

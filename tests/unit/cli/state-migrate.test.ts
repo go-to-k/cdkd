@@ -479,6 +479,31 @@ describe('cdkd state migrate', () => {
     // Source bucket still there: no DeleteBucketCommand was planned for it.
   });
 
+  it("carries the stack registry marker with the records (go-to-k/cdkd#4705)", async () => {
+    const keys = ['cdkd/StackA/us-east-1/state.json', '_cdkd-registry/us-east-1/StackA.json'];
+    const listing = () => ({ Contents: keys.map((Key) => ({ Key })) });
+    planS3({
+      HeadBucketCommand: [
+        () => ({}),
+        () => Object.assign(new Error('NotFound'), { name: 'NotFound' }),
+      ],
+      ListObjectsV2Command: [listing, listing, listing],
+      CreateBucketCommand: [() => ({})],
+      PutBucketVersioningCommand: [() => ({})],
+      PutBucketEncryptionCommand: [() => ({})],
+      PutBucketPolicyCommand: [() => ({})],
+      CopyObjectCommand: [() => ({}), () => ({})],
+    });
+
+    await runMigrate(['migrate', '--region', 'us-east-1', '--yes']);
+
+    const copied = s3SendImpl.mock.calls
+      .map(([cmd]) => cmd as { constructor: { name: string }; input: { Key?: string } })
+      .filter((cmd) => cmd.constructor.name === 'CopyObjectCommand')
+      .map((cmd) => cmd.input.Key);
+    expect(copied).toEqual(keys);
+  });
+
   it('--remove-legacy empties source (versions + delete-markers) and deletes it', async () => {
     planS3({
       HeadBucketCommand: [

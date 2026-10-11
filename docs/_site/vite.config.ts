@@ -102,6 +102,8 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'Stack Outputs', path: '/stack-outputs' },
       { title: 'Cross-Stack References', path: '/cross-stack-references' },
       { title: 'State Store', path: '/state-store' },
+      { title: 'Name check before a create', path: '/state-store-name-check', under: '/state-store' },
+      { title: 'Stack registry', path: '/state-store-registry', under: '/state-store' },
       { title: 'Import & CFn Migration', path: '/import' },
       { title: 'Options and the import plan', path: '/import-reference', under: '/import' },
       { title: 'By resource type', path: '/import-resource-types', under: '/import' },

@@ -30,6 +30,11 @@ const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
  * One that already expired before the question (the child's own load and diff
  * outlived it) refuses without asking: the parent has failed, so a "yes"
  * could only provision a child nothing will track.
+ *
+ * Resolves `true` when it asked someone (and was approved), `false` when it
+ * did not ask, or the approver answers without asking (`--yes`;
+ * go-to-k/cdkd#4705: only a prompt that waited makes the generated-name
+ * lookups re-read).
  */
 export async function requireDeploymentApproval(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -38,10 +43,10 @@ export async function requireDeploymentApproval(args: {
   records: Readonly<Record<string, ResourceState>>;
   template: CloudFormationTemplate;
   recreateTargetIds?: Iterable<string> | undefined;
-}): Promise<void> {
+}): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
-  if (level === 'never' || approve === undefined) return;
+  if (level === 'never' || approve === undefined) return false;
 
   // go-to-k/cdkd#4043: a reader promoted ONLY because a `NoEcho` parameter's
   // value may have moved is no template change (the engine compares it with
@@ -63,7 +68,7 @@ export async function requireDeploymentApproval(args: {
     level === 'destructive'
       ? destructiveChanges.length > 0
       : changes.length > 0 && !onlyNestedUpdates;
-  if (!ask) return;
+  if (!ask) return false;
 
   const count = (type: ResourceChange['changeType']): number =>
     changes.filter((c) => c.changeType === type).length;
@@ -93,6 +98,58 @@ export async function requireDeploymentApproval(args: {
       )
     );
   }
+  // Review H-3: `--yes` answered without asking; nothing waited.
+  return approve.autoApproves !== true;
+}
+
+/**
+ * go-to-k/cdkd#4705: hand a plan that may destroy something to
+ * `options.onDestructivePlan`, BEFORE the approval prompt (a user is never asked
+ * and then refused) and any provider call. The triggers, exactly:
+ *
+ * - a change `findDestructiveChanges` classifies `WILL_DESTROY`,
+ *   `WILL_REPLACE` (a `--recreate-via-*` target included) or `MAY_REPLACE` (a
+ *   replacement the deploy only learns about once a value resolves, so it may
+ *   delete the resource);
+ * - a nested-stack row being CREATED or UPDATED (a replacement included): the
+ *   child's own plan is only known once its row runs, after the parent has
+ *   started changing things, and children never run the hook. A created
+ *   child's creates can be handed resources the stack's twin under another
+ *   prefix records, which the child's automatic rollback would then delete
+ *   (review R6-2). One being DELETED is already a `WILL_DESTROY` above, or,
+ *   retained, a `WILL_ORPHAN` that leaves the child and its resources in
+ *   place.
+ *
+ * A retained removal (`WILL_ORPHAN`) deletes nothing and does not trigger it.
+ * Nothing is computed when no hook is set.
+ */
+export async function checkDestructivePlan(args: {
+  options: Pick<DeployEngineOptions, 'onDestructivePlan'>;
+  stackName: string;
+  changes: Iterable<ResourceChange>;
+  records: Readonly<Record<string, ResourceState>>;
+  template: CloudFormationTemplate;
+  recreateTargetIds?: Iterable<string> | undefined;
+}): Promise<void> {
+  const hook = args.options.onDestructivePlan;
+  if (hook === undefined) return;
+  const changes = [...args.changes].filter(
+    (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
+  );
+  const destroying = findDestructiveChanges(
+    args.stackName,
+    changes,
+    args.records,
+    args.template,
+    new Set(args.recreateTargetIds ?? [])
+  ).filter((c) => c.impact !== 'WILL_ORPHAN');
+  const nestedRowChanges = changes.some(
+    (c) =>
+      c.resourceType === NESTED_STACK_TYPE &&
+      (c.changeType === 'CREATE' || c.changeType === 'UPDATE')
+  );
+  if (destroying.length === 0 && !nestedRowChanges) return;
+  await hook(args.stackName, destroying);
 }
 
 /**
@@ -104,7 +161,9 @@ export async function requireDeploymentApproval(args: {
  * otherwise only an approval is `true`: a "no", a refusal to ask (no
  * terminal) and a deadline already past are `false`, never a throw, since the
  * caller keeps the resource instead. The enclosing deadlines pause while the
- * question is open, as for the up-front prompt.
+ * question is open, as for the up-front prompt. `onAsked` runs once the
+ * question was answered (go-to-k/cdkd#4705: the generated-name lookups made
+ * before it are read again at their creates).
  */
 export async function approveLateReplacement(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -112,13 +171,14 @@ export async function approveLateReplacement(args: {
   change: ResourceChange;
   records: Readonly<Record<string, ResourceState>>;
   template?: CloudFormationTemplate | undefined;
+  onAsked?: () => void;
 }): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
   if (level === 'never' || approve === undefined) return true;
   if (enclosingDeadlineExpired()) return false;
   try {
-    return await whileEnclosingDeadlinesPaused(() =>
+    const approved = await whileEnclosingDeadlinesPaused(() =>
       approve({
         stackName: args.stackName,
         level,
@@ -131,6 +191,8 @@ export async function approveLateReplacement(args: {
         ),
       })
     );
+    if (approve.autoApproves !== true) args.onAsked?.();
+    return approved;
   } catch {
     return false;
   }
