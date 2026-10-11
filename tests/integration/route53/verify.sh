@@ -486,8 +486,9 @@ echo "    OK: CidrRoutingConfig reached AWS (CollectionId='${ACTUAL_CIDR_COLLECT
 # call. GetHostedZone surfaces it under `HostedZone.Features.AcceleratedRecoveryStatus`.
 # AcceleratedRecovery enabling is an ASYNC AWS-side state transition — the
 # field reports `ENABLING` immediately after UpdateHostedZoneFeatures
-# returns success and only eventually settles to `ENABLED`. Accepting both
-# proves the wire reached AWS and the atomicity guard (DeleteHostedZone on
+# returns success (or `ENABLING_HOSTED_ZONE_LOCKED` while the zone is
+# locked for the transition) and only eventually settles to `ENABLED`.
+# Accepting any of the three proves the wire reached AWS and the atomicity guard (DeleteHostedZone on
 # UHF failure) didn't trip; the final-state poll is out of scope (would
 # add ~minutes to integ time for no extra correctness signal — cdkd's
 # job is the wire-up, not waiting for AWS-side eventual consistency).
@@ -495,9 +496,9 @@ ACCEL_RECOVERY=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGIO
   --query 'HostedZone.Features.AcceleratedRecoveryStatus' --output text 2>/dev/null)
 
 case "${ACCEL_RECOVERY}" in
-  ENABLED|ENABLING) ;;
+  ENABLED|ENABLING|ENABLING_HOSTED_ZONE_LOCKED) ;;
   *)
-    echo "FAIL: HostedZone.Features.AcceleratedRecoveryStatus is '${ACCEL_RECOVERY}', expected 'ENABLED' or 'ENABLING' (silent-drop NOT closed)" >&2
+    echo "FAIL: HostedZone.Features.AcceleratedRecoveryStatus is '${ACCEL_RECOVERY}', expected 'ENABLED', 'ENABLING' or 'ENABLING_HOSTED_ZONE_LOCKED' (silent-drop NOT closed)" >&2
     aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" | jq '.HostedZone'
     exit 1
     ;;
