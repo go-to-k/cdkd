@@ -644,6 +644,7 @@ describe('the success settle with DynamoDBGlobalTableProvider (go-to-k/cdkd#4606
     async (_label, failure) => {
       const r = await settle(failure(), { recordTableId: 'tid-NEW' });
       expect(r.del).not.toHaveBeenCalled();
+      expect(mockSend).toHaveBeenCalled();
       expect(mockSend.mock.calls.every(([cmd]) => cmd instanceof DescribeTableCommand)).toBe(true);
       expect(r.out.unaddressed).toBe(1);
       expect(r.warned).toContain('Orphan (AWS::DynamoDB::GlobalTable)');
