@@ -92,7 +92,10 @@ class QueueReaderChild extends cdk.NestedStack {
  *     `Ref` and `Fn::GetAtt`, and `PlainScheduleRole` attaches SecretPolicy by
  *     `Ref` (go-to-k/cdkd#3869): each read resolves to a value embedding a
  *     secret-derived name (the queue name, the policy path), which no log line
- *     may print.
+ *     may print. A second statement spells the queue's ARN with the secret
+ *     reference literally, which put the queue name into the policy's own
+ *     secrets bag; the save then rewrote its plaintext `Queues` URL into the
+ *     reference and the destroy failed (go-to-k/cdkd#4810).
  *   - `PlainTargetSchedule`, in the same group with its own role. Both
  *     schedules target `PlainTargetQueue`, whose name is NOT secret-derived,
  *     so each one's recorded target ARN and role are compared with the live
@@ -235,6 +238,27 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
             Principal: { AWS: cdk.Stack.of(this).account },
             Action: 'sqs:SendMessage',
             Resource: secretQueue.attrArn,
+          },
+          // The same ARN spelled with the secret reference LITERALLY
+          // (go-to-k/cdkd#4810): it puts the queue name into the policy's own
+          // secrets bag, and the save rewrote the plaintext `Queues` URL above
+          // into `https://sqs.../{{resolve:...}}`, which the destroy then sent
+          // to AWS.
+          {
+            Sid: 'SdinLiteralReference',
+            Effect: 'Allow',
+            Principal: { AWS: cdk.Stack.of(this).account },
+            Action: 'sqs:GetQueueAttributes',
+            Resource: cdk.Fn.join('', [
+              'arn:',
+              cdk.Aws.PARTITION,
+              ':sqs:',
+              cdk.Aws.REGION,
+              ':',
+              cdk.Aws.ACCOUNT_ID,
+              ':',
+              fromSecret('queue'),
+            ]),
           },
         ],
       },
