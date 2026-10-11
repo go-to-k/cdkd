@@ -653,6 +653,116 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     }
   );
 
+  describe("a DELETED child's stored values, masked with the parent's secret-named records", () => {
+    // The parent no longer declares the child, so its stored outputs render
+    // as REMOVE rows with their old values; only the parent's records can say
+    // what those hold.
+    async function deletedChildRow(
+      parentResources: StackState['resources'],
+      readerValue: string,
+      parameters?: CloudFormationTemplate['Parameters']
+    ): Promise<string> {
+      const parent: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 9,
+        resources: {
+          ...parentResources,
+          Child: {
+            physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const child: StackState = {
+        stackName: 'S~Child',
+        region: 'us-east-1',
+        version: 9,
+        resources: {},
+        outputs: { Out: readerValue },
+        lastModified: 0,
+      };
+      const tpl: CloudFormationTemplate = {
+        ...(parameters && { Parameters: parameters }),
+        Resources: Object.fromEntries(
+          Object.entries(parentResources).map(([id, r]) => [
+            id,
+            { Type: r.resourceType, Properties: r.properties as Record<string, unknown> },
+          ])
+        ),
+      };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: tpl,
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+      return JSON.stringify(childNode?.outputChanges.find((c) => c.name === 'Out'));
+    }
+
+    it.each([
+      ['the parent NoEcho values judge it', true],
+      ['negative control, a non-NoEcho parameter', false],
+    ])("masks a parent's NoEcho-named record: %s", async (_l, noEcho) => {
+      const row = await deletedChildRow(
+        {
+          Db: {
+            physicalId: 'teamsecretdb',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        'teamsecretdb',
+        { DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) } }
+      );
+      // Premise: the deleted child's row is rendered.
+      expect(row).toContain('"changeType":"REMOVE"');
+      expect(row.includes('teamsecretdb')).toBe(!noEcho);
+    });
+
+    it("shows a public segment of a secret-named composite id, and masks the secret one", async () => {
+      // Named from a NoEcho value, which state stores as the mask (a
+      // `{{resolve:` reference would withhold every value of a deleted child).
+      const parentResources: StackState['resources'] = {
+        SecretFilter: {
+          physicalId: 'plain-log-group|sdin-secret-filter',
+          resourceType: 'AWS::Logs::MetricFilter',
+          properties: {
+            FilterName: '***',
+            LogGroupName: 'plain-log-group',
+          },
+          attributes: {},
+          dependencies: [],
+        },
+      };
+      const row = await deletedChildRow(
+        parentResources,
+        'arn:aws:logs:us-east-1:123:log-group:plain-log-group:* sdin-secret-filter'
+      );
+      expect(row).toContain('"changeType":"REMOVE"');
+      expect(row).toContain('log-group:plain-log-group:*');
+      expect(row).not.toContain('sdin-secret-filter');
+    });
+  });
+
   it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
     // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
     // `inheritedSecrets`, whose needles its export-alias preview reads.
