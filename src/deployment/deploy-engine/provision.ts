@@ -211,18 +211,21 @@ export async function provisionResource(
   // secret-named log group; go-to-k/cdkd#3869). CREATE / UPDATE record their
   // new reads as they resolve, and their own new name right after
   // (create.ts / update.ts).
+  // Every row with a record scans it against the needles judged once for the
+  // deploy (a leaf scan of this record alone, not a per-row walk of every
+  // record): the records as the deploy FOUND them, so a name a record
+  // replaced earlier in this run no longer spells still counts.
+  const readsRegistry = this.secretNameBagFor(logicalId);
+  for (const needle of secretNamesStoredIn(
+    stateResources[logicalId],
+    printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()
+  )) {
+    recordLogOnlyValue(readsRegistry, needle);
+  }
+  // A DELETE also judges the records as they stand now, with what each
+  // resolved this deploy.
   if (change.changeType === 'DELETE') {
     this.noteSecretNamedReads(logicalId, stateResources[logicalId], stateResources);
-  } else {
-    // Against the needles judged once for the deploy, not a per-row walk of
-    // every record: a leaf scan of this record alone.
-    const registry = this.secretNameBagFor(logicalId);
-    for (const needle of secretNamesStoredIn(
-      stateResources[logicalId],
-      printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()
-    )) {
-      recordLogOnlyValue(registry, needle);
-    }
   }
   // A nested stack's child judges only its OWN records, and its stored values
   // can hold a name this stack's row used to pass, one no read of this deploy

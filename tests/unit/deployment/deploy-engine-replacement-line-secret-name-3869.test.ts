@@ -113,6 +113,7 @@ function harness(
     dryRun?: boolean;
     levels?: string[][];
     update?: () => unknown;
+    delete?: (...args: unknown[]) => unknown;
     beforeDag?: () => void;
     options?: Record<string, unknown>;
   } = {}
@@ -120,7 +121,7 @@ function harness(
   const provider = {
     create: vi.fn().mockResolvedValue({ physicalId: 'sdin-access-key-id-2' }),
     update: vi.fn(extra.update),
-    delete: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn(extra.delete ?? (() => undefined)),
     getAttribute: vi.fn(),
     readCurrentState: vi.fn().mockResolvedValue(undefined),
     // The orphan-adoption pre-pass confirms a kept record still exists.
@@ -438,6 +439,37 @@ describe("a nested stack row's child masks a name the parent's records hold (go-
     const line = logLines.filter((l) => l.startsWith('child: ')).join('\n');
     // Premise: the row's provider ran, inside the row's body.
     expect(line).toContain('requires replacement (from');
+    expect(line.includes(SECRET_USER)).toBe(shown);
+  });
+});
+
+describe("a DELETE row masks a name a record replaced earlier in the run held (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+    ['negative control, an ordinary name', SECRET_USER, true],
+  ])('%s', async (_l, userName, shown) => {
+    // The key leaves the template; its record still holds the old user's
+    // name, which no LIVE record spells once that user was replaced earlier in
+    // the run (simulated once the plan is made). Its delete line prints it.
+    const state = currentState(userName);
+    const h = harness(state, {}, {
+      dryRun: false,
+      levels: [['Key']],
+      beforeDag: () => {
+        // A replacement re-points the record to the new resource.
+        state.resources['SecretUser']!.physicalId = 'replacement-user';
+      },
+      delete: () => {
+        // Premise: the live record no longer carries the old id.
+        expect(state.resources['SecretUser']?.physicalId).toBe('replacement-user');
+        getLogger().debug(`delete: access key of ${SECRET_USER}`);
+      },
+    });
+    const tpl = template(userName);
+    delete tpl.Resources['Key'];
+    await h.engine.deploy('s', tpl);
+    const line = logLines.filter((l) => l.startsWith('delete: ')).join('\n');
+    expect(line).toContain('delete: access key of');
     expect(line.includes(SECRET_USER)).toBe(shown);
   });
 });
