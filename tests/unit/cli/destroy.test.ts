@@ -714,6 +714,53 @@ describe('cdkd destroy: terminationProtection guard', () => {
     getLoggerSpy.mockRestore();
   });
 
+  /** What of the command's teardown had already run when a deferred release ran (go-to-k/cdkd#4705 Y-1). */
+  async function trackTeardown() {
+    const { AwsClients } = await import('../../../src/utils/aws-clients.ts');
+    const sigint0 = process.listenerCount('SIGINT');
+    const sigterm0 = process.listenerCount('SIGTERM');
+    const snaps: Array<{ destroyClient: number; awsDestroy: number; sigintArmed: boolean; sigtermArmed: boolean }> = [];
+    return Object.assign(snaps, {
+      snap(backend: { destroyClient: ReturnType<typeof vi.fn> }) {
+        const results = (AwsClients as unknown as ReturnType<typeof vi.fn>).mock.results;
+        snaps.push({
+          destroyClient: backend.destroyClient.mock.calls.length,
+          awsDestroy: results.reduce(
+            (n: number, r: { value: { destroy: ReturnType<typeof vi.fn> } }) => n + r.value.destroy.mock.calls.length,
+            0
+          ),
+          sigintArmed: process.listenerCount('SIGINT') > sigint0,
+          sigtermArmed: process.listenerCount('SIGTERM') > sigterm0,
+        });
+      },
+    });
+  }
+
+  it('go-to-k/cdkd#4705 Y-1: a LATER stack that throws still lets every deferred release finish before teardown', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Plain', 'us-east-1'), makeStackInfo('Unguarded', 'us-east-1', false)],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Plain', region: 'us-east-1' },
+      { stackName: 'Unguarded', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({ state: makeStackState(name), etag: '"x"' }));
+    const teardownAtRelease = await trackTeardown();
+    let first = true;
+    mockRunDestroyForStack.mockImplementation(async (name: string, _state: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void; stateBackend: { destroyClient: ReturnType<typeof vi.fn> } }) => {
+      if (!first) throw new Error(`boom in ${name}`);
+      first = false;
+      ctx.deferRegistryTail?.(
+        new Promise<void>((r) => setTimeout(r, 5)).then(() => teardownAtRelease.snap(ctx.stateBackend))
+      );
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+    await runDestroy(['--all', '--yes']).catch(() => undefined);
+    expect([...teardownAtRelease]).toEqual([{ destroyClient: 0, awsDestroy: 0, sigintArmed: true, sigtermArmed: true }]);
+  });
+
   it('go-to-k/cdkd#4705 perf: --all hands each stack a deferRegistryTail, and awaits every deferred release before the client goes', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},
@@ -726,17 +773,25 @@ describe('cdkd destroy: terminationProtection guard', () => {
     ]);
     mockGetState.mockImplementation(async (name: string) => ({ state: makeStackState(name), etag: '"x"' }));
     const order: string[] = [];
-    mockRunDestroyForStack.mockImplementation(async (name: string, _state: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void }) => {
+    const teardownAtRelease = await trackTeardown();
+    mockRunDestroyForStack.mockImplementation(async (name: string, _state: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void; stateBackend: { destroyClient: ReturnType<typeof vi.fn> } }) => {
       order.push(`destroy:${name}`);
       ctx.deferRegistryTail?.(
         new Promise<void>((r) => setTimeout(r, 5)).then(() => {
           order.push(`released:${name}`);
+          teardownAtRelease.snap(ctx.stateBackend);
         })
       );
       return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
     });
     await runDestroy(['--all', '--yes']);
     expect(mockRunDestroyForStack.mock.calls.every((c) => typeof c[2].deferRegistryTail === 'function')).toBe(true);
+    // Y-1: each release ran while the clients, the interrupt watch and the
+    // SIGTERM forwarder were all still live.
+    expect([...teardownAtRelease]).toEqual([
+      { destroyClient: 0, awsDestroy: 0, sigintArmed: true, sigtermArmed: true },
+      { destroyClient: 0, awsDestroy: 0, sigintArmed: true, sigtermArmed: true },
+    ]);
     // Both stacks were destroyed before the first deferred release finished...
     expect(order.indexOf('destroy:Unguarded')).toBeLessThan(order.findIndex((o) => o.startsWith('released:')));
     // ...and every release finished before the command's client was destroyed.

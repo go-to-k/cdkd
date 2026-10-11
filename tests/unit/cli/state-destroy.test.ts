@@ -273,6 +273,37 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].skipConfirmation).toBe(true);
   });
 
+  it('go-to-k/cdkd#4705 N1: several stacks get a deferRegistryTail; every deferred release finishes before the command ends', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({ state: makeStackState(name, 'us-east-1'), etag: '"abc"' }));
+    const order: string[] = [];
+    mockRunDestroyForStack.mockImplementation(async (name: string, _s: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void }) => {
+      order.push(`destroy:${name}`);
+      ctx.deferRegistryTail?.(
+        new Promise<void>((r) => setTimeout(r, 5)).then(() => {
+          order.push(`released:${name}`);
+        })
+      );
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+    await runStateDestroy(['destroy', 'A', 'B', '--yes']);
+    order.push('returned');
+    expect(mockRunDestroyForStack.mock.calls.every((c) => typeof c[2].deferRegistryTail === 'function')).toBe(true);
+    expect(order.indexOf('destroy:B')).toBeLessThan(order.findIndex((o) => o.startsWith('released:')));
+    expect(order.slice(-1)).toEqual(['returned']);
+    expect(order.filter((o) => o.startsWith('released:'))).toHaveLength(2);
+  });
+
+  it('go-to-k/cdkd#4705 N1: a single stack gets no deferRegistryTail (its tail is awaited in the runner)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('MyStack', 'us-east-1'), etag: '"abc"' });
+    await runStateDestroy(['destroy', 'MyStack', '--yes']);
+    expect(mockRunDestroyForStack.mock.calls[0]![2].deferRegistryTail).toBeUndefined();
+  });
+
   it('passes --remove-protection through to the runner', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({

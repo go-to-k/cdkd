@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
-import { forwardSigtermToSigint, watchCommandInterrupt } from '../../../src/utils/interrupt-signals.js';
+import {
+  forwardSigtermToSigint,
+  prependPostCleanupSigintListener,
+  watchCommandInterrupt,
+} from '../../../src/utils/interrupt-signals.js';
 import {
   beginCommandInterruptScope,
   disarmInterruptWatchForTests,
@@ -162,6 +166,24 @@ describe('watchCommandInterrupt (issue #2117)', () => {
       expect(watch.interrupted()).toBe(true);
     } finally {
       removeRunner();
+      cap.restore();
+    }
+  });
+
+  it('go-to-k/cdkd#4705 P1: a previous stack\'s post-cleanup listener is NOT a graceful owner -- the next stack\'s pre-registration window still quits', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const cap = captureStderr();
+    const remove = prependPostCleanupSigintListener(() => undefined);
+    try {
+      const watch = arm();
+      await watch.runStack(async () => {
+        process.emit('SIGINT', 'SIGINT');
+      });
+      expect(exitSpy).toHaveBeenCalledWith(130);
+      expect(cap.output.join('')).toContain('armed its per-stack teardown');
+    } finally {
+      remove();
+      exitSpy.mockRestore();
       cap.restore();
     }
   });

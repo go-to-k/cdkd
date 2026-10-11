@@ -7,6 +7,7 @@ import {
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { prependPostCleanupSigintListener } from '../../utils/interrupt-signals.js';
 
 /**
  * The stack lock plus the SIGINT handler that guards it, as ONE unit.
@@ -195,8 +196,30 @@ export async function acquireStackLock(opts: StackLockOptions): Promise<HeldStac
       try {
         await beforeRelease?.();
         if (holdUntil !== undefined) {
-          // The handler stays armed until the deferred release ran, so a
-          // second Ctrl-C still releases this lock and prints its recovery.
+          // go-to-k/cdkd#4705 review P1: this stack's work is over, so its
+          // handler must not be the one that exits -- Node runs listeners in
+          // registration order, and an exit here would stop the stack in
+          // flight from releasing ITS lock. Swapped for a post-cleanup one,
+          // run first: a second Ctrl-C best-effort releases THIS lock and
+          // prints its recovery line, and the exit is left to the stack in
+          // flight's handler or the command's.
+          process.removeListener('SIGINT', sigintHandler);
+          let forced = false;
+          const removeDeferred = prependPostCleanupSigintListener(() => {
+            if (!interrupted) {
+              interrupted = true;
+              return;
+            }
+            if (forced || !lockHeld) return;
+            forced = true;
+            void lockManager.releaseLock(stackName, region).catch(() => {
+              /* best-effort: the recovery line below is the real guarantee */
+            });
+            process.stderr.write(
+              `\nForce-quit (post-destroy cleanup): stack lock may not be released.` +
+                `${forceQuitRecoveryClause(stackName, region, recovery)}\n`
+            );
+          });
           holdUntil.defer(
             holdUntil.work
               .then(
@@ -204,7 +227,7 @@ export async function acquireStackLock(opts: StackLockOptions): Promise<HeldStac
                 () => undefined
               )
               .then(releaseNow)
-              .finally(() => process.removeListener('SIGINT', sigintHandler))
+              .finally(removeDeferred)
           );
           deferred = true;
           return;

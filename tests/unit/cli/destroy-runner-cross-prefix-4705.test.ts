@@ -299,8 +299,13 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(removeStack).toHaveBeenCalledTimes(1);
     expect(deferred).toHaveLength(1);
     expect(releaseLock).not.toHaveBeenCalled();
+    // Deferred, so serialized: no marker release while the tombstone is open.
+    expect(h.releaseRegistryMarker).not.toHaveBeenCalled();
     finish();
     await deferred[0];
+    expect(h.ensureRetainedTombstone.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.releaseRegistryMarker.mock.invocationCallOrder[0]!
+    );
     // Record, tombstone and marker, THEN the lock.
     expect(h.releaseRegistryMarker).toHaveBeenCalledTimes(1);
     expect(releaseLock).toHaveBeenCalledTimes(1);

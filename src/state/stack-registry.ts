@@ -156,12 +156,14 @@ export class CrossPrefixGuard {
     const claimable = top === stackName && !this.readOnly;
     // go-to-k/cdkd#4705 perf: a first deploy's usual case is no marker at all,
     // so it claims in ONE conditional write (`If-None-Match`) rather than a
-    // read and then that write. A marker already there loses the write and is
-    // read and weighed below, exactly as before.
+    // read and then that write. Anything but a successful claim -- a marker
+    // there (412), and a write this identity may not make or the endpoint
+    // does not implement (review P2: an identity that can read the registry
+    // but not write it must still be refused by a marker naming another
+    // prefix) -- goes on to the read below, exactly as before.
     if (firstDeploy && claimable && !this.markers.has(JSON.stringify([top, region]))) {
       const claimed = await this.claim(top, region);
       if (claimed === 'claimed') return { kind: 'clear' };
-      if (claimed !== 'conflict') return this.fallback(stackName, region, when, claimed.error);
     }
     // At most one re-read after a lost conditional write.
     for (let attempt = 0; attempt < 2; attempt++) {

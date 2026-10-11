@@ -199,6 +199,32 @@ describe('acquireStackLock (go-to-k/cdkd#2174)', () => {
     expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0);
   });
 
+  it('P1: a second Ctrl-C with stack A deferred and B in flight: both locks are released best-effort, both recovery lines print, and only B exits', async () => {
+    const lmA = makeLockManager();
+    const lmB = makeLockManager();
+    const firstA = vi.fn();
+    const lockA = await acquireStackLock(opts(lmA, { stackName: 'StackA', onFirstSignal: firstA }));
+    const deferred: Array<Promise<void>> = [];
+    await lockA.release({ failureMessage: 'x', holdUntil: { work: new Promise(() => undefined), defer: (p) => deferred.push(p) } });
+    const lockB = await acquireStackLock(opts(lmB, { stackName: 'StackB' }));
+    void lockB;
+    const fire = (): void => {
+      for (const l of process.listeners('SIGINT').filter((x) => !before.includes(x))) (l as () => void)();
+    };
+    fire();
+    // Y-2: the first Ctrl-C is silent for the finished stack A.
+    expect(firstA).not.toHaveBeenCalled();
+    expect(lmA.releaseLock).not.toHaveBeenCalled();
+    fire();
+    expect(lmA.releaseLock).toHaveBeenCalledTimes(1);
+    expect(lmB.releaseLock).toHaveBeenCalledTimes(1);
+    const text = stderr.join('');
+    expect(text).toMatch(/Force-quit \(post-destroy cleanup\): stack lock may not be released\.[\s\S]*StackA/);
+    expect(text).toMatch(/Force-quit: stack lock may not be released\.[\s\S]*StackB/);
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledWith(130);
+  });
+
   it('holdUntil: work that rejects still releases the lock and removes the handler', async () => {
     const lm = makeLockManager();
     const lock = await acquireStackLock(opts(lm));

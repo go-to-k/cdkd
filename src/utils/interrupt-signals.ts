@@ -45,6 +45,23 @@ import {
  * commands (or into `cdkd local start-api`, which owns a real SIGTERM
  * handler of its own).
  */
+/**
+ * go-to-k/cdkd#4705: SIGINT listeners that clean up after a stack whose work
+ * is over (a held lock released later), registered FIRST so they run before
+ * the command's own handler and any stack's. They never exit and are never a
+ * graceful owner: {@link watchCommandInterrupt} does not defer to them.
+ */
+const postCleanupListeners = new WeakSet<(...args: unknown[]) => void>();
+
+/** Prepend a post-cleanup SIGINT listener; returns its remover. */
+export function prependPostCleanupSigintListener(listener: () => void): () => void {
+  postCleanupListeners.add(listener);
+  process.prependListener('SIGINT', listener);
+  return () => {
+    process.removeListener('SIGINT', listener);
+  };
+}
+
 export function forwardSigtermToSigint(): () => void {
   // This is also where the provider-side interrupt watch is told a command with
   // a graceful shutdown path is now running (issues #2053 / #1952). It gates on
@@ -260,7 +277,11 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
    * lifetime, so one cannot be present while the runner's is absent.
    */
   function gracefulOwnerArmed(): boolean {
-    const others = process.listeners('SIGINT').filter((l) => l !== handler).length;
+    const others = process
+      .listeners('SIGINT')
+      .filter(
+        (l) => l !== handler && !postCleanupListeners.has(l as (...args: unknown[]) => void)
+      ).length;
     return others - interruptWatchListenerCount() > 0;
   }
 

@@ -2376,7 +2376,7 @@ export async function runDestroyForStack(
       // stack's lock is held until they settle (`holdUntil` below) while the
       // command moves on, so they cost no round trip per stack. The exports
       // index is still awaited here.
-      const registryTail = Promise.all([
+      const writeKept = (): Promise<void> =>
         recordRetainedForReadoption(
           ctx.stateBackend,
           stackName,
@@ -2384,15 +2384,22 @@ export async function runDestroyForStack(
           retainedForReadoption,
           logger,
           retainedEarlier
-        ),
-        releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
-      ]).then(() => undefined);
+        );
+      const releaseMarker = (): Promise<void> =>
+        releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
       if (ctx.deferRegistryTail !== undefined) {
-        heldTail = registryTail;
+        // Off the critical path, so serialized as orphan, export and rollback
+        // do: the kept list or tombstone, then the marker (review nit). Both
+        // never throw.
+        heldTail = writeKept().then(releaseMarker);
         await ctx.exportIndexStore?.removeStack(stackName, regionForState);
       } else {
+        // A single destroy runs them concurrently with the exports-index
+        // update it always awaited, so they cost no round trip of their own;
+        // serializing them here would add one per stack.
         await Promise.all([
-          registryTail,
+          writeKept(),
+          releaseMarker(),
           ctx.exportIndexStore?.removeStack(stackName, regionForState),
         ]);
       }

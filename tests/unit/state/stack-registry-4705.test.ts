@@ -117,6 +117,16 @@ describe('a first deploy (the claim)', () => {
     expect(b.listTopLevelPrefixes).toHaveBeenCalledTimes(1);
   });
 
+  it('P2: a 403 on the claim, and a marker naming another HOLDING prefix: read and refused, never past it on a warning', async () => {
+    const b = backendOf({ claimError: accessDenied(), markers: { App: 'team-b' } });
+    b.recordUnderPrefix.mockResolvedValueOnce('holder');
+    await expect(new CrossPrefixGuard(b).firstDeploy('App', 'r')).resolves.toEqual({
+      kind: 'found',
+      prefixes: ['team-b'],
+    });
+    expect(b.getRegistryMarker).toHaveBeenCalledTimes(1);
+  });
+
   it('any other claim failure refuses (failed)', async () => {
     const b = backendOf({ claimError: unavailable() });
     await expect(new CrossPrefixGuard(b).firstDeploy('App', 'r')).resolves.toMatchObject({ kind: 'failed' });

@@ -3034,6 +3034,11 @@ async function stateDestroyCommand(
     throw error;
   }
 
+  // go-to-k/cdkd#4705 (Fable N1): as `cdkd destroy --all` does, each stack's
+  // post-record writes and lock release overlap the next stack when several
+  // are destroyed, and are all awaited in the `finally` below.
+  const deferredTails: Array<Promise<void>> = [];
+  let deferRegistryTail: ((released: Promise<void>) => void) | undefined;
   try {
     // Resolve target stack names from S3 (no synth). After PR 1, listStacks
     // returns one ref per (stackName, region) pair — same stackName across
@@ -3111,6 +3116,7 @@ async function stateDestroyCommand(
     // result, which promotes it ahead of the rest.
     // Only for the records the loop below destroys (`stateDestroyTargets`).
     const crossPrefixCheck = { cache: new CrossPrefixGuard(setup.stateBackend) };
+    if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
     for (const name of stackNames) {
       const refs = stateRefs.filter((r) => r.stackName === name);
       for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
@@ -3269,6 +3275,7 @@ async function stateDestroyCommand(
                   stackDestroy: true,
                   // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
                   crossPrefixCheck,
+                  ...(deferRegistryTail !== undefined && { deferRegistryTail }),
                   exportIndexStore: setup.exportIndexStore,
                   ...(options.allowUnsupportedTypes?.length && {
                     allowUnsupportedTypes: options.allowUnsupportedTypes,
@@ -3372,6 +3379,8 @@ async function stateDestroyCommand(
       );
     }
   } finally {
+    // go-to-k/cdkd#4705: every stack's deferred writes and lock release first.
+    await Promise.allSettled(deferredTails);
     unforwardSigterm();
     // Issue #2117 — disposed last of the destroy-side handlers; see the twin
     // in `destroy.ts`.

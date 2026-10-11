@@ -318,8 +318,9 @@ the commands above (a destroy starts it beside its own state read); a first
 deploy adds one conditional write (no read when there is no marker),
 overlapped with its diff. A destroy ends with two writes, after its record
 is gone and under its lock, run beside the exports-index update it always
-made -- and with `destroy --all` while the next stack is destroyed, its lock
-held until they finish -- so no round trip of their own: `retained.json` -- what it kept, or, kept nothing,
+made -- and, destroying several stacks (`destroy --all`, `state destroy`
+A B), one after the other while the next stack is destroyed, its lock held
+until they finish -- so no round trip of their own: `retained.json` -- what it kept, or, kept nothing,
 the empty one (written only when there is none) -- and the marker's release, conditional on the version read earlier. Records written
 before the registry existed have no marker: the first command that needs the
 answer for such a stack lists the bucket's top-level prefixes once (50
