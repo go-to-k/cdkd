@@ -319,6 +319,13 @@ export interface TemplateNoEchoReresolverOptions {
   inheritedSecrets?: RecordedSecretValues | undefined;
   /** How the parent classed each value it passes (#4543), for the child's input fingerprints. */
   passedClasses?: ReadonlyMap<string, PassedParameterClass> | undefined;
+  /**
+   * The parent's {@link TemplateNoEchoReresolver.printingNoEchoValues}, read by
+   * the child's alone (go-to-k/cdkd#3869): a parent row written before schema
+   * v11 names no `noEchoLeaves`, so nothing else says which child parameter
+   * carries one. PRINT-ONLY: never bound, compared or sent.
+   */
+  printingSeed?: RecordedSecretValues | undefined;
 }
 
 /**
@@ -434,17 +441,57 @@ export class TemplateNoEchoReresolver {
    * record written before schema v11 holds such a value in plaintext, which
    * nothing else marks as secret. Bound at most once (the parameters' binding
    * is shared with {@link valuesFor}), and only when the template declares a
-   * `NoEcho` parameter or the parent handed some. READ-ONLY to callers; a
-   * binding failure answers what was inherited.
+   * `NoEcho` parameter or a parent handed some. READ-ONLY to callers.
    */
   printingNoEchoValues(): Promise<RecordedSecretValues | undefined> {
-    if (this.noEchoParameters.size === 0 && !hasMaskableValues(this.options.inheritedSecrets)) {
+    if (
+      this.noEchoParameters.size === 0 &&
+      !hasMaskableValues(this.options.inheritedSecrets) &&
+      !hasMaskableValues(this.options.printingSeed)
+    ) {
       return Promise.resolve(undefined);
     }
-    this.printingNoEchoPromise ??= this.noEchoNeedles().then((bag) =>
+    this.printingNoEchoPromise ??= this.printingNeedles().then((bag) =>
       hasMaskableValues(bag) ? bag : undefined
     );
     return this.printingNoEchoPromise;
+  }
+
+  /**
+   * {@link noEchoNeedles} for printing alone: it also carries the parent's
+   * `printingSeed`, and when the binding fails AS A WHOLE (an unrelated
+   * SSM-typed parameter's lookup, say) it still records each `NoEcho` value
+   * this stack was handed, or a literal `Default`: cdkd takes no
+   * `--parameters`, so that is what it deployed with. A wrong guess only
+   * over-masks.
+   */
+  private async printingNeedles(): Promise<RecordedSecretValues> {
+    const bag = this.newBag();
+    if (this.options.printingSeed !== undefined) carryLogOnlyValues(this.options.printingSeed, bag);
+    const parameters = await this.boundParameters();
+    const section = (this.options.template.Parameters ?? {}) as Record<string, unknown>;
+    const supplied = this.options.parameters;
+    for (const name of this.noEchoParameters) {
+      if (parameters !== undefined) {
+        if (Object.hasOwn(parameters, name)) recordLogOnlyParameterValue(bag, parameters[name]);
+        continue;
+      }
+      if (supplied !== undefined && Object.hasOwn(supplied, name)) {
+        const value = supplied[name];
+        if (!this.options.maskedParameters?.has(name) && !carriesSecretMask(value)) {
+          recordLogOnlyParameterValue(bag, value);
+        }
+        continue;
+      }
+      const definition = Object.hasOwn(section, name)
+        ? (section[name] as { Type?: unknown; Default?: unknown } | undefined)
+        : undefined;
+      // An SSM-typed parameter's Default is the parameter NAME, not its value.
+      if (typeof definition?.Type === 'string' && definition.Type.startsWith('AWS::SSM::'))
+        continue;
+      if (definition?.Default !== undefined) recordLogOnlyParameterValue(bag, definition.Default);
+    }
+    return bag;
   }
 
   /**
@@ -586,8 +633,10 @@ export class TemplateNoEchoReresolver {
               rowTemplate?.Properties?.Parameters,
               this.inputSources(parameters0)
             ).catch(() => undefined);
+      const printingSeed = await this.printingNoEchoValues();
       return new TemplateNoEchoReresolver({
         ...(passedClasses !== undefined && { passedClasses }),
+        ...(printingSeed !== undefined && { printingSeed }),
         template: child.template,
         stackName: childStackName,
         region: this.options.region,

@@ -20,7 +20,11 @@ import {
   applyNoEchoDeleteValues,
   noEchoDeleteValuesFromResolved,
 } from '../../../src/deployment/noecho-delete-reresolution.js';
-import { SECRET_MASK, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
+import {
+  SECRET_MASK,
+  maskSecretsInText,
+  recordLogOnlyValue,
+} from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import {
@@ -177,16 +181,65 @@ describe('TemplateNoEchoReresolver.printingNoEchoValues (go-to-k/cdkd#3869)', ()
     expect(bind).not.toHaveBeenCalled();
   });
 
-  it('answers undefined when the parameters cannot be bound', async () => {
+  it("falls back to each NoEcho parameter's literal Default when the binding fails as a whole", async () => {
+    // An unrelated SSM-typed parameter's lookup failing fails the whole bind.
     vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters').mockRejectedValue(
       new Error('boom')
     );
-    const reresolver = new TemplateNoEchoReresolver({
-      template: template({}),
+    const t = template({}, {
+      Parameters: {
+        Secret: { Type: 'String', NoEcho: true, Default: VALUE },
+        Plain: { Type: 'String', Default: 'plain' },
+        // Its Default is the SSM parameter's NAME, never a value to mask.
+        SsmSecret: {
+          Type: 'AWS::SSM::Parameter::Value<String>',
+          NoEcho: true,
+          Default: '/ssm/name-not-a-value',
+        },
+      },
+    } as Partial<CloudFormationTemplate>);
+    const bag = await new TemplateNoEchoReresolver({
+      template: t,
       stackName: 'S',
       region: 'us-east-1',
-    });
-    expect(await reresolver.printingNoEchoValues()).toBeUndefined();
+    }).printingNoEchoValues();
+    expect(maskSecretsInText(`id ${VALUE}`, bag!)).toBe('id ***');
+    expect(maskSecretsInText('id /ssm/name-not-a-value', bag!)).toBe('id /ssm/name-not-a-value');
+    expect(maskSecretsInText('id plain', bag!)).toBe('id plain');
+    expect(logged.join('\n')).not.toContain(VALUE);
+  });
+
+  it('a nested child whose binding fails falls back to what its row hands it, never the mask', async () => {
+    vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters').mockRejectedValue(
+      new Error('boom')
+    );
+    const bag = await new TemplateNoEchoReresolver({
+      template: { Parameters: { A: { Type: 'String' }, B: { Type: 'String' } }, Resources: {} },
+      stackName: 'Child',
+      region: 'us-east-1',
+      parameters: { A: VALUE, B: SECRET_MASK },
+      inheritedNoEchoParameters: new Set(['A', 'B']),
+      maskedParameters: new Set(['B']),
+    } as unknown as ConstructorParameters<typeof TemplateNoEchoReresolver>[0]).printingNoEchoValues();
+    expect(maskSecretsInText(`id ${VALUE}`, bag!)).toBe('id ***');
+    // The mask itself is no needle.
+    expect(maskSecretsInText(`a ${SECRET_MASK}`, bag!)).toBe(`a ${SECRET_MASK}`);
+  });
+
+  it.each([
+    ['inheritedSecrets', 'inheritedSecrets'],
+    ['a print-only seed', 'printingSeed'],
+  ])('a stack declaring no NoEcho parameter still answers what it was handed: %s', async (_l, key) => {
+    const handed = new Map<string, string>();
+    recordLogOnlyValue(handed, VALUE);
+    const bag = await new TemplateNoEchoReresolver({
+      template: { Parameters: {}, Resources: {} },
+      stackName: 'Child',
+      region: 'us-east-1',
+      [key]: handed,
+    } as unknown as ConstructorParameters<typeof TemplateNoEchoReresolver>[0]).printingNoEchoValues();
+    expect(bag).toBeDefined();
+    expect(maskSecretsInText(`id ${VALUE}`, bag!)).toBe('id ***');
   });
 });
 
@@ -292,6 +345,55 @@ describe('TemplateNoEchoReresolver.forNestedChild (a nested child inheriting a N
       })
     ).toBeUndefined();
     expect(logged.join('\n')).not.toContain(VALUE);
+  });
+
+  it("hands a child the parent's NoEcho values print-only, though a pre-v11 row names no noEchoLeaves", async () => {
+    const childTemplate = {
+      Parameters: { ChildName: { Type: 'String' } },
+      Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { Ref: 'ChildName' } } } },
+    };
+    const childPath = path.join(dir, 'child.template.json');
+    fs.writeFileSync(childPath, JSON.stringify(childTemplate));
+    const parent = new TemplateNoEchoReresolver({
+      template: {
+        Parameters: { Secret: { Type: 'String', NoEcho: true, Default: VALUE } },
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'u', Parameters: { ChildName: { Ref: 'Secret' } } },
+          },
+        },
+      } as CloudFormationTemplate,
+      stackName: 'Parent',
+      region: 'us-east-1',
+      nestedTemplates: { Child: childPath },
+    });
+    // Written before v11: the value in plaintext, no `noEchoLeaves`.
+    const properties = { TemplateURL: 'u', Parameters: { ChildName: VALUE } };
+    const child = await parent.forNestedChild(
+      'Child',
+      { properties, noEchoLeaves: undefined, values: undefined },
+      'Parent-Child',
+      (p: string) => ({
+        template: JSON.parse(fs.readFileSync(p, 'utf-8')) as CloudFormationTemplate,
+        nestedTemplates: {},
+      }),
+      (props: Record<string, unknown>) => props['Parameters'] as Record<string, string>
+    );
+    const bag = await child!.printingNoEchoValues();
+    expect(bag).toBeDefined();
+    expect(maskSecretsInText(`id ${VALUE}`, bag!)).toBe('id ***');
+    // Print-only: the seed does not make ChildName a NoEcho parameter to re-resolve.
+    expect(
+      await child!.valuesFor('Db', {
+        physicalId: VALUE.toLowerCase(),
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { DBInstanceIdentifier: SECRET_MASK },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['DBInstanceIdentifier']],
+      })
+    ).toBeUndefined();
   });
 
   it('answers nothing for a row with no child template on disk', async () => {

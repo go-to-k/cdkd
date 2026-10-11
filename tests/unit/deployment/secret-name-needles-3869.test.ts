@@ -330,6 +330,11 @@ describe('the stack NoEcho values judge a pre-v11 plaintext name (go-to-k/cdkd#3
       physicalId: 'replica-id',
       attemptedProperties: { SourceDBInstanceIdentifier: FOLDED },
     };
+    // A replacement orphan: the state record under its logical id (the
+    // resource it was replacing) is judged with the values too.
+    const replacing = { ...orphan, physicalId: 'new-id', attemptedProperties: {} };
+    expect(masks(journaledOrphanPrintingBag([replacing], { Db: db(VALUE) }, noEcho()))).toBe(true);
+    expect(masks(journaledOrphanPrintingBag([replacing], { Db: db(VALUE) }))).toBe(false);
     // Judged through the state record it read.
     expect(masks(journaledOrphanPrintingBag([reader], { Db: db(VALUE) }, noEcho()))).toBe(true);
     expect(masks(journaledOrphanPrintingBag([reader], { Db: db(VALUE) }))).toBe(false);

@@ -1708,8 +1708,14 @@ P4D_NEW=$(mktemp)
 SCRATCH_FILES+=("${P4D_NEW}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P4D_STATE}" --region "${REGION}" --quiet
 P4D_TOPIC_NAME="cdkd-test-noecho-rename-${ACCOUNT_ID}-${TOKEN}"
-jq --arg name "${P4D_TOPIC_NAME}" \
-  '.resources.NoEchoRenamed.properties.TopicName = $name | del(.resources.NoEchoRenamed.noEchoLeaves)' \
+# Every v11-only field of the record goes, and a masked observed copy reads
+# back as the plaintext the older binary stored there too.
+jq --arg name "${P4D_TOPIC_NAME}" '
+  .resources.NoEchoRenamed.properties.TopicName = $name
+  | del(.resources.NoEchoRenamed.noEchoLeaves, .resources.NoEchoRenamed.noEchoExactEchoLeaves,
+      .resources.NoEchoRenamed.noEchoAttributeNames)
+  | if (.resources.NoEchoRenamed.observedProperties.TopicName? // null) == "***"
+    then .resources.NoEchoRenamed.observedProperties.TopicName = $name else . end' \
   "${P4D_STATE}" > "${P4D_NEW}"
 aws s3 cp "${P4D_NEW}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P4D_STATE}" --region "${REGION}" --quiet

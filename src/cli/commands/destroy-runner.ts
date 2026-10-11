@@ -120,6 +120,7 @@ import {
   secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
+import type { RecordedSecretValues } from '../../deployment/secret-redaction.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -1047,10 +1048,14 @@ export async function runDestroyForStack(
   // synthesized template (none under `cdkd state destroy`), judge the journal
   // listing below and every delete's printing bag: a record or journal entry
   // written before schema v11 holds such a value in plaintext, which nothing
-  // in it marks as secret. Awaited only where read; it never rejects.
-  const noEchoValuesPending = (
-    ctx.noEchoReresolver?.printingNoEchoValues() ?? Promise.resolve(undefined)
-  ).catch(() => undefined);
+  // in it marks as secret. Started on first use (the listing, or once the run
+  // is confirmed), so a declined run binds nothing it does not print; it never
+  // rejects, a synchronous throw included.
+  let noEchoValuesPending: Promise<RecordedSecretValues | undefined> | undefined;
+  const stackNoEchoValues = (): Promise<RecordedSecretValues | undefined> =>
+    (noEchoValuesPending ??= Promise.resolve()
+      .then(() => ctx.noEchoReresolver?.printingNoEchoValues())
+      .catch(() => undefined));
   const orphansAtDestroy = state.orphans ?? [];
   if (orphansAtDestroy.length > 0) {
     logger.info(
@@ -1112,7 +1117,7 @@ export async function runDestroyForStack(
     const listing = journaledOrphanPrintingBag(
       journaledOrphans.segments.flatMap(({ ops }) => ops),
       state.resources,
-      await noEchoValuesPending
+      await stackNoEchoValues()
     );
     withPrintingSecrets(listing, () => {
       for (const line of journaledOrphanLines(journaledOrphans, logger)) logger.info(line);
@@ -1594,6 +1599,8 @@ export async function runDestroyForStack(
     // outside the `try` would strand the lock and leak the cross-region
     // region/clients — the main `finally` below releases and restores both.
     renderer.start();
+    // Beside the journal re-read below (see `stackNoEchoValues`).
+    void stackNoEchoValues();
 
     // go-to-k/cdkd#4584: before the stack's own resources, which such a
     // resource may depend on (it was created after them), and under the lock.
@@ -1626,7 +1633,7 @@ export async function runDestroyForStack(
           `Nothing was deleted; re-run the destroy to act on the current journal.`
       );
     }
-    const noEchoValues = await noEchoValuesPending;
+    const noEchoValues = await stackNoEchoValues();
     if (journaledUnderLock.count > 0) {
       const orphanOutcome = await deleteJournaledOrphans(
         journaledUnderLock,

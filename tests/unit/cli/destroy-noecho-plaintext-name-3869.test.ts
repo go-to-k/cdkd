@@ -200,6 +200,34 @@ describe('cdkd destroy masks a pre-v11 plaintext NoEcho-derived name (go-to-k/cd
     expect(lines['Replica']).toBe(`Deleting Replica replica-id of ${DB_SECRET.toLowerCase()}`);
   });
 
+  it.each([
+    ['rejects', () => Promise.reject(new Error('boom'))],
+    [
+      'throws synchronously',
+      () => {
+        throw new Error('boom');
+      },
+    ],
+  ])('a source whose binding %s leaves the destroy running, record-only', async (_l, fail) => {
+    const lines: Record<string, string | undefined> = {};
+    const providerDelete = vi.fn((logicalId: string, physicalId: string) => {
+      const line = `Deleting ${logicalId} ${physicalId}`;
+      lines[logicalId] = currentLogLineMasker()?.(line) ?? line;
+      return Promise.resolve(undefined);
+    });
+    const ctx = {
+      ...makeCtx(providerDelete, false),
+      noEchoReresolver: {
+        printingNoEchoValues: fail,
+        valuesFor: () => Promise.resolve(undefined),
+      } as unknown as TemplateNoEchoReresolver,
+    };
+    const result = await runDestroyForStack('NoEchoStack', v11State(), ctx);
+    expect(result.errorCount).toBe(0);
+    expect(providerDelete).toHaveBeenCalledTimes(5);
+    expect(lines['Bucket']).toBe('Deleting Bucket ***');
+  });
+
   it('boundary: a v11 record (`***`) stays masked, with and without the template', async () => {
     for (const withTemplate of [true, false]) {
       const lines = await linesOf(v11State(), withTemplate);
