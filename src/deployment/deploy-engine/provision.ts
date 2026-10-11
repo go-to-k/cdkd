@@ -17,7 +17,12 @@ import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { DEFAULT_RESOURCE_TIMEOUT_MS, DEFAULT_RESOURCE_WARN_AFTER_MS } from './options.js';
 import { isReplacementCeiling } from '../deploy-value-equality.js';
 import { withResourceDeadline } from '../resource-deadline.js';
-import { maskSecretsInError, maskSecretsInText } from '../secret-redaction.js';
+import {
+  maskSecretsInError,
+  maskSecretsInText,
+  printingCorpusOf,
+  recordLogOnlyValue,
+} from '../secret-redaction.js';
 import {
   type NestedChildUnaddressed,
   collectNestedChildUnaddressed,
@@ -29,7 +34,11 @@ import {
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { secretNamesStoredIn } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
+
+/** The row type whose provider runs a nested child engine. */
+const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -194,11 +203,44 @@ export async function provisionResource(
   // record here; the new name is judged right after it resolves, in
   // `create.ts` / `update.ts`, and a replacement's new id before `was replaced`.
   this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
-  // A DELETE resolves nothing, so what its record read from a secret-named
-  // resource is carried here; CREATE / UPDATE record it as they resolve, and
-  // register their own new name right after resolving (create.ts / update.ts).
+  // What the record READ from a secret-named resource, carried for every row
+  // with a record: a DELETE resolves nothing, and an UPDATE resolves only
+  // what it reads NOW, while a replacement's `Deleting old <id> (<old id>)`
+  // and `was replaced: <old> -> <new>` lines print the OLD id, which can embed
+  // a name the template no longer reads (a metric filter moved off a
+  // secret-named log group; go-to-k/cdkd#3869). CREATE / UPDATE record their
+  // new reads as they resolve, and their own new name right after
+  // (create.ts / update.ts).
+  // Every row with a record scans it against the needles judged once for the
+  // deploy (a leaf scan of this record alone, not a per-row walk of every
+  // record): the records as the deploy FOUND them, so a name a record
+  // replaced earlier in this run no longer spells still counts.
+  const readsRegistry = this.secretNameBagFor(logicalId);
+  for (const needle of secretNamesStoredIn(
+    stateResources[logicalId],
+    printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()
+  )) {
+    recordLogOnlyValue(readsRegistry, needle);
+  }
+  // A DELETE also judges the records as they stand now, with what each
+  // resolved this deploy.
   if (change.changeType === 'DELETE') {
     this.noteSecretNamedReads(logicalId, stateResources[logicalId], stateResources);
+  }
+  // A nested stack's child judges only its OWN records, and its stored values
+  // can hold a name this stack's row used to pass, one no read of this deploy
+  // names: the child's `requires replacement (from <old> ...)` line printed it
+  // (go-to-k/cdkd#3869). The row's registry is bound around the child's whole
+  // deploy, so every record here named from a secret goes into it, judged
+  // with the stack's `NoEcho` values as the deploy FOUND them: the child's
+  // stored values predate this run, and a parent record replaced earlier in it
+  // no longer spells the old name. A name the row passes down THIS run is the
+  // row's own read (`printNestedStackReadsOnly`). Printing only.
+  if (resourceType === NESTED_STACK_ROW_TYPE) {
+    const registry = this.secretNameBagFor(logicalId);
+    for (const needle of printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()) {
+      recordLogOnlyValue(registry, needle);
+    }
   }
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a

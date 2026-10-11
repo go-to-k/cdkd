@@ -606,6 +606,15 @@ export class DeployEngine {
   /** @internal */
   fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
   /**
+   * The needles of every record named from a secret AS THE DEPLOY FOUND THEM
+   * (go-to-k/cdkd#3869), judged once before anything provisions: a nested
+   * stack row's registry carries them into the child's deploy, whose stored
+   * values can hold a name a parent record replaced earlier in the same run no
+   * longer spells. Printing only. Reset per `deploy()`.
+   */
+  /** @internal */
+  preDeploySecretNamedRecords: RecordedSecretValues | undefined = undefined;
+  /**
    * How each template parameter enters a masked property's INPUT fingerprint
    * (go-to-k/cdkd#4543), set once parameters resolve, so the diff pass and the
    * provisioning arms classify every parameter alike. Reset per `deploy()`.
@@ -970,6 +979,7 @@ export class DeployEngine {
     // and a reused engine carrying last deploy's answer is the #2516 class.
     this.perResourceResolvedType = new Map();
     this.fingerprintNoEchoValues = undefined;
+    this.preDeploySecretNamedRecords = undefined;
     this.fingerprintParameters = undefined;
     this.fingerprintChildTemplates = undefined;
     this.perResourceInputFingerprints = new Map();

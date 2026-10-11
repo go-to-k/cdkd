@@ -6,11 +6,12 @@ The PARENT's serialization point: run your own review round on a merge-ready
 lane (`references/verify.md` §8-i — before EVERY merge, even when the lane's
 reviewers passed; go-to-k/cdkd#3906), grant it its turn only once that round is
 CLEAN (one lane at a time), then run `/run-integ` and
-`gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent, whose
-real-AWS integ and merge the auto-mode classifier can refuse, and a refused
-lane call is the user's call, not a retry (go-to-k/cdkd#4059); the parent's own
-marker set and ledger push follow `/run-integ` step 9. While that tree is
-busy with a follow-up branch, ship from a SECOND sibling on the PR's branch
+`gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent. The
+auto-mode classifier can refuse the PARENT's calls too: any refused call goes
+to `AskUserQuestion`, never a reworded retry (go-to-k/cdkd#4059); only
+`/run-integ` step 9's one retry (marker set or ledger push) is exempt.
+While that tree is busy with a follow-up branch, ship from a SECOND sibling
+on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
 running BOTH the integ and the merge there (the marker is per tree). A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
@@ -172,8 +173,7 @@ git branch --list '<your prefix>*'               # ...and so is every branch it 
 IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove the
 tree it runs in** (a concurrent lane's sibling under `<MAIN_CHECKOUT>` takes the
 block above, every `git` line prefixed with `-C <MAIN_CHECKOUT>`, and so is
-not in this block's `-D` list). It owes the BRANCH — put back the
-one it found, delete the one it made.
+not in this block's `-D` list).
 `<LAUNCH_BRANCH>` and `<each branch this run created in THIS tree>` are SUBSTITUTION
 PLACEHOLDERS, not shell variables (`references/launch-mode.md`):
 

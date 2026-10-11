@@ -106,6 +106,13 @@ class QueueReaderChild extends cdk.NestedStack {
  *     child's `Resolved Ref to parameter: QueueArn` and provider lines printed
  *     the queue name until the row's reads joined the printing bag bound around
  *     its body.
+ *   - `SecretNamedGroup` (AWS::Logs::LogGroup), `LogGroupName` from the secret,
+ *     read by `MovingFilter` (go-to-k/cdkd#3869). SDIN_MOVE_FILTER=true moves
+ *     the filter to FilterLogGroup, a replacement of its create-only
+ *     `LogGroupName`: `cdkd diff --verbose` and `cdkd deploy --dry-run
+ *     --verbose` printed the OLD side, the secret group's name, in plaintext,
+ *     and the deployed move printed it in the old filter's id on its delete
+ *     lines.
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
@@ -203,7 +210,14 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
 
     const secretQueue = new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
-      visibilityTimeout: update ? 60 : 30,
+      // Step 5d (SDIN_MOVE_FILTER=true) also updates the queue, so its readers
+      // resolve its ARN from the provider in that deploy, as in step 4. Left
+      // unchanged, they hit two known bugs: a reader of a NO_CHANGE
+      // secret-named resource is re-sent the recorded `{{resolve:` spelling of
+      // its ARN (go-to-k/cdkd#4800), and the rollback that follows writes
+      // that spelling into the queue policy's recorded `Queues`
+      // (go-to-k/cdkd#4801).
+      visibilityTimeout: process.env.SDIN_MOVE_FILTER === 'true' ? 45 : update ? 60 : 30,
     });
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
     // and a `Fn::GetAtt` (its ARN) each resolve to a value embedding the name
@@ -323,6 +337,24 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       filterPattern: update ? 'ERROR' : 'WARN',
       metricTransformations: [
         { metricName: 'SdinFilterHits', metricNamespace: 'CdkdIntegSdin', metricValue: '1' },
+      ],
+    });
+
+    // go-to-k/cdkd#3869: a log group NAMED from the secret, and a metric
+    // filter reading it by Ref. Under SDIN_MOVE_FILTER=true (step 5c's diff
+    // and dry-run deploy, then step 5d's real deploy) the filter moves to
+    // FilterLogGroup: its create-only `LogGroupName` makes the row a
+    // replacement whose OLD side is the record's copy of the secret group's
+    // name, which nothing in that template reads any more.
+    const secretNamedGroup = new logs.CfnLogGroup(this, 'SecretNamedGroup', {
+      logGroupName: fromSecret('loggroup'),
+      retentionInDays: 1,
+    });
+    new logs.CfnMetricFilter(this, 'MovingFilter', {
+      logGroupName: process.env.SDIN_MOVE_FILTER === 'true' ? logGroup.ref : secretNamedGroup.ref,
+      filterPattern: 'WARN',
+      metricTransformations: [
+        { metricName: 'SdinMovingFilterHits', metricNamespace: 'CdkdIntegSdin', metricValue: '1' },
       ],
     });
   }

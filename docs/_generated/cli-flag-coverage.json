@@ -91,6 +91,7 @@
         "recreate-via-cc-api",
         "route53",
         "scrub-nested-child",
+        "secret-derived-immutable-names",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "sg-circular-dependency",

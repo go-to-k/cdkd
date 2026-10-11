@@ -53,12 +53,13 @@ gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <fi
 Claiming to avoid collision with parallel agents."
 ```
 
-Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
+Mandatory, BEFORE the first edit.
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
 that list**: beside the fix and its unit test, each EXISTING suite whose
-assertions the fix changes (read the hits of `grep -rl '<[dir/]basename, no
-extension>' tests/unit`; suites need not mirror `src/`), the fixture §8-c will
-extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
+assertions the fix changes (`grep -rl '<[dir/]basename, no
+extension>' tests/unit` hits; suites need not mirror `src/`), the fixture §8-c will
+extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW one
+adds `gen:all-matrices`' outputs in `docs/`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every comment, doc or rule the fix makes FALSE — stating the old invariant or
 calling the issue open (`grep -rnw '<issue digits>\|<key symbol>\|<each
@@ -94,7 +95,7 @@ stand down naming the winning branch and pick another issue, unasked. Escalate
 when timestamps cannot settle it (go-to-k/cdkd#1446).
 
 **A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
-Re-read the thread to the END before claiming precedence. A missing branch is
+Re-read the thread to the END before the tie-break. A missing branch is
 not absence (signals show LIFE only, §9); a claim has no TTL, so one you think
 dead goes to arbitration.
 

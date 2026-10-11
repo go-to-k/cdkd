@@ -469,6 +469,429 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     }
   );
 
+  it.each([
+    ['a secret-named target', '{{resolve:secretsmanager:sdin:SecretString:queue::}}', false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])(
+    "masks a name a parent row USED to pass, in a live child's stored value: %s",
+    async (_l, queueName, shown) => {
+      // The row now passes a literal, so nothing this walk resolves reads the
+      // queue for the child; only the parent's state says the child's stored
+      // value is the secret-named queue's URL.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { QueueUrl: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'QueueUrl' } } },
+            },
+          })
+        );
+        const parent = state(queueName);
+        parent.resources['Child'] = {
+          physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { Parameters: { QueueUrl: URL } },
+          attributes: {},
+          dependencies: ['Queue'],
+        };
+        const tpl = template(queueName);
+        // Nothing else reads the queue either, so the parent's own rows record
+        // no needle of it.
+        delete tpl.Resources['Policy'];
+        delete parent.resources['Policy'];
+        tpl.Resources['Child'] = {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': 'child.json' },
+          Properties: { Parameters: { QueueUrl: 'https://example.invalid/plain' } },
+        };
+        const child: StackState = {
+          stackName: 'S~Child',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: URL },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        };
+        const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+        const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+        // Premise: the row is rendered, its new side in the clear.
+        expect(row).toContain('"path":"Value"');
+        expect(row).toContain('https://example.invalid/plain');
+        expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    ['the parent NoEcho values judge it', true],
+    ['negative control, a non-NoEcho parameter', false],
+  ])(
+    "masks a parent's NoEcho-named record in a live child's stored value: %s",
+    async (_l, noEcho) => {
+      // A pre-v11 parent record stores the NoEcho value itself, and RDS
+      // lower-cases the identifier the child's row used to receive.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+      try {
+        const childPath = join(dir, 'child.json');
+        writeFileSync(
+          childPath,
+          JSON.stringify({
+            Parameters: { DbId: { Type: 'String' } },
+            Resources: {
+              Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'DbId' } } },
+            },
+          })
+        );
+        const tpl: CloudFormationTemplate = {
+          Parameters: {
+            DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) },
+          },
+          Resources: {
+            Db: {
+              Type: 'AWS::RDS::DBInstance',
+              Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+            },
+            Child: {
+              Type: 'AWS::CloudFormation::Stack',
+              Metadata: { 'aws:asset:path': 'child.json' },
+              Properties: { Parameters: { DbId: 'plain-db-id' } },
+            },
+          },
+        };
+        const parent: StackState = {
+          stackName: 'S',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            Db: {
+              physicalId: 'teamsecretdb',
+              resourceType: 'AWS::RDS::DBInstance',
+              properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+              attributes: {},
+              dependencies: [],
+            },
+            Child: {
+              physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+              resourceType: 'AWS::CloudFormation::Stack',
+              properties: { Parameters: { DbId: 'teamsecretdb' } },
+              attributes: {},
+              dependencies: ['Db'],
+            },
+          },
+          outputs: {},
+          exportNames: [],
+          lastModified: 0,
+        };
+        const child: StackState = {
+          stackName: 'S~Child',
+          region: 'us-east-1',
+          version: 9,
+          resources: {
+            Reader: {
+              physicalId: 'reader-param',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: 'teamsecretdb' },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        };
+        const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+        const tree = await buildDiffTree({
+          stackName: 'S',
+          displayName: 'S',
+          region: 'us-east-1',
+          template: tpl,
+          nestedTemplates: { Child: childPath },
+          recursive: true,
+          stateBackend: {
+            getState: async (name: string) =>
+              states[name] ? { state: states[name], etag: 'e' } : null,
+          } as unknown as S3StateBackend,
+          diffCalculator: new DiffCalculator(),
+          isNestedChild: false,
+        });
+        const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+        const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+        // Premise: the child's row is rendered, its new side in the clear.
+        expect(row).toContain('plain-db-id');
+        expect(row.includes('teamsecretdb')).toBe(!noEcho);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  describe("a DELETED child's stored values, masked with the parent's secret-named records", () => {
+    // The parent no longer declares the child, so its stored outputs render
+    // as REMOVE rows with their old values; only the parent's records can say
+    // what those hold.
+    async function deletedChildRow(
+      parentResources: StackState['resources'],
+      readerValue: string,
+      parameters?: CloudFormationTemplate['Parameters'],
+      childResources: StackState['resources'] = {}
+    ): Promise<string> {
+      const parent: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 9,
+        resources: {
+          ...parentResources,
+          Child: {
+            physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const child: StackState = {
+        stackName: 'S~Child',
+        region: 'us-east-1',
+        version: 9,
+        resources: childResources,
+        outputs: { Out: readerValue },
+        lastModified: 0,
+      };
+      const tpl: CloudFormationTemplate = {
+        ...(parameters && { Parameters: parameters }),
+        Resources: Object.fromEntries(
+          Object.entries(parentResources).map(([id, r]) => [
+            id,
+            { Type: r.resourceType, Properties: r.properties as Record<string, unknown> },
+          ])
+        ),
+      };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: tpl,
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+      return JSON.stringify(childNode?.outputChanges.find((c) => c.name === 'Out'));
+    }
+
+    it.each([
+      ['the parent NoEcho values judge it', true],
+      ['negative control, a non-NoEcho parameter', false],
+    ])("masks a parent's NoEcho-named record: %s", async (_l, noEcho) => {
+      const row = await deletedChildRow(
+        {
+          Db: {
+            physicalId: 'teamsecretdb',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        'teamsecretdb',
+        { DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) } }
+      );
+      // Premise: the deleted child's row is rendered.
+      expect(row).toContain('"changeType":"REMOVE"');
+      expect(row.includes('teamsecretdb')).toBe(!noEcho);
+    });
+
+    it("judges the deleted child's OWN composite-id record the same way", async () => {
+      // The secret-named record lives in the deleted child itself.
+      const row = await deletedChildRow(
+        {},
+        'arn:aws:logs:us-east-1:123:log-group:plain-log-group:* sdin-secret-filter',
+        undefined,
+        {
+          SecretFilter: {
+            physicalId: 'plain-log-group|sdin-secret-filter',
+            resourceType: 'AWS::Logs::MetricFilter',
+            properties: { FilterName: '***', LogGroupName: 'plain-log-group' },
+            attributes: {},
+            dependencies: [],
+          },
+        }
+      );
+      expect(row).toContain('"changeType":"REMOVE"');
+      expect(row).toContain('log-group:plain-log-group:*');
+      expect(row).not.toContain('sdin-secret-filter');
+    });
+
+    it("shows a public segment of a secret-named composite id, and masks the secret one", async () => {
+      // Named from a NoEcho value, which state stores as the mask (a
+      // `{{resolve:` reference would withhold every value of a deleted child).
+      const parentResources: StackState['resources'] = {
+        SecretFilter: {
+          physicalId: 'plain-log-group|sdin-secret-filter',
+          resourceType: 'AWS::Logs::MetricFilter',
+          properties: {
+            FilterName: '***',
+            LogGroupName: 'plain-log-group',
+          },
+          attributes: {},
+          dependencies: [],
+        },
+      };
+      const row = await deletedChildRow(
+        parentResources,
+        'arn:aws:logs:us-east-1:123:log-group:plain-log-group:* sdin-secret-filter'
+      );
+      expect(row).toContain('"changeType":"REMOVE"');
+      expect(row).toContain('log-group:plain-log-group:*');
+      expect(row).not.toContain('sdin-secret-filter');
+    });
+  });
+
+  it("never judges a parent record named like a NoEcho value's Fn::Split fragment, for a child", async () => {
+    // The parent's walk records the fragment `AlphaQ` of the NoEcho value
+    // `AlphaQ-beta` (the Split reader). Judged by it, the ordinary queue named
+    // `AlphaQ` would hand its lower-cased spelling to the child and mask the
+    // child's ordinary stored copy of it.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: {
+            Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'no-longer-the-queue' } },
+          },
+        })
+      );
+      const tpl: CloudFormationTemplate = {
+        Parameters: { Tok: { Type: 'String', NoEcho: true, Default: 'AlphaQ-beta' } },
+        Resources: {
+          Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'AlphaQ' } },
+          Split: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: { 'Fn::Select': [0, { 'Fn::Split': ['-', { Ref: 'Tok' }] }] } },
+          },
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: {},
+          },
+        },
+      };
+      const parent: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 11,
+        resources: {
+          Queue: {
+            physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/AlphaQ',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'AlphaQ' },
+            attributes: {},
+            dependencies: [],
+          },
+          Split: {
+            physicalId: 'split',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'older' },
+            attributes: {},
+            dependencies: [],
+          },
+          Child: {
+            physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/S-Child/1',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const child: StackState = {
+        stackName: 'S~Child',
+        region: 'us-east-1',
+        version: 11,
+        resources: {
+          Reader: {
+            physicalId: 'reader-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'alphaq-lowercased-copy' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+      const states: Record<string, StackState> = { S: parent, 'S~Child': child };
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: tpl,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) =>
+            states[name] ? { state: states[name], etag: 'e' } : null,
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+      });
+      // Premise: the parent's walk read the fragment (its Split row masks it).
+      const splitRow = JSON.stringify(tree.changes.get('Split')?.propertyChanges);
+      expect(splitRow).toContain('"path":"Value"');
+      expect(splitRow).not.toContain('AlphaQ');
+      const childNode = tree.children.find((c) => c.stackName === 'S~Child');
+      const row = JSON.stringify(childNode?.changes.get('Reader')?.propertyChanges);
+      // Premise: the child's row is rendered.
+      expect(row).toContain('no-longer-the-queue');
+      expect(row).toContain('alphaq-lowercased-copy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the inherited derived names out of the corpus a grandchild inherits", async () => {
     // Mask-only, as on the deploy path: `printingSecrets` is a grandchild's
     // `inheritedSecrets`, whose needles its export-alias preview reads.
@@ -816,6 +1239,234 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         expect(out).toContain('"oldValue"');
         expect(out.includes('sdin-diff-secret-queue')).toBe(shown);
       }
+    });
+  });
+
+  describe('a name only the OLD state value holds (the replacement line)', () => {
+    // An access key moves from a user named from a secret to an ordinary one.
+    // `UserName` is create-only, so the row is a replacement whose OLD side is
+    // the record's resolved copy of the secret user's name. Nothing in the
+    // template reads that user any more, so no resolution records its name.
+    const SECRET_USER = 'sdin-diff-secret-user';
+    const PLAIN_USER = 'S-PlainUser-ABC123';
+    const userTemplate = (userName: string): CloudFormationTemplate => ({
+      Resources: {
+        SecretUser: { Type: 'AWS::IAM::User', Properties: { UserName: userName } },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'PlainUser' } } },
+      },
+    });
+    const userState = (userName: string): StackState => ({
+      stackName: 'S',
+      region: 'us-east-1',
+      version: 9,
+      resources: {
+        SecretUser: {
+          physicalId: SECRET_USER,
+          resourceType: 'AWS::IAM::User',
+          properties: { UserName: userName },
+          attributes: {},
+          dependencies: [],
+        },
+        PlainUser: {
+          physicalId: PLAIN_USER,
+          resourceType: 'AWS::IAM::User',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+        Key: {
+          physicalId: 'sdin-access-key-id-1',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: { UserName: SECRET_USER },
+          attributes: {},
+          dependencies: ['SecretUser'],
+        },
+      },
+      outputs: {},
+      exportNames: [],
+      lastModified: 0,
+    });
+
+    it.each([
+      ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+      ['negative control, an ordinary name', SECRET_USER, true],
+    ])('masks it on the replacement line and the row: %s', async (_l, userName, shown) => {
+      debugLines.length = 0;
+      const result = await computeStackDiff(
+        userState(userName),
+        userTemplate(userName),
+        'us-east-1',
+        'S',
+        backend,
+        new DiffCalculator()
+      );
+      const replacement = debugLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+      // Premise: the replacement line printed, its new side in the clear.
+      expect(replacement).toContain('Property UserName of AWS::IAM::AccessKey');
+      expect(replacement).toContain(PLAIN_USER);
+      expect(replacement.includes(SECRET_USER)).toBe(shown);
+      const row = JSON.stringify(result.changes.get('Key')?.propertyChanges);
+      expect(row).toContain('"path":"UserName"');
+      expect(row).toContain(PLAIN_USER);
+      expect(row.includes(SECRET_USER)).toBe(shown);
+    });
+
+    it.each([
+      ['the stack-wide NoEcho values judge it', true],
+      ['negative control, a non-NoEcho parameter', false],
+    ])('judges a record holding a NoEcho value in plaintext: %s', async (_l, noEcho) => {
+      // A pre-v11 record stores the NoEcho value itself, and RDS lower-cases
+      // the identifier: the reader's stored copy is no substring of the value
+      // the diff masks, and nothing reads the instance any more.
+      const tpl: CloudFormationTemplate = {
+        Parameters: {
+          DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) },
+        },
+        Resources: {
+          Db: {
+            Type: 'AWS::RDS::DBInstance',
+            Properties: { DBInstanceIdentifier: { Ref: 'DbName' } },
+          },
+          Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'no-longer-the-db' } },
+        },
+      };
+      const s: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 9,
+        resources: {
+          Db: {
+            physicalId: 'teamsecretdb',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+            attributes: {},
+            dependencies: [],
+          },
+          Reader: {
+            physicalId: 'reader',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'teamsecretdb' },
+            attributes: {},
+            dependencies: ['Db'],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const result = await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator());
+      const row = JSON.stringify(result.changes.get('Reader')?.propertyChanges);
+      // Premise: the row is rendered, its new side in the clear.
+      expect(row).toContain('no-longer-the-db');
+      expect(row.includes('teamsecretdb')).toBe(!noEcho);
+    });
+
+    it.each([
+      ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+      ['negative control, an ordinary name', SECRET_USER, true],
+    ])("masks an OUTPUT's stored old value no record holds: %s", async (_l, userName, shown) => {
+      // The output moves off the secret-named user; only the stored outputs
+      // bag still spells its name (the key already reads the ordinary user).
+      const s = userState(userName);
+      (s.resources['Key']!.properties as Record<string, unknown>)['UserName'] = PLAIN_USER;
+      s.outputs = { UserOut: SECRET_USER };
+      const tpl = userTemplate(userName);
+      tpl.Outputs = { UserOut: { Value: { Ref: 'PlainUser' } } };
+      const result = await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator());
+      const out = JSON.stringify(result.outputChanges.find((c) => c.name === 'UserOut'));
+      // Premise: the output row is rendered, its new side in the clear.
+      expect(out).toContain(PLAIN_USER);
+      expect(out.includes(SECRET_USER)).toBe(shown);
+    });
+
+    it("never judges a record by a NoEcho value's Fn::Split piece", async () => {
+      // An ordinary queue named `AlphaQ`, and a NoEcho value `AlphaQ-beta`
+      // split on `-`: the piece is masked where it prints, as written, but it
+      // is no evidence the queue's name came from the value. Judged by it,
+      // the queue's lower-cased spelling would become a needle and mask a
+      // copy another record stores.
+      const tpl: CloudFormationTemplate = {
+        Parameters: { Tok: { Type: 'String', NoEcho: true, Default: 'AlphaQ-beta' } },
+        Resources: {
+          Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'AlphaQ' } },
+          Split: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: { 'Fn::Select': [1, { 'Fn::Split': ['-', { Ref: 'Tok' }] }] } },
+          },
+          Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'no-longer-the-queue' } },
+        },
+      };
+      const s: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        version: 11,
+        resources: {
+          Queue: {
+            physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/AlphaQ',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'AlphaQ' },
+            attributes: {},
+            dependencies: [],
+          },
+          Split: {
+            physicalId: 'split',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: '***' },
+            attributes: {},
+            dependencies: [],
+          },
+          Reader: {
+            physicalId: 'reader',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: 'alphaq-lowercased-copy' },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        exportNames: [],
+        lastModified: 0,
+      };
+      const result = await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator(), {
+        parameters: { Tok: 'AlphaQ-beta' },
+      });
+      const row = JSON.stringify(result.changes.get('Reader')?.propertyChanges);
+      // Premise: the row is rendered.
+      expect(row).toContain('no-longer-the-queue');
+      expect(row).toContain('alphaq-lowercased-copy');
+    });
+
+    it.each([
+      ['a secret-named user', '{{resolve:secretsmanager:sdin:SecretString:user::}}', false],
+      ['negative control, an ordinary name', SECRET_USER, true],
+    ])('judges a record the orphan adoption splices in too: %s', async (_l, userName, shown) => {
+      // The secret-named user is a rollback orphan this deploy re-adopts, so
+      // only the adoption's record says the key's stored value is its name.
+      const s = userState(userName);
+      const adopted = s.resources['SecretUser']!;
+      delete s.resources['SecretUser'];
+      s.orphans = [{ logicalId: 'SecretUser', orphanedAt: 1, state: adopted }];
+      debugLines.length = 0;
+      const result = await computeStackDiff(
+        s,
+        userTemplate(userName),
+        'us-east-1',
+        'S',
+        backend,
+        new DiffCalculator(),
+        {
+          previewOrphanAdoption: async () => ({ adopted: { SecretUser: adopted }, refusals: [] }),
+        }
+      );
+      // Premise: the record was adopted, so its row is no CREATE.
+      expect(result.adoptedOrphans).toEqual(['SecretUser']);
+      const replacement = debugLines.filter((l) => l.includes('requires replacement (from')).join('\n');
+      expect(replacement).toContain('Property UserName of AWS::IAM::AccessKey');
+      expect(replacement.includes(SECRET_USER)).toBe(shown);
+      const row = JSON.stringify(result.changes.get('Key')?.propertyChanges);
+      expect(row).toContain(PLAIN_USER);
+      expect(row.includes(SECRET_USER)).toBe(shown);
     });
   });
 });

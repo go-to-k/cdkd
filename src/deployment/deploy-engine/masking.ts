@@ -37,7 +37,11 @@ import {
   redactSecretsForState,
   unionOfSecretBags,
 } from '../secret-redaction.js';
-import { secretNameNeedlesOf, secretNamesReadBy } from '../secret-name-needles.js';
+import {
+  secretNameNeedlesOf,
+  secretNamesReadBy,
+  storedSecretNameNeedles,
+} from '../secret-name-needles.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
@@ -101,7 +105,15 @@ export function diffLogMasker(
   this: DeployEngine,
   diffSecrets: RecordedSecretValues | undefined,
   template: CloudFormationTemplate,
-  parameterValues: Record<string, unknown>
+  parameterValues: Record<string, unknown>,
+  /**
+   * The state records the diff compares against (go-to-k/cdkd#3869): a
+   * create-only property that stopped reading a resource NAMED from a secret
+   * prints the record's copy of that name as its OLD side, and no resolution
+   * of the diff pass reads it (`storedSecretNameNeedles`). Judged on the
+   * masker's FIRST call, so a deploy that prints no such line pays nothing.
+   */
+  resources: Readonly<Record<string, ResourceState>>
 ): SecretMasker {
   const inherited = this.options.inheritedSecrets;
   const noEchoValues: RecordedSecretValues = new Map();
@@ -118,7 +130,21 @@ export function diffLogMasker(
       recordLogOnlyParameterValue(noEchoValues, parameterValues[name], splitDelimiters);
     }
   }
-  return createUnionSecretMasker([diffSecrets, noEchoValues, inherited]);
+  const stateNames: RecordedSecretValues = new Map();
+  const union = createUnionSecretMasker([diffSecrets, noEchoValues, stateNames, inherited]);
+  let judged = false;
+  return (text) => {
+    if (!judged) {
+      judged = true;
+      // Judged with the stack's `NoEcho` values as every other deploy judge
+      // is (`fingerprintNoEchoValues`, set before the diff pass): whole values
+      // only, never a `Fn::Split` piece an ordinary name can hold nor a value
+      // that IS a `{{resolve:` token, and a nested child's parent-passed ones
+      // too. Records still spelling a reference or the mask need none.
+      storedSecretNameNeedles(resources, this.fingerprintNoEchoValues, stateNames);
+    }
+    return union(text);
+  };
 }
 
 /**

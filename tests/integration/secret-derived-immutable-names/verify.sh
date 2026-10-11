@@ -51,6 +51,22 @@
 #      With --recursive, so the nested QueueReaderChild's parameter lines
 #      are swept too: the diff's child walk masks them with the parent row's
 #      reads (its QueueUrl is SecretQueue's URL, in plaintext in state).
+#   5c. SDIN_MOVE_FILTER=true moves MovingFilter from SecretNamedGroup (named
+#      from the secret) to FilterLogGroup, which nothing else reads: a
+#      replacement of its create-only LogGroupName, never deployed.
+#      `cdkd diff --verbose` and `cdkd deploy --dry-run --verbose` each print
+#      the replacement line, and neither log names the group: its OLD side is
+#      the record's copy of the name, which no read of either diff pass
+#      records (go-to-k/cdkd#3869).
+#   5d. The same move, DEPLOYED: the replacement's `Deleting old MovingFilter
+#      (<old id>)` line and Cloud Control's delete line print the old id,
+#      `<LogGroupName>|<FilterName>`, and neither may name the group
+#      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
+#      destroy below deletes with it. The same deploy updates SecretQueue's
+#      VisibilityTimeout (45), so its readers resolve its ARN from the provider,
+#      sidestepping go-to-k/cdkd#4800 (a NO_CHANGE queue's readers were sent
+#      the recorded `{{resolve:` spelling) and the rollback after it,
+#      go-to-k/cdkd#4801.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -129,6 +145,15 @@
 # `buildDiffTree` in src/cli/commands/diff-recursive.ts ALONE
 # (go-to-k/cdkd#3869) and step 5b fails naming ${QUEUE_NAME} on the child's
 # `Parameter QueueUrl:` line (not yet measured on real AWS).
+# Revert the `stateNames` bag of computeStackDiff in
+# src/cli/commands/diff-recursive.ts ALONE (go-to-k/cdkd#3869) and step 5c fails
+# naming ${LOG_GROUP_NAME} on the diff's --verbose replacement line (the
+# rendered row prints `[requires replacement]` with no old value); revert
+# diffLogMasker's state-record judge in src/deployment/deploy-engine/masking.ts
+# ALONE and step 5c fails the same way on the dry-run deploy's replacement
+# line; revert the non-DELETE arm of the old-record reads in
+# src/deployment/deploy-engine/provision.ts ALONE and step 5d fails naming it
+# on the `Deleting old MovingFilter` line (none yet measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
@@ -218,6 +243,8 @@ REPO_NAME="sdin-repo-${SUFFIX}"
 STREAM_NAME="sdin-stream-${SUFFIX}"
 # The orphan stack's completed CREATE, which each rollback deletes.
 RB_QUEUE_NAME="sdin-rbq-${SUFFIX}"
+# Step 5c's log group, named from the secret (go-to-k/cdkd#3869).
+LOG_GROUP_NAME="sdin-lg-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
 SCHEDULE_NAME="CdkdSdinSchedule"
 PLAIN_SCHEDULE_NAME="CdkdSdinSchedulePlainTarget"
@@ -286,6 +313,8 @@ cleanup() {
     # any deploy, so a child create that wrote no state is covered), and the
     # child's state (its resources are gone by now, or deleted just here).
     aws ssm delete-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" >/dev/null 2>&1
+    # SecretNamedGroup, by its per-run name; deleting it takes MovingFilter.
+    aws logs delete-log-group --region "${REGION}" --log-group-name "${LOG_GROUP_NAME}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET:-}/${CHILD_STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET:-}/cdkd/${CHILD_STACK}/${REGION}/lock.json" >/dev/null 2>&1
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${CHILD_PREFIX}" noncurrent || true
@@ -357,8 +386,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -539,7 +568,7 @@ done
 echo "    OK: the deploy log withholds what its readers read from SecretQueue and SecretPolicy"
 
 echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
-for field in stage service path policydesc api datasource queue filter group; do
+for field in stage service path policydesc api datasource queue filter group loggroup; do
   if ! state_holds "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:${field}::}}"; then
     echo "FAIL: state does not record the {{resolve:secretsmanager: expression for the ${field}; the name is not secret-derived, so the update below would not exercise the guard" >&2
     exit 1
@@ -570,6 +599,10 @@ expect_eq "SecretDataSource's physical id carries the secret's name" \
   "${GQL_API_ID}|${DS_NAME}" "$(state_physical_id SecretDataSource)"
 expect_eq "SecretDataSource's Description after deploy" "cdkd integ: initial" "$(ds_field description)"
 expect_eq "SecretQueue's URL ends with the secret's queue name" "${QUEUE_NAME}" "${QUEUE_URL##*/}"
+expect_eq "SecretNamedGroup lives under the secret's log group name" "${LOG_GROUP_NAME}" \
+  "$(state_physical_id SecretNamedGroup)"
+expect_eq "MovingFilter's recorded LogGroupName is the group's name, in plaintext" "${LOG_GROUP_NAME}" \
+  "$(state_property MovingFilter LogGroupName)"
 expect_eq "SecretFilter's recorded FilterName" \
   "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:filter::}}" "$(state_property SecretFilter FilterName)"
 expect_eq "SecretFilter's FilterPattern after deploy" "WARN" "$(filter_field filterPattern)"
@@ -622,8 +655,8 @@ done
 
 echo "==> Step 3b: rotate the secret's filter field only"
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -779,6 +812,107 @@ for needle_var in QUEUE_NAME POLICY_PATH; do
   fi
 done
 echo "    OK: the cdkd diff log withholds what its readers read from SecretQueue and SecretPolicy"
+
+echo "==> Step 5c: a replacement whose OLD side is a secret-derived name no read names (go-to-k/cdkd#3869)"
+# SDIN_MOVE_FILTER=true moves MovingFilter to FilterLogGroup, so nothing in the
+# template reads SecretNamedGroup: only the state records can say the filter's
+# recorded LogGroupName is a name derived from the secret. PREMISE: each log
+# has the replacement line, naming the property and its NEW side (FilterLogGroup)
+# in the clear, so the absence below is about a printed OLD side.
+REPLACE_MARKER="Property LogGroupName of AWS::Logs::MetricFilter requires replacement (from "
+# PREMISE for the new-side check below: an empty FilterLogGroup id would make
+# that grep match every line.
+if [ -z "${FILTER_LOG_GROUP}" ]; then
+  echo "FAIL: premise: FILTER_LOG_GROUP is empty, so the replacement line's new side cannot be checked" >&2
+  exit 1
+fi
+expect_move_replacement() { # usage: expect_move_replacement <which>
+  local line
+  line="$(grep -F -- "${REPLACE_MARKER}" "${DEPLOY_LOG}" || true)"
+  if [ -z "${line}" ]; then
+    echo "FAIL: premise: the $1 log has no '${REPLACE_MARKER}' line (MovingFilter did not move, the --verbose debug stream is missing, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+  if ! grep -qF -- "${FILTER_LOG_GROUP}" <<< "${line}"; then
+    echo "FAIL: premise: the $1 log's replacement line does not show the new side (FilterLogGroup) in the clear" >&2
+    exit 1
+  fi
+  if grep -qF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}"; then
+    HIT_LINES="$(grep -nF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the $1 log names SecretNamedGroup, a secret-derived name only the OLD state value holds, in plaintext: \${LOG_GROUP_NAME} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
+  echo "    OK: the $1 log withholds the replaced filter's old, secret-derived log group name"
+}
+set +e
+SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose > "${DEPLOY_LOG}" 2>&1
+MOVE_DIFF_RC=$?
+set -e
+if [ "${MOVE_DIFF_RC}" -ne 0 ]; then
+  echo "FAIL: the moved cdkd diff exited ${MOVE_DIFF_RC}" >&2
+  log_tail
+  exit 1
+fi
+expect_move_replacement "cdkd diff"
+set +e
+SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+MOVE_DEPLOY_RC=$?
+set -e
+if [ "${MOVE_DEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: the moved cdkd deploy --dry-run exited ${MOVE_DEPLOY_RC}" >&2
+  log_tail
+  exit 1
+fi
+expect_move_replacement "cdkd deploy --dry-run"
+# PREMISE: the dry run changed nothing, so step 5d's deploy is the one that
+# moves the filter.
+expect_eq "MovingFilter's recorded LogGroupName after the dry run" "${LOG_GROUP_NAME}" \
+  "$(state_property MovingFilter LogGroupName)"
+
+echo "==> Step 5d: the same move, deployed: the replacement's delete lines withhold the old group (go-to-k/cdkd#3869)"
+# PREMISE: the old filter's id embeds the group's name (`<LogGroupName>|<FilterName>`),
+# so the old-id lines below WOULD name it unmasked. Otherwise the absence
+# check passes whatever cdkd masks.
+MOVING_FILTER_OLD_ID="$(state_physical_id MovingFilter)"
+case "${MOVING_FILTER_OLD_ID}" in
+  "${LOG_GROUP_NAME}|"?*) ;;
+  *)
+    echo "FAIL: premise: MovingFilter's physical id does not start with \${LOG_GROUP_NAME}| (the old-id lines would not carry the group's name)" >&2
+    exit 1
+    ;;
+esac
+set +e
+SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+MOVE_REAL_RC=$?
+set -e
+if [ "${MOVE_REAL_RC}" -ne 0 ]; then
+  echo "FAIL: the moved cdkd deploy exited ${MOVE_REAL_RC}" >&2
+  log_tail
+  exit 1
+fi
+# PREMISE: the replacement ran and named the old filter, so the absence below
+# is about a printed old id.
+if ! grep -qF -- "Deleting old MovingFilter (" "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the moved deploy's log has no 'Deleting old MovingFilter (' line (MovingFilter was not replaced, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+if grep -qF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the moved deploy's log names SecretNamedGroup in plaintext: \${LOG_GROUP_NAME} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+echo "    OK: the moved deploy's log withholds the replaced filter's old, secret-derived log group name"
+# PREMISE for the sidestep above: the queue WAS updated in this deploy.
+expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
+expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
+  "$(state_property MovingFilter LogGroupName)"
 
 echo "==> Step 6: destroy"
 set +e
@@ -1100,6 +1234,13 @@ if [ -n "${LEFTOVER_LOG_GROUP}" ] && [ "${LEFTOVER_LOG_GROUP}" != "None" ]; then
   echo "FAIL: log group ${FILTER_LOG_GROUP} (and its metric filter) still exists after destroy" >&2
   exit 1
 fi
+LEFTOVER_SECRET_GROUP="$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "${LOG_GROUP_NAME}" \
+  --query "logGroups[?logGroupName=='${LOG_GROUP_NAME}'].logGroupName" --output text)"
+if [ -n "${LEFTOVER_SECRET_GROUP}" ] && [ "${LEFTOVER_SECRET_GROUP}" != "None" ]; then
+  echo "FAIL: log group \${LOG_GROUP_NAME} (SecretNamedGroup, and MovingFilter in it) still exists after destroy" >&2
+  exit 1
+fi
 # SQS may answer for a deleted queue for up to 60 seconds.
 for q in "${QUEUE_URL}" "${PLAIN_TARGET_QUEUE_URL}"; do
   QUEUE_GONE=0
@@ -1138,7 +1279,7 @@ if [ "${TASK_DEF_STATUS}" = "ACTIVE" ]; then
   echo "FAIL: task definition ${TASK_DEF_ARN} is still ACTIVE after destroy" >&2
   exit 1
 fi
-echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, log group with its metric filter, both schedules with their group, roles and the second target queue)"
+echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, both log groups with their metric filters, both schedules with their group, roles and the second target queue)"
 
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" 2>/dev/null || true

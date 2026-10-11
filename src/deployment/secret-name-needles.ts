@@ -223,16 +223,21 @@ export function secretNamesReadBy(
     });
     if (needles === undefined) continue;
     for (const needle of needles) {
-      if (
-        leaves.some(
-          (leaf) => leaf === needle || (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle))
-        )
-      ) {
-        read.add(needle);
-      }
+      if (leavesHoldNeedle(leaves, needle)) read.add(needle);
     }
   }
   return read;
+}
+
+/**
+ * Does one of `leaves` hold `needle`: equal to it, or embedding it once it
+ * clears the literal masker's substring floor. The match every "a stored value
+ * holds this name" judge takes, so they cannot drift apart.
+ */
+function leavesHoldNeedle(leaves: readonly string[], needle: string): boolean {
+  return leaves.some(
+    (leaf) => leaf === needle || (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle))
+  );
 }
 
 /**
@@ -254,6 +259,125 @@ export function stateSecretNameNeedles(
       secrets,
       { embedded: undefined }
     );
+}
+
+/**
+ * {@link secretNameNeedlesOf} of a STATE record, judged as
+ * {@link stateSecretNameNeedles} judges it, less every needle one of the
+ * record's own PUBLIC string leaves spells (go-to-k/cdkd#3869). A record whose
+ * name is still a `{{resolve:` reference yields its id's name segments, and a
+ * composite id carries an ordinary scope: a secret-named metric filter's
+ * `<log group>|<filter>` yields the log group's name, which the filter's own
+ * `LogGroupName` stores in the clear. That segment is public, so it masks
+ * nothing. A leaf spelling a reference, the mask or a value `secrets` judges
+ * secret-derived is no evidence of that.
+ */
+function storedRecordNameNeedles(
+  logicalId: string,
+  record: ResourceState | undefined,
+  secrets: RecordedSecretValues | undefined
+): Set<string> | undefined {
+  const needles = secretNameNeedlesOf(logicalId, record, secrets, { embedded: undefined });
+  if (needles === undefined) return undefined;
+  const bag = secrets !== undefined && hasMaskableValues(secrets) ? secrets : undefined;
+  const mask = (text: string): string => (bag === undefined ? text : maskSecretsInText(text, bag));
+  // Case-folded too: a service that folds case (an RDS identifier) stores the
+  // lower-cased spelling, which the literal mask does not match.
+  const folded: RecordedSecretValues = new Map();
+  if (bag !== undefined) {
+    for (const needle of printingCorpusOf(bag).keys()) {
+      recordLogOnlyValue(folded, needle.toLowerCase());
+    }
+  }
+  const maskFolded = (text: string): string =>
+    hasMaskableValues(folded) ? maskSecretsInText(text.toLowerCase(), folded) : text.toLowerCase();
+  const publicLeaves = [...wholeStringLeavesOf(record?.properties)].filter(
+    (leaf) =>
+      leaf !== '' &&
+      !leaf.includes('{{resolve:') &&
+      leaf !== SECRET_MASK &&
+      // The folded test first: `isSecretDerivedValue` narrows its argument.
+      !isSecretDerivedValue(leaf.toLowerCase(), maskFolded) &&
+      !isSecretDerivedValue(leaf, mask)
+  );
+  for (const needle of [...needles]) {
+    if (leavesHoldNeedle(publicLeaves, needle)) needles.delete(needle);
+  }
+  return needles.size > 0 ? needles : undefined;
+}
+
+/**
+ * The needles of every resource named from a secret that a STORED value
+ * holds (go-to-k/cdkd#3869), recorded as log-only needles into `bag`: the OLD
+ * side a diff prints for a property or output that stopped reading such a
+ * resource, which no read of the diff pass names. Each record is judged by
+ * {@link storedRecordNameNeedles} (with `secrets`, the stack's `NoEcho`
+ * values), and a needle counts only where ANOTHER record's string leaf, or one
+ * of `outputs` (the stack's stored outputs bag), holds it.
+ */
+export function storedSecretNameNeedles(
+  resources: Readonly<Record<string, ResourceState>>,
+  secrets: RecordedSecretValues | undefined,
+  bag: RecordedSecretValues = new Map(),
+  outputs?: unknown
+): RecordedSecretValues {
+  const named: Array<[string, ReadonlySet<string>]> = [];
+  for (const [logicalId, record] of Object.entries(resources)) {
+    const needles = storedRecordNameNeedles(logicalId, record, secrets);
+    if (needles !== undefined) named.push([logicalId, needles]);
+  }
+  if (named.length === 0) return bag;
+  const readers: Array<[string | undefined, string[]]> = Object.entries(resources).map(
+    ([readerId, record]) => [
+      readerId,
+      [...wholeStringLeavesOf(record?.properties)].filter((leaf) => leaf !== ''),
+    ]
+  );
+  // No record's own: an output names no resource.
+  readers.push([undefined, [...wholeStringLeavesOf(outputs)].filter((leaf) => leaf !== '')]);
+  for (const [readerId, leaves] of readers) {
+    if (leaves.length === 0) continue;
+    for (const [namedId, needles] of named) {
+      if (namedId === readerId) continue;
+      for (const needle of needles) {
+        if (leavesHoldNeedle(leaves, needle)) recordLogOnlyValue(bag, needle);
+      }
+    }
+  }
+  return bag;
+}
+
+/**
+ * Which of `needles` (names of records judged secret-named) one of `record`'s
+ * string leaves holds (go-to-k/cdkd#3869): what that record READ from them,
+ * which its old id or old values can still print.
+ */
+export function secretNamesStoredIn(
+  record: { properties?: unknown } | undefined,
+  needles: Iterable<string>
+): string[] {
+  const leaves = [...wholeStringLeavesOf(record?.properties)].filter((leaf) => leaf !== '');
+  if (leaves.length === 0) return [];
+  return [...needles].filter((needle) => leavesHoldNeedle(leaves, needle));
+}
+
+/**
+ * The needles of EVERY record in `resources` named from a secret, judged by
+ * {@link storedRecordNameNeedles}, recorded into `bag` (go-to-k/cdkd#3869):
+ * for stored values the caller cannot see, a nested child's, which can hold a
+ * name the parent's row used to pass. Log-only, for printing alone.
+ */
+export function secretNamedRecordNeedles(
+  resources: Readonly<Record<string, ResourceState>>,
+  secrets: RecordedSecretValues | undefined,
+  bag: RecordedSecretValues = new Map()
+): RecordedSecretValues {
+  for (const [logicalId, record] of Object.entries(resources)) {
+    for (const needle of storedRecordNameNeedles(logicalId, record, secrets) ?? []) {
+      recordLogOnlyValue(bag, needle);
+    }
+  }
+  return bag;
 }
 
 /**
