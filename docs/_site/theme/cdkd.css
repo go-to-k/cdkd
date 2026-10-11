@@ -986,6 +986,10 @@ body {
 
 /* `::: steps`: core draws the numbers and the rail; a step's first line is
    its title. */
+.content .ox-steps {
+  padding-inline: var(--cdkd-space-4);
+}
+
 .content .ox-steps__item {
   &::before {
     border: 1px solid var(--cdkd-color-border);

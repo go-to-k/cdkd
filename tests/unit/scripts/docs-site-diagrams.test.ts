@@ -116,6 +116,55 @@ describe('layout', () => {
     expect(() => layout({ ...tiny, rows: [['a'], ['c']] }, 'wide')).toThrow(/no node "c"/);
   });
 
+  // A decision: two arrows leave one box, each with a label beside it.
+  const fork: Diagram = {
+    id: 'fork',
+    title: 'Fork',
+    description: 'One box, then two, and a way back.',
+    rows: [['ask'], ['left', 'right']],
+    edges: [
+      { from: 'ask', to: 'left', label: 'the answer on the left, which runs on for longer than one line holds' },
+      { from: 'ask', to: 'right', label: 'held by another run' },
+    ],
+    loops: [{ from: 'right', to: 'ask', label: 'try again' }],
+    nodes: [
+      { id: 'ask', title: 'Ask' },
+      { id: 'left', title: 'Left' },
+      { id: 'right', title: 'Right' },
+    ],
+  };
+  const labelsOf = (svg: string) =>
+    [...svg.matchAll(/<text class="d-label" x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]*)</g)].map(
+      (match) => ({ x: Number(match[1]), y: Number(match[2]), text: match[3]! }),
+    );
+  // `M x1 y1 V yTurn H x2 V y2`: where an arrow to another column turns.
+  const turnsOf = (svg: string) =>
+    [...svg.matchAll(/<path class="d-edge" d="M[\d.]+ [\d.]+V([\d.]+)H([\d.]+)V[\d.]+"/g)].map(
+      (match) => ({ y: Number(match[1]), x: Number(match[2]) }),
+    );
+
+  it.each(VARIANTS)('turns an arrow above the labels of the row it enters (%s)', (variant) => {
+    const svg = renderSvg(fork, variant);
+    const turns = turnsOf(svg);
+    expect(turns).toHaveLength(2);
+    const arriving = labelsOf(svg).filter((label) => label.text !== 'try again');
+    expect(arriving.length).toBeGreaterThanOrEqual(2);
+    // A label's cap height is under 12 units above its baseline.
+    for (const label of arriving) {
+      for (const turn of turns) expect(label.y - 12).toBeGreaterThan(turn.y);
+    }
+  });
+
+  it.each(VARIANTS)('keeps a label left of the next arrow into the row (%s)', (variant) => {
+    const svg = renderSvg(fork, variant);
+    const [left, right] = turnsOf(svg).sort((a, b) => a.x - b.x);
+    const beside = labelsOf(svg).filter((label) => label.x > left!.x && label.x < right!.x);
+    // The long label wraps, where one line would have run under the arrow.
+    expect(beside.length).toBeGreaterThan(1);
+    // 6.3 units a character is the layout's own estimate for a label.
+    for (const label of beside) expect(label.x + label.text.length * 6.3).toBeLessThan(right!.x);
+  });
+
   it('draws the narrow and the wide drawing in one figure', () => {
     const figure = renderFigure(tiny);
     expect(figure).toMatch(/^<figure class="cdkd-diagram"><svg [^>]*cdkd-diagram__svg--wide/);

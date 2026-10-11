@@ -8,6 +8,7 @@ import type { SsgNavigationGroup } from '@ox-content/vite-plugin';
 import { oxContentVue } from '@ox-content/vite-plugin-vue';
 import vize from '@vizejs/vite-plugin';
 import { homeTitlePlugin } from './plugins/home-title.js';
+import { navToggleScript } from './plugins/nav-toggle.js';
 import {
   type SearchScope,
   scopeShortcutsScript,
@@ -228,7 +229,6 @@ const theme = (command: 'build' | 'serve') =>
       { text: 'Guide', link: '/getting-started/' },
       { text: 'Reference', link: '/cli-reference/' },
       { text: 'Troubleshooting', link: '/troubleshooting/' },
-      { text: 'GitHub', link: 'https://github.com/go-to-k/cdkd' },
     ],
     socialLinks: {
       github: 'https://github.com/go-to-k/cdkd',
@@ -334,6 +334,9 @@ const theme = (command: 'build' | 'serve') =>
       // One button per search scope under the search input
       // (plugins/search-scopes.ts).
       scopeShortcutsScript(SEARCH_SCOPES),
+      // The sidebar groups' open and close, where CSS alone cannot animate
+      // it (plugins/nav-toggle.ts).
+      navToggleScript(Number.parseInt(tokens.motion.duration.normal, 10), tokens.motion.ease),
     ].join('\n'),
     embed: {
       head: [

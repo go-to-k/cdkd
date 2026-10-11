@@ -91,6 +91,12 @@ const TITLE_LINE = 20;
 const DETAIL_LINE = 18;
 const TITLE_GAP = 6;
 const LABEL_ROOM = 14;
+const LABEL_LINE = 15;
+/** From an arrow to the label beside it, and from a label to the next arrow. */
+const LABEL_OFFSET = 10;
+const LABEL_CLEAR = 12;
+/** From the rightmost box to the rail the loops run up. */
+const LOOP_OFFSET = 18;
 const HEAD = 6;
 
 // Average advance per character, in user units, for the faces the theme sets:
@@ -204,6 +210,10 @@ export function layout(diagram: Diagram, variant: Variant) {
   const noteWidth = m.width - m.pad - reserve - noteX;
 
   const boxes = new Map<string, Box>();
+  /** The wrapped label of each arrow that arrives from a row above. */
+  const edgeLabels = new Map<DiagramEdge, string[]>();
+  /** The room above each node's row that its arriving labels take. */
+  const labelRooms = new Map<string, number>();
   let y = m.pad;
   diagram.rows.forEach((row, r) => {
     const spans = row.length === 1;
@@ -242,11 +252,29 @@ export function layout(diagram: Diagram, variant: Variant) {
     const rowHeight = Math.max(
       ...placed.map((box) => Math.max(box.h, box.sideNote.length * DETAIL_LINE + PAD_Y)),
     );
-    // Room for the labels on arrows arriving in this row from above.
-    const labelLines = edges
-      .filter((edge) => edge.label && row.includes(edge.to) && !row.includes(edge.from))
-      .map((edge) => wrap(edge.label!, m.width / 2 - 24, ADVANCE.label).length);
-    const labelRoom = labelLines.length > 0 ? LABEL_ROOM + (Math.max(...labelLines) - 1) * 15 : 0;
+    // Room for the labels on arrows arriving in this row from above. A label
+    // sits to the right of its arrow, so it has the width up to the next
+    // arrow arriving in the row, or up to the loops' rail where there is one.
+    const arriving = edges.filter((edge) => row.includes(edge.to) && !row.includes(edge.from));
+    const centerOf = (id: string) => {
+      const box = placed.find((p) => p.node.id === id)!;
+      return box.x + box.w / 2;
+    };
+    const rightEdge = Math.max(...placed.map((box) => box.x + box.w));
+    const lastStop = loops.length > 0 ? rightEdge + LOOP_OFFSET : m.width - m.pad;
+    let labelRoom = 0;
+    for (const edge of arriving) {
+      if (!edge.label) continue;
+      const x = centerOf(edge.to) + LABEL_OFFSET;
+      const nextArrow = Math.min(
+        lastStop,
+        ...arriving.map((other) => centerOf(other.to)).filter((other) => other > x),
+      );
+      const lines = wrap(edge.label, Math.max(nextArrow - LABEL_CLEAR - x, 48), ADVANCE.label);
+      edgeLabels.set(edge, lines);
+      labelRoom = Math.max(labelRoom, LABEL_ROOM + (lines.length - 1) * LABEL_LINE);
+    }
+    for (const id of row) if (id) labelRooms.set(id, labelRoom);
     if (r > 0) y += m.rowGap + labelRoom;
     for (const box of placed) {
       box.y = y;
@@ -256,7 +284,7 @@ export function layout(diagram: Diagram, variant: Variant) {
     y += rowHeight;
   });
 
-  return { m, boxes, edges, loops, height: y + m.pad, noteX };
+  return { m, boxes, edges, loops, edgeLabels, labelRooms, height: y + m.pad, noteX };
 }
 
 function arrowHead(x: number, y: number, dir: 'down' | 'right' | 'left'): string {
@@ -269,24 +297,27 @@ function arrowHead(x: number, y: number, dir: 'down' | 'right' | 'left'): string
   return `<path class="d-head" d="${d}"/>`;
 }
 
-/** A label, wrapped to `maxWidth` and set downward from `y`. */
+/** A label's lines, set so that the last one's baseline is at `y`. */
 function label(
   x: number,
   y: number,
-  text: string,
-  maxWidth: number,
+  lines: string[],
   anchor: 'start' | 'middle' = 'start',
 ): string {
-  return wrap(text, maxWidth, ADVANCE.label)
+  const first = y - (lines.length - 1) * LABEL_LINE;
+  return lines
     .map(
       (line, i) =>
-        `<text class="d-label" x="${fmt(x)}" y="${fmt(y + i * 15)}" text-anchor="${anchor}">${escapeXml(line)}</text>`,
+        `<text class="d-label" x="${fmt(x)}" y="${fmt(first + i * LABEL_LINE)}" text-anchor="${anchor}">${escapeXml(line)}</text>`,
     )
     .join('');
 }
 
 export function renderSvg(diagram: Diagram, variant: Variant): string {
-  const { m, boxes, edges, loops, height, noteX } = layout(diagram, variant);
+  const { m, boxes, edges, loops, edgeLabels, labelRooms, height, noteX } = layout(
+    diagram,
+    variant,
+  );
   const parts: string[] = [];
 
   for (const edge of edges) {
@@ -300,25 +331,27 @@ export function renderSvg(diagram: Diagram, variant: Variant): string {
       const x2 = b.x;
       parts.push(`<path class="d-edge" d="M${fmt(x1)} ${fmt(yMid)}H${fmt(x2 - 1)}"/>`);
       parts.push(arrowHead(x2, yMid, 'right'));
-      if (edge.label) parts.push(label((x1 + x2) / 2, yMid - 7, edge.label, x2 - x1, 'middle'));
+      if (edge.label) {
+        const lines = wrap(edge.label, x2 - x1 - 8, ADVANCE.label);
+        parts.push(label((x1 + x2) / 2, yMid - 7, lines, 'middle'));
+      }
       continue;
     }
     const x1 = a.x + a.w / 2;
     const y1 = a.y + a.h;
     const x2 = b.x + b.w / 2;
     const y2 = b.y;
-    const yMid = y2 - Math.min(m.rowGap / 2, (y2 - y1) / 2);
+    // The turn is made above the room the row's labels take, so that a label
+    // beside one arrow is never under the branch to the next.
+    const yMid = y2 - (labelRooms.get(edge.to) ?? 0) - Math.min(m.rowGap / 2, (y2 - y1) / 2);
     const d =
       Math.abs(x1 - x2) < 1
         ? `M${fmt(x1)} ${fmt(y1)}V${fmt(y2 - 1)}`
         : `M${fmt(x1)} ${fmt(y1)}V${fmt(yMid)}H${fmt(x2)}V${fmt(y2 - 1)}`;
     parts.push(`<path class="d-edge" d="${d}"/>`);
     parts.push(arrowHead(x2, y2, 'down'));
-    if (edge.label) {
-      const room = m.width - m.pad - (x2 + 10);
-      const lines = wrap(edge.label, room, ADVANCE.label).length;
-      parts.push(label(x2 + 10, y2 - 12 - (lines - 1) * 15, edge.label, room));
-    }
+    const lines = edgeLabels.get(edge);
+    if (lines) parts.push(label(x2 + LABEL_OFFSET, y2 - 12, lines));
   }
 
   for (const loop of loops) {
@@ -326,7 +359,7 @@ export function renderSvg(diagram: Diagram, variant: Variant): string {
     const b = boxes.get(loop.to);
     if (!a || !b) throw new Error(`[diagrams] ${diagram.id}: loop ${loop.from} -> ${loop.to}`);
     const right = Math.max(...[...boxes.values()].map((box) => box.x + box.w));
-    const xLoop = right + 18;
+    const xLoop = right + LOOP_OFFSET;
     const y1 = a.y + a.h / 2;
     const y2 = b.y + Math.min(b.h / 2, 24);
     parts.push(
@@ -334,7 +367,9 @@ export function renderSvg(diagram: Diagram, variant: Variant): string {
     );
     parts.push(arrowHead(b.x + b.w, y2, 'left'));
     if (m.labelLoops && loop.label) {
-      parts.push(label(xLoop + 8, (y1 + y2) / 2, loop.label, m.width - m.pad - xLoop - 8));
+      const room = m.width - m.pad - xLoop - 8;
+      const lines = wrap(loop.label, room, ADVANCE.label);
+      parts.push(label(xLoop + 8, (y1 + y2) / 2 + (lines.length - 1) * LABEL_LINE, lines));
     }
   }
 
