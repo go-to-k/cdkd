@@ -64,6 +64,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import type { TemplateResource } from '../../../src/types/resource.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const NAME = 'sdin-q-1';
@@ -113,7 +114,7 @@ function previousState(): StackState {
  * last, so the automatic rollback reverts every update before it. Returns the
  * last state saved and the provider's `update` mock.
  */
-async function deployAndRollBack(template: Record<string, unknown>) {
+async function deployAndRollBack(template: Record<string, TemplateResource>) {
   const state = previousState();
   const saved: StackState[] = [];
   const provider = {
