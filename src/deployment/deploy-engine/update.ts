@@ -506,7 +506,11 @@ export async function provisionUpdate(
     )
   );
   const embeddedRewrites = embeddedPhysicalNameRewrites(updateSecrets);
-  for (const bag of new Set([currentProps, currentResource.properties])) {
+  // A record whose `properties` bag went missing (a hand edit) has nothing to repair.
+  const repairable = [currentProps, currentResource.properties].filter(
+    (bag): bag is Record<string, unknown> => bag !== null && typeof bag === 'object'
+  );
+  for (const bag of new Set(repairable)) {
     for (const key of Object.keys(bag)) {
       const repaired = repairPhysicalNameCopyLeaves(
         bag[key],
