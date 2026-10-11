@@ -121,10 +121,11 @@ Use one of the two ways above.
 > [!WARNING]
 > A cross-account reference that CDK generates for you does not work with
 > cdkd. For a producer in another account, CDK synthesizes
-> `Fn::GetStackOutput` with a `RoleArn` naming a role it creates in the
-> producer stack, which trusts only the consumer's CloudFormation execution
-> role and allows only `cloudformation:DescribeStacks`. cdkd cannot assume
-> that role, and the role could not read cdkd's state. Write the reference
+> `Fn::GetStackOutput` with a `RoleArn` built by `Fn::Join`, which cdkd refuses
+> because it accepts only a literal `RoleArn`. The role it names is one CDK
+> creates in the producer stack, which trusts only the consumer's
+> CloudFormation execution role and allows only
+> `cloudformation:DescribeStacks`, so it could not read cdkd's state either. Write the reference
 > yourself with `cdk.Fn.getStackOutput()`, naming a role set up as below.
 
 `Fn::GetStackOutput` with a `RoleArn` reads the producer's output from cdkd's
