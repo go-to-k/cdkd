@@ -111,12 +111,14 @@ CloudFormation's rollback deletes a failed create:
 | --- | --- |
 | The deploy's automatic rollback | Deleted, before the completed operations are reverted |
 | Nothing, under `--no-rollback` | Kept; the journal keeps the entry for later |
-| `cdkd rollback`, with or without `--revert-failed` | Deleted |
-| `cdkd destroy` | Deleted first, before the journal is removed with the state |
+| `cdkd rollback`, with or without `--revert-failed` | Deleted, after the checks below |
+| `cdkd destroy` | Deleted first, after the same checks, before the journal is removed with the state |
 | A later successful `cdkd deploy` | Deleted before the deploy removes the journal, when nothing else owns it |
 
-Every delete in the table follows the resource's `DeletionPolicy`. Other
-failed operations in the same journal still need `--revert-failed`.
+Every delete in the table follows the resource's `DeletionPolicy`. The
+automatic rollback skips the checks below: it runs inside the failed deploy,
+over that attempt's own operations. Other failed operations in the same
+journal still need `--revert-failed`.
 
 A replacement whose new resource was made before the failure is recorded the
 same way, beside the replacement's failed update, and every row above applies

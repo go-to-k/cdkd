@@ -161,9 +161,21 @@ for confirmation.
 
 ### Edge cases
 
-- **The resource may belong to something else.** cdkd warns and leaves the
-  resource alone when the state record, a later deploy or a record of a
-  resource a rollback kept may own it.
+- **The resource may belong to something else, or may not be the same one.**
+  cdkd warns, names the physical ID and leaves the resource in AWS when the
+  state record, a later deploy, a record of a resource a rollback kept or
+  another stack's state record may own it, or when nothing proves it is the
+  one the failed deploy created (the checks a
+  [rollback](cli-rollback-failed-operations.md#when-cdkd-deletes-the-resource-and-when-it-does-not)
+  makes). Delete it by hand if it is not in use. The destroy exits `2`, but no
+  state record holds the resource, so the state and the journal are still
+  removed, and the final message does not say the state was preserved. If a
+  record or the live identity cannot be read, cdkd counts a failure and keeps
+  the state and the journal.
+- **The resource is in a nested stack.** When the nested stack's only skips
+  are such resources, its own state is deleted, and the parent deletes the
+  nested stack's entry and its own state in the same run. The nested stack's
+  line in the parent says how many resources it left in AWS.
 - **The delete fails.** The summary counts it separately. cdkd keeps the state
   record and the journal, so run the destroy again.
 - **The delete can never succeed.** Check the resource by hand, then drop that

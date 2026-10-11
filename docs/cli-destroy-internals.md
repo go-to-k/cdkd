@@ -177,8 +177,9 @@ steps are:
   now (a later `cdkd import` may have adopted it). One it cannot prove (a
   DynamoDB global table whose name another table may have taken since), or one
   another stack holds or whose holders cannot be read, keeps its protection,
-  with a warning. Without the flag, or unproven, a protected one's delete is
-  refused and the journal keeps it for a re-run. `cdkd rollback
+  with a warning. Without the flag, a protected one's delete is refused and the
+  journal keeps it for a re-run; one that is unproven or another stack holds is
+  not deleted at all. `cdkd rollback
   --remove-protection` does the same for the resources it deletes that a
   failed CREATE left behind (a journaled orphan, or under `--revert-failed` the
   failed CREATE itself), and for a resource whose CREATE the failed deploy
@@ -445,7 +446,11 @@ The custom-resource handler causes attempted the delete. The per-resource
   resource or was interrupted. Here the child's *other* resources were deleted
   first, so "skipped" means the child stack as a whole was not destroyed — not
   that nothing happened. The record to repair lives in the child's state file
-  (`<parent>~<childLogicalId>`), which the summary names.
+  (`<parent>~<childLogicalId>`), which the summary names. A child whose only
+  skips are resources only its rollback journal recorded is not one of these:
+  it deleted its own state, so the parent deletes the nested stack's entry and
+  counts those resources as skips that keep no record
+  ([Resources only the rollback journal records](cli-destroy-skipped.md#resources-only-the-rollback-journal-records)).
 
 ### The `N unverified` figure
 

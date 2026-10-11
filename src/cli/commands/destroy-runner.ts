@@ -2217,21 +2217,26 @@ export async function runDestroyForStack(
               return;
             }
 
-            if (childLeftInAws > 0) {
-              // go-to-k/cdkd#4738: the child stack is gone, state included,
-              // so its row is dropped like any deleted one; what it left in
-              // AWS counts as skips that keep no record (exit 2).
-              const left =
-                deleteLeftInPlace(deleteResult) ??
-                `${childLeftInAws} resource(s) a failed deploy created were left in AWS`;
-              logger.info(
-                `  ${formatResourceLine('skipped', logicalId, resource.resourceType, `deleted (${left})`)}`
-              );
-              result.skippedCount += childLeftInAws;
-              result.journaledOrphanSkips += childLeftInAws;
-            } else {
-              logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
-            }
+            // go-to-k/cdkd#4738: a nested child that left resources in AWS
+            // with no record. The child stack is gone, state included, so its
+            // row is dropped like any deleted one; what it left counts as
+            // skips that keep no record (exit 2). `formatResourceLine` passes
+            // the verb through `displaySafe`.
+            const deletedLine =
+              childLeftInAws > 0
+                ? formatResourceLine(
+                    'skipped',
+                    logicalId,
+                    resource.resourceType,
+                    `deleted (${
+                      deleteLeftInPlace(deleteResult) ??
+                      `${childLeftInAws} resource(s) a failed deploy created were left in AWS`
+                    })`
+                  )
+                : formatResourceLine('deleted', logicalId, resource.resourceType);
+            logger.info(`  ${deletedLine}`);
+            result.skippedCount += childLeftInAws;
+            result.journaledOrphanSkips += childLeftInAws;
             result.deletedCount++;
             recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_SUCCEEDED',

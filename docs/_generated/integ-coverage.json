@@ -651,6 +651,7 @@
     {
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
+        "created-before-failure-revert",
         "custom-resource-noecho-nested",
         "custom-resource-resolved-secret",
         "export-nested-stack",
@@ -670,6 +671,9 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "created-before-failure-revert": [
+          "literal"
+        ],
         "custom-resource-noecho-nested": [
           "literal"
         ],
@@ -6909,6 +6913,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "context-test",
+        "created-before-failure-revert",
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
@@ -7018,6 +7023,9 @@
         ],
         "context-test": [
           "l2"
+        ],
+        "created-before-failure-revert": [
+          "l1"
         ],
         "cross-backend-same-stack": [
           "l1",
