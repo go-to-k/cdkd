@@ -71,7 +71,6 @@ import {
   recordLogOnlyParameterValue,
   literalSplitDelimitersOf,
   recordLogOnlyValue,
-  carryLogOnlyValues,
   maskSecretsInText,
   type RecordedSecretValues,
   readsNoEchoSource,
@@ -879,8 +878,9 @@ export interface StackDiffResult {
   derivedNames: RecordedSecretValues;
   /**
    * The MASK-ONLY needles of every record of this node named from a secret
-   * (go-to-k/cdkd#3869), adopted orphan records included and judged with its
-   * `NoEcho` values: a nested child's stored values can hold a name this
+   * (go-to-k/cdkd#3869), adopted orphan records included and judged with the
+   * diff bag at the END of the node's pass (its `NoEcho` values plus what the
+   * resolver derived from one): a nested child's stored values can hold a name this
    * node's row used to pass, which no read of the child's walk names. Never
    * part of {@link printingSecrets}.
    */
@@ -1761,13 +1761,12 @@ export async function computeStackDiff(
   // property that stopped reading the resource prints that stored copy as its
   // OLD side, on the `--verbose` replacement line and in its row, and no
   // resolution of this pass reads it. Mask-only, like `derivedNames`.
-  // Every judge of the records takes this COPY of the `NoEcho` values, taken
-  // before the resolver can record into `diffSecrets` (an `Fn::Base64` of one).
-  const noEchoJudge: RecordedSecretValues = new Map(diffSecrets);
-  carryLogOnlyValues(diffSecrets, noEchoJudge);
+  // Judged with `diffSecrets`, as the resolver's own judge is: the `NoEcho`
+  // values, plus what the resolver later derives from one (`Fn::Base64`),
+  // which can only add needles.
   const stateNames = storedSecretNameNeedles(
     currentState.resources ?? {},
-    noEchoJudge,
+    diffSecrets,
     new Map(),
     currentState.outputs
   );
@@ -1993,7 +1992,7 @@ export async function computeStackDiff(
       // adopted record can store one.
       storedSecretNameNeedles(
         stateForDiff.resources,
-        noEchoJudge,
+        diffSecrets,
         stateNames,
         currentState.outputs
       );
@@ -2556,7 +2555,7 @@ export async function computeStackDiff(
     effectiveTemplate,
     printingSecrets,
     derivedNames: diffPrintingSecrets([derivedNames, inheritedDerivedNames]),
-    secretNamedRecords: secretNamedRecordNeedles(stateForDiff.resources, noEchoJudge),
+    secretNamedRecords: secretNamedRecordNeedles(stateForDiff.resources, diffSecrets),
     resolvedParameters: mergedParameters,
     conditions,
     knownConditions:

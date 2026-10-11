@@ -47,6 +47,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
   secretNamedRecordNeedles,
+  secretNamesStoredIn,
   storedSecretNameNeedles,
 } from '../../../src/deployment/secret-name-needles.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -639,6 +640,17 @@ describe('storedSecretNameNeedles: the names a STORED value holds (go-to-k/cdkd#
     expect(maskSecretsInText('teamsecretdb', storedSecretNameNeedles(r, noEcho))).not.toContain(
       'teamsecretdb'
     );
+  });
+
+  it('secretNamesStoredIn finds a name a leaf EMBEDS, as in an ARN', () => {
+    const record = {
+      properties: {
+        Policy: { Resource: 'arn:aws:logs:us-east-1:123:log-group:sdin-secret-group:*' },
+      },
+    };
+    expect(secretNamesStoredIn(record, ['sdin-secret-group', 'not-held-anywhere'])).toEqual([
+      'sdin-secret-group',
+    ]);
   });
 
   it("records a needle a stored OUTPUT holds", () => {

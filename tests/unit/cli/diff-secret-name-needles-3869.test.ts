@@ -660,7 +660,8 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     async function deletedChildRow(
       parentResources: StackState['resources'],
       readerValue: string,
-      parameters?: CloudFormationTemplate['Parameters']
+      parameters?: CloudFormationTemplate['Parameters'],
+      childResources: StackState['resources'] = {}
     ): Promise<string> {
       const parent: StackState = {
         stackName: 'S',
@@ -684,7 +685,7 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
         stackName: 'S~Child',
         region: 'us-east-1',
         version: 9,
-        resources: {},
+        resources: childResources,
         outputs: { Out: readerValue },
         lastModified: 0,
       };
@@ -736,6 +737,27 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       // Premise: the deleted child's row is rendered.
       expect(row).toContain('"changeType":"REMOVE"');
       expect(row.includes('teamsecretdb')).toBe(!noEcho);
+    });
+
+    it("judges the deleted child's OWN composite-id record the same way", async () => {
+      // The secret-named record lives in the deleted child itself.
+      const row = await deletedChildRow(
+        {},
+        'arn:aws:logs:us-east-1:123:log-group:plain-log-group:* sdin-secret-filter',
+        undefined,
+        {
+          SecretFilter: {
+            physicalId: 'plain-log-group|sdin-secret-filter',
+            resourceType: 'AWS::Logs::MetricFilter',
+            properties: { FilterName: '***', LogGroupName: 'plain-log-group' },
+            attributes: {},
+            dependencies: [],
+          },
+        }
+      );
+      expect(row).toContain('"changeType":"REMOVE"');
+      expect(row).toContain('log-group:plain-log-group:*');
+      expect(row).not.toContain('sdin-secret-filter');
     });
 
     it("shows a public segment of a secret-named composite id, and masks the secret one", async () => {
