@@ -5,10 +5,18 @@ description: "Why cdkd diff prints *** or withholds a value, what it shows for s
 
 # Diff: secrets and NoEcho values
 
-`cdkd diff` never prints a secret, and it never fetches one. Where a value is
-secret, the output shows the reference to it, the mask `***`, or a
-placeholder. This page explains each thing you can see in its place, and what
-a hidden value means for the changes the diff reports.
+`cdkd diff` does not print a secret that reaches your template as a secret
+reference or a `NoEcho` parameter, and it does not look such a secret up. In
+its place the output shows the reference, the mask `***`, or a placeholder.
+This page explains each thing you can see there, and what a hidden value means
+for the changes the diff reports.
+
+> [!WARNING]
+> There is one exception. An attribute that is itself a credential, such as a
+> Cognito user pool client's `ClientSecret`, can be printed in clear text: in
+> the rows, in `--json`, and in the `--verbose` log. Read
+> [An attribute that is a credential](#an-attribute-that-is-a-credential)
+> before you send diff output to a log other people can read.
 
 ## Secrets and `NoEcho` values in the output
 
@@ -111,7 +119,12 @@ again.
 One case prints a credential in clear text. It applies when the diff reads an
 attribute from AWS because the state record lacks it, and the attribute is
 itself a credential that AWS returns unmasked. A Cognito user pool client's
-`ClientSecret` is an example. See
+`ClientSecret` is an example. The value appears in the rows, in `--json`, and
+in the `--verbose` log.
+
+This affects records an older cdkd wrote and records imported with
+`--migrate-from-cloudformation`, because those can lack the attribute. See the
+warning under
 [A state record missing an attribute](cli-diff-state-records.md#a-state-record-missing-an-attribute).
 
 ## Related
