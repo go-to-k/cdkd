@@ -1,68 +1,72 @@
 ---
 title: Troubleshooting
-description: "Common cdkd issues and their solutions — lock problems, state management, deploy failures, and debugging tips."
+description: "Find a cdkd error message or symptom and get its cause and fix: permissions, locks, state, deploy and destroy failures, assets, and proxies."
 ---
 
 # cdkd Troubleshooting Guide
 
-This document summarizes common issues when using cdkd and their solutions.
+Each entry is headed by the message or symptom, then says why it happens and
+gives the fix. Search this page for a distinctive part of your error text, or
+start from the table under [Start here](#start-here).
 
 ## Contents
 
-- [Lock Issues](#lock-issues)
+- [Start here](#start-here)
+- [Credentials and permissions](#credentials-and-permissions)
+  - ["Access Denied" Error](#access-denied-error)
+  - ["not authorized to perform: sts:AssumeRole"](#not-authorized-to-perform-sts-assumerole)
+  - [STS cannot report the account](#sts-cannot-report-the-account)
+  - ["The state machine IAM Role is not authorized to access the Log Destination"](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination)
+- [Locks](#locks)
   - ["Failed to acquire lock" Error](#failed-to-acquire-lock-error)
   - [Stale lock after a cancelled CI job](#stale-lock-after-a-cancelled-ci-job)
-- [State Management Issues](#state-management-issues)
+- [State](#state)
   - ["State has been modified by another process"](#state-has-been-modified-by-another-process)
   - [State File is Corrupted](#state-file-is-corrupted)
   - [State and Resources Don't Match](#state-and-resources-don-t-match)
   - [Cross-region state bucket ("is in a different region", `PermanentRedirect`)](#cross-region-state-bucket-is-in-a-different-region-permanentredirect)
-- [Deployment Errors](#deployment-errors)
+- [Templates cdkd refuses](#templates-cdkd-refuses)
+  - [An unsupported resource type](#an-unsupported-resource-type)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
-  - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
-  - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
-  - [A changed custom-resource ServiceToken is refused](#a-changed-custom-resource-servicetoken-is-refused)
-  - ["Backing Lambda for custom resource X no longer exists" on destroy](#backing-lambda-for-custom-resource-x-no-longer-exists-on-destroy)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Properties validation failed": a list where an object is expected, or the reverse](#properties-validation-failed-a-list-where-an-object-is-expected-or-the-reverse)
-  - ["Resource already exists" Error](#resource-already-exists-error)
-  - [An unsupported resource type](#an-unsupported-resource-type)
-  - [Replacing a resource, and the refusal that guards it](#replacing-a-resource-and-the-refusal-that-guards-it)
-  - ["bucket is not empty" / "still contains images" on destroy](#bucket-is-not-empty-still-contains-images-on-destroy)
-  - ["has DeletionPolicy: Snapshot, but ..." refusal on delete](#has-deletionpolicy-snapshot-but-refusal-on-delete)
+  - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
   - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
   - ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-sent-by-cdkd-yet)
-  - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
-  - ["cdkd stopped waiting for it" — a network outage during a Cloud Control operation](#cdkd-stopped-waiting-for-it-a-network-outage-during-a-cloud-control-operation)
-- [Asset Publishing Issues](#asset-publishing-issues)
-  - ["Asset publishing failed"](#asset-publishing-failed)
+- [Failures during a deploy](#failures-during-a-deploy)
+  - ["Resource already exists" Error](#resource-already-exists-error)
+  - [Replacing a resource, and the refusal that guards it](#replacing-a-resource-and-the-refusal-that-guards-it)
   - [Lambda Deployment Fails](#lambda-deployment-fails)
-- [Intrinsic Function Issues](#intrinsic-function-issues)
+  - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
+  - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
+  - [A changed custom-resource ServiceToken is refused](#a-changed-custom-resource-servicetoken-is-refused)
   - ["Unresolved intrinsic function" Error](#unresolved-intrinsic-function-error)
-  - [STS cannot report the account](#sts-cannot-report-the-account)
   - ["Refusing to resolve" a reference whose service cdkd does not resolve](#refusing-to-resolve-a-reference-whose-service-cdkd-does-not-resolve)
   - ["Refusing to resolve" a reference whose name was built from a secret](#refusing-to-resolve-a-reference-whose-name-was-built-from-a-secret)
   - ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)
-- [Permission Errors](#permission-errors)
-  - ["Access Denied" Error](#access-denied-error)
-  - ["not authorized to perform: sts:AssumeRole"](#not-authorized-to-perform-sts-assumerole)
-  - ["The state machine IAM Role is not authorized to access the Log Destination"](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination)
-- [Proxy / Corporate Network](#proxy-corporate-network)
-  - ["self-signed certificate in certificate chain" on the very first command](#self-signed-certificate-in-certificate-chain-on-the-very-first-command)
-  - [Variables cdkd honours](#variables-cdkd-honours)
-  - [`NO_PROXY` matching is EXACT, unlike curl](#no-proxy-matching-is-exact-unlike-curl)
-  - [A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`](#a-tls-terminating-proxy-still-needs-node-extra-ca-certs)
-  - [The Docker daemon has its own egress](#the-docker-daemon-has-its-own-egress)
-  - [Verifying that traffic is routed](#verifying-that-traffic-is-routed)
-- [Performance Issues](#performance-issues)
+- [Slow deploys, throttling and retries](#slow-deploys-throttling-and-retries)
   - [Deployment is Slow](#deployment-is-slow)
-  - [A property you set in the template never reaches AWS](#a-property-you-set-in-the-template-never-reaches-aws)
-  - [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
   - [Cloud Control API Rate Limit](#cloud-control-api-rate-limit)
   - [A name is still held by the resource you just deleted](#a-name-is-still-held-by-the-resource-you-just-deleted)
-- [Orphaned Resources](#orphaned-resources)
-  - [Overview](#overview)
-  - [How cdkd Prevents Orphans](#how-cdkd-prevents-orphans)
+  - ["cdkd stopped waiting for it" — a network outage during a Cloud Control operation](#cdkd-stopped-waiting-for-it-a-network-outage-during-a-cloud-control-operation)
+- [A deploy succeeds but AWS is not what the template says](#a-deploy-succeeds-but-aws-is-not-what-the-template-says)
+  - [A property you set in the template never reaches AWS](#a-property-you-set-in-the-template-never-reaches-aws)
+  - [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
+  - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
+- [Assets](#assets)
+  - ["Asset publishing failed"](#asset-publishing-failed)
+- [Destroying a stack](#destroying-a-stack)
+  - ["bucket is not empty" / "still contains images" on destroy](#bucket-is-not-empty-still-contains-images-on-destroy)
+  - ["has DeletionPolicy: Snapshot, but ..." refusal on delete](#has-deletionpolicy-snapshot-but-refusal-on-delete)
+  - ["Backing Lambda for custom resource X no longer exists" on destroy](#backing-lambda-for-custom-resource-x-no-longer-exists-on-destroy)
+  - [destroy reports `N skipped` and exits 2](#destroy-reports-n-skipped-and-exits-2)
+  - [Known Leftover: EFS Automatic Backups](#known-leftover-efs-automatic-backups)
+  - [Known Leftover: FSx Final Backups](#known-leftover-fsx-final-backups)
+- [After a failed or interrupted deploy](#after-a-failed-or-interrupted-deploy)
+  - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
+  - [Detecting Orphaned Resources](#detecting-orphaned-resources)
+  - [Recovering from Orphaned Resources](#recovering-from-orphaned-resources)
+- [Possible duplicates after a server error](#possible-duplicates-after-a-server-error)
   - [A warning that a KMS key, Cognito user pool or AppSync API may be an orphan](#a-warning-that-a-kms-key-cognito-user-pool-or-appsync-api-may-be-an-orphan)
   - [A warning that an API Gateway API, authorizer, integration or deployment may be an orphan](#a-warning-that-an-api-gateway-api-authorizer-integration-or-deployment-may-be-an-orphan)
   - [A warning that an EMR cluster, instance fleet or instance group may be an orphan](#a-warning-that-an-emr-cluster-instance-fleet-or-instance-group-may-be-an-orphan)
@@ -72,1772 +76,69 @@ This document summarizes common issues when using cdkd and their solutions.
   - [`EntityAlreadyExists` on an IAM create after a server error](#entityalreadyexists-on-an-iam-create-after-a-server-error)
   - [An "already exists" on a Lambda, EventBridge bus or ECR create after a server error](#an-already-exists-on-a-lambda-eventbridge-bus-or-ecr-create-after-a-server-error)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
-  - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
-  - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
-  - [destroy reports `N skipped` and exits 2](#destroy-reports-n-skipped-and-exits-2)
-  - [Detecting Orphaned Resources](#detecting-orphaned-resources)
-  - [Recovering from Orphaned Resources](#recovering-from-orphaned-resources)
-  - [Known Leftover: EFS Automatic Backups](#known-leftover-efs-automatic-backups)
-  - [Known Leftover: FSx Final Backups](#known-leftover-fsx-final-backups)
-- [Debugging Methods](#debugging-methods)
-  - [Adjust Log Level](#adjust-log-level)
-  - [Check State File](#check-state-file)
-  - [Check API Calls with AWS CloudTrail](#check-api-calls-with-aws-cloudtrail)
-  - [Check Execution Plan with Dry Run](#check-execution-plan-with-dry-run)
+- [Proxy / Corporate Network](#proxy-corporate-network)
+  - ["self-signed certificate in certificate chain" on the very first command](#self-signed-certificate-in-certificate-chain-on-the-very-first-command)
+  - [Variables cdkd honours](#variables-cdkd-honours)
+  - [`NO_PROXY` matching is EXACT, unlike curl](#no-proxy-matching-is-exact-unlike-curl)
+  - [A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`](#a-tls-terminating-proxy-still-needs-node-extra-ca-certs)
+  - [The Docker daemon has its own egress](#the-docker-daemon-has-its-own-egress)
+  - [Verifying that traffic is routed](#verifying-that-traffic-is-routed)
 - [Frequently Asked Questions (FAQ)](#frequently-asked-questions-faq)
   - [Q: Is a CloudFormation stack created?](#q-is-a-cloudformation-stack-created)
   - [Q: Can I use CloudFormation and cdkd for the same stack?](#q-can-i-use-cloudformation-and-cdkd-for-the-same-stack)
   - [Q: What happens if I delete the state file?](#q-what-happens-if-i-delete-the-state-file)
   - [Q: Is there a rollback feature?](#q-is-there-a-rollback-feature)
   - [Q: Are custom resources supported?](#q-are-custom-resources-supported)
+- [Collecting information for a bug report](#collecting-information-for-a-bug-report)
+  - [Adjust Log Level](#adjust-log-level)
+  - [Check State File](#check-state-file)
+  - [Check Execution Plan with Dry Run](#check-execution-plan-with-dry-run)
+  - [Check API Calls with AWS CloudTrail](#check-api-calls-with-aws-cloudtrail)
 - [Getting help](#getting-help)
 - [Related](#related)
-## Lock Issues
 
-### "Failed to acquire lock" Error
+## Start here
 
-**Symptoms:**
+Most first-week problems are one of these.
 
-```
-LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
-```
+| You see | Usual cause | Entry |
+| --- | --- | --- |
+| `is not authorized to perform`, `AccessDenied` | The identity running cdkd lacks a permission | ["Access Denied" Error](#access-denied-error) |
+| `Cannot determine the AWS account id`, `ExpiredToken` | The credentials are missing or expired | [STS cannot report the account](#sts-cannot-report-the-account) |
+| `Failed to acquire lock` / `Could not acquire lock` | Another cdkd run holds the stack, or a killed run left its lock | ["Failed to acquire lock" Error](#failed-to-acquire-lock-error) |
+| `already exists`, `EntityAlreadyExists`, `ResourceInUseException` | A resource with that name is in AWS but not in cdkd's state | ["Resource already exists" Error](#resource-already-exists-error) |
+| `The following resource types are not supported by cdkd` | Neither an SDK provider nor Cloud Control can manage the type | [An unsupported resource type](#an-unsupported-resource-type) |
+| `s3:PutObject` denied, `ECR login failed`, `Docker push failed` | Asset storage is missing or the identity cannot write to it | ["Asset publishing failed"](#asset-publishing-failed) |
 
-**Causes:**
+A deploy error has two lines. The first is cdkd's and names the resource. The
+`Caused by:` line is the AWS service's own message, and it is usually the one
+to search for:
 
-- Another process is deploying the same stack
-- Previous process crashed and lock remains
-
-> **A lock is only reclaimed once its holder stops renewing it.** The holding
-> process re-writes the lock's `expiresAt` **every 2 minutes** while it runs, so
-> the 30-minute TTL measures **silence, not duration** — it tolerates fourteen
-> consecutive missed renewals before it lapses. A long deploy does not lose its
-> lock partway through, and conversely a lock you find expired really does
-> belong to a process that is gone. If a lock is not expiring, the process
-> holding it is alive.
-
-> **Note:** The message above is what `cdkd deploy` prints — it **retries** a
-> held lock 3 times at 2-second intervals (4 attempts, about 6 seconds) before
-> giving up. When an attempt fails but cdkd then finds no lock, the holder
-> released it in between, so cdkd tries again at once without counting that
-> as a retry — up to 3 extra attempts per command. Past those, an attempt that
-> finds no readable lock waits the same 2 seconds, and if the last one still
-> fails the message says `No lock could be read after the last failed attempt`
-> rather than naming a holder: re-run the command, and reach for
-> `force-unlock` only if it repeats, since a `lock.json` that is not a readable
-> lock also fails this way. `cdkd rollback` and `cdkd scrub` retry on the same
-> schedule. The
-> commands that WRITE state without deploying — `cdkd destroy`,
-> `cdkd state destroy`, `cdkd import`, `cdkd export`, `cdkd orphan`,
-> `cdkd drift --accept`, `cdkd drift --revert` and
-> `cdkd state refresh-observed` — instead **fail fast** on contention (except
-> `cdkd export`'s nested-stack children, which retry 6 times at 5-second
-> intervals, a ceiling of about 30 seconds) with a different message, and do
-> **not** proceed while another process holds the lock:
->
-> ```text
-> Could not acquire lock for stack MyStack (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
-> ```
->
-> **Read the holder before acting on the suggestion.** cdkd cleans up an
-> EXPIRED lock automatically, so a lock that reaches this message is LIVE —
-> in practice a `cdkd deploy` that is still running. Running `force-unlock`
-> on it deletes that process's lock and lets a second writer into the same
-> stack, which is the failure this refusal exists to prevent. Use it only
-> when you know the named process is gone (a crashed CI job, a killed
-> terminal). When the holder cannot be read (an S3 permission gap), the
-> message falls back to `another cdkd process holds it`.
->
-> The recovery command carries every flag that decides WHICH lock it resolves
-> to — `--stack-region`, plus `--profile` / `--state-bucket` / `--state-prefix`
-> when you passed them. Run it as printed: `force-unlock` re-resolves the state
-> bucket from the ambient profile otherwise, so a shortened command can clear a
-> same-named stack's lock in a different account.
-
-> **Note:** Nested-stack children are locked separately. A child teardown
-> reached from `cdkd deploy` (because the template no longer declares the
-> child) or from `cdkd rollback` fails fast on the **child's** lock, even
-> though the parent's lock was acquired with retry.
->
-> `cdkd orphan` and `cdkd state orphan` are different commands, not two
-> spellings of one: `cdkd orphan '<path>'...` drops individual resources by
-> construct path and fails fast on the lock, while
-> `cdkd state orphan '<stack>'...` drops whole stack records and takes no lock
-> of its own — it refuses while one is held, and `--force` makes it delete
-> that lock, including a live one. `cdkd state orphan '<stack>' --resource
-> <logicalId>` is the exception: it drops individual entries, takes the lock
-> like `cdkd orphan`, and `--force` does not bypass a held one.
-
-> **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
-> longer strands the lock — the graceful-SIGINT handler finishes any in-flight
-> delete, flushes the incremental state, and **releases the lock** before
-> exiting non-zero. A re-run resumes immediately without waiting out the lock
-> TTL. `cdkd deploy` behaves the same way on a first `Ctrl-C`: in-flight
-> operations finish, partial state is saved, a rollback journal is recorded,
-> and the lock is released before the non-zero exit.
->
-> A **second** `Ctrl-C` force-quits immediately (`exit 130`) without waiting
-> for the in-flight operation, and what it does about the lock differs by
-> command.
->
-> `cdkd destroy` / `cdkd state destroy` fire a **best-effort** (un-awaited)
-> lock release and print the recovery command to stderr:
->
-> ```text
-> Force-quit: stack lock may not be released. If the next run reports a lock, run: cdkd force-unlock MyStack --stack-region us-east-1
-> ```
->
-> `cdkd deploy` prints its own plural form and does **not** attempt a release,
-> because a deploy may hold locks on several stacks:
->
-> ```text
-> Force-quit: stack locks may not be released. If the next run reports a lock, run this for EACH stack it names (the region-qualified form — see the message that run prints): cdkd force-unlock <stackName> --stack-region <region>
-> ```
->
-> **`cdkd rollback` has no second-signal path**: further `Ctrl-C`s are absorbed
-> by its graceful handler, so it cannot be force-quit this way. Stop it with
-> `SIGKILL` if you must, and expect to clear the lock afterwards.
->
-> Run the command as printed — the `--stack-region` it carries is what decides
-> which lock is cleared. After a destroy force-quit the best-effort release
-> usually lands, so most leave no lock; after a deploy force-quit, expect one.
-> A leftover lock therefore means an ungraceful kill (`SIGKILL`, a force-quit
-> whose best-effort release did not complete, or a crash).
-
-**Solutions:**
-
-**1. Check if another process is running**
-
-```bash
-# Check lock information
-aws s3api get-object \
-  --bucket ${STATE_BUCKET} \
-  --key cdkd/MyStack/us-east-1/lock.json \
-  /dev/stdout
-
-# Example output:
-# {
-#   "owner": "goto@macbook:12345",
-#   "timestamp": 1710835200000,
-#   "expiresAt": 1710837000000,
-#   "operation": "deploy"
-# }
-```
-
-`expiresAt` is the field everything keys on — the expiry check, the `expires
-in:` clause of the error above, and the renewal loop. It is `timestamp` plus
-the 30-minute TTL, rewritten every 2 minutes while the holder runs.
-`operation` is the only optional field. A truncated `lock.json` with no
-`expiresAt` is treated as **expired**.
-
-**2. Force release if lock is old**
-
-```bash
-cdkd force-unlock MyStack --stack-region us-east-1
-```
-
-Prefer this to deleting `lock.json` by hand: it resolves the same state
-bucket the deploy would, and it purges the key's noncurrent versions rather
-than leaving a delete marker over them.
-
-> **The retry count, the retry delay and the lock TTL are not configurable** —
-> there is no flag, environment variable or `cdk.json` setting for any of them.
-> If a lock is genuinely stale, clear it with `cdkd force-unlock`; if it is
-> not, the holder is alive and waiting is the correct behaviour.
-
-### Stale lock after a cancelled CI job
-
-**Symptoms:**
-
-A CI job running `cdkd deploy` was cancelled (manually, or automatically by a
-newer run), and the next run fails with `Failed to acquire lock` even though
-no deploy is in progress.
-
-A very common GitHub Actions setup for per-PR environments hits this:
-
-```yaml
-concurrency:
-  group: pr-env-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-```
-
-Consecutive pushes to the same PR target the **same stack**, so the cancelled
-run's stale lock blocks the run that replaced it.
-
-**Causes:**
-
-Cancellation is not a clean `Ctrl-C`. GitHub Actions escalates
-`SIGINT` → `SIGTERM` (~7.5 s later) → `SIGKILL` (~2.5 s after that); other CI
-systems (GitLab CI, `docker stop`, Kubernetes) typically send `SIGTERM`
-directly. cdkd's `deploy` / `destroy` / `state destroy` / `rollback` commands
-handle **both `SIGINT` and `SIGTERM`** gracefully: the first signal
-finishes in-flight operations, saves state, and releases the lock. What a
-second signal does varies by command (see the note above). But `SIGKILL` cannot be
-handled by any process — under GitHub Actions the whole escalation completes
-in ~10 seconds, so a job whose in-flight AWS operation takes longer than
-that is still killed before the lock-release cleanup finishes, stranding the
-lock. SIGTERM-only environments with a longer grace period (Kubernetes
-defaults to 30 s; `docker stop` to 10 s) give the graceful path a better
-chance to complete.
-
-**Solutions:**
-
-**1. Wait out the TTL** — a stale lock is reclaimed automatically after the
-lock TTL (**30 minutes** by default). The next run after that succeeds
-without intervention.
-
-**2. Clear it immediately** with:
-
-```bash
-cdkd force-unlock MyStack
-```
-
-**3. Recommended CI pattern** — when your workflow serializes runs per stack
-(as the `concurrency` group above does), it is safe to clear any stale lock
-at the start of the job, because no other run of the same group can be
-holding it legitimately:
-
-```yaml
-- run: npm i -g @go-to-k/cdkd
-- run: cdkd force-unlock MyStack || true  # only safe when runs are serialized per stack
-- run: cdkd deploy MyStack --yes
-```
-
-Do **not** add an unconditional `force-unlock` to workflows where two jobs
-can legitimately operate on the same stack concurrently — it would break the
-lock that protects the running deploy.
-
-#### Note on partially-applied deploys
-
-A killed deploy is usually not a correctness problem beyond the lock: cdkd
-saves state incrementally after each completed resource, so a re-run resumes
-from the last saved state, and a rollback journal (when present) lets
-`cdkd rollback` revert the interrupted deploy instead. The remaining exposure
-is a resource whose create was in flight at the moment of the kill: it may
-have been created on AWS without reaching state, in which case the next run
-can surface an "already exists" conflict that needs manual reconciliation
-(delete the resource, or adopt it with `cdkd import`).
-
----
-
-## State Management Issues
-
-### "State has been modified by another process"
-
-**Symptoms:**
-
-```
-StateError: State has been modified by another process. Expected ETag: "abc123", but state has changed.
-```
-
-**Causes:**
-
-- Two processes attempted to deploy simultaneously
-- Lock was acquired but conflict occurred when saving state
-
-**Solutions:**
-
-**1. Re-run the command**
-
-The write is guarded by an S3 precondition on the ETag cdkd read, so a
-conflicting write is refused rather than silently overwriting. **cdkd does not
-retry the save itself** — the conflict always surfaces as a failed command, and
-the re-run is deliberately yours to make, because it re-reads state and plans
-against whatever the other writer left:
-
-```bash
-cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
-```
-
-**2. If it recurs, find the other writer**
-
-A second conflict means a second process really is writing this stack. Read
-the lock rather than re-running in a loop — it names the owner and the
-operation:
-
-```bash
-aws s3api get-object \
-  --bucket ${STATE_BUCKET} \
-  --key cdkd/MyStack/us-east-1/lock.json \
-  /dev/stdout
-```
-
-Note this is not the lock TTL's doing: the lock excludes other cdkd
-*processes*, while this error is the ETag precondition on `state.json`. Waiting
-for a lock to expire does not affect it.
-
-### State File is Corrupted
-
-**Symptoms:**
-
-```
-StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
-Caused by: Unexpected token } in JSON at position 123
-```
-
-A sibling refusal names a schema version this binary cannot read, which is a
-different problem with a different fix — upgrade cdkd rather than restoring a
-backup:
-
-```
-StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Upgrade cdkd to a version that supports schema 12.
-```
-
-**Causes:**
-
-- S3 upload was interrupted
-- JSON error during manual editing
-
-**Solutions:**
-
-**1. Restore from S3 versioning**
-
-```bash
-# Get version list
-aws s3api list-object-versions \
-  --bucket ${STATE_BUCKET} \
-  --prefix cdkd/MyStack/us-east-1/state.json
-
-# Example output:
-# {
-#   "Versions": [
-#     {
-#       "Key": "cdkd/MyStack/us-east-1/state.json",
-#       "VersionId": "abc123",
-#       "LastModified": "2024-03-19T10:30:00.000Z"
-#     },
-#     {
-#       "Key": "cdkd/MyStack/us-east-1/state.json",
-#       "VersionId": "def456",
-#       "LastModified": "2024-03-19T09:00:00.000Z"
-#     }
-#   ]
-# }
-
-# Restore old version
-aws s3api get-object \
-  --bucket ${STATE_BUCKET} \
-  --key cdkd/MyStack/us-east-1/state.json \
-  --version-id def456 \
-  /tmp/state-backup.json
-
-# Restore
-aws s3 cp /tmp/state-backup.json \
-  s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
-```
-
-**2. Rebuild state from the live resources**
-
-If no usable version survives, adopt the resources back rather than deleting
-the state and redeploying — the resources still exist, and `cdkd import`
-records them without touching AWS:
-
-```bash
-aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
-cdkd import MyStack --dry-run
-cdkd import MyStack
-```
-
-### State and Resources Don't Match
-
-**Symptoms:**
-
-- Manually deleted/modified resources in AWS Console
-- cdkd tries to update non-existent resources
-
-**Causes:**
-
-cdkd's state file and actual AWS resources have diverged.
-
-**Solutions:**
-
-**1. See what cdkd thinks it has**
-
-```bash
-cdkd state resources MyStack          # LogicalID, Type, PhysicalID
-cdkd state resources MyStack --long   # plus dependencies and attributes
-```
-
-**2. Drop the records for resources that no longer exist**
-
-`cdkd state orphan` removes state only and never touches AWS, so it is the
-right tool when the resource is already gone:
-
-```bash
-cdkd state orphan MyStack --stack-region us-east-1 --resource MyTable1234ABCD  # one resource, by logical id
-cdkd orphan MyStack/MyTable                          # one resource, by construct path
-cdkd state orphan MyStack --stack-region us-east-1   # whole stack record
-```
-
-`cdkd orphan` is synth-driven and takes construct paths (repeatable, all
-referencing the same stack); `cdkd state orphan` needs no CDK app and takes
-stack names, plus `--resource` (repeatable) to drop single entries — the fit
-when the construct is already gone from the app. Only `cdkd orphan` accepts
-`--dry-run`. Do not drop the whole record of a stack that still has other live
-resources: the next deploy re-creates or collides with all of them.
-
-The next `cdkd deploy` then plans those resources as CREATE.
-
-**3. Re-adopt resources that exist but are missing from state**
-
-```bash
-cdkd import MyStack --dry-run   # preview; writes no state
-cdkd import MyStack
-```
-
-See [Importing Existing Resources](import.md) for the full flag set.
-
-**4. Start over, through cdkd rather than by hand**
-
-```bash
-cdkd state destroy MyStack --yes   # deletes the AWS resources AND the state
-cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
-```
-
-> **Do not delete `state.json` and redeploy.** It is not a reset — what happens
-> next depends on the resource type and none of the outcomes are what you
-> wanted. See
-> [Recovering from Orphaned Resources](#recovering-from-orphaned-resources).
-
----
-
-### Cross-region state bucket ("is in a different region", `PermanentRedirect`)
-
-**Symptoms:**
-
-```
-StateError: Failed to verify state bucket 'my-bucket': Bucket 'my-bucket' (in ap-northeast-1) is in a different region than the client. cdkd resolves this automatically; if you see this message, please report it.
-```
-
-cdkd rewrites the AWS SDK's synthetic `UnknownError` into a sentence keyed on
-the HTTP status, so the state-bucket path names the region rather than the
-placeholder. The lock path does not rewrite, and surfaces the raw 301 instead:
-
-```
-LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
-The bucket you are attempting to access must be addressed using the
-specified endpoint. Please send all future requests to this endpoint.
-```
-
-**Cause:**
-
-The state bucket lives in a region different from the one the AWS SDK
-client was constructed for. AWS SDK v3's region-redirect middleware does
-not handle the empty-body 301 HEAD response S3 returns in this case
-cleanly — the protocol parser falls through and produces a synthetic
-`Unknown` exception with the literal message `UnknownError`.
-
-**Solution:**
-
-cdkd resolves this automatically: the state backend (since
-v0.10.0), the lock manager (previously
-state operations succeeded against a cross-region bucket but lock
-acquisition failed with the PermanentRedirect error above), and the
-custom-resource response path (previously deploying
-a stack with a Lambda-backed Custom Resource to a region different from
-the state bucket's region failed with the same 301 on the pre-signed
-`ResponseURL`) look up the bucket region via `GetBucketLocation` (a GET
-request, not a HEAD — avoids the SDK glitch) and rebuild their S3
-clients to that region before any state, lock, or custom-resource
-response operation. If you still see either error, please file a bug
-with the full stack trace.
-
-You no longer need to set the region to match the bucket region (the
-state-bucket client auto-detects it via `GetBucketLocation`). As of
-v0.12.0, `--region` is a first-class option only on
-`cdkd bootstrap` (where it picks the new bucket's region); on every
-other command it is deprecated (prefer `AWS_REGION` / your AWS profile)
-but still honored if passed. Use `AWS_REGION` or your AWS profile to
-control the SDK's default region for provisioning.
-
----
-
-## Deployment Errors
-
-### "The following resources declare mutually exclusive properties"
-
-**Symptoms:**
-
-```
-The following resources declare mutually exclusive properties:
-  - BadRoute (AWS::EC2::Route) declares DestinationCidrBlock and DestinationIpv6CidrBlock
-      CloudFormation and the EC2 CreateRoute API accept exactly one destination per route.
-      cdkd would send only DestinationCidrBlock; DestinationIpv6CidrBlock would be dropped.
-      Deleting the dropped keys changes nothing cdkd sends — but if the LIVE resource was
-      created from one of them, making DestinationCidrBlock the sole value is a create-only
-      change that REPLACES it.
-      Declare at most one of: DestinationCidrBlock / DestinationIpv6CidrBlock / DestinationPrefixListId
-```
-
-**Causes:**
-
-The template declares two or more properties AWS accepts only one of. cdkd
-rejects this at pre-flight, before any AWS call. CloudFormation rejects the same
-template, so this is a template defect rather than a cdkd limitation — which is
-why there is no `--allow-*` escape hatch for it.
-
-The check fires on EVERY deploy, not only when the resource is new. A stack that
-already carries such a resource used to deploy silently (the diff classifies
-`NO_CHANGE`, so the provider's own refusal was never reached) while AWS held only
-one of the declared values.
-
-`cdkd diff` reports no CHANGE for this shape (the narrowed sides are equal),
-but it does warn that part of the declared properties cannot be sent as
-declared — that warning and this error describe the same defect.
-
-**Solutions:**
-
-**1. Remove the extra properties**
-
-Delete every key except the one the message says cdkd would send. That edit
-changes nothing cdkd sends. **Check what the resource is live on first**,
-though: if it was created from one of the dropped keys, promoting a different
-key to sole destination is a create-only change and REPLACES the resource:
-
-```typescript
-new ec2.CfnRoute(this, 'Route', {
-  routeTableId: rt.ref,
-  gatewayId: igw.ref,
-  destinationCidrBlock: '0.0.0.0/0',
-  // destinationIpv6CidrBlock: '::/0',  <- delete; only one destination is allowed
-});
-```
-
-**2. Or make them conditional**
-
-If the resource genuinely needs a different property per environment, put each
-behind a condition whose other arm is `AWS::NoValue`. cdkd treats a key behind
-an unresolved intrinsic as unknown and does NOT reject it, because exactly one
-of the two survives resolution:
-
-```json
-{
-  "DestinationCidrBlock":     { "Fn::If": ["IsV4", "0.0.0.0/0", { "Ref": "AWS::NoValue" }] },
-  "DestinationIpv6CidrBlock": { "Fn::If": ["IsV4", { "Ref": "AWS::NoValue" }, "::/0"] }
-}
-```
-
-### "The following custom resources pass a secure dynamic reference"
-
-**Symptoms:**
-
-```
-The following custom resources pass a secure dynamic reference ({{resolve:secretsmanager:...}} / {{resolve:ssm-secure:...}}) in their properties:
-  - DbInit: Password
-```
-
-**Causes:**
-
-A custom resource (`Custom::*` or `AWS::CloudFormation::CustomResource`) has a
-property whose value holds a `{{resolve:secretsmanager:...}}` or
-`{{resolve:ssm-secure:...}}` reference, directly or inside an intrinsic --
-including the token CDK splits across `Fn::Join` parts around a same-stack
-secret's `Ref`. CloudFormation does not support secure dynamic references in custom
-resources ("Dynamic references can't be used for secure values ... in custom
-resources", User Guide, dynamic references). cdkd refuses it at pre-flight, before
-anything is resolved, so the reference is never resolved into the handler's
-event. A plain `{{resolve:ssm:...}}` is accepted here; one that names a
-SecureString parameter is refused when the handler would be invoked instead
-(next entry).
-
-Like the checks above, this fires on every deploy, including one where the
-resource is unchanged, and there is no `--allow-*` escape hatch. `cdkd destroy`
-does not run it, so a stack deployed before this check can still be torn down.
-
-**Solutions:**
-
-- Pass the secret's name or ARN instead, and have the handler read the value
-  itself (grant its role `secretsmanager:GetSecretValue` or `ssm:GetParameter`).
-- For a value that is not secret, use a plain `{{resolve:ssm:...}}` parameter.
-
-### "Custom resource X: Y resolved to the value of a secret"
-
-**Symptoms:**
-
-```
-Custom resource DbInit: Password resolved to the value of a secret (a Secrets Manager secret, or an SSM SecureString parameter -- including one read through a plain {{resolve:ssm:...}} reference or a nested stack parameter). ...
-```
-
-**Causes:**
-
-The same rule as the entry above, caught at the handler invoke rather than in
-the template. A property of the custom resource resolved to a secret's value by
-a route the template does not show: a plain `{{resolve:ssm:...}}` that names a
-SecureString parameter, a nested stack's child reading a parent parameter the
-parent filled from a secret, or a rollback re-resolving an older record --
-including `cdkd rollback --revert-failed`, which sends a failed update's
-attempted properties as the event's `OldResourceProperties` (named
-`OldResourceProperties.<path>`). The check is whether the resource's resolution
-recorded a secret at all, so a value derived from one (base64-encoded, a
-fragment) is refused too. cdkd refuses before the handler runs, so the value
-never reaches its event. A rollback replay is refused too rather than
-downgraded, since the downgrade would send the value.
-
-**Solutions:**
-
-- Pass the secret's or parameter's name or ARN instead, and have the handler
-  read the value itself.
-- For a nested stack, pass the name down as the parameter, not the resolved
-  value.
-
-### A changed custom-resource ServiceToken is refused
-
-**Symptoms:**
-
-```
-Refusing to deploy S: a custom resource's ServiceToken changes, which CloudFormation does not allow ("Modifying service token is not allowed") (issue #4749). Nothing was sent to either handler.
-  - Cr: ServiceToken changes to arn:aws:lambda:...:function:new, away from the handler its record names.
-```
-
-**Causes:**
-
-The custom resource now points at a different handler: its `serviceToken`
-names another provider, or the backing Lambda was renamed or moved under a new
-construct id, so its ARN changed. CloudFormation refuses this, and an in-place
-update would orphan whatever the old handler created. A row reading `its
-recorded ServiceToken is ...` means the record holds no comparable token, so
-cdkd cannot tell whether it changed. See
-[a changed custom-resource ServiceToken](cli-deploy.md#a-changed-custom-resource-servicetoken).
-
-**Solutions:**
-
-- To use the new handler, give the custom resource a new logical id (in CDK, a
-  new construct id, or `overrideLogicalId`): the deploy creates it through the
-  new handler and deletes the old one through its old handler.
-- To keep the existing resource, deploy its previous `ServiceToken`.
-- For an unreadable recorded token whose handler did not change, put back as
-  `ServiceToken` in `state.json` the ARN of the handler that created this
-  resource (the one it was last deployed with, not the one the template names
-  now) and re-deploy.
-
-### "Backing Lambda for custom resource X no longer exists" on destroy
-
-**Symptoms:**
-
-```
-Backing Lambda for custom resource X no longer exists (arn:aws:lambda:...), so its Delete handler cannot be invoked and cdkd cannot confirm the resource was deleted; skipping deletion ...
-```
-
-The row reads `skipped (backing Lambda function is gone — Delete handler not
-invoked)`, the state record is kept, and `cdkd destroy` exits `2`.
-
-**Causes:**
-
-The function named by the custom resource's `ServiceToken` is gone, so its
-`Delete` handler can never run. Usually an earlier destroy skipped this
-resource (its handler reported `FAILED`, or the invoke did not complete) and
-went on to delete the backing Lambda in the same run. It also happens when a
-shared provider stack is destroyed before the stacks that use it. cdkd cannot
-tell whether what the handler manages still exists, so it keeps the record
-rather than report a delete nobody confirmed — as CloudFormation leaves such a
-stack `DELETE_FAILED`. Earlier versions dropped the record and exited `0`.
-A `cdkd deploy` delete keeps that behavior with a warning instead, since
-CloudFormation ignores delete failures in an update's cleanup phase.
-
-**Solutions:**
-
-- If the handler's function can come back at the same ARN (redeploy the shared
-  provider stack), do that and re-run `cdkd destroy`.
-- Otherwise confirm by hand that what the handler manages is gone, or tear it
-  down, then drop the stack's records with
-  `cdkd state orphan '<stack>' --stack-region <region>` — it drops every record
-  for the stack in that region, not just this one.
-
-### "The following resources declare a nested property block without a member it requires"
-
-**Symptoms:**
-
-```
-The following resources declare a nested property block without a member it requires:
-  - Service (AWS::ECS::Service): DeploymentConfiguration.DeploymentCircuitBreaker is missing required member Rollback
-```
-
-**Causes:**
-
-A nested block is present in the template but omits a member the resource
-type's schema marks required there. CloudFormation refuses the same template.
-Without the refusal the service
-API may accept the partial block and REPLACE the live one, silently resetting
-the omitted member — the circuit breaker above would switch a live rollback off.
-
-The check runs at pre-flight on every deploy, before any AWS call:
-
-- An absent block is never refused — only a present, incomplete one.
-- A block, element or member behind an unresolved intrinsic (`Fn::If`, `Ref`)
-  is not refused, since its resolved shape is not known yet.
-- It covers the resource types CloudFormation itself enforces these lists on.
-  Array elements are named by index (`Policies[1]`).
-
-**Solution:** declare the missing members. There is no `--allow-*` escape
-hatch, because CloudFormation rejects the template too.
-
-```typescript
-new ecs.CfnService(this, 'Service', {
-  // ...
-  deploymentConfiguration: {
-    deploymentCircuitBreaker: { enable: true, rollback: true },
-  },
-});
-```
-
-### "Properties validation failed": a list where an object is expected, or the reverse
-
-**Symptoms:**
-
-```
-Properties validation failed: the following resources declare a property whose kind contradicts the resource type's schema:
-  - Queue (AWS::SQS::Queue): #/Tags: expected type: JSONArray, found: JSONObject
-```
-
-**Causes:**
-
-A template property is an object where the resource type's schema requires a
-list, or a list where it requires an object. CloudFormation refuses the same
-template with the same words. Without the refusal the value reached the
-provider and failed inside an AWS call with an unrelated-looking error, or was
-dropped.
-
-The check runs at pre-flight on every deploy, before any AWS call:
-
-- Only a list against an object is refused. A scalar mismatch is left to
-  CloudFormation's and the service's own checks.
-- A property is checked only where the schema admits exactly one of the two
-  kinds, and only for types whose schema CloudFormation validates.
-- A value that is an unresolved intrinsic (`Ref`, `Fn::If`, `Fn::Split`, ...)
-  is not refused, since its resolved kind is not known yet. Array elements are
-  named by index (`Tags[1]`).
-
-**Solution:** give the property the kind the schema declares, usually after an
-`addPropertyOverride` that wrote the wrong one. There is no `--allow-*` escape
-hatch, because CloudFormation rejects the template too.
-
-```typescript
-(queue.node.defaultChild as sqs.CfnQueue).addPropertyOverride('Tags', [
-  { Key: 'team', Value: 'platform' }, // a list, not { Key, Value }
-]);
-```
-
-### "Resource already exists" Error
-
-**Symptoms:**
-
-A name-collision failure surfaces as the AWS error, wrapped twice — once by
-the provider and once by the deploy engine:
-
-```
+```text
 ProvisioningError: Failed to create resource MyBucket
-Caused by: The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.
+Caused by: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: s3:CreateBucket on resource: "arn:aws:s3:::my-bucket-name"
 ```
 
-The wording of the `Caused by:` line is the service's, so it differs per type:
-IAM raises `EntityAlreadyExists`, DynamoDB `ResourceInUseException`, and so on.
+If a deploy failed partway and you are not sure what state the stack is in,
+go to [After a failed or interrupted deploy](#after-a-failed-or-interrupted-deploy).
 
-**Not every type fails here.** Three behave differently, and knowing which
-matters before you reach for a fix:
-
-| Behaviour | Types | What you see |
-| --- | --- | --- |
-| Fails the create | IAM roles/users/groups, DynamoDB tables, Lambda functions, SQS queues, ELBv2 load balancers | the error above |
-| Adopts the existing resource | `AWS::S3::Bucket`, `AWS::Logs::LogGroup`, `AWS::SNS::Topic` | a successful deploy that re-applies your configuration to the resource that was already there |
-| Creates a second resource | types AWS assigns an opaque id to — VPC, EC2 instance, ACM certificate, CloudFront distribution | a successful deploy, and an orphan nothing tracks |
-
-An S3 bucket you own in a **different region** is refused rather than adopted,
-because owning a globally-unique name never implies the bucket is in this
-stack's region.
-
-**Causes:**
-
-- Resource with same name already exists
-- Previous deployment failed midway and state was not saved
-
-**Solutions:**
-
-**1. Change resource name**
-
-Make resource name unique in CDK code:
-
-```typescript
-new s3.Bucket(this, 'MyBucket', {
-  bucketName: `my-app-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-});
-```
-
-**2. Delete existing resource**
-
-```bash
-# S3 bucket example
-aws s3 rb s3://my-bucket-name --force
-```
-
-**3. Adopt the existing resource into state**
-
-```bash
-cdkd import MyStack --resource MyBucket=my-bucket-name
-```
-
-See [Importing Existing Resources](import.md) for the full flag set.
-
-### An unsupported resource type
-
-**Symptoms:**
-
-Usually at pre-flight, before anything is touched — and the message already
-carries a pre-filled link for requesting the type:
-
-```
-The following resource types are not supported by cdkd:
-  - AWS::AppMesh::Mesh
-      AWS reports this type as NON_PROVISIONABLE (Cloud Control API cannot
-      manage it) and cdkd has no SDK provider for it.
-      Request support: https://github.com/go-to-k/cdkd/issues/new?title=...
-
-To attempt deployment anyway (Cloud Control will likely fail for
-NON_PROVISIONABLE types), re-run with: --allow-unsupported-types AWS::AppMesh::Mesh
-```
-
-Or, if the type slipped past pre-flight, at provisioning time:
-
-```
-No provider available for resource type: AWS::CustomService::Resource. This
-resource type is not supported by Cloud Control API and no SDK provider is
-registered.
-```
-
-**Causes:**
-
-cdkd provisions a resource through a hand-written SDK provider or, failing
-that, the Cloud Control API ([Provisioning Layers](provisioning-layers.md)).
-This error means neither is available: AWS reports the type as
-`NON_PROVISIONABLE`, or it is on cdkd's Cloud Control blocklist pending a
-dedicated provider, or it is not an `AWS::` type at all.
-
-**Solutions:**
-
-**1. Ask for the type**
-
-The pre-flight message includes a link that opens a pre-filled issue for
-exactly this type. Use it — that request is what schedules the work.
-
-**2. Unblock the deploy now, if the type is only blocklisted**
-
-```bash
-cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh
-```
-
-This routes the named type through Cloud Control optimistically. It is
-per-type, not a blanket flag, so each one is an explicit choice. For a type AWS
-reports as `NON_PROVISIONABLE`, Cloud Control cannot manage it either and the
-deploy will still fail — the flag does not conjure support. See
-[`--allow-unsupported-types`](cli-deploy-safety.md#allow-unsupported-types-deploy-destroy).
-
-**3. Confirm what Cloud Control actually supports**
-
-[Supported resources for Cloud Control API](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html),
-and [Supported Resources](supported-resources.md) for cdkd's own per-type
-coverage table.
-
-### Replacing a resource, and the refusal that guards it
-
-**cdkd performs replacement itself.** Changing a property AWS cannot update in
-place makes cdkd delete the old resource and create the new one, and it says so
-as it goes:
-
-```
-Replacing MyBucket (AWS::S3::Bucket) - immutable properties changed: BucketName
-```
-
-You do not have to do anything to enable that, and there is nothing to
-implement.
-
-**Symptoms:**
-
-Two different refusals interrupt it, and they call for opposite responses.
-
-**1. The resource holds data.** cdkd refuses to replace a stateful resource
-without an explicit confirmation, because replacement means deleting it:
-
-```
-ProvisioningError: Failed to update resource MyBucket
-Caused by: MyBucket (AWS::S3::Bucket) requires replacement (immutable property changed: BucketName) but it is a stateful resource — S3 bucket is not provably empty. Re-run with --force-stateful-recreation to confirm the data loss, or change the resource definition to avoid the immutable-property change.
-```
-
-Either revert the immutable-property change, or accept the data loss:
-
-```bash
-cdkd deploy MyStack --force-stateful-recreation
-```
-
-The guard is skipped for a resource carrying `UpdateReplacePolicy: Retain`.
-
-**2. The type has no in-place update path at all**, so any change to it is a
-replacement:
-
-```
-ResourceUpdateNotSupportedError: AWS::EC2::NatGateway (MyNat) cannot be updated in place: use cdkd deploy with --replace, or change the resource definition to create a new version.
-```
-
-The message names the remedy for that specific type; the tail varies per
-provider. This exits `2` rather than `1`.
-
-### "bucket is not empty" / "still contains images" on destroy
-
-**Symptoms:**
-
-```text
-Failed to delete S3 bucket MyBucket: bucket my-bucket is not empty. Matching
-CloudFormation, cdkd does not delete a non-empty bucket unless it opted into
-automatic emptying ...
-```
-
-An S3 Express directory bucket carries its own prefix and wording:
-
-```text
-Failed to delete S3 Express Directory Bucket my-bucket--use1-az4--x-s3: bucket
-my-bucket--use1-az4--x-s3 is not empty. Matching CloudFormation, cdkd does not
-delete a non-empty directory bucket without an explicit opt-in ...
-```
-
-```text
-Failed to delete ECR Repository MyRepo: repository my-repo still contains
-images. Matching CloudFormation, cdkd does not force-delete an image-carrying
-repository ...
-```
-
-**Cause:**
-
-`cdkd destroy` matches CloudFormation's fail-and-protect behavior: an S3 bucket (standard
-or S3 Express directory bucket) that still contains objects, or an ECR
-repository that still contains images, is NOT force-cleaned unless the
-resource opted in.
-
-**Solutions:**
-
-1. Opt in from the CDK app and redeploy, then destroy:
-   - S3: `autoDeleteObjects: true` (with `removalPolicy: DESTROY`)
-   - S3 Express directory bucket: CDK has no `autoDeleteObjects` sugar —
-     declare the opt-in tag on the L1 (`Tags` is a handled property):
-     `tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }]`
-   - ECR: `emptyOnDelete: true` (or the legacy `autoDeleteImages: true`)
-2. Or empty the data manually and re-run the destroy:
-
-   ```bash
-   # Unversioned bucket
-   aws s3 rm s3://my-bucket --recursive
-   # Versioned bucket: also delete all object versions + delete markers
-   # ECR
-   aws ecr batch-delete-image --repository-name my-repo \
-     --image-ids "$(aws ecr list-images --repository-name my-repo --query 'imageIds' --output json)"
-   ```
-
-See the "Destroy data guards" section in
-[Destroy flags & guards](cli-destroy.md#destroy-data-guards-non-empty-s3-buckets-and-image-carrying-ecr-repositories) for the full semantics.
-
-### "has DeletionPolicy: Snapshot, but ..." refusal on delete
-
-**Symptoms:**
-
-```text
-MyDb (AWS::RDS::DBInstance) has DeletionPolicy: Snapshot, but the resource is
-managed via the Cloud Control API route (provisionedBy: cc-api), which has no
-final-snapshot delete parameter ...
-```
-
-**Cause:**
-
-CloudFormation creates a final snapshot before deleting a
-`DeletionPolicy: Snapshot` resource, and cdkd matches that for the FULL
-CFn-documented Snapshot-capable type list. The delete is refused only when
-cdkd cannot create the snapshot: the resource is an atomic-parameter type
-routed via Cloud Control (`provisionedBy: cc-api`, the silent-drop
-routing — Cloud Control's `DeleteResource` has no final-snapshot
-parameter), or the template carries `Snapshot` on a type CloudFormation
-itself would refuse the attribute on.
-
-**Solutions:**
-
-1. Snapshot the resource manually, then re-run with `--skip-final-snapshot`
-   (the explicit data-loss opt-out), or
-2. Change the policy to `Retain` and delete the resource manually after
-   snapshotting.
-
-See the "DeletionPolicy: Snapshot" section in
-[Destroy flags & guards](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics.
-
----
-
-### "OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table
-
-**Symptoms:**
-
-```text
-AWS::Glue::Table IcebergTable: OpenTableFormatInput.IcebergInput.IcebergTableInput
-cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue
-(issue #1454). ...
-```
-
-**Cause:**
-
-cdkd refuses this property on a **template-driven create**, before any AWS
-call. Two other paths only WARN, and the difference matters:
-
-- **An UPDATE never refuses.** Adding `IcebergTableInput` to an
-  already-deployed table produces a warning and a green deploy — cdkd forwards
-  nothing for it, because Glue's update-only shape for this is not wired. The
-  property is silently ignored rather than applied.
-- **A `cdkd rollback` warns** on both of its paths (the update replay and the
-  reverse-replacement re-create), because a rollback replays from cdkd state
-  rather than from your template, so refusing there would leave you no remedy
-  but hand-editing `state.json`. That matters for tables created by an older
-  cdkd build, whose state records still carry the key. See "Glue table Iceberg
-  support" in [Supported Resources](supported-resources.md) for what the
-  restored table looks like.
-
-The refusal is a
-deliberate parity divergence — CloudFormation forwards the property instead of
-validating it, but a live probe showed the spec is
-undeployable either way: the raw `glue:CreateTable` API cdkd calls rejects every
-shape of it, and CloudFormation rolls the same template back. The handler asks
-for `IcebergTableInputProperties`, a name that exists in neither the CFn
-registry schema nor `@aws-sdk/client-glue` — an AWS-side contract bug. Failing
-fast with the working shape spelled out beats a late, cryptic AWS error.
-
-**Solutions:**
-
-Move the table metadata into `TableInput` and leave `IcebergInput` carrying only
-the create-time directive:
-
-```yaml
-TableInput:
-  Name: events_iceberg
-  TableType: EXTERNAL_TABLE          # required for Iceberg
-  StorageDescriptor:
-    Location: s3://your-bucket/iceberg/events/
-    Columns:
-      - Name: event_id
-        Type: string
-OpenTableFormatInput:
-  IcebergInput:
-    MetadataOperation: CREATE        # Version: '2' is also accepted
-```
-
-Glue writes the Iceberg metadata itself — the created table comes back with
-`Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
-See [Glue table Iceberg support](supported-resources.md#glue-table-iceberg-support-icebergtableinput-is-refused)
-for the full probe transcript and rationale.
-
----
-
-### "SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"
-
-**Symptoms:**
-
-```text
-AWS::Lambda::EventSourceMapping MyMapping: SelfManagedKafkaEventSourceConfig.ConsumptionMode
-cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the member, ...
-```
-
-**Cause:**
-
-The CloudFormation schema declares `ConsumptionMode` (`Stream` or `Queue`) on a
-self-managed Kafka event source mapping, but the AWS SDK cdkd calls Lambda
-through does not model it yet and drops it from the request. Lambda itself
-currently rejects the member through CloudFormation's own handler too
-(`Unsupported 'ConsumptionMode' parameter for given event source mapping type`),
-so switching the resource to Cloud Control does not help. Rather than deploy a
-mapping without the mode you asked for, cdkd refuses a create that declares it,
-and an update that adds or changes it, before calling Lambda. A `cdkd rollback` or
-`cdkd drift --revert` only warns, because those paths replay a recorded
-configuration you cannot edit from the template.
-
-**Solution:** remove `ConsumptionMode` from `SelfManagedKafkaEventSourceConfig`
-to deploy the mapping without it.
-
----
-
-### deleting a Cognito `Policies` sub-key changes nothing on the pool
-
-**Symptoms:**
-
-You remove `Policies.SignInPolicy` from a `AWS::Cognito::UserPool` template --
-typically to revoke a passwordless first-auth factor such as `EMAIL_OTP` -- and
-`cdkd deploy` succeeds, but the pool still allows it. `cdkd drift` and
-`cdkd diff` both report nothing afterwards. The same happens for
-`Policies.PasswordPolicy`, and for deleting the whole `Policies` container.
-
-The one signal cdkd gives is a warning on the deploy that carries the removal:
-
-```text
-UserPool us-east-1_xxxxxxxxx: the desired configuration no longer declares
-Policies.SignInPolicy, and no UpdateUserPool input can express that removal --
-omitting the sub-key PRESERVES the live value ..., so the pool keeps its current
-sign-in policy. ... To change the live value, declare Policies.SignInPolicy
-explicitly with the intended configuration (the AWS default is
-AllowedFirstAuthFactors: [PASSWORD]).
-```
-
-**Cause:**
-
-`UpdateUserPool` treats an omitted `Policies` sub-key as "keep the live value",
-not as "reset it" -- measured us-east-1 2026-08-19. There is no input that
-expresses a removal, so a template that stops declaring the sub-key sends
-nothing for it and AWS changes nothing. **CloudFormation behaves identically**
-on the same template edit -- measured us-east-1 2026-09-02 on all three removal
-shapes -- so this
-is template-compatibility parity, not a cdkd defect, and cdkd deliberately does
-not send a reset that CloudFormation would not.
-
-`cdkd drift` is silent because the same deploy refreshes the drift baseline
-(`observedProperties`) from a post-update read of the live pool, so the retained
-sub-key sits on both sides of the comparison. That is why the deploy-time
-warning is the ONLY place this surfaces.
-
-**Solution:**
-
-Declare the sub-key explicitly with the configuration you want, rather than
-deleting it:
-
-```yaml
-Policies:
-  SignInPolicy:
-    AllowedFirstAuthFactors:
-      - PASSWORD          # revokes EMAIL_OTP by stating the intended set
-```
-
-The AWS defaults, if that is what you are after, are
-`AllowedFirstAuthFactors: [PASSWORD]` for `SignInPolicy` and `MinimumLength: 8`
-with every character-class requirement enabled plus
-`TemporaryPasswordValidityDays: 7` for `PasswordPolicy`.
-
-If the same edit also sets `MfaConfiguration: ON` while the retained list still
-allows `EMAIL_OTP` or `SMS_OTP` (or `WEB_AUTHN` without
-`WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION`), the deploy
-is refused before any change is sent (cdkd only reads the pool first), with a
-message naming the pool's LIVE `AllowedFirstAuthFactors`. AWS would reject the
-MFA change only after the rest of the update had already landed. The fix is the
-same explicit declaration; for `WEB_AUTHN`, declaring
-`WebAuthnFactorConfiguration: MULTI_FACTOR_WITH_USER_VERIFICATION` also works.
-
----
-
-### "cdkd stopped waiting for it" — a network outage during a Cloud Control operation
-
-**Symptoms:**
-
-Your connection drops mid-deploy (a VPN reconnecting is the usual cause) while
-a Cloud-Control-routed resource is being created, updated or deleted, and the
-operation ends with:
-
-```text
-CREATE of Dbwriter9B286E50 was accepted by Cloud Control API, but cdkd stopped
-waiting for it (cdkd could not reach Cloud Control API for 121s: connect
-ECONNREFUSED 100.72.0.178:443). The operation may still be running in AWS, and
-cdkd has NO state record for it, so any resource it creates is untracked by
-rollback and by cdkd destroy. Check what it did with:
-  aws cloudcontrol get-resource-request-status --request-token <token> --region ap-northeast-1
-```
-
-**Cause:**
-
-A Cloud Control operation runs asynchronously: cdkd submits it, receives a
-request token, and polls that token for the verdict. The operation itself keeps
-running in AWS whether or not cdkd can reach the API. Short blips are absorbed —
-the AWS SDK retries a few times, and cdkd re-polls the same token for up to two
-more minutes on top (ten seconds for the deletion-protection flip a
-`cdkd destroy --remove-protection` does first, which is best-effort and which
-the delete itself reports on) — but an outage longer than that leaves cdkd with no way to
-learn the outcome, and no physical id to record. A local-address failure
-(`EADDRNOTAVAIL` in the message, seen on a machine under heavy parallel load)
-is treated the same way: checking the status is a read, so cdkd re-polls it.
-
-**Solution:**
-
-Run the command the error prints. Its `OperationStatus` tells you what happened:
-
-- `SUCCESS` — AWS created (or updated, or deleted) the resource and cdkd has no
-  record of it. The response's `Identifier` names it. Adopt it with
-  [`cdkd import`](import.md) so the next deploy and `cdkd destroy` can see it,
-  or delete it in AWS if you do not want it.
-- `FAILED` — nothing to adopt; re-run `cdkd deploy`.
-- `IN_PROGRESS` — still running. Re-run the command until it settles, then
-  follow one of the two cases above.
-
-A `RequestTokenNotFoundException` means the request has aged out of Cloud
-Control's status history; fall back to looking for the resource in the console
-or via the service's own API, then `cdkd import` or delete it.
-
-A DELETE or an UPDATE reports the same way with a different consequence: the
-resource still has a state record, so re-running `cdkd destroy` (or
-`cdkd deploy`) finishes the job once the network is back. Only a CREATE can
-leave a resource cdkd has no record of.
-
-If the same deploy also reported `Failed to save partial state before rollback`
-or `Failed to write rollback journal`, the outage took those too — see
-[Reverting a failed `--no-rollback` / interrupted deploy](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback).
-
----
-
-## Asset Publishing Issues
-
-### "Asset publishing failed"
-
-**Symptoms:**
-
-A permissions failure on the S3 upload surfaces as the AWS SDK's own error,
-because cdkd does not wrap it:
-
-```
-AccessDenied: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: s3:PutObject on resource: "arn:aws:s3:::cdkd-assets-123456789012-us-east-1/abc123.zip"
-```
-
-The existence probe that runs before the upload fails with a wrapped message
-instead, naming the bucket and key:
-
-```
-Error: Failed to check S3 object s3://cdkd-assets-123456789012-us-east-1/abc123.zip: AccessDenied: Access Denied
-```
-
-Docker image assets are the ones that raise `AssetError`:
-
-```
-AssetError: ECR login failed: <docker output>
-AssetError: Docker push failed: <docker output>
-AssetError: Refusing to publish a Docker image asset: the destination region <region> is not a valid AWS region id
-AssetError: Refusing to publish a Docker image asset: <account> is not a 12-digit AWS account id
-```
-
-**Causes:**
-
-- Asset storage doesn't exist for the target: in cdkd-assets mode the
-  `cdkd-assets-*` bucket / `cdkd-container-assets-*` repo (someone deleted
-  them after bootstrap), in legacy mode the CDK bootstrap bucket
-  (`cdk-hnb659fds-assets-*`)
-- Insufficient IAM permissions
-- The ECR registry host cannot be built safely (the `Refusing to publish`
-  errors): a Docker destination's `region` in the asset manifest uses
-  characters an AWS region id does not have, such as `.`, `/`, `:` or `@`, or
-  the account id is not 12 digits. cdkd refuses before any AWS or docker call
-  for that destination, because the ECR password would be sent to that host.
-  See solution 4.
-
-**Solutions:**
-
-**1. Run `cdkd bootstrap` for the region**
-
-`cdkd bootstrap` creates the state bucket AND cdkd-owned asset storage for
-`--region` (asset bucket + container-asset ECR repo + opt-in marker), so no
-`cdk bootstrap` is needed:
-
-```bash
-cdkd bootstrap --region us-east-1
-```
-
-Normally this is automatic — the first `cdkd deploy` into a region
-auto-creates the storage, so this error usually means the
-auto-create was declined / opted out (`--no-auto-asset-storage`), failed
-(check the deploy output for the auto-create warning), or someone deleted
-the bucket/repo after opt-in.
-
-A deploy stays in **legacy mode** only when the region carries no cdkd
-bootstrap marker and the auto-create did not run, or when legacy mode is
-pinned with `--use-cdk-bootstrap-assets` / `cdk.json`
-`context.cdkd.useCdkBootstrapAssets`. Legacy mode publishes to the
-destinations named in the asset manifest — the CDK bootstrap bucket — and
-cdkd does not create that bucket. So either opt the region in, or create the
-CDK bootstrap stack with the CDK CLI:
-
-```bash
-cdkd bootstrap --region us-east-1                     # recommended
-npx cdk bootstrap aws://123456789012/us-east-1        # legacy mode only
-```
-
-See [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap).
-
-> **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest (and, in cdkd-assets mode, redirects default-bootstrap-shaped destinations to cdkd-owned storage), so custom qualifiers are fully supported.
-
-**2. Skip asset publishing**
-
-```bash
-# Skip during deployment
-cdkd deploy --app "..." --skip-assets
-```
-
-**3. Check IAM permissions**
-
-cdkd publishes assets with the caller's credentials directly (it never
-assumes CDK's `cdk-hnb659fds-file-publishing-role-*`). The caller needs
-S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode
-(adjust the ARN if the region was bootstrapped with a custom
-`--asset-bucket` name), `cdk-hnb659fds-assets-*` in legacy mode:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "FileAssetObjects",
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": [
-        "arn:aws:s3:::cdkd-assets-123456789012-*/*",
-        "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-*/*"
-      ]
-    },
-    {
-      "Sid": "FileAssetBucket",
-      "Effect": "Allow",
-      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
-      "Resource": [
-        "arn:aws:s3:::cdkd-assets-123456789012-*",
-        "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-*"
-      ]
-    },
-    {
-      "Sid": "EcrAuthTokenMustBeStar",
-      "Effect": "Allow",
-      "Action": "ecr:GetAuthorizationToken",
-      "Resource": "*"
-    },
-    {
-      "Sid": "DockerAssetRepo",
-      "Effect": "Allow",
-      "Action": [
-        "ecr:DescribeRepositories",
-        "ecr:DescribeImages",
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:InitiateLayerUpload",
-        "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload",
-        "ecr:PutImage"
-      ],
-      "Resource": [
-        "arn:aws:ecr:*:123456789012:repository/cdkd-container-assets-*",
-        "arn:aws:ecr:*:123456789012:repository/cdk-hnb659fds-container-assets-*"
-      ]
-    }
-  ]
-}
-```
-
-Three things about that policy are easy to get wrong:
-
-- **`ecr:GetAuthorizationToken` only works on `Resource: "*"`.** It is
-  registry-scoped and cannot be narrowed to a repository ARN.
-- **The layer-upload actions are needed even though cdkd makes no SDK call for
-  them.** The push is a `docker push` subprocess authenticated with a token
-  minted from your credentials, so a policy derived from cdkd's API calls alone
-  looks complete and then fails at push time.
-- **`s3:ListBucket` on the bucket ARN** (not the `/*` object ARN) is what the
-  pre-flight storage probe needs. Omitting it fails the deploy before any
-  upload is attempted.
-
-**Creating the storage needs more**, and not only when you run
-`cdkd bootstrap`: the first `cdkd deploy` into a region with no cdkd bootstrap
-marker **auto-creates** the asset storage, from the deploy identity. So unless
-you pass `--no-auto-asset-storage`, the same identity also needs:
-
-```json
-{
-  "Sid": "CreateAssetStorage",
-  "Effect": "Allow",
-  "Action": [
-    "s3:CreateBucket",
-    "s3:PutEncryptionConfiguration",
-    "s3:PutBucketPublicAccessBlock",
-    "s3:PutBucketPolicy",
-    "ecr:CreateRepository",
-    "ecr:PutImageTagMutability"
-  ],
-  "Resource": [
-    "arn:aws:s3:::cdkd-assets-123456789012-*",
-    "arn:aws:ecr:*:123456789012:repository/cdkd-container-assets-*"
-  ]
-}
-```
-
-Without it the auto-create fails, the deploy falls back to legacy mode with a
-warning, and the push then targets a CDK bootstrap bucket that may not exist —
-a confusing failure two steps removed from the missing permission. (Asset
-buckets are deliberately NOT versioned, so `s3:PutBucketVersioning` is not in
-this set; it belongs to the state bucket, which `cdkd bootstrap` creates.)
-
-**4. Fix the Docker asset's destination region or account**
-
-The region in a `Refusing to publish` error comes from the stack's
-`<StackName>.assets.json` in `cdk.out`, under
-`dockerImages.<hash>.destinations.<id>.region`. It must be a plain region id
-such as `us-east-1`. Fix the stack's `env.region` (or whatever produced the
-value) and re-synthesize. The account id comes from your credentials
-(`aws sts get-caller-identity`), or from `accountId` when you call cdkd as a
-library, and must be the 12-digit id.
-
-### Lambda Deployment Fails
-
-**Symptoms:**
-
-```
-ProvisioningError: Failed to create resource MyFunction
-Caused by: Failed to create Lambda function MyFunction: <the AWS error>
-```
-
-**Causes:**
-
-The AWS error on the `Caused by:` line is the diagnosis; the two common ones
-are:
-
-- **The asset was never published** — `Error occurred while GetObject. S3 Error
-  Code: NoSuchKey.` Reachable when the deploy ran with `--skip-assets`, or the
-  asset bucket was emptied.
-- **The execution role is not usable yet** — `The role defined for the function
-  cannot be assumed by Lambda.` This is IAM propagation, and cdkd **already
-  retries it** for about 48 seconds, so seeing it means the retry budget was
-  spent. Re-running usually succeeds.
-
-A missing `Code` or `Role` in the template is caught before any AWS call:
-`Code is required for Lambda function MyFunction`.
-
-**Solutions:**
-
-**1. Verify asset publishing**
-
-```bash
-# Check asset manifest
-cat cdk.out/MyStack.assets.json
-
-# Check asset bucket (cdkd-assets mode; use cdk-hnb659fds-assets-... in legacy mode)
-aws s3 ls s3://cdkd-assets-${AWS_ACCOUNT_ID}-${AWS_REGION}/
-```
-
-**2. Check IAM Role dependencies**
-
-A Lambda function depends on its IAM role, and the edge comes from the
-reference — not from the order the constructs appear in:
-
-```typescript
-const role = new iam.Role(this, 'LambdaRole', { ... });
-
-const func = new lambda.Function(this, 'MyFunction', {
-  role: role,  // ← synthesises to Fn::GetAtt, which is what creates the DAG edge
-});
-```
-
----
-
-## Intrinsic Function Issues
-
-### "Unresolved intrinsic function" Error
-
-**Symptoms:**
-
-```
-ProvisioningError: Failed to create resource MyResource
-Caused by: Unsupported CloudFormation intrinsic function "Fn::ToJsonString": cdkd does not support resolving it yet. Deploying this template would produce a broken value. Please request support by opening an issue: https://github.com/go-to-k/cdkd/issues/new?title=Support%20intrinsic%20Fn%3A%3AToJsonString&labels=intrinsic-support
-```
-
-The message names the intrinsic and carries a pre-filled issue link. It
-surfaces at provision time rather than at diff time, because `cdkd diff`
-resolves best-effort and leaves anything it cannot resolve as-is.
-
-**Causes:**
-
-CloudFormation intrinsic function not supported by cdkd is being used.
-
-#### Support Status
-
-| Function | Supported |
-|----------|-----------|
-| `Ref` | ✅ |
-| `Fn::GetAtt` | ✅ |
-| `Fn::Join` | ✅ |
-| `Fn::Sub` | ✅ |
-| `Fn::Select` | ✅ |
-| `Fn::Split` | ✅ |
-| `Fn::If` | ✅ |
-| `Fn::Equals` | ✅ |
-| `Fn::And` | ✅ |
-| `Fn::Or` | ✅ |
-| `Fn::Not` | ✅ |
-| `Fn::ImportValue` | ✅ |
-| `Fn::GetStackOutput` | ✅ (cdkd-specific; cross-account via its `RoleArn` argument) |
-| `Fn::FindInMap` | ✅ |
-| `Fn::GetAZs` | ✅ |
-| `Fn::Base64` | ✅ |
-| `Fn::Cidr` | ✅ |
-| `Fn::Transform` | ✅ |
-
-**Solution:**
-
-If the intrinsic in the error is **not** in the table, cdkd does not implement
-it — `Fn::ToJsonString` and `Fn::ForEach` are the two you are most likely to
-meet. [Open an issue](https://github.com/go-to-k/cdkd/issues) naming it and the
-template shape you used; there is no flag that works around it.
-
-If it **is** in the table, the installed cdkd predates its support. Upgrade:
-
-<pm>
-npm i -g @go-to-k/cdkd
-</pm>
-
-### STS cannot report the account
-
-**Symptoms:**
-
-cdkd resolves `AWS::AccountId` from `sts:GetCallerIdentity`. When that call
-fails and `AWS_ACCOUNT_ID` is not set, cdkd refuses rather than substituting a
-placeholder account:
-
-```
-Cannot determine the AWS account id: STS GetCallerIdentity failed (ExpiredToken. Re-run with --verbose for AWS's own message.). cdkd does not substitute a placeholder account, because AWS::AccountId, AWS::StackId and every ARN built from it would look valid while naming a different account. Fix the AWS credentials (`aws sts get-caller-identity` must succeed), or set AWS_ACCOUNT_ID to this deploy's 12-digit account id, and re-run.
-```
-
-It is raised by `Ref: AWS::AccountId`, `AWS::StackId`, a custom resource
-(whose request carries a `StackId`; a Delete asks again for about 17 seconds
-first, and is otherwise reported skipped with its record kept), and an `Fn::GetAtt` whose value embeds the
-account — an `Fn::GetAtt` the account is not in, `AWS::Region`,
-`AWS::Partition` and `AWS::URLSuffix` still resolve. A failed lookup is never
-cached, so the next lookup asks STS again.
-
-Where cdkd would only RECORD an ARN after the resource already exists (a KMS
-key, ECR repository or Kinesis stream through Cloud Control, an SSM parameter,
-an AppSync child, an API Gateway V2 API), it warns and leaves that attribute
-out instead of failing the create; the record heals on the resource's next
-update.
-
-**Causes:**
-
-The credentials are missing, expired, or cannot call `sts:GetCallerIdentity`.
-
-**Solutions:**
-
-Verify AWS credentials are properly configured:
-
-```bash
-# Check credentials
-aws sts get-caller-identity
-
-# Example output:
-# {
-#   "UserId": "AIDAI...",
-#   "Account": "123456789012",
-#   "Arn": "arn:aws:iam::123456789012:user/myuser"
-# }
-```
-
-Where STS genuinely cannot be reached (an emulated endpoint, a locked-down
-network), set `AWS_ACCOUNT_ID` to the deploy's 12-digit account id. cdkd warns
-and uses it; a value that is not 12 digits is refused.
-
----
-
-### "Refusing to resolve" a reference whose service cdkd does not resolve
-
-**Symptoms:**
-
-```
-Refusing to resolve {{resolve:***}}: its service is not one cdkd resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a secret value, so leaving it as written would send that value to AWS and record it in state in the clear.
-```
-
-On a resource property the resource fails before its provider is called, and
-the deploy rolls back. On a stack Output the deploy warns
-`Failed to resolve output <name>: ...`, skips that output and still exits 0;
-under `--strict-getatt` a failed output fails the deploy instead.
-
-**Causes:**
-
-An `Fn::Sub` or `Fn::Join` builds a `{{resolve:...}}` token around a value that
-is itself a resolved secret, and the secret lands where the service name goes:
-
-```yaml
-Value:
-  Fn::Sub:
-    - '{{resolve:${Pw}}}'
-    - Pw: '{{resolve:secretsmanager:MySecret:SecretString:password}}'
-```
-
-cdkd resolves `secretsmanager`, `ssm` and `ssm-secure` references. A token of
-any other service is left as written, and here the token's own text holds the
-secret, so cdkd refuses instead of sending it to AWS and writing it to
-`state.json`. A token that carries no secret (`{{resolve:notaservice:/x}}`) is
-still left as written, under an `Unsupported dynamic reference service` warning.
-
-**Solution:**
-
-Reference the secret directly, or spell the service literally and substitute
-only the name: `{{resolve:secretsmanager:${SecretName}:SecretString:password}}`.
-If such a value was deployed before cdkd refused it, the secret may be stored
-in AWS and in the stack's state record. Clean up in this order:
-
-1. Deploy the corrected template, so AWS stops holding the secret.
-2. Then run [`cdkd scrub`](cli-scrub.md), which replaces the secret inside the
-   stored `{{resolve:...}}` text with its reference.
-
-Scrubbing first leaves the record holding text no service can resolve while
-AWS still holds the old value: `cdkd drift` does not compare that property, and
-a `cdkd rollback` or `cdkd drift --revert` that touches the resource writes the
-unresolvable text to it. When another stack imports the value, scrub the
-PRODUCER stack before deploying the consumer: a consumer reads the producer's
-stored output as written, and cannot tell a leaked token from ordinary text.
-Rotate the secret either way.
-
----
-
-### "Refusing to resolve" a reference whose name was built from a secret
-
-**Symptoms:**
-
-```
-Refusing to resolve {{resolve:ssm:/app/***}}: the reference was assembled from a secret value and resolves to a secret, so recording it would write that value into state inside the reference. Build the reference name from non-secret values.
-```
-
-The resource or stack Output fails as in the section above. `cdkd import`
-resolves template properties the same way: it warns `Failed to resolve
-intrinsics in Properties for imported resource '<id>' ...` with this message
-and records that resource's properties in their template form.
-
-A second shape prints the whole reference masked:
-
-```
-Refusing to resolve ***: the reference was assembled from a secret value and resolves to a secret, ...
-```
-
-There a secret's whole VALUE is itself `{{resolve:...}}` text (an `ssm`
-parameter holding `{{resolve:ssm:/app/pin}}`, used through `Fn::Sub`), and cdkd
-resolves that text again as a reference.
-
-**Causes:**
-
-An `Fn::Sub` or `Fn::Join` puts a secret value into a `secretsmanager`, `ssm`
-or `ssm-secure` reference (its name, or another field such as a JSON key or a
-version stage), and the reference resolves to a secret:
-
-```yaml
-Value:
-  Fn::Sub:
-    - '{{resolve:ssm:/app/${Name}}}'
-    - Name: '{{resolve:secretsmanager:MySecret:SecretString:name}}'
-```
-
-cdkd stores a resolved secret in `state.json` as the reference that resolved
-it. Here that reference holds the other secret, so storing it would write that
-secret into state. A name that spells a secret of four or more characters is
-refused too, even when the text is written literally, if a parent stack
-passed that secret in as a decrypted parameter. A secret this stack's own
-deploy resolved does not count: two references to one secret, where the first
-one's value (`myapp`) also appears in the second one's literal text
-(`myapp-db`), both resolve, in either order.
-
-A `secretsmanager` or `ssm-secure` reference is a secret by its service
-alone, so it is refused before cdkd looks it up: the assembled name is never
-sent to AWS, where CloudTrail would record it. An `ssm` reference is looked up
-first, to learn whether its parameter is a `SecureString`.
-
-Not refused: an `ssm` reference whose result is public (a `String` or
-`StringList` parameter) or empty, and one whose lookup fails, which reports
-its own error with the name masked. `cdkd drift` and a rollback replay read what
-state already holds and are not refused.
-
-**Solution:**
-
-Build the reference name from values that are not secrets: a literal, or a
-plain parameter. For the second shape, write the reference to the target in
-the template instead of storing `{{resolve:...}}` text as a secret's value.
-If such a template was deployed before cdkd refused it, the
-stack's state record can hold the other secret inside the stored reference.
-[`cdkd scrub`](cli-scrub.md) leaves text inside a `secretsmanager` / `ssm` /
-`ssm-secure` reference as written, so it does not remove it: deploy the
-corrected template, which rewrites the record, and rotate the secret.
-
----
-
-### "Cannot resolve" a GetAtt on a resource an older cdkd deployed
-
-**Symptoms:**
-
-```
-Cannot resolve Fn::GetAtt [MyParam, Arn] for AWS::SSM::Parameter: the state
-record holds no value for it, and the physical ID fallback "/app/config" is not
-an ARN (arn:...). ... cdkd tried to re-read the attributes from AWS to heal the
-record, but the provider read failed (AccessDeniedException, HTTP 403); re-run
-with --verbose for the AWS error text.
-```
-
-**Cause:**
-
-cdkd answers `Fn::GetAtt` from the attributes it recorded in state when the
-resource was created or last updated. A record can lack one:
-
-| Record | Missing attribute |
-| --- | --- |
-| Written by a cdkd release that did not record it yet | e.g. `AWS::SSM::Parameter` `Arn`, `AWS::RDS::DBSubnetGroup` `DBSubnetGroupArn` |
-| Written while AWS had not assigned the value | `Endpoint.Address` / `Endpoint.Port` of a `--no-wait` `DBInstance` |
-| Holds a wildcard placeholder ARN from an old release | the ARN of an `AWS::AppSync::*` child |
-
-A deploy that changes none of that resource's own properties does not update
-it, so the record is not rewritten on its own.
-
-A value Cloud Control returns masked (`***`) — every value, when the deploy role
-lacks `cloudformation:DescribeType` — is treated as unreadable, never used.
-
-**What cdkd does:**
-
-When `cdkd deploy` is about to fall back to the physical ID for such a
-reference, it re-reads the resource's attributes from AWS once, uses the value,
-and adds it to the state record. The resource itself is not updated. Nothing is
-re-read for a reference that resolves from state, and `--dry-run` reads but
-records nothing.
-
-The error above appears only when that re-read could not help:
-
-| The message says | Meaning | Fix |
-| --- | --- | --- |
-| `the provider read failed (<ErrorClass>, HTTP <n>)` | The read was denied, throttled or failed | Grant the read permission (or retry), then deploy again — cdkd re-reads on every deploy until the record is healed |
-| `AWS reports no resource behind the recorded physical id` | The resource was deleted outside cdkd | Check with `cdkd drift`, then re-create it or remove it from state |
-| `cdkd re-read the resource ... reports none by that name` | The resource type does not supply this attribute | Avoid the `Fn::GetAtt`, or file an issue |
-| `re-read the resource through Cloud Control, but withheld the value` | The value came back masked, so cdkd would not use it | Grant the deploy role `cloudformation:DescribeType` and deploy again; if it has it, the name is a writable property — reference the template's own value |
-
-`--verbose` prints the AWS error text, which is withheld by default because a
-denied call quotes the caller's account, role and session.
-
-`cdkd diff` issues the same re-read, and its preview shows the value that read
-returns, but it never writes the value to state: only a deploy's own read
-records it.
-When that read fails or finds no resource, the diff's message says `This
-preview re-read the attributes from AWS, but ...` where the deploy's says `cdkd
-tried to re-read the attributes from AWS to heal the record, but ...`, because
-the preview heals nothing. For a failed read it adds that `cdkd deploy` issues
-the same read and records the attribute once the read returns it. For a
-withheld value it names the credentials the preview runs with, not the deploy
-role.
-The other read-only commands (`cdkd drift`, `cdkd export`) never re-read and
-never write state. Until a deploy has healed the record they report an `*Arn` /
-`*Url` reference as unresolved, and resolve any other attribute to the physical
-ID with a warning.
-
-Changing any property of the resource, or re-importing it with `cdkd import`,
-also rewrites the record.
-
-## Permission Errors
+## Credentials and permissions
 
 ### "Access Denied" Error
-
-**Symptoms:**
 
 ```
 ProvisioningError: Failed to create resource MyBucket
 Caused by: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: s3:CreateBucket on resource: "arn:aws:s3:::my-bucket-name"
 ```
 
-**Causes:**
+cdkd calls each service API directly, as the identity running the command (or
+the role given to `--role-arn`). There is no CloudFormation execution role, so
+that identity needs every permission the deploy uses. The `Caused by:` line
+names the missing action and the resource.
 
-IAM user/role lacks required permissions.
+Grant the permissions in the three groups below, plus `iam:PassRole`.
 
-**Solutions:**
-
-**1. Grant the two sets of permissions cdkd needs**
-
-They are genuinely two sets, and conflating them is why hand-written policies
-for cdkd tend not to work.
-
-**Set A — cdkd's own bookkeeping.** Needed by every deploy, whatever the stack
-contains:
+#### Set A: what every deploy needs
 
 ```json
 {
@@ -1898,74 +199,35 @@ contains:
 }
 ```
 
-> **The Cloud Control API's IAM actions carry the `cloudformation:` prefix**,
-> not a `cloudcontrol:` one — there is no such service prefix, so an action
-> spelled `cloudcontrol:*` matches nothing and grants nothing. Cloud Control
-> supports neither resource-level permissions nor service-specific condition
-> keys, so these six must stay on `"Resource": "*"`.
+The Cloud Control API's IAM actions carry the `cloudformation:` prefix. There
+is no `cloudcontrol:` prefix, so an action spelled `cloudcontrol:*` grants
+nothing. Cloud Control supports neither resource-level permissions nor
+service-specific condition keys, so its six actions must stay on
+`"Resource": "*"`.
 
-**Set B — the services your template provisions.** This one cannot be listed
-here, because it is whatever your stack contains. cdkd calls each service's
-API directly — through its own SDK providers, and through the Cloud Control
-API, which executes as **you** rather than as a service role. So a template
-with a bucket and a queue needs the `s3:` and `sqs:` actions for those
-operations on top of Set A. See
-[Supported Resources](supported-resources.md) for which layer handles a type.
+#### Set B: the services your template provisions
 
-**Set C — two conditional sets that are easy to miss**, because neither is
-implied by the resources in your template:
+This set is whatever your stacks contain. A template with a bucket and a queue
+needs the `s3:` and `sqs:` actions for those operations on top of Set A. The
+Cloud Control API also executes as you, with no service role of its own.
+[Supported Resources](supported-resources.md) says which layer handles a type.
 
-- **A CDK context lookup** (`Vpc.fromLookup`, `Machineimage.lookup`, a hosted
-  zone or AMI lookup) is resolved at SYNTH time and needs its own read
-  permissions — typically `ec2:DescribeVpcs` / `DescribeSubnets` /
-  `DescribeAvailabilityZones` / `DescribeImages`, `ssm:GetParameter`,
-  `route53:ListHostedZonesByName`, `kms:ListAliases`. A denial here fails
-  before any provisioning starts.
-- **A template declaring a macro** (`Transform` / `Fn::Transform`, e.g. SAM) is
-  expanded by CloudFormation through a transient stack, so that deploy also
-  needs `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `GetTemplate`
-  and `DeleteStack` on `cdkd-macro-expand-*`, plus `lambda:InvokeFunction` on
-  your own macro function if it is not an AWS-managed transform.
+#### Set C: permissions the template does not imply
 
-**Note**: In production, follow the principle of least privilege and grant only necessary permissions.
+| When | Needs |
+| --- | --- |
+| The app does a CDK context lookup (`Vpc.fromLookup`, an AMI or hosted-zone lookup) | Read actions at synth time, typically `ec2:DescribeVpcs`, `DescribeSubnets`, `DescribeAvailabilityZones`, `DescribeImages`, `ssm:GetParameter`, `route53:ListHostedZonesByName`, `kms:ListAliases` |
+| The template declares a macro (`Transform` / `Fn::Transform`, for example SAM) | `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `GetTemplate` and `DeleteStack` on `cdkd-macro-expand-*` |
+| The macro is your own function, not an AWS-managed transform | `lambda:InvokeFunction` on that function |
 
-**Note on `cloudformation:DescribeType`**: cdkd reads the CloudFormation
-registry schema for a resource type in three places, so this permission
-matters on an ordinary deploy and not only on the Cloud Control path.
+A denied context lookup fails before any provisioning starts.
 
-It resolves each type's **`createOnlyProperties`**, which is how `cdkd deploy`
-and `cdkd diff` decide that a property change forces a replacement. Without
-the permission cdkd warns and uses its bundled schema snapshot for the types it
-ships one for (every type with an SDK provider). That snapshot can lag AWS, so
-a property AWS has since made updatable may still be treated as forcing a
-replacement. For any other type the determination falls back to cdkd's own
-rules, and a replacement can be misclassified as an in-place update.
+#### `iam:PassRole` for roles the template hands to a service
 
-It also resolves each type's `writeOnlyProperties` so
-that Cloud Control API updates re-include write-only properties in every
-patch document (Cloud Control's read-modify-write update would otherwise
-drop them — e.g. `AWS::ECS::Service.VolumeConfigurations`). If the
-permission is missing, cdkd logs a warning and gracefully falls back to a
-minimal patch, so deploys still work — but
-write-only properties may be dropped on update for affected resource
-types. `cdkd export` also uses `cloudformation:DescribeType` to resolve
-primary identifiers (with a hardcoded fallback table) and, from the same
-response, to pre-flight resource types CloudFormation cannot IMPORT at
-all. Without the permission the export still runs off the fallback
-table, but the pre-flight cannot fire — a non-importable type then
-surfaces later as `ResourceTypes [<T>] are not supported for Import`
-from `CreateChangeSet`, naming only some of the offenders.
-
-**2. `iam:PassRole` for roles your template hands to a service**
-
-Because cdkd calls service APIs directly instead of delegating to a
-CloudFormation execution role, the identity running `cdkd deploy` (or the role
-given to `--role-arn`) needs `iam:PassRole` for every role the template hands
-to a service — Lambda's `Role`, ECS task execution and task roles, CodeBuild
-and EMR service roles, Step Functions, Glue, Firehose, EventBridge targets,
-RDS monitoring roles, EC2 instance profiles. The Cloud Control fallback needs
-it on the same identity, since cdkd never passes Cloud Control a service role
-of its own:
+The deploy identity needs `iam:PassRole` for every role the template hands to
+a service: a Lambda function's `Role`, ECS task and execution roles, CodeBuild
+and EMR service roles, Step Functions, Glue, Firehose, EventBridge targets, RDS
+monitoring roles, EC2 instance profiles.
 
 ```json
 {
@@ -1975,76 +237,100 @@ of its own:
 }
 ```
 
-### "not authorized to perform: sts:AssumeRole"
+#### What you lose without `cloudformation:DescribeType`
 
-**Symptoms:**
+cdkd reads the CloudFormation registry schema of each resource type on an
+ordinary deploy. Without the permission it warns and falls back:
+
+| cdkd uses the schema for | Without the permission |
+| --- | --- |
+| Deciding that a property change forces a replacement (`deploy`, `diff`) | Uses a bundled schema snapshot, which can lag AWS; for a type with no snapshot a replacement can be misclassified as an in-place update |
+| Re-including write-only properties in a Cloud Control update | Write-only properties may be dropped on update (for example `AWS::ECS::Service` `VolumeConfigurations`) |
+| `cdkd export`: primary identifiers and the check for types CloudFormation cannot import | Export runs off a fallback table; a non-importable type surfaces later as `ResourceTypes [<T>] are not supported for Import` |
+
+### "not authorized to perform: sts:AssumeRole"
 
 ```
 AccessDenied: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::210987654321:role/CdkdDeploy
 ```
 
-**Causes:**
+cdkd assumes a role only when something asked it to:
 
-cdkd assumes a role only when something asked it to, and none of those involve
-a CDK bootstrap role:
+| Trigger | What cdkd does with the role |
+| --- | --- |
+| `--role-arn` or `CDKD_ROLE_ARN` | Assumes it for every AWS call |
+| A cross-account `Fn::GetStackOutput` with a `RoleArn` | Assumes it to read the producer stack's state |
+| `--assume-role` on a `cdkd local` command | Assumes it to give the locally-run function or task its credentials |
 
-- **You passed `--role-arn` / set `CDKD_ROLE_ARN`.** cdkd assumes that role for
-  every AWS call.
-- **A cross-account `Fn::GetStackOutput` supplied a `RoleArn`.** cdkd assumes
-  it to read the producer stack's state. That path wraps the AWS error with a
-  trust-policy hint rather than surfacing it bare.
-- **You passed `--assume-role` to a `cdkd local` command**, which assumes the
-  role to give the locally-run function or task its credentials. Pulling a
-  container image from ECR for `cdkd local` can assume a role too.
+CDK bootstrap roles such as `cdk-hnb659fds-deploy-role-*` do not work here.
+cdkd makes raw service API calls instead of routing through CloudFormation, so
+a CDK CLI deploy role does not carry what cdkd needs. Adding yourself to a
+bootstrap role's trust policy does not fix this error.
 
-**`cdk-hnb659fds-deploy-role-*` and the other CDK bootstrap roles are not
-usable here.** cdkd issues raw service API calls instead of routing through
-CloudFormation, so a CDK CLI deploy role does not carry what cdkd needs.
-Adding yourself to a bootstrap role's trust policy will not make this error go
-away.
+::: steps
+1. Confirm which role is being assumed
 
-The role you name needs the permissions the Set A / Set B / Set C policy above
-describes, granted on the assumed role rather than on your own principal —
-**not `AdministratorAccess`**. Set B is whatever your stacks contain, so no
-fixed policy can be published for it; scope the role to the services your
-stacks actually use rather than attaching a blanket policy.
+   ```bash
+   aws sts get-caller-identity          # who you are before the hop
+   echo "${CDKD_ROLE_ARN:-<unset>}"     # what cdkd will try to assume
+   ```
 
-**Solutions:**
+2. Add your principal to that role's trust policy
 
-**1. Confirm which role is actually being assumed**
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": { "AWS": "arn:aws:iam::123456789012:user/myuser" },
+         "Action": "sts:AssumeRole"
+       }
+     ]
+   }
+   ```
+
+3. Grant the role the permissions from ["Access Denied" Error](#access-denied-error)
+
+   They go on the assumed role, not on your own principal. Scope Set B to the
+   services your stacks use rather than attaching `AdministratorAccess`.
+:::
+
+For the cross-account `Fn::GetStackOutput` case the trust policy belongs on the
+producer account's role, and it must allow the principal the consumer run
+issues calls as. When that run passes `--role-arn`, that principal is the
+assumed role, not the profile behind it. See
+[Cross-Stack References](cross-stack-references.md).
+
+### STS cannot report the account
+
+```
+Cannot determine the AWS account id: STS GetCallerIdentity failed (ExpiredToken. Re-run with --verbose for AWS's own message.). cdkd does not substitute a placeholder account, because AWS::AccountId, AWS::StackId and every ARN built from it would look valid while naming a different account. Fix the AWS credentials (`aws sts get-caller-identity` must succeed), or set AWS_ACCOUNT_ID to this deploy's 12-digit account id, and re-run.
+```
+
+The credentials are missing, expired, or cannot call `sts:GetCallerIdentity`.
+cdkd resolves `AWS::AccountId` from that call and refuses rather than guess.
+The refusal is raised by anything that needs the account: `Ref: AWS::AccountId`,
+`AWS::StackId`, a custom resource (its request carries a `StackId`), and an
+`Fn::GetAtt` whose value embeds the account.
+
+Fix the credentials and check them:
 
 ```bash
-aws sts get-caller-identity          # who you are before the hop
-echo "${CDKD_ROLE_ARN:-<unset>}"     # what cdkd will try to assume
+aws sts get-caller-identity
 ```
 
-**2. Add your principal to that role's trust policy**
+Where STS cannot be reached at all (an emulated endpoint, a locked-down
+network), set `AWS_ACCOUNT_ID` to the deploy's 12-digit account id. cdkd warns
+and uses it. A value that is not 12 digits is refused.
 
-On the role named in the error — not on a CDK bootstrap role:
+Two related behaviours:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::123456789012:user/myuser"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-```
-
-For the cross-account `Fn::GetStackOutput` case, the trust policy belongs on
-the **producer** account's role and must allow whichever principal the consumer
-run issues calls as — see
-[Cross-Stack References](cross-stack-references.md). When that run passes
-`--role-arn` (or sets `CDKD_ROLE_ARN`), the principal is the **assumed role**,
-not the profile that answered the original `AssumeRole`: cdkd runs every call
-as the role, this hop included. So a trust policy written against the profile's
-principal produces exactly this error, naming the producer role.
+- Where cdkd would only record an ARN for a resource that already exists, it
+  warns and leaves that attribute out instead of failing the create. The record
+  heals on the resource's next update.
+- A custom resource's Delete asks STS again for about 17 seconds, and is
+  otherwise reported skipped with its record kept.
 
 ### "The state machine IAM Role is not authorized to access the Log Destination"
 
@@ -2055,18 +341,21 @@ update with:
 The state machine IAM Role is not authorized to access the Log Destination
 ```
 
-AWS emits this same sentence whether the problem is transient or permanent, so
-cdkd cannot tell them apart from the message:
+AWS emits this sentence for three different problems, and cdkd cannot tell
+them apart from the message. It retries for about 48 seconds first, so the
+two permanent causes look like a short hang before the error.
 
 | Cause | Fix |
 | --- | --- |
-| The role's log-delivery grants have not propagated yet | Nothing — cdkd retries this for you |
-| The execution role lacks the grants | Add the delivery policy below |
-| The account's CloudWatch Logs resource policies are at a quota | See below |
+| The role's log-delivery grants have not propagated yet | None. cdkd retries this for you |
+| The execution role lacks the grants | Add the policy below |
+| The account's CloudWatch Logs resource policies are at a quota | See "Resource-policy quotas" below |
 
-**Missing grants.** The role the state machine runs as needs the vended-logs
-delivery actions on `"Resource": "*"` — these actions do not support resource
-types, so scoping them to the log group's ARN produces this same error:
+#### Missing grants
+
+The role the state machine runs as needs these actions on `"Resource": "*"`.
+They do not support resource types, so scoping them to the log group's ARN
+produces the same error.
 
 ```json
 {
@@ -2085,47 +374,2153 @@ types, so scoping them to the log group's ARN produces this same error:
 }
 ```
 
-That is what the CDK Step Functions L2 attaches to the role it CREATES for the
-state machine. If you passed your own `role:`, check that it carries them —
-a role imported with `mutable: false` has the grant silently dropped, and the
-state machine still synthesizes with logging enabled.
+The CDK Step Functions L2 attaches this to the role it creates. If you passed
+your own `role:`, check that it carries them. A role imported with
+`mutable: false` has the grant silently dropped, and the state machine still
+synthesizes with logging enabled.
 
-AWS's reference policy for this error additionally lists `logs:CreateLogStream`
-and `logs:PutLogEvents`, which are for writing log events rather than for the
-destination check the eight above satisfy.
+#### Resource-policy quotas
 
-**Resource-policy quotas.** Step Functions records log delivery in CloudWatch
-Logs resource policies, and two separate quotas apply — a policy document is
-limited to 5120 characters, and an account is limited to ten policies per
-Region. Either one produces this error. Inspect both dimensions with:
+Step Functions records log delivery in CloudWatch Logs resource policies. A
+policy document is limited to 5120 characters, and an account to ten policies
+per Region. Either limit produces this error. Inspect both with:
 
 ```bash
-aws logs describe-resource-policies --region <region>
+aws logs describe-resource-policies --region us-east-1
 ```
 
-For the size limit, give the log group a name starting with `/aws/vendedlogs/`,
-which is covered by one wildcard entry instead of consuming the budget per
-group. The name is immutable, so this REPLACES the log group — see the
-[stateful-resource guard](cli-deploy-safety.md#stateful-resource-guard) for what
-cdkd does with the old one and when it refuses the replacement outright. The
-ten-policy quota is account-wide across every service that writes one, so it can
-be reached with no Step Functions history at all; AWS documents consolidating
-the existing policies for that case.
+- **Size limit**: name the log group with the prefix `/aws/vendedlogs/`, which
+  one wildcard entry covers. The name is immutable, so this replaces the log
+  group. See the
+  [stateful-resource guard](cli-deploy-safety.md#stateful-resource-guard) for
+  when cdkd refuses that replacement.
+- **Ten-policy limit**: it is account-wide across every service that writes a
+  policy. AWS documents consolidating the existing policies.
 
-Editing those documents by hand is not safe by default: there is no per-entry
-API, so pruning means rewriting a whole document with
-`aws logs put-resource-policy`, and `aws logs delete-resource-policy` removes
-one outright — revoking log delivery for every identity in it, not just Step
-Functions.
+> [!WARNING]
+> There is no per-entry API for these policies. `aws logs put-resource-policy`
+> rewrites a whole document and `aws logs delete-resource-policy` removes one
+> outright, which revokes log delivery for every identity in it.
 
-Because the first cause is transient, cdkd retries this message rather than
-failing immediately — so on the two permanent causes the deploy appears to hang
-for up to ~47.75s before the error surfaces, and the give-up line still carries
-AWS's own sentence. The schedule and how to read that line are under
-[Cloud Control API Rate Limit](#cloud-control-api-rate-limit), which is where
-this page documents the retry behaviour.
+## Locks
 
----
+cdkd takes a per-stack, per-region lock in the state bucket before it writes.
+[State Management](state-management.md) describes the lock itself; the entries
+below are the fixes.
+
+```text diagram=troubleshooting-lock-held
+            ┌──────────────────────────────┐
+            │ Lock error names the holder  │
+            └───────┬──────────────┬───────┘
+                    ▼              ▼
+  ┌───────────────────────┐  ┌───────────────────────────┐
+  │ Holder still running  │  │ Holder is gone            │
+  │ Wait, then re-run     │  │ Cancelled CI job, killed  │
+  │                       │  │ process                   │
+  └───────────────────────┘  └─────────────┬─────────────┘
+                                           ▼
+                             ┌───────────────────────────┐
+                             │ cdkd force-unlock         │
+                             │ As the message prints it  │
+                             └───────────────────────────┘
+```
+
+### "Failed to acquire lock" Error
+
+```
+LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
+```
+
+Another cdkd process is working on the same stack, or a process that was
+killed left its lock behind. `cdkd deploy`, `cdkd rollback` and `cdkd scrub`
+print this after retrying a held lock 3 times at 2-second intervals.
+
+The commands that write state without deploying fail on the first attempt,
+with a different message:
+
+```text
+Could not acquire lock for stack MyStack (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
+```
+
+Those are `cdkd destroy`, `cdkd state destroy`, `cdkd import`, `cdkd export`,
+`cdkd orphan`, `cdkd drift --accept`, `cdkd drift --revert` and
+`cdkd state refresh-observed`. A nested stack's child is locked separately, so
+a child teardown reached from `cdkd deploy` or `cdkd rollback` can fail this
+way too.
+
+::: steps
+1. Read the holder named in the message
+
+   cdkd removes an expired lock by itself, so a lock that produces this
+   message has not expired. The holder renews its lock every 2 minutes, and the
+   lock expires only after 30 minutes without a renewal. If the named process
+   is still running, wait for it and re-run.
+
+2. If you know the holder is gone, run the printed command as printed
+
+   ```bash
+   cdkd force-unlock MyStack --stack-region us-east-1
+   ```
+
+   The printed command carries `--stack-region`, plus `--profile`,
+   `--state-bucket` and `--state-prefix` when you passed them. Those flags
+   decide which lock is cleared. A shortened command can clear a same-named
+   stack's lock in a different account.
+:::
+
+> [!WARNING]
+> `force-unlock` on a live lock lets a second writer into the same stack. Use
+> it only when the named process is gone (a crashed CI job, a killed terminal).
+
+To look at the lock yourself:
+
+```bash
+aws s3api get-object \
+  --bucket cdkd-state-123456789012 \
+  --key cdkd/MyStack/us-east-1/lock.json \
+  /dev/stdout
+```
+
+`expiresAt` in that object is what the expiry check and the `expires in`
+clause read. Prefer `cdkd force-unlock` to deleting `lock.json` by hand: it
+resolves the same state bucket the deploy would and purges the key's
+noncurrent versions.
+
+| The message says | Meaning | Do |
+| --- | --- | --- |
+| `No lock could be read after the last failed attempt` | The holder released the lock between attempts, or `lock.json` is unreadable | Re-run; use `force-unlock` only if it repeats |
+| `another cdkd process holds it` | cdkd could not read the holder (an S3 permission gap) | Find the running process before unlocking |
+
+The retry count, the retry delay and the 30-minute expiry are not
+configurable. `cdkd state orphan '<stack>' --force` also deletes a held lock,
+including a live one.
+
+#### A lock left behind by Ctrl-C
+
+A first {kbd:ctrl+c} during `cdkd deploy`, `cdkd destroy`, `cdkd state destroy`
+or `cdkd rollback` finishes the in-flight operations, saves state and releases
+the lock. A re-run starts at once.
+
+A second {kbd:ctrl+c} force-quits with exit `130`:
+
+| Command | On the second signal | It prints |
+| --- | --- | --- |
+| `cdkd destroy`, `cdkd state destroy` | Attempts a release without waiting for it | The first message below |
+| `cdkd deploy` | Does not attempt a release | The second message below |
+| `cdkd rollback` | Keeps running; it cannot be force-quit this way | Nothing |
+
+```text
+Force-quit: stack lock may not be released. If the next run reports a lock, run: cdkd force-unlock MyStack --stack-region us-east-1
+```
+
+```text
+Force-quit: stack locks may not be released. If the next run reports a lock, run this for EACH stack it names (the region-qualified form — see the message that run prints): cdkd force-unlock <stackName> --stack-region <region>
+```
+
+After a destroy force-quit the release usually lands and no lock is left.
+After a deploy force-quit, expect one and clear it with the printed command.
+
+### Stale lock after a cancelled CI job
+
+A CI job running `cdkd deploy` was cancelled, and the next run fails with
+`Failed to acquire lock` although no deploy is in progress. This GitHub
+Actions setup for per-PR environments hits it, because consecutive pushes
+target the same stack:
+
+```yaml
+concurrency:
+  group: pr-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+```
+
+cdkd releases its lock on `SIGINT` and `SIGTERM`, after the in-flight AWS
+operations finish. A CI cancellation ends in `SIGKILL`, which no process can
+handle. GitHub Actions escalates `SIGINT` to `SIGTERM` to `SIGKILL` within
+about 10 seconds, so a job whose in-flight operation takes longer is killed
+with the lock still held. Kubernetes (30 s grace) and `docker stop` (10 s) send
+`SIGTERM` first and then kill the same way.
+
+Pick one:
+
+- **Wait.** The lock expires 30 minutes after the killed job's last renewal,
+  and the next run then succeeds without intervention.
+- **Clear it now.**
+
+  ```bash
+  cdkd force-unlock MyStack
+  ```
+
+- **Clear it at the start of every job**, when the workflow serializes runs
+  per stack as the `concurrency` group above does. No other run of the group
+  can hold the lock legitimately:
+
+  ```yaml
+  - run: npm i -g @go-to-k/cdkd
+  - run: cdkd force-unlock MyStack || true  # only safe when runs are serialized per stack
+  - run: cdkd deploy MyStack --yes
+  ```
+
+> [!WARNING]
+> Do not add an unconditional `force-unlock` where two jobs can operate on the
+> same stack at once. It breaks the lock protecting the running deploy.
+
+A killed deploy is rarely a problem beyond the lock. cdkd saves state after
+each completed resource, so a re-run resumes from there. The exception is a
+resource whose create was in flight at the kill: it can exist in AWS without
+a state record, and the next run then fails with an already-exists error. See
+["Resource already exists" Error](#resource-already-exists-error).
+[Per-PR Environments in CI](ci-per-pr.md) has the full workflow.
+
+## State
+
+### "State has been modified by another process"
+
+```
+StateError: State has been modified by another process. Expected ETag: "abc123", but state has changed.
+```
+
+Something else wrote this stack's `state.json` between cdkd reading it and
+saving it. The save is conditional on the version cdkd read, so the
+conflicting write is refused instead of overwritten. cdkd does not retry the
+save, because a retry must re-read state and plan again.
+
+1. Re-run the command.
+
+   ```bash
+   cdkd deploy MyStack
+   ```
+
+2. If it happens again, a second process really is writing this stack. Find
+   it by reading the lock, which names the owner and the operation:
+
+   ```bash
+   aws s3api get-object \
+     --bucket cdkd-state-123456789012 \
+     --key cdkd/MyStack/us-east-1/lock.json \
+     /dev/stdout
+   ```
+
+Waiting for a lock to expire does not help here: this error is the condition
+on `state.json`, not the lock.
+
+### State File is Corrupted
+
+```
+StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
+Caused by: Unexpected token } in JSON at position 123
+```
+
+The upload of `state.json` was interrupted, or a manual edit left invalid
+JSON. A state bucket created by `cdkd bootstrap` is versioned, so restore the
+last good version.
+
+::: steps
+1. List the versions of the state file
+
+   ```bash
+   aws s3api list-object-versions \
+     --bucket cdkd-state-123456789012 \
+     --prefix cdkd/MyStack/us-east-1/state.json \
+     --query 'Versions[].{VersionId:VersionId,LastModified:LastModified}'
+   ```
+
+2. Download the version you want and check it
+
+   ```bash
+   aws s3api get-object \
+     --bucket cdkd-state-123456789012 \
+     --key cdkd/MyStack/us-east-1/state.json \
+     --version-id def456 \
+     state-backup.json
+   jq . state-backup.json > /dev/null   # fails if it is not valid JSON
+   ```
+
+3. Put it back
+
+   ```bash
+   aws s3 cp state-backup.json \
+     s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/state.json
+   ```
+:::
+
+If no usable version survives, rebuild state from the live resources instead
+of redeploying. `cdkd import` records them without changing them:
+
+```bash
+aws s3 rm s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/state.json
+cdkd import MyStack --dry-run   # preview; writes no state
+cdkd import MyStack
+```
+
+A different message names a schema version, and its fix is to upgrade cdkd,
+not to restore a backup:
+
+```
+StateError: Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Upgrade cdkd to a version that supports schema 12.
+```
+
+### State and Resources Don't Match
+
+Someone deleted or changed a resource in the AWS console, and cdkd now tries
+to update a resource that is gone, or does not know about one that exists.
+Start by listing what cdkd tracks:
+
+```bash
+cdkd state resources MyStack          # LogicalID, Type, PhysicalID
+cdkd state resources MyStack --long   # plus dependencies and attributes
+```
+
+| Situation | Fix |
+| --- | --- |
+| The resource is gone from AWS but still in state | Drop its record; the next deploy plans it as a create |
+| The resource exists in AWS but is missing from state | Adopt it with `cdkd import` |
+| You want to start over | `cdkd state destroy`, then deploy |
+
+**Drop a record.** Both commands remove state only and never touch AWS:
+
+```bash
+cdkd orphan MyStack/MyTable                                                    # by construct path; needs the CDK app
+cdkd state orphan MyStack --stack-region us-east-1 --resource MyTable1234ABCD  # by logical id; no CDK app
+```
+
+Use `cdkd state orphan --resource` when the construct is already gone from the
+app. Only `cdkd orphan` accepts `--dry-run`. Without `--resource`,
+`cdkd state orphan MyStack` drops the whole stack record. Do not do that to a
+stack with other live resources, because the next deploy re-creates or collides
+with all of them. [Orphan vs Destroy](orphan-vs-destroy.md) compares the
+commands.
+
+**Adopt a resource.**
+
+```bash
+cdkd import MyStack --dry-run   # preview; writes no state
+cdkd import MyStack
+```
+
+See [Importing Existing Resources](import.md) for the flags.
+
+**Start over**, through cdkd rather than by hand:
+
+```bash
+cdkd state destroy MyStack --yes   # deletes the AWS resources AND the state
+cdkd deploy MyStack
+```
+
+> [!CAUTION]
+> Do not delete `state.json` and redeploy. It is not a reset. See
+> [Q: What happens if I delete the state file?](#q-what-happens-if-i-delete-the-state-file)
+
+### Cross-region state bucket ("is in a different region", `PermanentRedirect`)
+
+```
+StateError: Failed to verify state bucket 'my-bucket': Bucket 'my-bucket' (in ap-northeast-1) is in a different region than the client. cdkd resolves this automatically; if you see this message, please report it.
+```
+
+The lock path reports the same condition as S3's raw redirect:
+
+```
+LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
+The bucket you are attempting to access must be addressed using the
+specified endpoint. Please send all future requests to this endpoint.
+```
+
+The state bucket is in a different region from the one your credentials
+default to. That is a supported setup: cdkd looks up the bucket's region and
+talks to it there for state, locks and custom-resource responses. You do not
+need to set the region to match the bucket.
+
+Seeing either message means that lookup did not take effect. Please
+[open an issue](https://github.com/go-to-k/cdkd/issues) with the output of the
+command re-run under `--verbose`.
+
+`AWS_REGION` or your AWS profile sets the region resources are provisioned in.
+`--region` is an option of `cdkd bootstrap`, where it picks the new bucket's
+region; on other commands it is deprecated but still honored.
+
+## Templates cdkd refuses
+
+cdkd refuses these templates instead of deploying something other than what
+they declare. The fix is in the CDK app. Only the unsupported-type refusal has
+a flag that overrides it.
+
+### An unsupported resource type
+
+```
+The following resource types are not supported by cdkd:
+  - AWS::AppMesh::Mesh
+      AWS reports this type as NON_PROVISIONABLE (Cloud Control API cannot
+      manage it) and cdkd has no SDK provider for it.
+      Request support: https://github.com/go-to-k/cdkd/issues/new?title=...
+
+To attempt deployment anyway (Cloud Control will likely fail for
+NON_PROVISIONABLE types), re-run with: --allow-unsupported-types AWS::AppMesh::Mesh
+```
+
+A type that slips past pre-flight fails at provisioning time instead:
+
+```
+No provider available for resource type: AWS::CustomService::Resource. This
+resource type is not supported by Cloud Control API and no SDK provider is
+registered.
+```
+
+cdkd provisions a resource through one of its SDK providers or, failing that,
+the Cloud Control API. This error means neither is available: AWS reports the
+type as `NON_PROVISIONABLE`, or cdkd blocks it on Cloud Control until it has a
+dedicated provider, or it is not an `AWS::` type at all.
+
+- **Request the type.** The message carries a link that opens a pre-filled
+  issue for exactly this type.
+- **Deploy now, if the type is only blocked by cdkd.**
+
+  ```bash
+  cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh
+  ```
+
+  The flag routes the named type through Cloud Control. It takes type names,
+  so each one is an explicit choice. For a `NON_PROVISIONABLE` type Cloud
+  Control cannot manage it either, and the deploy still fails.
+- **Check coverage.** [Supported Resources](supported-resources.md) lists
+  cdkd's per-type coverage, and AWS lists
+  [what Cloud Control supports](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html).
+
+[Deploy: safety & compatibility flags](cli-deploy-safety.md) documents
+`--allow-unsupported-types`.
+
+### "The following resources declare mutually exclusive properties"
+
+```
+The following resources declare mutually exclusive properties:
+  - BadRoute (AWS::EC2::Route) declares DestinationCidrBlock and DestinationIpv6CidrBlock
+      CloudFormation and the EC2 CreateRoute API accept exactly one destination per route.
+      cdkd would send only DestinationCidrBlock; DestinationIpv6CidrBlock would be dropped.
+      Deleting the dropped keys changes nothing cdkd sends — but if the LIVE resource was
+      created from one of them, making DestinationCidrBlock the sole value is a create-only
+      change that REPLACES it.
+      Declare at most one of: DestinationCidrBlock / DestinationIpv6CidrBlock / DestinationPrefixListId
+```
+
+The template declares two or more properties of which AWS accepts only one.
+CloudFormation rejects the same template, so there is no `--allow-*` flag. The
+check runs at pre-flight on every deploy, before any AWS call, including a
+deploy where the resource is unchanged.
+
+`cdkd diff` reports no change for this shape, but warns that part of the
+declared properties cannot be sent as declared.
+
+Remove every key except the one the message says cdkd would send:
+
+```typescript
+new ec2.CfnRoute(this, 'Route', {
+  routeTableId: rt.ref,
+  gatewayId: igw.ref,
+  destinationCidrBlock: '0.0.0.0/0',
+  // destinationIpv6CidrBlock: '::/0',  <- delete; only one destination is allowed
+});
+```
+
+> [!WARNING]
+> Check what the live resource was created from first. If it was created from
+> one of the dropped keys, making a different key the sole value is a
+> create-only change and replaces the resource.
+
+If the resource needs a different property per environment, put each behind a
+condition whose other arm is `AWS::NoValue`. cdkd does not refuse a key behind
+an unresolved intrinsic, and exactly one of the two survives resolution:
+
+```json
+{
+  "DestinationCidrBlock":     { "Fn::If": ["IsV4", "0.0.0.0/0", { "Ref": "AWS::NoValue" }] },
+  "DestinationIpv6CidrBlock": { "Fn::If": ["IsV4", { "Ref": "AWS::NoValue" }, "::/0"] }
+}
+```
+
+### "The following resources declare a nested property block without a member it requires"
+
+```
+The following resources declare a nested property block without a member it requires:
+  - Service (AWS::ECS::Service): DeploymentConfiguration.DeploymentCircuitBreaker is missing required member Rollback
+```
+
+A nested block is present in the template but omits a member the resource
+type's schema requires there. Sent as is, the service API may accept the
+partial block and replace the live one, resetting the omitted member. The
+block above would switch a live rollback off.
+
+Declare the missing members:
+
+```typescript
+new ecs.CfnService(this, 'Service', {
+  // ...
+  deploymentConfiguration: {
+    deploymentCircuitBreaker: { enable: true, rollback: true },
+  },
+});
+```
+
+The check runs at pre-flight on every deploy, before any AWS call.
+CloudFormation refuses the same template, so there is no `--allow-*` flag.
+
+- An absent block is never refused, only a present and incomplete one.
+- A block, element or member behind an unresolved intrinsic (`Fn::If`, `Ref`)
+  is not refused.
+- The check covers the resource types CloudFormation enforces these lists on.
+- Array elements are named by index (`Policies[1]`).
+
+### "Properties validation failed": a list where an object is expected, or the reverse
+
+```
+Properties validation failed: the following resources declare a property whose kind contradicts the resource type's schema:
+  - Queue (AWS::SQS::Queue): #/Tags: expected type: JSONArray, found: JSONObject
+```
+
+A template property is an object where the schema requires a list, or a list
+where it requires an object. The usual source is an `addPropertyOverride` that
+wrote the wrong kind. Give the property the kind the schema declares:
+
+```typescript
+(queue.node.defaultChild as sqs.CfnQueue).addPropertyOverride('Tags', [
+  { Key: 'team', Value: 'platform' }, // a list, not { Key, Value }
+]);
+```
+
+The check runs at pre-flight on every deploy, before any AWS call.
+CloudFormation refuses the same template with the same words, so there is no
+`--allow-*` flag.
+
+- Only a list against an object is refused. A scalar mismatch is left to
+  CloudFormation's and the service's own checks.
+- A property is checked only where the schema admits exactly one of the two
+  kinds.
+- A value that is an unresolved intrinsic (`Ref`, `Fn::If`, `Fn::Split`) is
+  not refused.
+- Array elements are named by index (`Tags[1]`).
+
+### "The following custom resources pass a secure dynamic reference"
+
+```
+The following custom resources pass a secure dynamic reference ({{resolve:secretsmanager:...}} / {{resolve:ssm-secure:...}}) in their properties:
+  - DbInit: Password
+```
+
+A custom resource (`Custom::*` or `AWS::CloudFormation::CustomResource`) has a
+property holding a `{{resolve:secretsmanager:...}}` or
+`{{resolve:ssm-secure:...}}` reference, directly or inside an intrinsic.
+CloudFormation does not support secure dynamic references in custom resources.
+cdkd refuses before resolving anything, so the secret never reaches the
+handler's event.
+
+- Pass the secret's name or ARN instead, and have the handler read the value
+  (grant its role `secretsmanager:GetSecretValue` or `ssm:GetParameter`).
+- For a value that is not secret, use a plain `{{resolve:ssm:...}}` parameter.
+
+The check runs on every deploy, including one where the resource is
+unchanged, and has no `--allow-*` flag. `cdkd destroy` does not run it, so a
+stack that already carries such a resource can still be torn down. A plain `{{resolve:ssm:...}}` that names a
+SecureString parameter passes this check and is refused later, when the
+handler would be invoked: see
+["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret).
+
+### "OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table
+
+```text
+AWS::Glue::Table IcebergTable: OpenTableFormatInput.IcebergInput.IcebergTableInput
+cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue
+(issue #1454).
+```
+
+AWS accepts no shape of this property: `glue:CreateTable` rejects it, and
+CloudFormation rolls the same template back. cdkd refuses a create that
+declares it, before calling Glue.
+
+Move the table metadata into `TableInput` and leave `IcebergInput` carrying
+only the create-time directive:
+
+```yaml
+TableInput:
+  Name: events_iceberg
+  TableType: EXTERNAL_TABLE          # required for Iceberg
+  StorageDescriptor:
+    Location: s3://your-bucket/iceberg/events/
+    Columns:
+      - Name: event_id
+        Type: string
+OpenTableFormatInput:
+  IcebergInput:
+    MetadataOperation: CREATE        # Version: '2' is also accepted
+```
+
+Glue writes the Iceberg metadata itself. The created table comes back with
+`Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
+
+Two paths warn instead of refusing:
+
+- **An update.** Adding `IcebergTableInput` to an already-deployed table
+  produces a warning and a successful deploy. cdkd forwards nothing for it, so
+  the property is ignored.
+- **A `cdkd rollback`.** A rollback replays cdkd's state, not your template,
+  so a refusal there would leave no remedy.
+
+See "Glue table Iceberg support" in
+[Supported Resources](supported-resources.md) for the background.
+
+### "SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"
+
+```text
+AWS::Lambda::EventSourceMapping MyMapping: SelfManagedKafkaEventSourceConfig.ConsumptionMode
+cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the member, so it
+would be dropped from the CreateEventSourceMapping request without an error (issue #3848).
+Remove ConsumptionMode from SelfManagedKafkaEventSourceConfig to deploy the mapping without it.
+```
+
+The CloudFormation schema declares `ConsumptionMode` (`Stream` or `Queue`) on a
+self-managed Kafka event source mapping, but the AWS SDK cdkd calls Lambda
+through drops it from the request. cdkd refuses a create that declares it, and
+an update that adds or changes it, rather than deploy a mapping without the
+mode you asked for.
+
+Remove `ConsumptionMode` from `SelfManagedKafkaEventSourceConfig`.
+
+Routing the resource through Cloud Control does not help: Lambda rejects the
+member there too (`Unsupported 'ConsumptionMode' parameter for given event
+source mapping type`). A `cdkd rollback` or `cdkd drift --revert` only warns,
+because those replay a recorded configuration.
+
+## Failures during a deploy
+
+### "Resource already exists" Error
+
+A name collision surfaces as the AWS service's own error under `Caused by:`:
+
+```
+ProvisioningError: Failed to create resource MyBucket
+Caused by: The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.
+```
+
+The wording differs per service: IAM raises `EntityAlreadyExists`, DynamoDB
+`ResourceInUseException`, and so on.
+
+A resource with that name exists in AWS and is not in this stack's state.
+Either something else owns the name, or an earlier deploy created the resource
+and ended before recording it.
+
+Not every type fails on a collision. Check which behaviour applies before
+choosing a fix:
+
+| Behaviour | Types | What you see |
+| --- | --- | --- |
+| Fails the create | IAM roles, users and groups, DynamoDB tables, Lambda functions, SQS queues, ELBv2 load balancers | The error above |
+| Adopts the existing resource | `AWS::S3::Bucket`, `AWS::Logs::LogGroup`, `AWS::SNS::Topic` | A successful deploy that re-applies your configuration to it |
+| Creates a second resource | Types with an AWS-assigned id: VPC, EC2 instance, ACM certificate, CloudFront distribution | A successful deploy, and an orphan nothing tracks |
+
+An S3 bucket you own in a different region is refused rather than adopted.
+
+Pick the fix that matches who owns the existing resource:
+
+- **It is this stack's resource: adopt it.**
+
+  ```bash
+  cdkd import MyStack --resource MyBucket=my-bucket-name
+  ```
+
+- **It is not needed: delete it**, then re-deploy.
+
+  ```bash
+  aws s3 rb s3://my-bucket-name --force
+  ```
+
+- **It belongs to something else: rename yours.**
+
+  ```typescript
+  new s3.Bucket(this, 'MyBucket', {
+    bucketName: `my-app-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
+  });
+  ```
+
+When the colliding name is one cdkd generated, the error is followed by a
+message that prints the adoption command. See
+[Recovering from Orphaned Resources](#recovering-from-orphaned-resources).
+[Importing Existing Resources](import.md) has the import flags.
+
+### Replacing a resource, and the refusal that guards it
+
+Changing a property AWS cannot update in place makes cdkd delete the old
+resource and create a new one. It needs no flag, and the deploy says so:
+
+```
+Replacing MyBucket (AWS::S3::Bucket) - immutable properties changed: BucketName
+```
+
+Two refusals interrupt a replacement.
+
+#### The resource holds data
+
+```
+ProvisioningError: Failed to update resource MyBucket
+Caused by: MyBucket (AWS::S3::Bucket) requires replacement (immutable property changed: BucketName) but it is a stateful resource — S3 bucket is not provably empty. Re-run with --force-stateful-recreation to confirm the data loss, or change the resource definition to avoid the immutable-property change.
+```
+
+Replacing means deleting, so cdkd asks for confirmation on a stateful
+resource. Revert the immutable-property change, or accept the data loss:
+
+```bash
+cdkd deploy MyStack --force-stateful-recreation
+```
+
+The guard is skipped for a resource carrying `UpdateReplacePolicy: Retain`.
+See the
+[stateful-resource guard](cli-deploy-safety.md#stateful-resource-guard).
+
+#### The type cannot be updated in place at all
+
+```
+ResourceUpdateNotSupportedError: AWS::EC2::NatGateway (MyNat) cannot be updated in place: use cdkd deploy with --replace, or change the resource definition to create a new version.
+```
+
+Any change to such a type is a replacement. The message names the remedy for
+that type, and its tail varies per type. This failure exits `2` rather than
+`1`.
+
+```bash
+cdkd deploy MyStack --replace
+```
+
+### Lambda Deployment Fails
+
+```
+ProvisioningError: Failed to create resource MyFunction
+Caused by: Failed to create Lambda function MyFunction: <the AWS error>
+```
+
+The AWS error on the `Caused by:` line is the diagnosis. The two common ones:
+
+| AWS error | Cause | Fix |
+| --- | --- | --- |
+| `Error occurred while GetObject. S3 Error Code: NoSuchKey.` | The code asset was never published: the deploy ran with `--skip-assets`, or the asset bucket was emptied | Deploy without `--skip-assets`; check the bucket as below |
+| `The role defined for the function cannot be assumed by Lambda.` | The new execution role has not propagated in IAM. cdkd already retried for about 48 seconds | Re-run the deploy |
+
+```bash
+jq '.files' cdk.out/MyStack.assets.json                 # what the stack expects
+aws s3 ls s3://cdkd-assets-123456789012-us-east-1/      # what was published
+```
+
+Use `cdk-hnb659fds-assets-123456789012-us-east-1` when the region publishes to
+the CDK bootstrap bucket (see ["Asset publishing failed"](#asset-publishing-failed)).
+
+A template missing `Code` or `Role` is caught before any AWS call, with
+`Code is required for Lambda function MyFunction`.
+
+cdkd orders the role before the function because the function references it.
+Passing `role: role` to `lambda.Function` is enough. `addDependency` is not
+needed.
+
+### an ACM certificate deploy fails with "did not reach ISSUED status"
+
+```
+ACM certificate SiteCert (arn:aws:acm:us-east-1:123456789012:certificate/...) did not reach
+ISSUED status within 600s.
+```
+
+A DNS-validated certificate reaches `ISSUED` only once its validation records
+are live in your DNS zone. On a first deploy they usually do not exist yet, so
+the 10-minute wait runs out. cdkd prints the records on its first
+`PENDING_VALIDATION` poll, and deletes the certificate it requested before
+reporting the error, so failed attempts leave nothing behind.
+
+Add the printed CNAME records to your DNS zone, then re-run:
+
+```bash
+cdkd deploy MyStack
+```
+
+The records stay valid for the next attempt. ACM derives a domain's validation
+CNAME from the domain and the account, not from the certificate, and
+[documents](https://docs.aws.amazon.com/acm/latest/userguide/dns-validation.html)
+that a replacement certificate does not need validation repeated.
+
+To change how long the deploy waits:
+
+| Goal | Command |
+| --- | --- |
+| Wait up to 20 minutes | `CDKD_ACM_POLL_ATTEMPTS=120 cdkd deploy MyStack` |
+| Do not wait | `cdkd deploy MyStack --no-wait` |
+
+- `CDKD_ACM_POLL_ATTEMPTS` (default 60) is the number of polls, and
+  `CDKD_ACM_POLL_INTERVAL_MS` (default 10000) the gap between them.
+- With `--no-wait` the certificate is created and recorded in state, and the
+  deploy returns at once. Resources that use the certificate fail until it
+  issues.
+
+`--resource-timeout` does not lengthen this wait by itself. The effective wait
+is the shorter of the poll cap and the per-resource deadline, which defaults to
+30 minutes. To poll past 30 minutes, raise both:
+
+```bash
+CDKD_ACM_POLL_ATTEMPTS=270 cdkd deploy MyStack \
+  --resource-timeout AWS::CertificateManager::Certificate=50m   # 45 min of polling
+```
+
+Do not set the deadline below the poll cap. The deadline abandons the create
+without cancelling it, so the cleanup that deletes the certificate may not run.
+
+If the message also says the certificate could NOT be deleted, the cleanup
+failed (a throttle, a permissions gap). cdkd is not tracking that certificate,
+so `cdkd destroy` will not remove it. The message names the ARN and the
+command:
+
+```bash
+aws acm delete-certificate --certificate-arn <arn> --region us-east-1
+```
+
+### "Custom resource X: Y resolved to the value of a secret"
+
+```
+Custom resource DbInit: Password resolved to the value of a secret (a Secrets Manager secret, or an SSM SecureString parameter -- including one read through a plain {{resolve:ssm:...}} reference or a nested stack parameter). CloudFormation does not support secure dynamic references in custom resources, so cdkd does not send the secret's value to the handler. Pass the secret's name or ARN instead and have the handler read it.
+```
+
+A property of the custom resource resolved to a secret's value by a route the
+template does not show, so the pre-flight check
+(["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference))
+could not catch it. cdkd refuses before the handler runs.
+
+| Route | Fix |
+| --- | --- |
+| A plain `{{resolve:ssm:...}}` that names a SecureString parameter | Pass the parameter's name or ARN; have the handler read it |
+| A nested stack's child reading a parameter the parent filled from a secret | Pass the name down as the parameter, not the resolved value |
+
+A value derived from a secret (base64-encoded, a fragment) is refused too.
+
+A rollback that re-resolves an older record is refused the same way. That
+includes `cdkd rollback --revert-failed`, which sends a failed update's
+attempted properties as the event's `OldResourceProperties`; the message then
+names the property as `OldResourceProperties.<path>`.
+
+### A changed custom-resource ServiceToken is refused
+
+```
+Refusing to deploy S: a custom resource's ServiceToken changes, which CloudFormation does not allow ("Modifying service token is not allowed") (issue #4749). Nothing was sent to either handler.
+  - Cr: ServiceToken changes to arn:aws:lambda:...:function:new, away from the handler its record names.
+```
+
+The custom resource now points at a different handler. Its `serviceToken`
+names another provider, or the backing Lambda was renamed or moved under a new
+construct id, so its ARN changed. CloudFormation refuses this too, and an
+in-place update would orphan whatever the old handler created.
+
+| You want | Do |
+| --- | --- |
+| The new handler | Give the custom resource a new logical id (a new construct id, or `overrideLogicalId`). The deploy creates it through the new handler and deletes the old one through its old handler |
+| The existing resource | Deploy its previous `ServiceToken` |
+
+A row reading `its recorded ServiceToken is ...` means the state record holds
+no comparable token, so cdkd cannot tell whether it changed. If the handler did
+not change, set `ServiceToken` in `state.json` to the ARN of the handler that
+created this resource (the one it was last deployed with) and re-deploy.
+
+### "Unresolved intrinsic function" Error
+
+```
+ProvisioningError: Failed to create resource MyResource
+Caused by: Unsupported CloudFormation intrinsic function "Fn::ToJsonString": cdkd does not support resolving it yet. Deploying this template would produce a broken value. Please request support by opening an issue: https://github.com/go-to-k/cdkd/issues/new?title=Support%20intrinsic%20Fn%3A%3AToJsonString&labels=intrinsic-support
+```
+
+The template uses a CloudFormation intrinsic function cdkd does not resolve.
+The error appears at provision time, not in `cdkd diff`, because diff leaves
+anything it cannot resolve as written.
+
+cdkd resolves `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`,
+`Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`,
+`Fn::ImportValue`, `Fn::GetStackOutput` (cdkd-specific), `Fn::FindInMap`,
+`Fn::GetAZs`, `Fn::Base64`, `Fn::Cidr` and `Fn::Transform`.
+
+- **The intrinsic is not in that list** (`Fn::ToJsonString` and `Fn::ForEach`
+  are the likely ones): use the link in the message to request it. No flag
+  works around it.
+- **It is in the list**: the installed cdkd predates its support. Upgrade:
+
+<pm>
+npm i -g @go-to-k/cdkd
+</pm>
+
+### "Refusing to resolve" a reference whose service cdkd does not resolve
+
+```
+Refusing to resolve {{resolve:***}}: its service is not one cdkd resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a secret value, so leaving it as written would send that value to AWS and record it in state in the clear.
+```
+
+An `Fn::Sub` or `Fn::Join` builds a `{{resolve:...}}` token around a value
+that is itself a resolved secret, and the secret lands where the service name
+goes:
+
+```yaml
+Value:
+  Fn::Sub:
+    - '{{resolve:${Pw}}}'
+    - Pw: '{{resolve:secretsmanager:MySecret:SecretString:password}}'
+```
+
+cdkd leaves a token of an unknown service as written. Here the token's text
+holds the secret, so cdkd refuses instead of sending it to AWS and writing it
+to `state.json`.
+
+Reference the secret directly, or spell the service literally and substitute
+only the name:
+`{{resolve:secretsmanager:${SecretName}:SecretString:password}}`.
+
+Where the refusal lands:
+
+| Position | Result |
+| --- | --- |
+| A resource property | The resource fails before its provider is called, and the deploy rolls back |
+| A stack Output | The deploy warns `Failed to resolve output <name>: ...`, skips the output and exits 0 |
+| A stack Output under `--strict-getatt` | The deploy fails |
+
+#### If such a value was already deployed
+
+The secret may be stored in AWS and in the stack's state record. Clean up in
+this order:
+
+1. Deploy the corrected template, so AWS stops holding the secret.
+2. Run [`cdkd scrub`](cli-scrub.md), which replaces the secret inside the
+   stored `{{resolve:...}}` text with its reference.
+3. Rotate the secret.
+
+Scrubbing first leaves the record holding text no service can resolve while
+AWS still holds the old value. `cdkd drift` then skips that property, and a
+`cdkd rollback` or `cdkd drift --revert` that touches the resource writes the
+unresolvable text to it.
+
+When another stack imports the value, scrub the producer stack before
+deploying the consumer. A consumer reads the producer's stored output as
+written.
+
+### "Refusing to resolve" a reference whose name was built from a secret
+
+```
+Refusing to resolve {{resolve:ssm:/app/***}}: the reference was assembled from a secret value and resolves to a secret, so recording it would write that value into state inside the reference. Build the reference name from non-secret values.
+```
+
+An `Fn::Sub` or `Fn::Join` puts a secret value into a `secretsmanager`, `ssm`
+or `ssm-secure` reference (its name, a JSON key, a version stage), and the
+reference itself resolves to a secret:
+
+```yaml
+Value:
+  Fn::Sub:
+    - '{{resolve:ssm:/app/${Name}}}'
+    - Name: '{{resolve:secretsmanager:MySecret:SecretString:name}}'
+```
+
+cdkd stores a resolved secret in `state.json` as the reference that resolved
+it. Here that reference contains the other secret, so storing it would write
+that secret into state.
+
+Build the reference name from values that are not secrets: a literal, or a
+plain parameter.
+
+A second shape masks the whole reference (`Refusing to resolve ***: ...`).
+There a secret's whole value is itself `{{resolve:...}}` text, for example an
+`ssm` parameter holding `{{resolve:ssm:/app/pin}}` used through `Fn::Sub`, and
+cdkd would resolve that text again. Write the reference to the target in the
+template instead of storing `{{resolve:...}}` text as a secret's value.
+
+What is and is not refused:
+
+| Reference | Result |
+| --- | --- |
+| `secretsmanager` or `ssm-secure`, name built from a secret | Refused before any lookup, so the name is never sent to AWS |
+| `ssm`, resolves to a `SecureString` | Looked up, then refused |
+| `ssm`, resolves to a `String` or `StringList`, or to nothing | Resolved |
+| `ssm`, lookup fails | Reports the lookup's own error, with the name masked |
+| A name that literally spells a secret of 4+ characters a parent stack passed in as a decrypted parameter | Refused |
+
+Two references to one secret in the same stack both resolve, even when the
+first one's value also appears in the second one's literal text. `cdkd drift`
+and a rollback replay read what state already holds and are not refused.
+`cdkd import` warns `Failed to resolve intrinsics in Properties for imported
+resource '<id>' ...` with this message and records that resource's properties
+in their template form.
+
+If such a template was already deployed, the state record can hold the other
+secret inside the stored reference. [`cdkd scrub`](cli-scrub.md) does not
+remove it. Deploy the corrected template, which rewrites the record, and
+rotate the secret.
+
+### "Cannot resolve" a GetAtt on a resource an older cdkd deployed
+
+```
+Cannot resolve Fn::GetAtt [MyParam, Arn] for AWS::SSM::Parameter: the state
+record holds no value for it, and the physical ID fallback "/app/config" is not
+an ARN (arn:...). ... cdkd tried to re-read the attributes from AWS to heal the
+record, but the provider read failed (AccessDeniedException, HTTP 403); re-run
+with --verbose for the AWS error text.
+```
+
+cdkd answers `Fn::GetAtt` from the attributes it recorded when the resource
+was created or last updated. A record can lack one:
+
+| Record | Missing attribute |
+| --- | --- |
+| Written by a cdkd release that did not record it yet | For example `AWS::SSM::Parameter` `Arn`, `AWS::RDS::DBSubnetGroup` `DBSubnetGroupArn` |
+| Written while AWS had not assigned the value | `Endpoint.Address` / `Endpoint.Port` of a `--no-wait` `DBInstance` |
+| Holds a wildcard placeholder ARN from an old release | The ARN of an `AWS::AppSync::*` child |
+
+When `cdkd deploy` meets such a reference it re-reads the resource's
+attributes from AWS once, uses the value and adds it to the record. The
+resource itself is not updated. The error above appears only when that re-read
+could not help, and the message says why:
+
+| The message says | Meaning | Fix |
+| --- | --- | --- |
+| `the provider read failed (<ErrorClass>, HTTP <n>)` | The read was denied, throttled or failed | Grant the read permission (or retry) and deploy again |
+| `AWS reports no resource behind the recorded physical id` | The resource was deleted outside cdkd | Check with `cdkd drift`, then re-create it or remove it from state |
+| `cdkd re-read the resource ... reports none by that name` | The resource type does not supply this attribute | Avoid the `Fn::GetAtt`, or file an issue |
+| `re-read the resource through Cloud Control, but withheld the value` | The value came back masked, so cdkd would not use it | Grant the deploy role `cloudformation:DescribeType` and deploy again |
+
+For the last row, if the role already has the permission, the name is a
+writable property and not an attribute. Reference the template's own value.
+
+Changing any property of the resource, or re-importing it with `cdkd import`,
+also rewrites the record. `--verbose` prints the AWS error text, which is
+withheld by default because a denied call quotes the caller's account, role
+and session.
+
+How the other commands treat the same record:
+
+| Command | Behaviour |
+| --- | --- |
+| `cdkd deploy --dry-run` | Re-reads, records nothing |
+| `cdkd diff` | Re-reads and previews the value, never writes it; its message starts `This preview re-read the attributes from AWS, but ...` |
+| `cdkd drift`, `cdkd export` | Never re-read; report an `*Arn` / `*Url` reference as unresolved, and resolve any other attribute to the physical ID with a warning |
+
+## Slow deploys, throttling and retries
+
+### Deployment is Slow
+
+A handful of independent resources takes well over a minute, or adding
+resources that do not depend on each other lengthens the deploy roughly
+linearly. [Benchmarks](benchmarks.md) has the figures to compare against.
+
+| Cause | Check | Fix |
+| --- | --- | --- |
+| A long dependency chain | The DAG depth, below | Remove dependencies the template does not need |
+| A resource on the Cloud Control route | `cdkd state show MyStack` | See "Resources on the Cloud Control route" below |
+| Cloud Control throttling | `Rate exceeded` under `--verbose` | [Cloud Control API Rate Limit](#cloud-control-api-rate-limit) |
+| Asset publishing | The asset steps before provisioning starts | The asset concurrency flags under [Cloud Control API Rate Limit](#cloud-control-api-rate-limit) |
+
+#### Inspect the dependency graph
+
+A dry-run deploy with `--verbose` builds the graph and stops before touching
+AWS:
+
+```bash
+cdkd deploy MyStack --dry-run --verbose
+```
+
+```text
+... DEBUG [DagBuilder] Dependency graph built: 4 nodes, 3 edges
+... DEBUG [DagBuilder] Level 0: 2 resources - Bucket, Table
+... DEBUG [DagBuilder] Level 1: 1 resources - Role
+... DEBUG [DagBuilder] Level 2: 1 resources - Function
+... DEBUG [DagBuilder] Execution levels computed: 3 levels
+✓ Dry run completed - no actual changes made
+```
+
+The depth bounds how much can run at once, so a deep, narrow graph is what
+caps a deploy. A real deploy prints the same figure in one line:
+`Deploying 4 resource(s) (DAG: 3 levels, max parallel: 10)`.
+
+Each resource starts as soon as its own dependencies complete, so a deploy
+does not wait for a whole level. Destroy deletes level by level, in reverse.
+
+#### Remove dependencies the template does not need
+
+cdkd derives the order from `Ref` and `Fn::GetAtt`. An explicit
+`addDependency` between unrelated resources only serializes them:
+
+```typescript
+const bucket = new s3.Bucket(this, 'Bucket');
+const role = new iam.Role(this, 'Role', {
+  assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+});
+role.node.addDependency(bucket); // delete this line: the role does not use the bucket
+```
+
+#### Resources on the Cloud Control route
+
+```bash
+cdkd state show MyStack
+```
+
+```text
+MyTopic
+  Type: AWS::SNS::Topic
+  PhysicalID: arn:aws:sns:us-east-1:123456789012:MyTopic
+  ProvisionedBy: cc-api
+```
+
+`ProvisionedBy: cc-api` means the resource goes through the Cloud Control API,
+which is slower than an SDK provider. A resource lands there when its template
+carries a top-level property the SDK provider does not send, and it stays
+there on later deploys. Whether you need to act depends on the type:
+
+| Type | What happens |
+| --- | --- |
+| cdkd now covers every property the resource uses, and the type is exempt from staying on Cloud Control | The next deploy that changes the resource moves it back in place. See [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider) |
+| Any other type | Move it yourself with `--recreate-via-sdk-provider <LogicalId>`, which destroys and recreates the resource |
+
+`--recreate-via-sdk-provider` refuses while the template still carries the
+property that sent the resource to Cloud Control. Remove the property, or
+accept that it is dropped with `--prefer-sdk-route <Type>:<Prop>`.
+[Provisioning Layers](provisioning-layers.md) explains the two layers, and
+[Deploy: safety & compatibility flags](cli-deploy-safety.md) the flags.
+
+### Cloud Control API Rate Limit
+
+```
+ProvisioningError: Failed to create resource MyTopic
+Caused by: CREATE failed for MyTopic: Rate exceeded
+```
+
+Cloud Control throttled the request (`ThrottlingException`). AWS publishes no
+rate quota for the Cloud Control API, but it throttles when the request rate
+is too high. A wide stack of independent resources issues many calls at once.
+
+cdkd retries throttling by itself, so you normally see this only under
+`--verbose` or after the retries are spent. If it fails the deploy, lower the
+concurrency:
+
+```bash
+cdkd deploy MyStack --concurrency 4        # default 10, concurrent resource operations
+cdkd deploy --all --stack-concurrency 2    # default 4, concurrent stacks
+```
+
+Asset publishing has its own limits: `--asset-publish-concurrency` (default 8)
+and `--image-build-concurrency` (default 4).
+
+#### What cdkd retries
+
+cdkd retries create, update and delete operations during `cdkd deploy`, and
+the replays `cdkd rollback` and `cdkd drift --revert` perform. The schedule
+depends on the kind of error:
+
+| Kind of error | Examples | Retries | Total wait |
+| --- | --- | --- | --- |
+| Throttling and transient | Rate limits, a resource still leaving `Pending`, HTTP 500 / 502 / 503 / 504 | 8, backing off 1s to 8s | 47s |
+| IAM propagation | `cannot be assumed`, `not authorized to perform`, `Invalid IAM Instance Profile`, `not authorized to access the Log Destination` | 26, every 0.25s to 2s | 47.75s |
+| A name still held by a deleted resource | `QueueDeletedRecently`, Step Functions `StateMachineDeleting` | 8, backing off 2s to 10s | 64s |
+
+`Custom::*` / `AWS::CloudFormation::CustomResource` and
+`AWS::CloudFormation::Stack` are outside this retry. A custom resource retries
+internally instead: `CDKD_CR_AUTHZ_MAX_RETRIES` (default 2, at most 10) is the
+number of times cdkd re-invokes your handler after it returns `FAILED` with an
+authorization-shaped reason, and `0` disables those re-invocations.
+
+#### Reading the "gave up after" line
+
+When the retries run out, cdkd prints one line at the default log level:
+
+```text
+MyFunction: gave up after 26 IAM-propagation retries over 47.75s of propagation backoff (the full propagation budget) - The role defined for the function cannot be assumed by Lambda.
+```
+
+When cdkd can see how the AWS SDK parsed the failing response, the line ends
+with a bracketed summary:
+
+```text
+MyQueuePolicy: gave up after 5 IAM-propagation retries over 5.75s of propagation backoff - Failed to create SQS queue policy MyQueuePolicy: UnknownError [name=InternalFailure http=500 requestId=ebf581cc-6072-5ffc-943a-e33312488615]
+```
+
+| The line shows | Meaning | Do |
+| --- | --- | --- |
+| `(the full propagation budget)` | The retries ran to the end. Usually IAM took longer than 47.75s | Re-run. If it recurs, open an issue with the line |
+| The same, on a message that is also emitted for permanent problems | A real misconfiguration, such as the Step Functions [log-destination](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination) error | Fix what the AWS message names; re-running never succeeds |
+| No budget note and a low count | Something terminal ended the retries early: an explicit deny, or an error cdkd could not classify | Read the bracket. Report it if the status is a 5xx other than 500 / 502 / 503 / 504, or the bracket shows `no-$metadata` |
+| `transient server-error retries (HTTP 5xx)` | The retries were spent on transient server errors, not on propagation | Re-run |
+| No such line at all | The retry never started: cdkd did not recognise the error, or the resource is a custom resource or nested stack | Report the unrecognised wording, unless the resource is one of those two types |
+
+Notes for reading the line:
+
+- `UnknownError` is the AWS SDK's placeholder for a response with no message
+  text. The bracket is then the whole diagnosis: `name` and `http` are what
+  cdkd classifies on, and `requestId` is what AWS support needs.
+- `no-$metadata` in place of `http=` means the failure never reached the SDK's
+  error parsing: a network or protocol failure.
+- The seconds count propagation backoff only. A throttle in between uses an
+  attempt without counting, so the retry count on a full-budget line can be
+  below 26.
+- `--verbose` prints each attempt with its running total
+  (`attempt 15/26, 25.75s backoff through this attempt`).
+- The line can appear during `cdkd rollback` and an automatic rollback as well
+  as during `cdkd deploy`.
+
+[Troubleshooting internals](troubleshooting-internals.md) has the exact
+schedules and the custom-resource retry rules.
+
+### A name is still held by the resource you just deleted
+
+A destroy followed straight away by a deploy fails on a name that looks free:
+
+```
+ProvisioningError: Failed to create resource MyQueue
+Caused by: You must wait 60 seconds after deleting a queue before you can create another with the same name.
+```
+
+Some services release a name some time after the delete returns. cdkd retries
+this for 64 seconds, so usually you never see it.
+
+| Type | Window |
+| --- | --- |
+| `AWS::SQS::Queue` | 60s, stated by the service |
+| `AWS::StepFunctions::StateMachine` | About 23s of `status: DELETING` on an idle machine |
+| `AWS::S3::Bucket` | Bucket names are global and released asynchronously |
+
+Wait and re-run. When the retries run out, the line says so:
+
+```
+MyQueue: gave up after 8 name-cooldown retries over 64.00s waiting for the name to be released (the full name-cooldown budget) - <the AWS message>
+```
+
+The Step Functions case is easy to hit without knowing it. Any CDK app using
+`custom_resources.Provider` with an `isCompleteHandler` carries a waiter state
+machine.
+
+cdkd does not retry these, so do not wait for them:
+
+- ELBv2 `DuplicateLoadBalancerName` and DynamoDB's create-side refusal, which
+  mean the resource still exists.
+- A Secrets Manager name scheduled for deletion, which can be held for 7 to 30
+  days.
+
+During a `--replace` the retry runs once per replacement attempt, so a
+custom-named SQS queue can appear to hang for up to about 11 minutes.
+
+### "cdkd stopped waiting for it" — a network outage during a Cloud Control operation
+
+```text
+CREATE of Dbwriter9B286E50 was accepted by Cloud Control API, but cdkd stopped
+waiting for it (cdkd could not reach Cloud Control API for 121s: connect
+ECONNREFUSED 100.72.0.178:443). The operation may still be running in AWS, and
+cdkd has NO state record for it, so any resource it creates is untracked by
+rollback and by cdkd destroy. Check what it did with:
+  aws cloudcontrol get-resource-request-status --request-token <token> --region ap-northeast-1
+```
+
+Your connection dropped while a Cloud Control operation was in flight. A VPN
+reconnecting is the usual cause. Cloud Control runs the operation in AWS
+whether or not cdkd can reach it, and cdkd polls a request token for the
+result. cdkd rides out about two minutes without a connection. After that it
+cannot learn the outcome.
+
+Run the command the error prints and read `OperationStatus`:
+
+| `OperationStatus` | Meaning | Do |
+| --- | --- | --- |
+| `SUCCESS` | AWS did the operation; for a create, cdkd has no record of the resource | Adopt it with [`cdkd import`](import.md) using the response's `Identifier`, or delete it in AWS |
+| `FAILED` | Nothing was created | Re-run `cdkd deploy` |
+| `IN_PROGRESS` | Still running | Run the status command again until it settles |
+
+A `RequestTokenNotFoundException` means the request has aged out of Cloud
+Control's status history. Look for the resource in the console or through the
+service's API, then import or delete it.
+
+Only a create can leave a resource without a record. After an update or a
+delete the resource still has its state record, so re-running `cdkd deploy` or
+`cdkd destroy` finishes the job once the network is back.
+
+If the same deploy also reported `Failed to save partial state before
+rollback` or `Failed to write rollback journal`, the outage took those too. See
+[After a failed or interrupted deploy](#after-a-failed-or-interrupted-deploy).
+
+## A deploy succeeds but AWS is not what the template says
+
+### A property you set in the template never reaches AWS
+
+The deploy succeeds and `cdkd diff` reports the change, but the field is
+absent from the live resource.
+
+cdkd's SDK providers send only the properties they handle. To avoid dropping
+the rest, cdkd routes a resource whose template carries any other top-level
+property through the Cloud Control API, which forwards every property. The
+deploy says so:
+
+```
+MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow.)
+```
+
+So a missing field means that routing did not happen. Check which layer
+handled the resource:
+
+```bash
+cdkd state show MyStack    # ProvisionedBy: sdk | cc-api
+```
+
+`cc-api` means every property was forwarded, so cdkd did not drop the field.
+`sdk` means one of these:
+
+| Cause | Fix |
+| --- | --- |
+| You passed `--prefer-sdk-route <Type>:<Prop>`, which keeps the resource on the SDK provider and accepts the drop | Stop passing the flag; the next deploy routes the resource and applies the property |
+| cdkd's bundled schema does not know the property, and the resource already carries it with the same value | Change the value so the next deploy routes it, or pass `--recreate-via-cc-api <LogicalId>` |
+| The property is nested, not top-level | None here: the routing check covers top-level properties only, and a missing nested key is a different problem |
+
+For the second row cdkd warns on the deploy. A read-only property never
+routes, and neither does a property on a type Cloud Control cannot manage.
+
+You do not need `--recreate-via-cc-api` merely because a deployed resource
+gained such a property. The next deploy re-routes it and normally applies the
+property in place.
+
+#### `CREATE_ONLY_DROP_NEEDS_REPLACEMENT`
+
+Dropping `--prefer-sdk-route` is refused with this code when the dropped
+property is create-only, because applying it to a live resource needs a
+replacement. The refusal names the remedies:
+
+| Remedy | Effect |
+| --- | --- |
+| `--recreate-via-cc-api <LogicalId>` or `--replace` | Replaces the resource with the property applied; inside a nested stack only `--replace` reaches it |
+| `--force-stateful-recreation` | Also required when the type is stateful |
+| `--prefer-sdk-route` with the list the refusal prints | Keeps dropping the property; the list can name more than your original flag did |
+
+[Deploy: safety & compatibility flags](cli-deploy-safety.md) says what each
+remedy costs, and [Provisioning Layers](provisioning-layers.md) how to choose a
+flag.
+
+### `cdkd diff` shows `[returning to SDK provider]`
+
+```
+  [~] MyTopic (AWS::SNS::Topic) [returning to SDK provider]
+```
+
+The resource was deployed through the Cloud Control API, and cdkd's SDK
+provider now covers every property it uses. The next deploy that changes the
+resource moves it back to the faster SDK provider. This is an update in place:
+the physical id is kept, so references to the resource survive. The deploy
+names the move:
+
+```
+MyTopic (AWS::SNS::Topic): returning to the SDK provider — cdkd now covers every property this resource uses. The physical id is preserved; pass --pin-cc-api MyTopic to decline this for a deploy.
+```
+
+Usually there is nothing to do. To keep the resource on Cloud Control for one
+deploy, for example while investigating something else:
+
+```bash
+cdkd deploy MyStack --pin-cc-api MyTopic
+```
+
+The flag applies to that deploy only. A resource of a type Cloud Control
+cannot manage correctly moves back regardless, logs a different line and
+ignores `--pin-cc-api`. See [Provisioning Layers](provisioning-layers.md).
+
+### deleting a Cognito `Policies` sub-key changes nothing on the pool
+
+You remove `Policies.SignInPolicy` from an `AWS::Cognito::UserPool`, typically
+to revoke a passwordless first-auth factor such as `EMAIL_OTP`. The deploy
+succeeds, but the pool still allows it, and `cdkd drift` and `cdkd diff` report
+nothing. The same happens for `Policies.PasswordPolicy` and for deleting the
+whole `Policies` block.
+
+The only signal is a warning on the deploy that carries the removal. It
+begins:
+
+```text
+UserPool us-east-1_xxxxxxxxx: the desired configuration no longer declares
+Policies.SignInPolicy, and no UpdateUserPool input can express that removal
+```
+
+`UpdateUserPool` treats an omitted `Policies` sub-key as "keep the live value".
+No input expresses a removal, and CloudFormation behaves the same on the same
+edit. `cdkd drift` is silent because the deploy refreshes its baseline from
+the live pool, which still holds the sub-key.
+
+Declare the sub-key with the configuration you want instead of deleting it:
+
+```yaml
+Policies:
+  SignInPolicy:
+    AllowedFirstAuthFactors:
+      - PASSWORD          # revokes EMAIL_OTP by stating the intended set
+```
+
+The AWS defaults are `AllowedFirstAuthFactors: [PASSWORD]` for `SignInPolicy`.
+For `PasswordPolicy` they are `MinimumLength: 8`, every character-class
+requirement enabled, and `TemporaryPasswordValidityDays: 7`.
+
+A related refusal: if the same edit sets `MfaConfiguration: ON` while the
+retained list still allows `EMAIL_OTP` or `SMS_OTP`, the deploy is refused
+before any change is sent, with a message naming the pool's live
+`AllowedFirstAuthFactors`. `WEB_AUTHN` is refused the same way unless
+`WebAuthnFactorConfiguration` is `MULTI_FACTOR_WITH_USER_VERIFICATION`. The fix
+is the same explicit declaration.
+
+## Assets
+
+### "Asset publishing failed"
+
+A denied S3 upload surfaces as the AWS SDK's own error:
+
+```
+AccessDenied: User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: s3:PutObject on resource: "arn:aws:s3:::cdkd-assets-123456789012-us-east-1/abc123.zip"
+```
+
+The check that runs before the upload names the bucket and key:
+
+```
+Error: Failed to check S3 object s3://cdkd-assets-123456789012-us-east-1/abc123.zip: AccessDenied: Access Denied
+```
+
+Docker image assets raise `AssetError`:
+
+```
+AssetError: ECR login failed: <docker output>
+AssetError: Docker push failed: <docker output>
+AssetError: Refusing to publish a Docker image asset: the destination region <region> is not a valid AWS region id
+AssetError: Refusing to publish a Docker image asset: <account> is not a 12-digit AWS account id
+```
+
+| Cause | Fix |
+| --- | --- |
+| The asset bucket or ECR repository does not exist | [Create the asset storage](#create-the-asset-storage) |
+| The identity cannot write to it | [Grant the publishing permissions](#grant-the-publishing-permissions) |
+| A `Refusing to publish` error | [Fix the Docker asset's region or account](#fix-the-docker-asset-s-region-or-account) |
+
+#### Create the asset storage
+
+```bash
+cdkd bootstrap --region us-east-1
+```
+
+`cdkd bootstrap` creates the state bucket and cdkd's own asset storage for the
+region: the `cdkd-assets-*` bucket and the `cdkd-container-assets-*` ECR
+repository. No `cdk bootstrap` is needed.
+
+The first `cdkd deploy` into a region normally creates this storage by
+itself. So this error usually means the auto-create was turned off
+(`--no-auto-asset-storage`), failed (look for its warning in the deploy
+output), or someone deleted the bucket or repository afterwards.
+
+A region without cdkd's storage publishes to the destinations in the asset
+manifest, which is the CDK bootstrap bucket (`cdk-hnb659fds-assets-*`). The
+same happens when `--use-cdk-bootstrap-assets` or `cdk.json`
+`context.cdkd.useCdkBootstrapAssets` is set. cdkd does not create that bucket:
+
+```bash
+npx cdk bootstrap aws://123456789012/us-east-1
+```
+
+A custom bootstrap qualifier works: cdkd reads the destinations from the
+manifest. See [`cdkd bootstrap`](cli-bootstrap.md).
+
+To deploy without publishing assets:
+
+```bash
+cdkd deploy MyStack --skip-assets
+```
+
+#### Grant the publishing permissions
+
+cdkd publishes with the caller's credentials. It never assumes CDK's
+`cdk-hnb659fds-file-publishing-role-*`. Adjust the bucket ARN if the region
+was bootstrapped with a custom `--asset-bucket` name.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FileAssetObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": [
+        "arn:aws:s3:::cdkd-assets-123456789012-*/*",
+        "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-*/*"
+      ]
+    },
+    {
+      "Sid": "FileAssetBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": [
+        "arn:aws:s3:::cdkd-assets-123456789012-*",
+        "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-*"
+      ]
+    },
+    {
+      "Sid": "EcrAuthTokenMustBeStar",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DockerAssetRepo",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:DescribeRepositories",
+        "ecr:DescribeImages",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
+      ],
+      "Resource": [
+        "arn:aws:ecr:*:123456789012:repository/cdkd-container-assets-*",
+        "arn:aws:ecr:*:123456789012:repository/cdk-hnb659fds-container-assets-*"
+      ]
+    }
+  ]
+}
+```
+
+Three parts of that policy are easy to get wrong:
+
+- `ecr:GetAuthorizationToken` works only on `"Resource": "*"`. It cannot be
+  narrowed to a repository ARN.
+- The layer-upload actions are needed although cdkd makes no SDK call for
+  them. The push is a `docker push` authenticated with a token minted from
+  your credentials.
+- `s3:ListBucket` goes on the bucket ARN, not the `/*` object ARN. The storage
+  check before the upload needs it, and without it the deploy fails before any
+  upload.
+
+The identity that creates the storage needs more. That is `cdkd bootstrap`,
+and also the first `cdkd deploy` into a region unless you pass
+`--no-auto-asset-storage`:
+
+```json
+{
+  "Sid": "CreateAssetStorage",
+  "Effect": "Allow",
+  "Action": [
+    "s3:CreateBucket",
+    "s3:PutEncryptionConfiguration",
+    "s3:PutBucketPublicAccessBlock",
+    "s3:PutBucketPolicy",
+    "ecr:CreateRepository",
+    "ecr:PutImageTagMutability"
+  ],
+  "Resource": [
+    "arn:aws:s3:::cdkd-assets-123456789012-*",
+    "arn:aws:ecr:*:123456789012:repository/cdkd-container-assets-*"
+  ]
+}
+```
+
+Without it the auto-create fails, the deploy warns and publishes to the CDK
+bootstrap bucket instead, and the upload then fails if that bucket does not
+exist.
+
+#### Fix the Docker asset's region or account
+
+cdkd refuses to publish when it cannot build a safe ECR registry host,
+because the ECR password would be sent to that host.
+
+- **Region**: it comes from `<StackName>.assets.json` in `cdk.out`, under
+  `dockerImages.<hash>.destinations.<id>.region`. It must be a plain region id
+  such as `us-east-1`. Fix the stack's `env.region` and re-synthesize.
+- **Account**: it comes from your credentials
+  (`aws sts get-caller-identity`), or from `accountId` when you call cdkd as a
+  library, and must be the 12-digit id.
+
+## Destroying a stack
+
+### "bucket is not empty" / "still contains images" on destroy
+
+```text
+Failed to delete S3 bucket MyBucket: bucket my-bucket is not empty. Matching
+CloudFormation, cdkd does not delete a non-empty bucket unless it opted into
+automatic emptying (CDK's autoDeleteObjects: true, i.e. the
+'aws-cdk:auto-delete-objects' tag).
+```
+
+```text
+Failed to delete S3 Express Directory Bucket my-bucket--use1-az4--x-s3: bucket
+my-bucket--use1-az4--x-s3 is not empty. Matching CloudFormation, cdkd does not
+delete a non-empty directory bucket without an explicit opt-in.
+```
+
+```text
+Failed to delete ECR Repository MyRepo: repository my-repo still contains
+images. Matching CloudFormation, cdkd does not force-delete an image-carrying
+repository unless it opted in via EmptyOnDelete: true (CDK's emptyOnDelete) or
+the 'aws-cdk:auto-delete-images' tag (CDK's autoDeleteImages).
+```
+
+Like CloudFormation, `cdkd destroy` does not delete a bucket that still holds
+objects or a repository that still holds images, unless the resource opted in.
+
+Either opt in from the CDK app, redeploy, then destroy:
+
+| Resource | Opt-in |
+| --- | --- |
+| S3 bucket | `autoDeleteObjects: true` with `removalPolicy: RemovalPolicy.DESTROY` |
+| S3 Express directory bucket | The tag on the L1: `tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }]` |
+| ECR repository | `emptyOnDelete: true`, or the older `autoDeleteImages: true` |
+
+Or empty the data by hand and re-run the destroy:
+
+```bash
+aws s3 rm s3://my-bucket --recursive   # a versioned bucket also needs its versions and delete markers removed
+aws ecr batch-delete-image --repository-name my-repo \
+  --image-ids "$(aws ecr list-images --repository-name my-repo --query 'imageIds' --output json)"
+```
+
+[Destroy flags & guards](cli-destroy.md) has the full rules.
+
+### "has DeletionPolicy: Snapshot, but ..." refusal on delete
+
+```text
+MyDb (AWS::RDS::DBInstance) has DeletionPolicy: Snapshot, but the resource is
+managed via the Cloud Control API route (provisionedBy: cc-api), which has no
+final-snapshot delete parameter — deleting it now would destroy its data WITHOUT
+the final snapshot the policy promises.
+```
+
+cdkd takes a final snapshot before deleting a `DeletionPolicy: Snapshot`
+resource, as CloudFormation does. It refuses the delete only when it cannot
+take one: the resource is managed through the Cloud Control API, whose delete
+has no final-snapshot parameter, or the template puts `Snapshot` on a type that
+does not support it.
+
+Take the snapshot yourself, then do one of:
+
+- Re-run with `--skip-final-snapshot`, which deletes without a snapshot.
+
+  ```bash
+  aws rds create-db-snapshot --db-instance-identifier mydb --db-snapshot-identifier mydb-final
+  cdkd destroy MyStack --skip-final-snapshot
+  ```
+
+- Change the policy to `Retain` and delete the resource by hand afterwards.
+
+[Destroy flags & guards](cli-destroy.md) has the per-type behaviour.
+
+### "Backing Lambda for custom resource X no longer exists" on destroy
+
+```
+Backing Lambda for custom resource X no longer exists (arn:aws:lambda:...), so its Delete handler cannot be invoked and cdkd cannot confirm the resource was deleted; skipping deletion — anything this custom resource manages may still be LIVE.
+```
+
+The row reads `skipped (backing Lambda function is gone — Delete handler not
+invoked)`, the state record is kept, and `cdkd destroy` exits `2`.
+
+The function named by the custom resource's `ServiceToken` is gone, so its
+Delete handler cannot run and cdkd cannot tell whether what it manages still
+exists. The two usual routes are a shared provider stack destroyed before the
+stacks that use it, and an earlier destroy that skipped this resource and then
+deleted the function in the same run.
+
+- **The function can come back at the same ARN** (redeploy the shared provider
+  stack): do that, then re-run `cdkd destroy`.
+- **It cannot**: confirm by hand that what the handler manages is gone, or
+  tear it down. Then drop the stack's records:
+
+  ```bash
+  cdkd state orphan MyStack --stack-region us-east-1
+  ```
+
+  This drops every record for the stack in that region, not only this one.
+
+During a `cdkd deploy` the same situation only warns and drops the record,
+because CloudFormation ignores delete failures in an update's cleanup phase.
+
+### destroy reports `N skipped` and exits 2
+
+```text
+⚠ MyGlueTable (AWS::Glue::Table) skipped (malformed physicalId in state — no delete issued)
+⚠ Stack MyStack partially destroyed (4 deleted, 1 skipped, 0 errors). cdkd did not confirm the skipped resource(s) were deleted, so they may still exist in AWS.
+```
+
+The state record's `physicalId` does not have the shape cdkd needs to address
+the resource. Some types need more than one value, so cdkd joins them with `|`
+(`<databaseName>|<tableName>` for `AWS::Glue::Table`,
+`<apiId>|<typeName>|<fieldName>` for `AWS::AppSync::Resolver`). A hand-edited
+`state.json` or a record from an older cdkd can have the wrong number of
+segments.
+
+cdkd issued no AWS call for that resource, so it may still exist. It keeps the
+state record, because without it you would have neither the resource deleted
+nor an id to delete it with. The warning for each resource names the shape it
+expected.
+
+Inspect the record, then fix it one of two ways:
+
+```bash
+cdkd state show MyStack
+```
+
+- **Repair the id and re-run.**
+
+  ```bash
+  aws s3 cp s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/state.json .
+  # edit the record: "physicalId": "mydb|mytable"
+  aws s3 cp state.json s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/state.json
+  cdkd destroy MyStack
+  ```
+
+- **Delete the resource by hand and drop the record.**
+
+  ```bash
+  aws glue delete-table --database-name mydb --name mytable
+  cdkd state orphan MyStack   # removes state only, never AWS resources
+  ```
+
+Do not re-run with the record deleted and the resource still in AWS. That
+leaves the resource with nothing tracking it.
+
+### Known Leftover: EFS Automatic Backups
+
+A successful `cdkd destroy` of an `AWS::EFS::FileSystem` deletes the file
+system but not the AWS Backup recovery points taken while it existed. With
+automatic backups on (`BackupPolicy: { Status: ENABLED }`), they stay in the
+vault `aws/efs/automatic-backup-vault` for the 35-day default retention. They
+remain restorable and are billed.
+
+List and delete them with `aws backup list-recovery-points-by-backup-vault`
+and `aws backup delete-recovery-point`. "EFS automatic backups survive
+destroy" in [Supported Resources](supported-resources.md) has the full
+commands.
+
+### Known Leftover: FSx Final Backups
+
+A successful `cdkd destroy` of an `AWS::FSx::FileSystem` can leave a billed
+final backup. cdkd calls `DeleteFileSystem` with the API defaults, as
+CloudFormation does, and those take a final backup for Windows and ONTAP file
+systems (observed on OpenZFS too).
+
+The backup is usually untagged, so find it by its `FileSystem.FileSystemId`
+with `aws fsx describe-backups`, and remove it with `aws fsx delete-backup`.
+"FSx final backup on destroy" in [Supported Resources](supported-resources.md)
+has the full commands.
+
+## After a failed or interrupted deploy
+
+By default cdkd rolls a failed deploy back. With `--no-rollback`, after
+{kbd:ctrl+c}, or when the rollback itself dies, the stack is left partly
+deployed, and cdkd keeps the state it saved plus a rollback journal recording
+which operations completed. [Rollback](rollback.md) describes the mechanism.
+
+```text diagram=troubleshooting-after-failed-deploy
+                  ┌────────────────────────────┐
+                  │ Deploy fails or is stopped │
+                  └──────┬──────────────┬──────┘
+                         ▼              ▼
+  ┌─────────────────────────┐  ┌──────────────────────────────────┐
+  │ Automatic rollback      │  │ --no-rollback, Ctrl+C, or a      │
+  │ (default)               │  │ rollback that died               │
+  │ Reverts what the deploy │  │ Partial state and a journal are  │
+  │ completed               │  │ kept                             │
+  └─────────────────────────┘  └────┬───────────┬───────────┬─────┘
+                                    ▼           ▼           ▼
+                        ┌─────────────┐ ┌───────────────┐ ┌──────────────┐
+                        │ cdkd deploy │ │ cdkd rollback │ │ cdkd destroy │
+                        │ Fix forward │ │ Revert        │ │ Clean up     │
+                        └─────────────┘ └───────────────┘ └──────────────┘
+```
+
+An orphaned resource is one that exists in AWS but is in no cdkd state file.
+cdkd saves state after every completed resource, so orphans are rare. They
+come from a create that was in flight when the process was killed, from a
+resource a rollback retained, and from the ambiguous server errors under
+[Possible duplicates after a server error](#possible-duplicates-after-a-server-error).
+
+### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
+
+```bash
+cdkd rollback MyStack                        # revert to the pre-deploy state
+cdkd rollback MyStack --yes                  # skip the confirmation (--force also works)
+cdkd rollback MyStack --revert-failed        # also revert the resource that failed mid-deploy
+cdkd rollback MyStack --orphan MyQueue       # leave one resource alone (repeatable)
+cdkd rollback MyStack --stack-region us-west-2
+```
+
+`cdkd rollback` replays the rollback journal, with no synth and no CDK app.
+The prompt refuses a non-interactive stdin, so CI needs `--yes` or `--force`.
+
+| Outcome | Meaning | Do |
+| --- | --- | --- |
+| Exit `2`, journal kept | One or more operations failed | Re-run `cdkd rollback`; already-reverted resources are skipped |
+| Exit `2`, an operation skipped with a warning | It cannot be reverted (its physical id changed, or the delete is unrecoverable) | Read the `ROLLBACK_RESOURCE_SKIPPED` event with `cdkd events MyStack` |
+| Exit `2`, a reverted operation left a resource cdkd no longer tracks | A copy retained by `UpdateReplacePolicy: Retain`, or one whose delete failed | Its `ROLLBACK_RESOURCE_SUCCEEDED` event carries the id and a `reason` |
+| `Nothing to roll back` | No journal: a later deploy succeeded, or the process was killed before writing it | `cdkd deploy` to resume, or `cdkd destroy` to clean up |
+
+A resource whose properties use `{{resolve:secretsmanager:...}}`, or
+`{{resolve:ssm:...}}` pointing at a SecureString, is stored as the reference.
+Reverting it resolves the reference again during the rollback. If the secret
+was deleted or your credentials can no longer read it, that revert fails with
+exit `2` and the journal kept. Restore access and re-run, or skip the resource
+with `--orphan`.
+
+Storing the reference is a redaction pass, not a guarantee. Treat a secret
+that was ever persisted in plaintext as compromised and rotate it.
+
+See [`cdkd rollback`](cli-rollback.md) for every flag and the known
+limitations.
+
+### Detecting Orphaned Resources
+
+List what cdkd tracks, then compare it with AWS:
+
+```bash
+cdkd state list                         # which stacks have state
+cdkd state resources MyStack            # LogicalID, Type, PhysicalID
+cdkd state resources MyStack --json     # machine-readable
+cdkd state show MyStack                 # the full record, including properties
+```
+
+```bash
+aws cloudcontrol list-resources --type-name AWS::S3::Bucket
+aws cloudcontrol list-resources --type-name AWS::Lambda::Function
+```
+
+Pass `--stack-region <region>` when the same stack name has state in more than
+one region.
+
+### Recovering from Orphaned Resources
+
+If state was saved, which is the usual case, run `cdkd deploy` again. Existing
+resources are in state and are handled as updates or no-ops.
+
+If a resource exists in AWS without a state record, adopt it. Do not delete
+`state.json`, and do not edit it by hand.
+
+::: steps
+1. See what cdkd tracks
+
+   ```bash
+   cdkd state resources MyStack
+   ```
+
+2. Preview the adoption
+
+   ```bash
+   cdkd import MyStack --dry-run   # writes no state
+   ```
+
+3. Adopt
+
+   ```bash
+   cdkd import MyStack
+   cdkd import MyStack --resource MyBucket=mystack-mybucket   # anything reported "not found"
+   ```
+:::
+
+Read a resource's exact name off AWS instead of constructing it. A name cdkd
+generates is `<StackName>-<LogicalId>` only when that fits the type's length
+limit. Otherwise cdkd truncates it and appends `-` plus 8 hex characters. A
+`--resource` import merges into existing state and needs no `--force` while
+the resource is absent from it.
+
+To start over instead, delete the resources through cdkd:
+
+```bash
+cdkd state destroy MyStack --yes   # deletes the AWS resources AND the state
+cdkd deploy MyStack
+```
+
+#### A rollback left a `Retain` resource behind
+
+A resource carrying `DeletionPolicy: Retain` stays in AWS when a deploy rolls
+back, and its state record is dropped, as with CloudFormation. With cdkd the
+next deploy then fails with an already-exists error. cdkd's generated names
+have no random part, so the deploy asks for the name the retained resource
+still holds. Re-running does not clear it.
+
+When the colliding name is one cdkd generated, the failure is followed by a
+message that ends with the adoption command on its own line:
+
+```text
+ApiGatewayAccountCloudWatchRole: the name AWS reports as taken (mystack-apigatewayaccountcl-19184149) is one cdkd DERIVED from the logical id, and that derivation has no random component — so this is most likely a resource an earlier cdkd run left behind.
+Adopt with: cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149'
+```
+
+The same message covers a resource the failing create made itself, when an
+earlier attempt ended without a clear verdict and the retry found the name
+taken. It then opens with `... is most likely held by a resource THIS create
+made`. That resource is in no state file, so no rollback or `cdkd destroy`
+removes it.
+
+> [!IMPORTANT]
+> Confirm the resource is yours before adopting it. A generated name is
+> predictable. For a globally unique name it can belong to another account,
+> and the same stack in another region generates the same name. Importing
+> that leaves two stacks sharing one resource.
+
+If you do not want to keep the resource, delete it in AWS after confirming it
+holds nothing you need, then re-deploy.
+
+cdkd tells you to delete instead of printing the import command in three
+cases: the type cannot be imported, the resource is in a nested stack, or its
+name contains characters that would change what the printed command means. A
+name holding whitespace or shell characters is printed as a quoted placeholder
+(`'<stack>'`, `'<logicalId=physicalId>'`) to replace with your own quoted
+value.
+
+## Possible duplicates after a server error
+
+Some AWS create calls carry no idempotency token. When one fails with HTTP
+500 / 502 / 503 / 504, AWS may have created the resource and lost only the
+response, and a retry then creates a second one or collides with the first.
+
+For the calls below cdkd turns off the AWS SDK's own retry of a 5xx. Before
+its own retry it looks for what the failed attempt may have made, and reports
+each candidate as a warning with a read command. It never adopts or deletes a
+candidate, and then creates the resource again.
+
+What to do with such a warning:
+
+1. Inspect each id with the read command the warning gives.
+2. Delete it only after confirming it is this deploy's orphan and not another
+   deploy's resource.
+
+Four things apply to every warning below:
+
+- **A reset connection or a timeout** is as ambiguous as a 5xx, and the AWS
+  SDK retries it inside one call. If that retry also fails, cdkd looks before
+  its own retry as above. If it succeeds, cdkd looks right after the create
+  and the warning says the call "succeeded only after the AWS SDK sent it
+  again". It never names the resource the create returned.
+- **A clean lookup is not proof.** The list APIs are eventually consistent, so
+  a duplicate may not be listed yet.
+- **Without the lookup permission** cdkd warns that it could not look, and the
+  deploy proceeds.
+- **Some types report no creation time** (AppSync, API Gateway authorizers and
+  integrations, the EC2 lookups). A candidate of such a type may be another
+  stack's resource of the same name, and the warning says so. A throttled
+  request the SDK retried triggers the same lookup, and for these types it can
+  name an unrelated resource.
+
+### A warning that a KMS key, Cognito user pool or AppSync API may be an orphan
+
+| Call | Candidate cdkd reports | Read command | Lookup permission |
+| --- | --- | --- | --- |
+| `CreateKey` | A key with the same settings, created during the failed attempt | `describe-key` | `kms:ListKeys`, `kms:DescribeKey` |
+| `CreateUserPool` | A pool with the same name, created during the failed attempt | `describe-user-pool` | `cognito-idp:ListUserPools` |
+| `CreateGraphqlApi` | An API with the same name that this deploy did not record | `get-graphql-api` | `appsync:ListGraphqlApis` |
+| `CreateApiKey` | A key on the same API with the same description that this deploy did not record | `list-api-keys` | `appsync:ListApiKeys` |
+
+- After the warning a user pool name is shared by two pools. Before deleting
+  one, check that it has no users, that it was created during the failed
+  attempt, and that it carries no tags another stack sets.
+- A KMS key cannot be deleted at once. `aws kms schedule-key-deletion` puts it
+  in a 7-to-30-day pending window.
+- An AppSync API key's id is the credential clients send, so the warning names
+  a key only by its last four characters and its expiry. Find it in the
+  `list-api-keys` output.
+
+A related KMS warning, "KMS key ... was created for ..., but a follow-up call
+failed", means `CreateKey` succeeded and a later call on the key
+(`EnableKeyRotation`, `DisableKey`) did not. The retry reuses that key, so
+leave it alone while the deploy is running. Only if the deploy then fails is
+the key left out of cdkd state.
+
+### A warning that an API Gateway API, authorizer, integration or deployment may be an orphan
+
+The calls are `CreateAuthorizer` and `CreateDeployment` (REST API), and
+`CreateApi`, `CreateIntegration` and `CreateAuthorizer` (HTTP / WebSocket API).
+
+| Candidate cdkd reports | Delete command in the warning |
+| --- | --- |
+| An API with the same name and protocol, created during the failed attempt | Yes |
+| A deployment of the same REST API with the same description, created during the failed attempt | Yes |
+| An authorizer with the same name and type in the same API that this deploy did not record | No |
+| An integration with the same type and URI in the same API that this deploy did not record | No |
+
+An orphaned authorizer, integration or deployment is deleted with its API.
+The lookup needs `apigateway:GET` on the API, or on the API list for
+`CreateApi`.
+
+### A warning that an EMR cluster, instance fleet or instance group may be an orphan
+
+The calls are `RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups`. A
+duplicate here is billed per instance-hour.
+
+| Candidate cdkd reports | Commands in the warning |
+| --- | --- |
+| A cluster with the same name, created during the failed attempt, not terminating or terminated | `aws emr describe-cluster`, then `aws emr terminate-clusters` |
+| A TASK instance fleet or group with the same name in the same cluster (any name, when the template sets none) | `list-instance-fleets` / `list-instance-groups`, then `modify-instance-fleet` / `modify-instance-groups` to scale it to zero |
+
+- EMR cannot remove a fleet or group from a running cluster. Scaling it to
+  zero stops the billing, and it goes away with its cluster.
+- A candidate cluster with termination protection needs
+  `modify-cluster-attributes --no-termination-protected` first. The warning
+  does not chain that command, since the cluster may be another deploy's.
+- A MASTER or CORE fleet or group is not looked up: a cluster holds at most
+  one of each.
+
+The cluster lookup needs `elasticmapreduce:ListClusters`.
+
+### A warning that a Lambda layer version or event source mapping may be an orphan
+
+| Call | Candidate cdkd reports | Commands in the warning | Lookup permission |
+| --- | --- | --- | --- |
+| `PublishLayerVersion` | A version of the same layer published during the failed attempt | `aws lambda get-layer-version`, then `aws lambda delete-layer-version` | `lambda:ListLayerVersions` |
+| `CreateEventSourceMapping` | A mapping between the same function and event source that this deploy did not record | `aws lambda get-event-source-mapping`; no delete command | `lambda:ListEventSourceMappings` |
+
+For a self-managed Kafka source the mapping is matched on the function only.
+A mapping last modified before the failed attempt is not reported.
+
+Where Lambda refuses a second mapping between the same function and source, as
+it does for an SQS queue, the retry fails with `ResourceConflictException`
+naming the orphan's UUID. Confirm the mapping is this deploy's, delete it and
+re-run the deploy:
+
+```bash
+aws lambda delete-event-source-mapping --uuid <uuid>
+```
+
+### A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan
+
+| Call | Candidate cdkd reports | Commands in the warning | Lookup permission |
+| --- | --- | --- | --- |
+| `CreateLifecyclePolicy` | A policy with the same description and the same default or custom kind, created during the failed attempt, that this deploy did not record | `aws dlm get-lifecycle-policy`, then `aws dlm delete-lifecycle-policy` | `dlm:GetLifecyclePolicies`, `dlm:GetLifecyclePolicy` |
+| `RegisterTaskDefinition` | An ACTIVE revision of the same family, registered during the failed attempt, that this deploy did not register | `aws ecs describe-task-definition`, then `aws ecs deregister-task-definition` | `ecs:ListTaskDefinitions`, `ecs:DescribeTaskDefinition` |
+
+A policy with no description matches a create with none. Run the second
+command only after confirming the candidate is this deploy's: another deploy
+can create a policy with the same description, or register a revision of the
+same family, in the same window.
+
+### A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan
+
+cdkd tags these resources only after the create returns, so an orphan has no
+tags. It reports each untagged match this deploy did not record:
+
+| Call | Candidate cdkd reports | Read command | Lookup permission |
+| --- | --- | --- | --- |
+| `CreateVpc` | A VPC with the same CIDR that is not a default VPC | `describe-vpcs` | `ec2:DescribeVpcs` |
+| `CreateSubnet` | A subnet with the same CIDR in the same VPC | `describe-subnets` | `ec2:DescribeSubnets` |
+| `CreateInternetGateway` | An internet gateway attached to no VPC | `describe-internet-gateways` | `ec2:DescribeInternetGateways` |
+| `AllocateAddress` | An Elastic IP of the same domain, associated with nothing | `describe-addresses` | `ec2:DescribeAddresses` |
+
+EC2 reports no creation time for these, so the warning gives no delete
+command. For an Elastic IP the match also considers the network border group
+or pool when the template sets one. An unassociated Elastic IP is billed until
+released.
+
+Two creates fail on the retry instead of duplicating:
+
+- **Subnet.** A CIDR cannot repeat in a VPC, so the retry fails with
+  `InvalidSubnet.Conflict`. Confirm the subnet the warning named is this
+  deploy's, delete it and re-run:
+
+  ```bash
+  aws ec2 delete-subnet --subnet-id <id>
+  ```
+
+- **Security group.** A name cannot repeat in a VPC, so a replayed
+  `CreateSecurityGroup` fails with `InvalidGroup.Duplicate`. No lookup runs
+  for it.
+
+### `EntityAlreadyExists` on an IAM create after a server error
+
+`CreateRole`, `CreateUser`, `CreateGroup`, `CreateInstanceProfile` and
+`CreatePolicy` failed with a 5xx although IAM had created the entity, so
+cdkd's retry fails with `EntityAlreadyExists` against it. For a name cdkd
+generated, the error says the entity is most likely what this create's earlier
+attempt made.
+
+That entity is in no state file. Confirm it is this deploy's, then either
+adopt it or delete it, and re-run the deploy:
+
+```bash
+cdkd import MyStack --resource MyRole=mystack-myrole   # adopt
+aws iam delete-role --role-name mystack-myrole          # or delete
+```
+
+After a reset connection or a timeout the request may never have reached IAM,
+so the holder can be another resource. Confirm before deleting or importing.
+
+#### Access keys
+
+`CreateAccessKey` is handled differently, because a duplicate key is a
+credential whose secret nobody received.
+
+- After a failure, cdkd lists the user's keys and deletes the one that attempt
+  minted: a key the user did not have before, created after the attempt
+  started, and not recorded by this process. It then creates a new key.
+- After an SDK retry that succeeded following a reset or timeout, it does the
+  same right after the create and keeps the key the create returned. It does
+  not do this after a throttle or a refused connection, which minted nothing.
+- A key it declines to delete is reported as a warning with the
+  `aws iam delete-access-key` command.
+
+`ListAccessKeys` is eventually consistent. A key IAM does not list yet is
+neither deleted nor reported, and the retry mints a second one. After such a
+failure, compare the user's keys with the key in cdkd state:
+
+```bash
+aws iam list-access-keys --user-name my-user
+cdkd state show MyStack
+```
+
+### An "already exists" on a Lambda, EventBridge bus or ECR create after a server error
+
+The create failed with a 5xx although AWS had created the resource, so cdkd's
+retry fails against it. For a name cdkd generated, the error says the
+resource is most likely what this create's earlier attempt made.
+
+| Call | Error on the retry | Delete with |
+| --- | --- | --- |
+| `CreateFunction` | `ResourceConflictException` | `aws lambda delete-function` |
+| `CreateFunctionUrlConfig` | `ResourceConflictException` | `aws lambda delete-function-url-config` |
+| `AddPermission` | `ResourceConflictException` | `aws lambda remove-permission` |
+| `CreateEventBus` | `ResourceAlreadyExistsException` | `aws events delete-event-bus` |
+| `CreateRepository` | `RepositoryAlreadyExistsException` | `aws ecr delete-repository` |
+
+That resource is in no state file. Confirm it is this deploy's, then delete it
+or adopt it with `cdkd import`, and re-run the deploy.
+
+After a reset connection or a timeout the request may never have reached the
+service, so the holder can be another resource. Confirm before deleting or
+importing.
+
+### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
+
+A `CreateDistribution` answered with a 5xx, cdkd retried it, and CloudFront
+refused the retry. The first request had succeeded and only its response was
+lost. cdkd sends the same `CallerReference` on every attempt of one create, so
+CloudFront refuses the replay instead of creating a second distribution.
+
+The deploy fails and the first attempt's distribution is live, in no state
+file. CloudFront offers no way to adopt it, so the cleanup is manual.
+
+::: steps
+1. Find the distribution by its origin domain or comment
+
+   ```bash
+   aws cloudfront list-distributions \
+     --query "DistributionList.Items[].{Id:Id,Status:Status,Enabled:Enabled,Domain:DomainName,Origins:Origins.Items[].DomainName,Comment:Comment}"
+   ```
+
+   Do not filter with `contains(Origins.Items[0].DomainName, ...)`. JMESPath
+   raises a TypeError on any distribution that has no origins.
+
+2. Disable it and wait for the change to deploy (typically about 15 minutes)
+
+   ```bash
+   aws cloudfront get-distribution-config --id <ID>    # note the ETag; set Enabled=false in the config
+   aws cloudfront update-distribution --id <ID> --if-match <ETag> --distribution-config file://disabled.json
+   aws cloudfront wait distribution-deployed --id <ID>
+   ```
+
+3. Delete it
+
+   ```bash
+   aws cloudfront delete-distribution --id <ID> --if-match <NewETag>
+   ```
+
+4. Re-run the deploy
+
+   ```bash
+   cdkd deploy MyStack
+   ```
+
+   The next run uses a fresh caller reference, so it does not collide with the
+   deleted distribution.
+:::
 
 ## Proxy / Corporate Network
 
@@ -2138,24 +2533,23 @@ No --state-bucket specified, resolving default bucket name...
 CredentialsProviderError: Error: self-signed certificate in certificate chain
 ```
 
-**The certificate wording is usually a red herring.** On a network whose only
-egress is a corporate proxy, it is the DIRECT route that gets intercepted, so
-the certificate cdkd sees is the interceptor's rather than Amazon's. Routed
-through the proxy, cdkd sees Amazon's own certificate.
+On a network whose only way out is a corporate proxy, this usually means cdkd
+is not using the proxy. The direct route is the one that gets intercepted, so
+cdkd sees the interceptor's certificate instead of Amazon's.
 
-cdkd honours the proxy environment variables. If the AWS CLI, `git` and `npm`
-work in the same shell but cdkd does not, check that the variables are exported
-to the process running cdkd — the AWS CLI can also be
-configured through `~/.aws/config`, and `npm` through `~/.npmrc`, so those two
-working is not by itself evidence that the environment carries a proxy.
+cdkd honours the proxy environment variables. Export them in the shell that
+runs cdkd:
 
-**Why this needed a change in cdkd at all.** The AWS SDK for JavaScript v3 does
-not read the proxy variables the way botocore (the AWS CLI) and Go's
-`net/http` do; its
-[guide](https://docs.aws.amazon.com/sdk-for-javascript/v3/developer-guide/node-configuring-proxies.html)
-states that a proxy is supplied "through a third-party HTTP agent" by whoever
-constructs the client. Node's own `NODE_USE_ENV_PROXY=1` is not a substitute:
-it rewires the GLOBAL agent, while every SDK client builds its own.
+```bash
+export HTTPS_PROXY=http://proxy.corp.example:8080
+cdkd bootstrap --profile my-sso-profile
+```
+
+The AWS CLI and `npm` working in the same shell does not prove the environment
+carries a proxy. They can be configured through `~/.aws/config` and `~/.npmrc`.
+
+If the error survives correct variables, the proxy terminates TLS: see
+[A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`](#a-tls-terminating-proxy-still-needs-node-extra-ca-certs).
 
 ### Variables cdkd honours
 
@@ -2166,28 +2560,20 @@ it rewires the GLOBAL agent, while every SDK client builds its own.
 | `ALL_PROXY` / `all_proxy` | Fallback for either scheme |
 | `NO_PROXY` / `no_proxy` | Hosts to reach directly, bypassing the proxy |
 
-Both spellings work, and the lower-case one wins where both are set. Tools
-differ here — the AWS CLI prefers the lower-case spelling too, while Go's
-`net/http` prefers the upper-case one — so do not rely on the two agreeing. The
-proxy is chosen per REQUEST, so `HTTPS_PROXY` and `HTTP_PROXY` may name
-different proxies and each scheme goes to its own.
-
-**Always include the scheme.** A scheme-less value inherits the request's, so
-`HTTPS_PROXY=proxy.corp:8080` is read as `https://proxy.corp:8080` and cdkd
-then speaks TLS *to the proxy* — an error that names neither the variable nor
-the missing scheme. Write `HTTPS_PROXY=http://proxy.corp:8080` unless the proxy
-genuinely terminates TLS on its own listener; the scheme describes how to reach
-the PROXY, not the traffic being proxied.
-
-A proxy variable set to **whitespace only** is treated as a typo rather than as
-configuration: cdkd refuses to start and names the variable. Unset it, or give
-it a URL.
+- **Spelling.** Both work, and the lower-case one wins where both are set.
+  Other tools differ, so do not rely on the two agreeing.
+- **Scheme.** Always include it: `HTTPS_PROXY=http://proxy.corp.example:8080`.
+  The scheme says how to reach the proxy, not what is being proxied. A value
+  without one inherits the request's scheme, so cdkd speaks TLS to the proxy
+  and fails with an error that names neither the variable nor the scheme.
+- **Per request.** `HTTPS_PROXY` and `HTTP_PROXY` may name different proxies.
+- **Whitespace only.** cdkd refuses to start and names the variable. Unset it
+  or give it a URL.
 
 ### `NO_PROXY` matching is EXACT, unlike curl
 
-An entry that does not start with `.` or `*` is compared for **exact equality**
-against the hostname. This surprises most people, because curl treats a bare
-entry as a suffix.
+An entry that does not start with `.` or `*` matches only that exact
+hostname. curl treats a bare entry as a suffix; cdkd does not.
 
 | `NO_PROXY` | `example.com` | `api.example.com` |
 | --- | --- | --- |
@@ -2196,1219 +2582,255 @@ entry as a suffix.
 | `*.example.com` | **proxied** | direct |
 | `example.com,.example.com` | direct | direct |
 
-So covering a domain and its subdomains takes **two entries**.
+Covering a domain and its subdomains takes two entries. For a VPC-endpoint
+setup that sends AWS traffic direct:
 
-**CIDR ranges are not supported and are silently ignored.** A hostname never
-contains `/`, so a `10.0.0.0/8` entry falls into the exact-match branch and can
-never match anything. IP addresses must be listed literally
-(`NO_PROXY=10.1.2.3`). A trailing wildcard such as `172.16.*` does not work
-either — only a LEADING `*` is a wildcard.
+```bash
+export NO_PROXY=.amazonaws.com,amazonaws.com
+```
 
-This matters for VPC-endpoint setups, where the intent is usually to send
-`*.amazonaws.com` direct and everything else through the proxy: write
-`NO_PROXY=.amazonaws.com,amazonaws.com`, not `NO_PROXY=amazonaws.com`.
+| Entry | Behaviour |
+| --- | --- |
+| A CIDR range (`10.0.0.0/8`) | Ignored without a warning; list IP addresses literally (`10.1.2.3`) |
+| A trailing wildcard (`172.16.*`) | Does not work; only a leading `*` is a wildcard |
+| A lone `*` | Bypasses the proxy for every host |
+| An entry with a port (`example.com:443`) | Applies to that port only |
 
-Three more behaviours worth knowing: a lone `*` — as the whole value or as one
-entry among others — bypasses the proxy for every host; entries may be
-separated by whitespace as well as commas, and matching is case-insensitive;
-and an entry may carry a port (`example.com:443`), in which case it applies to
-that port only, so `example.com:8443` exempts nothing from ordinary HTTPS.
-
-Instance-metadata (IMDS) and ECS container credentials are fetched over the
-link-local address and deliberately bypass the proxy, so a `NO_PROXY` entry for
-`169.254.169.254` is unnecessary.
+Entries may be separated by commas or whitespace, and matching is
+case-insensitive. Instance-metadata (IMDS) and ECS container credentials
+always bypass the proxy, so no entry for `169.254.169.254` is needed.
 
 ### A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`
 
-Routing through the proxy removes the need for an extra CA only when the proxy
-opens a **CONNECT tunnel**, because the origin's own certificate is what gets
-validated end to end. A proxy that **terminates TLS** presents its own
-certificate on purpose, and cdkd must be told to trust it:
+A proxy that opens a CONNECT tunnel passes Amazon's own certificate through,
+and needs no extra CA. A proxy that terminates TLS presents its own
+certificate, and cdkd must be told to trust it:
 
 ```bash
 export NODE_EXTRA_CA_CERTS=/path/to/corporate-root-ca.pem
 ```
 
-If a certificate error survives correct proxy variables, this is almost always
-what is missing. `NODE_EXTRA_CA_CERTS` must point at a PEM file readable by the
-cdkd process; it is a Node.js variable, so it does not help the AWS CLI (which
-uses `AWS_CA_BUNDLE`).
+The file must be PEM and readable by the cdkd process. This is a Node.js
+variable, so it does not affect the AWS CLI, which uses `AWS_CA_BUNDLE`.
 
 ### The Docker daemon has its own egress
 
-`cdkd deploy` builds and pushes container image assets through the **Docker
-daemon**, and `cdkd local` runs containers through it. The daemon is a separate
-process with its own network configuration — cdkd cannot configure it, and the
-variables above do not reach it. If image pulls or pushes fail behind a proxy
-while everything else works, configure the daemon itself (on Linux, a systemd
-drop-in with `Environment="HTTPS_PROXY=..."`; on Docker Desktop, Settings →
-Resources → Proxies) and restart it.
+`cdkd deploy` builds and pushes container image assets through the Docker
+daemon, and `cdkd local` runs containers through it. The daemon is a separate
+process, and the variables above do not reach it.
+
+If image pulls or pushes fail behind a proxy while everything else works,
+configure the daemon and restart it:
+
+- Linux: a systemd drop-in with `Environment="HTTPS_PROXY=..."`.
+- Docker Desktop: Settings → Resources → Proxies.
 
 ### Verifying that traffic is routed
 
-Point cdkd at a proxy that cannot work. If the variable is being honoured, the
-command fails; if it succeeds anyway, the variable is not reaching the process:
+Point cdkd at a proxy that cannot work. If the variable is honoured, the
+command fails. If it succeeds anyway, the variable is not reaching the
+process:
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:1 cdkd state list --profile <a working profile>
+HTTPS_PROXY=http://127.0.0.1:1 cdkd state list --profile my-profile
 ```
-
----
-
-## Performance Issues
-
-### Deployment is Slow
-
-**Symptoms:**
-
-- A handful of independent resources take well over a minute, where the
-  measured figure for five parallel SDK-provider resources is ~17s (see
-  [Benchmarks](benchmarks.md))
-- Adding resources that do not depend on each other still lengthens the deploy
-  roughly linearly
-
-**Causes:**
-
-- Long dependency chains in the DAG (the critical path caps how fast a deploy can finish, even with event-driven dispatch)
-- Cloud Control API rate limits
-- Asset publishing takes time
-- A resource pinned to the Cloud Control route (`ProvisionedBy: cc-api`), which is slower than cdkd's hand-written SDK provider
-
-**Solutions:**
-
-**1. Inspect the dependency graph**
-
-`cdkd diff` reports *what* changes, not in what order. To see the shape of the
-graph, run a dry-run deploy at debug level — it builds the DAG and then stops
-before touching AWS:
-
-```bash
-cdkd deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run --verbose
-```
-
-```text
-... DEBUG [DagBuilder] Dependency graph built: 4 nodes, 3 edges
-... DEBUG [DagBuilder] Level 0: 2 resources - Bucket, Table
-... DEBUG [DagBuilder] Level 1: 1 resources - Role
-... DEBUG [DagBuilder] Level 2: 1 resources - Function
-... DEBUG [DagBuilder] Execution levels computed: 3 levels
-✓ Dry run completed - no actual changes made
-```
-
-A deep, narrow graph is what caps a deploy: the depth bounds how much can
-overlap. A real deploy prints the same figure in one line —
-`Deploying 4 resource(s) (DAG: 3 levels, max parallel: 10)`.
-
-Deploy does not actually wait for a whole level to finish: each resource starts
-the moment its own dependencies complete, so the levels describe the graph's
-depth rather than a set of barriers. Destroy is the exception — it deletes
-level by level, in reverse.
-
-**2. Remove unnecessary dependencies**
-
-Reduce explicit dependencies in CDK code:
-
-```typescript
-// Bad example
-const bucket = new s3.Bucket(this, 'Bucket');
-const role = new iam.Role(this, 'Role', { ... });
-role.node.addDependency(bucket);  // ← Unnecessary dependency
-
-// Good example
-const bucket = new s3.Bucket(this, 'Bucket');
-const role = new iam.Role(this, 'Role', { ... });
-// Dependencies auto-detected from Ref/GetAtt
-```
-
-**3. Check whether a resource is pinned to the Cloud Control route**
-
-```bash
-cdkd state show MyStack
-
-# Example output:
-# MyTopic
-#   Type: AWS::SNS::Topic
-#   PhysicalID: arn:aws:sns:us-east-1:123456789012:MyTopic
-#   ProvisionedBy: cc-api
-```
-
-`ProvisionedBy: cc-api` means the resource is provisioned through the Cloud
-Control API — cdkd's fallback layer, and slower than a hand-written SDK
-provider. A resource lands there when its template carries a top-level property
-the SDK provider would silently drop, and the record is then **sticky**: a later
-cdkd release that adds SDK coverage for that property does not by itself move
-the resource back, because doing that unconditionally would mean
-destroy-and-recreate churn on every release. [Provisioning Layers](provisioning-layers.md) explains
-the two layers and how cdkd picks between them.
-
-Whether you need to do anything depends on the resource type:
-
-- **The type is exempt from the sticky rule**, because cdkd now covers it.
-  Nothing to do. The next deploy that changes the resource returns it to the SDK
-  provider automatically and **in place** — no flag, no physical-id churn. See
-  [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
-  below.
-- **The type has no exemption.** The migration is user-initiated, and it
-  destroys and recreates the resource:
-  [`--recreate-via-sdk-provider <LogicalId>`](cli-deploy-safety.md#recreate-via-sdk-provider-deploy).
-  The flag refuses while the template still carries the silent-drop property
-  that sent the resource to Cloud Control in the first place, so first either
-  remove that property or accept the drop with
-  `--prefer-sdk-route <Type>:<Prop>`.
-
-### A property you set in the template never reaches AWS
-
-**Symptoms:**
-
-The deploy succeeds, `cdkd diff` reports the change, but the field is absent
-from the live resource when you read it back with the AWS CLI or the console.
-
-**Cause:**
-
-cdkd's SDK providers write only the properties they were written to handle. A
-top-level CloudFormation property outside that set is a **silent drop** — the
-provider does not send it and does not complain. This is a real bug class, so
-cdkd defends against it by default rather than dropping the field: a resource
-whose template carries such a property is routed through the Cloud Control API
-instead, which forwards the whole property map. The deploy says so:
-
-```
-MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow.)
-```
-
-So if the field is genuinely missing from AWS, the auto-route did not fire.
-Three reasons:
-
-1. **You passed
-   [`--prefer-sdk-route <Type>:<Prop>`](cli-deploy-safety.md#the-override).** That flag
-   means "keep this resource on the SDK provider and accept the drop" — it is
-   the opt-in to exactly this outcome.
-2. **The property is not in cdkd's committed CloudFormation schema snapshot,
-   and the resource was already deployed with it on the SDK provider.** A
-   property the snapshot does not know routes the resource through Cloud
-   Control when it is new or changed. When the resource already carries it
-   with the same value from an earlier SDK-provider deploy, cdkd keeps the
-   resource where it is and warns instead. Change the value (or remove it,
-   deploy, and add it back) to route it; a read-only property never routes,
-   because no engine sets one. On a type Cloud Control cannot manage, such a
-   property never routes either, and the warning says so.
-3. **The property is nested, not top-level.** The silent-drop check works on
-   top-level properties; a missing key inside a nested object is a different
-   problem.
-**Solutions:**
-
-Confirm which layer handled the resource:
-
-```bash
-cdkd state show MyStack    # ProvisionedBy: sdk | cc-api
-```
-
-`sdk` means one of the three causes applies. For case 1, dropping the flag is
-enough: cdkd records only what the SDK provider actually sent, so the property
-is a genuine addition on the next deploy and the auto-route delivers it. For
-case 2, change the value so the next deploy routes the resource through Cloud
-Control, or use `--recreate-via-cc-api <LogicalId>` to put it there
-deliberately.
-
-The case 1 exception is a create-only property. cdkd keeps it in the record,
-because applying one to a live resource needs a replacement, so the deploy
-without the flag refuses with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` rather than
-replacing the resource on its own. The refusal names the remedies:
-
-- `--recreate-via-cc-api <LogicalId>` or `--replace` replaces the resource with
-  the property applied; inside a nested stack only `--replace` reaches it.
-- `--force-stateful-recreation` is also required for a stateful type.
-- `--prefer-sdk-route` with the `<Type>:<Prop>,...` list the refusal prints keeps
-  dropping the property; that list can name more than your original flag did.
-
-See
-[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement)
-for what each remedy does and costs.
-
-`cc-api` means the resource is on the layer that forwards the whole property
-map, so the absence is not cdkd dropping the field.
-
-You do **not** need `--recreate-via-cc-api` merely because a deployed
-SDK-managed resource has just gained a silent-drop property — the next deploy
-re-routes it and normally applies the property in place. A create-only property
-and a physical id Cloud Control cannot address are the exceptions. See
-[Provisioning Layers](provisioning-layers.md#choosing-a-flag).
-
-### `cdkd diff` shows `[returning to SDK provider]`
-
-**Symptoms:**
-
-```
-  [~] MyTopic (AWS::SNS::Topic) [returning to SDK provider]
-```
-
-**Cause:**
-
-The resource is recorded `provisionedBy: cc-api`, and its type carries an
-`'sdk-coverage'` exemption from the sticky rule described above — Cloud Control
-manages the type and is slower (for `AWS::ElasticLoadBalancingV2::Listener` it
-also leaves a removed `ListenerAttributes` key at its old value), and cdkd now covers every
-property this particular resource uses. The next mutating deploy moves it back
-to the faster SDK provider — see
-[Coming back from Cloud Control](provisioning-layers.md#coming-back-from-cloud-control).
-
-The annotation deliberately does not wear the `via CC API:` prefix its sibling
-tokens (`[via CC API: <property>]`, `[via CC API: sticky]`) share — the resource
-is *leaving* Cloud Control, not routing through it.
-
-**This is an update in place, not a replacement.** The physical id is preserved,
-so references to the resource and any out-of-band configuration attached to it
-survive. `cdkd deploy` names the move as it happens:
-
-```
-MyTopic (AWS::SNS::Topic): returning to the SDK provider — cdkd now covers every property this resource uses. The physical id is preserved; pass --pin-cc-api MyTopic to decline this for a deploy.
-```
-
-**Solutions:**
-
-Usually none — this is the routing improving itself. To decline it for a single
-deploy, for example to keep one deploy on the same layer as the last while
-investigating something, pass
-[`--pin-cc-api <LogicalId>`](cli-deploy-safety.md#pin-cc-api-deploy). It is
-per-deploy rather than a stored preference: pass it again next time, or stop
-passing it and let the move happen.
-
-A resource whose type is exempt for the opposite reason — Cloud Control
-*cannot* manage it correctly — moves for correctness rather than speed, logs a
-different line, and **ignores `--pin-cc-api`**, since honouring the pin would
-hold the resource on the handler that cannot address it.
-
-### Cloud Control API Rate Limit
-
-**Symptoms:**
-
-```
-ProvisioningError: Failed to create resource MyTopic
-Caused by: CREATE failed for MyTopic: Rate exceeded
-```
-
-Cloud Control returns this as `ThrottlingException`. cdkd retries it
-automatically, so you normally see it only under `--verbose`, or in the
-give-up line after the retry budget is spent.
-
-**Causes:**
-
-AWS publishes **no rate quota** for the Cloud Control API — its Service Quotas
-entry states the service has no quotas — but it does throttle when the request
-rate is too high. A wide stack whose resources are all independent issues many
-Cloud Control calls at once, which is when you are most likely to see it.
-
-**Solutions:**
-
-**1. Retry with exponential backoff (built-in)**
-
-cdkd retries CREATE, UPDATE and DELETE operations during `cdkd deploy` (and the
-replays performed by `cdkd rollback` and `cdkd drift --revert`), with the
-backoff shape chosen per error class:
-
-- **Throttling and other transient errors** (rate limits, a resource still leaving `Pending`, an async delete releasing a dependency, and a transient server error — HTTP 500 / 502 / 503 / 504, the same four the AWS SDK's own retry strategy treats as transient): exponential backoff `1s->2s->4s->8s->8s->8s->8s->8s`, capped at 8s, up to 8 retries (47s of sleep). Hammering a throttled API is counter-productive, so this class deliberately backs off hard.
-- **IAM propagation** (`Invalid IAM Instance Profile`, `cannot be assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`, `not authorized to access the Log Destination`, `does not have a trust relationship allowing`, ...): a denser `0.25s->0.5s->1s->2s->2s...` schedule over 26 retries (47.75s of sleep). This class usually resolves in single-digit seconds — cdkd creates an IAM entity and consumes it ~1-3s later, faster than IAM propagates — so cdkd re-probes roughly every 2s instead of idling through a 4s or 8s step. A few of these patterns are also emitted for PERMANENT problems (see the note under the give-up line below), and those spend the budget rather than resolving. The dense window (47.75s) is slightly longer than the generic one (47s), so nothing that used to recover stops recovering — and from 3.75s onwards the dense grid is strictly ahead, never lagging the generic one by more than 0.75s in the early band.
-
-  If the window is not enough, cdkd says so rather than silently re-raising the AWS error. A propagation retry that gives up prints one line at the DEFAULT log level (`--verbose` additionally prefixes a timestamp and `WARN`):
-
-  ```text
-  MyFunction: gave up after 26 IAM-propagation retries over 47.75s of propagation backoff (the full propagation budget) - The role defined for the function cannot be assumed by Lambda.
-  ```
-
-  When cdkd can see what the AWS SDK made of the failing response, the line ends with a bracketed summary of it:
-
-  ```text
-  MyQueuePolicy: gave up after 5 IAM-propagation retries over 5.75s of propagation backoff - Failed to create SQS queue policy MyQueuePolicy: UnknownError [name=InternalFailure http=500 requestId=ebf581cc-6072-5ffc-943a-e33312488615]
-  ```
-
-  A sequence that spent its budget on transient server errors rather than on propagation says so instead, and a mixed one reports both:
-
-  ```text
-  MyQueuePolicy: gave up after 8 transient server-error retries (HTTP 5xx) - ... [name=InternalFailure http=503 requestId=...]
-  ```
-
-  `UnknownError` in the message position is not something AWS said — it is the placeholder the AWS SDK substitutes when a response carries no message text at all. When you see it, the message is empty by definition and the bracket is the whole diagnosis: `name` and `http` are the two fields cdkd's classifier decides on, and `requestId` is what AWS support needs. A `no-$metadata` token instead of `http=` means the failure never reached the SDK's error parsing (a network or protocol failure), which is a different problem from a status cdkd chose not to retry.
-
-  That line is how you tell the cases apart without reading cdkd's source:
-
-  - **`(the full propagation budget)` present** — the retry ran to exhaustion. Usually that means IAM genuinely took longer than 47.75s in that account, and re-running succeeds; if it recurs, please [open an issue](https://github.com/go-to-k/cdkd/issues) with the line, since the budget's shape is then the thing that needs changing. Note the retry COUNT on such a line can be below 26: a throttle mid-race consumes an attempt without counting as a propagation retry, so the budget can run out at 25 or fewer.
-
-    **Read the AWS message on the line before concluding that, though**: a few patterns are matched because the same sentence is AMBIGUOUS between a propagation race and a permanent misconfiguration, so exhausting the budget is how a PERMANENT failure surfaces on those. Re-running will never succeed there and the budget is not the problem — fix what the message names. The Step Functions log-destination rejection is the one to know: `The state machine IAM Role is not authorized to access the Log Destination` is emitted both while the role's log-delivery grants are still propagating AND when they are genuinely absent or when the account's CloudWatch Logs resource policies have hit a quota. See ["The state machine IAM Role is not authorized to access the Log Destination"](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination) for both remedies.
-  - **No budget note, and a low count** — something terminal ended the race early: a non-retryable error such as an explicit deny, or an error cdkd's classifier could not read. The seconds figure tells you how much of the 47.75s was actually spent, which is what distinguishes "IAM was too slow" from "the retry was cut short", and the bracketed `[name=... http=...]` names what ended it. This shape is worth reporting when the status is a 5xx other than 500 / 502 / 503 / 504, or when the bracket shows `no-$metadata`: those are the cases cdkd does not currently treat as transient, and one of them (a plain HTTP 500 answered mid-propagation with an empty body) was a real, since-fixed defect, where a single 500 ended an otherwise healthy sequence at 12% of its budget.
-  - **No such line at all** — the retry never engaged, and there are two reasons, which need different responses. Either cdkd's error classifier did not recognise the failure as IAM propagation — worth reporting, since the wording it failed to recognise is the useful half of the report — OR the failing resource is served by a provider that opts out of the outer retry by design: `Custom::*` / `AWS::CloudFormation::CustomResource` and `AWS::CloudFormation::Stack` are never wrapped by the dense outer schedule, so no give-up line is produced for them. A custom resource's Lambda HANDLER is an ordinary `AWS::Lambda::Function` and does retry on the outer schedule. Check which of the two the failing logical id is before filing.
-
-    There used to be a THIRD reason, and it is worth knowing it is gone. A rollback's reverse-replacement re-create — the arm that revives the OLD resource after a replacement failed — could never produce this line at all, whatever the error: it wrapped the create in a retry carrying an explicit schedule and a name-collision classifier, and either of those alone makes the propagation counters inert. So a rollback that hit `The role defined for the function cannot be assumed by Lambda.` printed the bare AWS sentence, retried zero times, and was indistinguishable from a build with no propagation retry at all. That path now retries on the same dense schedule and prints the same give-up line, so **you can now see this line during `cdkd rollback` and during an automatic rollback**, not only during `cdkd deploy`. The two reasons above are once again the complete set.
-
-    Opting out of the OUTER retry is not the same as having no retry, which is what this bullet used to say. `CustomResourceProvider` retries internally instead, and that now covers both error shapes rather than one: a handler that RETURNS `FAILED` with an authz-shaped reason, and — new — an authz-shaped error THROWN by an SDK call the provider itself makes before the request reaches the handler. The two draw on SEPARATE budgets, because they cost different things. A re-invoke after a FAILED response re-runs your handler, so it stays small (`CDKD_CR_AUTHZ_MAX_RETRIES`, default 2, clamped to 10). A pre-delivery THROW reached no handler at all, so it gets the same 26 retries over 47.75s the outer schedule gives every other resource type — which is the whole point, since the propagation window this covers is measured in seconds and 0.75s of coverage would not have closed the reported failure. `CDKD_CR_AUTHZ_MAX_RETRIES=0` therefore disables re-invocations of your handler only; it does not disable the pre-delivery retry or the response-placeholder `PutObject` retry, neither of which can reach a handler. A throw that lands AFTER the invoke was accepted is never replayed regardless of its wording — the handler is running and will write to that attempt's response URL — so a `Custom::*` failure can still be genuinely single-shot; the readiness waiters are likewise never replayed — they have already polled `lambda:GetFunction` for their own 600s — so a permanent denial there surfaces after one waiter timeout rather than three. `AWS::CloudFormation::Stack` is unchanged and has no internal retry.
-
-  The seconds count PROPAGATION backoff only, so an interleaved throttle's own wait is excluded — the figure is meant to be compared against the 47.75s budget, not read as total elapsed time.
-
-  Add `--verbose` to see each attempt with its running total (`attempt 15/26, 25.75s backoff through this attempt`), which is what turns "it failed" into a measurement.
-
-- **A name still held by a resource you just deleted** (`QueueDeletedRecently`,
-  Step Functions' `StateMachineDeleting`, S3's `conflicting conditional
-  operation`): a `2s->4s->8s->10s->10s->10s->10s->10s` grid, 64s over 8
-  retries. This class is separate because it cannot inherit the generic
-  47s budget — SQS's own message names a 60-second window, and a 47s budget
-  against a 60s window does not converge, it just fails 47 seconds later. See
-  [A name is still held by the resource you just deleted](#a-name-is-still-held-by-the-resource-you-just-deleted).
-
-CC API polling is a different mechanism from the retry above: it waits for an
-accepted operation to finish, on a `1s -> 1.5s -> 2.25s -> 3.4s -> 5.1s ->
-7.6s -> 10s` schedule (a 1.5x multiplier, capped at 10s), against a 15-minute
-deadline — longer for known-slow types such as OpenSearch domains and RDS /
-Redshift / ElastiCache clusters.
-
-**2. Lower the concurrency**
-
-```bash
-cdkd deploy --app "..." --concurrency 4        # default 10, concurrent resource operations
-cdkd deploy --app "..." --stack-concurrency 2  # default 4, concurrent stacks
-```
-
-Asset publishing has its own limits: `--asset-publish-concurrency` (default 8)
-and `--image-build-concurrency` (default 4).
-
-### A name is still held by the resource you just deleted
-
-**Symptoms:**
-
-A destroy-then-redeploy loop fails on a name that looks free:
-
-```
-ProvisioningError: Failed to create resource MyQueue
-Caused by: You must wait 60 seconds after deleting a queue before you can create another with the same name.
-```
-
-**Cause:**
-
-Some services release a name asynchronously after the delete returns. cdkd
-retries this class on its own `2s -> 4s -> 8s -> 10s ...` grid — 64 seconds
-over 8 retries, chosen to cover SQS's stated 60-second window — so most of the
-time you never see it. The types that reach it in practice:
-
-| Type | Window |
-| --- | --- |
-| `AWS::SQS::Queue` | 60s, stated by the service |
-| `AWS::StepFunctions::StateMachine` | ~23s of `status: DELETING` on an idle machine |
-| `AWS::S3::Bucket` | bucket names are global and released asynchronously |
-
-The Step Functions case is easy to hit without knowing it: any CDK app using
-`custom_resources.Provider` with an `isCompleteHandler` carries a waiter state
-machine, so an ordinary re-deploy reaches this path.
-
-**Solutions:**
-
-Wait and re-run — the exhaustion line says so explicitly:
-
-```
-MyQueue: gave up after 8 name-cooldown retries over 64.00s waiting for the name to be released (the full name-cooldown budget) - <the AWS message>
-```
-
-Two deliberate non-members of this class, so you do not wait for a retry that
-will not come: ELBv2's `DuplicateLoadBalancerName` and DynamoDB's create-side
-refusal are raised for a resource that genuinely still **exists**, and a
-Secrets Manager name scheduled for deletion can be held for 7-30 days, which no
-bounded budget rides out.
-
-During a `--replace` the outer replacement loop re-enters this retry per
-attempt, so a custom-named SQS queue can appear to hang for up to ~11 minutes.
-That is the retry working, not a stall.
-
----
-
-## Orphaned Resources
-
-### Overview
-
-Orphaned resources are AWS resources that exist in your account but are not tracked in cdkd's state file. This can happen when a deployment fails partway through — some resources may have been successfully created while others failed in flight.
-
-### How cdkd Prevents Orphans
-
-cdkd uses a multi-layered approach to prevent orphaned resources:
-
-1. **Per-resource in-memory state update**: Each resource updates the in-memory state (`newResources`) immediately upon successful provisioning.
-
-2. **Per-resource partial state save**: After each successful resource provision, state is persisted to S3 (serialized via a save chain to avoid ETag conflicts). This prevents orphans if the process crashes mid-deploy.
-
-3. **Pre-rollback state save**: If any resource fails, cdkd saves the current in-memory state (including all successfully provisioned resources up to that point) to S3 **before** attempting rollback. This ensures that resources completed concurrently with the failed one are still tracked.
-
-4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
-
-5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed. This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`, each first deleting (per its `DeletionPolicy`) any resource a failed CREATE made that only the journal records; a successful deploy that cannot act on one keeps the journal (reduced to that entry where it can), and one a state record may own is warned about and left in AWS; either way it exits `2`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted: the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it. An automatic rollback that skipped an operation it could not revert (recorded as a `ROLLBACK_RESOURCE_SKIPPED` event, see `cdkd events`) is not clean and keeps the full journal. A nested stack's successful deploy keeps its journal until the top-level stack's deploy succeeds, so a failure of the parent can revert the child from it.
-
-### A warning that a KMS key, Cognito user pool or AppSync API may be an orphan
-
-`CreateKey`, `CreateUserPool`, `CreateGraphqlApi` and `CreateApiKey` carry no
-idempotency token. When one fails with HTTP 500 / 502 / 503 / 504, AWS may have
-created the resource and lost only the response, and cdkd's retry creates it
-again. cdkd therefore turns off the AWS SDK's own retry of a 5xx for these four
-calls, so the failure reaches cdkd's retry, and before retrying it looks for
-what the failed attempt may have made:
-
-- a user pool with the same name, a KMS key with the same settings, or a
-  GraphQL API with the same name, created during the failed attempt (AppSync
-  reports no creation time, so for it: any API with that name this deploy did
-  not record), or an API key on the same GraphQL API with the same
-  description that this deploy did not record;
-- each match is REPORTED at warn, with its id and a read command first
-  (`describe-user-pool`, `describe-key`, `get-graphql-api`,
-  `list-api-keys`). An API key's id is the credential clients send, so the
-  warning names a key only by its last four characters and its expiry; find
-  it in the `list-api-keys` output. cdkd neither adopts nor deletes it -- a
-  name or a set of settings does not prove which deploy made it -- and creates
-  a new resource, so a user pool name is then shared by two pools.
-
-Inspect each id the warning names, and delete it only after confirming it is
-this deploy's orphan and no other deploy's resource (for a pool: no users, the
-failed attempt's creation time, no tags another stack sets). A KMS key cannot
-be deleted immediately: `aws kms schedule-key-deletion` puts it in a
-7-to-30-day pending window. The lookup needs `kms:ListKeys` + `kms:DescribeKey`,
-`cognito-idp:ListUserPools`, `appsync:ListGraphqlApis`, or
-`appsync:ListApiKeys`; without them cdkd warns that it could not look, and the
-deploy proceeds.
-
-A reset connection or a timeout is just as ambiguous, and the AWS SDK
-retries it inside one call. When that retry still ends in an error cdkd
-retries, the next attempt looks as above. When the SDK's retry SUCCEEDS, cdkd
-runs the same lookup right after the create, for the window from the first
-request to the reply, and reports at warn what the first request may have made
-(the warning says the call "succeeded only after the AWS SDK sent it again").
-It never names the resource the create returned, which cdkd records as usual,
-and it neither adopts nor deletes a candidate. A lookup this soon after the
-create may not list the duplicate yet (the list APIs are eventually
-consistent), so a clean result says only what was listed. A throttled request
-the SDK retried triggers the same lookup: for a type with a creation date it
-finds nothing, and for an undated type (AppSync, API Gateway authorizers and
-integrations, and the EC2 lookups that match on a name, CIDR or missing tag)
-it can name an unrelated resource of the same name -- the warning already says
-such a candidate may be another stack's.
-
-A related KMS warning -- "KMS key ... was created for ..., but a follow-up
-call failed" -- means `CreateKey` succeeded and a later call on the key
-(`EnableKeyRotation`, `DisableKey`) did not. The retry reuses that key rather
-than creating another, so leave it alone while the deploy is still running;
-only if the deploy then fails is it left out of cdkd state.
-
-### A warning that an API Gateway API, authorizer, integration or deployment may be an orphan
-
-Like the three creates above, five API Gateway creates carry no idempotency
-token: `CreateAuthorizer` and `CreateDeployment` (REST API), and `CreateApi`,
-`CreateIntegration` and `CreateAuthorizer` (HTTP / WebSocket API). cdkd turns
-off the AWS SDK's own retry of a 5xx for them too, and after one fails with
-HTTP 500 / 502 / 503 / 504, cdkd's retry first lists what the failed attempt
-may have made and warns about each match, with a read command first:
-
-- an API with the same name and protocol, or a deployment of the same REST API
-  with the same description, created during the failed attempt. These carry a
-  creation time, so the warning also gives a delete command, to run only after
-  confirming the candidate is this deploy's orphan;
-- an authorizer with the same name and type, or an integration with the same
-  type and URI, in the same API, that this deploy did not record. API Gateway
-  reports no creation time for these, so a match may also be this stack's own
-  authorizer or integration from an earlier deploy, or another stack's in a
-  shared API; the warning prints no delete command.
-
-cdkd neither adopts nor deletes a candidate, and then creates the resource
-again. An orphaned authorizer, integration or deployment is deleted with its
-API. The lookup needs `apigateway:GET` (on the API, or on the API list for
-`CreateApi`); without it cdkd warns that
-it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the three creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
-
-### A warning that an EMR cluster, instance fleet or instance group may be an orphan
-
-`RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups` carry no idempotency
-token either, and a duplicate here bills per instance-hour. cdkd turns off the
-AWS SDK's own retry of a 5xx for them, and after one fails with HTTP 500 / 502 /
-503 / 504, cdkd's retry first lists what the failed attempt may have made and
-warns about each match created during that attempt:
-
-- a cluster with the same name that is not already terminating or terminated.
-  The warning gives `aws emr describe-cluster`, then `aws emr terminate-clusters`
-  to run only after confirming the cluster is this deploy's orphan. When the
-  template turns termination protection on, it adds that a candidate
-  `describe-cluster` shows as protected needs `modify-cluster-attributes
-  --no-termination-protected` first; that command is not chained onto the
-  terminate, since the candidate may be another deploy's protected cluster;
-- a TASK instance fleet or group with the same name (any name, when the
-  template sets none) in the same cluster. The warning gives the cluster's
-  `list-instance-fleets` / `list-instance-groups`, then a `modify-instance-fleet`
-  / `modify-instance-groups` that scales the candidate to zero: EMR has no call
-  that removes a fleet or group from a running cluster, so scaling it down is
-  what stops its instances billing, and it goes with its cluster.
-
-cdkd neither adopts, terminates nor scales a candidate, and then creates the
-resource again. A MASTER or CORE fleet or group is not looked up: a cluster
-holds at most one of each. The cluster lookup needs
-`elasticmapreduce:ListClusters`; without it cdkd warns that it could not look,
-and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
-
-### A warning that a Lambda layer version or event source mapping may be an orphan
-
-`PublishLayerVersion` and `CreateEventSourceMapping` carry no idempotency token
-either. cdkd turns off the AWS SDK's own retry of a 5xx for them, and after one
-fails with HTTP 500 / 502 / 503 / 504, cdkd's retry first lists what the failed
-attempt may have made and warns about each match:
-
-- a version of the same layer published during the failed attempt. The warning
-  gives `aws lambda get-layer-version`, then `aws lambda delete-layer-version`
-  to run only after confirming the version is this deploy's orphan;
-- a mapping between the same function and event source (the same function
-  only, for a self-managed Kafka source) that this deploy did not record and
-  that was not last modified before the failed attempt. Lambda reports no
-  creation time for a mapping, so a match may also be this stack's own mapping
-  from an earlier deploy or another stack's; the warning gives
-  `aws lambda get-event-source-mapping` and no delete command.
-
-cdkd neither adopts nor deletes a candidate, and then creates the resource
-again. Where Lambda refuses a second mapping between the same function and
-source (it does for an SQS queue), that create fails with
-`ResourceConflictException` naming the orphan's UUID: delete that mapping
-(`aws lambda delete-event-source-mapping --uuid <uuid>`) once you have
-confirmed it is this deploy's, and re-run the deploy. The lookup needs
-`lambda:ListLayerVersions` or `lambda:ListEventSourceMappings`; without it cdkd
-warns that it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
-
-### A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan
-
-`CreateLifecyclePolicy` and `RegisterTaskDefinition` carry no idempotency token
-either: every `RegisterTaskDefinition` registers the family's next revision. cdkd
-turns off the AWS SDK's own retry of a 5xx for them. After one fails with HTTP
-500 / 502 / 503 / 504, cdkd's retry first lists what the failed attempt may have
-made and warns about each match:
-
-- a lifecycle policy with the same description (a policy with no description
-  matches a create with none), and the same default or custom kind, created
-  during the failed attempt that this deploy did not record. The
-  warning gives `aws dlm get-lifecycle-policy`, then
-  `aws dlm delete-lifecycle-policy`;
-- an ACTIVE revision of the same task definition family, registered during the
-  failed attempt, that this deploy did not register. The warning gives
-  `aws ecs describe-task-definition`, then `aws ecs deregister-task-definition`.
-
-Run the second command only after confirming the candidate is this deploy's
-orphan: another deploy can create a policy with the same description, or
-register a revision of the same family, in the same window. cdkd neither adopts
-nor deletes a candidate, and then creates the resource again. The lookup needs
-`dlm:GetLifecyclePolicies` + `dlm:GetLifecyclePolicy`, or
-`ecs:ListTaskDefinitions` + `ecs:DescribeTaskDefinition`; without them cdkd
-warns that it could not look, and the deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
-
-### A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan
-
-`CreateVpc`, `CreateSubnet`, `CreateInternetGateway`, `AllocateAddress` and
-`CreateSecurityGroup` carry no idempotency token either. cdkd turns off the AWS
-SDK's own retry of a 5xx for them. After one of the first four fails with HTTP
-500 / 502 / 503 / 504, cdkd's retry first lists what the failed attempt may
-have made and warns about each match that has no tags (cdkd tags these
-resources only after the create returns, so an orphan has none) and that this
-deploy did not record:
-
-- a VPC with the same CIDR that is not a default VPC;
-- a subnet with the same CIDR in the same VPC;
-- an internet gateway attached to no VPC;
-- an Elastic IP address of the same domain (and the same network border group
-  or pool, when the template sets one) associated with nothing.
-
-EC2 reports no creation time for these, so a match may also be this stack's
-own resource from an earlier deploy (one whose template sets no tags) or
-another stack's; the warning gives a `describe-vpcs` / `describe-subnets` /
-`describe-internet-gateways` / `describe-addresses` read command and no delete
-command. cdkd neither adopts nor deletes a candidate, and then creates the
-resource again. A subnet CIDR cannot repeat in a VPC, so for a subnet that
-create then fails with `InvalidSubnet.Conflict`: delete the subnet the warning
-named (`aws ec2 delete-subnet --subnet-id <id>`) once you have confirmed it is
-this deploy's, and re-run the deploy. A security group name cannot repeat in a
-VPC either, so a replayed `CreateSecurityGroup` fails with
-`InvalidGroup.Duplicate` instead of creating a second group; no lookup runs for
-it. An unassociated Elastic IP is billed until released. The lookup needs
-`ec2:DescribeVpcs`, `ec2:DescribeSubnets`, `ec2:DescribeInternetGateways` or
-`ec2:DescribeAddresses`; without it cdkd warns that it could not look, and the
-deploy proceeds. A reset connection or a timeout is covered as for the creates above: looked for before cdkd's retry when the AWS SDK's in-call retry ends in an error, and right after the create when it succeeds.
-
-### `EntityAlreadyExists` on an IAM create after a server error
-
-`CreateRole`, `CreateUser`, `CreateGroup`, `CreateInstanceProfile`,
-`CreatePolicy` and `CreateAccessKey` carry no idempotency token either, and
-cdkd turns off the AWS SDK's own retry of a 5xx for them too. When one of the
-first five fails with HTTP 500 / 502 / 503 / 504 and IAM had in fact created
-the entity, cdkd's retry fails with `EntityAlreadyExists` against that entity
-(for a name cdkd derived from the logical id, the error says it is most likely
-what this create's earlier attempt made). That entity is in no state file: delete it (`aws iam delete-role` and so on) once
-you have confirmed it is this deploy's, or adopt it with `cdkd import`, and
-re-run the deploy. For `CreateAccessKey` cdkd lists the user's keys after the
-failure and deletes the one that attempt minted (a key the user did not have
-before the attempt, created after it started, and not recorded by this
-process), then creates a new key; a key it declines to delete is reported at
-warn. `ListAccessKeys` is eventually consistent, though: a key IAM does not
-list yet is neither deleted nor reported, and the retry then mints a second
-one, so after such a failure compare `aws iam list-access-keys` with the key
-cdkd state records. When the first request of one of the first five ended in
-a reset connection or a timeout, the AWS SDK retries it inside one call, and
-cdkd treats the retry's `EntityAlreadyExists` as possibly this create's own:
-it is not deleted first, and for a name cdkd derived from the logical id the
-error says it is most likely what this create's earlier attempt made. A reset
-can also happen before the request reached IAM, so the holder may still be
-another resource: confirm before deleting or importing. For `CreateAccessKey`
-a retry that succeeds after such a reset may have minted a second key whose
-secret nobody received: cdkd then lists the user's keys right after the create
-and deletes that key under the same three conditions, keeping the key the
-create returned, and a key it declines to delete is reported at warn with the
-`aws iam delete-access-key` command. It does so only when the SDK's retry
-followed a reset or timeout, never after a throttle or a refused connection,
-which minted nothing. The same eventual-consistency caveat applies.
-
-### An "already exists" on a Lambda, EventBridge bus or ECR create after a server error
-
-`CreateFunction`, `CreateFunctionUrlConfig`, `AddPermission`,
-`CreateEventBus` and `CreateRepository` carry no idempotency token either, and
-cdkd turns off the AWS SDK's own retry of a 5xx for them too. When one fails
-with HTTP 500 / 502 / 503 / 504 and AWS had in fact created the resource,
-cdkd's retry fails against it (`ResourceConflictException` for the three
-Lambda calls, `ResourceAlreadyExistsException` for the bus,
-`RepositoryAlreadyExistsException` for the repository; for a name cdkd derived
-from the logical id, the error says it is most likely what this create's
-earlier attempt made). That resource is in no state file: delete it
-(`aws lambda delete-function`, `delete-function-url-config`,
-`remove-permission`, `aws events delete-event-bus`, `aws ecr
-delete-repository`) once you have confirmed it is this deploy's, or adopt it
-with `cdkd import`, and re-run the deploy. When the first request ended in a
-reset connection or a timeout, the AWS SDK retries it inside one call, and
-cdkd treats the retry's "already exists" as possibly this create's own: it is
-not deleted first, and for a name cdkd derived from the logical id the error
-says it is most likely what this create's earlier attempt made. A reset can
-also happen before the request reached the service, so the holder may still be
-another resource: confirm before deleting or importing.
-
-### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
-
-cdkd retries a `CreateDistribution` that answered HTTP 500 / 502 / 503 / 504,
-because those are usually transient. Some of them are not: the request can SUCCEED
-server-side and lose only the response. `CallerReference` is CloudFront's
-idempotency key, so cdkd sends a value that is stable across every attempt of
-one logical create —
-the replay is then REFUSED by CloudFront rather than quietly creating a second
-distribution that no state file knows about and that `cdkd destroy` can never
-reach.
-
-The deploy therefore fails, and **the first attempt's distribution is still
-live**. That is deliberate: a loud failure with an orphan you can find beats a
-green deploy with an orphan you cannot. CloudFront gives no way to adopt it —
-`ListDistributions` returns `Comment` but not `CallerReference`, and
-`GetDistribution` needs the `Id` the lost response was carrying — so the cleanup
-is manual:
-
-```bash
-# List every distribution with its origins, and find yours by origin domain or
-# Comment. Do NOT filter with `contains(Origins.Items[0].DomainName, ...)` --
-# JMESPath raises a TypeError on any distribution that has no origins, so one
-# unrelated distribution in the account breaks the whole query.
-aws cloudfront list-distributions \
-  --query "DistributionList.Items[].{Id:Id,Status:Status,Enabled:Enabled,Domain:DomainName,Origins:Origins.Items[].DomainName,Comment:Comment}"
-
-# Deleting one requires disabling it first, then waiting for the disable to
-# propagate (typically ~15 min) before the delete is accepted.
-aws cloudfront get-distribution-config --id <ID>    # note the ETag
-# ... set Enabled=false in the config, then:
-aws cloudfront update-distribution --id <ID> --if-match <ETag> --distribution-config file://disabled.json
-aws cloudfront wait distribution-deployed --id <ID>
-aws cloudfront delete-distribution --id <ID> --if-match <NewETag>
-```
-
-Then re-run `cdkd deploy`. The next run derives a fresh caller reference, so it
-will not collide with the deleted one.
-
-### an ACM certificate deploy fails with "did not reach ISSUED status"
-
-```
-ACM certificate SiteCert (arn:aws:acm:us-east-1:123456789012:certificate/...) did not reach
-ISSUED status within 600s.
-```
-
-A DNS-validated certificate only reaches `ISSUED` once its validation records
-are live in your DNS zone. On a first deploy those records usually do not exist
-yet — cdkd prints them on its first `PENDING_VALIDATION` poll — so the wait runs
-out. This is a real failure, not a cosmetic one: anything downstream
-(CloudFront, an ALB listener) cannot use a certificate that has not issued.
-
-**The certificate is not orphaned.** cdkd deletes the certificate it requested
-before the error is reported, so a failed deploy leaves
-nothing behind and repeated attempts do not accumulate certificates in your
-account. Before this, each failed attempt left one that nothing tracked.
-
-Add the printed CNAME records to your DNS zone, then re-run the deploy:
-
-```bash
-cdkd deploy '<stack>'
-```
-
-**Adding those records is not wasted work**, even though the certificate they
-were printed for is gone: ACM derives a domain's validation CNAME from the
-domain and the account rather than from the certificate, and documents that you
-can [replace a deleted certificate](https://docs.aws.amazon.com/acm/latest/userguide/dns-validation.html)
-without repeating validation. The records you added validate the next attempt's
-certificate.
-
-Two ways to change what the deploy does about the wait:
-
-```bash
-# Wait LONGER. This is the provider's OWN cap -- 60 polls x 10s = 10 minutes --
-# and it is what fires, so raising it is what makes cdkd wait longer.
-# CDKD_ACM_POLL_INTERVAL_MS (default 10000) changes the gap between polls.
-CDKD_ACM_POLL_ATTEMPTS=120 cdkd deploy '<stack>'        # 20 minutes
-
-# Do not wait at all. The certificate is created, RECORDED IN STATE, and the
-# deploy returns immediately -- downstream consumers will fail until it issues,
-# but the certificate survives for you to validate out of band.
-cdkd deploy '<stack>' --no-wait
-```
-
-**`--resource-timeout` alone does not make this wait longer**: the poll cap is
-the provider's own, and the deadline is the engine's, wrapped AROUND it — so
-the effective wait is the **shorter** of the two.
-
-Below the engine's 30-minute default that means `--resource-timeout` can only
-cut the poll cap short. **At or above 30 minutes it becomes load-bearing**:
-raising `CDKD_ACM_POLL_ATTEMPTS` past 180 without also raising
-`--resource-timeout` silently caps the wait at 30 minutes. Raise both:
-
-```bash
-CDKD_ACM_POLL_ATTEMPTS=270 cdkd deploy '<stack>' \
-  --resource-timeout AWS::CertificateManager::Certificate=50m   # 45 min of polling
-```
-
-Setting the deadline BELOW the cap is worth avoiding for a second reason: it
-abandons the create from outside rather than cancelling it, so the cleanup that
-retires the certificate may run after the deploy has already reported failure,
-or not at all if the process exits first.
-
-If the message also says the certificate **could NOT be deleted**, the cleanup
-itself failed (a throttle, a permissions gap). The message names the ARN and
-the exact command; cdkd is not tracking that certificate, so `cdkd destroy`
-will not remove it:
-
-```bash
-aws acm delete-certificate --certificate-arn <arn> --region <region>
-```
-
-### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
-
-After a deploy fails with `--no-rollback`, is interrupted with Ctrl+C, or its
-automatic rollback dies partway, you have three options: fix forward
-(`cdkd deploy` again), revert (`cdkd rollback`), or clean up (`cdkd destroy`).
-
-```bash
-cdkd rollback MyStack                        # revert to the pre-deploy state
-cdkd rollback MyStack --force                # skip the confirmation (-y / --yes also works)
-cdkd rollback MyStack --revert-failed        # also revert the resource that failed mid-deploy
-cdkd rollback MyStack --stack-region us-west-2
-```
-
-The prompt refuses a non-interactive stdin rather than hanging, so CI needs one
-of the confirmation flags.
-
-- **Exit `2`** means the rollback was partial. When one or more ops failed
-  best-effort, the rollback journal is **kept** so you can re-run `cdkd
-  rollback` — replay is idempotent (already-reverted resources are skipped).
-  An op skipped with a warning (e.g. a resource whose physical id changed
-  after a later fix-forward attempt, or an unrecoverable DELETE) would be
-  skipped again by a re-run, so its segment is cleared and the skip is
-  recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`). A
-  reverted op that left a resource cdkd no longer tracks (a new copy retained
-  by `UpdateReplacePolicy: Retain`, or one whose delete failed) exits `2` too;
-  its `ROLLBACK_RESOURCE_SUCCEEDED` event carries the survivor's id and a
-  `reason`. So does a reverse-replacement whose re-create returned the live
-  new resource (not fully reversed), whose event carries a `reason` only.
-- Use `--orphan <logicalId>` (repeatable) to leave a specific resource alone
-  during the revert (mirrors `cdk rollback --orphan`).
-- **Secret dynamic references need live access at rollback time.** A resource
-  whose properties use `{{resolve:secretsmanager:...}}` — or
-  `{{resolve:ssm:...}}` pointing at a `SecureString` parameter — is written to
-  state and the journal as the unresolved expression rather than the plaintext,
-  so reverting it re-resolves the reference against Secrets Manager / SSM during
-  the rollback. (That substitution is a redaction pass, not a guarantee: a
-  position it cannot certify against the template keeps whatever value it was
-  handed, so treat a value ever persisted in plaintext as compromised and rotate
-  it.) If that secret has since been deleted or your credentials can no
-  longer read it, that resource's revert fails (exit `2`, journal kept) —
-  restore access to the secret and re-run `cdkd rollback`, or `--orphan` the
-  resource to skip it.
-- If `cdkd rollback` reports "nothing to roll back", the journal is already
-  gone — the deploy either succeeded on a later attempt (journal deleted on
-  success) or the process was killed before the journal was written (a
-  SIGKILL before the PUT). In the latter case use `cdkd deploy` to resume or
-  `cdkd destroy` to clean up.
-- See [`cdkd rollback`](cli-rollback.md) for the full flag
-  reference and known limitations.
-
-### destroy reports `N skipped` and exits 2
-
-```text
-⚠ MyGlueTable (AWS::Glue::Table) skipped (malformed physicalId in state — no delete issued)
-⚠ Stack MyStack partially destroyed (4 deleted, 1 skipped, 0 errors). cdkd did not confirm the skipped resource(s) were deleted ...
-```
-
-**Cause**: the state record's `physicalId` does not decode. A handful of
-resource types need more than one value to address the resource, so cdkd packs
-them into one string joined by `|` (`<databaseName>|<tableName>` for
-`AWS::Glue::Table`, `<apiId>|<typeName>|<fieldName>` for
-`AWS::AppSync::Resolver`, ...). If the recorded value has the wrong number of
-segments — a hand-edited `state.json`, or a record written by an older binary —
-cdkd cannot build the delete call. The per-resource warning names the exact
-shape it expected.
-
-**What cdkd did**: nothing. No AWS call was issued for that resource, so it may
-still exist and still be billing. cdkd deliberately does NOT count it as
-deleted and does NOT drop its state record — without the record you would have
-neither the resource deleted nor an id to go and delete it with. `state.json` is
-preserved and the command exits `2`.
-
-**Fix**, either way round:
-
-```bash
-# 1. Inspect the bad record
-cdkd state show MyStack
-
-# 2a. Repair the physicalId to the shape the warning named, then re-run
-aws s3 cp s3://cdkd-state-{account}/cdkd/MyStack/{region}/state.json .
-#    ...edit "physicalId": "mydb|mytable"...
-aws s3 cp state.json s3://cdkd-state-{account}/cdkd/MyStack/{region}/state.json
-cdkd destroy MyStack
-
-# 2b. OR delete the AWS resource by hand and drop the state record
-aws glue delete-table --database-name mydb --name mytable
-cdkd state orphan MyStack   # removes state only, never AWS resources
-```
-
-Do not "fix" this by re-running with the record deleted — that is the orphan
-this behavior exists to prevent.
-
-### Detecting Orphaned Resources
-
-If you suspect orphaned resources exist (e.g., due to a process crash before state could be saved), list what cdkd tracks and compare it against AWS:
-
-```bash
-# Resources in state: LogicalID, Type, PhysicalID
-cdkd state resources MyStack
-
-# Machine-readable, and with dependencies + attributes
-cdkd state resources MyStack --json
-cdkd state resources MyStack --long
-
-# The full record, including resource properties
-cdkd state show MyStack
-
-# Which stacks have state at all
-cdkd state list
-```
-
-Pass `--stack-region <region>` when the same stack name has state in more than
-one region. Then compare against AWS:
-
-```bash
-aws cloudcontrol list-resources --type-name AWS::S3::Bucket
-aws cloudcontrol list-resources --type-name AWS::Lambda::Function
-```
-
-### Recovering from Orphaned Resources
-
-**If state was saved (most cases)**:
-
-Running `cdkd deploy` again will reconcile the state — existing resources will be detected as already created and handled as updates or no-ops.
-
-**If state was NOT saved (rare — process crash)**:
-
-Adopt the resources back into state. Do not delete them, and do not hand-edit
-`state.json`:
-
-```bash
-# 1. See what cdkd currently tracks.
-cdkd state resources MyStack
-
-# 2. Preview the adoption; writes no state.
-cdkd import MyStack --dry-run
-
-# 3. Adopt. Add --resource for anything reported "not found" — cdkd's
-#    generated names are deterministic (no random component), but read the
-#    exact name off AWS rather than constructing it: the form is
-#    <StackName>-<LogicalId> only when that FITS the type's length limit,
-#    otherwise cdkd truncates and appends "-" + 8 hex characters.
-cdkd import MyStack --resource MyBucket=mystack-mybucket
-```
-
-Or, to start over, delete the AWS resources through cdkd rather than by hand:
-
-```bash
-cdkd state destroy MyStack --yes   # deletes the AWS resources AND the state
-cdkd deploy MyStack
-```
-
-**If a rollback left a `Retain` resource behind**:
-
-A resource carrying `DeletionPolicy: Retain` stays in AWS when a deploy rolls
-back, and its state record is dropped — CloudFormation does the same, and it is
-what `Retain` is for.
-
-The difference is the NAME. For a resource your template does not name,
-CloudFormation generates one with a random suffix, so its next deploy asks for
-a fresh name and succeeds — the retained resource is left orphaned but does not
-block anything. cdkd's generated names are derived from the stack and logical
-id with no random component, so the next `cdkd deploy` asks AWS for the name the
-retained resource still holds and fails with an already-exists error; that
-failure rolls back too, so the deploy cannot self-resolve by re-running.
-
-For a resource you DID name explicitly, both engines behave the same and both
-get stuck — the name is taken either way, and the recovery below applies to
-CloudFormation stacks too, via `cdk import`.
-
-cdkd names this case for you. When the colliding name is one cdkd derived, the
-failure is followed by a message saying so, ending with the adoption command
-on a line of its own:
-
-```text
-ApiGatewayAccountCloudWatchRole: the name AWS reports as taken
-(mystack-apigatewayaccountcl-19184149) is one cdkd DERIVED from the logical id
-... To recover, adopt it back into state instead of re-creating it, with the
-command below ...
-Adopt with: cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149'
-```
-
-A selective `--resource` import merges into existing state and needs no
-`--force` while the resource is absent from it.
-
-The same message covers a resource the failing create made itself. When an
-attempt ends without a clear verdict (an HTTP 5xx, a dropped connection or a
-timeout, or a failure after the create call itself may have succeeded), cdkd or
-the AWS SDK retries it, and the retry can find the name taken by what that
-first attempt made. A dropped connection can also happen before the request
-reached AWS, so the holder may be another resource. cdkd records a resource only
-once its create succeeds, so that one is in no state file and no rollback or
-`cdkd destroy` removes it. The message then opens with `... is most likely held
-by a resource THIS create made` instead, and offers the same remedy: confirm
-it is yours, then adopt it or delete it (no `Retain` is involved in that case).
-
-**Confirm the resource is yours before adopting it.** A name cdkd derives is
-predictable, so a collision is not proof the resource is this stack's: for a
-type whose names are globally unique it can belong to another account, and the
-same stack deployed in another region derives the same name — importing that
-would leave two stacks sharing one resource, and destroying either would delete
-it out from under the other.
-
-If the resource is not one you want to keep, delete it in AWS — after
-confirming it holds nothing you need, since `Retain` is what kept it — and
-re-deploy. cdkd says so instead of offering the command in three cases: the
-type's provider implements no import, the resource is in a nested stack (whose
-stack name `cdkd import` cannot resolve), or its name contains characters that
-would make the printed command name something else. A stack name, logical id or
-resource name that holds whitespace or a character a shell acts on (such as
-`'`, `;` or `$`) is printed in the command as a quoted hole (`'<stack>'`,
-`'<logicalId=physicalId>'`), and the message says to replace the hole with your
-own shell-quoted value; the prose describes such a logical id or name rather
-than printing it.
-
-> **Do not delete `state.json` and redeploy.** It is not a reset, and what
-> happens next is not uniform: most types fail the CREATE with an
-> already-exists error; `AWS::S3::Bucket`, `AWS::Logs::LogGroup` and
-> `AWS::SNS::Topic` silently adopt the existing resource and re-apply your
-> configuration over it; and types with an AWS-assigned id — VPC, EC2 instance,
-> ACM certificate, CloudFront distribution — create a **second** resource and
-> orphan the first, silently, once per attempt. That last case manufactures
-> exactly the orphans this section is about.
-
-### Known Leftover: EFS Automatic Backups
-
-A successful `cdkd destroy` of an `AWS::EFS::FileSystem` deletes the file
-system but not the AWS Backup recovery points taken while it existed. If the
-file system had automatic backups on (`BackupPolicy: { Status: ENABLED }`,
-which cdkd applies from the template), those recovery points stay in the
-service-managed vault `aws/efs/automatic-backup-vault` for the 35-day default
-retention and remain fully restorable — a copy of the data, and a charge,
-outliving the stack. See
-["EFS automatic backups survive destroy" in Supported Resources](supported-resources.md#efs-automatic-backups-survive-destroy)
-for the `aws backup list-recovery-points-by-backup-vault` /
-`aws backup delete-recovery-point` commands.
-
-### Known Leftover: FSx Final Backups
-
-A successful `cdkd destroy` of an `AWS::FSx::FileSystem` can leave a
-chargeable final backup behind: cdkd keeps CloudFormation parity and calls
-`DeleteFileSystem` with API defaults, which take a final backup for
-Windows/ONTAP (observed on OpenZFS too). The backup is typically untagged, so
-find it via the backup's persisted `FileSystem.FileSystemId` rather than tags.
-See ["FSx final backup on destroy" in Supported Resources](supported-resources.md#fsx-final-backup-on-destroy)
-for the details and the `aws fsx describe-backups` / `aws fsx delete-backup`
-commands.
-
----
-
-## Debugging Methods
-
-### Adjust Log Level
-
-```bash
-# Enable verbose (debug) logging — the only way to raise the level
-cdkd deploy --app "..." --verbose
-
-# Disable the live progress renderer (plain line-by-line output; implied
-# by --verbose, and useful in CI)
-CDKD_NO_LIVE=1 cdkd deploy --app "..."
-```
-
-cdkd has **no log-level environment variable**. The level defaults to `info`
-and is raised to `debug` only by `--verbose`, which every command accepts. One
-case lowers it instead: `cdkd diff --json` pins the level to `warn` so debug
-output cannot corrupt the JSON on stdout, and `--json` wins over `--verbose`.
-
-### Check State File
-
-```bash
-# Download state file
-aws s3 cp s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json /tmp/state.json
-
-# Format and display
-cat /tmp/state.json | jq .
-
-# Check specific resource
-cat /tmp/state.json | jq '.resources.MyBucket'
-```
-
-### Check API Calls with AWS CloudTrail
-
-```bash
-# Check recent events in CloudTrail
-aws cloudtrail lookup-events \
-  --lookup-attributes AttributeKey=EventName,AttributeValue=CreateBucket \
-  --max-results 10
-```
-
-### Check Execution Plan with Dry Run
-
-```bash
-# Show plan only without actual execution
-cdkd deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run
-```
-
----
 
 ## Frequently Asked Questions (FAQ)
 
 ### Q: Is a CloudFormation stack created?
 
-A: No. A `cdkd deploy` provisions each resource directly: a hand-written **SDK
-provider** first, with the **Cloud Control API** as the fallback for types (and
-properties) no SDK provider covers. There is no CloudFormation stack, no change
-set, and no stack events — cdkd's equivalents are `cdkd state show` and
-`cdkd events`. See [Provisioning Layers](provisioning-layers.md).
+No. `cdkd deploy` provisions each resource directly, through an SDK provider
+or the Cloud Control API. There is no CloudFormation stack, change set or
+stack events. The equivalents are `cdkd state show` and `cdkd events`. See
+[Provisioning Layers](provisioning-layers.md).
 
-Two commands do touch CloudFormation, and neither is an ordinary deploy:
+Two cases do touch CloudFormation:
 
-- A template declaring a macro (`Transform` / `Fn::Transform`, e.g. SAM) is
-  expanded by CloudFormation. cdkd creates a transient `cdkd-macro-expand-*`
-  stack, reads the processed template, and deletes it again before provisioning
-  anything.
-- [`cdkd export`](cli-export.md) deliberately creates a real CloudFormation
-  stack — that is how it hands the stack over.
+- A template declaring a macro (`Transform` / `Fn::Transform`, for example
+  SAM) is expanded by CloudFormation. cdkd creates a temporary
+  `cdkd-macro-expand-*` stack, reads the processed template and deletes the
+  stack before provisioning anything.
+- [`cdkd export`](cli-export.md) creates a real CloudFormation stack, because
+  that is how it hands a stack over.
 
 ### Q: Can I use CloudFormation and cdkd for the same stack?
 
-A: One stack has one owner at a time, but you can hand it over in either
-direction, and both directions are first-class.
-
-**CloudFormation → cdkd** — adopt the resources and retire the CFn stack
-record; the AWS resources are not deleted:
+One stack has one owner at a time, and you can hand it over in either
+direction. The AWS resources are not changed by either.
 
 ```bash
-cdkd import MyStack --migrate-from-cloudformation
-```
-
-This needs a CDK app that already synthesizes the stack. For a hand-written
-CloudFormation template, generate the CDK app first (upstream
-`cdk migrate --from-stack`). Nested stacks are walked recursively.
-
-**cdkd → CloudFormation** — build an IMPORT change set, execute it, and delete
-cdkd state; the AWS resources are unchanged:
-
-```bash
-cdkd export MyStack --dry-run   # print the plan, no AWS writes
+cdkd import MyStack --migrate-from-cloudformation   # CloudFormation -> cdkd
+cdkd export MyStack --dry-run                       # cdkd -> CloudFormation: print the plan
 cdkd export MyStack
 ```
 
-An export is all-or-nothing and refuses up front on a template resource with no
-cdkd state entry, a redaction mask in the recorded properties, a type
-CloudFormation cannot import, or a Custom Resource without
-`--include-non-importable`.
+- **To cdkd**: the import adopts the resources and retires the CloudFormation
+  stack record. It needs a CDK app that synthesizes the stack. Nested stacks
+  are walked recursively. See [Importing Existing Resources](import.md).
+- **To CloudFormation**: the export builds an IMPORT change set, executes it
+  and deletes cdkd state. It is all-or-nothing. It refuses up front on a
+  resource with no state entry, a masked value in the recorded properties, a
+  type CloudFormation cannot import, or a custom resource without
+  `--include-non-importable`. See [`cdkd export`](cli-export.md).
 
-Different stacks can also stay on different engines: a cdkd-deployed consumer
-resolves `Fn::ImportValue` / `Fn::GetStackOutput` against a
-CloudFormation-managed producer with no change on the producer side.
+Different stacks can stay on different engines. A cdkd-deployed stack resolves
+`Fn::ImportValue` / `Fn::GetStackOutput` against a CloudFormation-managed
+producer with no change on the producer side.
 
 ### Q: What happens if I delete the state file?
 
-A: cdkd no longer knows about any of the stack's resources, so the next
-`cdkd deploy` plans every one as a CREATE. **Do not delete the AWS resources** —
-adopt them back with `cdkd import`:
+cdkd no longer knows any of the stack's resources, so the next `cdkd deploy`
+plans every one as a create. What happens then depends on the type:
+
+| Types | Result of the create |
+| --- | --- |
+| Most types | Fails with an already-exists error |
+| `AWS::S3::Bucket`, `AWS::Logs::LogGroup`, `AWS::SNS::Topic` | Adopts the existing resource and re-applies your configuration over it |
+| Types with an AWS-assigned id: VPC, EC2 instance, ACM certificate, CloudFront distribution | Creates a second resource and orphans the first, once per attempt |
+
+Do not delete the AWS resources. Adopt them back:
 
 ```bash
 cdkd import MyStack --dry-run   # preview; writes no state
 cdkd import MyStack
 ```
 
-With no flags, `cdkd import` resolves each physical id from the template's own
-name property and then from a same-named CloudFormation stack. A resource whose
-name CDK left for cdkd to generate has no name in the template, so it is
-reported `not found` — name those explicitly. cdkd's generated names are
-deterministic (nothing random goes into them), and the form is
-`<StackName>-<LogicalId>` **when that fits the type's length limit**; when it
-does not, cdkd truncates and appends `-` plus 8 hex characters
-(`mystack-averylongconstructna-19184149`). So copy the name AWS reports rather
-than building it by hand — for a long stack or logical id the plain form does
-not exist:
+`cdkd import` finds each resource by the name in the template, then through a
+CloudFormation stack of the same name. A resource whose name cdkd generated
+has no name in the template and is reported `not found`. Name those
+explicitly, copying the name AWS reports:
 
 ```bash
 cdkd import MyStack --resource MyBucket=mystack-mybucket
 ```
 
-See [Importing Existing Resources](import.md) for the full flag set.
+A generated name is `<StackName>-<LogicalId>` when that fits the type's length
+limit. Otherwise it is truncated with `-` and 8 hex characters appended
+(`mystack-averylongconstructna-19184149`). See
+[Importing Existing Resources](import.md).
 
 ### Q: Is there a rollback feature?
 
-A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback '<stack>'` command — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
+Yes. cdkd rolls back on failure by default. `--no-rollback` keeps the partial
+state instead, and the next deploy applies the remaining changes. To return a
+`--no-rollback` or interrupted deploy to its pre-deploy state, run
+`cdkd rollback MyStack`. See [Rollback](rollback.md).
 
 ### Q: Are custom resources supported?
 
-A: Yes. Both type spellings work — `Custom::<Name>` and
-`AWS::CloudFormation::CustomResource` (what CDK emits for a
-`new cdk.CustomResource(...)` with no explicit `resourceType`) — and so do both
-`ServiceToken` forms:
+Yes. Both type spellings work (`Custom::<Name>` and
+`AWS::CloudFormation::CustomResource`), and both `ServiceToken` forms:
 
-- **Lambda-backed**: the function is invoked, and the handler either returns
-  the response directly or PUTs it to the pre-signed `ResponseURL`.
+- **Lambda-backed**: cdkd invokes the function. The handler returns the
+  response directly or PUTs it to the pre-signed `ResponseURL`.
 - **SNS-backed**: cdkd publishes the request to the topic and polls for the
   response.
 
 CDK's Provider framework (`onEventHandler` + `isCompleteHandler`) is detected
-automatically; the async pattern gets a long polling timeout, one hour by
-default. Adjust it with
-`--resource-timeout AWS::CloudFormation::CustomResource=<duration>`.
+automatically and gets a longer timeout, one hour by default. Change it with:
 
-Note that `cdkd export` cannot hand a Custom Resource to CloudFormation without
-`--include-non-importable` — CloudFormation cannot import them.
+```bash
+cdkd deploy MyStack --resource-timeout AWS::CloudFormation::CustomResource=2h
+```
 
----
+`cdkd export` cannot hand a custom resource to CloudFormation without
+`--include-non-importable`.
+
+## Collecting information for a bug report
+
+An issue is quickest to act on with the cdkd version, the failing command and
+its `--verbose` output, and the resource type involved:
+
+```bash
+cdkd --version
+cdkd deploy MyStack --verbose        # debug log, including AWS's own error text
+cdkd state info                      # state bucket, its region, schema version
+cdkd state resources MyStack         # what cdkd tracks for the stack
+cdkd events MyStack                  # the stack's recorded runs
+cdkd events MyStack --run <runId>    # one run's events
+```
+
+Read the output before posting it. `--verbose` prints AWS error text that
+quotes your account, role and session, and `cdkd state show` prints resource
+properties.
+
+Everything cdkd records for a stack is under one prefix of the state bucket
+(`cdkd-state-<account>` and the prefix `cdkd` by default):
+
+```text
+s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/
+├── state.json                  # the stack's record
+├── lock.json                   # present while a command holds the lock
+├── rollback-journal.json       # present after a deploy that was not rolled back
+└── deployments/
+    ├── index.json              # the most recent runs
+    └── <runId>.jsonl           # one run's events
+```
+
+[State Management](state-management.md) and
+[Deployment Events](deployment-events.md) describe these files.
+
+### Adjust Log Level
+
+```bash
+cdkd deploy MyStack --verbose        # debug logging
+CDKD_NO_LIVE=1 cdkd deploy MyStack   # plain line-by-line output, for CI logs
+```
+
+`--verbose` is the only way to raise the log level, and every command accepts
+it. There is no log-level environment variable. `--verbose` also turns off the
+live progress display, which `CDKD_NO_LIVE=1` does by itself.
+
+`cdkd diff --json` lowers the level to `warn` so that debug output cannot
+corrupt the JSON on stdout. `--json` wins over `--verbose` there.
+
+### Check State File
+
+```bash
+cdkd state show MyStack           # readable
+cdkd state show MyStack --json    # the full record as JSON
+```
+
+To read the raw file:
+
+```bash
+aws s3 cp s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/state.json - \
+  | jq '.resources.MyBucket'
+```
+
+### Check Execution Plan with Dry Run
+
+```bash
+cdkd deploy MyStack --dry-run   # show the plan; no AWS changes
+```
+
+### Check API Calls with AWS CloudTrail
+
+cdkd calls service APIs directly, so each call is in CloudTrail under the
+identity that ran cdkd:
+
+```bash
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=CreateBucket \
+  --max-results 10
+```
 
 ## Getting help
 
 Nothing above matching? Open a
-[GitHub Issue](https://github.com/go-to-k/cdkd/issues) with the failing
-command, its output, and the resource type involved. Questions are welcome
-there too.
+[GitHub Issue](https://github.com/go-to-k/cdkd/issues) with what
+[Collecting information for a bug report](#collecting-information-for-a-bug-report)
+lists. Questions are welcome there too.
 
 ## Related
 
-- [CLI Reference](cli-reference.md) — every command, the output-stream contract,
-  and the full exit-code table
-- [State Management](state-management.md) — the state record, the lock, and the
-  bucket layout behind most of the errors above
-- [Architecture](architecture.md) — the pipeline a deploy runs through
-- [Supported Resources](supported-resources.md) — whether a type is handled by
-  an SDK provider or the Cloud Control fallback
+- [CLI Reference](cli-reference.md): every command, the output streams and the
+  exit codes
+- [State Management](state-management.md): the state record, the lock and the
+  bucket layout
+- [Rollback](rollback.md): what a rollback undoes and what it can leave behind
+- [Provisioning Layers](provisioning-layers.md): SDK providers and the Cloud
+  Control API
+- [Supported Resources](supported-resources.md): which layer handles a type
+- [Troubleshooting internals](troubleshooting-internals.md): retry schedules
+  and other mechanisms behind the entries on this page

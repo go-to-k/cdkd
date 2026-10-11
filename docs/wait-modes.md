@@ -1,67 +1,95 @@
 ---
 title: Wait Modes
-description: Choose what "done" means for a cdkd deploy — --no-wait, the load-bearing default, and CloudFormation-parity --full-wait.
+description: "Choose when cdkd deploy returns: as soon as AWS accepts each call (--no-wait), once the deploy's own dependencies are ready (default), or when everything CloudFormation waits for has settled (--full-wait)."
 ---
 
 # `--no-wait` / `--full-wait`: choose what "done" means
 
-CloudFront / RDS / ElastiCache / NAT Gateway / EC2 Instance / ELBv2
-LoadBalancer typically take 1–15 minutes to fully provision. Three
-modes, least to most waiting:
+Some resources keep provisioning for minutes after AWS accepts the create
+call: a CloudFront distribution, an RDS instance, a NAT gateway, an ECS
+service. A wait mode decides how much of that `cdkd deploy` sits through
+before it returns.
 
-- **`--no-wait`** returns as soon as the create call returns and lets
-  AWS finish in the background.
-- **default** waits where the wait is load-bearing (something the same
-  deploy resolves or verifies needs the settled state, or the wait can
-  surface a failure). The rule of thumb: where CloudFormation and
-  Terraform agree on what "done" means, cdkd matches them; where they
-  disagree, cdkd's default takes the faster side — so, for example, ECS
-  Service steady state is NOT waited for by default (Terraform does not
-  wait either; `--full-wait` restores the CloudFormation behavior). The
-  one case where both engines wait and cdkd still returns early is
-  CloudFront Distribution: it returns as soon as `CreateDistribution`
-  is accepted (nothing in-deploy needs the 3–15 min edge propagation,
-  and the wait cannot detect a failure).
-- **`--full-wait`** additionally waits everywhere CloudFormation does —
-  the exact per-type set is the wait-semantics table in
-  [Deploy: waits & concurrency](cli-deploy.md#wait-behaviour-by-resource-type).
+```bash
+cdkd deploy MyStack               # default: wait only where the deploy needs it
+cdkd deploy MyStack --no-wait     # return as soon as AWS accepts each call
+cdkd deploy MyStack --full-wait   # also wait wherever CloudFormation waits
+```
 
-## How to pick
+## Where each mode returns
 
-Pick by whether anything downstream needs the resource to actually be
-serving, not by where the deploy runs — cutting billed CI minutes is a
-perfectly good reason to use `--no-wait` in CI, and a local smoke test
-(or a pipeline that wants CloudFormation-parity completion as a standing
-setting) is a good reason to use `--full-wait`. The two flags are
-opposite ends of one axis and cannot be combined.
+```text diagram=guide-wait-modes
+  AWS accepts the create / update call
+        │                              ◀── --no-wait returns here
+        ▼
+  Resources the deploy itself depends on are ready
+    RDS, DocumentDB, Neptune, ElastiCache: available
+    NAT gateway, EC2 instance, load balancer: up
+    ACM certificate: issued
+        │                              ◀── the default returns here
+        ▼
+  Everything CloudFormation waits for has settled
+    ECS service: steady state
+    CloudFront distribution: Deployed
+                                       ◀── --full-wait returns here
+```
+
+The default waits where the wait does something for the deploy: a later step
+needs the settled resource, or the wait can surface a failure. It skips the
+two waits that do neither. An ECS service's steady state and a CloudFront
+distribution's edge propagation (3 to 15 minutes) are not needed by anything
+else in the deploy, so the default returns once the call is accepted.
+
+## Which mode to use
+
+| Mode | Use it when | What you give up |
+| --- | --- | --- |
+| `--no-wait` | Nothing runs right after the deploy: a preview environment, or a CI job where the billed minutes matter | Resources may still be coming up when the command exits |
+| default | Ordinary use | The ECS service or CloudFront distribution may not be serving yet |
+| `--full-wait` | A smoke test, a DNS cutover or a follow-on job starts as soon as the deploy returns | The extra minutes CloudFormation would also spend |
+
+Pick by whether something downstream needs the resource to be serving. Where
+the deploy runs (a laptop or CI) does not decide it.
+
+The two flags are opposite ends of one setting. Passing both is rejected
+before any AWS call:
+
+```text
+--no-wait and --full-wait cannot be combined: --no-wait skips stabilization waits, --full-wait adds them. Pick one.
+```
+
+## What `--no-wait` leaves unfinished
+
+A resource created under `--no-wait` is fully functional once AWS finishes in
+the background. Until then:
+
+- A NAT gateway is still `pending`, so nothing in the deploy can rely on
+  NAT-routed egress.
+- An EC2 instance is still `pending`. cdkd cannot verify that its instance
+  profile attached, and prints a warning naming the instance.
+- An ACM certificate is left in `PENDING_VALIDATION`.
+- A load balancer's DNS name returns 503 until it is `active`.
+
+[Deploy: waits & concurrency](cli-deploy.md) lists what each mode does for
+every affected resource type, next to what CloudFormation and Terraform do.
 
 ## Destroy always waits
 
-**Deploy-only**: `cdkd destroy` always waits (NAT in `deleting` state
-holds ENIs and would `DependencyViolation` sibling deletes).
+The flags exist on `cdkd deploy` only. `cdkd destroy` waits in every case,
+because a NAT gateway that is still `deleting` blocks the subnet, internet
+gateway and VPC deletes that follow it with `DependencyViolation`.
 
 ## The mode does not change the stack lock
 
-A stack lock is released when the command finishes its work on that stack, not
-when the resources it touched finish provisioning — so in every mode a second
-`cdkd deploy` on the same stack can start while resources the first one
-created are still coming up. `--no-wait` widens that window and
-`--full-wait` narrows it; neither changes what releasing the lock means.
-What that second deploy runs into is under
-[What the stack lock covers](cli-deploy.md#what-the-stack-lock-covers-and-when-a-second-deploy-can-start).
-
-## What "done" means per resource type
-
-The single source of truth is the wait-semantics table in
-[Deploy: waits & concurrency](cli-deploy.md#wait-behaviour-by-resource-type): what each mode does
-per resource type, next to what CloudFormation and Terraform do, plus
-the caveats (NAT egress, RDS final-snapshot timing, etc.). cdkd is
-template-compatible with CloudFormation but not
-wait-semantics-identical.
+cdkd releases a stack's lock when the command finishes its work on that
+stack. It does not hold the lock until the resources finish provisioning. In
+every mode a second `cdkd deploy` on the same stack can therefore start while
+resources from the first are still coming up. `--no-wait` widens that window
+and `--full-wait` narrows it.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md) — the per-type wait table, the concurrency knobs, and the stack lock
-- [Deploy: tuning](cli-deploy-tuning.md) — the per-resource timeout overrides, and observed-state capture
-- [Benchmarks](benchmarks.md) — what each mode costs in wall clock
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
+- [Deploy: waits & concurrency](cli-deploy.md): the per-type wait table, the
+  concurrency flags, and what the stack lock covers
+- [Deploy: tuning](cli-deploy-tuning.md): per-resource timeout overrides
+- [Benchmarks](benchmarks.md): what each mode costs in wall clock

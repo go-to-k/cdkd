@@ -1,13 +1,16 @@
 ---
 title: Core Concepts
-description: How cdkd deploys CDK apps without CloudFormation — the pipeline, S3-based state, stack outputs, orphan vs destroy, and VPC DependsOn relaxation.
+description: "How cdkd works: the pipeline from CDK app to AWS API calls, the state it keeps in S3, and how it decides what to change."
 ---
 
 # Core Concepts
 
-cdkd deploys AWS CDK applications directly via the AWS SDK and Cloud Control API, skipping CloudFormation. This page covers the concepts you need to reason about what a deploy actually does: the pipeline, state, outputs, and the two ways a resource leaves cdkd's management.
+cdkd deploys a CDK app by calling AWS APIs itself instead of handing a
+template to CloudFormation. This page gives you the model you need to predict
+what a command will do: the deploy pipeline, the state cdkd keeps, and the
+handful of terms the rest of the docs use.
 
-## How it works
+## How a deploy works
 
 ```text diagram=how-it-works
 ┌─────────────────┐
@@ -48,43 +51,94 @@ cdkd deploys AWS CDK applications directly via the AWS SDK and Cloud Control API
 └────────┘ └────────┘
 ```
 
-Your CDK app synthesizes to an ordinary CloudFormation template — cdkd requires zero CDK code changes. cdkd then builds and publishes assets, analyzes the template's dependency graph, diffs it against the current state, and executes the plan in parallel, dispatching each resource the moment its dependencies complete. Each resource is provisioned by a hand-written SDK Provider where one exists, with Cloud Control API as the fallback for many additional types — see [Provisioning Layers](provisioning-layers.md) for how cdkd chooses, and when that choice changes.
+Each stage, in order:
 
-For a deeper look at each layer and a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI parsing, synthesis, asset publishing, per-stack deploy), see [Architecture](architecture.md).
+1. **Synthesis.** cdkd runs your CDK app the way the AWS CDK CLI does and
+   reads the result: an ordinary CloudFormation template per stack. This is
+   why your CDK code needs no changes.
+2. **Assets.** Lambda code and other file assets are zipped and uploaded to
+   S3. Container images are built and pushed to ECR.
+3. **Plan.** cdkd builds the dependency graph of the template's resources and
+   compares the template with its state from the last deploy. Every resource
+   comes out as a create, an update, a delete, or no change.
+4. **Execution.** The plan runs in parallel. A resource starts the moment the
+   resources it depends on have finished; nothing waits for an unrelated
+   resource.
 
-## State Management
+Each resource is created through one of two routes. Where cdkd has a provider
+written for the resource type, it calls that service's SDK directly. For many
+other types it falls back to the Cloud Control API.
+[Provisioning Layers](provisioning-layers.md) explains how the route is chosen
+and [Supported Resources](supported-resources.md) lists the types.
 
-State is stored in S3 with optimistic locking via S3 Conditional Writes
-(no DynamoDB required). Keys are scoped by `(stackName, region)` so the
-same stack deployed to two regions has two independent state files.
+## State
 
-**You do not create this bucket yourself** — `cdkd bootstrap` creates it once
-per account (see [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap)), with
-versioning, AES-256 encryption, and a deny-external-access bucket policy. The
-settings below are only for pointing cdkd at a non-default name; pass that same
-name to `cdkd bootstrap --state-bucket` so bootstrap creates it for you there too.
+CloudFormation remembers what a stack contains. cdkd has no service behind it,
+so it writes that record itself: one JSON file per stack and region in an S3
+bucket. The file holds each resource's logical id, type, physical id and the
+properties it was last deployed with. Every later command starts from it:
+
+| Command | Compares | Answers |
+| --- | --- | --- |
+| `cdkd diff` | your template with state | What will the next deploy change? |
+| `cdkd deploy` | your template with state, then acts | |
+| `cdkd drift` | state with live AWS | What changed outside cdkd? |
+| `cdkd destroy` | reads state | What do I have to delete? |
+
+Because the state is the record of what cdkd manages, a resource that is in
+AWS but not in state is invisible to cdkd, and a resource that is in state but
+gone from AWS shows up as drift.
+
+### Where state lives
+
+`cdkd bootstrap` creates the bucket once per account, with versioning,
+AES-256 encryption and a policy that denies access from outside the account.
+You do not create it yourself.
 
 | Setting | CLI | cdk.json | Env var | Default |
-|---------|-----|----------|---------|---------|
-| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning — run `cdkd state migrate` to consolidate) |
+| --- | --- | --- | --- | --- |
+| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` |
 | Prefix | `--state-prefix` | - | - | `cdkd` |
 
-The state bucket is shared across all CDK apps in the same account by
-default. To isolate apps, pass different `--state-prefix` values.
-`cdkd destroy --all` only targets stacks from the current CDK app
-(determined by synthesis), not all stacks in the bucket.
+To use a bucket name of your own, pass the same `--state-bucket` to
+`cdkd bootstrap` so that bootstrap creates it.
 
-See **[State Management](state-management.md)** for the full
-spec: S3 key layout, optimistic-locking mechanism (ETag-based), state
-schema, legacy `version: 1` migration, bucket-name migration via
-`cdkd state migrate`, and troubleshooting.
+One bucket serves every CDK app in the account. State is keyed by stack name
+and region, so the same stack deployed to two regions has two independent
+state files, and two apps must not use the same stack name in the same region
+unless you give them different `--state-prefix` values. `cdkd destroy --all`
+only targets the stacks of the app you run it in, not everything in the
+bucket.
+
+### Locks
+
+Two deploys of the same stack at once would corrupt its state, so a command
+that changes a stack takes a lock on it first. The lock is an
+object in the same bucket, taken with an S3 conditional write; there is no
+DynamoDB table. A lock is renewed while its command runs and expires 30
+minutes after it stops being renewed, so a killed process cannot block a stack
+for long. [`cdkd force-unlock`](cli-force-unlock.md) clears one sooner.
+
+[State Store](state-store.md) is the guide to working with state, and
+[State Management](state-management.md) is the full reference.
+
+## Terms the docs use
+
+| Term | Meaning |
+| --- | --- |
+| Logical id | The resource's name in the template, such as `MyBucketF68F3FF0`. Stable across deploys. |
+| Physical id | The identifier AWS gave the real resource, such as a bucket name or an ARN. Recorded in state. |
+| Replacement | A change AWS cannot apply in place, so a new resource takes the old one's place. |
+| Stateful resource | A resource that holds data, such as a bucket, table or log group. Replacing one loses the data, so cdkd refuses unless you pass `--force-stateful-recreation`. See [Deploy: safety & compatibility flags](cli-deploy-safety.md#stateful-resource-guard). |
+| Destroy | Delete the AWS resources and the state record. |
+| Orphan | Delete only the state record. The AWS resources stay, and cdkd no longer manages them. See [Orphan vs Destroy](orphan-vs-destroy.md). |
+| Drift | A difference between state and live AWS, caused by a change made outside cdkd. See [Drift Detection](drift.md). |
+| Rollback | Undoing what a failed deploy did, so the stack returns to its last good state. See [Rollback](rollback.md). |
+| Wait mode | How long a deploy waits for a slow resource to become ready. See [Wait Modes](wait-modes.md). |
 
 ## Where to go next
 
-- [Getting Started](getting-started.md) — installing cdkd and deploying a first stack
-- [Stack Outputs](stack-outputs.md) — reading a deployed stack's outputs back
-- [Orphan vs Destroy](orphan-vs-destroy.md) — dropping a resource from state without deleting it
-- [Wait Modes](wait-modes.md) — choosing what "done" means per resource type
-- [State Management](state-management.md) — the state record in detail
-- [Architecture](architecture.md) — the full pipeline, layer by layer
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
+- [Getting Started](getting-started.md): install cdkd and deploy a first stack.
+- [Wait Modes](wait-modes.md): choose what "done" means for slow resources.
+- [Stack Outputs](stack-outputs.md): read a deployed stack's outputs back.
+- [Architecture](architecture.md): the pipeline layer by layer, for contributors.

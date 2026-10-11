@@ -1,104 +1,118 @@
 ---
 title: cdkd list
-description: "List the stacks in a CDK app with cdkd list — display paths, wildcard selection, and the environment and dependency views."
+description: "List the stacks in a CDK app with cdkd list, and the stack selection patterns every cdkd command shares."
 ---
 
 # cdkd list
 
-Prints the stacks a CDK app synthesizes, one per line, in dependency order.
-It is usually the first thing you run against an unfamiliar app.
-
-It synthesizes the app and mutates nothing, but it is not offline: synthesis
-resolves the account through STS and runs whatever context lookups the app asks
-for, which is what `--profile` and `--role-arn` are for here. Aliased `ls`.
+`cdkd list` prints the stacks a CDK app synthesizes, one per line, in
+dependency order. Run it to see what an app contains, or to feed stack names
+to a script. This page also documents the stack selection patterns every
+command shares. `cdkd ls` is an alias.
 
 ```bash
 cdkd list                           # every stack, one id per line
-cdkd ls                             # same command
-cdkd list 'MyStage/*'               # only the stacks under one stage
-cdkd list --long                    # add each stack's account and region
-cdkd list --show-dependencies       # add each stack's dependencies
+cdkd list 'MyStage/*'               # only the stacks directly inside one stage
+cdkd list --long                    # each stack's name, account and region
+cdkd list --show-dependencies       # each stack's dependencies
 cdkd list --long --json             # the same payload as JSON
 ```
+
+The command changes nothing, but it is not offline. Synthesis resolves the
+account through STS and runs the context lookups the app asks for, which is
+what `--profile` and `--role-arn` are for here.
 
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-l`, `--long` | `false` | Print each stack's environment — name, account, region — instead of just its id. |
-| `-d`, `--show-dependencies` | `false` | Print each stack's dependencies instead of just its id. |
-| `--json` | `false` | Encode the `--long` / `--show-dependencies` payload as JSON instead of YAML. Has no effect on the default one-id-per-line output. |
-| `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to an already-synthesized assembly directory. |
+| `[stacks...]` | every stack | Patterns that filter the listing. See [Selecting stacks](#selecting-stacks). |
+| `-l`, `--long` | `false` | Print each stack's name, account and region. |
+| `-d`, `--show-dependencies` | `false` | Print each stack's dependencies. |
+| `--json` | `false` | Encode the `--long` / `--show-dependencies` payload as JSON, not YAML. No effect on the default output. |
+| `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
-| `-c`, `--context <key=value...>` | — | Context values, repeatable. |
-| `--profile <profile>` | — | AWS profile. |
+| `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
 | `--verbose` | `false` | Debug-level logging. |
-| `--region <region>` | `AWS_REGION`, then the profile | Deprecated and hidden, but honoured. Prefer `AWS_REGION` or the profile — see [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command). |
-| `-y`, `--yes` | `false` | Accepted for consistency with the other commands; `cdkd list` asks no confirmation, so it changes nothing. |
+| `-y`, `--yes` | `false` | Accepted, but `cdkd list` asks no confirmation. |
+| `--region <region>` | | Deprecated and hidden. See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command). |
 
 ## Selecting stacks
 
-Positional arguments filter the listing. Every stack-selecting command
-(`deploy`, `diff`, `destroy`, `publish-assets`, `scrub`, `synth`, `list`)
-matches them the same way, as the AWS CDK CLI does:
-
-- A pattern is matched against the stack's **hierarchical id**, its CDK display
-  path: `Api` for a top-level stack, `MyStage/Api` inside a Stage. A top-level
-  stack whose `stackName` differs from its construct id is named by the
-  construct id, as in `cdk deploy`.
-- `*` matches within one `/` segment and never crosses `/`, so `'*'` selects
-  the top-level stacks only and `'MyStage/*'` the stacks directly inside
-  `MyStage`. A whole segment `**` spans any number of segments, so `'**'`
-  selects every stack, Stage stacks included.
-- Every other character — `.`, `?`, `(` and the rest — matches only itself.
-- **Differences from `cdk`:** `?`, `[...]`, `{a,b}` and a leading `!` are
-  literal in cdkd, where `cdk`'s picomatch reads them as glob syntax; and
-  cdkd's `*` / `**` also match a segment starting with `.`, which picomatch's
-  do not.
-- **cdkd extension:** a pattern that is EXACTLY a stack's physical
-  CloudFormation name (`MyStage-Api`) selects it too. Exact only, never a glob:
-  `'MyStage-*'` matches hierarchical ids, not physical names.
+Every command that takes stack arguments (`deploy`, `diff`, `destroy`,
+`publish-assets`, `scrub`, `synth`, `list`) matches them the same way, which
+is the way the AWS CDK CLI does.
 
 ```bash
-cdkd list MyStage/Api               # one stack
-cdkd list 'MyStage/*'               # every stack in a stage (quote the glob)
+cdkd list MyStage/Api               # one stack, by its CDK path
+cdkd list 'MyStage/*'               # every stack directly inside a stage
 cdkd list '**'                      # every stack, at any depth
 cdkd list MyStage-Api MyStage-Db    # several, by exact physical name
 ```
 
-`--all` on `deploy`, `destroy` and `diff` selects the **top-level** stacks only
-— the AWS CDK CLI's `--all` — and prints one line naming any Stage stacks it
-left out; name those with `'MyStage/*'` or `'**'`. An app whose every stack is
-inside a Stage is refused there. `publish-assets --all` and `scrub --all`
-cover every stack, Stage stacks included.
+A pattern is matched against the stack's **hierarchical id**, its CDK display
+path: `Api` for a top-level stack, `MyStage/Api` inside a Stage.
 
-A pattern is resolved against the whole app before anything else: when it is
-one stack's CDK path, that stack is the one selected, even where another
-stack's physical name is the same string.
+| Pattern | Matches |
+| --- | --- |
+| `Api` | The top-level stack with construct id `Api`. |
+| `MyStage/Api` | That stack inside the Stage `MyStage`. |
+| `'*'` | Every top-level stack. `*` matches within one `/` segment. |
+| `'MyStage/*'` | The stacks directly inside `MyStage`. |
+| `'**'` | Every stack, Stage stacks included. A whole segment `**` spans any number of segments. |
+| `MyStage-Api` | The stack whose physical CloudFormation name is exactly `MyStage-Api`. |
 
-Before this rule, `*` crossed `/`: a pattern without `/` was a wildcard over
-the physical name, so `cdkd destroy '*'` or `'MyStage-*'` reached Stage stacks,
-and one with `/` was a wildcard over the display path, so `'MyStage/*'` reached
-`MyStage/Parent/Child`. When `deploy` or `destroy` leaves out a stack that old
-rule would have selected, it warns in one line naming those stacks and the
-pattern that selects them.
+Rules worth knowing:
 
-Quote a wildcard, so the shell hands the pattern to cdkd rather than trying to
-resolve it itself — under zsh an unmatched glob aborts the command outright.
+- Quote a wildcard, so the shell passes the pattern to cdkd. Under zsh an
+  unmatched glob aborts the command.
+- A top-level stack whose `stackName` differs from its construct id is named
+  by the construct id, as in `cdk deploy`.
+- The physical-name form is a cdkd extension and is exact only.
+  `'MyStage-*'` is matched against hierarchical ids, not physical names.
+- When a pattern is one stack's CDK path, that stack is selected, even if
+  another stack's physical name is the same string.
+- Every character other than `*` matches only itself.
 
-With no argument, every stack in the app is listed.
+### Differences from `cdk`
+
+| Syntax | `cdk` | cdkd |
+| --- | --- | --- |
+| `?`, `[...]`, `{a,b}`, a leading `!` | Glob syntax | Literal characters |
+| `*` and `**` against a segment starting with `.` | No match | Match |
+
+### `--all`
+
+| Command | What `--all` selects |
+| --- | --- |
+| `deploy`, `destroy`, `diff` | The top-level stacks only, as in the AWS CDK CLI. One line names any Stage stacks left out. |
+| `publish-assets`, `scrub` | Every stack, Stage stacks included. |
+
+To include Stage stacks on `deploy`, `destroy` or `diff`, name them with
+`'MyStage/*'` or `'**'`. Those three refuse `--all` on an app whose every stack
+is inside a Stage.
+
+Older cdkd versions let `*` cross `/`, so `'*'` and `'MyStage-*'` reached
+Stage stacks. When `deploy` or `destroy` leaves out a stack that rule would
+have selected, it warns in one line naming those stacks and the pattern that
+selects them.
 
 ## What it prints
 
-The default output is one id per line, in dependency order. **The id is not
-always just the display path**: where a stack's display path and its physical
-CloudFormation name differ — which is what a CDK Stage produces — the line
-carries both, as `MyStage/Api (MyStage-Api)`. A single-stack app with no stage
-prints the bare name, so the two shapes look alike until a stage appears.
+The default output is one id per line. Where a stack's display path and its
+physical name differ, which is what a CDK Stage produces, the line carries
+both:
 
-That parens form is for reading, not for piping. To feed stack names to another
-command, take them from the structured output:
+```text
+Network
+MyStage/Api (MyStage-Api)
+MyStage/Db (MyStage-Db)
+```
+
+That form is for reading. To feed stack names to another command, take them
+from the structured output:
 
 ```bash
 cdkd list --long --json | jq -r '.[].name' | while read -r name; do
@@ -106,19 +120,18 @@ cdkd list --long --json | jq -r '.[].name' | while read -r name; do
 done
 ```
 
-`--long` and `--show-dependencies` switch to a structured document — YAML by
-default, JSON under `--json`. The same renderer produces `cdkd synth`'s
-template, so the document parses back unchanged; one detail worth knowing is
-that an AWS account id is a string in the payload and is emitted quoted
-(`account: "123456789012"`), matching what `--json` returns.
-Under `--json`, any control, format, line-separator or paragraph-separator
-character left in a value (such as a zero-width space) is written as a
-`\uXXXX` escape rather than raw.
+`--long` and `--show-dependencies` print a structured document, YAML by
+default and JSON under `--json`:
 
-**stdout is a payload stream on this command.** The listing goes to stdout and
-everything else — `Resolving missing context...`, the CDK app's re-emitted
-stderr, `--verbose` output — goes to stderr, so a redirect captures the listing
-alone. See
+- The document parses back unchanged. An AWS account id is a string in the
+  payload, so YAML quotes it (`account: "123456789012"`), matching `--json`.
+- Under `--json`, a control, format, line-separator or paragraph-separator
+  character left in a value, such as a zero-width space, is written as a
+  `\uXXXX` escape.
+
+The listing goes to stdout and everything else goes to stderr: progress lines
+such as `Resolving missing context...`, the CDK app's own stderr and
+`--verbose` output. A redirect therefore captures the listing alone. See
 [Output streams](cli-reference.md#output-streams-when-stdout-is-a-payload).
 
 ## Exit codes
@@ -126,18 +139,16 @@ alone. See
 | Code | Meaning |
 | --- | --- |
 | `0` | The listing was printed. |
-| `1` | Synthesis failed, the app could not be resolved, the assembly held no stacks, or **no** pattern matched anything. |
+| `1` | Synthesis failed, the app could not be resolved, the assembly held no stacks, or no pattern matched anything. |
 
-Matching is evaluated over the whole pattern set, not per pattern: `cdkd list
-Good Bad` prints `Good` and exits `0`. Only when every pattern misses is it an
-error, and the message then lists the patterns given alongside the stacks that
-do exist. Scripts that treat "no match" as a normal outcome need to handle that
-non-zero exit.
+Matching is judged over the whole set of patterns. `cdkd list Good Bad` prints
+`Good` and exits `0`. Only when every pattern misses is it an error, and the
+message lists the patterns given and the stacks that exist.
 
-The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+The table for every command is in the [CLI Reference](cli-reference.md#exit-codes).
 
 ## Related
 
-- [`cdkd synth`](cli-synth.md) — the same app read, emitting templates instead of names
-- [`cdkd diff`](cli-diff.md) — what a deploy of a listed stack would change
-- [CLI Reference](cli-reference.md) — every command, the stdout contract, and the full exit-code table
+- [`cdkd synth`](cli-synth.md): reads the same app and prints templates
+- [`cdkd diff`](cli-diff.md): what a deploy of a listed stack would change
+- [CLI Reference](cli-reference.md): every command, the stdout contract and exit codes

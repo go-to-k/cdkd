@@ -2,6 +2,17 @@
 // (```text diagram=<id>). Each follows the text diagram it replaces on the
 // site; the Markdown keeps that text, so the two are edited together.
 import type { Diagram } from './render.js';
+import { guideDiagrams } from './guide.js';
+import { cliCoreDiagrams } from './cli-core.js';
+import { cliSafetyDiagrams } from './cli-safety.js';
+import { cliDiffDriftDiagrams } from './cli-diff-drift.js';
+import { cliDestroyScrubDiagrams } from './cli-destroy-scrub.js';
+import { cliExportStateDiagrams } from './cli-export-state.js';
+import { localDiagrams } from './local.js';
+import { stateDiagrams } from './state.js';
+import { troubleshootingDiagrams } from './troubleshooting.js';
+import { contributingDiagrams } from './contributing.js';
+import { importEventsDiagrams } from './import-events.js';
 
 const howItWorks: Diagram = {
   id: 'how-it-works',
@@ -403,5 +414,17 @@ export const DIAGRAMS: Record<string, Diagram> = Object.fromEntries(
     deployUpdate,
     deployDestroy,
     contextLoop,
+    // Each area's diagrams live in a module of their own, beside this one.
+    ...guideDiagrams,
+    ...cliCoreDiagrams,
+    ...cliSafetyDiagrams,
+    ...cliDiffDriftDiagrams,
+    ...cliDestroyScrubDiagrams,
+    ...cliExportStateDiagrams,
+    ...localDiagrams,
+    ...stateDiagrams,
+    ...troubleshootingDiagrams,
+    ...contributingDiagrams,
+    ...importEventsDiagrams,
   ].map((diagram) => [diagram.id, diagram]),
 );

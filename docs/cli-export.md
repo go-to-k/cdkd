@@ -1,439 +1,362 @@
 ---
 title: cdkd export
-description: "Hand a cdkd-managed stack over to CloudFormation with cdkd export."
+description: "Hand a cdkd-managed stack over to CloudFormation with cdkd export: what it changes, what blocks it, and every flag."
 ---
 
 # cdkd export
 
-`cdkd export '<stack>'` is the mirror of [`cdkd import`](import.md): it hands a
-cdkd-managed stack over to CloudFormation. It builds a CloudFormation
-`ChangeSetType=IMPORT` changeset from cdkd state plus the synthesized template,
-executes it, and deletes cdkd state on success. AWS resources are unchanged
-across the migration. From then on the stack is managed by `cdk deploy` /
-`aws cloudformation`.
+`cdkd export` hands a stack that cdkd manages over to CloudFormation. It is the
+opposite direction of [`cdkd import`](import.md). The AWS resources are not
+modified: CloudFormation adopts them into a new stack, and cdkd deletes its
+state record once that has succeeded. From then on you change the stack with
+`cdk deploy` or `aws cloudformation`.
+
+```text diagram=export-ownership
+┌──────────────────────────────────────┐
+│ Before: cdkd owns the stack          │
+│  state record in S3, cdkd deploy     │
+└──────────────────┬───────────────────┘
+                   ▼
+┌──────────────────────────────────────┐
+│ cdkd export                          │  The AWS resources
+│  IMPORT changeset from the state     │  are not modified
+│  record + the synthesized template   │
+└──────────────────┬───────────────────┘
+                   ▼
+┌──────────────────────────────────────┐
+│ After: CloudFormation owns the stack │
+│  same resources in a CFn stack,      │
+│  cdkd state deleted, cdk deploy      │
+└──────────────────────────────────────┘
+```
 
 ```bash
-cdkd export MyStack                              # confirmation prompt; CFn stack name = cdkd stack name
-cdkd export MyStack --cfn-stack-name MyStack-CFn # name the destination stack
-cdkd export MyStack --dry-run                    # print the import plan, make no CFn calls
-cdkd export MyStack --template path.json         # pre-rendered template (JSON or YAML), skip synth
-cdkd export MyStack --include-non-importable     # 2-phase run: IMPORT, then CFn-CREATE Custom Resources
-cdkd export                                      # auto-detected for single-stack apps
+cdkd export MyStack --dry-run                    # print the import plan, change nothing
+cdkd export MyStack                              # export; the CloudFormation stack is named MyStack
+cdkd export MyStack --cfn-stack-name MyStack-CFn # name the CloudFormation stack yourself
+cdkd export MyStack --include-non-importable     # also migrate Custom Resources (two phases)
+cdkd export MyStack --template template.yaml     # use this template instead of synthesizing
+cdkd export                                      # single-stack app: the stack is detected
 ```
+
+## Export a stack
+
+::: steps
+1. Preview the plan
+
+   `--dry-run` takes no lock, creates no changeset and writes nothing. It lists
+   each resource with the identifier CloudFormation will adopt it by, and
+   reports anything that blocks the export.
+
+   ```bash
+   cdkd export MyStack --dry-run
+   ```
+
+   ```text
+   Migrating cdkd stack 'MyStack' ('us-east-1') → CloudFormation stack 'MyStack'
+
+   Import plan for CloudFormation stack 'MyStack':
+     UploadsBucket5E5E9B33 (AWS::S3::Bucket) ← BucketName=mystack-uploadsbucket5e5e9b33-k2j4h8x1
+     JobsTable1A2B3C4D (AWS::DynamoDB::Table) ← TableName=MyStack-JobsTable1A2B3C4D-9QK2M
+
+   --dry-run: no CloudFormation changeset will be created.
+   ```
+
+2. Run the export
+
+   cdkd prints the same plan, asks for confirmation, imports the resources and
+   deletes its state record.
+
+   ```bash
+   cdkd export MyStack
+   ```
+
+   ```text
+   ✓ Phase 1: CloudFormation stack 'MyStack' created via IMPORT. 2 resource(s) imported.
+   cdkd state for 'MyStack' ('us-east-1') removed. Manage the stack with 'cdk deploy' or 'aws cloudformation' from here on.
+
+   Next steps — manage the stack with CDK CLI from now on:
+     cdk diff MyStack    # verify synth matches what CFn now holds
+     cdk deploy MyStack  # subsequent updates
+   ```
+
+3. Check the result with the CDK CLI
+
+   ```bash
+   cdk diff MyStack
+   ```
+
+   The diff is empty for resources whose names AWS generated. The one case that
+   is not is described under [After the export](#after-the-export).
+:::
+
+The output above is abridged to the lines you act on.
+
+## What cannot be exported
+
+cdkd builds the whole plan before it takes the stack lock or submits anything.
+A stack that cannot be exported is reported with every offending resource named
+in one message, and nothing has changed.
+
+These are the blocks you are likely to meet:
+
+| Blocked | Remedy |
+| --- | --- |
+| A CloudFormation stack with the destination name already exists | Pick another name with `--cfn-stack-name`, or delete that stack. |
+| A Custom Resource (`Custom::*` or `AWS::CloudFormation::CustomResource`) | Pass [`--include-non-importable`](#custom-resources-and-include-non-importable). |
+| A resource type CloudFormation cannot import | See [Resource types CloudFormation cannot import](#resource-types-cloudformation-cannot-import). |
+| `-c` context overrides on the command line | See [Context values passed with `-c`](#context-values-passed-with-c). |
+| A template Parameter with no value | Pass `--parameter Key=Value`. See [Template Parameters](#template-parameters). |
+| A stack with a failed or interrupted deploy | Not a block but a prompt. See [Confirmation prompts](#confirmation-prompts). |
+
+### Resource types CloudFormation cannot import
+
+CloudFormation rejects an IMPORT changeset containing one of these types with
+`ResourceTypes [<T>] are not supported for Import`:
+
+| Resource type |
+| --- |
+| `AWS::Glue::Table` |
+| `AWS::Route53::RecordSet` |
+| `AWS::Route53::RecordSetGroup` |
+| `AWS::AppSync::GraphQLSchema` |
+| `AWS::AppSync::GraphQLApi` |
+| `AWS::EC2::NetworkAclEntry` |
+| `AWS::SQS::QueuePolicy` |
+| `AWS::SNS::TopicPolicy` |
+
+For each of them, do one of these before exporting:
+
+- Remove the resource from the stack. It stays in AWS, and you can declare it
+  in CloudFormation afterwards.
+- Destroy it and let CloudFormation create it fresh after the export.
+
+The table is not what cdkd checks against. cdkd refuses a type when its
+CloudFormation registry schema declares no `read` handler and reports
+`ProvisioningType: NON_PROVISIONABLE`. So the check covers types not listed
+here and stops applying once AWS makes a type importable.
+`AWS::AppSync::GraphQLApi` is the exception: its registry schema looks
+importable but CloudFormation refuses it, so cdkd blocks it by name.
+
+Neither check is AWS's published list of importable types. If AWS has since
+made a type importable, `--skip-import-support-preflight` skips both checks and
+lets CloudFormation answer.
+
+### Less common blocks
+
+| Blocked | Why | Remedy |
+| --- | --- | --- |
+| A template resource with no cdkd state entry | cdkd does not know its physical id. | Import it first, or remove it from the stack. |
+| A nested stack whose state record is missing | The child's resources cannot be imported. | Repair or re-import the child's state. |
+| A type with a multi-field identifier that cdkd has no mapping for | cdkd cannot build the identifier CloudFormation expects. See [Composite identifiers](#composite-identifiers). | Remove the resource before exporting. |
+| Two resources with the same import identifier | An import adopts an AWS resource into one logical id. Two `AWS::EC2::SecurityGroupIngress` resources resolving to one rule share one `sgr-…` id. | Keep one in the app, export, then add the others back with a CloudFormation stack update. |
+| An identifier property the template declares as a list containing an intrinsic, a nested list, or an empty list | The value cannot be overwritten with the recorded identifier. | Declare the scalar the message names. |
+| A recorded value that is the redaction mask `***` | cdkd cannot re-derive the real value. | See [When a recorded value is `***`](#when-a-recorded-value-is). |
+| A state record whose `resources` map, or a resource's `properties` map, is not a JSON object | A hand edit or a truncation. The export reads those maps and deletes the record at the end. | Repair the record by hand, or re-import the named resources with a selective `cdkd import --force`. |
+
+Removing a damaged record does not unblock the export. Without the root record
+there is nothing to migrate, and without a nested child's record the export
+refuses the tree as missing that child.
+
+### When a recorded value is `***`
+
+cdkd stores `***` in state where the real value is a secret. Most masks do not
+block an export. A mask blocks only where the export has to read the value:
+
+| Where the mask is | Remedy |
+| --- | --- |
+| A property a `NoEcho` template parameter fills | None needed. The exported template still reads the parameter, and CloudFormation receives its value. |
+| A resource's import identifier, or an `AWS::IAM::Policy`'s principals or name, filled by a `NoEcho` parameter | Export without the resource and adopt it into CloudFormation by hand, passing the value yourself. |
+| A longer identifier value with `***` embedded in it | Same. |
+| A nested stack's Parameter that resolves to or embeds `***` (`EXPORT_MASKED_CHILD_PARAMETER`) | Export without that nested stack, or adopt it by hand, passing the value yourself. |
+| The recorded attribute cdkd uses as the identifier (see [Identifiers read from recorded attributes](#identifiers-read-from-recorded-attributes)) | Re-import with `cdkd import MyStack --resource '<logicalId>=<physicalId>' --force` and `cloudformation:DescribeType` granted, or export without the resource. |
+| Any other recorded property | Depends on what wrote the mask. See the next table. |
+
+For a mask in any other recorded property, the record does not say what wrote
+it. There are three sources:
+
+| Source of the mask | Remedy |
+| --- | --- |
+| A Custom Resource response sets `NoEcho` | Stop setting `NoEcho` on the response, re-deploy, then export. Forcing the Custom Resource to update does not help: cdkd masks the value again when it writes state. |
+| A secret under `Fn::Base64`, such as a `{{resolve:...}}` reference in EC2 `UserData` | Have the resource read the secret at run time, re-deploy, then export. Do not put the plaintext in the template: cdkd would record it in state. |
+| A mask copied from another record by `cdkd orphan --force` (older releases) or by a `cdkd import` resolving a `Ref` or `Fn::GetAtt` | Repair the record that holds the mask with a selective `cdkd import --force`, then re-run the command that wrote this property. |
+
+In every case you can also export the stack without that resource and adopt it
+into CloudFormation by hand.
+
+A record imported through Cloud Control routinely carries `***` in its
+`attributes`. Those records export normally, because the export reads
+`attributes` only for the few types in
+[Identifiers read from recorded attributes](#identifiers-read-from-recorded-attributes).
 
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stack]` | — | Stack to export. Auto-detected when the app defines a single stack. |
-| `--cfn-stack-name <name>` | the cdkd stack name | Name of the destination CloudFormation stack. |
-| `--cfn-child-stack-name <pair...>` | `~` replaced by `-` | Per-nested-child destination name, `'<cdkdName>=<cfnName>'`. Repeatable. |
-| `--template <path>` | — | Pre-rendered CloudFormation template (JSON or YAML, format auto-detected). Skips synth. |
-| `--stack-region <region>` | — | Region of the cdkd state record. Required when the same stack name has state in several regions. |
+| `[stack]` | — | Stack to export. Detected when the app defines a single stack. |
 | `--dry-run` | off | Print the import plan and exit. No lock, no changeset, no AWS writes. |
-| `--include-non-importable` | off | Run the 2-phase migration for Custom Resources instead of refusing. |
-| `--parameter <key=value...>` | template `Default` | Template Parameter override. Repeatable. |
-| `--accept-transient-context` | off | Allow CLI `-c` overrides at export time (default: refuse). |
-| `--strict-cross-stack` | off | Refuse when sibling cdkd stacks reference this one via `Fn::GetStackOutput` (default: warn). |
-| `--skip-import-support-preflight` | off | Skip the registry pre-flight that refuses types CloudFormation cannot import. |
-| `--no-recreate-import-unsupported` | off | Block on IMPORT-unsupported types instead of the delete-and-re-create handling. |
+| `--cfn-stack-name <name>` | the cdkd stack name | Name of the destination CloudFormation stack. |
+| `--cfn-child-stack-name <pair...>` | `~` replaced by `-` | Name for a nested child, as `'<cdkdName>=<cfnName>'`. Repeatable. |
+| `--template <path>` | — | Use this CloudFormation template (JSON or YAML) and skip synthesis. |
+| `--stack-region <region>` | — | Region of the cdkd state record. Required when the stack name has state in several regions. |
+| `--include-non-importable` | off | Migrate Custom Resources in a second phase instead of refusing. |
+| `--no-recreate-import-unsupported` | off | Refuse on `AWS::IAM::Policy` instead of deleting and re-creating it. |
+| `--parameter <key=value...>` | template `Default` | Template Parameter value. Repeatable. |
+| `--accept-transient-context` | off | Allow `-c` overrides at export time. |
+| `--strict-cross-stack` | off | Refuse when other stacks in the app read this one through `Fn::GetStackOutput`. |
+| `--skip-import-support-preflight` | off | Skip the checks for types CloudFormation cannot import. |
 | `-y`, `--yes` | off | Answer the confirmation prompts automatically. |
-| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory. |
+| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a synthesized cloud assembly directory. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
+| `-c`, `--context <key=value...>` | — | Context values. Refused without `--accept-transient-context`. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state records. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
-| `-c`, `--context <key=value...>` | — | Context values, repeatable. Refused unless `--accept-transient-context` is also passed. |
 | `--verbose` | off | Verbose logging. |
 
 ## How the export runs
 
-1. Synthesize the CDK app, or read `--template <path>`.
-2. Refuse if a CloudFormation stack with the destination name already exists.
-3. Load cdkd state for the target stack and build the
-   `(logicalId, physicalId, resourceType)` map.
-4. **Build the import plan**: classify every template resource as importable,
-   blocked, a Custom Resource, an IMPORT-unsupported type, or a nested-stack
-   row, and resolve each importable resource's CloudFormation identifier.
-5. Acquire the stack lock, so a concurrent `cdkd deploy` cannot race.
-6. Ask for confirmation (skipped by `-y` / `--yes`).
-7. Preprocess the phase-1 template, then
-   `CreateChangeSet --change-set-type IMPORT`, wait, `ExecuteChangeSet`, wait
-   for the import to complete.
-8. If the stack has Custom Resources or IMPORT-unsupported types, delete the
-   IMPORT-unsupported AWS resources and submit the phase-2 UPDATE changeset
-   carrying the full template.
-9. Delete cdkd state for the migrated stack and release the lock.
+```text diagram=export-run
+┌────────────────────────────────────┐
+│ Build the import plan              │  No lock, no AWS writes.
+│  synthesize or read --template,    │  Blocked resources are
+│  classify, resolve identifiers     │  reported here.
+└─────────────────┬──────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ Lock the stack, ask to confirm     │  --dry-run stops before this
+└─────────────────┬──────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ Phase 1: IMPORT changeset          │
+│  creates the CloudFormation stack  │
+└─────────────────┬──────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ Phase 2: UPDATE changeset          │  A failure here leaves the
+│  only with Custom Resources or     │  CloudFormation stack and
+│  AWS::IAM::Policy                  │  the cdkd state in place
+└─────────────────┬──────────────────┘
+                  ▼
+┌────────────────────────────────────┐
+│ Delete cdkd state, release lock    │
+└────────────────────────────────────┘
+```
 
-**The whole plan is built before the lock is acquired** (step 4 precedes step
-5). A stack that cannot be exported says so without first locking out
-concurrent `cdkd deploy` / `cdkd destroy`, and planning issues no AWS write —
-it reads cdkd state and the CloudFormation type registry.
+The lock keeps a concurrent `cdkd deploy` or `cdkd destroy` out for the
+duration. cdkd state is deleted only after the last changeset completes, so a
+failure before that leaves the state record intact.
 
-When the changeset fails, cdkd fetches `DescribeStackEvents` and surfaces the
-per-resource failure reasons; the waiter alone reports only the high-level
-rollback state.
+When a changeset fails, cdkd fetches the stack events and prints the
+per-resource failure reasons.
 
-## What blocks an export
+Plans and error messages carry commands to paste, so a stack name, physical id
+or context value that is not a plain identifier is printed there as
+`(not shown: it is not a plain identifier)`. `cdkd state show` prints the
+stored value.
 
-Each of these is reported before anything is locked or submitted, and every
-offending resource is named in one message so you can fix them in one pass.
+## Custom Resources and `--include-non-importable`
 
-| Blocked | Why | Remedy |
-| --- | --- | --- |
-| A template resource with no cdkd state entry | Nothing to hand over — cdkd does not know its physical id. | Import it first, or remove it from the stack. |
-| A resource whose recorded properties hold the redaction mask `***` outside the positions a `NoEcho` template parameter fills | A value cdkd cannot re-derive: a `NoEcho` Custom Resource value, the `Fn::Base64` encoding of a secret, or a mask copied from another record. | See below. |
-| A resource whose import identifier, or (for an `AWS::IAM::Policy` re-created between phases) principals or name, a `NoEcho` template parameter fills | cdkd stores only `***` there, so it cannot name the resource or what to remove. | Export without it and adopt it into CloudFormation by hand, passing the parameter value yourself. |
-| A resource whose CloudFormation import identifier, or the properties overlay it is built into, embeds `***` inside a longer value | It was built from a value cdkd stores only as the mask: a `NoEcho` template parameter, or another record's masked attribute substituted through `Fn::Sub`. Applies whatever let the record's properties through. | Export without it and adopt it into CloudFormation by hand, passing the value yourself. |
-| A resource whose CloudFormation import identifier would be the redaction mask `***` | The recorded attribute cdkd reads as the identifier (an `AWS::S3Tables::Table` `TableARN`, an `AWS::EC2::SecurityGroupIngress` `Id`, ...) was masked by a Cloud Control import, or the physical id itself is masked. | Re-import the resource with `cloudformation:DescribeType` granted, or export without it. See below. |
-| A nested-stack row's Parameter that resolves to, or embeds, `***` (`EXPORT_MASKED_CHILD_PARAMETER`) | A `NoEcho` value cdkd stores only as the mask; forwarding it would hand the child the mask, and falling back to the child's `Default` would hand it a different value. | Export without that nested stack, or adopt it into CloudFormation by hand, passing the value yourself. |
-| An `AWS::CloudFormation::Stack` row with no matching nested-stack entry in cdkd state | The child's state record is missing, so its resources cannot be imported. | Repair or re-import the child's state. |
-| A resource type CloudFormation cannot import | See [Resource types CloudFormation cannot import](#resource-types-cloudformation-cannot-import). | Remove the resource, or destroy it and let CloudFormation create it fresh. |
-| A composite-id type with no registered identifier mapping | cdkd cannot turn its physical id into the field map CloudFormation expects. | Remove the resource before exporting. |
-| Two resources whose import identifier is the same AWS resource | Two `AWS::EC2::SecurityGroupIngress` resources that resolve to one rule share one `sgr-…` id, and an import adopts a resource into only one logical id. Each is named with the other. | Remove all but one from the app before exporting, then add the others back with a CloudFormation stack update; CloudFormation records an identical rule against the existing one. |
-| A Custom Resource, without `--include-non-importable` | CloudFormation cannot import `Custom::*` at all. | Pass [`--include-non-importable`](#custom-resources-and-include-non-importable). |
-| CLI `-c` overrides, without `--accept-transient-context` | The overrides are not persisted, so a later `cdk deploy` would synthesize a different template. | See [Context values passed with `-c`](#context-values-passed-with-c). |
-| A Parameter with neither a `--parameter` override nor a template `Default` | The changeset would be rejected. | Pass `--parameter Key=Value`. |
-| An identifier property the template carries in an unrepresentable shape | A list containing an intrinsic, a nested list, or an empty list. | Declare the scalar the message names. |
+CloudFormation cannot import a Lambda-backed Custom Resource. That covers
+`Custom::*` and `AWS::CloudFormation::CustomResource`, which is what
+`new cdk.CustomResource(...)` synthesizes when no `resourceType` is passed.
 
-**A damaged state record.** A record whose `resources` map, or a resource
-entry's `properties` map, is not a JSON object — `null`, absent, a list, a
-string, a number or a boolean, from a hand edit or a truncation — is refused by
-name: for the root stack at the state load, before any lock, and for every
-nested child before any child stack is planned or locked (after the root's
-plan, and on a real run under the root lock, which it releases), under
-`--dry-run` too. The export
-reads the `properties` map to build an import identifier, to check for the
-mask, and to find what a phase-2 pre-delete removes, and it deletes the record
-once the migration succeeds. Repair the record by hand, or re-import the named
-resources with a selective `cdkd import --force`. Removing the record does not
-unblock the export: without the root record there is nothing to migrate, and
-without a nested child's record the export refuses the tree as missing that
-child.
+Without `--include-non-importable` a stack containing one is refused. Under
+`--dry-run` the refusal becomes a warning, so you still see the full plan.
 
-**About the `***` mask.** The remedy depends on what put the mask there:
+With the flag, phase 1 imports everything else and phase 2 submits the full
+template, so CloudFormation creates the Custom Resources. That invokes each
+backing Lambda's `onCreate` handler again. The handler must:
 
-- **A `NoEcho` template parameter's value.** cdkd stores only `***` where such
-  a parameter fills a property, and the record names those positions. That
-  mask is no block: the exported template still reads the parameter, and
-  CloudFormation receives its value as a stack parameter. It blocks only where
-  the export itself reads the position, as the table above lists.
+1. Be idempotent: return the same `PhysicalResourceId` and `Data` on every
+   event type.
+2. Answer through the response URL: `PUT` its status payload to
+   `event.ResponseURL`.
 
-For the other three the record does not say which put the mask there:
+> [!WARNING]
+> cdkd's own deploy also accepts a handler that only returns a value.
+> CloudFormation does not. A Custom Resource backed by such a Lambda hangs
+> phase 2, and every later `cdk deploy`, until CloudFormation's one-hour
+> Custom Resource timeout.
 
-- **A `NoEcho` Custom Resource value.** Forcing the Custom Resource to update
-  does not clear the block: the handler supplies the value to the *deploy*, and
-  cdkd re-masks it on the way into state — which is what the export reads. Stop
-  setting `NoEcho` on that response and re-deploy, then export again.
-- **The `Fn::Base64` encoding of a secret** — a `{{resolve:...}}` dynamic
-  reference under `Fn::Base64`, as in EC2 `UserData`. cdkd never records that
-  encoding, so re-deploying the same template does not clear it. Stop encoding
-  the secret into the property and re-deploy, then export again. Have the
-  resource read the secret at run time instead; do not write the secret's
-  plaintext into the template, which cdkd would then record in state in the
-  clear.
-- **A mask copied from another record**, by `cdkd orphan --force` in a cdkd
-  release before it stopped copying masks, or by a `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over a masked value. Repair
-  the record that holds the mask with a selective `cdkd import --force`, then
-  re-run whichever command wrote this property.
+If phase 2 fails, cdkd state is kept and the error prints the recovery: an
+`aws cloudformation create-change-set --change-set-type UPDATE` command to
+finish phase 2, then `cdkd state orphan` to remove the state record.
 
-In every case you can also export the stack without that resource and adopt it
-into CloudFormation by hand.
+## `AWS::IAM::Policy` is deleted and re-created
 
-A mask in a record's `attributes` is a different population and is judged
-differently. `cdkd import` writes the mask there for every Cloud Control model
-key it cannot certify as read-only — the whole model when
-`cloudformation:DescribeType` was unavailable — so a Cloud-Control-imported
-record routinely carries masked attributes, and those records export normally:
-the export reads `attributes` at exactly one position, the recorded identifier
-of the few types whose cdkd physical id is not CloudFormation's identifier. Only
-a mask at THAT position blocks, because it would become the resource's identity
-in the import changeset; re-deploying does not clear it (the import re-masks),
-so the remedy is `cdkd import '<stack>' --resource '<logicalId>=<physicalId>'
---force` with `cloudformation:DescribeType` granted, or exporting without the
-resource. Whatever produced the identifier, a value equal to the mask is
-refused before the changeset is built.
+CloudFormation has no way to look up an existing inline policy, so it cannot
+import `AWS::IAM::Policy`. CDK grants emit this type often (a Lambda execution
+role's inline policy, an ECS task execution role's ECR pull policy). cdkd
+handles it without a flag:
 
-## Resource types CloudFormation cannot import
+1. Phase 1 leaves the policy out.
+2. cdkd deletes the inline policy from its roles, users and groups.
+3. Phase 2 has CloudFormation create it again from the template.
 
-A type whose CloudFormation registry schema declares no `read` handler **and**
-reports `ProvisioningType: NON_PROVISIONABLE` is rejected by `CreateChangeSet`
-with `ResourceTypes [<T>] are not supported for Import`. `AWS::Glue::Table`,
-`AWS::Route53::RecordSet`, `AWS::Route53::RecordSetGroup`,
-`AWS::AppSync::GraphQLSchema`, `AWS::EC2::NetworkAclEntry`,
-`AWS::SQS::QueuePolicy` and `AWS::SNS::TopicPolicy` are all in this class.
-(`AWS::AppSync::ApiKey` left it in September 2026, when AWS re-published the
-type with a read handler; it imports, and cdkd resolves its composite
-`[ApiId, ApiKeyId]` identifier from the `apiId|apiKeyId` physical id.)
+> [!WARNING]
+> Between steps 2 and 3 the permission does not exist. A call that relies on
+> it fails with `AccessDenied` until phase 2 completes.
 
-cdkd surfaces them from the schema it already fetches for the identifier and
-names **every** offending resource in one message — AWS's own error is not
-exhaustive. Both signals must agree before cdkd refuses, so a partial or
-unusual registry response falls back to letting AWS answer.
+The plan printed before the confirmation lists each such policy and the roles,
+users and groups it is removed from. Pass `--no-recreate-import-unsupported` to
+refuse instead.
 
-The registry heuristic is necessary but not sufficient: a type can declare a
-read handler and still be refused. `AWS::AppSync::GraphQLApi` is the measured
-case (us-east-1, September 2026: registry `FULLY_MUTABLE` with a full handler
-set, changeset rejected all the same), so cdkd also blocks it up front from a
-short list of dated measurements, with the same remedies.
+### The policy is checked against the template first
 
-Remove the resource from the stack before exporting — it stays in AWS and can
-be re-declared in CloudFormation afterwards — or destroy it first and let
-CloudFormation create it fresh.
+The principals to detach come from cdkd state. The principals phase 2 attaches
+come from the template. cdkd compares the two before anything changes and
+stops the export, with no AWS change, when they disagree:
 
-Neither verdict is AWS's published supported-for-import list.
-`--skip-import-support-preflight` is the escape hatch when AWS has since made
-a type importable: both checks are skipped, the changeset is submitted and
-CloudFormation answers for itself.
-
-## Types cdkd re-creates instead of importing
-
-A second class is importable in principle but has no schema handler
-CloudFormation can look the resource up with. cdkd handles these automatically:
-it skips the resource from phase 1, deletes the AWS-side resource between
-phases, and lets CloudFormation re-`CREATE` it in phase 2.
-
-| Resource type | Why | What the re-create costs |
-| --- | --- | --- |
-| `AWS::IAM::Policy` | No `read` or `list` handler: an inline policy attachment has no first-class AWS resource id. CDK L2 grants emit these (ECS task execution role ECR pull, Lambda execution role inline policies). | The attachment is dropped from its role / user / group between phases, so any in-flight call relying on the granted permission fails with `AccessDenied` until phase 2 completes. |
-
-The plan printed before the confirmation lists each of these resources. For
-an `AWS::IAM::Policy` it also lists the roles, users and groups the policy is
-removed from. Those names come from cdkd state, which recorded them at deploy
-time, while phase 2 re-attaches the policy to the principals the template
-names. So cdkd checks the two against each other before anything changes:
-
-- The policy is reported as a resource that blocks migration, and the export
-  stops before phase 1 without changing any AWS resource, in these cases:
-
-  | cdkd state records | `Repair with:` |
-  | --- | --- |
-  | a principal the template does not name, or a policy name that is not the template's `PolicyName` | `cdkd deploy` on the app stack, after `cdkd diff` (printed first, as `Check first with:`): typically a template change not yet deployed, and a deploy moves AWS and the record to the template together. It also removes the policy from those principals, which the diff shows. When the template's value comes from a root Parameter, re-running the export with the `--parameter` values the stack was deployed with is the other fix. |
-  | no principal list, a value that is not a list of IAM names, or a physical id that is not the policy name the record and template share | `cdkd import ... --force`: re-imports the policy so its record matches the template. |
-  | more than 100 principals | none: check the record and the template against AWS. Do not destroy the resource or remove it from the app, which would remove the policy from every recorded principal. |
-
-  A legacy `policyName:roleName` record that records no principal list at all
-  (not even an empty one) uses the id's role, when that role is an IAM name,
-  as `cdkd destroy` does, and is then checked like any other.
-- A template principal is checked directly when it is:
-  - a literal name;
-  - a `Ref` to a role, user or group resource in the same template that cdkd
-    state also records with that type;
-  - a `Ref` to a Parameter the template declares, read from the value the
-    export submits to that stack's changeset. For the root stack that is
-    `--parameter` or a `Default`. For a nested stack it is what the parent
-    row passes, resolved as described under [Child Parameters](#child-parameters),
-    so the check sees the same value phase 2 uses.
-
-  `PolicyName` is checked when it is a literal or such a Parameter `Ref`. A
-  stack's OWN SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) is never
-  read as known: its value is the SSM parameter's name, not the name
-  CloudFormation substitutes. A nested stack passed a parent's SSM-typed
-  Parameter is checked against the stored value, which is what it is handed
-  (see [Child Parameters](#child-parameters)).
-- Anything else, such as `Fn::ImportValue`, cannot be checked, and neither can
-  a missing `PolicyName`. The plan marks each such principal or policy name,
-  and the export proceeds, with `--yes` and `--dry-run` too. So under `--yes`,
-  a principal that cdkd state records and the template names only through
-  such a value is detached without anyone reading the mark.
-
-Pass `--no-recreate-import-unsupported` to block instead. The pre-delete is
-fatal on failure — phase 2 would otherwise collide with the still-present AWS
-resource. cdkd state and the post-phase-1 CloudFormation stack are preserved,
-but re-running `cdkd export` does not resume: the CloudFormation stack now
-exists, so the export refuses it. The error gives the by-hand steps: delete
-the remaining pre-delete resources, run the phase-2 UPDATE yourself, and clean
-up cdkd state with `cdkd state orphan`. The cause is usually a missing
-permission: the pre-delete issues `iam:DeleteRolePolicy` /
-`iam:DeleteUserPolicy` / `iam:DeleteGroupPolicy` for an inline policy,
-depending on what it is attached to.
-
-The plan row and the failure message name each pre-delete's physical id only
-when it is a plain value inert on a command line; any other prints as
-"(not shown: it is not a plain identifier)", since the message also carries
-commands to paste. `cdkd state show` prints the stored value.
-
-## How cdkd resolves each resource's identifier
-
-Every imported resource needs the `ResourceIdentifier` map CloudFormation
-expects. cdkd resolves each type's primary identifier property names from
-`cloudformation:DescribeType`, with a built-in fallback table covering about
-thirty single-key types.
-
-### Composite identifiers
-
-Types whose CloudFormation `primaryIdentifier` names more than one field are
-mapped by a per-type splitter. It reads cdkd's `physicalId` — plus the
-resource's recorded `properties` for sub-resource types where the parent
-identifier (`ApiId`, `FunctionName`, `RestApiId`) lives in `properties` rather
-than in the id — and produces the field map:
-
-- `AWS::ApiGateway::Method`
-- `AWS::ApiGateway::Resource`
-- `AWS::ApiGateway::Deployment`
-- `AWS::ApiGateway::Stage`
-- `AWS::ApiGateway::Authorizer`
-- `AWS::ApiGateway::Model`
-- `AWS::ApiGateway::RequestValidator`
-- `AWS::ApiGatewayV2::Integration`
-- `AWS::ApiGatewayV2::Route`
-- `AWS::ApiGatewayV2::Stage`
-- `AWS::EC2::VPCGatewayAttachment`
-- `AWS::EC2::VPCCidrBlock`
-- `AWS::EC2::Route`
-- `AWS::EC2::EIP`
-- `AWS::S3Tables::Namespace`
-- `AWS::Lambda::EventInvokeConfig`
-- `AWS::Lambda::Permission`
-- `AWS::AppSync::ApiKey`
-
-Sub-resource types whose identifier includes an AWS-generated id
-(`IntegrationId`, `RouteId`, `AWS::Lambda::Permission`'s `Id`,
-`AWS::AppSync::ApiKey`'s `ApiKeyId`) narrow the
-`Properties` overlay to the writable subset, so CloudFormation does not reject
-the changeset with "Encountered unsupported property". A composite type not in
-the list is refused with a message naming it.
-
-### Identifiers cdkd reads from recorded attributes
-
-Five types have a **single-field** CloudFormation identifier that is not cdkd's
-physical id — for four of them the physical id is a pipe-joined composite the
-identifier is not a segment of, and for `AWS::AppSync::GraphQLApi` it is the
-bare API id while CloudFormation identifies the API by its ARN — so no splitter
-can produce it. cdkd reads the value from the resource's recorded `attributes`
-instead.
-
-| Resource type | CloudFormation identifier | cdkd physical id |
-| --- | --- | --- |
-| `AWS::S3Tables::Table` | `TableARN` | `<tableBucketARN>\|<namespace>\|<name>` |
-| `AWS::AppSync::DataSource` | `DataSourceArn` | `<apiId>\|<name>` |
-| `AWS::AppSync::Resolver` | `ResolverArn` | `<apiId>\|<typeName>\|<fieldName>` |
-| `AWS::AppSync::GraphQLApi` | `Arn` | `<apiId>` |
-| `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-...` rule id) | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` |
-
-When state does not carry the attribute, the resource is blocked with an
-actionable message. For the ARN-identified four, that means a record written
-before cdkd started recording the ARN — re-deploy the stack once to heal it, as
-[State Management](state-management.md#the-composite-id-is-not-what-ref-returns)
-describes. The `AWS::AppSync::GraphQLApi` row is recent: AWS moved the type's
-identifier from `ApiId` to `Arn` in September 2026, and a registry that still
-reports `ApiId` is accepted as-is, because cdkd's physical id already is that
-value.
-
-### `AWS::EC2::SecurityGroupIngress`
-
-The ingress row's remedies differ, because there are two ways to lack the rule
-id, and a re-deploy heals neither:
-
-- **A rule declaring more than one source** (both `CidrIp` and `CidrIpv6` on one
-  resource) makes AWS mint one rule per source, and cdkd records neither id —
-  neither is *the* identifier. Split it into one ingress resource per source.
-- **A record predating that recording** carries no `Id` at all, and a no-op
-  re-deploy does not heal it either: AWS returns the rule id only from
-  `AuthorizeSecurityGroupIngress` itself.
-
-**`cdkd export` recovers it for you.** A row with no usable recorded `Id`
-triggers a paginated `DescribeSecurityGroupRules` on the group the physical id
-names, and the rule is adopted only when exactly one ingress rule on that group
-carries the composite's `(protocol, port range)` tuple:
-
-| Matches | Outcome |
+| cdkd state records | What the error tells you to run |
 | --- | --- |
-| Exactly one | Adopted. |
-| Zero | Refused, naming the row and the tuple cdkd searched for. Nothing matched, so there are no candidates to name. |
-| More than one | Refused, naming the row and every candidate `sgr-…` id — two rules sharing that tuple are two rules cdkd's own physical id cannot tell apart either. |
+| A principal the template does not name, or a policy name other than the template's `PolicyName` | `cdkd diff`, then `cdkd deploy`. This is usually a template change not yet deployed. If the value comes from a root Parameter, re-run the export with the `--parameter` values the stack was deployed with. |
+| No principal list, a value that is not a list of IAM names, or a physical id that is not the policy name | `cdkd import ... --force`, to re-import the policy so its record matches the template. |
+| More than 100 principals | Nothing. Check the record and the template against AWS. Do not destroy the resource or remove it from the app, which removes the policy from every recorded principal. |
 
-Matching rules are counted **before** any is set aside, so a rule AWS reports
-without a usable `sgr-…` id refuses too, rather than letting its sibling pass
-as "exactly one". A "more than one" refusal has two causes: the multi-source
-rule above (split the resource), or two distinct ingress resources differing
-only by source, which the composite carries none of — those are already one
-resource per source, so repair the row's `attributes.Id` or remove the row
-before exporting.
+cdkd can check a template principal that is a literal name, a `Ref` to a role,
+user or group in the same template, or a `Ref` to a template Parameter. It
+cannot check any other value, such as `Fn::ImportValue`, or a missing
+`PolicyName`. The plan marks each one it could not check and the export
+proceeds.
 
-The lookup needs `ec2:DescribeSecurityGroupRules`; without that permission the
-row is blocked with a message saying so, while a throttled lookup is retried
-with backoff and reported as a throttle rather than as a missing permission. A
-row whose state already records the `Id` — everything a current cdkd deploys —
-issues no live read at all.
+> [!IMPORTANT]
+> Under `--yes` nobody reads those marks. A principal that the template names
+> only through an uncheckable value is detached and may not be re-attached.
+> Read a `--dry-run` plan before exporting such a stack unattended.
 
-## Template preprocessing
+### If deleting the policy fails
 
-cdkd rewrites the phase-1 template automatically. The CloudFormation IMPORT
-contract requires all three changes.
+The export stops. cdkd state and the CloudFormation stack that phase 1 created
+are both kept. Re-running `cdkd export` does not resume, because the
+CloudFormation stack now exists. The error gives the steps to finish by hand:
 
-### Outputs are stripped
+1. Delete the remaining inline policies.
+2. Run the phase-2 UPDATE yourself.
+3. Remove the state record with `cdkd state orphan`.
 
-CloudFormation rejects an IMPORT changeset that declares any `Outputs` ("you
-cannot modify or add [Outputs]"). The phase-2 UPDATE re-submits the full synth
-template and restores `Outputs` along with the non-importable resources.
-
-### `DeletionPolicy: Delete` is injected
-
-CloudFormation IMPORT requires a `DeletionPolicy` on every imported resource,
-and CDK synth emits one only when `RemovalPolicy` is set explicitly. cdkd
-injects `Delete` rather than `Retain`, so the post-export template matches the
-CloudFormation type default — the same thing plain CloudFormation would have
-applied — and the post-export `cdk diff` carries no `DeletionPolicy` noise.
-`UpdateReplacePolicy` is deliberately not injected; only `DeletionPolicy` is
-required for IMPORT.
-
-### The `ResourceIdentifier` overlay is conditional
-
-cdkd mirrors upstream `cdk import`: it passes the synth template through and
-lets CloudFormation match resources via the changeset's
-`ResourcesToImport[].ResourceIdentifier` alone — except when the template
-carries a *literal* value for the identifier field that *differs* from it.
-Four cases:
-
-| Template value | What cdkd does | Post-export `cdk diff` |
-| --- | --- | --- |
-| **Absent** — an auto-generated name, no physical name declared in CDK code | Leaves `Properties[<NameField>]` absent. CloudFormation accepts the changeset on `ResourceIdentifier` alone. | Clean: both sides have the property absent. |
-| **An intrinsic** — a composite-id sub-resource referencing its parent via `{Ref: ...}` / `{Fn::GetAtt: ...}` | Preserves the intrinsic. CloudFormation resolves it during changeset processing against the parent's own `ResourceIdentifier`, since the parent is imported in the same changeset. | Clean: both sides keep the intrinsic. |
-| **A mismatched literal** — the legacy name-prefixing case below | Overwrites the property with the value cdkd recorded, which is the authority on what the resource is. Without this, AWS rejects with `The Identifier [<Field>] ... does not match the identifier value for the resource in the template`. | The overlay persists; see [After the export](#after-the-export). |
-| **Unrepresentable** — a list carrying an intrinsic, a nested list, or an empty list | Refuses, naming the resource, the property and the scalar to declare instead. | n/a |
-
-A plain literal — a string, number, boolean, or an array of those — is
-overwritten with the scalar identifier. Only the unrepresentable shapes are
-refused, because preserving any of them reproduces an opaque CloudFormation
-rejection, while what makes overwriting wrong differs per shape: only a list
-that actually carries an object element has an intrinsic to discard. The
-message says which reason applies.
+The usual cause is a missing permission: `iam:DeleteRolePolicy`,
+`iam:DeleteUserPolicy` or `iam:DeleteGroupPolicy`, depending on what the policy
+is attached to.
 
 ## Nested stacks
 
-A cdkd nested-stack tree is exported by a **leaf-first per-stack IMPORT loop**.
-cdkd walks the cdkd state tree recursively and submits one IMPORT changeset per
-cdkd-managed stack:
+A nested-stack tree is exported one stack at a time, leaves first. Each cdkd
+stack in the tree becomes its own CloudFormation stack, and each parent then
+adopts its children as nested stacks. CloudFormation offers no single changeset
+for this: it rejects `IncludeNestedStacks` on an IMPORT changeset.
 
-- **Leaf stacks** get a single CREATE-via-IMPORT changeset.
-- **Non-leaf parents** get two. Phase 1A is a CREATE-via-IMPORT covering the
-  parent's own leaf resources; phase 1B is an UPDATE-via-IMPORT against the
-  now-existing parent that adopts the already-imported children, following
-  AWS's "Nest an existing stack" pattern.
-
-Phase 1B injects `DeletionPolicy: Retain`, `ResourceIdentifier: { StackId:
-<child arn> }`, a `TemplateURL` rewritten to point at the child's
-AWS-canonicalized template (fetched with `GetTemplate(Processed)` after the
-import), and the child's tags forwarded from `DescribeStacks` — AWS's nested
-stack import validation rejects tag mismatches.
-
-Between phases each non-root stack is flipped from `IMPORT_COMPLETE` to
-`UPDATE_COMPLETE` by a no-op tag-only `UpdateStack`, because AWS rejects
-`IMPORT_COMPLETE` as a non-importable status for nesting. The flip adds a
-transient `cdkd:nested-export-flip` tag, which phase 1B then forwards verbatim
-into the parent template.
-
-There is no single-changeset alternative: AWS rejects `IncludeNestedStacks` on
-an IMPORT changeset outright (`ValidationError: IncludeNestedStacks is not
-supported for changeSet type: IMPORT`).
+```bash
+cdkd export MyApp --dry-run   # per-stack plan for the whole tree
+cdkd export MyApp
+```
 
 ### Child stack names
 
-Each cdkd child stack `<parent>~<childLogicalId>` becomes its own
-CloudFormation stack named `<parent>-<childLogicalId>` by default, because `~`
-is illegal in a CloudFormation stack name. Override per child, repeatably:
+A cdkd child stack is named `<parent>~<childLogicalId>`. `~` is not allowed in a
+CloudFormation stack name, so the child becomes `<parent>-<childLogicalId>`.
+Override it per child:
 
 ```bash
 cdkd export MyApp --cfn-child-stack-name 'MyApp~Database=my-app-db'
@@ -441,301 +364,296 @@ cdkd export MyApp --cfn-child-stack-name 'MyApp~Database=my-app-db'
 
 ### Child Parameters
 
-Per-child Parameters are forwarded from the parent template's
-`AWS::CloudFormation::Stack.Properties.Parameters` block. Literal string,
-number and boolean values pass through. Intrinsic-valued Parameters
-(`{Ref: <ParentParam>}`, `{Fn::GetAtt: [ParentResource, Attr]}`) are resolved
-at import time against the parent's resolved Parameters and cdkd state, in a
-root-first pre-pass — a child's Parameters resolve against its parent's. A
-value cdkd cannot resolve degrades to a warning, and the child template's
-Parameter `Default` must then cover it. A value that resolves to, or embeds,
-the redaction mask `***` (a `NoEcho` value cdkd stores only as the mask) is
-never forwarded and never left to the `Default`: the export refuses with
-`EXPORT_MASKED_CHILD_PARAMETER` before anything is locked or submitted.
-Export the stack without that nested stack, or adopt it into CloudFormation by
-hand, passing the value yourself.
+Each child receives the Parameters its parent's template passes to it.
 
-When a parent passes one of its SSM-typed Parameters
-(`AWS::SSM::Parameter::Value<...>`) to a child, CloudFormation hands the nested
-stack the value stored under the SSM parameter, not its name. After the export
-the child is a standalone CloudFormation stack, so cdkd reads that value with
-`ssm:GetParameter` (without decryption) and submits it to the child's
-changeset. The parent's own changeset still submits the SSM parameter's name,
-which CloudFormation resolves. A list type is a list to the child row's `Ref`,
-so `Fn::Join` and `Fn::Select` over it resolve, and a bare `Ref` hands it over
-comma-joined. Only a parameter the child's row mentions is read, and `cdkd
-export` then needs `ssm:GetParameter` on it. If the read fails, or the
-parameter's type is not `String` or `StringList` (such as a `SecureString`,
-which CloudFormation does not accept for an SSM-typed Parameter), the export
-refuses before it takes any nested stack's lock or submits any changeset, so
-nothing changes. `--dry-run` warns instead and plans without the nested stacks'
-Parameter values, so their principals read as unconfirmed. The value is handled like any other resolved
-Parameter value: a `String` or `StringList` SSM parameter is public
-configuration, and a `SecureString` is never read decrypted.
+| Value the parent passes | What the child's changeset receives |
+| --- | --- |
+| A literal string, number or boolean | The value. |
+| A `Ref` to a parent Parameter, or `Fn::GetAtt` on a parent resource | The resolved value, from the parent's Parameters and cdkd state. |
+| A value cdkd cannot resolve | Nothing, with a warning. The child template's `Default` must cover it. |
+| A value that resolves to or embeds `***` | The export refuses with `EXPORT_MASKED_CHILD_PARAMETER`. |
+| A parent's SSM-typed Parameter (`AWS::SSM::Parameter::Value<...>`) | The value stored in SSM, which cdkd reads with `ssm:GetParameter`, without decryption. |
 
-### Failure and re-runs
+For the SSM case `cdkd export` needs `ssm:GetParameter` on each parameter a
+child's row mentions. If the read fails, or the parameter is not a `String` or
+`StringList`, the export refuses before it locks any nested stack or submits
+any changeset. `--dry-run` warns instead.
 
-On a per-stack failure, cdkd state is preserved for the failed stack and every
-stack not yet imported, and the error names which stacks moved and which
-remain; a cdkd or CloudFormation stack name that is not a plain identifier
-inert on a command line prints in those lists as "(not shown: it is not a
-plain identifier)". Re-running `cdkd export` does not resume: it refuses the whole tree
-while any of its CloudFormation stacks exists, and every stack imported before
-the failure has one. When any step from a stack's IMPORT (Phase 1A) through its
-phase 2 fails, the error gives the by-hand recovery instead:
+### When one stack of the tree fails
 
-- a `cdkd state orphan <stack> --stack-region <region>` for each stack that
-  finished, and for the failed stack once you finish the steps it still needs
-  by hand, which the error names (a failed parent's by-hand IMPORT, or its
-  redone adoption, must adopt its already-imported nested children);
-- when the failed stack's phase 2 re-creates resources CloudFormation cannot
-  import, the by-hand deletes to run before that phase 2;
-- the stacks not yet imported, to migrate with CloudFormation IMPORT by hand,
-  adopting their nested children as AWS's "Nest an existing stack" procedure
+cdkd state is kept for the failed stack and for every stack not yet imported.
+The error names the stacks that moved and the ones that remain.
+
+Re-running `cdkd export` does not resume. It refuses the tree while any of its
+CloudFormation stacks exists, and every stack imported before the failure has
+one. The error gives the recovery by hand instead:
+
+- `cdkd state orphan <stack> --stack-region <region>` for each stack that
+  finished, and for the failed stack once you complete the steps the error
+  names for it.
+- The inline-policy deletes to run before the failed stack's phase 2, when it
+  has one.
+- The stacks not yet imported, which you migrate with CloudFormation IMPORT by
+  hand, adopting nested children as AWS's "Nest an existing stack" procedure
   describes.
 
-When the very first stack's IMPORT fails, nothing was imported: delete that
-stack's CloudFormation stack if the failed IMPORT left one, after checking with
-the printed `aws cloudformation list-stack-resources` that it holds no
-resources, and re-run the export.
+If the first stack's import fails, nothing was imported. Delete the
+CloudFormation stack the failed import left, after confirming with the printed
+`aws cloudformation list-stack-resources` command that it holds no resources,
+and re-run the export.
 
-`--dry-run` prints the per-stack plan summary without acquiring child locks or
-submitting any changeset. It still resolves each child's Parameters, which can
-read other stacks' outputs from cdkd state or CloudFormation.
-
-The design rationale is in the
-[nested-stack export/import design note](design/464-nested-stacks-export-import.md).
-
-## Custom Resources and `--include-non-importable`
-
-Lambda-backed Custom Resources — both `Custom::*` and
-`AWS::CloudFormation::CustomResource`, the latter being what
-`new cdk.CustomResource(...)` synthesizes when no `resourceType` is passed —
-are not CloudFormation-importable. Without `--include-non-importable` their
-presence aborts the command — except under `--dry-run`, where the missing flag
-is downgraded to a warning so you still see the full plan and the gate you
-would need to flip.
-
-With the flag, cdkd runs the 2-phase migration: phase 1 imports the importable
-resources, and phase 2 submits an UPDATE changeset carrying the full template,
-so CloudFormation `CREATE`s the Custom Resources. That re-invokes each backing
-Lambda's `onCreate` handler, which must be:
-
-1. **Idempotent** — the same `PhysicalResourceId` and `Data` on every event
-   type; and
-2. **Correct about the cfn-response protocol** — it must `PUT` a
-   Status / PhysicalResourceId payload to `event.ResponseURL`.
-
-cdkd's own deploy path also accepts a return-value fast path for handler
-responses, but the phase-2 UPDATE, any later rollback, and every future
-`cdk deploy` against the imported stack all require the real `ResponseURL`
-post. A Custom Resource backed by a return-only Lambda will hang until
-CloudFormation's one-hour Custom Resource ceiling.
-
-On a phase-2 failure, cdkd state is preserved and the error message carries the
-recovery procedure: an
-`aws cloudformation create-change-set --change-set-type UPDATE ...` invocation
-followed by `cdkd state orphan`.
+The changeset sequence cdkd submits per stack is described in
+[cdkd export internals](cli-export-internals.md#nested-stack-changesets).
 
 ## Template Parameters
 
-Parameters in the synthesized template are forwarded to both the phase-1 and
-phase-2 changesets. Each one resolves in order:
+Parameters in the template are passed to both changesets. Each one takes its
+value from `--parameter Key=Value` if given, otherwise from the template's
+`Default`.
 
-1. a `--parameter Key=Value` override (repeatable), then
-2. the template's `Default`.
+```bash
+cdkd export MyStack --parameter Environment=prod --parameter InstanceCount=2
+```
 
-A Parameter with neither aborts with an error listing the missing keys, and a
-`--parameter` override naming a key the template does not declare is rejected
-too, which catches typos. CDK-generated templates typically carry only
-`BootstrapVersion`, with a default — `cdkd export` needs no `--parameter` for
-those.
+A Parameter with neither is an error listing the missing keys. A `--parameter`
+naming a key the template does not declare is also an error, which catches
+typos. A CDK-generated template usually declares only `BootstrapVersion`, which
+has a default, so most exports need no `--parameter`.
 
 ## Context values passed with `-c`
 
-CDK reads context from `cdk.json` and `cdk.context.json` on every synth. CLI
-`-c key=value` overrides are **not** persisted to either file; they apply only
-to the current invocation. So if you run `cdkd export -c env=prod` and later
-run `cdk deploy` without the same `-c env=prod`, CDK synthesizes a different
-template, which CloudFormation sees as drift or a replacement on the first
-post-migration deploy.
+`-c key=value` applies to one invocation and is not saved to `cdk.json`. If you
+export with `-c env=prod` and later run `cdk deploy` without it, CDK
+synthesizes a different template, and CloudFormation updates or replaces
+resources on that deploy. `cdkd export` therefore refuses `-c` overrides.
 
-`cdkd export` therefore refuses by default when CLI `-c` overrides are present.
-Two ways forward:
+Move the values into `cdk.json` and export without `-c`:
 
-- **Recommended.** Move the overrides into `cdk.json`'s `"context": { ... }`
-  field and re-run `cdkd export` without `-c`. Later `cdk deploy` invocations
-  read `cdk.json` automatically.
-- **Escape hatch.** Pass `--accept-transient-context`. cdkd proceeds and warns,
-  naming every override. You are then responsible for passing the same `-c`
-  flags to every future `cdk deploy` for this stack, or for moving them into
-  `cdk.json` before then. On success cdkd prints the `cdk diff` /
-  `cdk deploy` commands including the captured flags. A value that is not a
-  plain identifier inert on a command line (JSON, a space) prints as the
-  quoted hole `'<context>'` there and as "(not shown: it is not a plain
-  identifier)" in the warning; `cdk.json` is the way to keep such a value.
+```json
+{
+  "app": "npx ts-node bin/app.ts",
+  "context": {
+    "env": "prod"
+  }
+}
+```
+
+Or pass `--accept-transient-context`. cdkd warns, naming every override, and
+on success prints the `cdk diff` and `cdk deploy` commands with the same `-c`
+flags. You then have to pass them on every later `cdk` invocation for this
+stack.
 
 ## Cross-stack consumers
 
-When other stacks in the same CDK app reference the exporting stack via
-`Fn::GetStackOutput`, cdkd scans for them at synth time.
+cdkd checks whether other stacks in the same CDK app read this stack's outputs
+through `Fn::GetStackOutput`.
 
-Those consumers keep resolving after the migration through the CloudFormation
-fallback: the exported stack's outputs move to CloudFormation, and a consumer's
-next resolve reads them from there (`DescribeStacks`) after missing in cdkd
-state. The reference is weak either way. By default cdkd warns that the
-references become fallback-dependent; `--strict-cross-stack` refuses instead.
+Those consumers keep working after the export. The outputs now live in
+CloudFormation, and a consumer that does not find them in cdkd state reads them
+from the CloudFormation stack. cdkd warns that the references now depend on
+that fallback. `--strict-cross-stack` refuses instead.
 
-They break only for consumers deployed with `--no-cfn-fallback`. Plan
-multi-stack migrations from the leaves up in that case.
+A consumer deployed with `--no-cfn-fallback` does break. Plan a multi-stack
+migration from the leaves up in that case.
 
-Without `Fn::GetStackOutput` — or with consumer stacks outside the CDK app — no
-scan can run, and checking is up to you.
+cdkd cannot see consumers outside the CDK app. Checking those is up to you.
+See [Cross-Stack References](cross-stack-references.md).
 
 ## Drift baseline
 
-cdkd warns when state lacks `observedProperties` for one or more resources.
-Without that baseline `cdkd drift` cannot reliably compare against AWS, so the
-first `cdk deploy` after the migration may surface unexpected changes if AWS
-has drifted from the synth template. Run `cdkd state refresh-observed '<stack>'`
-(or any redeploy) before exporting, then `cdkd drift '<stack>'` to verify. The
-warning is non-blocking by design — you decide whether to proceed.
+The export submits the synthesized template as it is. If a resource in AWS has
+drifted from the template, the first `cdk deploy` after the export changes it
+back. To find drift before exporting:
 
-A resource whose baseline a `cdkd import` run **refused** is listed apart:
-`cdkd state refresh-observed` declines it too. The list is grouped by remedy.
-Deploying a change to the resource restores its baseline, unless the refusal was
-over a template parameter whose deployed value cdkd could not prove; then only
-replacing the resource, or re-importing it while a CloudFormation stack can
-prove the value, clears it. A refusal recorded by an older cdkd without its
-reason is treated this way when the resource reads a template parameter in the
-template the CDK app synthesizes, the same reading the next deploy applies.
-With `--template`, or for a resource that template no longer defines, the
-warning cannot tell and says so. See
-[the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
+```bash
+cdkd state refresh-observed MyStack   # record what AWS holds now
+cdkd drift MyStack                    # compare
+```
 
-A `resources` **bag** that is not a JSON object never reaches this report: the
-export refuses such a record first (see
-[What blocks an export](#what-blocks-an-export)).
+`cdkd export` warns when the state record has no drift baseline for some
+resources, because `cdkd drift` cannot compare those reliably. The warning does
+not stop the export.
 
-A `resources` **entry** that is not an object, or carries no resource type,
-gets its own warning here, naming the logical ids, and is left out of the
-baseline tally rather than counted as a resource missing one: nothing can read
-such a row, so the advice above cannot help it. Most rows that reach this
-warning are ones the import plan does not read a state entry for: an id the
-synth template does not declare at all (a stale row from a rename or a hand
-edit), an `AWS::CDK::Metadata` row, and a Custom Resource row, which cdkd plans
-as a fresh create in the second phase. A templated resource of any other type
-whose row has no physical id — every shape that is not an object among them —
-is refused earlier, by name, with the rest of the resources cdkd cannot import,
-and so is a nested stack whose row carries no type. Any other templated
-resource whose row is an object with a physical id but no type is planned from
-the template's type and still named here. The record is malformed either way;
-inspect it with `cdkd state show '<stack>' --stack-region '<region>' --json` before
-migrating.
+Resources whose baseline a `cdkd import` run refused are listed separately in
+the warning, grouped by remedy, because `cdkd state refresh-observed` skips
+them too. [`cdkd import`](import.md) explains the refusal.
 
-When the stack's records are unreadable in that way, the `refresh-observed`
-advice above changes: that command refuses a record holding such a row, so the
-warning says to repair the record first. Because `refresh-observed` rewrites
-state, its command is printed only when the stack name and region render
-exactly as loaded; when sanitizing or the length cap would change either, the
-warning names the command in prose and prints no command to paste, since a
-near-match could rewrite a different stack's baseline. It is withheld the same
-way for a stack whose name begins with `-`, which the CLI reads as an option
-however it is quoted — a stack named `--all` would otherwise print a command
-that rewrites every record in the region rather than the one named. The commands this section's warnings
-suggest are built from the stack and region `cdkd export` loaded the record
-from — not the values stored inside it, which a hand edit can change — and name
-that region so the command selects one record when the same stack name holds
-state in several. A legacy record, whose key carries no region, gets no
-`--stack-region` at all, and no `refresh-observed` command either: that command
-refuses a record with no region, so the warning says to migrate it first (any
-cdkd write does). The read-only `cdkd state show` command is still
-printed when rendering altered the name, so it may name a stack other than the
-one loaded; it changes nothing either way.
+The warning also names any resource entry in the record that is not an object
+or has no resource type. Inspect such a record before exporting:
+
+```bash
+cdkd state show MyStack --stack-region us-east-1 --json
+```
 
 ## Confirmation prompts
 
-`cdkd export` asks before it changes anything. `-y` / `--yes` skips all three.
+`cdkd export` asks before it changes anything. `-y` / `--yes` answers all of
+them, and `--dry-run` never prompts.
 
 | Prompt | Raised when |
 | --- | --- |
-| `Export anyway?` | The stack has a rollback journal — a previous deploy failed or was interrupted and has not been reverted. |
-| Migration confirm | Before submitting the changeset for a single stack. |
-| Tree-wide confirm | Before submitting the per-stack IMPORT loop for a nested-stack tree. |
+| `Export anyway?` | A previous deploy of the stack failed or was interrupted and has not been rolled back. |
+| Migration confirmation | Before the changeset for a single stack is submitted. |
+| Tree-wide confirmation | Before the per-stack loop for a nested-stack tree starts. |
 
-Exporting a half-deployed state to CloudFormation is almost certainly
-unintended, which is why the journal case prompts on its own: run
-`cdkd rollback '<stack>'` to revert, or `cdkd deploy` to fix forward, first.
-`--dry-run` never prompts.
+Exporting a half-deployed stack is rarely what you want. Run
+`cdkd rollback MyStack` to revert, or `cdkd deploy` to finish, first.
 
-All three prompts are **interactive-only**. On a non-TTY stdin each refuses
-before creating the prompt, exiting 1 — see
-[Destroy flags & guards](cli-destroy.md#every-other-mutating-confirmation-prompt-is-interactive-only-too).
-The migration and tree-wide prompts hold the stack lock; each releases it on
-the way out, so a refusal leaks no lock.
+The prompts need a terminal. When stdin is not a TTY, each one refuses with
+exit code `1` instead of waiting, and releases the stack lock if it holds it.
+Pass `--yes` in CI.
 
 ## After the export
 
-cdkd prints the `cdk diff` and `cdk deploy` commands to run next. Post-export
-`cdk diff` is clean for auto-generated names and for composite-id
-sub-resources.
+cdkd prints the `cdk diff` and `cdk deploy` commands to run next. `cdk diff` is
+empty for resources with generated names and for sub-resources that reference
+their parent.
 
-One case still proposes a **replacement** on the next `cdk deploy`: a stack
-carrying names prefixed by cdkd's legacy user-supplied-name prefixing —
-`cdkd deploy --prefix-user-supplied-names`, or a stack deployed before that
-stopped being the default. There, `roleName: 'my-role'` in CDK code became
-`MyStack-my-role` on AWS. Phase-1 preprocessing rewrites the template's name
-field to the prefixed value, or CloudFormation IMPORT would reject the
-identifier mismatch, and that prefixed value persists into the post-import
-template. The next `cdk deploy` sees `MyStack-my-role` (recorded by
-CloudFormation) against `my-role` (declared in CDK) as a change to an immutable
-name field, and proposes a replacement.
+One case proposes a replacement on the next `cdk deploy`: a stack whose
+physical names carry cdkd's stack-name prefix. That happens with
+`cdkd deploy --prefix-user-supplied-names`, and with stacks deployed before
+v0.94.0, when prefixing was the default.
 
-Before your first post-export deploy, either change the CDK code to the
-prefixed value (`roleName: 'MyStack-my-role'`) or accept the replacement. The
-export's prefix-migration pre-flight is meant to surface this beforehand, and
-inspecting the post-import changeset is the way to be sure:
-
-```bash
-aws cloudformation create-change-set --change-set-type UPDATE ...
+```ts
+// In the CDK app
+new iam.Role(this, 'Role', {
+  roleName: 'my-role', // the role in AWS is named MyStack-my-role
+  assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+});
 ```
 
-Changed in v0.94.0: user-supplied physical names are no longer prefixed by
-default, so stacks deployed since are not in this case.
+The export records the real name, `MyStack-my-role`, in CloudFormation. The
+next `cdk deploy` then sees the template's `my-role` as a change to an
+immutable name and proposes to replace the role.
+
+Before the first deploy after the export, either change the CDK code to the
+prefixed name (`roleName: 'MyStack-my-role'`) or accept the replacement. To see
+what the deploy would do without running it:
+
+```bash
+aws cloudformation create-change-set \
+  --stack-name MyStack \
+  --change-set-name post-export-check \
+  --change-set-type UPDATE \
+  --template-body file://cdk.out/MyStack.template.json \
+  --capabilities CAPABILITY_NAMED_IAM
+aws cloudformation describe-change-set \
+  --stack-name MyStack --change-set-name post-export-check
+```
+
+## How cdkd identifies each resource
+
+Each imported resource needs the identifier CloudFormation knows it by. cdkd
+reads the identifier's property names from the type's CloudFormation registry
+schema (`cloudformation:DescribeType`), with a built-in table for about thirty
+common single-field types as a fallback. For most types the identifier is
+cdkd's physical id and there is nothing to know.
+
+### Composite identifiers
+
+These types have an identifier with more than one field. cdkd builds it from
+the physical id and, where the parent's id is a property (`ApiId`,
+`FunctionName`, `RestApiId`), from the recorded properties.
+
+| Service | Resource types |
+| --- | --- |
+| API Gateway (REST) | `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`, `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Model`, `AWS::ApiGateway::RequestValidator` |
+| API Gateway (HTTP) | `AWS::ApiGatewayV2::Integration`, `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Stage` |
+| EC2 | `AWS::EC2::VPCGatewayAttachment`, `AWS::EC2::VPCCidrBlock`, `AWS::EC2::Route`, `AWS::EC2::EIP` |
+| Lambda | `AWS::Lambda::EventInvokeConfig`, `AWS::Lambda::Permission` |
+| AppSync | `AWS::AppSync::ApiKey` |
+| S3 Tables | `AWS::S3Tables::Namespace` |
+
+A type with a multi-field identifier that is not in this table is refused with
+a message naming it.
+
+### Identifiers read from recorded attributes
+
+For five types the CloudFormation identifier is a single value that is not
+cdkd's physical id. cdkd reads it from the attributes it recorded at deploy
+time.
+
+| Resource type | CloudFormation identifier | cdkd physical id |
+| --- | --- | --- |
+| `AWS::S3Tables::Table` | `TableARN` | `<tableBucketARN>\|<namespace>\|<name>` |
+| `AWS::AppSync::DataSource` | `DataSourceArn` | `<apiId>\|<name>` |
+| `AWS::AppSync::Resolver` | `ResolverArn` | `<apiId>\|<typeName>\|<fieldName>` |
+| `AWS::AppSync::GraphQLApi` | `Arn` | `<apiId>` |
+| `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-…` rule id) | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` |
+
+`AWS::AppSync::GraphQLApi` reaches this table only under
+`--skip-import-support-preflight`, because it is blocked by default.
+
+A resource whose record lacks the attribute is blocked with a message saying
+so. For the four ARN-identified types, deploy the stack once: an older record
+did not store the ARN, and a deploy adds it.
+[State Management](state-management.md) describes these composite ids.
+
+### `AWS::EC2::SecurityGroupIngress` without a recorded rule id
+
+A deploy does not add a missing rule id. When the record has none, the export
+looks the rule up itself with `DescribeSecurityGroupRules`, which needs
+`ec2:DescribeSecurityGroupRules`. It searches the security group for ingress
+rules with the same protocol and port range:
+
+| Rules that match | Outcome |
+| --- | --- |
+| Exactly one | Adopted. |
+| None | Refused, naming the resource and what cdkd searched for. |
+| More than one | Refused, naming the resource and every candidate `sgr-…` id. |
+
+More than one match has two causes:
+
+- One ingress resource declares both `CidrIp` and `CidrIpv6`. AWS creates one
+  rule per source. Split it into one resource per source.
+- Two ingress resources differ only by source. Repair the resource's recorded
+  `Id` attribute, or remove the resource before exporting.
+
+A record that already has the rule id, which is everything a current cdkd
+deploys, triggers no lookup.
+
+## What cdkd changes in the template
+
+The phase-1 template is the synthesized template with three changes that an
+IMPORT changeset requires.
+
+| Change | Why |
+| --- | --- |
+| `Outputs` are removed in phase 1 | An IMPORT changeset may not declare outputs. Phase 2 restores them. |
+| `DeletionPolicy: Delete` is added to resources that have none | An IMPORT requires a `DeletionPolicy` on every resource. `Delete` is what CloudFormation applies by default, so `cdk diff` stays empty. |
+| An identifier property is overwritten when the template's literal value differs from the real one | CloudFormation rejects a template whose identifier does not match the resource. This is the prefixed-name case in [After the export](#after-the-export). |
+
+An identifier property that the template leaves out, or sets with `Ref` or
+`Fn::GetAtt`, is left as it is.
+
+Templates are JSON or YAML. YAML shorthand intrinsics (`!Ref`, `!Sub`,
+`!GetAtt`, `!Join`) are preserved, and the changesets are submitted in the
+same format as the source template.
 
 ## Limitations
 
-- **Inline `TemplateBody` only**, capped at 51,200 bytes. A larger template
-  needs an S3 upload via `TemplateURL`, which `cdkd export` does not do.
-- **The synth template is used verbatim.** cdkd does not substitute
-  `observedProperties` into it, so if the CDK code has drifted from the
-  AWS-current state, the next `cdk deploy` after the migration updates the
-  resource. Run `cdkd drift` before exporting if that matters.
-- **Nested-stack Parameters that cdkd cannot resolve** degrade to a warning;
-  the child template's `Default` has to cover them.
-
-JSON and YAML are both supported. Templates round-trip through cdkd's
-CloudFormation-aware codec, which preserves every shorthand intrinsic (`!Ref`,
-`!Sub`, `!GetAtt`, `!Join`, …) across the parse, preprocess and re-serialize
-cycle. The phase-1 IMPORT and phase-2 UPDATE changesets are emitted in the same
-format as the source template, so a YAML-authored stack stays YAML on the wire.
+- A template larger than 51,200 bytes is uploaded to the state bucket for the
+  duration of the changeset call. A template larger than 1 MB cannot be
+  submitted to CloudFormation at all, and the export refuses it, naming the
+  largest inline payloads. Move inline Lambda code to
+  `lambda.Code.fromAsset(...)` or split the stack.
+- The synthesized template is used as written. cdkd does not copy the values
+  AWS currently holds into it. See [Drift baseline](#drift-baseline).
+- A nested-stack Parameter that cdkd cannot resolve becomes a warning, and the
+  child template's `Default` has to cover it.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The stack was handed over and cdkd state was deleted. |
-| `1` | Any failure — a blocked resource, a rejected changeset, an AWS auth error, lock contention, or a prompt refused on a non-interactive stdin. |
-
-cdkd state is deleted **only** after the import changeset completes
-successfully. A mid-flow failure leaves cdkd state intact, so the command can
-be re-run. The full cross-command table is in the
-[CLI Reference](cli-reference.md).
+| `0` | The stack was handed over and cdkd state was deleted. A declined prompt and `--dry-run` also exit `0`. |
+| `1` | Any failure: a blocked resource, a rejected changeset, an AWS authentication error, a held lock, or a prompt on a non-interactive stdin. |
 
 ## Related
 
-- [Exporting to CloudFormation](export.md) — the short guide to this command
-- [`cdkd import`](import.md) — the opposite direction, CloudFormation to cdkd
-- [State Management](state-management.md) — state records, composite physical ids, locks
-- [Cross-Stack References](cross-stack-references.md) — what happens to `Fn::GetStackOutput` consumers
-- [Destroy flags & guards](cli-destroy.md#every-other-mutating-confirmation-prompt-is-interactive-only-too) — the non-interactive prompt rule
+- [Exporting to CloudFormation](export.md): the short guide to this command
+- [`cdkd import`](import.md): the opposite direction, CloudFormation to cdkd
+- [State Management](state-management.md): state records, composite physical ids, locks
+- [Cross-Stack References](cross-stack-references.md): what happens to `Fn::GetStackOutput` consumers
+- [CLI Reference](cli-reference.md): every command and the full exit-code table
+- [cdkd export internals](cli-export-internals.md): changeset mechanics, for contributors

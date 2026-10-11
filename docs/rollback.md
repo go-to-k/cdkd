@@ -1,146 +1,185 @@
 ---
 title: Rollback
-description: cdkd's automatic rollback on deploy failure, the --no-rollback escape hatch, and the standalone journal-driven cdkd rollback command.
+description: "What cdkd undoes when a deploy fails, how to keep the partial stack with --no-rollback, and how to revert it later with cdkd rollback."
 ---
 
 # Rollback behavior
 
-When a deploy fails mid-stack (e.g. a resource hits a validation error
-or AWS rejects the request), cdkd by default **rolls back the
-already-completed resources in the same deploy** so the stack state
-stays consistent:
-
-- Every resource this run created is deleted, in reverse dependency
-  order. `DeletionPolicy` decides the exceptions
-  ([full table](cli-rollback.md#deletionpolicy-on-a-rolled-back-create)):
-  `Retain` leaves the resource in AWS, and `Snapshot` takes a final
-  snapshot before deleting.
-- A `Retain`ed resource moves out of the record's resources into a
-  rollback-orphan record. The next deploy re-adopts it — rather than
-  colliding with the name it still holds — provided its template still
-  declares that resource with the same type, leaves the physical name for
-  cdkd to derive, and no other cdkd stack records the same resource. A
-  type cdkd will not re-adopt is reported instead and left for you to
-  delete.
-- Every resource this run updated is reverted to the properties cdkd had
-  recorded for it — its last deployed template values, not a live read,
-  so drift is not restored. A replacement is undone by reversing the
-  replacement rather than by reverting properties.
-- A nested stack this run updated is reverted by replaying the child
-  stack's own journal for this run, not by re-deploying its template: a
-  nested child's successful deploy keeps what it did until the top-level
-  deploy succeeds. When that record is missing, the nested stack's row
-  is reported as a failed rollback operation, never as restored.
-- A resource this run had already deleted cannot be brought back. The
-  rollback warns and moves on.
-- Resources this run did not touch are left alone.
-
-The state record is updated to match, and the CLI exits non-zero.
-
-Pass `cdkd deploy --no-rollback` to skip the rollback (Terraform-style:
-the partial state is preserved so you can `cdkd state show '<stack>'`,
-inspect what landed, fix the underlying issue, and re-run `cdkd deploy`
-to continue from the half-deployed state). Recommended only when you
-plan to manually inspect / repair; the default is safer for CI.
-
-Mid-deploy state is also saved per-resource as work completes, so even
-if cdkd itself crashes between the failure and the rollback, the state
-file accurately reflects what's on AWS and a follow-up `cdkd destroy`
-won't orphan anything.
-
-## `cdkd rollback` — revert a failed deploy
-
-After a `--no-rollback` failure (or a Ctrl+C-interrupted deploy, or an
-automatic rollback that itself died partway), you have three options:
-fix forward (`cdkd deploy` again), revert (`cdkd rollback`), or clean up
-(`cdkd destroy`). The standalone `cdkd rollback` command is the "revert"
-option — the cdkd equivalent of `cdk rollback` / CloudFormation
-`RollbackStack`:
+When a resource fails partway through `cdkd deploy`, cdkd undoes what that
+deploy had already done to the stack, updates the state record to match, and
+exits non-zero. You do not have to ask for this. The rest of this page is for
+when you want something else: keeping the half-deployed stack to inspect it,
+or reverting a stack whose deploy was interrupted.
 
 ```bash
-cdkd rollback MyStack          # revert MyStack to its pre-deploy state
-cdkd rollback                  # single journaled stack (no arg)
-cdkd rollback MyStack --force  # skip the confirmation prompt
+cdkd deploy MyStack                 # a failure rolls the stack back
+cdkd deploy MyStack --no-rollback   # a failure leaves the partial stack in place
+cdkd rollback MyStack               # revert a stack left partial, later
 ```
 
-It works from a **rollback journal** cdkd writes to
-`s3://bucket/cdkd/{stack}/{region}/rollback-journal.json` (a sibling of
-`state.json`) whenever a deploy ends without a completed rollback — the
-journal records the exact operations that completed, so `cdkd rollback`
-replays them in reverse (deleting created resources, restoring updated
-ones) with no synth and no CDK app needed. It is **synth-free** on
-purpose: a broken app is a common reason you want to roll back. The
-journal is deleted automatically on the next successful deploy and by
-`cdkd destroy`; after a clean automatic rollback it keeps only the
-failed resource's record so `cdkd rollback --revert-failed` still works
-in the default deploy flow. A resource a failed CREATE made before it
-failed (or the new resource a failed replacement made), which only the
-journal records, is deleted per its `DeletionPolicy`
-by the automatic rollback, any `cdkd rollback`, `cdkd destroy` and a later
-successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)).
-`cdkd rollback`, `cdkd destroy` and a successful deploy delete it only when no
-other stack's state record holds it (a later `cdkd import` into another stack,
-say) and, for a resource whose physical id is a name, AWS still reports the
-identity the failed CREATE recorded (it may have been deleted and its name
-reused). Only a Kinesis stream, an S3 bucket, a DynamoDB table and an RDS,
-DocumentDB or Neptune cluster or instance record that identity today; a type whose physical id AWS generates and never
-reuses (a VPC, a security group, a load balancer, a KMS key, ...) needs none.
-**Every other name-keyed type (a Lambda function, an IAM role, a DynamoDB
-global table, an SQS queue, ...) records none, so `cdkd rollback` and `cdkd
-destroy` keep its journaled orphan instead of deleting it.** A kept one is
-warned about, its physical id named, and left in AWS for you to delete by hand
-if it is not in use; `cdkd rollback` and `cdkd destroy` both exit `2`. When
-another stack's record or the live identity cannot be read, nothing is decided:
-the entry stays in the journal as a failed operation, for a re-run once the
-record or the resource can be read (`cdkd rollback --drop-failed` removes only
-the entry and leaves the resource in AWS). One AWS reports gone is settled with
-no delete. The automatic rollback, which runs inside the failed deploy over that
-attempt's own operations, deletes it without either check.
-A successful deploy that cannot act on one keeps the journal (reduced to that
-entry where it can), and one a state record may own, or that the checks above
-keep, is warned about and left in AWS; either way it exits `2`. An automatic rollback that skipped an operation
-it could not revert keeps the whole journal. A nested stack's journal is the exception:
-its successful deploy keeps a record until the top-level stack's deploy
-succeeds, which deletes the journals of every nested stack under it.
+## What the automatic rollback undoes
 
-Flags: `--force` (skip confirm), `--orphan <logicalId>` (repeatable —
-leave the resource alone during replay, like `cdk rollback --orphan`),
-`--revert-failed` (also attempt to revert the resource whose operation
-FAILED mid-deploy — off by default because its remote state is unknown; its
-delete honors `DeletionPolicy` the same way a completed CREATE's does),
-`--stack-region <region>` (disambiguate a same-named stack across
-regions), `--role-arn`, `--state-bucket`.
+```text diagram=guide-rollback-undo
+                    A resource fails mid-deploy
+          (resources the deploy did not touch are left alone)
+                                 │
+              ┌──────────────────┴──────────────────┐
+              ▼                                     ▼
+  Created by this deploy                Updated by this deploy
+    deleted                               set back to the properties
+    Retain: left in AWS                   cdkd had recorded
+    Snapshot: snapshotted, then deleted
+              ▼                                     ▼
+  Replaced by this deploy               Deleted by this deploy
+    old resource re-created,              cannot be restored
+    new one deleted                       the rollback warns and
+    data in the old one is not            moves on
+    recovered
+```
 
-A **replacement** is reverted by reversing it: the old resource is
-re-created from its journaled pre-deploy state and the new one deleted
-(for a stateful type the old resource's data is not recovered by this
-rollback and the re-created one starts empty — warned loudly). The new
-copy escapes that delete when `UpdateReplacePolicy: Retain` applies to
-it: cdkd leaves it running, drops it from state and warns. When the
-deploy had retained the *old* resource under that same attribute, the
-old one is re-adopted with its data instead and the new copy is again
-left running and untracked.
+| The deploy had | The rollback |
+| --- | --- |
+| Created the resource | Deletes it, in reverse dependency order |
+| Created it with `DeletionPolicy: Retain` | Leaves it in AWS and records it as a rollback orphan |
+| Created it with `DeletionPolicy: Snapshot` | Takes the final snapshot, then deletes it |
+| Updated the resource | Sets it back to the properties cdkd had recorded |
+| Replaced the resource | Re-creates the old one and deletes the new one |
+| Deleted the resource | Cannot restore it; warns and moves on |
+| Not touched the resource | Leaves it alone |
 
-A resource you `cdkd import` while the journal exists is left alone: the
-import marks it on the journal, and the rollback skips the journal's
-operations for that resource, listing each in its plan as `adopted by cdkd
-import after this deploy`. An operation that recorded a different resource
-under the same logical id is also left alone, with a warning. See
-[`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import) for both
-cases. A deploy that runs after the import journals its own operations, and
-those are reverted as usual.
+Three of these rows have a consequence worth knowing before you rely on them.
 
-Exit codes: `0` = fully clean
-(journal deleted), `2` = partial (some ops failed — the journal is kept so
-you can re-run — or were skipped, each recorded as a
-`ROLLBACK_RESOURCE_SKIPPED` event, or left an untracked new copy behind or
-were not fully reversed, recorded on its `ROLLBACK_RESOURCE_SUCCEEDED` event's `reason`), `1` = hard error. See
-[`cdkd rollback`](cli-rollback.md) for the
-full reference and known limitations (a DELETE that already happened
-cannot be restored).
+**An update is reverted to what cdkd recorded.** That is the resource's last
+deployed template values. cdkd does not read the live resource first, so a
+change someone made in the console before the deploy is not restored.
+
+**A reversed replacement does not bring data back.** The re-created old
+resource of a stateful type starts empty, and cdkd warns about it. The
+exception is `UpdateReplacePolicy: Retain`: the new copy is left running and
+dropped from state, and if the deploy had retained the old resource under
+that policy, the old one is re-adopted with its data.
+
+**A retained resource is re-adopted by the next deploy.** A rollback orphan
+keeps its physical name, so the next deploy adopts it instead of colliding
+with that name. This requires the template to still declare the resource with
+the same type, to leave the physical name for cdkd to derive, and no other
+cdkd stack to record the same resource. A type cdkd will not re-adopt is
+reported and left for you to delete.
+
+A nested stack the deploy updated is reverted from the record of what that
+deploy did to the child stack. When that record is missing, the nested
+stack's row is reported as a failed rollback operation.
+
+## Keep the partial stack: `--no-rollback`
+
+```bash
+cdkd deploy MyStack --no-rollback
+```
+
+With `--no-rollback`, a failed deploy stops where it failed and keeps
+everything it created. The state record describes that partial stack, so you
+can look at what landed:
+
+```bash
+cdkd state show MyStack
+```
+
+Use it when you plan to inspect or repair the stack by hand. The default is
+the safer choice for CI.
+
+cdkd saves state after each resource completes. If cdkd itself
+is killed between the failure and the rollback, the state record still
+matches what is in AWS, and a later `cdkd destroy` deletes all of it.
+
+## After a deploy that was not rolled back
+
+A stack is left partial after a `--no-rollback` failure, a deploy interrupted
+with {kbd:ctrl+c}, or an automatic rollback that itself failed partway. You
+have three ways forward:
+
+| You want | Run | Needs the CDK app |
+| --- | --- | --- |
+| To fix the cause and continue from where it stopped | `cdkd deploy MyStack` | Yes |
+| The stack as it was before the failed deploy | `cdkd rollback MyStack` | No |
+| The stack gone | `cdkd destroy MyStack` | Yes (`cdkd state destroy MyStack` does not) |
+
+## Revert with `cdkd rollback`
+
+```bash
+cdkd rollback MyStack                  # print the plan, confirm, revert
+cdkd rollback                          # the one stack that has a journal
+cdkd rollback MyStack --force          # skip the confirmation prompt
+cdkd rollback MyStack --orphan MyBucket   # revert everything except MyBucket
+```
+
+`cdkd rollback` works from a **rollback journal**: the list of operations the
+failed deploy completed, which cdkd writes next to the stack's state record
+whenever a deploy ends without a completed rollback. The command replays that
+list in reverse, with the rules in the table above.
+
+It does not synthesize, so it runs without the CDK app. A broken app is a
+common reason to roll back.
+
+The journal is deleted by the next successful deploy and by `cdkd destroy`.
+A nested stack's journal is kept until the top-level stack's deploy succeeds.
+
+### Flags you are likely to need
+
+| Flag | Effect |
+| --- | --- |
+| `--force` | Skip the confirmation prompt |
+| `--orphan <logicalId>` | Leave this resource out of the replay; repeatable |
+| `--revert-failed` | Also revert the resource whose operation failed |
+| `--skip-final-snapshot` | Delete a `DeletionPolicy: Snapshot` resource without the snapshot |
+| `--stack-region <region>` | Pick the region when the stack name has state in several |
+
+`--revert-failed` is off by default because the failed resource's state in
+AWS is unknown. It also works after a clean automatic rollback, which keeps
+the failed resource's journal entry for this purpose.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Fully reverted. The journal is deleted. |
+| `1` | Hard error, such as no journal for the stack or the lock held by another run. |
+| `2` | Partial. An operation failed, was skipped, or left a resource cdkd no longer tracks. |
+
+After an exit `2` caused by a failed operation, the journal is kept and you
+can run `cdkd rollback` again. Replay skips what is already reverted.
+
+## What a rollback can leave behind
+
+**A resource you imported after the failed deploy.** `cdkd import` marks the
+resource on the journal, and the rollback skips the journal's operations for
+it. The plan lists each as `adopted by cdkd import after this deploy`. An
+operation that recorded a different resource under the same logical id is
+also left alone, with a warning. Operations of a deploy that ran after the
+import are reverted as usual.
+
+**A resource a failed create made before it failed.** Only the journal
+records such a resource. The automatic rollback deletes it, following its
+`DeletionPolicy`. A later `cdkd rollback`, `cdkd destroy` or successful deploy
+deletes it only when no other stack's state record holds it and, for a
+resource identified by its name, AWS still reports the identity the failed
+create recorded.
+
+Types whose physical id AWS generates (a VPC, a security group, a load
+balancer, a KMS key) need no identity check. Among name-identified types,
+only a Kinesis stream, an S3 bucket, a DynamoDB table, and an RDS, DocumentDB
+or Neptune cluster or instance record that identity. For any other
+name-identified type (a Lambda function, an IAM role, an SQS queue), `cdkd
+rollback` and `cdkd destroy` keep the resource, warn with its physical id,
+and exit `2`. Delete it by hand if it is not in use.
+
+The cases in between, and `--drop-failed` for an entry cdkd cannot act on,
+are in [`cdkd rollback`](cli-rollback.md).
 
 ## Related
 
-- [`cdkd rollback`](cli-rollback.md) — every flag, the journal, and the exit codes
-- [Destroy flags & guards](cli-destroy.md) — tearing a stack down instead of reverting it
-- [Deployment Events](deployment-events.md) — reading back what a failed run actually did
+- [`cdkd rollback`](cli-rollback.md): every flag, the journal, the
+  `DeletionPolicy` table and the known limitations
+- [Destroy flags & guards](cli-destroy.md): tearing a stack down instead of
+  reverting it
+- [Deployment Events](deployment-events.md): reading back what a failed run
+  did

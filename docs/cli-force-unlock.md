@@ -5,131 +5,139 @@ description: "Delete a stack's lock object when a crashed or cancelled run left 
 
 # cdkd force-unlock
 
-Deletes the lock object a cdkd run holds while it writes to a stack. Reach for
-it when a run was force-quit, a CI job was cancelled, or a laptop slept
-mid-deploy, and the next command refuses to start because the stack is still
-locked.
-
-It needs no CDK app — it operates on the state bucket directly.
+`cdkd force-unlock` deletes the lock a cdkd run holds while it writes to a
+stack. Use it when a run was force-quit, a CI job was cancelled or a laptop
+slept mid-deploy, and the next command refuses to start because the stack is
+still locked.
 
 ```bash
-cdkd force-unlock MyStack                         # every region where the stack has state
-cdkd force-unlock MyStack --stack-region us-west-2 # one region
-cdkd force-unlock MyStack OtherStack               # several stacks in one run
+cdkd force-unlock MyStack                           # every region where the stack has state
+cdkd force-unlock MyStack --stack-region us-west-2  # one region
+cdkd force-unlock MyStack ApiStack                  # several stacks in one run
 ```
+
+It needs no CDK app; it works on the state bucket directly.
+
+> [!WARNING]
+> The delete is unconditional. Run against a live deploy, it leaves two
+> processes writing to the same stack. Confirm the lock's owner is gone first.
 
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
+| `[stacks...]` | | Stacks to unlock. At least one is required, here or through `--stack`. |
+| `--stack <name>` | | A stack to unlock, as a flag. |
 | `--stack-region <region>` | every region where the stack has state | Release the lock for one region only. |
-| `--stack <name>` | — | Stack to unlock, as a flag instead of a positional argument. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET`, then `cdk.json`, then the account default | The state bucket holding the lock. The default name is resolved by probing `cdkd-state-{accountId}` and the legacy `cdkd-state-{accountId}-{region}`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET`, then `cdk.json`, then the account default | The state bucket holding the lock. |
 | `--state-prefix <prefix>` | `cdkd` | Key prefix inside the bucket. |
-| `--profile <profile>` | — | AWS profile. |
+| `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
-| `-y`, `--yes` | `false` | Accepted for consistency with the other state-writing commands; `cdkd force-unlock` asks no confirmation, so it changes nothing. |
+| `-y`, `--yes` | `false` | Accepted, but `cdkd force-unlock` asks no confirmation. |
 | `--verbose` | `false` | Debug-level logging. |
 
-At least one stack is required, positionally or via `--stack`; the command
-errors rather than guessing.
+The account default bucket is found by probing `cdkd-state-{accountId}` and
+the legacy `cdkd-state-{accountId}-{region}`.
 
-## Usually you do not need this
+## Do you need it?
 
 A lock usually clears itself. It carries a 30-minute TTL, and a live cdkd
-process renews it well inside that window, so an abandoned lock is expired 30
-minutes after its owner's last renewal — and the next `cdkd deploy` normally
-takes an expired lock over on its own, printing a warning that names the
-previous owner and how long ago it expired.
+process renews it well inside that window. An abandoned lock therefore expires
+30 minutes after its owner's last renewal. The next `cdkd deploy` normally
+takes an expired lock over, with a warning that names the previous owner and
+how long ago the lock expired.
 
-`cdkd force-unlock` is for the cases where that does not happen:
+| Situation | What to do |
+| --- | --- |
+| The lock will expire soon and you can wait | Nothing. The next deploy takes it over. |
+| You do not want to wait out the TTL | `cdkd force-unlock` |
+| The lock object is unreadable: truncated, or not a lock at all | `cdkd force-unlock`. Nothing takes such a lock over. |
+| The takeover was refused, and the message names this command | `cdkd force-unlock`. Such a lock does not clear by waiting. |
 
-- You do not want to wait out the remaining TTL.
-- The lock object is unreadable — truncated, or holding something that is not a
-  lock. Nothing can take that over automatically, because the takeover path has
-  to read `expiresAt` to decide the lock is expired, while every attempt to
-  acquire still fails on the object's presence. `force-unlock` deletes it
-  regardless of whether it could be parsed.
-- The takeover was refused. cdkd removes an expired lock only when it can
-  delete the exact version it just read; if that version cannot be identified,
-  or the S3 endpoint will not evaluate the conditional delete, it declines
-  rather than risk deleting a lock some other process has since taken. It says
-  so and names this command. Such a lock does not clear on its own, however
-  long you wait.
+An unreadable lock cannot be taken over, because cdkd has to read its expiry
+time to know it has expired. `force-unlock` deletes it whether or not it can
+be parsed.
 
-## The delete is unconditional
+cdkd removes an expired lock only by deleting the exact version it just read.
+A takeover is refused when that version cannot be identified, or when the S3
+endpoint will not evaluate the conditional delete. cdkd declines so that it
+does not delete a lock another process has since taken.
 
-This command removes the lock whether or not it has expired, and whether or not
-another process still holds it. That is deliberate — a lock cdkd cannot read is
-a lock nothing else can clear, so gating the delete on reading it first would
-make a corrupt lock permanent.
+## Before you run it
 
-The cost is that **running it against a live deploy leaves two processes writing
-to the same stack**. Before running it, confirm the owner is really gone: the
-command prints the lock's owner and operation before deleting, and `cdkd events
-'<stack>'` shows whether a run is still emitting events.
+The command deletes the lock whether or not it has expired and whether or not
+another process still holds it. Check two things first.
 
-Confirm the *account*, too. The command re-resolves the state bucket from the
-ambient profile, so a shortened invocation — dropping the `--profile` or
-`--state-bucket` you used earlier — can clear the lock of a same-named stack in
-a different account. When cdkd prints a recovery command in a lock error, run it
-as printed.
+**The owner is gone.** The command prints the lock's owner and operation
+before deleting, and [`cdkd events`](cli-events.md) shows whether a run is
+still recording events:
+
+```bash
+cdkd events MyStack
+```
+
+**You are in the right account.** The command resolves the state bucket from
+your current profile. If you drop the `--profile` or `--state-bucket` you used
+earlier, it can clear the lock of a stack with the same name in another
+account. When cdkd prints a recovery command in a lock error, run it as
+printed.
 
 ## Which regions it releases
 
-Without `--stack-region`, the command looks the stack up in the state bucket and
-releases the lock in **every region where that stack name has a state record** —
-the same stack name deployed to two regions has two independent locks. A record
-written by a pre-v2 cdkd that names no region resolves to the region-less lock
-key, and is released by the same walk; one that does name a region resolves to
-the region-prefixed key only.
+The same stack name deployed to two regions has two independent locks.
 
-When the stack has no state record at all, the walk falls back to the region
-`--region` or `AWS_REGION` names, and to the literal `us-east-1` when neither is
-set — the profile's own region is not consulted. See
+| Invocation | Locks released |
+| --- | --- |
+| `cdkd force-unlock MyStack` | One in every region where that stack name has a state record. |
+| `cdkd force-unlock MyStack --stack-region us-west-2` | That region's only. No other key is touched. |
+| `cdkd force-unlock MyStack`, and the stack has no state record | The region `--region` or `AWS_REGION` names, or `us-east-1` when neither is set. |
+
+In the last row the profile's own region is not consulted. See
 [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
-`--stack-region` narrows the walk to the one region named, and no other key is
-touched — including the region-less one.
+A legacy state record that names no region has a lock key with no region in
+it. The walk over every region releases that lock too. `--stack-region` does
+not.
 
 ## What it deletes
 
-The lock is a single object at
-`s3://{bucket}/{prefix}/{stackName}/{region}/lock.json`. The command deletes it
-and then purges that key's noncurrent versions, so a versioned state bucket does
-not accumulate the leavings of every crashed run. That purge reaches the state
-bucket only — on a replicated bucket the destination keeps its copies, which
-matters less here than elsewhere (a lock body carries no secret) but is the
-same mechanism; see
-[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you). Nothing else in the state
-record is touched: the stack's `state.json`, its resources, and its deployment
-events are all left as they were.
+The lock is one object:
+
+```text
+s3://{bucket}/{prefix}/{stackName}/{region}/lock.json
+```
+
+The command deletes it and then purges that key's noncurrent versions, so a
+versioned state bucket does not accumulate one from every crashed run. Nothing
+else is touched: the stack's `state.json`, its resources and its deployment
+events stay as they were.
+
+The purge reaches the state bucket only. On a replicated bucket the
+destination keeps its copies. A lock holds no secret, so this matters less
+here; see
+[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Every lock the walk reached was deleted, or there was none to delete. |
-| `1` | A lock could not be deleted; no stack was named; credentials or state-bucket resolution failed; or listing a stack's regions failed. |
+| `0` | Every lock the command looked for was deleted, or there was none to delete. |
+| `1` | A lock could not be deleted; no stack was named; credentials or the state bucket could not be resolved; or listing a stack's regions failed. |
 
-A lock that was **already absent** is a success, not a failure — the command's
-job is that no lock remains, and an absent one already satisfies it.
+A lock that was already absent is a success.
 
-The two failure kinds differ in how much of the walk still runs:
+The two kinds of failure differ in how much of the run continues:
 
-- **Failing to DELETE a lock** does not stop the walk. The error is reported,
-  the remaining regions of that stack and then the remaining stacks are still
-  attempted, and the run exits `1` at the end naming every lock it could not
-  release. One unreachable stack therefore does not cost you the others.
-- **Failing to LIST a stack's regions** aborts immediately with `1`, leaving any
-  later stack in the same invocation unattempted.
+| Failure | What happens next |
+| --- | --- |
+| Deleting a lock fails | The error is reported and the remaining regions and stacks are still attempted. The run exits `1` at the end, naming every lock it could not release. |
+| Listing a stack's regions fails | The run stops at once with `1`. Later stacks in the same invocation are not attempted. |
 
-
-The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+The table for every command is in the [CLI Reference](cli-reference.md#exit-codes).
 
 ## Related
 
-- [`cdkd state`](cli-state.md) — inspecting the state record the lock guards
-- [`cdkd events`](cli-events.md) — checking whether a run is still active before forcing the lock
-- [State Management](state-management.md) — the state bucket layout and the locking model
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
+- [`cdkd state`](cli-state.md): inspecting the state record the lock guards
+- [`cdkd events`](cli-events.md): checking whether a run is still active
+- [Deploy: waits & concurrency](cli-deploy.md#what-the-stack-lock-covers-and-when-a-second-deploy-can-start): what the lock covers and how a deploy takes it
+- [State Management](state-management.md): the state bucket layout and the locking model

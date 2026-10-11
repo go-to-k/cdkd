@@ -1,87 +1,94 @@
 ---
 title: cdkd publish-assets
-description: "Synthesize, build, and publish file and Docker assets without deploying — cdkd publish-assets."
+description: "Synthesize, build, and publish file and Docker assets without deploying, with cdkd publish-assets."
 ---
 
 # cdkd publish-assets
 
-`cdkd publish-assets` runs the asset half of the deploy pipeline — synthesize the
-CDK app, build any Docker images, upload file assets to S3, push images to ECR —
-and then **stops**. No state writes, no provisioning, no lock acquisition. This
-is the "CI builds and uploads the assets, a separate runner deploys" split that
-pipelines often want.
+`cdkd publish-assets` runs the asset half of a deploy and then stops. It
+synthesizes the CDK app, builds any Docker images, uploads file assets to S3
+and pushes images to ECR. Use it when one CI job builds and uploads the assets
+and a separate job deploys.
 
 ```bash
-cdkd publish-assets                          # the single stack, when the app defines only one
-cdkd publish-assets MyStack MyOtherStack     # specific stacks
-cdkd publish-assets --all                    # every stack in the app
-cdkd publish-assets 'My*'                    # wildcard over top-level ids
-cdkd publish-assets -a cdk.out               # skip synth — read a pre-synthesized assembly
+cdkd publish-assets                          # the only stack in the app
+cdkd publish-assets MyStack ApiStack         # specific stacks
+cdkd publish-assets --all                    # every stack, Stage stacks included
+cdkd publish-assets 'MyStage/*'              # the stacks inside one stage
+cdkd publish-assets -a cdk.out               # skip synthesis; read an existing assembly
 ```
+
+It provisions nothing, writes no state and takes no stack lock.
 
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to publish assets for: CDK display paths with `*` / `**`, or exact physical names. |
-| `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
-| `--all` | off | Publish assets for every stack in the CDK app, Stage stacks included. |
-| `--use-cdk-bootstrap-assets` | off | Publish to the CDK bootstrap destinations named by the asset manifest, even in a region opted in to cdkd asset storage. |
-| `--asset-publish-concurrency <n>` | `8` | Maximum concurrent asset publishes (S3 upload + ECR push). |
-| `--image-build-concurrency <n>` | `4` | Maximum concurrent Docker image builds. |
-| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory. |
-| `--output <path>` | `cdk.out` | Synthesis output directory. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket to read the per-region bootstrap marker from. Never written. |
-| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
-| `-c`, `--context <key=value...>` | — | Context values, repeatable. |
-| `--profile <profile>` | — | AWS profile. |
+| `[stacks...]` | the only stack | Stacks to publish assets for: CDK display paths with wildcards, or exact physical names. |
+| `--stack <name>` | | One stack name, as an alternative to the positional argument. |
+| `--all` | `false` | Publish assets for every stack in the app, Stage stacks included. |
+| `--use-cdk-bootstrap-assets` | `false` | Publish to the CDK bootstrap destinations in the asset manifest, even in a region opted in to cdkd asset storage. |
+| `--asset-publish-concurrency <number>` | `8` | Maximum concurrent asset publishes (S3 uploads and ECR pushes). |
+| `--image-build-concurrency <number>` | `4` | Maximum concurrent Docker image builds. |
+| `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
+| `--output <path>` | `cdk.out` | Directory to synthesize into. |
+| `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET`, then `cdk.json` | Bucket to read the region's bootstrap marker from. Never written. |
+| `--state-prefix <prefix>` | `cdkd` | Key prefix for state files. |
+| `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
-| `--verbose` | off | Verbose logging. |
+| `-y`, `--yes` | `false` | Answer prompts automatically. |
+| `--verbose` | `false` | Debug-level logging. |
 
-The concurrency defaults are the same as `cdkd deploy`'s; see
-[Deploy: waits & concurrency](cli-deploy.md#options).
+The two concurrency flags have the same defaults as on
+[`cdkd deploy`](cli-deploy.md#options).
 
 ## Stack selection
 
-- The CDK app is synthesized via the standard `--app` / `CDKD_APP` / `cdk.json`
-  chain.
-- Stack-name matching is the same as `deploy`, `diff` and `destroy`: the CDK
-  display path with `*` within one segment and `**` across segments, or the
-  exact physical CloudFormation name; see [stack selection](cli-list.md#selecting-stacks).
-- With no argument, `publish-assets` covers the single stack when the app
-  defines only one; with more than one it lists them and exits `1`.
-- `--all` covers every stack in the app, Stage stacks included, as
-  `cdk publish-assets --all` does — unlike `deploy` / `destroy` / `diff`,
-  whose `--all` takes the top-level stacks only.
-- A CDK Stage that failed to load stops the run whatever was selected
-  ([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
-- Each selected stack's asset manifest is fed into the same work graph `deploy`
-  uses, with stack concurrency set to zero so no stack-deploy work runs.
+Stack names are matched as on `deploy`, `diff` and `destroy`. See
+[Selecting stacks](cli-list.md#selecting-stacks).
 
-## `-a` / `--app`: a command or a directory
+| You pass | What is published |
+| --- | --- |
+| Nothing, and the app has one stack | That stack's assets. |
+| Nothing, and the app has several stacks | Nothing. The command lists the stacks and exits `1`. |
+| Stack names or patterns | The matching stacks' assets. |
+| `--all` | Every stack's assets, Stage stacks included. |
 
-`-a` / `--app` accepts either form, with the same dual semantics as
-`cdkd deploy`:
+`--all` here matches `cdk publish-assets --all`. On `deploy`, `destroy` and
+`diff`, `--all` takes the top-level stacks only.
 
-- a **shell command** (`"node app.ts"`), which cdkd runs to synthesize; or
-- a path to an **already-synthesized cloud assembly directory** (`cdk.out`), in
-  which case synthesis is skipped and the manifest is read directly.
+A CDK Stage that failed to load stops the run, whatever was selected. See
+[A pre-synthesized assembly is trusted input](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input).
 
-Re-using a pre-synthesized assembly is therefore covered by `-a <dir>`.
-`publish-assets` has no `--path <manifest>` flag of its own.
+## Publishing from an existing assembly
+
+`-a` / `--app` takes a shell command or a directory, as on `cdkd deploy`:
+
+| Value | What cdkd does |
+| --- | --- |
+| A command, such as `"node app.ts"` | Runs it to synthesize the app. |
+| A synthesized assembly directory, such as `cdk.out` | Skips synthesis and reads the manifest. |
+
+```bash
+cdkd synth --output build/assembly
+cdkd publish-assets --all -a build/assembly
+```
+
+There is no separate flag for a manifest path.
 
 ## Asset destinations
 
-Asset destinations follow the region's asset mode:
+Where assets go depends on whether the region is opted in to cdkd asset
+storage. The command reads the region's bootstrap marker from the state bucket
+to find out.
 
-- The command reads the per-region bootstrap marker from the state bucket,
-  resolved via the standard `--state-bucket` / `CDKD_STATE_BUCKET` / `cdk.json` /
-  default chain. It never writes state.
-- When the region is **opted in**, assets go to the cdkd-owned storage, so a
-  subsequent `cdkd deploy` finds them where its rewritten templates point.
-- When **no state bucket resolves at all**, the command falls back to the
-  manifest destinations verbatim, with an info line.
-- `--use-cdk-bootstrap-assets` pins the legacy destinations explicitly.
+| Situation | Destination |
+| --- | --- |
+| The region is opted in | The cdkd-owned storage, where a later `cdkd deploy` expects them. |
+| The region is not opted in | The destinations in the asset manifest. |
+| No state bucket resolves | The destinations in the asset manifest, with an info line. |
+| `--use-cdk-bootstrap-assets` | The destinations in the asset manifest. |
 
 The full rules are under
 [Asset destinations after opt-in](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode).
@@ -90,15 +97,15 @@ The full rules are under
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Every selected stack's assets published cleanly. |
-| `1` | Command-level failure: auth, a synth crash, bad arguments. |
-| `2` | Partial failure — one or more stacks failed and the rest published. Re-run to retry the failed ones; per-stack outcomes are listed in the run summary. |
+| `0` | Every selected stack's assets were published. |
+| `1` | The command failed: auth, a synthesis crash, bad arguments. |
+| `2` | Partial failure. One or more stacks failed and the rest published. The run summary lists each stack's outcome; run again to retry. |
 
-The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+The table for every command is in the [CLI Reference](cli-reference.md#exit-codes).
 
 ## Related
 
-- [`cdkd bootstrap`](cli-bootstrap.md) — the asset storage this command publishes into
-- [Deploy: waits & concurrency](cli-deploy.md) — the concurrency knobs it shares with deploy
-- [`cdkd gc`](cli-gc.md) — collecting assets nothing references any more
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
+- [`cdkd bootstrap`](cli-bootstrap.md): the asset storage this command publishes into
+- [Deploy: waits & concurrency](cli-deploy.md): the concurrency flags it shares with deploy
+- [`cdkd gc`](cli-gc.md): collecting assets nothing references any more
+- [CLI Reference](cli-reference.md): every command and the exit-code table

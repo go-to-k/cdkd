@@ -1,101 +1,112 @@
 ---
 title: Local Execution
-description: "Run AWS workloads on your machine with cdkd local via Docker — invoke Lambda functions, serve API Gateway and ALB, run ECS tasks and services, and serve CloudFront and Bedrock AgentCore, with no AWS deploy."
+description: "Run the Lambda functions, APIs, ECS tasks and services, load balancers, CloudFront distributions and AgentCore runtimes in your CDK app on your own machine with cdkd local."
 ---
 
 # Local Execution
 
-`cdkd local *` runs the AWS workloads in your CDK app on your own machine. There
-is no deploy, no `template.yaml` to maintain, and no `cdk synth | sam ...`
-round-trip — the commands read the same cloud assembly `cdkd deploy` does, so a
-handler edit is testable in seconds.
+`cdkd local` runs the workloads in your CDK app on your own machine. The
+commands read the same cloud assembly `cdkd deploy` does, so there is no
+deploy and no `template.yaml` to maintain. A handler edit is testable in
+seconds.
 
 ```bash
-cdkd local invoke MyStack/Handler --event event.json   # one-shot Lambda invoke
-cdkd local start-api                                   # serve every discovered API on localhost
-cdkd local run-task MyStack/Service/TaskDef            # run one ECS task definition
-cdkd local start-service MyStack/Service --watch       # long-running ECS service, hot-reloaded
-cdkd local start-api -a cdk.out                        # skip synthesis, reuse a built assembly
-cdkd local invoke MyStack/Handler --from-state         # resolve intrinsics from deployed state
+cdkd local invoke MyStack/Handler --event event.json   # run one Lambda once
+cdkd local start-api --port 3000                       # serve the app's APIs on localhost
+cdkd local invoke MyStack/Handler --from-state         # use the deployed stack's table names, ARNs, ...
 ```
 
-## Subcommands
+## Which command do I want
 
-| Command | Emulates | Shape |
+| In your CDK app | Command | Runs |
 | --- | --- | --- |
-| [`cdkd local invoke`](local-invoke.md) | One Lambda invocation | One-shot |
-| [`cdkd local start-api`](local-start-api.md) | API Gateway REST v1, HTTP API, WebSocket API and Function URL routes | Server, one per discovered API |
-| [`cdkd local run-task`](local-run-task.md) | ECS `RunTask` for one task definition | One-shot |
-| [`cdkd local start-service`](local-start-service.md) | ECS `Service`, `DesiredCount` replicas with restart-on-exit | Server |
-| [`cdkd local start-alb`](local-start-alb.md) | Application Load Balancer in front of ECS or Lambda targets | Server, one per listener port |
-| [`cdkd local start-cloudfront`](local-start-cloudfront.md) | CloudFront distribution: CloudFront Functions, Lambda@Edge, S3 and Lambda Function URL origins | Server |
-| [`cdkd local invoke-agentcore`](local-invoke-agentcore.md) | One Bedrock AgentCore Runtime invocation | One-shot |
-| [`cdkd local start-agentcore`](local-start-agentcore.md) | Bedrock AgentCore Runtime served against a warm container | Server |
+| A Lambda function | [`cdkd local invoke`](local-invoke.md) | Once, then exits |
+| API Gateway (REST, HTTP, WebSocket) or a Function URL | [`cdkd local start-api`](local-start-api.md) | Until {kbd:ctrl+c} |
+| An ECS task definition | [`cdkd local run-task`](local-run-task.md) | Until the task exits |
+| An ECS service | [`cdkd local start-service`](local-start-service.md) | Until {kbd:ctrl+c} |
+| An Application Load Balancer | [`cdkd local start-alb`](local-start-alb.md) | Until {kbd:ctrl+c} |
+| A CloudFront distribution | [`cdkd local start-cloudfront`](local-start-cloudfront.md) | Until {kbd:ctrl+c} |
+| A Bedrock AgentCore Runtime, one request | [`cdkd local invoke-agentcore`](local-invoke-agentcore.md) | Once, then exits |
+| A Bedrock AgentCore Runtime, many requests | [`cdkd local start-agentcore`](local-start-agentcore.md) | Until {kbd:ctrl+c} |
 
-The servers run until `^C`, which tears down every container, sidecar and
-docker network they created.
+`start-alb` boots the ECS services and Lambda functions behind the load
+balancer itself, so you do not run `start-service` next to it.
 
 ## Requirements
 
-Docker is required for everything that runs a workload container: the Lambda
-Runtime Interface Emulator (RIE) behind `local invoke` and `local start-api`,
-the task containers and the ECS metadata sidecar behind `local run-task` /
-`local start-service` / `local start-alb`, and the agent container behind the
-two AgentCore commands.
+Docker must be running. Every command runs your code in a container: Lambda
+functions in the AWS Lambda Runtime Interface Emulator (RIE) image, ECS
+containers from their own images next to the AWS-published ECS metadata
+sidecar, and AgentCore agents in the agent's image.
 
-`local start-cloudfront` is the one command that can run without Docker. A
-distribution whose origins are all S3 and whose only edge logic is CloudFront
-Functions serves entirely in-process — the functions run in a sandboxed VM and
-the S3 content is read from the `BucketDeployment` source in the cloud assembly.
-Docker is required as soon as the distribution has a Lambda Function URL origin
-or a Lambda@Edge association, because those run in RIE containers.
+`local start-cloudfront` is the one exception. A distribution made of S3
+origins and CloudFront Functions is served in-process and needs no Docker. It
+needs Docker once the distribution has a Lambda Function URL origin or a
+Lambda@Edge association.
 
 The first run pulls the images it needs: roughly 600 MB for a language-specific
-Lambda base image, 50 MB for `provided.*`, plus the ECS metadata sidecar for the
-task commands. Later runs reuse the cached image. `--no-pull` skips the `docker
-pull` round-trip entirely; its exact scope differs per command, so check the
-command's own page.
+Lambda base image and 50 MB for `provided.*`. Later runs reuse the cached
+image, and `--no-pull` skips the `docker pull` check. What `--no-pull` covers
+differs per command, so each page states it.
 
-## Common flags
+## Naming the target
 
-Every `cdkd local` subcommand accepts these.
+Every command takes the resource to run as a positional target.
 
-| Flag | Default | Description |
+| Form | Example | Notes |
 | --- | --- | --- |
-| `-a`, `--app <cmd-or-dir>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory. Pass `-a cdk.out` to skip synthesis. |
-| `--output <path>` | `cdk.out` | Output directory for synthesis. |
-| `-c`, `--context <key=value...>` | — | CDK context values. Repeatable. |
-| `--no-pull` | off | Skip `docker pull` and use the cached image. Per-command scope differs. |
-| `--from-state` | off | Resolve intrinsic-valued properties against cdkd's deployed S3 state. Mutually exclusive with `--from-cfn-stack`. |
-| `--from-cfn-stack [name]` | — | Resolve them against a deployed CloudFormation stack instead, for apps deployed with the AWS CDK CLI. Bare form uses the cdkd stack name. |
-| `--stack-region <region>` | — | Which region's record to read, and the CloudFormation client region under `--from-cfn-stack`. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding the state read by `--from-state`. The default means `--from-state` works with no configuration on a bootstrapped account. |
-| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
-| `--profile <profile>` | — | AWS profile. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
-| `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
-| `--verbose` | off | Verbose logging. |
+| CDK display path | `MyStack/MyApi/Handler` | The construct path. A prefix is enough, so you do not type the trailing `/Resource`. |
+| Stack-qualified logical ID | `MyStack:MyApiHandler1234ABCD` | Works in any app. |
+| Bare name | `Handler` | Only when the app has exactly one stack. |
 
-`--from-state` and its two bucket flags are accepted everywhere but do nothing on
-`local start-cloudfront`, which reads deployed values only through
-`--from-cfn-stack`. On `local start-alb` they are partial: they resolve the
-backing ECS services but not a Lambda target group's environment, which the
-command warns about at boot — see
-[its page](local-start-alb.md#lambda-target-groups-and-the-state-source). Two
-more flags are not accepted on `local start-cloudfront` at all:
+A stack inside a CDK `Stage` is addressed by its full display path:
+`MyStage/MyStack/MyApi/Handler`.
 
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--env-vars <file>` | — | JSON environment-variable overrides, SAM-compatible. |
-| `--container-host <ip>` | `127.0.0.1` | Bind IP for published container ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
+On `start-api`, `start-service`, `start-alb`, `start-cloudfront` and the two
+AgentCore commands the target is optional. `start-api` serves every API it
+finds. The others open a picker when you omit it in an interactive terminal.
 
-Everything else is per-command; each page's own options table is the complete
-list for that command.
+## Where values come from
+
+Nothing has been deployed when you run a local command, so a value such as
+`table.tableName` has no real name yet. In the synthesized template it is a
+`Ref`, not a string. Each environment value is handled by what it is:
+
+```text diagram=local-value-resolution
+                Value in the synthesized template
+        ┌───────────────────────┼──────────────────────────┐
+        ▼                       ▼                          ▼
+     Literal        Intrinsic (Ref, Fn::GetAtt, ...)   {{resolve:...}}
+  passed through    --from-state: cdkd S3 state        looked up with your
+    unchanged       --from-cfn-stack: CloudFormation   credentials; a failed
+                    neither: dropped with a warning    lookup stops the command
+        └───────────────────────┼──────────────────────────┘
+                                ▼
+                        --env-vars file
+        replaces any of the three; an overridden key is never looked up
+                                │
+                                ▼
+                      Container environment
+```
+
+| What you want | Do this |
+| --- | --- |
+| Run without reading a deployed stack | Nothing. Literals pass through; intrinsic values are dropped, each with a warning naming the key. |
+| Use the values of a stack deployed with `cdkd deploy` | `--from-state` |
+| Use the values of a stack deployed with the AWS CDK CLI | `--from-cfn-stack` |
+| Point one variable at something local | `--env-vars overrides.json` |
+
+When several sources supply the same key, the highest of these wins:
+
+1. The resource's own entry in the `--env-vars` file.
+2. The `Parameters` entry in the `--env-vars` file.
+3. The value resolved from `--from-state` or `--from-cfn-stack`.
+4. The literal in the template.
 
 ### `--env-vars`: overriding environment variables
 
-The file is SAM-compatible: a top-level object keyed by resource, plus an
-optional `Parameters` object for values that apply everywhere.
+The file has the shape `sam local` uses: a top-level object keyed by resource,
+plus an optional `Parameters` object for values that apply to every resource.
 
 ```json
 {
@@ -105,259 +116,303 @@ optional `Parameters` object for values that apply everywhere.
 }
 ```
 
-A `null` value clears the key rather than setting it to the string `"null"`.
+A `null` value removes the key from the container environment.
 
-What the top-level key names depends on what the command runs:
-
-| Command | Key |
+| Command | The top-level key is |
 | --- | --- |
-| `local invoke`, `local start-api` | The Lambda's logical ID, or its **CDK display path** (`MyStack/MyHandler`) — the same form the `<target>` argument accepts, matched against the resource's `aws:cdk:path` metadata. |
-| `local run-task`, `local start-service`, `local start-alb` | The **container name**, i.e. `ContainerDefinitions[].Name`. |
-| `local invoke-agentcore`, `local start-agentcore` | The runtime's logical ID or CDK display path. |
+| `local invoke`, `local start-api` | The Lambda's logical ID, or its CDK display path (`MyStack/MyHandler`) |
+| `local run-task`, `local start-service`, `local start-alb` | The container name, `ContainerDefinitions[].Name` |
+| `local invoke-agentcore`, `local start-agentcore` | The runtime's logical ID, or its CDK display path |
 
-For Lambda targets the two forms coexist in one file, and when both name the
-same key the later JSON entry wins, matching SAM's apply-in-order semantics.
+For a Lambda both key forms can appear in one file. When both set the same
+variable, the entry later in the file wins.
+
+`local start-cloudfront` does not accept `--env-vars`.
 
 ### `--from-state` and `--from-cfn-stack`: resolving deployed values
 
-Both are off by default, and they are mutually exclusive. Without either, an
-intrinsic-valued property — a `Ref` to a table name, an `Fn::GetAtt` on a queue
-URL — has no value to resolve to, because nothing has been deployed.
+Both are off by default and they cannot be combined.
 
 | Flag | Reads | Use when |
 | --- | --- | --- |
-| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. `local start-cloudfront` REFUSES it — see [its page](local-start-cloudfront.md#state-sources) — and `local start-alb` does not apply it to a Lambda target group. |
-| `--from-cfn-stack [name]` | A deployed CloudFormation stack's resources | The stack was deployed with the AWS CDK CLI, or the command is `local start-cloudfront`. |
+| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. |
+| `--from-cfn-stack [name]` | A deployed CloudFormation stack | The stack was deployed with the AWS CDK CLI. |
 
-`--from-cfn-stack` resolves `Ref` and `Fn::ImportValue` from the deployed
-physical IDs and exports. `Fn::GetAtt` is not universally recoverable, because a
-stack's resource listing carries no per-attribute values; where cdkd cannot
-recover one it warns and drops the value rather than substituting a wrong one.
-What each command can recover differs, so check its own page.
+```bash
+cdkd local invoke MyStack/Handler --from-state                          # deployed with cdkd
+cdkd local invoke MyStack/Handler --from-cfn-stack                      # CloudFormation stack named MyStack
+cdkd local invoke MyStack/Handler --from-cfn-stack MyExplicitStackName  # the deployed name differs
+cdkd local invoke MyStack/Handler --from-state --stack-region us-west-2 # state exists in two regions
+```
 
-#### When a state record's `outputs` map is malformed
+What each source can supply:
 
-A state record is used as typed data without a field-by-field shape check, so a
-hand-edited or truncated one can hold a string, a list, a number, a boolean or
-`null` where the `outputs` map belongs — and enumerating a string yields one
-entry per **character**. `--from-state` used to hand a six-character value to
-the local run as six outputs. A `Fn::GetStackOutput` against such a record
-behaved differently by shape, because the reader tested `!got.state.outputs`
-before `outputName in got.state.outputs`. A **falsy** bag — `null`, `0`, `false`
-or `''` — short-circuited on the first test and returned an ordinary miss, so
-the reference simply went unresolved with nothing said about the record. A
-truthy non-object — a non-empty string, a non-zero number or `true` — reached
-the `in`, which throws on all three, and surfaced as an opaque state-read error
-naming nothing either. A **list** answered the membership test, so an output
-named like an index resolved a fabricated element.
+| Intrinsic | `--from-state` | `--from-cfn-stack` |
+| --- | --- | --- |
+| `Ref` to a resource | The recorded physical ID | The physical ID from `ListStackResources` |
+| `Fn::GetAtt` | The attribute recorded at deploy time | Only where the command can read it back; otherwise dropped with a warning |
+| `Fn::Sub`, `Fn::Join` | Resolved piece by piece | Resolved piece by piece, within the limits above |
+| `AWS::AccountId`, `AWS::Region`, `AWS::Partition`, `AWS::URLSuffix` | STS `GetCallerIdentity` and the resolved region | Same |
+| `Fn::ImportValue` | The producing stack's state, same account and region | `ListExports` |
+| `Fn::GetStackOutput` | The named stack's outputs, same account | Not resolved |
 
-`cdkd local` reads such a bag as **empty** and warns, naming the stack and
-region. It does not refuse: these commands write no state record, so there is
-nothing to damage further, and a local invoke over one damaged record is still
-worth running. What the warning buys is the distinction an empty map cannot
-make on its own — "this record could not be read" versus "this stack publishes
-no outputs". Repair the record (or run [`cdkd state
-show`](cli-state.md) with `--json` to see what is stored) before trusting a
-substitution that came back absent.
+`Fn::GetAtt` is the weak spot of `--from-cfn-stack`: a CloudFormation resource
+listing carries no attribute values. cdkd never substitutes a guess. It warns
+and drops the key, and you can supply the value with `--env-vars`. Each command
+page says what it can recover.
 
-### CloudFormation dynamic references (`{{resolve:...}}`)
+Resolution is per key and never stops the run. A missing state record, an
+attribute that was not recorded, an unsupported intrinsic or a failed
+CloudFormation call drops the affected keys with a warning, and the command
+continues.
 
-A container environment value that carries a CloudFormation dynamic reference —
-`{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` or
-`{{resolve:ssm-secure:...}}` — is **resolved locally before the container
-starts**, so the handler sees the value the deployed resource receives rather
-than the token text. Two routes reach a token, and both are resolved:
+Four limits to know:
 
-- **Same stack**: the reference is written into the function's or container's
-  own environment (for example `SecretValue.secretsManager(...)` rendered into
-  an env var). No state flag is needed.
-- **Cross stack, under `--from-state`**: cdkd persists a secret-bearing stack
-  output redacted back to its `{{resolve:...}}` expression, so an
-  `Fn::ImportValue` / `Fn::GetStackOutput` of it reads the token from state. It
-  is resolved against the **producing** stack's region. (`local start-api` does
-  not resolve cross-stack references under `--from-state` at all; it drops
-  them.)
+- An explicit `--from-cfn-stack <name>` is rejected when the run spans more
+  than one stack, because one name cannot apply to all of them. Use the bare
+  form, which uses each stack's own name.
+- `--from-cfn-stack` needs a region. With no `--stack-region`, no
+  `AWS_REGION` / `AWS_DEFAULT_REGION` and no region on the synthesized stack,
+  the command fails instead of guessing one.
+- `local start-api` does not resolve cross-stack references
+  (`Fn::ImportValue`, `Fn::GetStackOutput`) under `--from-state`. It drops
+  them.
+- A damaged state record is read as far as it can be. A `resources` or
+  `outputs` map that is not an object is treated as empty, and a row that is
+  not a resource record is skipped. Each case prints a warning naming the
+  stack. Run [`cdkd state show`](cli-state.md) with `--json` to see what is
+  stored.
 
-The lookup is a `GetSecretValue` / `GetParameter` (with decryption for
-`ssm-secure`) made with your own credentials, `--profile` honoured — never the
-`--role-arn` role, because the value lands in the container (the same reason
-`--from-cfn-stack` decrypts as you). An ARN reference uses its own
-region; any other uses the region of the stack that owns the value (the loaded
-state record's, then `--stack-region`, then the synth region, then `--region`).
+Two commands restrict the state flags:
 
-- **It fails loudly.** A missing permission, a missing secret or parameter, or a
-  malformed reference stops the command before any container starts, with an
-  error naming the reference, the consumer and the IAM permission the lookup
-  needs. The token is never passed through in place of the value.
-- **The plaintext stays off the command line.** A resolved key is passed as a
-  value-less `-e KEY` read from `docker run`'s environment, never on its argv,
-  and no log line or error message carries it. Under `CDK_DOCKER=finch` on macOS
-  or Windows such a container is refused unless `CDKD_ALLOW_SECRETS_ON_ARGV=1`
-  is set, as for any other secret.
-- **`--env-vars` skips the lookup.** An overridden key is never resolved — the
-  override is your local literal, which CloudFormation never sees — so an
-  override is also how to run without the permission.
-- **ECS `Command`, `EntryPoint` and health-check commands are refused** when
-  they carry a token (`local run-task`): resolving one would put the secret on
-  the `docker run` argv. Move it into an `Environment` variable or a `Secrets`
-  entry. `Secrets[].ValueFrom` is an ARN and is never resolved this way.
-
-`local invoke`, `local start-api` (once, at server boot), `local
-invoke-agentcore` and `local run-task` resolve in cdkd; the engine commands
-(`local start-agentcore`, `local start-cloudfront`, `local start-service`,
-`local start-alb`) get the same behaviour from cdk-local.
+| Command | Restriction |
+| --- | --- |
+| [`local start-cloudfront`](local-start-cloudfront.md) | Refuses `--from-state`, `--state-bucket` and `--state-prefix`. Use `--from-cfn-stack`. |
+| [`local start-alb`](local-start-alb.md) | `--from-state` resolves the ECS services but not a Lambda target group's environment. |
 
 ### `--stack-region`: choosing between records
 
-Only meaningful alongside `--from-state` or `--from-cfn-stack`. Pass it when the
-same stack name has state in more than one region.
+Pass `--stack-region` when the same stack name has state in more than one
+region. Under `--from-cfn-stack` it also sets the CloudFormation client's
+region.
 
-Region **case is not significant**: the value is matched against the state
-record's own spelling case-insensitively, so `--stack-region US-EAST-1` reads the
-`us-east-1` record instead of silently falling back to no state at all. A record
-spelled exactly the way you typed the flag always wins, so if both a `us-east-1`
-and a `US-EAST-1` record exist, each flag spelling reads its own. That collision
-is reported at warn level, naming the record read and which of the two rules
-chose it.
+The value is matched case-insensitively, so `--stack-region US-EAST-1` reads
+the `us-east-1` record. If records exist under both spellings, each spelling
+reads its own and a warning names the record that was read.
+
+### CloudFormation dynamic references (`{{resolve:...}}`)
+
+An environment value containing `{{resolve:secretsmanager:...}}`,
+`{{resolve:ssm:...}}` or `{{resolve:ssm-secure:...}}` is resolved before the
+container starts, so your code sees the value the deployed resource would
+receive. This needs no state flag.
+
+| Question | Answer |
+| --- | --- |
+| Whose credentials make the call | Yours, honouring `--profile`. Never the `--role-arn` role, because the value lands in the container. |
+| Which region | An ARN reference uses its own region. Any other uses the owning stack's region: the state record's, then `--stack-region`, then the synthesized region. |
+| What if the lookup fails | The command stops before any container starts. The error names the reference, the consumer and the IAM permission needed. |
+| How do I skip the lookup | Override the key with `--env-vars`. An overridden key is never looked up. |
+| Does the value appear on a command line | No. It is passed as a value-less `-e KEY`, read from the environment of `docker run`. No log line carries it. |
+
+A token can also arrive through a cross-stack reference: cdkd stores a
+secret-bearing stack output as its `{{resolve:...}}` text, so under
+`--from-state` an `Fn::ImportValue` or `Fn::GetStackOutput` of that output
+yields the token, which is then resolved in the producing stack's region.
+
+ECS `Command`, `EntryPoint` and health-check commands that contain a token are
+refused, because resolving one would put the secret on the `docker run` command
+line. Move it to an `Environment` variable or a `Secrets` entry.
+
+## Credentials inside the container
+
+By default the container gets your own AWS credentials, so calls your code
+makes to AWS reach real AWS as you. That usually means wider permissions than
+the deployed role has. To see IAM errors locally, run under the deployed role:
+
+| Command | Flag |
+| --- | --- |
+| `local invoke` | `--assume-role [arn]` |
+| `local start-api` | `--assume-role <arn>`, `--assume-role <LogicalId>=<arn>`, `--assume-role-auto` |
+| `local run-task` | `--assume-task-role [arn]` |
+| `local start-service`, `local start-alb` | `--assume-role [arn]` (`--assume-task-role` also works) |
+| `local start-cloudfront` | `--assume-role [arn]`, for Lambda origins |
+| `local invoke-agentcore`, `local start-agentcore` | `--assume-role [arn]` |
+
+`--role-arn` is a different flag. It is the role cdkd assumes for its own AWS
+calls. On `start-service`, `start-alb`, `start-cloudfront` and
+`start-agentcore` it is not safe to pass `--role-arn` without `--profile`: the
+role's credentials reach your containers, or fetch the secrets injected into
+them. cdkd warns at startup when that applies, and each page's Options table
+says what the role touches.
+
+## Common flags
+
+Every `cdkd local` command accepts these. Each command page lists only the
+flags that are its own.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `-a`, `--app <cmd-or-dir>` | `cdk.json` / `CDKD_APP` | CDK app command, or a synthesized cloud assembly directory. `-a cdk.out` skips synthesis. |
+| `--output <path>` | `cdk.out` | Output directory for synthesis. |
+| `-c`, `--context <key=value...>` | — | CDK context value. Repeatable. |
+| `--no-pull` | off | Skip `docker pull` and use the cached image. |
+| `--from-state` | off | Resolve intrinsic values from cdkd's S3 state. |
+| `--from-cfn-stack [name]` | off | Resolve them from a deployed CloudFormation stack. The bare form uses the stack's own name. |
+| `--stack-region <region>` | — | Region of the state record, and of the CloudFormation client under `--from-cfn-stack`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket read by `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
+| `--profile <profile>` | — | AWS profile. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role cdkd assumes for its own AWS calls. |
+| `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
+| `--verbose` | off | Verbose logging. |
+
+Every command except `local start-cloudfront` also accepts:
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--env-vars <file>` | — | JSON environment-variable overrides. |
+| `--container-host <ip>` | `127.0.0.1` | IP that published container ports bind to. Must be numeric; Docker rejects a hostname here. |
+
+The region for AWS calls comes from `AWS_REGION`, then `AWS_DEFAULT_REGION`,
+then the synthesized stack's own `env.region`. A deprecated `--region` flag,
+hidden from `--help`, still overrides them and prints a removal warning. An
+upper-cased region such as `US-EAST-1` is folded to lower case before any AWS
+call.
 
 ## Reaching a server on the host
 
-Containers cannot reach `localhost` on your machine — inside the container,
-`localhost` is the container. Use `host.docker.internal` for a service running
-on the host, which is what an override like
-`"ENDPOINT": "http://host.docker.internal:4566"` is for.
+Inside a container, `localhost` is the container. To reach a server on your
+machine, such as a local DynamoDB or a tunnel to a VPC resource, use the
+hostname `host.docker.internal`:
+
+```json
+{ "Parameters": { "AWS_ENDPOINT_URL_DYNAMODB": "http://host.docker.internal:8000" } }
+```
+
+Docker Desktop resolves the name natively. On Linux, cdkd adds the
+`host.docker.internal:host-gateway` mapping itself (Docker 20.10 or newer). On
+a daemon that does not support it, the mapping is skipped without an error.
+
+## Stopping a server
+
+{kbd:ctrl+c} stops a long-running command and removes every container,
+sidecar, Docker network and temporary file it created.
+
+A second {kbd:ctrl+c} exits immediately without cleanup, for when Docker
+itself hangs. Leftover containers can then be found and removed:
+
+```bash
+docker ps --filter name=cdkd-local-
+docker rm -f <container-id>
+```
+
+On `start-api` and `run-task` with `--profile`, the forced exit also names a
+temporary credentials file it did not remove. The file holds live credentials,
+so delete it once the containers are gone.
+
+## finch on macOS and Windows
+
+When `CDK_DOCKER` names finch on macOS or Windows, containers run inside a
+Lima VM, and finch copies each `-e KEY` value onto command lines that other
+local processes can read. cdkd therefore refuses to pass a secret that way:
+
+| Command | Refused |
+| --- | --- |
+| `local run-task`, `local start-service` | A task with a `Secrets` entry |
+| `local start-alb` | A service with a `Secrets` entry, and a Lambda target with a decrypted SecureString |
+| `local invoke-agentcore`, `local start-agentcore` | A decrypted SecureString in the runtime's environment |
+| `local start-cloudfront` | A decrypted SecureString in a Lambda Function URL origin's environment |
+| Any command | A resolved `{{resolve:...}}` value |
+
+The error names the secrets. Use Docker, podman, nerdctl or finch on Linux
+instead, or set `CDKD_ALLOW_SECRETS_ON_ARGV=1` to accept the exposure.
+
+AWS credentials are treated differently so that finch stays usable:
+
+- Credentials cdkd hands to a container are still forwarded, with a warning
+  naming the variables. This matters most for `--assume-role` /
+  `--assume-task-role` session credentials and credentials resolved from
+  `--profile`, which are not otherwise in the environment.
+- Credentials in cdkd's own environment reach finch's command line on every
+  finch command, including pulls and builds. finch does that by itself and
+  cdkd does not warn about it.
+
+finch is recognised by the file name `CDK_DOCKER` resolves to (`finch` or
+`finch.exe`, in any case). A wrapper script or symlink under another name is
+not recognised. finch on Linux is not affected.
 
 ## What cdkd trusts in the assembly
 
-These commands read the cloud assembly, and `-a <dir>` reads one that was built
-elsewhere. Some of the paths it supplies are refused when they resolve outside
-the assembly directory, and some are not, so the list is worth reading rather
-than assuming.
+A cloud assembly names directories to mount, build and serve, and `-a <dir>`
+can point at an assembly built elsewhere. cdkd checks those paths against the
+app's output directory before using them.
 
-Refused:
+Running a local command against an assembly runs code from it: the handler
+runs in a container, and a Docker asset's build command runs on your machine.
+Treat an assembly you did not synthesize yourself as untrusted input.
 
-- a Lambda's `Handler`, for an inline `Code.ZipFile` — cdkd materializes it as
-  a file before running it, so an escaping module path would have written the
-  assembly's own bytes to a path of its choosing;
-- a Docker asset's `source.directory` — the directory an image is built
-  from, and the working directory of a `source.executable` build script — on
-  every command that builds one: `cdkd local run-task`, `cdkd local invoke`
-  and `cdkd local start-api` (a container-image Lambda),
-  `cdkd local invoke-agentcore` and `cdkd local start-agentcore` (the
-  container arm), `cdkd local start-service` / `cdkd local start-alb` (an ECS
-  service's image, and a container-image Lambda behind the ALB), and a
-  container-image Lambda behind a function URL origin of
-  `cdkd local start-cloudfront`. A relative value that leaves the app's output
-  directory, through `..` or a symbolic link, is refused before the image is
-  built or the script runs. An absolute value is placed UNDER the manifest's
-  directory, which is how the build has always joined it. `sub/<link>/..` is
-  built from `sub`, as the path is written, which stays inside. Each image is
-  checked as it is built, so `start-service` / `start-alb` create their
-  network and metadata container (and `start-alb` its front door) first, and
-  check again on every `--watch` rebuild. `--no-build` reuses a cached image and opens no directory, so there
-  is nothing to check. The refusal prints the value bare when it is a plain
-  path and as one quoted string otherwise, so a crafted value cannot add words
-  of its own to it;
-- the directory a `--watch` soft reload copies into a running container
-  (`start-service`, `start-alb`, `invoke-agentcore`, `start-agentcore`): a
-  relative escape, and ANY absolute value outside the output directory. The
-  image's own build places an absolute value under the manifest's directory,
-  so a `cdk synth --no-staging` assembly never reaches a soft reload. A refused
-  reload falls back to a full rebuild, or is skipped, and never copies the
-  directory;
-- a code asset's `source.path` under `cdkd local invoke-agentcore` and
-  `cdkd local start-agentcore`, when it leaves the output directory (an
-  absolute value is placed under the manifest's directory, as above);
-- a `BucketDeployment` source that `cdkd local start-cloudfront` serves as an
-  S3 origin, when it is **relative** and leaves the output directory. Each file
-  served must also resolve inside its origin directory, so a symbolic link
-  there pointing elsewhere is not served. An **absolute** one follows the
-  `--no-staging` rule below;
-- a stack name that would carry `<stack>.assets.json` out of the assembly
-  directory;
-- a Lambda's `Metadata['aws:asset:path']` under `cdkd local invoke`,
-  `cdkd local start-api`, `cdkd local start-alb` and
-  `cdkd local start-cloudfront`, when it is **relative** — both the function's
-  own code directory and a same-stack layer's. The result is bind-mounted
-  read-only at
-  `/var/task` (a layer's at `/opt`) inside a container running handler code the
-  same assembly supplies, and `cdkd local invoke` forwards your credentials into
-  it, so a relative path escaping the app's output directory would carry that
-  code from a session it already has to the rest of your filesystem. Nothing a
-  real `cdk synth` emits has that shape, so refusing it costs nothing.
+### Refused
 
-A stack inside a `cdk.Stage` is unaffected by any of those: its assets are
-staged into the app's output directory, so `../asset.<hash>` is the shape CDK
-writes and it loads normally. The same rule and the same wording apply on the
-deploy path; see [Deploy safety](cli-deploy-safety.md).
+A path is refused when it resolves outside the app's output directory, through
+`..` or a symbolic link.
 
-Warned about, but accepted:
+| Path in the assembly | Applies to |
+| --- | --- |
+| A Lambda's relative `Metadata['aws:asset:path']`, for function code and same-stack layers | `invoke`, `start-api`, `start-alb`, `start-cloudfront` |
+| The module path in a Lambda's `Handler`, for inline `Code.ZipFile` | Wherever inline code is run |
+| A Docker asset's `source.directory` | Every command that builds an image, on each build and each `--watch` rebuild |
+| The directory a `--watch` reload copies into a running container | `start-service`, `start-alb`, `invoke-agentcore`, `start-agentcore` |
+| A code asset's `source.path` | `invoke-agentcore`, `start-agentcore` |
+| A relative `BucketDeployment` source served as an S3 origin | `start-cloudfront` |
+| A stack name that would place `<stack>.assets.json` outside the assembly | Wherever a command reads it |
 
-- an **absolute** `Metadata['aws:asset:path']` that points outside the output
-  directory. `cdk synth --no-staging` (the `aws:cdk:disable-asset-staging`
-  context flag) makes CDK write the asset's absolute SOURCE directory there
-  instead of a staged `asset.<hash>`, and that is a documented CDK CLI flag —
-  AWS's own pre-step for `sam local invoke` — so cdkd reads what `cdk` wrote
-  rather than rejecting it. cdkd cannot tell such a value apart from one a
-  hostile assembly planted, so it prints a warning naming the directory and
-  saying it will be mounted. **If you did not synthesize with `--no-staging`,
-  that warning means the assembly is pointing cdkd at a directory of its own
-  choosing — treat it as untrusted.** An absolute path that stays inside the
-  output directory is accepted silently.
-- a Docker asset's `source.executable` — a command line the manifest chose,
-  which cdkd runs on your machine to produce the image. Every `cdkd local`
-  command that builds a Docker asset announces it first, naming the command and
-  how many arguments it took; the arguments themselves stay behind `--verbose`,
-  since a build script's own flags are not `docker build` flags and a
-  `--password` among them would otherwise reach every log. Each distinct
-  command is announced once per run rather than once per build, so a
-  `start-service` rebuilding per replica does not repeat it. **Running a local
-  command against an assembly executes code from it, and the CloudFormation
-  template does not show that command.**
+Notes on those rows:
 
-- an **absolute** `BucketDeployment` source that `cdkd local start-cloudfront`
-  serves as an S3 origin, when it lies outside the output directory — the
-  shape `cdk synth --no-staging` writes. It is served, with a warning naming
-  it, only when it is a folder inside your project: inside the git work tree
-  holding the output directory (the nearest ancestor with a `.git` directory
-  or file), or inside the current directory when that contains the output
-  directory or is itself a git work-tree root. A project root that is your
-  home directory, or contains it, does not count, so a folder is refused when
-  the only candidate is `~` itself (a cwd of `~`, or a dotfiles repository
-  there). No directory between that
-  project root and the folder may be a credential or version-control
-  directory (`.git`, `.hg`, `.svn`, `.ssh`, `.aws`, `.gnupg`, `.docker`,
-  `.kube`, `.config`, `.azure`, `.gcloud`, `.terraform`, `.npm`,
-  `.pnpm-store`, `.yarn`, `.cache`, `.local`, compared case-insensitively).
-  Other hidden build folders, such as `docs/.vitepress/dist`, are accepted.
-  Everything else is refused. That includes `/`, your home directory and every
-  directory containing it, every directory containing the output directory,
-  and the project root itself; all of these are judged on real paths. An
-  origin accepted this way never serves a hidden entry (`/.env`,
-  `/.git/...`), except a `.well-known` path segment. The rule scopes the folder
-  without proving it is yours: running from a folder that holds several
-  repositories puts a sibling repository's non-hidden folders in scope, and
-  the credential list is not exhaustive.
+- An absolute `source.directory` or `source.path` is placed under the
+  manifest's directory, so it cannot leave it.
+- A refused `--watch` copy falls back to a full rebuild or is skipped. The
+  directory is never copied.
+- `--no-build` reuses a cached image and opens no directory.
+- `start-cloudfront` also checks every file it serves, so a symbolic link
+  inside an origin directory that points elsewhere is not served.
 
-Every path on these lists is checked wherever a `cdkd local` command reads it, including
-the ones the bundled `cdk-local` engine runs end to end (`start-agentcore`,
-`start-cloudfront`, `start-service`, `start-alb`). The engine also warns about a
-BuildKit passthrough path outside the assembly (a build secret, an SSH key, a
-build context, a cache or output directory) on every image it builds, and a
-Lambda's `Metadata['aws:asset:path']` reached through it follows the same rule
-as cdkd's own resolver.
+A stack inside a `cdk.Stage` is unaffected. Its assets are staged into the
+app's output directory, so the `../asset.<hash>` CDK writes resolves inside it.
+The exception is pointing `-a` at the Stage's own sub-assembly
+(`-a cdk.out/assembly-MyStage`): the check is then bounded to that directory
+and the Stage's assets are refused. Point `-a` at the app's `cdk.out` and
+select the resource by its display path. The deploy path follows the same
+rule; see [Deploy safety](cli-deploy-safety.md).
 
-None of this makes a hand-modified assembly safe to run: its
-`source.executable` still runs on your machine, and its handler code still runs
-in the container. Treat an assembly you did not synthesize yourself as
-untrusted input.
+### Warned about, but accepted
+
+| Path in the assembly | Why it is accepted |
+| --- | --- |
+| An absolute `Metadata['aws:asset:path']` outside the output directory | `cdk synth --no-staging` writes the asset's absolute source directory there. |
+| A Docker asset's `source.executable` | It is the build command the manifest chose. cdkd runs it on your machine to produce the image. |
+| An absolute `BucketDeployment` source outside the output directory | Also written by `cdk synth --no-staging`. Served only when it is a folder inside your project; see [`cdkd local start-cloudfront`](local-start-cloudfront.md#absolute-bucketdeployment-sources). |
+
+> [!WARNING]
+> If you did not synthesize with `--no-staging`, a warning that cdkd is about
+> to mount a directory outside the output directory means the assembly chose
+> that directory. Treat the assembly as untrusted.
+
+cdkd announces a `source.executable` build before running it, naming the
+command and how many arguments it takes. The arguments are shown only under
+`--verbose`, because a build script's flags may include a password. Each
+distinct command is announced once per run.
+
+`start-service`, `start-alb`, `start-cloudfront` and `start-agentcore` also
+warn about a BuildKit path outside the assembly (a build secret, an SSH key, a
+build context, a cache or output directory) on every image they build.
 
 ## Related
 
-- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream
-  contract, and the full exit-code table
-- [Deploy safety](cli-deploy-safety.md) — what cdkd refuses to read out of a
-  cloud assembly, and why
-- [Getting Started](getting-started.md) — installing cdkd and deploying a first
+- [CLI Reference](cli-reference.md): every cdkd command and the full exit-code
+  table
+- [Deploy safety](cli-deploy-safety.md): what cdkd refuses to read out of a
+  cloud assembly on the deploy path
+- [State Management](state-management.md): what `--from-state` reads
+- [Getting Started](getting-started.md): installing cdkd and deploying a first
   stack
-- [State Management](state-management.md) — what `--from-state` reads

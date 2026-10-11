@@ -45,3 +45,34 @@ features:
 cdkd deploys up to 15x faster than AWS CDK (CloudFormation) on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
 
 <div data-ox-island="cdkd-benchmark" data-ox-props='{"title":"VPC + CloudFront + Lambda stack","rows":[{"label":"AWS CDK (CFn)","seconds":599},{"label":"cdkd","seconds":96,"ratio":"~6x"},{"label":"cdkd","flag":"--no-wait","seconds":40,"ratio":"15.0x"}],"note":"Deploy phase only. The 15x figure requires cdkd deploy --no-wait, which returns as soon as each Create call returns and lets AWS finish NAT Gateway stabilization in the background too.","href":"/benchmarks/","linkText":"Benchmarks"}'></div>
+
+## Where to start
+
+::: card-grid
+
+::: card Deploy your CDK app
+Install, bootstrap, and run a first deploy. [Getting Started](getting-started.md)
+:::
+
+::: card See how it works
+The pipeline, state, and how changes are decided. [Core Concepts](concepts.md)
+:::
+
+::: card Recover from a failure
+Undo a failed deploy with [Rollback](rollback.md), or look up the error in
+[Troubleshooting](troubleshooting.md).
+:::
+
+::: card Use it next to CloudFormation
+One CDK app, two tools. [Mixed Estates](mixed-estates.md)
+:::
+
+::: card Run it on your machine
+Lambda functions, APIs and ECS tasks, locally. [Local Execution](local-emulation.md)
+:::
+
+::: card Look up a command
+Every command and flag. [CLI Reference](cli-reference.md)
+:::
+
+:::

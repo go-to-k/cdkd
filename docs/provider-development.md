@@ -1,1462 +1,654 @@
 ---
 title: Provider Development
-description: "How to implement a cdkd SDK Provider — the Provider abstraction, registry, implementation steps, and best practices."
+description: "How to add or change a cdkd SDK provider: a walkthrough of a real one from file to registration and tests, then the rules every provider obeys."
 ---
 
 # cdkd Provider Development Guide
 
-## Overview
+A **provider** is the class that makes the AWS calls for a resource type. cdkd
+has two kinds. An **SDK provider** is written by hand for one service and calls
+that service's SDK client directly. The **Cloud Control provider** is generic
+and handles the types nobody has written an SDK provider for.
 
-In cdkd, AWS resource provisioning is implemented through an abstraction layer called **Provider**. SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API serves as a fallback for resource types without an SDK Provider (requires async polling).
+An SDK provider's calls return without polling, so adding one for a commonly
+used type makes deploys of that type faster. It can also handle what the
+generic route cannot, such as retries for IAM propagation or a type Cloud
+Control does not support.
 
-Adding SDK Providers for frequently used resource types is one of the most impactful performance improvements. This guide explains how to add new providers.
+This page walks through one small SDK provider from start to finish, then lists
+the rules every provider obeys. Read [Architecture](architecture.md) first if
+you have not seen how the deploy engine calls a provider.
 
-## Provider Interface
+## How a resource reaches your provider
 
-All providers implement the `ResourceProvider` interface.
+`ProviderRegistry` chooses a provider for each resource on each deploy.
 
-### Definition (`src/types/resource.ts`)
+```text diagram=contrib-provider-routing
+              Resource in the template
+                         |
+                         v
+                 ProviderRegistry
+                         |
+        +----------------+-----------------+
+        |                |                 |
+        v                v                 v
+Custom resource     SDK provider      Cloud Control
+provider                              provider
 
-```typescript
-export interface ResourceProvider {
-  /**
-   * Create a new resource
-   *
-   * @param logicalId CloudFormation logical ID
-   * @param resourceType CloudFormation resource type (e.g., "AWS::S3::Bucket")
-   * @param properties Resource properties from template
-   * @returns Physical ID and attributes
-   */
-  create(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>
-  ): Promise<ResourceCreateResult>;
-
-  /**
-   * Update an existing resource
-   *
-   * @param logicalId CloudFormation logical ID
-   * @param physicalId AWS physical ID (from state)
-   * @param resourceType CloudFormation resource type
-   * @param properties New properties
-   * @param previousProperties Old properties
-   * @param context Optional update context — `desiredFromAwsReadback`,
-   *   `replayingState` (the desired bag is a cdkd STATE record, set by the
-   *   rollback executor's revert arms, issue #3141), `maskSecrets`, and
-   *   `expectedRegion` (the region the state record being updated belongs to,
-   *   issue #2301), and `recordedAttributes` (the attributes cdkd recorded for
-   *   the addressed record, identity evidence, issue #4051). Optional in every
-   *   sense: a provider that needs none of
-   *   them may declare five parameters, as the examples further down this page
-   *   do.
-   * @returns Physical ID (may change if replaced) and attributes
-   */
-  update(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>,
-    context?: UpdateContext
-  ): Promise<ResourceUpdateResult>;
-
-  /**
-   * Delete a resource
-   *
-   * @param logicalId CloudFormation logical ID
-   * @param physicalId AWS physical ID
-   * @param resourceType CloudFormation resource type
-   * @param properties Resource properties (optional, for cleanup logic)
-   * @param context Delete-time context (optional). `context.expectedRegion`
-   *   is the region recorded in the stack state when the resource was
-   *   created. Providers MUST verify the AWS client's region against
-   *   `context.expectedRegion` before treating a `*NotFound` error as
-   *   idempotent delete success — see the "DELETE idempotency" section
-   *   below. `context.recordedAttributes` is the deleted record's attributes
-   *   (identity evidence, issue #4157): a name-addressed provider compares a
-   *   recorded id with the live holder's before deleting.
-   * @returns Nothing (means "deleted"), or `{ outcome: 'skipped', reason }`
-   *   when the provider issued NO AWS call and the resource may still be
-   *   alive — see "2b. Reporting a SKIPPED delete" below.
-   */
-  delete(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties?: Record<string, unknown>,
-    context?: DeleteContext
-  ): Promise<void | ResourceDeleteResult>;
-
-  /**
-   * Adopt an existing AWS resource into cdkd state.
-   *
-   * Optional. Providers without an `import` implementation are reported
-   * by `cdkd import` as `unsupported` and skipped (Cloud Control API
-   * fallback handles them via `--resource <id>=<physicalId>` overrides).
-   *
-   * @param input Logical ID, resource type, CDK path, stack name, region,
-   *   template properties, and (optionally) the user-supplied
-   *   `knownPhysicalId` from `--resource` / `--resource-mapping`.
-   * @returns Physical ID + attributes (same shape as `create` returns),
-   *   or `null` when no matching AWS resource was found (caller treats
-   *   `null` as "skipped — not deployed yet", not as a failure).
-   */
-  import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
-
-  /**
-   * Whether a resource a failed CREATE proved it made (its journaled id) is
-   * the same live resource as the one the state record under the same
-   * logical id holds (issue #4606: the fix-forward).
-   *
-   * Optional. A successful deploy deletes the journaled resource only on
-   * `'different'`, and so do `cdkd rollback` and `cdkd destroy` replaying
-   * an entry that deploy kept (issue #4754); absent, `'unknown'` or a throw
-   * keeps today's warning.
-   * A `'different'` must rest on AWS evidence, not on two id strings
-   * differing: at the least a live read confirming the record's resource
-   * exists, in an id namespace where two distinct ids cannot name one
-   * resource (a unique, non-renamable name per account and region). Answer
-   * `'unknown'` for an id form you do not
-   * recognise, a client region other than `context.expectedRegion`, or a
-   * record whose resource is not found.
-   */
-  isSameResource?(
-    journaledPhysicalId: string,
-    record: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' },
-    resourceType: string,
-    context: { expectedRegion: string }
-  ): Promise<'same' | 'different' | 'unknown'>;
-
-  /**
-   * A token naming THIS live resource and no later one created under the
-   * same physical id (issue #4655). A failed CREATE journals it beside a
-   * proven orphan, and a successful deploy deletes the orphan only when the
-   * live token is equal (one reported gone is dropped without a delete).
-   *
-   * Optional, but without it a successful deploy never deletes a proven
-   * orphan of a name-keyed type: it warns and exits 2. Not needed for a type
-   * listed in `UNIQUE_PHYSICAL_ID_TYPES`
-   * (src/deployment/rollback-executor/orphan-identity.ts), whose marked id
-   * AWS generates and never reuses; add a type there only after checking its
-   * `markCreatedBeforeFailure` site. Build the token from an immutable AWS id
-   * where one exists, else the ARN plus the creation time. Return
-   * `RESOURCE_NOT_FOUND` only on AWS's not-found answer, and `undefined` for
-   * an id form you do not recognise, a client region other than
-   * `context.expectedRegion`, or a response without the fields.
-   */
-  resourceIdentity?(
-    physicalId: string,
-    resourceType: string,
-    context: { expectedRegion: string }
-  ): Promise<string | typeof RESOURCE_NOT_FOUND | undefined>;
-}
+Custom::* types     the type is       no SDK provider, or
+                    registered and    the template sets a
+                    every property    property the SDK
+                    is handled        provider does not handle
 ```
 
-### Return Types
+Two consequences for a provider author:
 
-```typescript
-export interface ResourceCreateResult {
-  physicalId: string                     // AWS physical ID
-  attributes?: Record<string, unknown>   // Attributes for Fn::GetAtt
-  effectiveProperties?: Record<string, unknown>  // See below — rarely needed
-  noEchoAttributes?: boolean             // See below — the whole bag is sensitive
-  noEchoAttributeNames?: readonly string[]  // ...or only these keys of it
-}
+- Your provider only sees a resource whose top-level properties are all in the
+  provider's `handledProperties`. A template that sets any other property is
+  sent through Cloud Control, so the property is not silently dropped.
+- A resource that state records as created through Cloud Control normally stays
+  there after you add an SDK provider for its type.
 
-export interface ResourceUpdateResult {
-  physicalId: string                     // Physical ID after update
-  wasReplaced: boolean                   // Whether resource was replaced
-  attributes?: Record<string, unknown>   // Attributes after update
-  effectiveProperties?: Record<string, unknown>  // See below — rarely needed
-  noEchoAttributes?: boolean             // See below — the whole bag is sensitive
-  noEchoAttributeNames?: readonly string[]  // ...or only these keys of it
-}
-```
+[Provisioning Layers](provisioning-layers.md) has the full order of the
+decision.
 
-**`noEchoAttributes` — the attributes you are returning are SENSITIVE**
-(issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)). Leave it absent
-and nothing changes. Set it and the deploy engine registers every string value
-in `attributes` as a redaction needle, so `state.json` stores `***` in its
-place — in this resource's own `attributes`, in the resolved `properties` of
-every resource that consumed one through `Fn::GetAtt`, and in `state.outputs`.
+## Before you write code
 
-Three things about it are decisions rather than accidents, and each is a rule
-for a second producer:
+Answer these from the CloudFormation resource reference and the AWS SDK
+documentation for the type:
 
-- **`noEchoAttributes` is WHOLE-BAG, and that matches its producer.**
-  `CustomResourceProvider` relays the `NoEcho: true` field of the
-  CloudFormation custom-resource RESPONSE envelope — a property of the
-  response, not of one `Data` member — so declaring one member sensitive would
-  invent a granularity the wire format does not have. Use
-  `noEchoAttributeNames` instead when your bag genuinely MIXES sensitive and
-  ordinary members: `NestedStackProvider` does, because its attributes are a
-  whole child stack's outputs, of which typically one is sensitive. Declaring
-  such a bag whole would mask every unrelated member into this record and into
-  every resource that consumes one — degrading resources that have nothing to
-  do with the secret. A name the returned `attributes` does not carry is
-  ignored.
-- **Do NOT mask the values you return.** They are what `Fn::GetAtt` resolves
-  to, and CloudFormation delivers a `NoEcho` custom resource's `Data` to a
-  dependent resource in the CLEAR (measured against real CloudFormation).
-  Masking at capture would make a template feeding the value into
-  `AWS::SecretsManager::Secret.SecretString` store the literal mask AS the
-  secret. Report the flag; let the engine decide what to write down.
-- **It is per-CALL and not persisted.** A `create()` that reports it and a
-  later `update()` that does not are two honest statements about two
-  responses. `ResourceState` has no durable field for it, which is why cdkd
-  REFUSES rather than guessing when a later deploy has to write a value it can
-  only read back as the mask — see
-  [State Management](state-management.md#noecho-custom-resource-responses)
-  for the user-facing consequences, and issue
-  [#2449](https://github.com/go-to-k/cdkd/issues/2449) for the schema bump that
-  would close it.
-
-**`effectiveProperties` — only when you deliberately NARROW what you send**
-(issue [#1591](https://github.com/go-to-k/cdkd/issues/1591)). The deploy engine
-records the DESIRED properties into cdkd state, which is right for almost every
-provider — leave the field absent and nothing changes. But a provider that
-knowingly drops part of the bag makes the record describe something AWS never
-held, and since `readCurrentState` can only return what AWS *does* hold, the
-difference becomes permanent phantom drift: reported by every `cdkd drift`, and
-"repaired" by `drift --revert` calling `update()` again, which narrows and
-re-reports. Returning the bag you actually sent makes the engine record that
-instead.
-
-Every `update()` caller honours the field, not only the deploy engine — since
-issue [#1644](https://github.com/go-to-k/cdkd/issues/1644), `drift --revert` and
-the rollback executor's two revert arms record it as well, so the loop closes on
-those commands too. Return the COMPLETE bag you sent regardless of caller; each
-one knows how to fold that into the record it maintains.
-
-`EC2Provider.createRoute` is the live case: a CFn-invalid template declaring two
-destination keys is REFUSED on the template path, but the refusal downgrades to
-a warning on the state-borne paths, where it keeps one key and returns the
-others stripped.
-
-`EC2Provider.createSecurityGroupIngress` is the second, and it shows that a
-dropped KEY is not the only shape (issue
-[#1633](https://github.com/go-to-k/cdkd/issues/1633)). A SUBSTITUTED value does
-the same damage: a malformed `IpProtocol` is warn-replaced by the `-1` default
-on the state-borne paths, and — separately — an unquoted YAML `IpProtocol: -1`
-is a NUMBER that is stringified before it is sent. Both reached AWS as something
-other than what the record said, so both had to be reported. When auditing your
-own provider, read every arm that can put a value on the wire differing from the
-declared one, not only the arms that log.
-
-`DynamoDBGlobalTableProvider` is the third, and it shows both halves of the
-question (issue [#1683](https://github.com/go-to-k/cdkd/issues/1683)). Every one
-of its ordinary CREATE-path guard downgrades is now answered (the UPDATE-side
-capacity residual was closed by issue
-[#1738](https://github.com/go-to-k/cdkd/issues/1738)), and they do NOT all answer
-the same way — a `BillingMode` warn-and-SUBSTITUTE on the replay-CREATE path records
-the substituted mode, the same property's UPDATE-side guard suppresses the flip
-and so records the mode it compared against — DROPPING the key instead when the
-record declared none, so the key stays absent and every later deploy re-reads
-AWS rather than comparing against a snapshot this arm would have frozen in
-(issue [#1733](https://github.com/go-to-k/cdkd/issues/1733) is what makes that
-re-read happen, and what makes the drop safe rather than a lost flip) — a
-`GlobalSecondaryIndexes` warn-and-SKIP on update retains the previous list, and
-the same property's replay-CREATE OMIT drops the key outright (issue
-[#1724](https://github.com/go-to-k/cdkd/issues/1724)), because there the block
-never reached AWS at all. Note the first two answer the SAME property
-differently because what reached AWS differs: one created the table on-demand,
-the other left a live table's mode untouched. The create-side substitution also
-STRIPS the PROVISIONED-only capacity blocks that mode never sent (issue
-[#1726](https://github.com/go-to-k/cdkd/issues/1726)) — a substitution that
-changes a MODE drops more than the key it rewrote, and the strip set is read off
-the provider's own `readCurrentState` gating under the new mode rather than
-guessed from key names, which is what keeps the on-demand ceilings (genuinely
-sent under that mode) from being swept up with it. Getting the
-UPDATE-side split wrong cost two review rounds in opposite directions, so the
-per-shape reasoning lives in
-[.claude/rules/providers.md](https://github.com/go-to-k/cdkd/blob/main/.claude/rules/providers.md) rather than being
-summarized twice. One arm logs no refusal at all: cross-region replication REQUIRES a stream, so the
-provider enables `NEW_AND_OLD_IMAGES` on a template that declared no
-`StreamSpecification`, on the ORDINARY template path. A provider is therefore
-not "done" once every guard reports — the audit question is what it SENDS that
-differs from what was declared, not which guards can warn.
-
-**But finding such an arm is not the same as fixing it.** The value that arm
-records is a key the template does not have, so the twin rule above binds:
-`DiffCalculator` walks the key UNION, so an unchanged template would classify an
-UPDATE on the next deploy, `update()` would return no effective bag, and the key
-would vanish again. Settle the twin's feasibility BEFORE recording anything. For
-this arm (issue [#1723](https://github.com/go-to-k/cdkd/issues/1723)) the twin
-is pure and synchronous and does not know the deploy region, so only the
-region-independent half (more than one replica, no `MultiRegionConsistency` declared) is recorded, through one
-predicate shared by `create()`, `update()` and `canonicalizeDesiredProperties`;
-a single replica outside the deploy region still records nothing.
-
-When more than one arm can fire in a single call, COMPOSE them
-(`...(effectiveProperties ?? properties)`) rather than assigning — otherwise the
-later arm silently erases the earlier one's answer.
-
-Three conditions, or this becomes a way to hide losses rather than record them:
-
-- the narrowing is **deliberate** — a value you merely failed to send is a bug,
-  and recording it launders the bug. Usually that means an **announced** one (a
-  warn arm), and if you are unsure, that is the bar to hold yourself to. The
-  exception is a transformation that loses NOTHING and therefore has nothing to
-  announce: `IpProtocol: -1` and `'-1'` name the same protocol, so stringifying
-  it needs no warning and still belongs here. **Do not read that as "any
-  lossless coercion qualifies" — the real bar is "matches what AWS HOLDS"**
-  (issue #1643). `-1` works because AWS reports `-1` back. Measured us-east-1
-  2026-08-12: a declared `IpProtocol: 6` goes through the identical lossless
-  coercion to `'6'`, and AWS stores and reports `tcp` — so recording `'6'` here
-  pins a value the readback can never equal. A TYPE coercion cdkd performs is
-  knowable at send time; a VALUE mapping the SERVICE performs is not, so that
-  class is fixed on the readback side instead (see
-  `src/analyzer/drift-protocol-normalize.ts`). Ask what the service will
-  REPORT, not just whether your transformation lost information;
-- it is what you **sent**, not what AWS computed. AWS-side defaults and computed
-  values belong in `observedProperties` (captured by a real read-back); putting
-  them here makes the desired baseline drift from the template and silently
-  disables the absent-field removal derivation, which reads that side;
-- it **replaces** the desired bag wholesale, so it must be complete — not a
-  patch. An absent field means "record the desired properties", so the engine
-  gates on `??`, and an empty object is a legitimate answer.
-
-**Implement `canonicalizeDesiredProperties` alongside it — whenever what you
-report is a NARROWING.** The two are halves of one decision, and the first
-without the second is worse than neither. (A warn-and-SKIP is a different shape
-and takes the opposite answer — see the section below.) `effectiveProperties` makes state describe what AWS holds; the
-template still declares what it always did, so the next diff reads the dropped
-keys as a change the user made. For a create-only property that means a
-REPLACEMENT, and the engine's replacement create never sets `replayingState` —
-so a provider that refuses the shape on the create path turns a previously-green
-no-op deploy into a hard failure. Without create-only knowledge it classifies in-place instead and the resource is
-delete-and-recreated on *every* deploy.
-
-```typescript
-canonicalizeDesiredProperties(
-  resourceType: string,
-  properties: Record<string, unknown>
-): Record<string, unknown> {
-  if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
-    // A no-op `onUnusable`: a diff must not throw, and must not warn either —
-    // the provisioning path already announces the identical substitution.
-    return narrowIngressIpProtocol(properties, () => {}).narrowed;
-  }
-  if (resourceType !== 'AWS::EC2::Route') return properties;
-  // The SAME helper the provisioning path uses — re-deriving the rule lets
-  // state and template narrow to different keys, which is the original bug
-  // wearing a new hat.
-  const { declared, narrowed } = narrowRouteDestinations(properties);
-  return declared.length > 1 ? narrowed : properties;
-}
-```
-
-It must be pure and synchronous (it runs inside the diff, before any AWS call),
-and it must return the input unchanged whenever nothing applies.
-
-Two things that are easy to get wrong and were both caught by review:
-**normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
-
-**A warn-and-SKIP arm needs `effectiveProperties` too — but NOT the
-`canonicalizeDesiredProperties` twin** (issue
-[#1612](https://github.com/go-to-k/cdkd/issues/1612)). A guard that refuses a
-malformed value on the template path and downgrades to warn-and-skip on the
-state-borne ones lets the deploy SUCCEED while the call never runs, so the
-engine records a desired value AWS never received — the same permanent phantom
-drift, reached through a skip instead of a narrowing. `S3BucketProvider` is the
-live case: eight of its appliers carry that downgrade, behind two shared guard
-helpers.
-
-Read the twin rule above as scoped to a NARROWING, which is a pure function of
-the desired bag so both comparison sides can be reduced identically. A skip is
-not: what reaches AWS depends on what was already there. Canonicalizing the
-desired side would DROP the malformed configuration from it, so a previous side
-holding a VALID configuration against a desired side holding a malformed one
-derives a REMOVAL — cdkd would DELETE the live lifecycle / replication
-configuration the user still wants, over one unusable field. Recording the
-retained value has no such arm: the malformed template keeps re-warning until it
-is fixed, which is correct.
-
-What to record differs per path, and neither answer generalizes:
-
-- **UPDATE** — retain the PREVIOUS value. The call never ran, so AWS still holds
-  the previously-applied configuration. Dropping the key is wrong in the other
-  direction: a later template that REMOVES the block would derive no removal and
-  the live configuration would survive forever.
-- **replay-CREATE** (the reverse-replacement arm) — DROP the key. The resource is
-  new and nothing was applied, so there is no previous value to keep. Read that
-  as scoped to a SKIP ([#1653](https://github.com/go-to-k/cdkd/issues/1653)): a
-  create arm whose replay downgrade is a warn-and-DEFAULT DID apply the block,
-  so it records the SUBSTITUTED value instead — dropping there would record that
-  the provider sent nothing. Ask whether the call went out, not whether it was a
-  create.
-- **per-item appliers** (a Put keyed by `Id`) — the skip unit is one
-  configuration ITEM, so the effective array substitutes the previous item of the
-  same `Id` IN PLACE, or drops it when the skipped item was an ADD. Preserve the
-  DESIRED order: the diff compares arrays positionally, so a reordered effective
-  array manufactures a fresh phantom drift while removing the one you fixed.
-
-Report the skip EXPLICITLY from the applier — a `Promise<boolean>` "applied"
-return, or a list of skipped item indexes — rather than inferring it by wrapping
-`onUnusable`. That callback is shared by two guard classes: SKIP-class guards
-(`configStringRefusal`, `configBooleanRefusal`, `requireConfigObject`,
-`requireConfigArray`) and
-warn-and-DEFAULT reads (`readConfigString` with the options bag), where the
-applier proceeds WITH a substituted default. A wrapper cannot tell them apart, so
-a defaulted-but-APPLIED configuration would be recorded as skipped and the
-previous value retained — manufacturing exactly the drift you set out to remove.
-
-**The warn-and-SUBSTITUTE arm beside it needs the same treatment, and its own
-answer** (issue [#1670](https://github.com/go-to-k/cdkd/issues/1670)). Those
-warn-and-DEFAULT reads are not the SKIP's sibling only in the negative sense:
-the applier proceeds, the deploy succeeds, and AWS ends up holding a value the
-record does not describe — the same permanent phantom drift, reached through a
-substitution. Record the value SENT, and mind three things the skip path did not
-need:
-
-- The item was APPLIED, so its effective entry is what was SENT — kept IN PLACE,
-  not dropped and not replaced by the previous item. Because the two arms mean
-  opposite things, report them separately: the four `S3BucketProvider` per-`Id`
-  appliers return `{ skipped, substituted }` rather than a bare index list.
-- Write the substituted value back at the key the TEMPLATE declared — UNLESS the
-  readback can only emit one of the accepted spellings, in which case normalize
-  the whole block to that one (see the SHAPE section below). The bullet's
-  original reason was that a hardcoded branch leaves the malformed value alive at
-  the other key and adds a stray one; normalizing wholesale removes the other key
-  entirely, so that concern does not apply. The S3 analytics / inventory
-  `Destination` was the worked case: accepted flattened AND nested, emitted only
-  flattened, so it normalized
-  ([#1707](https://github.com/go-to-k/cdkd/issues/1707)). The nested spelling
-  is now refused pre-flight as a missing required member
-  ([#3602](https://github.com/go-to-k/cdkd/issues/3602)); a spelling the
-  nested required-member check refuses is dropped rather than normalized.
-- Hand the recorder the value the read RETURNED, not the fallback literal, so
-  "recorded" and "sent" cannot drift apart.
-
-Whether such a site ALSO takes the `canonicalizeDesiredProperties` twin is a
-genuine per-site question — unlike a skip, a substitution IS a pure function of
-the desired value, so the twin rule reaches it. `.claude/rules/providers.md`
-carries the three-finding checklist and the worked S3 answer, which is worth
-reading as TWO answers rather than one: for the SUBSTITUTED values (#1670) it is
-still no twin, because canonicalizing would conceal a malformed value whose
-warning is the user's only signal; for the never-emitted KEY and SHAPE folds at
-the same sites (#1686 / #1707) it is yes, because those have no fault to conceal
-and emit no warning at all. Both live in one
-`canonicalizeDesiredProperties` on `S3BucketProvider`, keyed off the DECLARED
-shape so the substitution stays visible.
-The one licensed exception is a SINGLE call site of KNOWN class
-([#1653](https://github.com/go-to-k/cdkd/issues/1653)): where you wrap one
-`readConfigString` you wrote yourself, you already know it is a
-warn-and-DEFAULT, and what you record is the default that WAS APPLIED rather
-than a retained previous value. Compose `replayWarn`'s own `onUnusable` instead
-of replacing it, and only when that callback exists — otherwise a template-path
-create silently gains a downgrade it never had — and say in-code that the
-exception is deliberate, or the next reviewer reads it as the violation.
-
-Two more rules the #1653 / #1654 reviews added:
-
-- **Validate the PREVIOUS value before retaining it.** An absent-vs-present test
-  is not enough — `previousProperties` is a cdkd STATE record, so on a replay it
-  can hold `null` / `''` / a bare string just as the desired side can, and
-  copying that in re-creates the drift from the other direction. Run the SAME
-  predicate the desired side runs (`configStringRefusal`, not a hand-written
-  `typeof` twin), DROP the key when both sides are unusable, and COPY the
-  retained value rather than aliasing the previous bag — the rollback executor
-  spreads your answer shallowly.
-- **Dropping a key can MOVE a hazard rather than remove it.** An absent key is
-  not malformed, so the next reader's guard does not fire and its default
-  applies silently. `AWS::Lambda::Url` is the live case
-  ([#1654](https://github.com/go-to-k/cdkd/issues/1654)): `update()` drops an
-  unvouchable `AuthType`, and the reverse-replacement `create()` then defaults
-  to `'NONE'` — a PUBLIC function URL, unannounced. The fix is not to stop
-  dropping but to make the READING path announce the defaulted absence on a
-  replay. Audit who reads the record next.
-
-**A KEY the readback never emits is the same defect reached through the SHAPE**
-(issue [#1686](https://github.com/go-to-k/cdkd/issues/1686)), and it NARROWS the
-"write it back at the key the TEMPLATE declared" bullet above. That bullet is
-right when both accepted spellings can come back from AWS. When they cannot —
-your provider tolerates an SDK spelling on the desired side but your
-`readCurrentState` reverse-mapper emits only the CFn one — writing back at the
-declared key preserves a key the comparator can never match, and the record
-drifts forever with no warning anywhere, because nothing was lost and nothing
-was substituted. Record the spelling the READBACK produces and REMOVE the other:
-the S3 inventory applier accepts `ScheduleFrequency` and the SDK
-`Schedule: { Frequency }` while `inventorySdkToCfn` emits only the former, so it
-records the CFn key and drops `Schedule`. Three things generalize: key the
-normalization off the DECLARED shape rather than off a refusal (the main
-population carries no malformed value at all); REMOVE the key instead of setting
-it `undefined` (`JSON.stringify` drops an `undefined` member but a cloned state
-record keeps it, so key-set walks disagree); and prefer normalizing over
-retracting the tolerance. Audit the whole type when you fix one — diff the
-type's live registry-schema property names against every key the provider reads
- off a desired-side bag. Match the `(a['X'] ?? a['Y'])` alias
-form explicitly — a plain bracket-read regex misses most of the class.
-
-Recording the folded spelling **needs its `canonicalizeDesiredProperties`
-twin**, and re-asking that question per site matters: the #1670 "no twin"
-answer rests on canonicalizing CONCEALING a malformed value whose warning tells
-the user what to fix, and a never-emitted spelling has no fault to fix and emits
-no warning. Without the twin the template keeps declaring the SDK spelling while
-state holds the CFn one, so `cdkd diff` reports the property forever and every
-deploy re-issues the Put (measured). cdkd's S3 fold shipped WITHOUT the twin at
-first — deliberately, because the alternative is worse in the direction that
-MUTATES — and the twin landed in issue
-[#1717](https://github.com/go-to-k/cdkd/issues/1717):
-`S3BucketProvider.canonicalizeDesiredProperties` folds the inventory schedule
-key, the analytics / inventory destination shape, and the defaulted-but-SENT
-members, sharing ONE per-item helper with the appliers so state and template can
-never be folded to different keys. It has since grown two WHOLE-BLOCK folds on
-the same rule — `effectiveNotificationConfiguration` and
-`effectiveLifecycleConfiguration` (issues #1748 / #1754 / #1755 / #1759) — which
-add three things worth knowing when you write the next one: the fold's unit can
-be the BLOCK rather than an item; a decision made across a whole LIST (S3
-chooses the V1 vs V2 lifecycle form once per configuration) has to be shared
-with the applier as a function, not re-derived; and an arm the wire WARNS about
-(a legacy singular transition colliding with its plural) must be left unfolded,
-or the comparison goes equal and the warning stops after one deploy.
-
-**A member that is always SENT and always READ BACK must be recorded even when
-the template omits it** (issue
-[#1718](https://github.com/go-to-k/cdkd/issues/1718)) — the defaulted-but-SENT
-arm of the same class, with no substitution and no warning anywhere. The S3
-inventory `Enabled` / `IncludedObjectVersions`, the analytics
-`OutputSchemaVersion`, the destination `Format` and the intelligent-tiering
-`Status` are all defaulted on the wire and all emitted by the reverse mapper, so
-an item omitting one recorded fewer keys than the readback produces. That is
-invisible for a TOP-LEVEL key (the drift comparator only descends into keys state
-carries) and fatal inside an ARRAY, which is compared WHOLESALE. Record the
-default and add it to the twin so both diff sides agree. Audit the sibling
-appliers when you fix one, and expect the answer to differ: S3 `metrics`
-defaults no scalar member and correctly needs no fold.
-
-**An EMPTY COLLECTION is not a removal intent** (issue
-[#1671](https://github.com/go-to-k/cdkd/issues/1671)). An applier that skips its
-Put for an empty rules array is the skip class reached from an ORDINARY template
-rather than a state replay, since a condition-pruned or intrinsic-collapsed
-template synthesizes one. Do not "fix" it by turning the skip into a Delete:
-measured against live CloudFormation (us-east-1, 2026-08-12), an update to
-`LifecycleConfiguration: { Rules: [] }` / `CorsConfiguration: { CorsRules: [] }`
-drives the stack to `UPDATE_ROLLBACK_COMPLETE` and BOTH live configurations
-survive unchanged — so it is an invalid template, and deleting would diverge
-from CFn while destroying a configuration the user still wants. The registry
-schema only says the shape is legal (the collection is required with no
-`minItems`), which is why this had to be measured rather than read. Keep the
-skip, record the PREVIOUS value per the UPDATE rule above, and ANNOUNCE it —
-CFn's own answer is a loud failure, so a silent skip leaves the user to discover
-it by diffing state. Keep it a warning rather than a throw, or the
-`readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
-an always-emitted empty-rules block back through `update()`) stops working.
-
-**The CREATE path usually carries the same guard, and what it RECORDS is a
-separate question** (issue [#1718](https://github.com/go-to-k/cdkd/issues/1718)).
-cdkd's create-side S3 arm skipped in SILENCE for the same collapsed array, so a
-fresh bucket came up without a declared configuration and nothing said so; it
-now announces the skip too. Neither recording answer transfers: the update arm
-retains the PREVIOUS value and a create has none, while the replay-CREATE rule's
-"DROP the key" is also wrong here, because `readCurrentState` ALWAYS emits the
-empty placeholder for an unconfigured resource — so the declared empty
-collection already equals what the readback returns and the right answer is to
-override NOTHING. Dropping it would leave the template declaring a key the
-record does not and churn a no-op UPDATE on every deploy. Before importing the
-drop answer, ask what your readback emits for the UNCONFIGURED resource.
+| Question | Why you need it |
+| --- | --- |
+| Does a provider already exist? Check `src/provisioning/register-providers.ts`. | A type is registered once. |
+| Which SDK client and which create, update, delete and describe calls? | These are the body of the provider. |
+| What does CloudFormation use as the physical id (the `Ref` value)? | Your `create` must return the same thing. |
+| Which attributes does `Fn::GetAtt` expose? | Your `create` and `update` return them. |
+| Which properties are marked "Update requires: Replacement"? | An update to one must not be sent as an in-place change. |
 
 ## Provider Implementation Examples
 
-**Clients and region.** Take AWS clients from `getAwsClients()`, or build your
-own SDK client with `ambientClientDefaults()`
-(`src/utils/ambient-client-defaults.ts`) spread first — it adds the active
-`AwsClients`' profile and explicit credentials to `awsClientDefaults()`, which
-alone would drop them (issue
-[#3588](https://github.com/go-to-k/cdkd/issues/3588)) — and read the region
-through `ambientRegion()` (`src/utils/stack-aws-scope.ts`) — never
-`process.env.AWS_REGION` directly. `cdkd deploy` runs stacks in several regions
-concurrently, each inside its own stack AWS scope, and those three are the reads
-that follow the scope; the environment is process-wide and belongs to no stack
-(issue [#1981](https://github.com/go-to-k/cdkd/issues/1981)).
+The example is `DocDBSubnetGroupProvider`, which serves
+`AWS::DocDB::DBSubnetGroup`. It is one of the smallest providers in the tree and
+has every part a provider needs. The code below is taken from
+[`src/provisioning/providers/docdb-subnet-group-provider.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/docdb-subnet-group-provider.ts),
+shortened where marked.
 
-### 1. Simple Example: S3 Bucket Policy Provider
+For a larger provider with sub-resources to manage, read
+`iam-role-provider.ts`, which attaches managed policies and writes inline
+policies on create, diffs them on update, and removes them before deleting the
+role.
 
-S3 bucket policies benefit from an SDK Provider for fast, synchronous operations without CC API polling overhead.
+### 1. Create the file and the client
 
-#### File: `src/provisioning/providers/s3-bucket-policy-provider.ts`
+Name the file `src/provisioning/providers/{service}-{resource}-provider.ts`,
+for example `docdb-subnet-group-provider.ts` or `lambda-function-provider.ts`.
 
-```typescript
-import {
-  S3Client,
-  PutBucketPolicyCommand,
-  GetBucketPolicyCommand,
-  DeleteBucketPolicyCommand,
-  NoSuchBucketPolicy,
-} from '@aws-sdk/client-s3';
+```ts
+import { DocDBClient /* and the commands */ } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
-import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
-import type {
-  ResourceProvider,
-  ResourceCreateResult,
-  ResourceUpdateResult,
-} from '../../types/resource.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import type { ResourceProvider } from '../../types/resource.js';
 
-export class S3BucketPolicyProvider implements ResourceProvider {
-  private s3Client: S3Client;
-  private logger = getLogger().child('S3BucketPolicyProvider');
+export class DocDBSubnetGroupProvider implements ResourceProvider {
+  private docdbClient?: DocDBClient;
+  private readonly providerRegion = ambientRegion();
+  private logger = getLogger().child('DocDBSubnetGroupProvider');
 
-  constructor() {
-    const awsClients = getAwsClients();
-    this.s3Client = awsClients.s3;
-  }
-
-  async create(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>
-  ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating S3 bucket policy ${logicalId}`);
-
-    const bucket = properties['Bucket'] as string;
-    const policyDocument = properties['PolicyDocument'];
-
-    if (!bucket || !policyDocument) {
-      throw new ProvisioningError(
-        `Bucket and PolicyDocument are required for ${logicalId}`,
-        resourceType,
-        logicalId
-      );
+  private getClient(): DocDBClient {
+    if (!this.docdbClient) {
+      this.docdbClient = new DocDBClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
-
-    try {
-      const policy =
-        typeof policyDocument === 'string'
-          ? policyDocument
-          : JSON.stringify(policyDocument);
-
-      await this.s3Client.send(
-        new PutBucketPolicyCommand({
-          Bucket: bucket,
-          Policy: policy,
-        })
-      );
-
-      this.logger.info(`Successfully created S3 bucket policy ${logicalId}`);
-
-      // Physical ID is bucket name
-      return {
-        physicalId: bucket,
-      };
-    } catch (error) {
-      throw new ProvisioningError(
-        `Failed to create S3 bucket policy ${logicalId}: ${String(error)}`,
-        resourceType,
-        logicalId,
-        bucket,
-        error instanceof Error ? error : undefined
-      );
-    }
-  }
-
-  async update(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
-  ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating S3 bucket policy ${logicalId}`);
-
-    const newBucket = properties['Bucket'] as string;
-    const oldBucket = previousProperties['Bucket'] as string;
-
-    // Replace if bucket name changed
-    if (newBucket !== oldBucket) {
-      this.logger.info(`Bucket changed, replacing policy: ${oldBucket} -> ${newBucket}`);
-
-      // Create new policy
-      const createResult = await this.create(logicalId, resourceType, properties);
-
-      // Delete old policy
-      try {
-        await this.delete(logicalId, physicalId, resourceType, previousProperties);
-      } catch (error) {
-        this.logger.warn(`Failed to delete old policy: ${String(error)}`);
-      }
-
-      return {
-        physicalId: createResult.physicalId,
-        wasReplaced: true,
-      };
-    }
-
-    // Update only policy document
-    try {
-      const policyDocument = properties['PolicyDocument'];
-      const policy =
-        typeof policyDocument === 'string'
-          ? policyDocument
-          : JSON.stringify(policyDocument);
-
-      await this.s3Client.send(
-        new PutBucketPolicyCommand({
-          Bucket: newBucket,
-          Policy: policy,
-        })
-      );
-
-      this.logger.info(`Successfully updated S3 bucket policy ${logicalId}`);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-      };
-    } catch (error) {
-      throw new ProvisioningError(
-        `Failed to update S3 bucket policy ${logicalId}: ${String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-    }
-  }
-
-  async delete(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    _properties?: Record<string, unknown>
-  ): Promise<void> {
-    this.logger.info(`Deleting S3 bucket policy ${logicalId}`);
-
-    try {
-      // Check if policy exists
-      try {
-        await this.s3Client.send(
-          new GetBucketPolicyCommand({
-            Bucket: physicalId,
-          })
-        );
-      } catch (error) {
-        if (error instanceof NoSuchBucketPolicy) {
-          this.logger.info(`Policy does not exist for bucket ${physicalId}, skipping`);
-          return;
-        }
-        throw error;
-      }
-
-      // Delete policy
-      await this.s3Client.send(
-        new DeleteBucketPolicyCommand({
-          Bucket: physicalId,
-        })
-      );
-
-      this.logger.info(`Successfully deleted S3 bucket policy ${logicalId}`);
-    } catch (error) {
-      throw new ProvisioningError(
-        `Failed to delete S3 bucket policy ${logicalId}: ${String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-    }
+    return this.docdbClient;
   }
 }
 ```
 
-### 2. Complex Example: IAM Role Provider
+There are two ways to get a client:
 
-IAM Role requires the following features:
+- `getAwsClients()` from `src/utils/aws-clients.ts` has shared clients for the
+  most used services (`.s3`, `.iam`, `.lambda` and others). Use one when it
+  exists.
+- Otherwise build the client yourself, lazily, with `ambientClientDefaults()`
+  spread first. That call carries the active profile and credentials.
 
-- Inline policies (`Policies`)
-- Managed policy attachment (`ManagedPolicyArns`)
-- Role name length limit (64 characters)
+Read the region through `ambientRegion()`, never from `process.env.AWS_REGION`.
+`cdkd deploy` runs stacks in several regions at once, and the environment
+variable belongs to the process, while `ambientRegion()` follows the stack
+being deployed.
 
-See `src/provisioning/providers/iam-role-provider.ts` for details.
+If the SDK package is not yet a dependency, add it with
+`vp add @aws-sdk/client-<service>`.
 
-**Key Points**:
+### 2. Declare the properties you handle
 
-1. **Create** sets inline policies and managed policies
-2. **Update** calculates diff and adds/removes/updates
-3. **Delete** deletes dependent resources (policies) first
+```ts
+handledProperties = new Map<string, ReadonlySet<string>>([
+  [
+    'AWS::DocDB::DBSubnetGroup',
+    new Set(['DBSubnetGroupName', 'DBSubnetGroupDescription', 'SubnetIds', 'Tags']),
+  ],
+]);
+```
 
-```typescript
-async update(...): Promise<ResourceUpdateResult> {
-  // Replace if role name changed
-  if (newRoleName !== physicalId) {
-    const createResult = await this.create(logicalId, resourceType, properties);
+List a property here only when `create` and `update` both send it to AWS. The
+registry reads this set to decide whether a resource can come to your provider,
+and a unit test compares it with the type's CloudFormation schema (step 9).
 
-    try {
-      await this.delete(logicalId, physicalId, resourceType);
-    } catch (error) {
-      this.logger.warn(`Failed to delete old role: ${String(error)}`);
-    }
+### 3. `create`
+
+`create` receives the resolved properties and returns the physical id and the
+attributes.
+
+```ts
+async create(
+  logicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>
+): Promise<ResourceCreateResult> {
+  this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
+  // A malformed Tags value is refused before any call.
+  const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+
+  const dbSubnetGroupName =
+    (properties['DBSubnetGroupName'] as string | undefined) ||
+    generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+
+  try {
+    await this.getCreateClient().send(
+      new CreateDBSubnetGroupCommand({
+        DBSubnetGroupName: dbSubnetGroupName,
+        DBSubnetGroupDescription:
+          (properties['DBSubnetGroupDescription'] as string) || `Subnet group for ${logicalId}`,
+        SubnetIds: properties['SubnetIds'] as string[],
+        ...(tags.length > 0 && { Tags: tags }),
+      })
+    );
 
     return {
-      physicalId: createResult.physicalId,
-      wasReplaced: true,
-      attributes: createResult.attributes,
+      physicalId: dbSubnetGroupName,
+      attributes: { DBSubnetGroupName: dbSubnetGroupName },
     };
-  }
-
-  // Update properties only
-  await this.iamClient.send(new UpdateRoleCommand({ ... }));
-
-  // Apply managed policies diff
-  await this.updateManagedPolicies(physicalId, newPolicies, oldPolicies);
-
-  // Apply inline policies diff
-  await this.updateInlinePolicies(physicalId, newPolicies, oldPolicies);
-
-  return {
-    physicalId,
-    wasReplaced: false,
-    attributes: { ... },
-  };
-}
-```
-
-## Provider Registration
-
-### Provider Registry (`src/provisioning/provider-registry.ts`)
-
-```typescript
-export class ProviderRegistry {
-  private providers = new Map<string, ResourceProvider>();
-  private cloudControlProvider: CloudControlProvider;
-
-  // No singleton: each command constructs its own registry.
-  constructor() {
-    this.cloudControlProvider = new CloudControlProvider();
-    // ...
-  }
-
-  /**
-   * Register a provider
-   */
-  register(resourceType: string, provider: ResourceProvider): void {
-    this.providers.set(resourceType, provider);
-    this.logger.debug(`Registered provider for ${resourceType}`);
-  }
-
-  /**
-   * Get a provider
-   *
-   * Returns registered SDK Provider if available (preferred for performance),
-   * falls back to Cloud Control Provider for unregistered types
-   */
-  getProvider(resourceType: string): ResourceProvider {
-    const provider = this.providers.get(resourceType);
-
-    if (provider) {
-      return provider;  // SDK Provider (fast, synchronous)
-    }
-
-    // Fallback to Cloud Control API (async polling)
-    return this.cloudControlProvider;
+  } catch (error) {
+    const cause = error instanceof Error ? error : undefined;
+    throw new ProvisioningError(
+      `Failed to create DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      resourceType,
+      logicalId,
+      dbSubnetGroupName,
+      cause
+    );
   }
 }
 ```
 
-### Registration Location
+What to copy from it:
 
-Provider classes are re-exported from `src/provisioning/provider-classes.ts`,
-which is loaded on demand: a provider module evaluates its `@aws-sdk/client-*`
-package, so nothing imports one statically (that would put the client on every
-command's startup path). Registration is in `src/provisioning/register-providers.ts`:
+| Part | Rule |
+| --- | --- |
+| The name | When the template gives none, `generateResourceName` (`src/provisioning/resource-name.ts`) builds `{StackName}-{LogicalId}-{Hash}`, cut to the service's length limit. |
+| The physical id | It is what CloudFormation's `Ref` returns for the type, here the subnet group name. |
+| The attributes | Return each attribute a template can read with `Fn::GetAtt`. |
+| The error | Every AWS call is inside a `try`. A failure is rethrown as `ProvisioningError` with the type, logical id, physical id and the original error as the cause. |
+| The log line | `safeMsg` keeps a value from the template on one line, so it cannot forge a log row. |
 
-```typescript
-// provider-classes.ts
-export { IAMRoleProvider } from './providers/iam-role-provider.js';
-// ... one re-export per provider class
+When an attribute's value can be missing, build the map with
+`definedAttributes` (`src/provisioning/attribute-map.ts`). It leaves the key out
+instead of storing an empty string.
 
-// register-providers.ts
-export function registerAllProviders(registry: ProviderRegistry, classes: ProviderClasses): void {
-  const { IAMRoleProvider, IAMPolicyProvider, S3BucketProvider, EC2Provider /* ... */ } = classes;
-  registry.register('AWS::IAM::Role', new IAMRoleProvider());
-  registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
-  registry.register('AWS::S3::Bucket', new S3BucketProvider());
-  // ... see register-providers.ts for all registrations
+The deploy engine retries a provider call that fails with a transient error,
+such as an IAM role that has not propagated yet. You do not need a retry loop
+for that in `create`.
 
-  // Multi-type providers share a single instance:
-  const ec2Provider = new EC2Provider();
-  registry.register('AWS::EC2::VPC', ec2Provider);
-  registry.register('AWS::EC2::Subnet', ec2Provider);
-  // ... (9 EC2 types total)
+### 4. `update`
 
-  // Wildcard matching for Custom::*
-  // handled by ProviderRegistry.getProvider()
+`update` receives the new properties and the previous ones, and changes the
+existing resource in place.
+
+```ts
+async update(
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): Promise<ResourceUpdateResult> {
+  refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+
+  try {
+    const subnetIds = properties['SubnetIds'] as string[] | undefined;
+    const sendSubnetIds = subnetIds !== undefined && subnetIds.length > 0;
+    await this.getClient().send(
+      new ModifyDBSubnetGroupCommand({
+        DBSubnetGroupName: physicalId,
+        DBSubnetGroupDescription: clearOnUpdateRemoval(
+          properties['DBSubnetGroupDescription'] as string | undefined,
+          previousProperties['DBSubnetGroupDescription'] as string | undefined,
+          `Subnet group for ${logicalId}`
+        ),
+        ...(sendSubnetIds && { SubnetIds: subnetIds }),
+      })
+    );
+
+    // ... apply the tag diff between previousProperties and properties ...
+
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: { DBSubnetGroupName: physicalId },
+    };
+  } catch (error) {
+    // ... rethrow as ProvisioningError, as in create ...
+  }
 }
 ```
 
-The registry is **not a singleton**: each command builds its own and passes it
-in, with the classes loaded once per process —
-`const providerClasses = await loadProviderClasses();` first, then
-`const registry = new ProviderRegistry(); registerAllProviders(registry, providerClasses);`
-(see `src/cli/commands/deploy.ts`). So a provider is registered in exactly one
-place, `registerAllProviders`, and never from module scope.
+The call to `clearOnUpdateRemoval` is the part that is easy to miss. When a
+user deletes a property from their template, CloudFormation resets it to its
+default. Most AWS update APIs treat a missing field as "leave it alone". A
+provider that passes properties straight through therefore keeps the old value
+in AWS while state says it is gone.
 
-## Steps to Add a New Provider
+`clearOnUpdateRemoval(newValue, previousValue, clearValue)` returns the new
+value when there is one, the clear value when the property was set before and
+is now absent, and `undefined` when it was never set. Check every optional
+property your `update` sends. The per-field checklist is in
+[Update removal semantics](provider-rules.md#update-removal-semantics-clear-on-removal).
 
-### Step 1: Research Resource Type
+`update` handles in-place changes only. When a create-only property changes,
+the diff classifies the change as a replacement, and the engine calls your
+`create` for the new resource and your `delete` for the old one.
 
-Check if an SDK Provider already exists for the target resource type, and whether it would benefit from a dedicated provider:
+### 5. `delete`
 
-- **Performance**: SDK Providers make direct synchronous API calls (no polling), significantly faster than CC API
-- **CC API limitations**: Some resources are not supported or have bugs in Cloud Control API
-- **Fine-grained control**: Some resources need special handling (e.g., IAM propagation retries, inline policies)
-
-```bash
-# Check if CC API supports the resource (for reference)
-# https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html
-```
-
-Adding an SDK Provider is recommended for **any frequently used resource type** to improve deployment speed.
-
-### Step 2: Check AWS SDK Client
-
-Identify the required AWS SDK v3 client:
-
-| Resource Type | AWS SDK Client |
-|---------------|----------------|
-| `AWS::IAM::Role` | `IAMClient` from `@aws-sdk/client-iam` |
-| `AWS::S3::BucketPolicy` | `S3Client` from `@aws-sdk/client-s3` |
-| `AWS::Lambda::Function` | `LambdaClient` from `@aws-sdk/client-lambda` |
-| `AWS::DynamoDB::Table` | `DynamoDBClient` from `@aws-sdk/client-dynamodb` |
-
-### Step 3: Create Provider Class
-
-#### File Naming Convention
-
-`src/provisioning/providers/{service}-{resource}-provider.ts`
-
-Examples:
-
-- `iam-role-provider.ts`
-- `s3-bucket-policy-provider.ts`
-- `lambda-function-provider.ts`
-
-#### Template
-
-```typescript
-import { /* AWS SDK imports */ } from '@aws-sdk/client-xxx';
-import { getLogger } from '../../utils/logger.js';
-import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
-import type {
-  ResourceProvider,
-  ResourceCreateResult,
-  ResourceUpdateResult,
-} from '../../types/resource.js';
-
-export class XxxResourceProvider implements ResourceProvider {
-  private client: XxxClient;
-  private logger = getLogger().child('XxxResourceProvider');
-
-  constructor() {
-    const awsClients = getAwsClients();
-    this.client = awsClients.xxx;  // Use shared client instance
-  }
-
-  async create(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>
-  ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating ${resourceType} ${logicalId}`);
-
-    try {
-      // 1. Validate properties
-      const requiredProp = properties['RequiredProp'] as string;
-      if (!requiredProp) {
-        throw new ProvisioningError(
-          `RequiredProp is required for ${logicalId}`,
-          resourceType,
-          logicalId
-        );
-      }
-
-      // 2. Create with AWS SDK
-      const response = await this.client.send(
-        new CreateXxxCommand({
-          /* ... */
-        })
-      );
-
-      // 3. Return physical ID and attributes
-      const physicalId = response.XxxId || response.XxxArn;
-      const attributes = {
-        Arn: response.XxxArn,
-        Id: response.XxxId,
-        // Attributes accessible via Fn::GetAtt
-      };
-
-      this.logger.info(`Successfully created ${resourceType} ${logicalId}: ${physicalId}`);
-
-      return {
-        physicalId,
-        attributes,
-      };
-    } catch (error) {
-      throw new ProvisioningError(
-        `Failed to create ${resourceType} ${logicalId}: ${String(error)}`,
+```ts
+async delete(
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  _properties?: Record<string, unknown>,
+  context?: DeleteContext
+): Promise<void> {
+  try {
+    await this.getClient().send(
+      new DeleteDBSubnetGroupCommand({ DBSubnetGroupName: physicalId })
+    );
+  } catch (error) {
+    if (isDocDBNotFoundError(error, 'DBSubnetGroupNotFoundFault')) {
+      const clientRegion = await this.getClient().config.region();
+      assertRegionMatch(
+        clientRegion,
+        context?.expectedRegion,
         resourceType,
         logicalId,
-        undefined,
-        error instanceof Error ? error : undefined
+        physicalId
       );
+      return;
     }
-  }
-
-  async update(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
-  ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating ${resourceType} ${logicalId}: ${physicalId}`);
-
-    try {
-      // Check if replacement required due to property changes
-      const requiresReplacement = this.checkReplacementRequired(
-        properties,
-        previousProperties
-      );
-
-      if (requiresReplacement) {
-        this.logger.info(`Replacement required for ${logicalId}, recreating`);
-
-        const createResult = await this.create(logicalId, resourceType, properties);
-
-        // Delete old resource (best effort)
-        try {
-          await this.delete(logicalId, physicalId, resourceType, previousProperties);
-        } catch (error) {
-          this.logger.warn(`Failed to delete old resource: ${String(error)}`);
-        }
-
-        return {
-          physicalId: createResult.physicalId,
-          wasReplaced: true,
-          attributes: createResult.attributes,
-        };
-      }
-
-      // Update if possible
-      await this.client.send(
-        new UpdateXxxCommand({
-          /* ... */
-        })
-      );
-
-      // Get attributes after update
-      const updatedResource = await this.client.send(
-        new GetXxxCommand({ /* ... */ })
-      );
-
-      const attributes = {
-        Arn: updatedResource.XxxArn,
-        // ...
-      };
-
-      this.logger.info(`Successfully updated ${resourceType} ${logicalId}`);
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes,
-      };
-    } catch (error) {
-      throw new ProvisioningError(
-        `Failed to update ${resourceType} ${logicalId}: ${String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-    }
-  }
-
-  async delete(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties?: Record<string, unknown>
-  ): Promise<void> {
-    this.logger.info(`Deleting ${resourceType} ${logicalId}: ${physicalId}`);
-
-    try {
-      // Check if resource exists
-      try {
-        await this.client.send(new GetXxxCommand({ /* ... */ }));
-      } catch (error) {
-        if (error instanceof ResourceNotFoundException) {
-          this.logger.info(`Resource ${physicalId} does not exist, skipping deletion`);
-          return;
-        }
-        throw error;
-      }
-
-      // Delete
-      await this.client.send(
-        new DeleteXxxCommand({
-          /* ... */
-        })
-      );
-
-      this.logger.info(`Successfully deleted ${resourceType} ${logicalId}`);
-    } catch (error) {
-      throw new ProvisioningError(
-        `Failed to delete ${resourceType} ${logicalId}: ${String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-    }
-  }
-
-  /**
-   * Check if replacement is required
-   */
-  private checkReplacementRequired(
-    newProps: Record<string, unknown>,
-    oldProps: Record<string, unknown>
-  ): boolean {
-    // Properties marked "Update requires: Replacement" in CloudFormation docs
-    const replacementProperties = ['XxxName', 'XxxId'];
-
-    for (const prop of replacementProperties) {
-      if (newProps[prop] !== oldProps[prop]) {
-        return true;
-      }
-    }
-
-    return false;
+    // ... rethrow as ProvisioningError ...
   }
 }
 ```
 
-### Step 3.5: Implement `import` (Optional but Recommended)
+Deleting a resource that is already gone succeeds. Before treating "not found"
+as success, call `assertRegionMatch` (`src/provisioning/region-check.ts`).
 
-The `import` method lets `cdkd import '<stack>' --app "..."` adopt
-already-deployed AWS resources of this type into cdkd state — covering
-disaster recovery (state file lost), adoption (moving from another IaC
-tool), and re-syncing after rollback. Skipping `import` is allowed (CC
-API fallback handles overrides), but providers without it can only be
-adopted via `--resource <id>=<physicalId>`.
+> [!WARNING]
+> A destroy that runs against the wrong region gets "not found" for every
+> resource. Without the region check, cdkd would remove them all from state
+> and leave the real resources running in the other region.
 
-> [!IMPORTANT]
-> **Do not write an `aws:cdk:path` tag walk in a new provider.** That fallback
-> can never match: AWS rejects any `aws:`-prefixed tag write, and CloudFormation
-> keeps the construct path in template `Metadata` without promoting it to a tag
-> ([#1128](https://github.com/go-to-k/cdkd/issues/1128)). Auto-mode import
-> resolves physical ids from a same-named CloudFormation stack's
-> `DescribeStackResources` ([#1130](https://github.com/go-to-k/cdkd/issues/1130))
-> or from the template's physical-name property. The existing walks are being
-> deleted ([#1134](https://github.com/go-to-k/cdkd/issues/1134)); adding a new
-> one just adds more dead code.
+Returning normally from `delete` means the resource is gone. If your `delete`
+decides to make no AWS call, return `{ outcome: 'skipped', reason }` instead,
+so `cdkd destroy` keeps the state record and reports the skip. See
+[Reporting a skipped delete](provider-rules.md#reporting-a-skipped-delete).
 
-What the method RETURNS matters as much as how it resolves the id:
+### 6. `import`
 
-> [!IMPORTANT]
-> **If any intrinsic resolves from a recorded ATTRIBUTE, `import` must record
-> it too** ([#1728](https://github.com/go-to-k/cdkd/issues/1728)). Returning
-> `attributes: {}` is only correct when the physical id alone answers every
-> `Ref` / `Fn::GetAtt` for the type. Where it does not — the three
-> `AWS::AppSync::*` children, whose `Ref` is an ARN the resolver recovers from
-> the attribute `create()` records — an adopted resource is silently stuck on
-> the degraded path until its next UPDATE happens to heal the record. Reuse the
-> SAME mapping `create()` / `update()` use rather than writing a third spelling,
-> and return the COMPLETE set: the import writes the record's attribute map
-> outright, so a partial answer drops the rest. Reconstructing from the supplied
-> physical id is preferred over a readback when every segment is already in the
-> id (it costs no per-resource API call), and the build must never fail the
-> import — warn and degrade to `{}`, which is exactly the pre-fix behavior.
->
-> Two things about reconstructing, both found by review rather than by tests:
-> derive the region from `ResourceImportInput.region` (what `import` keyed the
-> STATE RECORD by), not from the provider client's own config, or the ARN can
-> name a different region than the record holding it. And **the credentials
-> failure throws from the ARN BUILDER** — `getAccountInfo` rejects with
-> `AccountIdUnavailableError` when STS cannot name the account
-> ([#1730](https://github.com/go-to-k/cdkd/issues/1730)). Do not swallow it
-> INSIDE the builder: the UPDATE path rebuilds the same ARN on every in-place
-> update and its attribute map replaces the record's wholesale, so a builder
-> that answered something anyway would overwrite a correct recorded ARN. Let it
-> reach each caller, and let each caller pick its own degradation: create omits, update reports NO
-> attributes (so the engine carries the existing ones forward), and import keeps
-> the account-independent keys while dropping only the ARN.
+`import` lets `cdkd import` adopt a resource that already exists in AWS. It is
+optional. Without it, the type can only be adopted by passing the physical id
+with `--resource <logicalId>=<physicalId>`.
 
-The method follows a single shape:
-
-```typescript
-import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import type {
-  ResourceImportInput,
-  ResourceImportResult,
-} from '../../types/resource.js';
-
+```ts
 async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-  // Explicit override OR Properties.<NameField> from template.
-  // Pass `null` as the second arg if the resource type has no
-  // template-supplied name field (e.g. KMS Key, CloudFront Distribution).
-  const explicit = resolveExplicitPhysicalId(input, '<NameField>');
+  const explicit = resolveExplicitPhysicalId(input, 'DBSubnetGroupName');
   if (explicit) {
     try {
-      await this.client.send(new <Get|Head|Describe>Command({ /* ... */ }));
+      await this.getClient().send(
+        new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: explicit })
+      );
       return { physicalId: explicit, attributes: {} };
     } catch (err) {
-      if (err instanceof <NotFoundError>) return null;
+      if ((err as { name?: string }).name === 'DBSubnetGroupNotFoundFault') return null;
       throw err;
     }
   }
-
-  // Nothing else to resolve from. Return null so `cdkd import` reports the
-  // resource as not-found rather than guessing.
   return null;
 }
 ```
 
-A `List*` walk is still correct when it matches on a **name** the template
-supplies (rather than on a tag) and the service has no direct
-`Get<Name>` lookup — see `s3-tables-provider.ts`'s `TableBucketName` walk
-and `servicediscovery-provider.ts`'s namespace `Name` walk. Guard it with an
-early `return null` when the template carries no name, so the walk never
-pages an account's entire inventory just to fail.
+`resolveExplicitPhysicalId` returns the `--resource` override, or the name the
+template gives in the named property. Pass `null` as the second argument for a
+type with no name property. Confirm the resource exists with a describe call,
+and return `null` when it does not: `cdkd import` reads `null` as "not deployed
+yet", not as a failure.
 
-Reference implementations to copy from:
+> [!IMPORTANT]
+> Do not look a resource up by an `aws:cdk:path` tag. AWS rejects any tag
+> whose key starts with `aws:`, so no resource carries that tag and the lookup
+> can never match.
 
-- **Name-matched list walk** (the only walk shape still worth writing — matches
-  a template-supplied name, not a tag): `s3-tables-provider.ts`
-  (`TableBucketName`), `servicediscovery-provider.ts` (namespace `Name`)
-- **Explicit-override only** (auto lookup is impractical, the resource is not taggable, or it is a sub-resource / attachment): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi; `route53-provider.ts` for RecordSets (not taggable); `efs-provider.ts` for MountTargets (not taggable); `elbv2-provider.ts` for Listeners (no taggable identity tying them to a CDK construct); `sns-subscription-provider.ts`, `sns-topic-policy-provider.ts`, `sqs-queue-policy-provider.ts`, `s3-bucket-policy-provider.ts`, `lambda-permission-provider.ts`, `lambda-eventsource-provider.ts`, `lambda-url-provider.ts`, `custom-resource-provider.ts`, `cloudfront-oai-provider.ts`, `agentcore-runtime-provider.ts` for attachments / handler-returned identity; `agentcore-evaluator-provider.ts` accepts the ARN verbatim or resolves a bare evaluator id to the canonical ARN via `GetEvaluator`. Pattern: `if (input.knownPhysicalId) return { physicalId: input.knownPhysicalId, attributes: {} }; return null;` — JSDoc the override-only choice naming the reason (no tag API, sub-resource scoping, attachment, identity carried by handler-returned PhysicalResourceId, etc).
-- **Singleton live auto-lookup (no override needed at all)**: `agentcore-browser-provider.ts` / `agentcore-code-interpreter-provider.ts` — the types are adopt-only representations of the AWS-managed defaults (`aws.browser.v1` / `aws.codeinterpreter.v1`), so `import` resolves them live via `GetBrowser` / `GetCodeInterpreter` and ignores overrides.
+`attributes: {}` is right when the physical id alone answers every `Ref` and
+`Fn::GetAtt` for the type. When it does not, see
+[What `import` returns](provider-development-internals.md#what-import-returns).
 
-Notes:
+### 7. `readCurrentState`
 
-- **Return `null`, don't throw**, when nothing matches — `cdkd import` treats `null` as "not deployed yet", not as a failure
-- `attributes: {}` is fine for most types — the deploy-time `Fn::GetAtt`
-  resolver reconstructs missing attributes via `constructAttribute`
-  (dispatched from `src/deployment/intrinsic-resolver/getatt.ts`; the per-type handlers live in `getatt-construct-*.ts`). `cdkd import`
-  persists whatever map you return, but an empty map is treated as "no
-  attributes" and falls back to the same-physical-id map already in state,
-  so returning `{}` never clobbers a good snapshot from a prior deploy.
-- **Never store an empty-string placeholder for an attribute you could not
-  read back — omit the key instead.** Build the map with `definedAttributes`
-  from `src/provisioning/attribute-map.ts`, which drops every `undefined` /
-  `null` value (an empty string AWS itself reported is a known value and is
-  kept — a provider that knows a `''` means "not yet" maps it to `undefined`
-  first, as the EC2 Instance provider does while an instance is `pending`):
-  write
-  `attributes: definedAttributes({ Arn: response.Arn })`, not
-  `attributes: { Arn: response.Arn ?? '' }`, and stringify a numeric field
-  through its `stringifyIfAssigned` sibling so `Endpoint.Port` never becomes
-  the literal `'undefined'`. The resolver treats any non-`undefined` stored
-  attribute as a hit, so a persisted `''` shadows `constructAttribute`'s
-  fallback — the live `DescribeInstances` re-read for an EC2 instance's
-  addresses, the rebuilt ARN for the RDS family — and makes `Fn::GetAtt`
-  resolve to the empty string, which the Outputs pass then exports. This
-  applies to `create()` / `update()` / `import()` alike — keep the three
-  consistent within a provider. `tests/unit/provisioning/attribute-map.test.ts`
-  fails the build on any `?? ''` / `|| ''`, or a bare `''` where a value is
-  built (a property value, an initializer, an `=` right-hand side, a `?:`
-  branch), reachable from a provider's `attributes` value — the literal, a
-  hoisted `const` / `let` and its reassignments, a builder's element writes, a
-  same-file helper's return, a call's arguments and receiver, or a spread.
-  It carries no allow-list: the last two exempt sites (the security group's
-  `VpcId`, once copied from the template) were retired by reading the value
-  back from `DescribeSecurityGroups` (issue #3097) — when a provider has no
-  read-back for an attribute, add one rather than an exemption.
-- Tests for `import` go in the same file as the create/update/delete
-  tests, with three cases: explicit-override path, tag-based lookup
-  hit, tag-based lookup miss (returns `null`)
+`readCurrentState` returns what AWS holds now, in the shape of the template's
+properties. `cdkd drift` compares it with state. It is optional. Without it,
+`cdkd drift` falls back to a Cloud Control read of the resource, and reports a
+resource it cannot read as `unsupported`.
 
-### Step 4: Add AWS Client
+```ts
+async readCurrentState(
+  physicalId: string,
+  _logicalId: string,
+  resourceType: string
+): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  // ... DescribeDBSubnetGroups; RESOURCE_NOT_FOUND when the group is gone ...
 
-Add client to `src/utils/aws-clients.ts`:
-
-```typescript
-import { XxxClient } from '@aws-sdk/client-xxx';
-
-export class AwsClients {
-  // Existing clients
-  public readonly s3: S3Client;
-  public readonly iam: IAMClient;
-  // ...
-
-  // New client
-  public readonly xxx: XxxClient;
-
-  constructor(region: string) {
-    const config = { region };
-
-    this.s3 = new S3Client(config);
-    this.iam = new IAMClient(config);
-    // ...
-    this.xxx = new XxxClient(config);
+  const result: Record<string, unknown> = {};
+  if (sg.DBSubnetGroupName !== undefined) result['DBSubnetGroupName'] = sg.DBSubnetGroupName;
+  if (sg.DBSubnetGroupDescription !== undefined) {
+    result['DBSubnetGroupDescription'] = sg.DBSubnetGroupDescription;
   }
+  result['SubnetIds'] = (sg.Subnets ?? [])
+    .map((s) => s.SubnetIdentifier)
+    .filter((id): id is string => !!id);
+  // ... attach Tags ...
+  return result;
 }
 ```
 
-### Step 5: Register Provider
+Use the same keys `create` accepts. Return `RESOURCE_NOT_FOUND` only when AWS
+says the resource does not exist, and `undefined` when you cannot tell. The
+rules for which properties to emit when AWS returns nothing for them are in
+[`readCurrentState()` for drift detection](provider-rules.md#readcurrentstate-for-drift-detection).
 
-Re-export the class from `src/provisioning/provider-classes.ts`, then register it
-in `registerAllProviders()` (`src/provisioning/register-providers.ts`):
+### 8. Register the provider
 
-```typescript
-// provider-classes.ts
-export { XxxResourceProvider } from './providers/xxx-resource-provider.js';
+Two files, one line each. First re-export the class from
+`src/provisioning/provider-classes.ts`:
 
-// register-providers.ts: add XxxResourceProvider to the `const { ... } = classes`
-// destructure, then
-registry.register('AWS::Xxx::Resource', new XxxResourceProvider());
+```ts
+export { DocDBSubnetGroupProvider } from './providers/docdb-subnet-group-provider.js';
 ```
 
-Do not import the provider module statically anywhere: it would put its SDK
-client back on every command's startup path, and a unit test fails on it.
+Then, in `registerAllProviders()` in
+`src/provisioning/register-providers.ts`, add the class to the
+`const { ... } = classes` destructure and register the type:
 
-### Step 5b: Refresh CFn schema fixture (issue #391)
+```ts
+registry.register('AWS::DocDB::DBSubnetGroup', new DocDBSubnetGroupProvider());
+```
 
-The `property-coverage` test will fail until the new type's schema fixture exists:
+Do not import the provider module anywhere else. A provider module loads its
+`@aws-sdk/client-*` package, so a static import puts that client on the startup
+path of every command. `provider-classes.ts` is loaded on demand, and a unit
+test fails on a static import.
+
+A provider that serves several types registers one instance for all of them:
+
+```ts
+const docdbProvider = new DocDBProvider();
+registry.register('AWS::DocDB::DBCluster', docdbProvider);
+registry.register('AWS::DocDB::DBInstance', docdbProvider);
+```
+
+### 9. Fetch the schema and classify every property
+
+A unit test, `property-coverage`, compares each provider's `handledProperties`
+with the type's CloudFormation schema. It fails until the schema fixture for
+your type exists:
 
 ```bash
-node scripts/refresh-cfn-schemas.mjs --only-missing
+node scripts/refresh-cfn-schemas.mjs --only-missing   # needs AWS credentials
+vp test run property-coverage
 ```
 
-That path uses `cloudformation:DescribeType` and needs AWS credentials. `vp run gen:cfn-schemas-from-zip` reads AWS's public schema bundle instead and needs none, but captures every registered type rather than only the missing one — it is what the daily refresh workflow runs (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
+The first command calls `cloudformation:DescribeType` for the newly registered
+type and writes `tests/fixtures/cfn-schemas/AWS-DocDB-DBSubnetGroup.json`.
+`vp run gen:cfn-schemas-from-zip` needs no credentials but captures every
+registered type from AWS's public schema bundle.
 
-Then classify every unaccounted property into `handledProperties` (if wired) or `unhandledByDesign` (if intentionally skipped, with a one-line rationale). See [`handledProperties` against the CFn schema](provider-rules.md#handledproperties-against-the-cfn-schema) for the full workflow.
+The test then lists each schema property you have not accounted for. Put each
+one in one of two places:
 
-### Step 6: Create Tests
+| Where | When |
+| --- | --- |
+| `handledProperties` | `create` and `update` send it to AWS |
+| `unhandledByDesign`, with a one-line reason | You deliberately do not send it |
 
-`tests/unit/provisioning/providers/xxx-resource-provider.test.ts`:
+The full workflow is in
+[`handledProperties` against the CFn schema](provider-rules.md#handledproperties-against-the-cfn-schema).
 
-```typescript
-import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
-import { XxxResourceProvider } from '../../../../src/provisioning/providers/xxx-resource-provider.js';
+### 10. Write unit tests
 
-describe('XxxResourceProvider', () => {
-  let provider: XxxResourceProvider;
+Put the tests in `tests/unit/provisioning/`. Mock the SDK package, because the
+provider builds its own client:
+
+```ts
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { DescribeDBSubnetGroupsCommand } from '@aws-sdk/client-docdb';
+
+const mockSend = vi.fn();
+
+vi.mock('@aws-sdk/client-docdb', async (importOriginal) => {
+  const orig = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...orig,
+    DocDBClient: vi.fn().mockImplementation(() => ({
+      send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
+import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+
+describe('DocDBSubnetGroupProvider.readCurrentState', () => {
+  let provider: DocDBSubnetGroupProvider;
 
   beforeEach(() => {
-    provider = new XxxResourceProvider();
+    vi.clearAllMocks();
+    provider = new DocDBSubnetGroupProvider();
   });
 
-  describe('create', () => {
-    it('should create resource with valid properties', async () => {
-      const result = await provider.create(
-        'MyResource',
-        'AWS::Xxx::Resource',
-        {
-          RequiredProp: 'value',
-        }
-      );
+  it('returns RESOURCE_NOT_FOUND when the group is gone', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('DBSubnetGroup my-sg not found'), {
+        name: 'DBSubnetGroupNotFoundFault',
+      })
+    );
 
-      expect(result.physicalId).toBeDefined();
-      expect(result.attributes).toBeDefined();
-    });
+    const result = await provider.readCurrentState('my-sg', 'Sg', 'AWS::DocDB::DBSubnetGroup');
 
-    it('should throw error if required property is missing', async () => {
-      await expect(
-        provider.create('MyResource', 'AWS::Xxx::Resource', {})
-      ).rejects.toThrow();
-    });
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeDBSubnetGroupsCommand);
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
-
-  // Add tests for update, delete
 });
 ```
 
-## Implementation rules
+A provider that takes its client from `getAwsClients()` mocks
+`src/utils/aws-clients.js` instead.
 
-Writing the class is the easy half. The decisions that follow — how to refuse
-what CloudFormation would forward, what an update does with a property the user
-removed, which attributes to cache, what `readCurrentState()` must emit for
-drift to work — are collected in
-[Provider implementation rules](provider-rules.md). Most were written after a
-defect got past review, so each states the failure it prevents.
+Cover at least these cases:
 
-## Custom Resource Provider
+| Method | Cases |
+| --- | --- |
+| `create` | The command sent, the physical id and the attributes returned |
+| `update` | The command sent; a property removed from the template is reset |
+| `delete` | The command sent; "not found" is success; "not found" in the wrong region throws |
+| `import` | An explicit id that exists; a name from the template; a resource that is not found returns `null` |
+| `readCurrentState` | The property shape; `RESOURCE_NOT_FOUND` when gone; the round trip through `update` |
 
-Support for Lambda-backed custom resources (`Custom::*`):
+The round-trip test feeds the result of `readCurrentState` back into `update`,
+which is what `cdkd drift --revert` does. It is required for any provider with
+`readCurrentState`, and its shape is in
+[Read-update round-trip test](provider-rules.md#read-update-round-trip-test-mandatory-for-any-provider-with-readcurrentstate).
 
-See `src/provisioning/providers/custom-resource-provider.ts` for details.
+[Testing](testing.md) covers running the suite and the mocking rules.
 
-**Key Points**:
+### 11. Add an integration fixture and the documentation rows
 
-- Invoke Lambda with same request format as CloudFormation
-- Get `PhysicalResourceId` from response
-- Return `Data` field as attributes
+Unit tests mock AWS. A new provider also needs a fixture under
+`tests/integration/` that deploys and destroys the type for real.
+[Testing](testing.md#write-an-integration-fixture) shows how to write one. You
+do not have to run it yourself.
 
-```typescript
-const payload = {
-  RequestType: 'Create',  // or 'Update', 'Delete'
-  ServiceToken: properties['ServiceToken'],
-  ResourceType: resourceType,
-  LogicalResourceId: logicalId,
-  ResourceProperties: properties,
-};
+Then finish the bookkeeping CI checks:
 
-const response = await lambdaClient.send(
-  new InvokeCommand({
-    FunctionName: serviceLambdaArn,
-    Payload: JSON.stringify(payload),
-  })
-);
+| What | Where |
+| --- | --- |
+| List the type as supported | [Supported Resources](supported-resources.md) and the table in [Import](import.md). A unit test matches the exact type string. |
+| Regenerate the coverage matrix | `vp run integ-coverage`, and commit the result |
+| Add a changelog entry | One file under `changelog.d/entries/` |
 
-const result = JSON.parse(responsePayload);
+Before opening the pull request:
 
-return {
-  physicalId: result.PhysicalResourceId,
-  attributes: result.Data || {},
-};
+```bash
+vp run check && vp test run && vp run build
 ```
 
-## Troubleshooting
+## The `ResourceProvider` interface
 
-### Provider is Not Being Called
+The interface is declared in
+[`src/types/resource.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/resource.ts),
+which documents every member. `create`, `update` and `delete` are required.
+The rest are optional:
 
-**Cause**: Not registered in Registry (falling back to Cloud Control API)
+| Member | Implement it when |
+| --- | --- |
+| `handledProperties` | Always, in practice. It routes resources to you and feeds the coverage test. |
+| `unhandledByDesign` | A schema property is deliberately not sent |
+| `import` | The type should be adoptable by `cdkd import` without an explicit id |
+| `readCurrentState` | The type should take part in `cdkd drift` |
+| `getAttribute` | An attribute may need a live read because state does not hold it |
+| `removalDefaults`, `removalHandledInUpdate` | A removed property resets to a constant, or `update` already handles the removal |
+| `getDriftUnknownPaths`, `getDriftUnorderedPaths`, `canonicalizeDriftProperties`, `canonicalizeDriftPair` | AWS reads a property back differently from how it was sent |
+| `canonicalizeDesiredProperties` | The provider sends something narrower than what the template declares |
+| `disableCcApiFallback` | Cloud Control cannot manage the type, so an unhandled property must be an error |
+| `disableOuterRetry` | A retry by the engine would break per-call state the provider prepares |
+| `getMinResourceTimeoutMs` | An operation on the type can outlast the default per-resource timeout |
+| `isSameResource`, `resourceIdentity` | A failed create can leave an orphan under a name that can be reused |
 
-**Check**:
+`create` and `update` can also return two less common fields,
+`effectiveProperties` and `noEchoAttributes`. Those, the canonicalizers and the
+orphan identity methods are described in
+[Provider Development internals](provider-development-internals.md).
 
-```typescript
-const provider = registry.getProvider('AWS::Xxx::Resource');
-console.log(provider.constructor.name);  // → "CloudControlProvider" if SDK Provider not registered
+## Rules every provider obeys
+
+The walkthrough shows most of these. The list is the checklist to go through
+before you open a pull request. Each rule links to its full statement in
+[Provider implementation rules](provider-rules.md).
+
+| Rule | What goes wrong otherwise |
+| --- | --- |
+| [Wrap every AWS call and rethrow as `ProvisioningError`](provider-rules.md#error-handling), with the original error as the cause | The failure reaches the user without the resource it belongs to |
+| [Refuse a malformed value before any call](provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards), and [never infer a default from one](provider-rules.md#never-infer-a-default-from-a-possibly-malformed-value) | A typo deploys as a default nobody chose |
+| [Treat "not found" on delete as success only after `assertRegionMatch`](provider-rules.md#idempotency) | A destroy in the wrong region empties state and orphans the resources |
+| [Report a delete that made no AWS call as skipped](provider-rules.md#reporting-a-skipped-delete) | State drops a resource that is still running |
+| [Reset a property the template removed](provider-rules.md#update-removal-semantics-clear-on-removal) | AWS keeps the old value while `cdkd diff` reports no changes |
+| [Do not erase AWS-authored values with a full-replace update](provider-rules.md#full-replace-update-apis-erase-aws-authored-values) | An update deletes configuration AWS or the service added |
+| [Send an idempotency token when create mints a server-side id](provider-rules.md#a-create-that-mints-a-server-side-id-needs-an-idempotency-token) | A retried create makes a second resource |
+| [Return every `Fn::GetAtt` attribute, and build ARNs from the partition](provider-rules.md#returning-attributes) | References fail, or are wrong outside the `aws` partition |
+| [Leave out an attribute you could not read](provider-development-internals.md#never-store-an-empty-string-placeholder-for-an-attribute-you-could-not-read-back). Never store `''` for it. | `Fn::GetAtt` resolves to an empty string |
+| [Emit every user-settable property from `readCurrentState`](provider-rules.md#readcurrentstate-for-drift-detection) | A change made in the console is invisible to drift |
+| [List every sent property in `handledProperties`](provider-rules.md#handledproperties-against-the-cfn-schema) | The resource is routed to Cloud Control, or a property is dropped |
+| Take the region from `ambientRegion()` and credentials from `getAwsClients()` or `ambientClientDefaults()` | A multi-region deploy calls the wrong region |
+| Register only in `registerAllProviders`, and never import a provider module statically | Every command loads the SDK client at startup |
+| Pass any log line that includes a resolved property value through `context.maskSecrets`, which `create` and `update` receive | A resolved secret is printed |
+| [Respect the service's name length and character limits](provider-rules.md#resource-name-constraints) | Create fails for a long stack or logical id |
+
+### A retry loop inside a provider must honor Ctrl-C
+
+The engine checks for an interrupt between operations. `withRetry`
+(`src/deployment/retry.ts`) is the only wait that checks during a backoff. A
+provider that calls `withRetry` itself must pass it an interrupt watch, or
+{kbd:ctrl+c} does nothing until the retries run out:
+
+```ts
+const watch = startInterruptWatch(`... ${logicalId}`);
+try {
+  await withRetry(op, logicalId, {
+    logger: this.logger,
+    isInterrupted: watch.isInterrupted,
+    onInterrupted: watch.onInterrupted,
+  });
+} finally {
+  watch.dispose();
+}
 ```
 
-### Attributes Not Resolved
+`startInterruptWatch` is in `src/provisioning/interrupt-watch.ts`.
+`vp run audit:withretry-interrupt:check` fails on a `withRetry` call under
+`src/provisioning/` that does not pass both options.
 
-**Cause**: Not returning attributes in `create()` / `update()`
+### A provider that waits for stabilization
 
-**Fix**:
+Some creates return before the resource is usable, and the provider polls until
+it is. If your provider skips or shortens that wait under `CDKD_NO_WAIT` or
+`CDKD_FULL_WAIT`, document it in the wait table in
+[`cdkd deploy`](cli-deploy.md) and in the option's help text in
+`src/cli/options.ts`.
 
-```typescript
-return {
-  physicalId: xxx,
-  attributes: {
-    Arn: 'arn:aws:...',
-    // ...
-  },
-};
-```
+## Custom resources
 
-### Error on Update
+`Custom::*` and `AWS::CloudFormation::CustomResource` are served by
+`CustomResourceProvider` (`src/provisioning/providers/custom-resource-provider.ts`).
+It sends the handler the same request CloudFormation would, with `RequestType`
+set to `Create`, `Update` or `Delete`. It takes the physical id from the
+response's `PhysicalResourceId` and the attributes from its `Data`.
 
-**Cause**: Trying to change property requiring replacement in `update()`
+You do not write a provider for a custom resource type. The handler is the
+user's Lambda function.
 
-**Fix**: Detect in `checkReplacementRequired()` and replace with `create()` + `delete()`
+## When something does not work
 
-## References
+### Your provider is not called
 
-- [Architecture](./architecture.md) - Overall architecture
-- [AWS Cloud Control API Supported Resources](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html)
-- [CloudFormation Resource Reference](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html)
-- [AWS SDK for JavaScript v3](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/)
+The resource went to Cloud Control. Run `cdkd diff MyStack`: a resource routed
+there because of a property is annotated `[via CC API: <property>]`. Either the
+type is not registered, or the template sets a property missing from
+`handledProperties`, or state already records the resource as created through
+Cloud Control.
+
+### `Fn::GetAtt` does not resolve
+
+`create` or `update` did not return the attribute. Add it to the `attributes`
+map both return, with the name CloudFormation documents.
+
+### An update fails on a property that cannot change
+
+The property is create-only and the diff did not classify the change as a
+replacement. The diff reads the type's entry in
+`src/analyzer/replacement-rules.ts` first, and falls back to the
+`createOnlyProperties` of the type's CloudFormation schema for a property the
+entry does not classify. Check both.
 
 ## Related
 
-- [Provider implementation rules](provider-rules.md) — error handling,
-  idempotency, removal semantics, drift read-back, property coverage
-- [Integration fixture conventions](integ-fixture-conventions.md) — the rules
-  the fixture that exercises your provider follows
-- [Supported Resources](supported-resources.md) — the types that have one today
-- [Architecture](architecture.md) — where provisioning sits in the pipeline
+- [Provider implementation rules](provider-rules.md): the complete rulebook
+- [Provider Development internals](provider-development-internals.md): the
+  less common return fields and methods
+- [Integration fixture conventions](integ-fixture-conventions.md): the rules
+  the fixture for your provider follows
+- [Supported Resources](supported-resources.md): the types that have a
+  provider today
+- [CloudFormation resource reference](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html)
+- [AWS SDK for JavaScript v3](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/)

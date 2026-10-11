@@ -1,50 +1,67 @@
 ---
 title: cdkd state
-description: "The cdkd state subcommands — inspect the S3 state store, and orphan, destroy, migrate, or re-baseline the records in it without a CDK app."
+description: "The cdkd state subcommands: inspect the S3 state store, and orphan, destroy, migrate or re-baseline its records without a CDK app."
 ---
 
 # cdkd state
 
-`cdkd state` is the command family that talks to cdkd's S3 state store
-directly. Every subcommand reads the bucket rather than your CDK app, so none
-of them synthesizes and none of them needs the source that deployed a stack —
-which is what makes them work from a CI runner after the branch is gone, or
-from a laptop that never had the repository. The unit of work is the state
-record, not the stack in your app: `cdkd state list` shows everything the
-bucket knows about, and `state refresh-observed --all` acts across the whole
-estate in one invocation. `state destroy` does not: it deletes only the stacks
-you name.
+`cdkd state` reads and edits the records in cdkd's S3 state bucket directly.
+No subcommand synthesizes, so none needs the CDK app that deployed a stack:
+they work from a CI runner after the branch is gone, or on a machine that
+never had the repository. Stacks are named by their physical name, as
+`cdkd state list` prints them.
 
 ```bash
-cdkd state info                          # which bucket, which region, how many stacks
-cdkd state list                          # one "Stack (region)" per line
-cdkd state list --tree                   # parent → child hierarchy for nested stacks
-cdkd state resources MyStack             # logical id / type / physical id
-cdkd state show MyStack --json           # the whole record, including properties
-cdkd state destroy MyStack --yes         # delete the AWS resources, then the record
-cdkd state orphan MyStack                # delete ONLY the record; AWS resources survive
-cdkd state orphan MyStack --resource MyQueue  # drop one resource's record; the stack stays deployed
-cdkd state refresh-observed MyStack      # repopulate the drift baseline without deploying
+cdkd state info                               # which bucket cdkd uses, and what is in it
+cdkd state list                               # one "Stack (region)" per line
+cdkd state resources MyStack                  # logical id, type, physical id
+cdkd state show MyStack                       # the whole record, with properties
+cdkd state orphan MyStack --resource MyQueue  # stop tracking one resource; it stays in AWS
+cdkd state destroy MyStack --yes              # delete the AWS resources, then the record
+cdkd state refresh-observed MyStack           # re-read the drift baseline from AWS
 ```
 
 ## Subcommands
 
-| Subcommand | What it changes | What it does |
+Read-only subcommands. A held lock never blocks them.
+
+| Subcommand | Use it to |
+| --- | --- |
+| [`info`](#cdkd-state-info) | See which bucket cdkd resolved, its region, and how many stacks it holds. |
+| [`list`](#cdkd-state-list) | List the stacks in the bucket, flat or as a nested-stack tree. |
+| [`resources`](#cdkd-state-resources) | List one stack's resources with their physical ids. |
+| [`show`](#cdkd-state-show) | Read one stack's full record: lock, outputs, and every resource's properties. |
+
+Subcommands that write. Each asks for confirmation first.
+
+| Subcommand | Changes | Use it to |
 | --- | --- | --- |
-| [`info`](#cdkd-state-info) | nothing | Reports the bucket cdkd resolved, its region, where the name came from, and how many records it holds. |
-| [`list`](#cdkd-state-list) | nothing | Lists the stacks registered in the bucket, flat or as a nested-stack tree. |
-| [`resources`](#cdkd-state-resources) | nothing | Lists one stack's recorded resources. |
-| [`show`](#cdkd-state-show) | nothing | Prints one stack's full record — metadata, lock, outputs, resources with properties. |
-| [`orphan`](#cdkd-state-orphan) | the state record | Removes a state record, or with `--resource` one resource's entry in it, and leaves the AWS resources running. |
-| [`destroy`](#cdkd-state-destroy) | AWS resources, then the record | Deletes the AWS resources and then the record, with no CDK app. |
-| [`migrate`](#cdkd-state-migrate) | the bucket the records live in | Copies a legacy region-suffixed state bucket into the region-free one. |
-| [`refresh-observed`](#cdkd-state-refresh-observed) | the state record | Repopulates `observedProperties` — the drift baseline — from live AWS. |
+| [`orphan`](#cdkd-state-orphan) | the state record | Stop tracking a stack, or one resource in it, and leave the AWS resources running. |
+| [`destroy`](#cdkd-state-destroy) | AWS resources, then the record | Delete a stack when you no longer have its CDK app. |
+| [`refresh-observed`](#cdkd-state-refresh-observed) | the state record | Re-read the drift baseline from AWS without deploying. |
+| [`migrate`](#cdkd-state-migrate) | which bucket holds the records | Copy a legacy region-suffixed state bucket into the region-free one. |
+
+To remove a stack, the choice between `orphan` and `destroy` is whether the AWS
+resources should survive:
+
+```text diagram=state-cli-cleanup-choice
+Should the AWS resources be deleted?
+├─ yes ─▶ cdkd state destroy MyStack
+│         deletes the resources, then the record
+└─ no ──▶ How much of the record goes?
+          ├─ one resource ─▶ cdkd state orphan MyStack --resource MyQueue
+          │                  drops one entry; the stack stays deployed
+          └─ whole stack ──▶ cdkd state orphan MyStack
+                             deletes the whole record; nothing stays tracked
+```
+
+[Orphan vs Destroy](orphan-vs-destroy.md) compares these with `cdkd destroy`
+and `cdkd orphan`, which need the CDK app.
 
 ## Shared options
 
-These rows are identical across the subcommands below, apart from
-`state migrate`, which takes neither `--state-bucket` nor `--state-prefix`. Each
-subcommand's own table lists only what is specific to it.
+Every subcommand takes these, except that `state migrate` takes neither
+`--state-bucket` nor `--state-prefix`.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -55,94 +72,166 @@ subcommand's own table lists only what is specific to it.
 | `-y`, `--yes` | off | Skip the confirmation prompt. No effect on the read-only subcommands. |
 | `--verbose` | off | Verbose logging. |
 
-`--region` is deprecated — prefer `AWS_REGION` or your AWS profile — but it is
-still honored if passed, and it is not a no-op.
+`--region` is deprecated in favour of `AWS_REGION` or your AWS profile, but is
+still honored. Two subcommands differ: `state info` rejects it, and on
+`state migrate` it is a regular option that names the legacy bucket.
 
-Two subcommands treat `--region` differently.
-[`cdkd state info`](#cdkd-state-info) does not accept it at all, and errors on
-it; the region it reports is the bucket's own, detected from S3. On
-[`cdkd state migrate`](#cdkd-state-migrate) it is a real selector rather than
-the deprecated option: it names which legacy bucket to migrate.
+### `--stack-region`: which of a name's records
 
-Every subcommand that acts on a named record — all of them except `info`,
-`list`, and `migrate` — also takes `--stack-region <region>`, which selects
-which of a name's records to use. It is deliberately not spelled `--region`:
-the deprecated global option picks the AWS client's region, whereas
-`--stack-region` picks which record to act on.
+The same stack name can have a record in several regions. `--stack-region
+<region>` picks one. It is separate from `--region`, which sets the AWS
+client's region.
 
-What happens when you omit it and the name has records in several regions is
-not uniform across the subcommands, so each one's table below states it.
+```bash
+cdkd state show MyStack --stack-region us-west-2
+```
+
+Without it, a name with records in several regions is handled per subcommand:
+
+| Subcommand | Without `--stack-region` on an ambiguous name |
+| --- | --- |
+| `resources`, `show` | Error. |
+| `orphan` | Removes the record in every region. |
+| `orphan --resource` | Error. |
+| `destroy` | Error. |
+| `refresh-observed <stack>` | Error. |
+| `refresh-observed --all` | Not ambiguous: the flag is a filter, and omitting it refreshes every region. |
 
 ## `cdkd state info`
 
+Answers "which bucket is cdkd using, and what is in it".
+
 ```bash
 cdkd state info
-cdkd state info --json
 ```
 
-Answers "which bucket is cdkd actually using, and what is in it" — the bucket
-name, its region (auto-detected via `GetBucketLocation`), the source the name
-came from, the schema version, the record count, and the per-region
-`cdkd bootstrap` asset-storage opt-ins.
+```text
+State bucket:    cdkd-state-123456789012
+Region:          us-east-1 (auto-detected via GetBucketLocation)
+Source:          default (account ID from STS)
+Schema version:  11
+Stacks:          4
+Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in
+```
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--json` | off | Emit the report as a JSON object on stdout, and nothing else. |
+| `--json` | off | Print the report as one JSON object on stdout, and nothing else. |
 
-Routine commands (`deploy`, `destroy`, `diff`, …) do not print the bucket
-banner, because the default bucket name embeds your AWS account id and would
-leak through screenshots and public CI logs. `cdkd state info` is the explicit
-on-demand answer; `--verbose` surfaces the same name in the other commands'
-debug logs.
+`Source:` says how the bucket name was resolved:
 
-The `Source:` line names how the bucket was resolved — `--state-bucket flag`,
-`CDKD_STATE_BUCKET env`, `cdk.json (context.cdkd.stateBucket)`, or one of the
-two defaults. The legacy default is called out as
-`default (legacy region-suffixed name; cdkd state migrate recommended)`, which
-is the cue to run [`cdkd state migrate`](#cdkd-state-migrate).
+| `Source:` | Meaning |
+| --- | --- |
+| `--state-bucket flag` | Passed on the command line. |
+| `CDKD_STATE_BUCKET env` | From the environment variable. |
+| `cdk.json (context.cdkd.stateBucket)` | From the app's `cdk.json`. |
+| `default (account ID from STS)` | The default name, `cdkd-state-{account}`. |
+| `default (legacy region-suffixed name; cdkd state migrate recommended)` | An older bucket name is in use. Run [`cdkd state migrate`](#cdkd-state-migrate). |
 
-This subcommand degrades rather than failing: an unreadable bucket region
-reports `unknown`, and an empty bucket or an unparsable record reports an
-`unknown` schema version. The reported version is read from one record, not
-reconciled across all of them.
+Other commands do not print the bucket name, because the default name contains
+your AWS account id and would end up in screenshots and public CI logs.
+`--verbose` shows it in their debug output.
+
+`state info` reports rather than fails where it can. A bucket whose region
+cannot be read shows `unknown`, and so does the schema version of an empty
+bucket or an unparsable record. The schema version is read from one record,
+not reconciled across all of them.
 
 ## `cdkd state list`
 
+Lists the stacks that have a record in the bucket. `ls` is an alias.
+
 ```bash
-cdkd state list                # one "Stack (region)" reference per line
-cdkd state ls --long           # resource count, last-modified, lock status
+cdkd state list           # one "Stack (region)" per line
+cdkd state list --long    # resource count, last-modified time, lock status
+cdkd state list --tree    # nested stacks under their parents
 cdkd state list --json
-cdkd state list --tree         # parent → child tree for nested stacks
-cdkd state list --tree --json  # the same tree, nested JSON
+```
+
+```text
+ApiStack (us-east-1)
+MyStack (us-east-1)
+MyStack (us-west-2)
 ```
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-l`, `--long` | off | Show resource count, last-modified time, and lock status per stack. |
-| `--tree` | off | Render the parent → child stack tree. Rejected together with `--long`, at parse time. |
-| `--json` | off | Emit the listing as JSON. Composes with `--long` and with `--tree`. |
+| `-l`, `--long` | off | Show resource count, last-modified time and lock status per stack. |
+| `--tree` | off | Draw the parent-to-child tree of nested stacks. Cannot be combined with `--long`. |
+| `--json` | off | Print the listing as JSON. Works with `--long` and with `--tree`. |
 
-`ls` is an accepted alias. Note that `cdkd list` (also aliased `ls`) is a
-different question — it lists stacks from the local CDK app via synthesis, for
-CDK CLI parity, whereas `cdkd state list` reports what is registered in the S3
-bucket.
+[`cdkd list`](cli-list.md) is a different command. It lists the stacks your
+local CDK app defines; `cdkd state list` lists what is recorded in the bucket.
 
-### Output streams
+stdout carries only the listing in every mode, so it is safe to pipe. Warnings
+and log lines go to stderr:
 
-**`cdkd state list`'s stdout is a payload in every mode, `--json` or not.** The
-default one-reference-per-line shape is exactly what a `while read -r ref` loop
-consumes, so everything cdkd's logger prints goes to stderr instead. The other
-subcommands with a `--json` mode (`resources`, `show`, `info`) keep the
-`--json` gate, because their flagless output is a formatted human view rather
-than a record set. See
-[Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
+```bash
+cdkd state list | while read -r stack region; do
+  echo "$stack is recorded in $region"   # region arrives in parentheses
+done
+```
 
-### The `--tree` view
+The plain listing reads no record. `--long` costs two extra S3 requests per
+stack (the record and its lock), and `--tree` one.
 
-`--tree` walks each record's v6 `parentStack` / `parentRegion` fields, which a
-nested-stack deploy and the recursive
-`cdkd import --migrate-from-cloudformation` both populate, to draw
-`tree(1)`-style box-drawing:
+### `--long`
+
+```bash
+cdkd state list --long
+```
+
+```text
+ApiStack (us-east-1)
+  Region: us-east-1
+  Resources: 23
+  Last Modified: 2026-10-08T09:14:02.000Z
+  Lock: unlocked
+
+MyStack (us-east-1)
+  Region: us-east-1
+  Resources: 2
+  Last Modified: 2026-10-10T16:40:51.000Z
+  Lock: locked
+```
+
+`--long --json` emits one object per stack:
+
+| Field | Value |
+| --- | --- |
+| `stackName`, `region` | The reference. `region` is `null` for a legacy record without one. |
+| `resourceCount` | Number of resources, or `null` when it could not be counted. |
+| `lastModified` | ISO timestamp, or `null`. |
+| `locked` | `true`, `false`, or `null` when the lock could not be read. |
+| `stateReadError`, `stateReadErrorKind` | Why the record could not be read or counted. Both `null` otherwise. |
+| `lockReadError` | Why the lock could not be read. `null` otherwise. |
+
+### Rows cdkd could not read
+
+One unreadable stack does not fail the listing. Its row says what is missing,
+a warning on stderr counts such rows, and the command still exits `0`.
+
+| Read that failed | Text row | `--long --json` |
+| --- | --- | --- |
+| The state record, or its `resources` could not be counted | `Resources: unknown (...)`; the lock is still reported | `resourceCount: null`, `stateReadError` and `stateReadErrorKind` set |
+| The lock | `Lock: unknown (...)`; the resource count is still reported | `locked: null`, `lockReadError` set |
+
+Run `cdkd state show` on that stack to see the underlying error.
+
+`stateReadErrorKind` separates the two record failures for a script:
+
+| `stateReadErrorKind` | Meaning | Retrying helps? |
+| --- | --- | --- |
+| `read-failed` | The record could not be read. | Possibly. The failure may be transient. |
+| `resources-malformed` | The record was read, but its `resources` is not a JSON object. | No. The record has to be fixed. |
+
+Treat a value you do not recognise as a failure. More kinds may be added.
+
+### `--tree`
+
+```bash
+cdkd state list --tree
+```
 
 ```text
 NestedStackDeep (us-east-1)
@@ -150,361 +239,155 @@ NestedStackDeep (us-east-1)
     └── NestedStackDeep~Child~Grandchild (us-east-1)
 ```
 
-Flat output stays the default so scripts that grep `cdkd state list` keep
-working. A child whose parent record is missing — parent destroyed
-out-of-band, or state hand-deleted — surfaces at the root rather than
-vanishing. `--long` and `--tree` both read every record, so they cost extra
-S3 requests per stack — two for `--long` (the record and its lock), one for
-`--tree`. The plain listing reads none of them.
+A child whose parent record is missing appears at the root instead of
+disappearing. `--tree --json` emits the same tree as nested objects with
+`stackName`, `region`, `parentStack`, `parentLogicalId`, `parentRegion` and
+`children`.
 
 The tree is capped at 100 levels. A record that would sit deeper is shown at
-the root instead, and the chain continues from there, so every record still
-appears exactly once. The cap is far beyond the nesting an app is written with
-— CloudFormation stops at five levels of nested stacks, so an app that also
-has to deploy through CloudFormation cannot exceed that — but cdkd deploys
-nested stacks through its own engine and imposes no limit of its own, so a
-deeper tree is possible and stays readable rather than failing. A re-rooted
-record keeps its own parent link: `--tree --json` still reports the
-`parentStack`, `parentLogicalId` and `parentRegion` it names, which is how a
-consumer tells it apart from a genuine top-level stack.
+the root instead, and its chain continues from there, so every record appears
+exactly once. CloudFormation stops at five levels of nested stacks, so only an
+app that deploys solely through cdkd can reach the cap. A parent chain more
+than 100 levels deep is therefore drawn in several pieces, with no record
+dropped.
 
-### Unreadable records and unsafe values
+### Names that are quoted or cut
 
-Neither `--long` nor `--tree` lets one stack it cannot read take down the rest
-of the listing.
-Under `--long`, a failed read costs only that stack's row, and the record read
-and the lock read degrade separately:
+A stack name or region is printed as it is when it is a plain identifier,
+which every real one is. A value with a space, a bracket, a quote or a
+non-ASCII character is printed inside double quotes, so that it cannot be
+read as a different stack's row. A very long value is cut and ends with
+`[cut: N more characters withheld, tail sha256:<32 hex>]`.
 
-| Read that failed | Text row | `--long --json` |
-| --- | --- | --- |
-| state record, or a `resources` that could not be counted (see below) | `Resources: unknown (...)`; the lock is still reported | `resourceCount: null`, `stateReadError` and `stateReadErrorKind` set |
-| lock | `Lock: unknown (...)`; the resource count is still reported | `locked: null`, `lockReadError` set |
+The quotes mark a boundary for a reader. They are not shell quoting. Use
+`--json` when a script needs the exact stored values: `--json` output is never
+altered this way, and control characters in it are written as `\uXXXX` escapes
+so the values parse back unchanged. That holds for the `--json` mode of every
+`cdkd state` subcommand.
 
-The reason text is fixed and never quotes the underlying error, because a
-malformed record's parse error can quote bytes of the record. Run
-`cdkd state show` for that one stack to see the error. A legacy row with no
-region is the exception: its lock reason names no command, because
-`cdkd state show` refuses a region-less record before it reads the lock. A
-warning on stderr counts the rows that could not be fully read or counted, and
-the command still exits 0.
-
-`stateReadErrorKind` tells the two record-side failures apart without matching
-the reason text. It is `null` exactly when `stateReadError` is:
-
-| `stateReadErrorKind` | Meaning | Retrying helps? |
-| --- | --- | --- |
-| `read-failed` | the record could not be read | possibly — the failure may be transient |
-| `resources-malformed` | the record was read, but its `resources` is not a JSON object | no — the record itself has to be fixed |
-
-Treat an unrecognised value as a failure: more kinds may be added.
-
-Other malformed values render instead of stopping the listing:
-
-| Value | How it renders |
-| --- | --- |
-| a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
-| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` and `stateReadErrorKind` set; the warning counts the row. An absent or `null` `resources` counts as `0`. What the other commands do with such a record is under [When `resources` is not an object](#when-resources-is-not-an-object) |
-| a character outside printable ASCII in a stack name or region | replaced with a space, and the value is then quoted (see the row below). A value with nothing printable left shows as `<unrenderable>` |
-| a stack name or region that cdkd had to CHANGE to render — anything outside printable ASCII, or surrounding whitespace it trimmed | rendered as a quoted string, so its boundary is visible. A trailing space is enough: `ProdStack ` renders `"ProdStack" (us-east-1)` |
-| a stack name or region carrying a space, a bracket or a quote — anything outside `A-Za-z0-9` and `:_@./+=,~-` | quoted the same way: `"ProdStack (us-east-1)" (us-east-1)`. Both rules apply to both halves of every reference |
-| a very long stack name or region | cut, with `[cut: N more characters withheld, tail sha256:<32 hex>]` appended. The digest names the withheld part without showing it, so two long values that differ only past the cut render differently — unless they differ only in characters outside printable ASCII, which are replaced with a space (as in the earlier row) before the digest is taken. The limit is 1152 characters for a name, 255 for a region — no ordinary value is near either |
-| a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
-| a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
-| records that name each other as parent | `--tree` shows every stack on the loop at the root |
-| a parent chain more than 100 levels deep | `--tree` shows the record that would sit deeper at the root; the chain resumes there and no record is dropped |
-
-A legacy `version: 1` record with no region is not read under `--long`, so its
-row shows `Resources: 0` and `Last Modified: unknown` with no reason attached.
-
-The quoting matters because the ` (region)` suffix is cdkd's own annotation of
-the line rather than part of either value. Both halves come from an S3 key
-segment — or, for a legacy record, the state body — so a name that contains a
-space and brackets could otherwise render byte-identical to a different,
-genuine reference.
-
-Where it applies, and what it does not promise:
-
-| Question | Answer |
-| --- | --- |
-| Where else? | [`cdkd state orphan`](#cdkd-state-orphan)'s prompt and its removal line, [`cdkd state refresh-observed`](#cdkd-state-refresh-observed)'s prompt, and `cdkd rollback`'s candidate list |
-| Does a real row change? | No. Real stack names and region codes are plain identifiers, so a `while read -r ref` consumer sees the bytes it always did |
-| Is a quoted value shell-safe? | No. The quotes are a boundary for a reader, not shell quoting — a shell still expands `$(...)` and backticks inside them |
-| Can a long name still mislead? | Yes, if your terminal wraps it: a wrapped line can read like a genuine row with the quotes off-screen. Widen the terminal, or use `--json` |
-| Can anything else still mislead? | Yes. A name ending in a comma is left unquoted, and the prompts above list references separated by `, ` — so one such name reads as two entries. `cdkd state orphan` prints no count to check it against |
-
-`--json` output is not sanitized, because that would change the values a
-script matches on. It is escaped instead: every control, format, line-separator
-and paragraph-separator character — including DEL, the C1 range, `U+2028`,
-`U+2029`, the bidi overrides and the zero-width characters, which plain JSON
-would emit raw — is written as a `\uXXXX` escape. The output parses back to
-exactly the stored values, and printing it to a terminal cannot run a control
-sequence. The same applies to the `--json` output of every `cdkd state`
-subcommand.
-
-### Without cdkd
-
-The equivalent low-level query, when you want it without cdkd:
+### Listing the bucket without cdkd
 
 ```bash
-aws s3 ls s3://cdkd-state-bucket/cdkd/ --recursive \
+aws s3 ls s3://cdkd-state-123456789012/cdkd/ --recursive \
   | grep state.json \
   | awk '{print $4}' \
   | sed 's|cdkd/||; s|/state.json||'
-# Output: <stackName>/<region>, one row per (stackName, region) pair.
+# Prints <stackName>/<region>, one row per record.
 ```
 
 ## `cdkd state resources`
 
+Lists what cdkd recorded for one stack, sorted by logical id.
+
 ```bash
 cdkd state resources MyStack
-cdkd state resources MyStack --long
-cdkd state resources MyStack --json
 ```
 
-Lists what cdkd recorded for one stack, sorted by logical id. The default view
-is three aligned columns — logical id, resource type, physical id — with no
-header row, which makes it pipe-friendly.
+```text
+JobsTable1A2B3C4D      AWS::DynamoDB::Table  MyStack-JobsTable1A2B3C4D-9QK2M
+UploadsBucket5E5E9B33  AWS::S3::Bucket       mystack-uploadsbucket5e5e9b33-k2j4h8x1
+```
+
+The columns are logical id, resource type and physical id. There is no header
+row, so the output can be piped.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-l`, `--long` | off | Expand each resource into a block including its dependencies and attributes. |
-| `--json` | off | Emit the resource array as JSON. Takes precedence over `--long`. |
-| `--stack-region <region>` | — | Region of the record to read. Omitting it on a name with records in several regions is an error. |
+| `-l`, `--long` | off | Print each resource as a block with its dependencies and attributes. |
+| `--json` | off | Print the resources as a JSON array. Takes precedence over `--long`. |
+| `--stack-region <region>` | — | Region of the record to read. |
 
-### What the human views do to a malformed record
+```bash
+cdkd state resources MyStack --long
+```
 
-A state record is read as JSON and used as typed data without a field-by-field
-shape check, so a hand-edited one can hold anything. Both human views of
-`cdkd state resources` and every row of `cdkd state show` therefore treat what
-they print as untrusted text:
+```text
+JobsTable1A2B3C4D
+  Type: AWS::DynamoDB::Table
+  PhysicalID: MyStack-JobsTable1A2B3C4D-9QK2M
+  Dependencies: (none)
+  Attributes:
+    Arn: arn:aws:dynamodb:us-east-1:123456789012:table/MyStack-JobsTable1A2B3C4D-9QK2M
+```
 
-- **Control characters are removed from every name, type, id, dependency list
-  and nested-stack header.** Two rows take no removal here because neither
-  needs it: the lock row's `owner` and `operation` are sanitized where the
-  lock record is read, before `cdkd state show` sees them, and `Version` is
-  refused where the state record is read unless it is a known schema number or
-  absent. cdkd's output is line-oriented, so a newline inside a field would not
-  merely colour the output — it would invent a line that reads exactly like a
-  real row. The escape BYTE is removed and the characters
-  around it are kept, so a name carrying `ESC[31m` prints as `[31m`: the
-  sequence is broken, the name is not censored.
-- **A value whose type the record got wrong still prints, rather than ending the
-  output.** A number where a string belongs prints as that number, an object as
-  JSON, and a value nothing can serialize as `(unserializable)`. A few fields are
-  decided before any of that: a falsy `region` omits its whole row, a falsy
-  `parentRegion` drops only the parenthesized region from the `Parent:` row, and
-  an absent or null `provisionedBy` reports the legacy default. A
-  `lastModified` that cannot be read as a time prints as itself instead of an
-  instant. In `cdkd state show`, a
-  `dependencies` that is not a list prints as itself, and `(none)` is supplied
-  only for an absent one or an empty list; `cdkd state resources --long` supplies
-  it for a `null` too, so the two views differ on that one value. The marker is
-  ordinary text, so a record whose dependency list literally contains `(none)`
-  renders the same thing -- read `--json` when you need to tell them apart.
-- **The refusals these views raise are held to the same rule.** When a record
-  is malformed enough that the view refuses instead of rendering, the message is
-  where the record's own text appears — an unreadable `state.json` or `lock.json` is quoted back by
-  the JSON parser, an ambiguous stack has its regions listed, and a nested-stack
-  walk names the child it could not find. cdkd's output is line-oriented, so
-  the same removal applies there: the diagnostic reports the bad
-  value flattened onto one line rather than letting it invent a row. Anything
-  that strips to nothing is reported as an explicit placeholder rather than an
-  empty slot, and the underlying cause a refusal reports is flattened the same
-  way. This covers the refusals these two commands raise; an error reaching you
-  from the AWS SDK itself is that service's own text.
-- **`--json` applies none of this sanitizing** — it escapes the same
-  characters as `\uXXXX` instead, so the values parse back unchanged (see
-  [Unreadable records and unsafe values](#unreadable-records-and-unsafe-values)) —
-  and `cdkd state show --json` is
-  the mode to reach for when you need the stored value rather than a readable
-  one. It is not byte-for-byte in every mode, and the exceptions differ per
-  command:
+No mode of this subcommand prints resource properties. Use
+[`cdkd state show`](#cdkd-state-show) for those.
 
-  | Mode | What it is not |
-  | --- | --- |
-  | `cdkd state show --json` | the record as parsed; the lock it reports has had `owner` and `operation` put through the shared display sanitizer, with an `expiresAt` whose number coercion THROWS emitted as `null` — one that merely converts to `NaN`, such as `{}` or `"soon"`, is emitted as stored |
-  | `cdkd state resources --json` | substitutes an empty list or object for an absent `dependencies` or `attributes`; never reads a lock. **It is also not a view of the stored `resources` value at all** — it emits the resource array cdkd derived, so a `resources` that is not a JSON object yields `[]` with the warning described under [When `resources` is not an object](#when-resources-is-not-an-object), not the stored value |
-
-  So `--json` being the raw-value mode is true of `cdkd state show` and false of
-  `cdkd state resources`. When the question is what the record actually holds,
-  `cdkd state show --json` is the command that answers it.
-
-This tolerance also covers a record that is malformed beyond its values. A `resources`
-entry holding `null` rather than a resource no longer aborts any mode,
-`--show-nested` and both JSON walks included: the human views render it the way
-a number or a string there always did (`Type` and `PhysicalID` read `undefined`,
-the other fields their defaults), and the JSON modes emit it —
-`cdkd state show --json` as the stored `null`. A `resources` bag that is not a
-JSON object at all yields no nested-stack children, at every depth — see
-[When `resources` is not an object](#when-resources-is-not-an-object). A lock whose
-`owner`, `operation` or `expiresAt` holds an object that cannot be coerced
-renders too: the owner and operation read as `[object Object]`, and the expiry
-reads as `expires at an unknown time` — the same words the lock-contention
-refusal uses for any `expiresAt` that is not a finite number (`{}`, `"soon"`,
-absent), so a hand-edited deadline never prints as `NaNmNaNs`.
-
-A record malformed at its ROOT is still refused rather than rendered, with a
-message that names the problem: a `state.json` that is not valid JSON, one whose
-body is not a JSON object (it parses to `null`, an array or a primitive), or one
-whose schema version this binary does not read, whatever type that version
-holds. Under `cdkd state list --long` only that stack's row degrades instead, as
-described under [`cdkd state list`](#cdkd-state-list).
-
-Plain `cdkd state show --json` remains the way to see a record's stored values:
-it emits the record as parsed, without walking it or rendering a lock summary.
-
-**Resource properties are deliberately excluded from every mode here** — use
-[`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be
-a composite, pipe-delimited value for resource types AWS identifies by more
-than one field; see
-[State Management](state-management.md#composite-pipe-delimited-physicalids)
-for what those mean and why they are not what `Ref` returns.
-
-### When `resources` is not an object
-
-`resources` is a map of logical id to resource. A hand-edited or truncated
-record can hold a string, a list, a number or a boolean there instead, and
-walking one of those invents entries — a string yields one per character, a
-list one per element. Both views of `cdkd state resources` and the text view of
-`cdkd state show` therefore read a bag they cannot use as an EMPTY set, and say
-so on stderr, rather than describing resources that are not there.
-
-| Command | What it prints |
-| --- | --- |
-| `cdkd state resources`, plain and `--long` | nothing, plus the warning |
-| `cdkd state resources --json` | `[]`, plus the warning |
-| `cdkd state show`, `--show-nested` included | `Resources (0):` with no resource blocks, plus one warning per record read that way |
-| `cdkd state show --json` | the stored value, unchanged and unwarned |
-| `cdkd state show --show-nested --json` | the stored value, unchanged, but still warned per record |
-| `cdkd state list --long` | `Resources: unknown (...)` for that row, as described under [`cdkd state list`](#cdkd-state-list) |
-
-`cdkd state show --json` is the mode to reach for here: it is the one view that
-shows what the record actually holds, which is why the `--long` listing's
-reason text names it.
-
-`--show-nested` reports no children for such a record — a bag that is not a map
-of logical id to resource declares no nested stack — and the record itself
-still comes back as stored. That applies **at every depth**, not only to the
-stack you named: each record the walk reaches is judged on its own bag, so a
-healthy parent whose nested child is malformed still renders the parent's
-resources, reports the child with none, and descends no further.
-
-The warning identifies the stack and region, says the output describes zero
-resources rather than a stack that has none, and says that `cdkd deploy` and
-`cdkd destroy` **refuse** such a record. Both read the same map, and one they
-cannot read is indistinguishable from an empty stack: acting on that reading
-would make a deploy re-create every resource and a destroy delete none of them
-while removing the record. Repair or remove the record instead — the full
-per-command table is under
-[when `resources` is not an object](state-management.md#when-resources-is-not-an-object).
-
-An absent or `null` bag is reported the same way and renders exactly as an
-empty one does. `cdkd state list --long` differs on those two: it counts them
-as `0` with no reason attached.
-
-`--show-nested --json` is the one JSON mode that still warns, because there the
-damage is invisible in the payload's shape: a node whose bag could not be read
-comes back with an empty `children` list, which is exactly what a genuine leaf
-looks like, so a tool walking the tree reads a cut subtree as a complete one.
-
-### When a value container is not an object
-
-The same reading applies to the four containers these views walk for their
-rows: `outputs` and `skippedOutputs` on the record, and `attributes` and
-`properties` on each resource. A hand-edited or truncated record can hold a
-string, a list, a number or a boolean in any of them, and walking one invents
-rows the same way — a string yields one per character, a list one per element.
-Each is read as EMPTY instead, with one warning on stderr per record naming
-every container that was emptied.
-
-| Command | What it prints |
-| --- | --- |
-| `cdkd state show` | the record without that block — no `Outputs:`, no `Skipped outputs:`, `Attributes: (none)`, `Properties: (none)` — plus the warning |
-| `cdkd state show --show-nested` | the same, judged per record, so the warning names the stack whose record it was |
-| `cdkd state resources --long` | `Attributes: (none)`, plus the warning |
-| `cdkd state resources --json` | `"attributes": {}`, plus the warning |
-| `cdkd state resources`, plain | the three-column listing, unchanged and unwarned — it prints no attributes |
-| `cdkd state show --json`, `--show-nested` included | the stored value, unchanged and unwarned |
-
-The rule behind those rows is that a view reports only the containers IT
-renders. `cdkd state resources` prints attributes in `--long` and `--json` and
-nothing else in any mode, so it says nothing about `properties`, `outputs` or
-`skipped outputs` however they are spelled, and its plain listing says nothing
-at all. `cdkd state show` is where a record's four containers are visible, and
-`cdkd state show --json` remains the mode that shows what the record actually
-holds — the warning's own text names it.
-
-An absent or `null` container is NOT reported, and this is where these four
-differ from the `resources` bag. `skippedOutputs` is absent on every record
-written before it existed, `attributes` is absent on a resource that has none,
-and both views have always rendered a missing container as an empty one.
-Neither can invent a row, so neither is treated as a defect.
+For resource types that AWS identifies by more than one field, the physical id
+is several values joined with `|`. That value is not what `Ref` returns;
+[State Management](state-management.md) explains these ids.
 
 ## `cdkd state show`
 
+Prints one stack's whole record: metadata, the lock, outputs, and every
+resource with its properties, attributes, dependencies and the layer that
+provisioned it.
+
 ```bash
 cdkd state show MyStack
-cdkd state show MyStack --json
-cdkd state show MyParent --show-nested
-cdkd state show MyParent --show-nested --json
 ```
 
-The deepest read: stack metadata, the lock record, outputs, skipped outputs,
-and every resource with its properties, attributes, dependencies, and
-`provisionedBy` routing.
+```text
+Stack: MyStack
+  Region: us-east-1
+  Version: 11
+  Last Modified: 2026-10-10T16:40:51.000Z
+  Lock: unlocked
 
-What every mode here does with a record whose `resources` is not a JSON object —
-including `--show-nested` at any depth — is described once, under
-[When `resources` is not an object](#when-resources-is-not-an-object).
+Outputs:
+  QueueUrl: https://sqs.us-east-1.amazonaws.com/123456789012/MyStack-JobsQueue7C2B1F0E-Zk3mQ
 
-### When a nested resource shows the wrong `provisionedBy`
+Resources (1):
 
-Earlier versions let `--recreate-via-cc-api <LogicalId>` also recreate a
-nested child's resource that shared the logical id, stamping the child's
-record `provisionedBy: cc-api`. The stamp is sticky and the recreate flags
-cannot target a child (see
-[Nested stacks](cli-deploy-safety.md#nested-stacks)), and there is no
-`state` subcommand that edits it, by design: the stamp travels with the
-physical id that layer recorded, and Cloud Control's identifier and the id
-cdkd's SDK provider stores differ for many types (an ARN versus a name, or a
-composite id), so relabelling the record alone would hand the SDK provider an
-id it may not address. First check whether the type already returns on its
-own (see
-[Going back to the SDK provider](cli-deploy-safety.md#going-back-to-the-sdk-provider)
-and the exemption table under
-[`version: 7` adds `provisionedBy`](state-management.md#version-7-adds-provisionedby-v7-writers)).
-Otherwise, to move such a resource back, change its construct id
-(and so its logical id) in the child. The next deploy then creates the new
-logical id through the default routing, which ignores the old stamp, and
-deletes the old one through the layer that created it. This is a destroy and
-recreate, and the deploy does not ask first: the stateful guard and
-`--force-stateful-recreation` cover replacements, not the delete of a logical
-id that left the template. A stateful resource comes back empty (under a
-`Snapshot` policy, the RDS default, the old one is deleted after a final
-snapshot). Creates run before deletes, so an old resource whose delete is
-refused fails the deploy after the new one exists. Empty a non-empty S3 bucket
-that lacks `autoDeleteObjects` first; otherwise the automatic rollback deletes
-the new bucket again (`--no-rollback` leaves both). Deletion protection needs
-its own deploy BEFORE the rename, setting the property to false: a deploy
-never lifts protection (only a destroy with `--remove-protection` does), and the
-renamed resource is created from the same properties, so it is born protected
-and the rollback cannot delete it either, leaving both live. A resource with a fixed
-physical name needs a new name, or its removal deployed first and its re-add
-in a second deploy. Under `DeletionPolicy: Retain` (the CDK default for many
-stateful constructs) the old resource is only dropped from state and stays in
-AWS: delete it yourself, and for a fixed physical name do so before the
-re-add deploy.
+JobsQueue7C2B1F0E
+  Type: AWS::SQS::Queue
+  PhysicalID: https://sqs.us-east-1.amazonaws.com/123456789012/MyStack-JobsQueue7C2B1F0E-Zk3mQ
+  ProvisionedBy: sdk
+  Dependencies: (none)
+  Attributes:
+    Arn: arn:aws:sqs:us-east-1:123456789012:MyStack-JobsQueue7C2B1F0E-Zk3mQ
+  Properties:
+    VisibilityTimeout: 300
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--json` | off | Print the stored record and its lock as JSON: `{state, lock}`. |
+| `--show-nested` | off | Also print every nested stack under this one. |
+| `--stack-region <region>` | — | Region of the record to read. |
+
+`--json` is the mode to use when you need the stored values exactly, for
+example to inspect a record another command refused.
+
+### `--show-nested`
+
+```bash
+cdkd state show MyParent --show-nested
+```
+
+```text
+Stack: MyParent
+  ...
+
+Nested stack: MyParent~Child
+Stack: MyParent~Child
+  ...
+```
+
+Each nested stack's block follows its parent's, depth first, each behind its
+own `Nested stack:` header. With `--json` the shape becomes
+`{state, lock, children: [...]}`, where `children` is always present and is
+empty on a leaf.
+
+A parent that lists a nested stack whose record does not exist is an error,
+and no partial tree is printed. To repair it, re-deploy the parent or finish
+the operation that was interrupted. Failing both, remove the parent's record
+with [`cdkd state orphan`](#cdkd-state-orphan) and re-import the stack.
 
 ### Skipped outputs
 
-A `Skipped outputs:` block appears when `skippedOutputs` contains entries. Its
-rows are the Outputs keys the last deploy could not resolve, each mapped to a
-digest of that output's template inputs.
-
-It sits after `Outputs:` where that section is rendered at all. `Outputs:` is
-omitted when the outputs bag is empty, which includes the first-deploy case
-this record exists for, every output having failed — so the two blocks do not
-always appear together:
+A `Skipped outputs:` block lists the output keys the last deploy could not
+resolve, each with a digest of that output's template inputs:
 
 ```text
 Skipped outputs:
@@ -520,425 +403,448 @@ its whole Outputs section if the key still cannot resolve.
 Binding rule: `bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.
 ```
 
-The explanation sits at column zero, unlike the key rows, so it cannot be
-mistaken for another entry. Under `--show-nested` it is printed ONCE for the
-whole tree rather than after every child that skipped something.
+This is where to look when `cdkd diff` shows nothing for an output you expect.
+A skipped key gets no diff row and no warning, so this block is the
+explanation.
 
-This block is the reason to look here rather than at `cdkd diff`: a suppressed
-key gets **no diff row and no warning**, so the text view is where the
-explanation lives. Suppression takes both conditions above — the record still
-binding, and the key still absent from the stored outputs.
+Three things to know when reading it:
 
-For an output whose resolver THREW, the deploy's own warning already names it;
-for one that merely resolved to `undefined` there is no per-output warning at
-all. For such a key while it is ABSENT from the stored outputs, this block is
-the first place it is named in the human-readable view without `--verbose`,
-which logs the same decision from `cdkd diff` at debug level. A key whose earlier
-value was retained is ALSO stored under `Outputs:` — it appears in both
-sections — and is NOT suppressed by the record. It takes the ordinary resolve
-path, which can end in `cdkd diff` suppressing its whole Outputs section with
-a warning if the key fails again. `--json` and the stored `state.json` carry the
-record either way.
+- The block appears only when something was recorded. A record without it does
+  not prove that nothing was skipped.
+- `Outputs:` is omitted when no output has a value, so the block can appear
+  without it.
+- The digest is cut to 12 characters. Two different prefixes mean two different
+  records, but equal prefixes prove nothing. Compare whole digests through
+  `--json`.
 
-The digest is TRUNCATED to 12 characters here, after control characters are
-stripped — so an ESC costs no preview space, though a sequence's printable
-tail (`[2J`) still does. One value is exempt: `(unserializable)`, which is
-what prints for a digest nothing can serialize, is longer than the window and
-is shown whole, because cut to `(unserializa…` it would read as a hash prefix.
-A trailing `…` marks a value that was actually cut, so a value exactly 12
-characters long is not mistaken for a truncated one. A prefix DIFFERENCE tells
-you at a glance that two records differ; a prefix MATCH proves nothing, so
-compare digests through `--json`, which carries them whole, as does the stored
-`state.json`.
+### When a nested resource shows the wrong `provisionedBy`
 
-The block is omitted when the field is present but empty, and when it is
-absent. Absence means only that no skipped set was RECORDED, not that nothing
-was skipped: records written before the field existed never carried one, and
-several state writers deliberately drop it. The `--json` shape is unchanged
-either way.
+`ProvisionedBy` records which layer created a resource: `sdk` or `cc-api`
+(Cloud Control). A resource in a nested stack can carry `cc-api` from an older
+cdkd release, in which `--recreate-via-cc-api <LogicalId>` also matched a
+child's resource with the same logical id. The value stays, the recreate flags
+cannot target a nested child, and no `state` subcommand edits it: the two
+layers store different physical ids for many types, so changing the label
+alone would hand the SDK provider an id it cannot use.
 
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--json` | off | Emit the raw state record and lock as JSON. |
-| `--show-nested` | off | Recursively include every nested-stack child under the target. |
-| `--stack-region <region>` | — | Region of the record to read. Omitting it on a name with records in several regions is an error. |
+First check whether the type moves back by itself.
+[Deploy: safety](cli-deploy-safety.md) and
+[State Management](state-management.md) list the types that do.
 
-`--show-nested` reuses the same recursive walker as `cdkd export`: for every
-`AWS::CloudFormation::Stack` row in the target's resources it derives the child
-key `<parent>~<childLogicalId>`, loads
-`cdkd/<parent>~<childLogicalId>/<region>/state.json`, and recurses. Each
-descendant's block follows the parent's in depth-first order, flat at column
-zero rather than indented, behind its own header:
+Otherwise, rename the construct in the nested stack, which changes its logical
+id:
 
-```text
-Stack: MyParent
-  ...
-
-Nested stack: MyParent~Child
-Stack: MyParent~Child
-  ...
+```ts
+// Before: new sqs.Queue(this, 'Jobs');
+new sqs.Queue(this, 'JobsV2');
 ```
- It fails
-fast on a torn tree — a parent listing a nested-stack row whose child record
-does not exist — rather than printing a partial tree. Repair it by re-deploying
-the parent, by finishing whatever partial operation tore it, or, failing both,
-by [`cdkd state orphan '<parent>'`](#cdkd-state-orphan) and re-importing.
 
-The `--json` shape under `--show-nested` is recursive
-`{state, lock, children: [...]}`, with `children` always present (an empty
-array on leaves) so the key set is stable. Without `--show-nested` the
-single-stack `{state, lock}` shape is preserved verbatim, so existing tooling
-keeps working.
+The next deploy creates the new logical id through the default layer and
+deletes the old resource through the layer that created it.
 
-A held lock never blocks any of the read subcommands; `show` reports it as part
-of the record.
+> [!CAUTION]
+> This destroys and re-creates the resource, and the deploy does not ask
+> first. A stateful resource comes back empty. With a `Snapshot` deletion
+> policy, the RDS default, the old one is deleted after a final snapshot.
+
+The deploy creates before it deletes, so prepare these cases before renaming:
+
+| The old resource | Do this first |
+| --- | --- |
+| Is a non-empty S3 bucket without `autoDeleteObjects` | Empty it. Otherwise its delete fails, and the rollback deletes the new bucket again (`--no-rollback` leaves both). |
+| Has deletion protection | Deploy the property set to `false` on its own, before the rename. A deploy never lifts protection, and the renamed resource would be created protected, so the rollback could not delete it either. |
+| Has a fixed physical name | Give the new one a different name, or deploy the removal first and add the construct back in a second deploy. |
+| Has `DeletionPolicy: Retain` | Nothing, but it stays in AWS afterwards, only dropped from state. Delete it yourself, and before the re-add deploy if it has a fixed physical name. |
+
+## Malformed state records
+
+A state record is JSON in S3, and a hand edit or a truncated write can leave
+it in a shape cdkd does not expect. The read-only subcommands show what they
+can and say what they could not. The subcommands that write refuse.
+
+### What the human views do to a malformed record
+
+The text output of `cdkd state resources` and `cdkd state show` treats every
+value in the record as untrusted text:
+
+- Control characters are removed from names, types, ids and dependency lists,
+  so a value cannot forge an extra output line or run a terminal escape
+  sequence.
+- A value of the wrong type is still printed: a number as that number, an
+  object as JSON, and a value that cannot be serialized as `(unserializable)`.
+- A lock with an unreadable expiry reads `expires at an unknown time`.
+
+A record that is broken at its root is refused, with a message naming the
+problem:
+
+- `state.json` is not valid JSON.
+- Its body is not a JSON object.
+- Its schema version is one this cdkd does not read.
+
+`cdkd state list --long` degrades only that stack's row instead, as described
+under [Rows cdkd could not read](#rows-cdkd-could-not-read).
+
+`cdkd state show --json` prints the stored values without any of this
+filtering. `cdkd state resources --json` does not: it prints the resource
+list cdkd derived from the record.
+
+### When `resources` is not an object
+
+`resources` is a map from logical id to resource. If a record holds a string, a
+list, a number or a boolean there, the read-only views treat the stack as
+having no resources and print a warning on stderr.
+
+| Command | What it prints |
+| --- | --- |
+| `cdkd state resources`, plain and `--long` | Nothing, plus the warning. |
+| `cdkd state resources --json` | `[]`, plus the warning. |
+| `cdkd state show`, `--show-nested` included | `Resources (0):` with no resource blocks, plus one warning per record read that way. |
+| `cdkd state show --json` | The stored value, unchanged, with no warning. |
+| `cdkd state show --show-nested --json` | The stored value, unchanged, with one warning per record. |
+| `cdkd state list --long` | `Resources: unknown (...)` for that row. |
+
+An absent or `null` `resources` is reported the same way, except that
+`cdkd state list --long` counts it as `0` without a reason.
+
+> [!WARNING]
+> `cdkd deploy` and `cdkd destroy` refuse such a record. Read as empty, it
+> would make a deploy re-create every resource and a destroy delete none of
+> them while removing the record. Repair the record or remove it.
+> [State Management](state-management.md) lists what each command does.
+
+Under `--show-nested` each record is judged separately. A healthy parent with a
+malformed nested stack prints the parent's resources and reports the child
+with none.
+
+### When a value container is not an object
+
+The same rule applies to four other maps: `outputs` and `skippedOutputs` on the
+record, and `attributes` and `properties` on each resource. One that holds a
+string, a list, a number or a boolean is read as empty, with one warning per
+record naming each container that was emptied.
+
+| Command | What it prints |
+| --- | --- |
+| `cdkd state show` | The record without that block: no `Outputs:`, no `Skipped outputs:`, `Attributes: (none)`, `Properties: (none)`. Plus the warning. |
+| `cdkd state show --show-nested` | The same, with the warning naming the stack whose record it was. |
+| `cdkd state resources --long` | `Attributes: (none)`, plus the warning. |
+| `cdkd state resources --json` | `"attributes": {}`, plus the warning. |
+| `cdkd state resources`, plain | The three-column listing, with no warning. It prints no attributes. |
+| `cdkd state show --json`, `--show-nested` included | The stored value, unchanged, with no warning. |
+
+An absent or `null` container is normal and is not reported.
+
+[cdkd state internals](cli-state-internals.md) has the full rendering rules.
 
 ## `cdkd state orphan`
 
+Removes cdkd's record of a stack and leaves every AWS resource running. cdkd
+no longer knows the stack exists. With `--resource`, it removes only the named
+resources' entries and keeps the rest of the record.
+
 ```bash
-cdkd state orphan MyStack
-cdkd state orphan MyStack --stack-region us-east-1
-cdkd state orphan StackA StackB --force
+cdkd state orphan MyStack                                    # every region's record for MyStack
+cdkd state orphan MyStack --stack-region us-east-1           # one region's record
+cdkd state orphan StackA StackB --force                      # no prompt, even if locked
 cdkd state orphan MyStack --stack-region us-east-1 --resource MyQueue
 ```
 
-Removes cdkd's state record for one or more stacks and **leaves every AWS
-resource running**. After this, cdkd no longer knows the stack exists; the
-resources become untracked rather than deleted. With `--resource`, it removes
-only the named resources' entries and keeps the rest of the stack's record
-([Removing one resource from the record](#removing-one-resource-from-the-record)).
-
 | Flag | Default | Description |
 | --- | --- | --- |
-| `<stacks...>` | — | Stack name(s) to orphan, as physical CloudFormation names. At least one is required; exactly one with `--resource`. |
-| `-f`, `--force` | off | Skip the confirmation prompt **and** remove the record even when the stack is locked. With `--resource`: skip the prompt **and** enable the cached-attribute fallback (a reference that cannot be resolved live takes the value cached in state); a held lock still refuses. |
-| `--stack-region <region>` | — | Orphan only the record in this region. Omitting it removes every record for the name — `orphan` does not refuse an ambiguous name. With `--resource` it does: a stack with records in several regions needs this flag. |
-| `--resource <logicalId>` | — | Remove only this resource's entry from the stack's record. Repeat the flag for several. |
+| `<stacks...>` | — | Stack names to orphan. At least one; exactly one with `--resource`. |
+| `--resource <logicalId>` | — | Remove only this resource's entry. Repeatable. |
+| `-f`, `--force` | off | Skip the prompt and remove the record even when the stack is locked. With `--resource`: skip the prompt and allow cached values for unresolvable references; a lock still refuses. |
+| `--stack-region <region>` | — | Orphan only the record in this region. Required with `--resource` when the name has records in several regions. |
 
-`-y` / `--yes` skips the prompt but does *not* bypass the lock guard; only
-`--force` does both — except with `--resource`, where no flag bypasses a held
-lock. A locked stack otherwise fails with the exact
-`cdkd force-unlock` command to run first. Orphaning a stack that has no record
-is a no-op, not an error, so the command is safe to re-run.
+Orphaning a stack that has no record does nothing and exits `0`, so the command
+can be re-run.
 
-Force-releasing a lock this way deletes whatever lock is present, including a
-live one belonging to an in-flight deploy — deliberately, so a stuck lock can
-never make a record unremovable. The command warns when it is about to do that.
+On a stack that is still deployed, removing the whole record means the next
+`cdkd deploy` creates every resource again or collides with the existing ones.
+Use `--resource` there.
+
+### Locked stacks
+
+| Flag | Prompt | A held lock |
+| --- | --- | --- |
+| none | asks | Refuses, printing the `cdkd force-unlock` command to run first. |
+| `-y`, `--yes` | skipped | Refuses the same way. |
+| `-f`, `--force` | skipped | Deletes the lock and removes the record. |
+| `--resource`, with any flag | as above | Refuses. No flag bypasses a lock here. |
+
+`--force` deletes whatever lock is present, including one that belongs to a
+deploy in progress. The command warns when it is about to do that.
 
 ### Removing one resource from the record
 
-`--resource <logicalId>` removes one resource's entry from a stack's record
-and keeps the stack deployed: the resource stays in AWS, untracked, and every
-other resource stays under cdkd. It reads the record, not your CDK app, so it
-also reaches a resource whose construct has already left the template — a
-delete that `cdkd deploy` skipped, for example, which
-[`cdkd orphan`](orphan-vs-destroy.md) cannot address because it resolves
-construct paths through the synthesized template.
+```bash
+cdkd state orphan MyStack --resource MyQueue
+cdkd state orphan MyStack --resource MyQueue --resource MyTopic
+```
 
-It edits the record the way `cdkd orphan` does:
+`--resource <logicalId>` removes one resource's entry and keeps the stack
+deployed. The resource stays in AWS, untracked, and every other resource stays
+under cdkd. Because it reads the record and not your CDK app, it also reaches
+a resource whose construct has already left the template, such as one whose
+delete `cdkd deploy` skipped. `cdkd orphan` cannot address that one, because it
+finds resources by construct path in the synthesized template.
 
-- Every `Ref`, `Fn::GetAtt` and `Fn::Sub` to the removed resource that another
-  record or a stack output still holds is replaced with the value it resolved
-  to, and the removed resource is dropped from every `dependencies` list. A
-  `Fn::GetAtt` the record cannot serve is read live from AWS in the stack's
-  region. One that still cannot be resolved stops the run, and nothing is
-  written. `--force` takes the value cached in the removed record instead, and
-  keeps the original intrinsic where there is none — or where it is a value
-  cdkd recognises as a credential (a credential-named attribute, any custom
-  resource's attribute, a known secret-valued attribute such as AppSync's
-  `ApiKey`, or a value holding a credential-named field), the redaction mask
-  or an unresolved `{{resolve:...}}` reference, which are never copied into
-  another record (the same rule applies to `cdkd orphan --force`).
-- It takes the stack's lock and saves with a conditional write. A held lock
-  refuses with the `cdkd force-unlock` command to run, `--force` included.
-- A logical id the record does not hold refuses, listing the ones it does.
-- A record it cannot read is refused rather than rewritten, wherever
-  `cdkd orphan` refuses one
-  ([State Management](state-management.md#when-resources-is-not-an-object)
-  lists each container): the record as a whole, its outputs, and any part of a
-  resource entry it would keep.
-- A target whose child record (`<parent>~<logicalId>`, a nested stack's)
-  still exists in any region refuses: the child's records would be left with
-  nothing that removes them. The refusal prints the
-  `cdkd state orphan '<parent>~<logicalId>'` to run first, with the child's own
-  region, and says when the child has records in other regions too. Once the child has no record, the parent's entry is removed like any
-  other.
+What it does to the rest of the record:
 
-What the next `cdkd deploy` does with the resource depends on the template.
-If the construct has left it, the deploy leaves the resource alone, since
-cdkd holds no record of it. If the construct is still there, the deploy
-creates it again: a resource whose name cdkd generates or the template sets
-collides with the one still in AWS, so delete that by hand first or import
-it back with [`cdkd import`](import.md).
+- Every `Ref`, `Fn::GetAtt` and `Fn::Sub` that another resource or a stack
+  output holds to the removed resource is replaced with the value it resolved
+  to.
+- The removed resource is dropped from every `dependencies` list.
+- A `Fn::GetAtt` value the record does not hold is read live from AWS in the
+  stack's region.
 
-When to reach for it, and when not to:
-[Orphan vs Destroy](orphan-vs-destroy.md) draws the line against `cdkd orphan`,
-which is synth-driven and works per resource;
-[Cross-Stack References](cross-stack-references.md#what-about-cdkd-state-orphan)
-explains why it is the wrong tool for escaping a strong-reference destroy
-block.
+It refuses, writing nothing, in these cases:
+
+| Refused when | What to do |
+| --- | --- |
+| A reference to the removed resource cannot be resolved | Pass `--force` to use the value cached in the removed entry. Where there is none, or it is a credential or a masked value, the original reference is kept. |
+| The stack is locked | Run the printed `cdkd force-unlock` command. `--force` does not bypass the lock. |
+| The record has no such logical id | Pick one from the list the error prints. |
+| The record, its outputs, or an entry it would keep is malformed | Repair the record. See [Malformed state records](#malformed-state-records). |
+| The resource is a nested stack whose own record still exists | Run the printed `cdkd state orphan '<parent>~<logicalId>'` first. |
+
+What the next `cdkd deploy` does with the resource depends on your template:
+
+| The construct is | The next deploy |
+| --- | --- |
+| No longer in the template | Leaves the resource alone. cdkd has no record of it. |
+| Still in the template | Creates it again. A resource with a fixed or generated name collides with the one in AWS, so delete that by hand first or bring it back with [`cdkd import`](import.md). |
+
+This is the wrong tool for getting past a destroy that another stack's
+reference blocks. [Cross-Stack References](cross-stack-references.md) explains
+why.
 
 ## `cdkd state destroy`
 
+Deletes a stack's AWS resources and then its state record, working from the
+record instead of the CDK app. It runs the same per-stack steps as
+[`cdkd destroy`](cli-destroy.md), so the data guards, `DeletionPolicy`
+handling, cross-stack reference blocks, locking and exit codes are the same.
+
 ```bash
-cdkd state destroy MyStack --yes
-cdkd state destroy StackA StackB --yes
+cdkd state destroy MyStack                       # asks for confirmation
+cdkd state destroy MyStack OtherStack --yes
+cdkd state destroy MyStack --stack-region us-west-2
 cdkd state destroy MyStack --remove-protection --yes
 ```
 
-Deletes a stack's AWS resources and then its state record, reading the record
-instead of synthesizing — the CDK-app-free counterpart of `cdkd destroy`. Both
-run the identical per-stack pipeline, so the data guards, `DeletionPolicy`
-handling, strong-reference blocks, lock behavior, and exit codes are the same.
-
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to destroy, as physical CloudFormation names. Required. |
-| `--remove-protection` | off | Turn per-resource deletion protection off in place before deleting. |
+| `[stacks...]` | — | Stack names to destroy. Required. |
+| `--remove-protection` | off | Turn per-resource deletion protection off before deleting. |
 | `--skip-final-snapshot` | off | Delete `DeletionPolicy: Snapshot` resources without taking the final snapshot. |
-| `--allow-unsupported-types <types>` | — | Comma-separated escape hatch routing otherwise-unprovisionable types through Cloud Control. |
-| `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
+| `--allow-unsupported-types <types>` | — | Comma-separated types to attempt through Cloud Control although cdkd reports them unsupported. |
+| `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation runs longer than this. Repeatable. |
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
-| `--stack-region <region>` | — | Act on the record in this region, plus any record that does not name a region at all. A name whose only record is elsewhere is warned about and skipped; omitting the flag on a name with records in several regions is an error. |
+| `--stack-region <region>` | — | Act on the record in this region, and on any record that names no region. A name whose only record is elsewhere is warned about and skipped. |
 
-Three differences from `cdkd destroy` are worth knowing before you script it:
+Differences from `cdkd destroy`:
 
-- **Names only.** Nothing is synthesized, so stacks are matched by physical
-  CloudFormation name — CDK display paths and wildcards are not available. A
-  nested-stack child can be targeted directly by its `<parent>~<child>` name.
-- **No `-f` / `--force`.** `-y` / `--yes` is the only way to skip the prompts.
-- **No `--purge-events`.** Use [`cdkd events prune`](cli-events.md) to drop
-  deployment-event history for a stack instead.
+| Difference | `cdkd state destroy` |
+| --- | --- |
+| Stack selection | Physical names only. No CDK display paths, no wildcards. A nested stack can be named directly as `<parent>~<child>`. |
+| `--all` | Does not exist. Passing it fails with exit `1` before anything is read. |
+| `-f`, `--force` | Does not exist. `-y` / `--yes` is the only way to skip the prompts. |
+| `--purge-events` | Does not exist. Use [`cdkd events prune`](cli-events.md). |
+| A name with no record | An error, not a silent skip. |
 
-Naming a stack that has no record at all is an error, not a silent skip.
+There is no `--all` because the state bucket is shared by every CDK app
+deployed to the account, so such a flag would destroy other apps' stacks.
+Name each stack, or run `cdkd destroy --all` from the CDK app, which destroys
+only that app's top-level stacks (`cdkd destroy '**'` also destroys its CDK
+Stage stacks).
 
-There is no `--all`. The state bucket is shared by every CDK app deployed to
-the account, so a flag selecting every stack in it destroyed stacks across
-apps; it was removed, and passing it now fails with exit `1` before anything is
-read. Name each stack instead (`cdkd state list` shows them), or run
-`cdkd destroy --all` from the CDK app, which destroys only that app's top-level
-stacks (`cdkd destroy '**'` destroys its CDK Stage stacks too).
+Each stack and region the command runs against records one deployment-event
+run under `command: destroy`, including a failed, skipped or declined target.
+[`cdkd events`](cli-events.md) can read it after the record is gone.
 
-The flag semantics, the data guards, and the confirmation matrix are documented
-once, on the destroy page:
-[Destroy flags & guards](cli-destroy.md) — in particular
-[stack selection](cli-destroy.md#stack-selection),
-[confirmation prompts](cli-destroy.md#confirmation-prompts),
-[`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy),
-and [skipped resources](cli-destroy.md#skipped-resources-on-destroy).
-
-Each stack and region `cdkd state destroy` runs against records one
-deployment-event run under `command: destroy` (a failed, skipped or declined
-target included), readable with [`cdkd events`](cli-events.md) after the record is gone — see
-[Deployment Events](deployment-events.md).
-
-The two per-resource duration flags behave exactly as they do on deploy; they
-are documented on
-[Deploy: tuning](cli-deploy-tuning.md#per-resource-timeout).
+The flags, data guards and prompts are documented on
+[Destroy flags & guards](cli-destroy.md), and the two duration flags on
+[Deploy: tuning](cli-deploy-tuning.md).
 
 ## `cdkd state migrate`
 
-```bash
-cdkd state migrate --region us-east-1 --dry-run
-cdkd state migrate --region us-east-1
-cdkd state migrate --region us-east-1 --remove-legacy
-```
+Copies a legacy state bucket, `cdkd-state-{account}-{region}`, into the
+region-free default, `cdkd-state-{account}`. Run it when
+[`cdkd state info`](#cdkd-state-info) reports the legacy name. Objects are
+copied key for key and no record is rewritten.
 
-Copies a legacy region-suffixed state bucket (`cdkd-state-{account}-{region}`)
-into the region-free default (`cdkd-state-{account}`). This is a bucket-name
-migration, not a schema or key-layout one: objects are copied key-for-key and
-no record body is rewritten.
+::: steps
+1. Preview
+
+   ```bash
+   cdkd state migrate --region us-east-1 --dry-run
+   ```
+
+   Prints the two bucket names, the source bucket's region and the object
+   count, then stops without asking for confirmation.
+
+2. Copy
+
+   ```bash
+   cdkd state migrate --region us-east-1
+   ```
+
+   The source bucket is kept. Run this once per region you have a legacy
+   bucket in.
+
+3. Remove the legacy bucket, once you are satisfied with the new one
+
+   ```bash
+   cdkd state migrate --region us-east-1 --remove-legacy
+   ```
+:::
+
+> [!CAUTION]
+> `--remove-legacy` cannot be undone. It deletes every object version and
+> delete marker in the source bucket, then the bucket.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--region <region>` | `AWS_REGION` / `us-east-1` | Which legacy bucket to migrate. Run the command once per region you have one in. |
-| `--legacy-bucket <name>` | derived from the account and region | Override the source bucket name. |
-| `--new-bucket <name>` | `cdkd-state-{accountId}` | Override the destination bucket name. |
-| `--dry-run` | off | Stop before any mutation, after reporting what would be copied. |
-| `--remove-legacy` | off | Delete the source bucket after the copy is verified. Irreversible: it empties every object version and delete marker first, so the source bucket's version history is gone. |
+| `--region <region>` | `AWS_REGION` / `us-east-1` | Which region's legacy bucket to migrate. |
+| `--legacy-bucket <name>` | derived from the account and region | Source bucket name. |
+| `--new-bucket <name>` | `cdkd-state-{accountId}` | Destination bucket name. |
+| `--dry-run` | off | Report what would be copied and change nothing. |
+| `--remove-legacy` | off | Delete the source bucket after the copy has been verified. |
 
-`migrate --dry-run` prints its plan — the two bucket names, the source
-bucket's real region, and the object count — and stops there without asking
-for confirmation, so it is safe to run unattended.
+The command can be re-run. It reuses an existing destination, each object copy
+is repeatable, and the verification accepts a destination that already holds
+objects, so a second run resumes a partial migration. The source bucket is
+deleted only after the object count at the destination has been verified.
 
-The migration is idempotent: the destination is reused when it already exists,
-each object copy is idempotent per key, and the post-copy verification tolerates
-a destination that already holds objects, so a re-run resumes a partial
-migration. The source bucket is kept unless `--remove-legacy` is passed, and it
-is only deleted after the object count at the destination has been verified.
-Leave it in place until you are satisfied with the migrated bucket — that
-deletion is the one step here you cannot undo.
+It refuses to start while any `lock.json` exists in the source bucket, and
+names the keys. Wait for the operation in progress, or clear a stale lock with
+[`cdkd force-unlock`](cli-force-unlock.md).
 
-It refuses to start while any `lock.json` exists in the source bucket, naming
-the offending keys — wait for the in-flight operation, or clear a stale lock
-with `cdkd force-unlock`.
-
-The full behavior list, the destination bucket's hardening, and the manual
-`aws s3 sync` fallback are on
-[State Management](state-management.md#migration-path-cdkd-state-migrate).
+[State Management](state-management.md) covers the destination bucket's
+settings and a manual `aws s3 sync` alternative.
 
 ## `cdkd state refresh-observed`
 
+Re-reads every resource of a stack from AWS and stores the result as the
+stack's drift baseline, without deploying. The baseline, `observedProperties`
+in the record, is the snapshot of what AWS held: your template's values, the
+defaults AWS filled in, and keys your template never set.
+[`cdkd drift`](cli-drift.md) compares AWS against it.
+
 ```bash
 cdkd state refresh-observed MyStack
-cdkd state refresh-observed --all --dry-run
+cdkd state refresh-observed --all --dry-run   # count what would be refreshed
 cdkd state refresh-observed --all --yes
 ```
 
-Repopulates `observedProperties` for every resource in a stack by reading each
-one back from AWS, without deploying. `observedProperties` is the drift
-baseline: the snapshot of what AWS actually held, including AWS-managed
-defaults and keys your template never set.
-
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to refresh, as physical CloudFormation names. Required unless `--all` is given. |
+| `[stacks...]` | — | Stack names to refresh. Required unless `--all` is given. |
 | `--all` | off | Refresh every stack in the state bucket. |
-| `--dry-run` | off | Print the per-stack refresh count without taking a lock, reading resources back from AWS, or writing state. The records themselves are still read from S3. |
-| `--stack-region <region>` | — | Region of the record to refresh. Omitting it on a *named* stack with records in several regions is an error; under `--all` the flag is a filter instead, and omitting it refreshes every region. |
+| `--dry-run` | off | Print the per-stack count. Takes no lock, reads no resource from AWS, writes nothing. The records are still read from S3. |
+| `--stack-region <region>` | — | Region of the record to refresh. With `--all` it filters. |
 
-Why it exists: `cdkd deploy` already maintains the baseline in two ways — it
-captures a fresh one for every resource it creates, updates, or replaces, and
-it reads back any resource whose baseline is missing, including ones that
-deploy left unchanged. Both of those reach only the resources whose provider
-can read state back. What deploy does not do is re-read a resource that was
-unchanged *and* already had a baseline; that one keeps whatever was captured
-the last time the resource was touched, however long ago.
+### When to run it
 
-This command re-reads the whole stack on demand, so it covers that case, and
-it is how you refresh a baseline without deploying at all — including on a
-stack deployed with
-[`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state),
-where nothing was captured in the first place.
+`cdkd deploy` keeps the baseline current for every resource it creates,
+updates or replaces, and fills in a missing one. It does not re-read a resource
+that was unchanged and already had a baseline. Run this command when:
 
-The baseline is what makes the comparison thorough. With one present,
-`cdkd drift` walks the union of the recorded and the live keys, so a
-console-side edit to a key your template never mentions still surfaces;
-without one, it falls back to comparing only the keys in state.
+- A stack has not been deployed for a while and you want `cdkd drift` to
+  compare against what AWS holds now.
+- The stack was deployed with `--no-capture-observed-state`, so no baseline was
+  captured ([Deploy: tuning](cli-deploy-tuning.md)).
+- You are about to hand the stack to CloudFormation with
+  [`cdkd export`](cli-export.md).
 
-**One kind of resource this command deliberately declines.** If a
-[`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to
-capture a baseline — because that resource's recorded properties can no longer
-position the secret redaction — the refusal is recorded on the record, and this
-command skips it rather than reading a value back against those properties,
-which could persist a resolved secret into `state.json` in plaintext. Such
-resources are counted and reported separately from `unsupported` ones, and
-`cdkd state show` marks each with an `ObservedBaseline: REFUSED` line, which
-also names that resource's remedy. Re-running this command will not clear it:
+With a baseline, `cdkd drift` also reports a console edit to a key your
+template never mentions. Without one it compares only the keys in state.
 
-- **Deploy a change to the resource**, which rebuilds its record from your
-  template and captures a real baseline.
-- **Unless the refusal was over a template parameter** whose deployed value cdkd
-  could not prove. A deploy that updates the resource in place keeps that
-  refusal, so only replacing the resource, or re-importing it while a
-  CloudFormation stack can prove the value, clears it. A refusal recorded by an
-  older cdkd without its reason is treated this way when the resource reads a
-  template parameter. See
-  [the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
+### Resources it does not refresh
 
-Run [`cdkd scrub`](cli-scrub.md) first on state written by a pre-GHSA binary.
-The readback is redacted **by position** against the existing record: the
-record's own properties are expected to hold the unresolved
-`{{resolve:secretsmanager:...}}` expression, which is written back over the
-decrypted value AWS echoes. A record whose properties already hold plaintext
-has nothing to redact from.
+| Resource | What happens | Exit code |
+| --- | --- | --- |
+| Its provider cannot read current state | Counted as unsupported. Keeps its previous baseline. | unaffected |
+| AWS reports it as not found | Named in a warning and counted as failed. Keeps its previous baseline. | `2` |
+| Its read fails for another reason | Reported individually. | `2` |
+| A `cdkd import` run refused it a baseline | Skipped and counted separately. | unaffected |
 
-Where the readback and the record cannot be lined up at a reference-bearing
-position — AWS restructured the property, normalised a list element's identity
-field, reordered a list, or the record holds a raw `Fn::Join` object where the
-readback holds a string — cdkd cannot tell a resolved secret from an ordinary
-literal, so it writes the mask `***` at that position rather than the value AWS
-reported. `cdkd drift` then reports that position as not compared (exit `2`)
-while the mask is the only difference there, and as drift if anything else
-there changed. A `cdkd deploy` repairs it: one that changes the resource
-re-captures the whole baseline, and one that changes nothing replaces each mask
-the resource's own secret references can certify. Re-running this command
-afterwards writes the masks back, since it resolves nothing. See
-[Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
+The last row is deliberate. When [`cdkd import`](import.md) could not place
+the secret redaction for a resource, it records that on the resource, and this
+command will not read a value back for it, since that could store a resolved
+secret in plaintext. `cdkd state show` marks such a resource with an
+`ObservedBaseline: REFUSED` line that names its remedy. Re-running this
+command does not clear it:
 
-**A public SSM parameter inside a longer value keeps its value.** A LEGACY record
-can hold a plain `{{resolve:ssm:...}}` reference inside a longer string, such as
-`https://{{resolve:ssm:/app/host}}/health`: one imported before
-[import refused such baselines](import.md#the-drift-baseline-an-import-records)
-(state schema v10), written by an older cdkd, or edited by hand. A current
-deploy stores a public reference resolved, and a current import records no
-baseline for a record that still spells one — including a record a selective
-import carries over from existing state, which it re-resolves and refuses.
-A `String` or `StringList` parameter is public config, so the value AWS reports
-is the right baseline — when it is exactly the record's text with the
-parameter's current value in place. A `SecureString` is a secret, and the
-reference is written back over it, as it is over any other value. To tell the two apart, the command calls
-`ssm:GetParameter` with `WithDecryption: false` in the stack's region, once per
-reference. Nothing is decrypted, and a reference that is the whole value needs
-no call. The reference is written back, as before, when the parameter is a
-`SecureString`, when the call fails (a missing `ssm:GetParameter` permission
-included — the command still succeeds), or when the reference may belong to
-another region: an ARN naming one, a stack that reads outputs from another
-region, or a nested stack whose parent stacks' cross-region reads cannot be
-established (their records are missing or unreadable), where any reference that
-names no region gets no proof.
+- Deploy a change to the resource. That rebuilds its record from your template
+  and captures a baseline. A deploy that changes nothing does not.
+- If the refusal was over a template parameter whose deployed value cdkd could
+  not prove, an in-place update keeps the refusal. Replace the resource, or
+  re-import it while a CloudFormation stack can prove the value.
 
-Resources whose provider cannot read current state are counted as unsupported
-and keep their previous baseline. A resource AWS reports as not found — deleted
-outside cdkd — is named in a warning, counted as failed and also keeps its
-previous baseline, so a transient not-found can never null one out. Per-resource
-read failures, a not-found one included, are reported individually and make the
-run exit `2`.
+### Secrets in the baseline
 
-**A malformed record is refused, not refreshed.** This is the one command in
-the `cdkd state` family that writes the record back, so — unlike the read-only
-views described under
-[What the human views do to a malformed record](#what-the-human-views-do-to-a-malformed-record)
-— it will not proceed over a record whose shape it cannot read. Two shapes
-refuse, both naming the stack and the region, and both *before* that stack's
-lock is taken, before anything is read from AWS for it and before any write to
-it. Over several stacks — `--all`, or more than one name — the shape of every
-region-scoped record is checked before the first one is refreshed, so one such
-malformed record refuses the whole run and no stack is written. One case still
-refuses only when its turn comes, after the stacks ahead of it have been
-saved: a record edited between that check and its own refresh. A legacy
-record with no region is refused, for that reason, after the confirmation
-prompt and before the first stack is refreshed, so nothing is written. Its
-message suggests migrating the record with any cdkd write, and prints a
-`cdkd deploy '<stack>'` example only when the stack name renders exactly and
-holds no `*` or `/` and does not start with `-` — a name that had to be
-sanitized could name a different stack in your app, `cdkd deploy` reads `*` and
-`/` as a pattern, and a leading `-` would be read as an option.
+The values AWS returns can include decrypted secrets. cdkd writes the
+`{{resolve:secretsmanager:...}}` reference from the record back over such a
+value, matching by position.
 
-- a `resources` bag that is not a JSON object — `null`, absent, a list, a
-  number, a string, `true` or `false`. A list of resource objects is the dangerous one: its
-  elements look like records, so without the refusal they would be read back
-  from AWS, given a fresh baseline, and saved — still as a list, so the record
-  stays broken while the run reports a clean refresh over it.
-- a `resources` **entry** that is not an object, or is an object carrying no
-  resource type. The refusal names the logical ids, up to five of them and a
-  count of the rest.
+- Run [`cdkd scrub`](cli-scrub.md) first on state written by a cdkd release
+  that predates its secret-redaction fixes. A record whose own properties
+  already hold the plaintext gives this command nothing to match against.
+- Where the readback and the record cannot be lined up, cdkd writes the mask
+  `***` at that position. `cdkd drift` then reports the position as not
+  compared (exit `2`). A `cdkd deploy` repairs it; re-running this command
+  afterwards writes the masks back. See [`cdkd drift`](cli-drift.md).
+- An older record can hold a `{{resolve:ssm:...}}` reference inside a longer
+  value. The value AWS reports is kept there only when the parameter is a
+  `String` or `StringList`; for a `SecureString` the reference is written
+  back. The check calls `ssm:GetParameter` without decryption. Without that
+  permission the reference is written back and the command still succeeds.
 
-Repairing instead would replace the only evidence that the record is broken
-with a well-formed one. Inspect it with `cdkd state show '<stack>' --json`, then
-repair or remove it — [`cdkd state orphan`](#cdkd-state-orphan) removes a
-record without touching the AWS resources.
+### Malformed records are refused
+
+This subcommand rewrites the record, so it does not proceed over one it cannot
+read. It refuses, naming the stack and region, before taking the lock and
+before reading anything from AWS, when:
+
+- `resources` is not a JSON object (`null`, absent, a list, a number, a string
+  or a boolean), or
+- an entry in `resources` is not an object or has no resource type. The
+  message names up to five logical ids and counts the rest.
+
+With `--all` or several names, every record is checked before the first one is
+refreshed, so one malformed record stops the whole run with nothing written. A
+legacy record without a region is also refused before any stack is refreshed.
+Any cdkd write, such as a deploy, migrates it.
+
+Inspect the record, then repair or remove it:
+
+```bash
+cdkd state show MyStack --json
+cdkd state orphan MyStack   # removes the record, not the AWS resources
+```
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success, including a declined confirmation prompt and a no-op run. |
-| `1` | The command failed — missing record, ambiguous region, lock contention, a refused prompt in a non-interactive shell, or an AWS/S3 error. |
-| `2` | Partial completion. `state destroy`: per-resource delete failures, skips, or an interruption with targets left. `state refresh-observed`: per-resource readback failures, including a resource AWS reports as not found. |
-| `130` | Force-quit by Ctrl-C during a destroy: a second one, or one that arrived before the stack's own graceful stop was armed. A stack lock may be left behind; the message names `cdkd force-unlock`. |
+| `0` | Success, including a declined confirmation prompt and a run with nothing to do. |
+| `1` | Failure: a missing record, an ambiguous region, a held lock, a prompt in a non-interactive shell, or an AWS or S3 error. |
+| `2` | Partial completion. `state destroy`: per-resource delete failures, skips, or an interruption with targets left. `state refresh-observed`: per-resource read failures, including a resource AWS reports as not found. |
+| `130` | A destroy force-quit with {kbd:ctrl+c}: a second press, or one before the stack's graceful stop was armed. A stack lock may be left behind; the message names `cdkd force-unlock`. |
 
-Every mutating subcommand refuses its confirmation prompt with exit `1` in a
-non-interactive shell rather than hanging or assuming yes — pass `-y` / `--yes`
-(or `--force`, for `state orphan`) to run it unattended. The full cross-command
-table is in the [CLI Reference](cli-reference.md#exit-codes).
+In a non-interactive shell, a writing subcommand refuses its confirmation
+prompt with exit `1` instead of waiting. Pass `-y` / `--yes`, or `--force` for
+`state orphan`, to run it unattended.
 
 ## Related
 
-- [State Store](state-store.md) — the same subject, summarised for a first read
-- [State Management](state-management.md) — the record schema, the key layout, and the lock mechanism
-- [Orphan vs Destroy](orphan-vs-destroy.md) — which of the four cleanup commands to reach for
-- [Destroy flags & guards](cli-destroy.md) — the guards and prompts `cdkd state destroy` inherits
-- [`cdkd drift`](cli-drift.md) — the comparison `state refresh-observed` supplies the baseline for
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
-- [Troubleshooting](troubleshooting.md) — what to do when a state record and AWS disagree
+- [State Store](state-store.md): the same subject, summarised for a first read
+- [State Management](state-management.md): the record schema, the key layout and the lock
+- [Orphan vs Destroy](orphan-vs-destroy.md): which cleanup command to reach for
+- [Destroy flags & guards](cli-destroy.md): the guards and prompts `cdkd state destroy` shares
+- [`cdkd drift`](cli-drift.md): the comparison `state refresh-observed` supplies the baseline for
+- [CLI Reference](cli-reference.md): every command and the full exit-code table
+- [Troubleshooting](troubleshooting.md): what to do when a state record and AWS disagree
+- [cdkd state internals](cli-state-internals.md): rendering and refusal rules, for contributors

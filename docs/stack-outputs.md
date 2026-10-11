@@ -1,33 +1,37 @@
 ---
 title: Stack Outputs
-description: How cdkd resolves CDK CfnOutput values, prints them after deploy, and stores them in the S3 state file — and how that differs from CloudFormation.
+description: "How cdkd resolves CDK CfnOutput values, prints them after a deploy and stores them in the stack's state record, and where that differs from CloudFormation."
 ---
 
 # Stack Outputs
 
-CDK's `CfnOutput` constructs are resolved and stored in the state file:
+A CDK `CfnOutput` works with cdkd as it does with CloudFormation: the value
+is resolved during the deploy and printed at the end. The one difference is
+where the value lives afterwards. CloudFormation keeps outputs on the stack;
+cdkd keeps them in the stack's state record in S3.
 
-```typescript
-// In your CDK code
+## Declare, deploy, read
+
+Declare the output in your CDK code as usual:
+
+```ts
 new cdk.CfnOutput(this, 'BucketArn', {
-  value: bucket.bucketArn,  // Uses Fn::GetAtt internally
+  value: bucket.bucketArn,
   description: 'ARN of the bucket',
 });
 ```
 
-After deployment, outputs are resolved and printed at the end of `cdkd deploy` (matching CDK CLI's format) and saved to the S3 state file:
+`cdkd deploy` resolves the value and prints it after the deployment summary,
+in the format the CDK CLI uses:
 
 ```text
-Deployment Summary:
-  Stack: MyStack
-  ...
-  Duration: 21.25s
-
 Outputs:
   MyStack.BucketArn = arn:aws:s3:::actual-bucket-name-xyz
 
 ✓ Deployment completed successfully
 ```
+
+The value is also saved under `outputs` in the state record:
 
 ```json
 {
@@ -37,16 +41,36 @@ Outputs:
 }
 ```
 
-**Key differences from CloudFormation**:
+Read it back later without the CDK app:
 
-- CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
-- cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
-- Both print outputs to stdout after a successful deploy
-- Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
-- An output whose value comes from a `NoEcho` parameter: CloudFormation prints it in the clear, while cdkd stores and prints it as `***`, as it does a resolved `{{resolve:...}}` dynamic-reference secret and a `NoEcho` custom-resource attribute (see [`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)). A stack that reads such an output gets the value only within the same `cdkd deploy` run as its producer. An output is published data, so keep secrets out of outputs.
+```bash
+cdkd state show MyStack          # outputs and resources, human-readable
+cdkd state show MyStack --json   # the whole record, for a script
+```
+
+## Differences from CloudFormation
+
+| | CloudFormation | cdkd |
+| --- | --- | --- |
+| Where outputs are stored | On the stack | In the state record, `s3://<bucket>/cdkd/MyStack/us-east-1/state.json` |
+| How to read them | `aws cloudformation describe-stacks` | `cdkd state show MyStack` |
+| Printed after a deploy | Yes | Yes |
+| `Ref`, `Fn::GetAtt` and other intrinsics | Resolved to real values | Resolved to real values |
+| An output fed by a `NoEcho` parameter | Printed in the clear | Stored and printed as `***` |
+
+## Secrets in outputs are masked
+
+cdkd stores and prints `***` for an output whose value comes from a `NoEcho`
+parameter, from a resolved `{{resolve:...}}` secret reference, or from a
+`NoEcho` custom-resource attribute.
+
+A stack that reads such an output from another stack gets the real value only
+when both stacks are deployed in the same `cdkd deploy` run. An output is
+published data, so keep secrets out of outputs.
 
 ## Related
 
-- [Cross-Stack References](cross-stack-references.md) — consuming another stack's outputs
-- [State Management](state-management.md) — where outputs are stored
-- [CLI Reference](cli-reference.md) — `cdkd state show '<stack>' --json` reads them back
+- [Cross-Stack References](cross-stack-references.md): consuming another
+  stack's outputs
+- [State Management](state-management.md): the state record that holds them
+- [`cdkd state`](cli-state.md): `cdkd state show` and its flags

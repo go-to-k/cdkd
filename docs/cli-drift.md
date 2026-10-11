@@ -1,16 +1,14 @@
 ---
 title: cdkd drift
-description: "Detect and resolve drift between cdkd state and live AWS resources with cdkd drift."
+description: "Detect differences between cdkd state and live AWS resources, then accept or revert them."
 ---
 
 # cdkd drift
 
-`cdkd drift` compares each resource cdkd manages against its live AWS-side
-configuration and reports what diverged. Detection is the default; `--accept`
-and `--revert` also resolve what the comparator finds, in either direction.
-cdkd does not go through CloudFormation, so CloudFormation's own drift
-detection does not apply — the comparison is state against a fresh read from
-each resource's provider.
+`cdkd drift` reads each resource cdkd manages back from AWS and reports where
+it differs from what cdkd recorded at deploy time. Use it to find changes made
+outside cdkd, such as a console edit or a deleted resource. With `--accept` or
+`--revert` the same command resolves what it found.
 
 ```bash
 cdkd drift                              # the single stack in state
@@ -23,71 +21,586 @@ cdkd drift MyStack --revert --yes       # AWS <- state (undo a console edit)
 cdkd drift MyStack --revert --dry-run   # preview either resolution
 ```
 
+`cdkd drift` reads state only. It never synthesizes, so it takes no `--app`
+and does not need the CDK app's source.
+
+## What drift compares
+
+```text diagram=drift-compares
+ cdkd state (S3)                 Live AWS
+ the values AWS reported         a fresh read of each resource
+ at the last deploy
+            │                              │
+            └──────────────┬───────────────┘
+                           ▼
+                       cdkd drift
+            compares the keys state records
+                           │
+                           ▼
+  clean / drifted / deleted / not compared / drift unknown
+```
+
+cdkd does not deploy through CloudFormation, so CloudFormation's drift
+detection does not apply. The comparison is cdkd state against a fresh read
+from AWS. [`cdkd diff`](cli-diff.md) is the other comparison: the template
+against state.
+
+The state side is the **observed baseline**: the snapshot of the resource that
+cdkd read from AWS when it deployed it (`observedProperties` in state). With
+it, a console change to a property you never set in your CDK code still shows
+as drift.
+
+A resource with no observed baseline falls back to the properties from your
+template, which only catches changes to properties you did set. To record a
+baseline without redeploying, run
+[`cdkd state refresh-observed MyStack`](cli-state.md#cdkd-state-refresh-observed).
+
+Only keys present in state are compared. Fields AWS manages and cdkd never set
+(timestamps, generated identifiers, account-wide defaults) are ignored.
+
+## Reading the report
+
+A stack with no drift prints one line:
+
+```text
+✓ MyStack (us-east-1): no drift detected (12 resources checked, 0 unsupported)
+```
+
+A stack with drift prints a block. A `-` line is the value in cdkd state and a
+`+` line is the value AWS holds now:
+
+```text
+⚠ MyStack (us-east-1): drift detected on 2 resources
+
+  - LegacyTopic (AWS::SNS::Topic) — DELETED outside cdkd: AWS reports it does not exist.
+
+  ~ AssetsBucket (AWS::S3::Bucket)
+    - VersioningConfiguration.Status: Enabled
+    + VersioningConfiguration.Status: Suspended
+```
+
+Every resource ends in exactly one of five outcomes:
+
+| Outcome | Meaning | In the report |
+| --- | --- | --- |
+| **clean** | Every recorded property was compared and matched. | Counted in the summary line. |
+| **drifted** | At least one property differs. | `~ <logicalId> (<type>)` with a `-` / `+` pair per property. |
+| **deleted** | AWS reports the resource does not exist. | `- <logicalId> (<type>) — DELETED outside cdkd`. |
+| **not compared** | Nothing differed, but some or all properties were not compared. | Listed in a `NOT fully compared` or `only PARTIALLY compared` block, each with its reason. |
+| **drift unknown** | Nothing read back proves the resource's state, typically because no provider reads its type. | `? <logicalId> (<type>)` in a block at the bottom, counted as `unsupported`. |
+
+A deleted resource is drift and exits `1`. It is reported only when AWS itself
+answers that the resource is not there. An access-denied or throttled read is
+never reported as deleted.
+
+### The summary line when not everything was compared
+
+The `✓` is printed only when every resource cdkd attempted was fully compared.
+Otherwise the line starts with `⚠` and says how much was checked:
+
+```text
+⚠ MyStack (us-east-1): no drift detected, but 1 of 3 resources fully checked (2 only partially compared), 1 unsupported
+⚠ MyStack (us-east-1): no drift detected, but NOTHING was compared — 0 of 1 resource checked (1 unsupported, 0 skipped)
+```
+
+Unsupported and skipped resources are not part of the "checked" count. Custom
+resources (`Custom::*`) are always skipped. A stack where nothing could be
+compared still exits `0`; only the wording changes.
+
+## Exit codes
+
+| Code | Mode | Meaning |
+| --- | --- | --- |
+| `0` | detection | Nothing drifted, and nothing was left uncompared for a reason you can act on. |
+| `0` | `--accept` / `--revert` | The run completed. It does not assert that every comparison completed. |
+| `1` | any | Drift was detected (a deleted resource counts), or the command failed: no state found, an AWS error, bad arguments. |
+| `2` | detection | Nothing drifted, but at least one comparison did not happen for a reason you can act on. |
+| `2` | `--revert` | One or more resources were not reverted. |
+| `2` | `--accept` / `--revert` | The run refused at least one [deleted resource](#deleted-resources). |
+
+The cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+
+- Drift outranks a partial comparison: a run with both exits `1`.
+- Which causes produce exit `2` is the last column of the
+  [not-compared table](#why-a-resource-was-not-compared).
+- `drift unknown` and skipped resources never change the exit code.
+- An `--accept` or `--revert` run whose comparison was incomplete still exits
+  `0`. It prints `Comparison INCOMPLETE — nothing to accept/revert, and that is
+  NOT a clean bill of health` and names what was not compared.
+
+To gate CI on "everything was compared and nothing drifted", run `cdkd drift`
+without `--accept` / `--revert` and require exit `0`, or read `--json`:
+
+```bash
+cdkd drift --all --json | jq -e 'all(.[]; .drifted == [] and .deleted == [] and .notCompared == [])'
+```
+
+## Resolving drift: `--accept` and `--revert`
+
+```text diagram=drift-accept-revert
+              Drift reported on a property
+                           │
+          ┌────────────────┴────────────────┐
+          ▼                                 ▼
+   --accept                          --revert
+   state <- AWS                      AWS <- state
+   record the live value             push the recorded value back
+   AWS is not modified               through the resource's provider
+```
+
+Pick the direction that matches the intent. The two flags are mutually
+exclusive.
+
+| | `--accept` | `--revert` |
+| --- | --- | --- |
+| Use when | The AWS-side change is intended and cdkd should catch up. | The AWS-side change should be undone. |
+| Writes to | cdkd state only. | AWS, through each drifted resource's provider. |
+| After it | The next `cdkd drift` reports clean. | The next `cdkd drift` reports clean. |
+
+Both take the per-stack lock that `cdkd deploy` uses, print a plan, and ask
+for confirmation unless `--yes` is given. Both do nothing on a clean stack,
+and both skip resources reported as `drift unknown`.
+
+A worked example, for a stack whose only drift is the `AssetsBucket` change
+above:
+
+::: steps
+1. Preview the change
+
+   ```bash
+   cdkd drift MyStack --revert --dry-run
+   ```
+
+   ```text
+   Plan (--revert): push cdkd state values back into AWS for MyStack (us-east-1):
+     → provider.update on AssetsBucket (AWS::S3::Bucket): revert 1 property path
+       VersioningConfiguration.Status: Suspended → Enabled
+   --dry-run: AWS will NOT be modified. Re-run without --dry-run to apply.
+   ```
+
+   `--dry-run` takes no lock, writes nothing, and exits `0`.
+
+2. Apply it
+
+   ```bash
+   cdkd drift MyStack --revert --yes
+   ```
+
+   The run ends with:
+
+   ```text
+   Revert summary: 1 reverted.
+   ```
+
+3. Confirm the stack is clean
+
+   ```bash
+   cdkd drift MyStack
+   ```
+:::
+
+### `--accept` (state ← AWS)
+
+`--accept` writes the AWS-current value of every drifted property into cdkd
+state. AWS resources are not modified.
+
+```text
+Plan (--accept): update cdkd state for MyStack (us-east-1):
+  ~ AssetsBucket (AWS::S3::Bucket)
+    VersioningConfiguration.Status: Enabled → Suspended
+```
+
+The write goes to the observed baseline, so the properties from your last
+deployed template stay as they were. For a resource with no observed baseline
+the write goes to those properties instead.
+
+A concurrent `cdkd deploy` cannot race the write: the save is conditional on
+the state file being unchanged since it was read.
+
+`--accept` refuses some properties and says so by name in the plan:
+
+| Refused | Why |
+| --- | --- |
+| A secret-bearing property whose live value it cannot identify | It will not write `***`, or an unidentified value, into state. |
+| A position state holds as the mask `***` | Accepting would write live plaintext over a redaction. |
+| A resource whose baseline a `cdkd import` refused | See [Clearing a baseline refusal](#clearing-a-baseline-refusal). |
+| A deleted resource | See [Deleted resources](#deleted-resources). |
+
+### `--revert` (AWS ← state)
+
+`--revert` calls each drifted resource's provider update to set the drifted
+properties back to their recorded values. Properties that did not drift are
+sent with their current AWS values, so they are left alone. State is normally
+not modified.
+
+`--concurrency <n>` (default `4`) bounds the parallel updates. One resource's
+failure does not stop the rest. The run ends with a summary such as
+`Revert summary: 3 reverted, 1 update-not-supported, 1 failed.` and exits `2`
+when anything was not reverted.
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `✗` ... | The AWS update call failed. Counted as `failed`. | Read the AWS error, fix the cause, re-run `--revert`. |
+| `⊘ <stack>/<id> (<type>): could not revert — ...` | The type cannot be updated in place. Counted as `update-not-supported`. | Redeploy with `cdkd deploy --replace`, or destroy and redeploy. |
+| Counted as `reference-unresolvable` | A secret reference in the baseline could not be re-resolved, or a masked position could not be matched. No AWS call was made. | Grant `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference. |
+
+Types that report update-not-supported are those AWS treats as immutable
+(`AWS::Lambda::LayerVersion`, `AWS::Lambda::Permission`,
+`AWS::ApiGateway::Deployment`) and those cdkd has no in-place update for:
+`AWS::AppSync::*`, `AWS::EFS::*`, `AWS::KinesisFirehose::DeliveryStream`,
+`AWS::ApiGatewayV2::*`, `AWS::ApiGateway::Authorizer` / `Deployment` /
+`Method`, `AWS::Glue::Database`, `AWS::ServiceDiscovery::*` and
+`AWS::ElasticLoadBalancingV2::LoadBalancer`.
+
+### What `--revert` leaves alone
+
+The plan lists each of these before the confirmation prompt and under
+`--dry-run`.
+
+| Case | What the revert does |
+| --- | --- |
+| A tag added by a user or in the console | Removes it. |
+| A service-managed tag in a top-level `Tags` list (`AmazonECSManaged`, any `aws:` prefix) | Keeps it, and names the key in the plan. |
+| A resource with no observed baseline | Leaves values AWS wrote that the template never declared, and lists each path. |
+| A drifted IAM Role or ManagedPolicy name | Reverts the other properties and warns that the name was left. |
+| A drifted IAM `Path`, or a managed policy's `Description` | Fails that resource's revert. |
+| An ELBv2 attribute key only AWS returns | Leaves the live value, with a warning. |
+| A position state holds as the mask `***` | Keeps the live value, or refuses the whole resource when it cannot tell which value belongs there. |
+
+For a resource with no observed baseline the plan prints a
+`! this resource has no observed-capture baseline ... LEAVES N AWS-authored
+values untouched` line naming each path. Run
+`cdkd state refresh-observed MyStack` or redeploy first if you want those
+reverted too.
+
+A name that cannot be reverted keeps being reported until
+`cdkd drift --accept` records the live one. Only a deploy renames the
+resource.
+
+A provider may re-create a resource to revert it: an
+`AWS::EC2::SecurityGroupIngress` rule is revoked and re-authorized under a new
+`sgr-` id. State then records the new physical id and attributes.
+
+How the update is built, and when a revert writes a narrowed value back to
+state, is in
+[cdkd drift internals](cli-drift-internals.md#how-revert-builds-the-update).
+
+### Deleted resources
+
+Neither flag acts on a resource AWS reports deleted. `--revert` updates in
+place and cannot recreate one, and `--accept` does not erase a state record.
+Each such resource is refused by name, every other drifted resource is still
+resolved, and the run exits `2`. With `--dry-run`, or when you decline the
+prompt, it exits `0`.
+
+A plain `cdkd deploy` does not recreate the resource either. A deploy compares
+the template with cdkd state, and neither changed.
+
+::: steps
+1. Confirm the resource is gone
+
+   Check in the AWS console or with the AWS CLI.
+
+2. Remove it from the CDK app and deploy
+
+   ```bash
+   cdkd deploy MyStack
+   ```
+
+   Anything in the app that references the resource has to come out with it,
+   and this deploy deletes those resources too. If the resource is meant to
+   stay gone, stop here.
+
+3. Restore it in the CDK app and deploy again
+
+   ```bash
+   cdkd deploy MyStack
+   ```
+:::
+
+### A malformed state record
+
+Detection reports on a state record it cannot fully read: the unreadable rows
+are listed as not compared and the run exits `2`, or `1` when something else
+drifted. `--accept` and `--revert`
+refuse such a record before taking the lock, naming the stack, the region and
+the logical ids. Inspect it with:
+
+```bash
+cdkd state show MyStack --json
+```
+
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to check, as physical CloudFormation names. Each named stack's [nested stacks](#nested-stacks) are checked with it. With none given and `--all` unset, the single stack in state (with its nested stacks) is auto-selected. |
+| `[stacks...]` | — | Stack name(s) to check, as physical CloudFormation names. Each stack's [nested stacks](#nested-stacks) are checked with it. |
 | `--all` | off | Check every stack in the state bucket. |
-| `--json` | off | Emit the structured per-stack report on stdout, and nothing else. |
-| `--accept` | off | Write the AWS-current values into cdkd state (state ← AWS). Mutually exclusive with `--revert`. |
-| `--revert` | off | Push cdkd state values back into AWS (AWS ← state). Mutually exclusive with `--accept`. |
-| `--dry-run` | off | Print the planned mutations and exit, without taking a lock or calling AWS / S3. |
-| `--concurrency <n>` | `4` | Maximum concurrent `provider.update` calls during `--revert`. No effect on `--accept`, whose writes are serialized per stack. |
+| `--json` | off | Emit the structured per-stack report on stdout, and nothing else. See [JSON output](#json-output). |
+| `--accept` | off | Write the AWS-current values into cdkd state. Mutually exclusive with `--revert`. |
+| `--revert` | off | Push cdkd state values back into AWS. Mutually exclusive with `--accept`. |
+| `--dry-run` | off | With `--accept` or `--revert`: print the planned mutations and exit, without taking a lock or writing. |
+| `--concurrency <number>` | `4` | Maximum concurrent provider updates during `--revert`. No effect on `--accept`. |
 | `--stack-region <region>` | — | Region of the stack record to inspect. Required when one stack name has state in more than one region. |
-| `-y`, `--yes` | off | Skip the confirmation prompt before `--accept` writes state or `--revert` writes to AWS. |
+| `-y`, `--yes` | off | Skip the confirmation prompt of `--accept` and `--revert`. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state records. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `--verbose` | off | Verbose logging. |
 
-`--region` is deprecated — prefer `AWS_REGION` or your AWS profile — but it is
-still honored if passed, and it is not a no-op.
+With no stack named and `--all` unset, the single stack in state is selected,
+with its nested stacks.
 
-`cdkd drift` reads state only. It never synthesizes, so it takes no `--app`.
+`--region` is deprecated. Prefer `AWS_REGION` or your AWS profile. It is still
+honored if passed.
 
-## What drift compares
+## Why a resource was not compared
 
-The AWS side is whatever the resource's provider reads back now. The cdkd side
-is the **deploy-time AWS snapshot** in `ResourceState.observedProperties`
-(state schema `version: 3`+). A resource written before observed capture
-existed, or by a provider with no read-back, has no `observedProperties`; for
-those the comparator falls back to `properties`, the user-templated intent.
+The report names a reason for each resource it did not fully compare, and
+`--json` carries it as `notCompared[].cause`. "Partly" means every other
+property of the resource was compared.
 
-The difference matters: the observed baseline is what makes a console-side
-change to a key you never templated surface as drift, while the fallback only
-catches changes to keys you did template. Run
-[`cdkd state refresh-observed '<stack>'`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
-populate an observed baseline in place.
+| `cause` | What happened | Compared | Exit `2` |
+| --- | --- | --- | --- |
+| `refused` | cdkd could not attribute a secret reference in state to a region, and declined to resolve it. | Partly | Yes |
+| `unresolvedToken` | State holds `{{resolve:...}}` text that is not a reference cdkd resolves. | Partly | No |
+| `uncertifiedBaseline` | The baseline holds the mask `***` at [a position cdkd could not certify](#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify). | Partly | Yes |
+| `noEchoParameter` | State holds a `NoEcho` template parameter's value only as `***`. | Partly | No |
+| `readFailed` | The read or the comparison failed, usually a missing permission or a throttle. | Not at all | Yes |
+| `readAborted` | Five reads in a row failed in this stack, so cdkd stopped reading it that way. | Not at all | Yes |
+| `baselineRefused` | A `cdkd import` refused to capture this resource's baseline. | Not at all | Yes |
+| `unreadableRecord` | The state row is not readable as a resource, or its `properties` is not an object. | Not at all | Yes |
+| `unreadableMap` | The record's whole `resources` map is not an object. Reported as one entry named `(resources map)`. | Not at all | Yes |
 
-The comparator only looks at keys present in cdkd state. AWS-managed fields
-cdkd never set — timestamps, generated identifiers, account-wide defaults —
-are ignored, so they never surface as false-positive drift.
+The two causes that do not produce exit `2` are permanent: no re-run can
+compare the value, so failing CI on them would fail forever.
 
-### Empty undeclared keys are skipped
+| `cause` | To clear it |
+| --- | --- |
+| `refused` | Spell the reference as a full ARN, which names its region. |
+| `uncertifiedBaseline` | Run `cdkd deploy`; see the linked section. |
+| `readFailed` | Grant the missing permission, or re-run after a throttle. |
+| `readAborted` | Refresh the credentials or restore the role or permission, then re-run. |
+| `baselineRefused` | See [Clearing a baseline refusal](#clearing-a-baseline-refusal). |
+| `unreadableRecord`, `unreadableMap` | Repair or re-import the state record. |
 
-On the observed-baseline path, a top-level key the template never declared
-whose captured value was EMPTY (`[]`, `{}`, `null`) is skipped entirely. Such
-keys are typically filled in AFTER the capture by a sibling resource in the
-same stack — `AWS::ECS::ClusterCapacityProviderAssociations` populating the
-cluster's `CapacityProviders`, a standalone `AWS::AutoScaling::LifecycleHook`
-populating the ASG's hook list, standalone security-group ingress and egress
-rules — or by AWS itself. Comparing them reported permanent phantom drift on a
-freshly deployed stack, and `--revert` then stripped that sibling-managed
-configuration out of AWS.
+Notes on individual causes:
 
-CloudFormation's drift detection likewise compares only template-declared
-properties, so this matches its behaviour for that class. An undeclared key
-captured with a REAL value — an AWS-side default — is still compared.
+- **`readAborted`** counts Cloud Control reads and SDK-provider reads
+  separately, and a successful read resets the count. Five failures in a row
+  usually mean expired credentials or a missing permission such as
+  `cloudcontrol:GetResource`. Other stacks in the run are still read.
+- **`refused`** also applies to a nested stack when a parent's state record is
+  missing or unreadable, because a value the parent read from another region
+  reaches the child without its region.
+- A **drifted** resource can be partly compared too. Its changes are real, it
+  carries `referencesUnresolved: true`, and it is also listed under
+  `notCompared`.
+- A type Cloud Control has no read handler for is `drift unknown`, not a
+  failed read.
+
+The usual reasons a secret reference cannot be resolved are a role without
+`secretsmanager:GetSecretValue` / `ssm:GetParameter`, a deleted secret, and a
+cross-region reference.
+
+### Clearing a baseline refusal
+
+The report row, the `--accept` / `--revert` refusals and
+[`cdkd state show`](cli-state.md#cdkd-state-show) each name the remedy for the
+resource. It depends on why the import refused it:
+
+| Why the import refused it | What clears it |
+| --- | --- |
+| Its recorded properties could not position the secret redaction. | A deploy that changes the resource. A deploy that changes nothing does not. |
+| It reads a template parameter whose deployed value cdkd could not prove. | Replacing the resource, or re-importing it while a CloudFormation stack can prove the value. An in-place update keeps the refusal. |
+| Recorded by an older cdkd, with no reason. | Like the first row, unless the resource reads a template parameter; then like the second. |
+
+`--accept` and `--revert` both decline such a resource. It has no trustworthy
+baseline to accept into or revert to, and comparing it could print a decrypted
+secret. The full rules are in
+[the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
+
+A stack imported by a cdkd older than state schema v10 has no refusal marker,
+so it is still compared. `cdkd drift` warns, naming the stack and the
+resources without a baseline. Any later state write silences that warning
+without fixing the records; re-run `cdkd import` for the stack to fix them.
+
+## Nested stacks
+
+cdkd deploys a nested stack's resources itself, so no CloudFormation stack
+exists in AWS to read back. The resources are recorded as a stack of their
+own, `<parent>~<child>`, in the parent's region. `cdkd drift` checks that
+record whenever it checks the parent:
+
+```bash
+cdkd drift Parent                # Parent, then Parent~Child, then any stack below it
+cdkd drift 'Parent~Child'        # the nested stack and the stacks below it, not Parent
+```
+
+Each nested stack gets its own block in the report, and drift inside one makes
+the run exit `1`. A record is checked once however it is selected.
+`--accept` and `--revert` act on each nested stack's drifted resources under
+that record's own lock.
+
+| The parent's `AWS::CloudFormation::Stack` row | Reported as |
+| --- | --- |
+| Its nested stack's record exists | `skipped`. The nested stack's own block covers it. |
+| Its nested stack's record is gone | **deleted**, printed as `— RECORD MISSING` naming the record. |
+
+A parent whose only resources are nested stacks prints
+`✓ <parent> (<region>): no drift detected here — N nested stacks, each checked in its own block`.
+
+A missing record comes about in one of two ways:
+
+| How the record went missing | What to do |
+| --- | --- |
+| A `cdkd import --migrate-from-cloudformation` stopped part-way, after recording the parent | Re-run that import with `--force`. The resources are still live in the source CloudFormation stack. |
+| The record was removed after a deploy, by hand or by `cdkd state orphan` | Its resources are no longer tracked and may still exist in AWS. Check before recreating the nested stack. |
+
+`--accept` and `--revert` refuse a `RECORD MISSING` row by name, as they
+refuse any deleted resource.
+
+## Secret and redacted values
+
+cdkd state holds a secret dynamic reference as its unresolved expression:
+`{{resolve:secretsmanager:...}}`, `{{resolve:ssm-secure:...}}`, or
+`{{resolve:ssm:...}}` naming a `SecureString` parameter. To compare such a
+property, `cdkd drift` resolves the reference in memory. Detection writes
+nothing back.
+
+That needs read access to the referenced secrets:
+`secretsmanager:GetSecretValue`, or `ssm:GetParameter` with `kms:Decrypt` on
+the parameter's key. Without it, or when the secret was deleted, cdkd warns
+and continues. That resource's secret-bearing properties are listed as not
+compared, and every other resource is unaffected.
+
+| AWS holds at a secret-bearing property | Reported as |
+| --- | --- |
+| The value the reference resolves to | Clean. |
+| Anything else | Drifted, with the AWS side shown as `***`. |
+| Nothing for that property (a write-only credential such as `MasterUserPassword`) | Neither clean nor drifted. It cannot be checked. |
+| Nothing for a whole block (all environment variables removed) | Drifted. `--accept` refuses it; use `--revert`. |
+
+The commonest cause of the second row is a Secrets Manager rotation, where the
+deployed resource still carries the previous version. An out-of-band edit
+looks identical, so cdkd prints neither value.
+
+`--accept` refuses a drifted secret-bearing property, and the drift keeps
+being reported. `--revert` resolves the reference first, so the resource
+receives the secret value, not the `{{resolve:...}}` text.
+
+`cdkd drift` does not tell you whether state holds a secret in plaintext. Run
+`cdkd scrub --dry-run --fail` for that; see [`cdkd scrub`](cli-scrub.md).
+
+### Redacted (`NoEcho`) baselines
+
+Some positions in state hold the literal mask `***` and no reference to
+resolve:
+
+| Source of the mask | Effect on drift |
+| --- | --- |
+| A `NoEcho` custom-resource response value resolved into a property | Reported as drifted on every run. |
+| The `Fn::Base64` encoding of a secret, such as `UserData` around a `{{resolve:...}}` reference | Reported as drifted on every run. |
+| A `NoEcho` template parameter | Listed as `noEchoParameter` by path. No effect on the exit code. |
+
+For the first two, cdkd's side is the mask and AWS's side is the real value,
+so they never match. The report prints `***` on both sides and detection exits
+`1` every time. No deploy clears it. cdkd reports it because the live value is
+readable and cdkd cannot say whether it is the right one.
+
+- `--accept` refuses the position.
+- `--revert` keeps the value AWS has there. It refuses the whole resource
+  (exit `2`) when AWS reports nothing at the position, or when the mask is in
+  a list whose elements it cannot match to the recorded ones.
+
+If a stack in this state must gate CI on drift, either stop marking the custom
+resource's response `NoEcho`, or gate on `--json` and filter the known
+position out.
+
+When `--revert` refused because AWS reports nothing at the position, change a
+property of the custom resource (a nonce is the usual way) and redeploy, so
+its handler runs again and supplies the value.
+
+A property whose real value is the string `***` is treated the same way; see
+[State Management](state-management.md#noecho-custom-resource-responses).
+List matching and the remaining refusal cases are in
+[cdkd drift internals](cli-drift-internals.md#redacted-noecho-baselines).
+
+### Another cause of a masked baseline: a position cdkd could not certify
+
+When cdkd records an observed baseline, it replaces each decrypted secret AWS
+returned with the `{{resolve:...}}` reference from the template, matching by
+position. Where it cannot line the AWS response up with the reference, it
+writes `***` instead of risking a secret in state. This happens when AWS
+restructures or reorders the property, normalises a name (`db` returned as
+`DB`), or when a `cdkd import` recorded a raw `Fn::Join` object.
+
+A stack adopted with `cdkd import` can show this on its first `cdkd drift`.
+
+| At the masked position | Reported as | `--accept` | `--revert` |
+| --- | --- | --- | --- |
+| The mask is the only difference | Not compared, cause `uncertifiedBaseline`. Detection exits `2`. | Writes nothing there. | Sends AWS's own value back unchanged. |
+| Anything else differs (an edited neighbour, a resized or reordered list) | Drifted, with the AWS side masked. | Refuses it. | Often refuses the whole resource. |
+
+The rest of the resource is compared as usual. A secret changed exactly at a
+masked position cannot be seen.
+
+The fix is a `cdkd deploy`, even one that changes nothing. At the start of
+every deploy cdkd re-reads each such resource and replaces a mask with the
+reference when the value AWS holds is exactly what the reference resolves to.
+
+- A secret rotated since the resource was last deployed keeps its mask, until
+  a deploy that creates or updates that resource.
+- `cdkd state refresh-observed` does not clear a mask.
+- A resource whose only baseline is a raw `Fn::Join` / `Fn::Sub` object is
+  refused by `--revert` (exit `2`). The same `cdkd deploy` fixes it.
+
+The shapes that produce the mask and the refresh rules are in
+[cdkd drift internals](cli-drift-internals.md#a-masked-position-cdkd-could-not-certify).
+
+### Tokens that are not references
+
+A `{{resolve:...}}` string cdkd does not resolve is text that only looks like
+a reference, or a service AWS adds later. The property is reported as not
+compared with the cause `unresolvedToken`, and a warning names the token once
+per resource.
+
+When `--revert` runs because another property of the same resource drifted, it
+either leaves the live value at the token's position unchanged, or writes the
+token literally as `cdkd deploy` would. The warning printed before the
+confirmation prompt says which. The rules are in
+[cdkd drift internals](cli-drift-internals.md#tokens-that-are-not-references).
+
+A resource deployed by a cdkd release that predates `ssm-secure` resolution
+can hold the literal `{{resolve:ssm-secure:...}}` text in AWS. `cdkd drift`
+reports it for a property the provider reads back, and `--revert` writes the
+resolved value. A write-only property such as `MasterUserPassword` needs one
+deploy that updates it.
+
+## What is not reported as drift
+
+| Case | Why it is skipped |
+| --- | --- |
+| An undeclared key whose recorded value was empty (`[]`, `{}`, `null`) | A sibling resource or AWS fills it in after the deploy, such as a cluster's `CapacityProviders` or standalone security-group rules. |
+| `aws:`-prefixed tags (`aws:cdk:path`) | CDK and AWS add them; they are not your `Tags`. |
+| An undeclared ELBv2 attribute the baseline holds and AWS stopped returning | AWS changes the returned key set on its own. |
+| A stack-name-prefixed name on a stack deployed with `--prefix-user-supplied-names` | `my-role` in state and `MyStack-my-role` in AWS are the same name. |
+
+An undeclared key recorded with a real value, such as an AWS-side default, is
+still compared. User tags are compared for every type drift can read, in a
+stable order. IAM Role, User and Group inline policies are compared too.
+
+The prefixed-name rule covers an IAM Role, User, Group, InstanceProfile or
+ManagedPolicy and an ELBv2 LoadBalancer or TargetGroup. A live name cdkd would
+not derive from the template's is still reported.
 
 ### ELBv2 attributes AWS stops or starts reporting
 
 `LoadBalancerAttributes`, `TargetGroupAttributes` and `ListenerAttributes` are
-captured in full, including keys the template never declared. The key set AWS
-returns can change on its own: it sometimes stops or starts returning
-`ddos_protection.syn_cookie.mode` on an ALB, and a newly released attribute
-appears on existing resources. No ELBv2 attribute call removes a key.
+recorded in full, including keys the template never declared. AWS sometimes
+stops or starts returning a key, such as `ddos_protection.syn_cookie.mode` on
+an ALB.
 
 | Case | `cdkd drift` | `--revert` |
 | --- | --- | --- |
@@ -97,678 +610,19 @@ appears on existing resources. No ELBv2 attribute call removes a key.
 | A changed value on a key both sides hold | Reported | Writes the recorded value back |
 
 A key only AWS returns is reported because cdkd cannot tell a key AWS started
-returning from a value someone set on it. The revert cannot remove the key and
-has no recorded value to restore, so it sends nothing for it. Every other
-drifted attribute is still reverted. If the live value is expected, run
-`cdkd drift --accept` to record it; otherwise declare the value in the template
-and deploy.
-
-### Tags
-
-Tag drift is compared for every SDK provider with a read-back and on the Cloud
-Control fallback. cdkd filters `aws:`-prefixed entries (notably `aws:cdk:path`
-and `aws:cdk:metadata`) out of the AWS-current snapshot before comparing:
-those are injected by CDK as construct metadata rather than as user-managed
-`Tags`, so leaving them in would fire drift on every CDK-deployed resource.
-The remaining user tags are normalized to CloudFormation's `[{Key, Value}]`
-shape and sorted by `Key` for a stable comparison, and the key is omitted
-entirely when AWS reports no user tags.
-
-IAM Role, User and Group inline-policy bodies are compared too, via paginated
-policy listing plus per-policy reads, reconciled against the order state
-records.
-
-## Per-resource outcomes
-
-Every resource ends in exactly one of five states.
-
-| Outcome | Meaning | In the report |
-| --- | --- | --- |
-| **drifted** | At least one property differs between state and AWS. | `~ <logicalId> (<type>)`, with one `+/-` line per diverging property path. |
-| **deleted** | AWS reports the resource does not exist: it was deleted outside cdkd. For a [nested stack's row](#nested-stacks), its own state record is gone. | `- <logicalId> (<type>) — DELETED outside cdkd` (a nested row: `— RECORD MISSING`), in the drift block, counted in `drift detected on N resources`. |
-| **clean** | Every state-recorded property was compared against AWS and matched. | Counted in the per-stack summary, not listed individually. |
-| **not compared** | Nothing differed, but cdkd did not compare every property. | Listed in the partially-compared block, with its own reason. |
-| **drift unknown** | Nothing read back proves the resource's state: typically no provider reads its type back, or the read could not tell whether it still exists. | `? <logicalId> (<type>)`, in a separate block at the bottom of the stack's report. |
-
-A **clean** verdict never means anything except compared-and-matched.
-
-A **deleted** resource is drift and exits `1`. Except for a
-[nested stack's row](#nested-stacks), it is reported only on AWS's own answer
-that the resource is not there (a not-found error, or a status such as an ECS
-cluster's `INACTIVE` that the service keeps listing for a while after a
-delete). An access-denied or throttled read is never reported as deleted, and
-neither is a read that cannot tell. A deleted resource of a type cdkd has no
-reader for still reads as **drift unknown**. See [JSON output](#json-output)
-for the `--json` shape change.
-
-### Nested stacks
-
-cdkd deploys a nested stack's resources itself, so no CloudFormation stack
-exists in AWS to read back. Its resources are recorded as a stack of their own,
-`<parent>~<child>`, in the parent's region, and `cdkd drift` checks that record
-whenever it checks the parent, as `cdkd diff` and `cdkd destroy` act on a
-parent's nested stacks:
-
-```bash
-cdkd drift Parent                # Parent, then Parent~Child, then any stack below it
-cdkd drift 'Parent~Child'        # the nested stack and the stacks below it, not Parent
-```
-
-Each nested stack gets its own block in the report, so a resource deleted or
-changed inside one makes the run exit `1`. A record is checked once however it
-is selected — by `--all`, or by naming both a parent and its nested stack.
-
-| The parent's `AWS::CloudFormation::Stack` row | Reported as |
-| --- | --- |
-| Its nested stack's record exists | `skipped` — the nested stack's own block covers it. |
-| Its nested stack's record is gone | **deleted**, printed as `— RECORD MISSING` naming the record. |
-
-A parent whose only resources are nested stacks prints
-`✓ <parent> (<region>): no drift detected here — N nested stacks, each checked in its own block`
-rather than claiming nothing was compared.
-
-A missing record comes about in one of two ways, and the remedy differs:
-
-| How the record went missing | What to do |
-| --- | --- |
-| A `cdkd import --migrate-from-cloudformation` stopped part-way: it records the parent before its nested stacks | Re-run that import with `--force` (the parent record already exists); the resources are still live in the source CloudFormation stack. |
-| The record was removed after a deploy: by hand, or by `cdkd state orphan` (which a failed nested destroy suggests) | Its resources are no longer tracked by cdkd and may still exist in AWS; check before recreating the nested stack. |
-
-`--accept` and `--revert` refuse that row by name, as they refuse any deleted
-resource, and act on every nested stack's drifted resources as on a stack named
-directly, each under that record's lock.
-
-### Why a resource was not compared
-
-`--json` reports the reason per resource as `notCompared[].cause`:
-
-| `cause` | What happened | Clearable? |
-| --- | --- | --- |
-| `refused` | cdkd declined to resolve a dynamic reference the resource's state records, because it could not attribute the reference to a region. Its secret-bearing properties were never looked at. | Yes — spell the reference as a full ARN, which names its region. |
-| `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
-| `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported, unless the reads keep failing (`readAborted`). | Yes — usually a missing permission or a throttle; grant it or re-run. |
-| `readAborted` | cdkd never read the resource: 5 reads in a row earlier in the same stack failed, through the same read path. Every Cloud Control read is one path — a resource cdkd manages through Cloud Control, and the Cloud Control fallback for a type whose provider cannot read it — and a read through one of cdkd's own SDK providers is the other. Five failures in a row is what expired credentials, a revoked role or a permission all of those reads need (such as `cloudcontrol:GetResource`) looks like, though a burst of throttling can trip it too. cdkd stops reading that stack that way instead of paying the same failure for every remaining resource; resources read the other way are still read. A read that succeeds resets the count, so one unreadable resource among readable ones never causes this, and resources cdkd never sends to AWS (skipped types, a type denied the Cloud Control fallback, a refused baseline) neither count nor reset. Other stacks in the run are still read. | Yes — fix the condition (refresh the credentials, restore the role or permission), or simply re-run if it was throttling. |
-| `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource; for a [template-parameter refusal](#clearing-a-baseline-refusal), replace it, or re-import it while a CloudFormation stack can prove the parameter. |
-| `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
-| `noEchoParameter` | The resource's state holds a `NoEcho: true` template parameter's value only as the redaction mask `***`, at the positions the record names, and the mask is the only difference at those positions. The report names the positions, never a value. Every other property was compared. | No — the value is masked by design, which is why, like `unresolvedToken`, it does not affect the exit code. `cdkd deploy` compares the value with AWS instead. |
-| `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object. cdkd drops the row so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. | Yes — repair or re-import the record. |
-| `unreadableMap` | The record's whole `resources` map is not a JSON object, so no resource in it was read. cdkd reads the map as empty and reports one entry whose `logicalId` is `(resources map)`. Key on this cause, not on that name: a hand-edited record can hold an entry keyed `(resources map)`, which is reported as `unreadableRecord`. | Yes — repair or re-import the record. |
-
-The `baselineRefused` cause is recorded on the state record, which means it only
-covers a refusal made by a cdkd that knew how to record one (state schema v10 and
-later). A stack imported by an older release carries the same untrustworthy
-properties with nothing marking them, and `cdkd drift` still compares it.
-
-cdkd cannot tell those apart from the record, so it **says so** instead: when a
-stack's state predates v10 and any of the resources it compared has no drift
-baseline, `cdkd drift` names the stack, the region, and those resources. It is a
-warning rather than a refusal because the same condition also describes stacks
-that were never imported at all.
-
-**The warning going away does not mean the records were fixed.** cdkd stamps the
-current schema version on every state write, so *any* write — `--accept` or
-`--revert` in the same run, or a deploy that changes nothing about those
-resources — silences the warning while leaving the untrustworthy properties in
-place. On the deploy path it is worse: the baseline refresh then refills those
-resources *from* those same properties. The warning says this itself, and the
-reliable remedy is to **re-run `cdkd import`** for the stack — or to deploy a
-change that actually touches a listed resource, which rebuilds its record from
-your template. The deploy does not help a resource that reads a template
-parameter: it binds the same parameter `Default` the import did.
-
-A **drifted** resource can be partially compared too: the changes it reports
-are real, but they are not the whole comparison, so it carries
-`referencesUnresolved: true` alongside them and is rolled up under
-`notCompared` as well.
-
-Everything not fully compared is listed under the human report's
-`N resource(s) only PARTIALLY compared` block — headed
-`N resource(s) NOT fully compared — K not compared AT ALL (<causes>)` when a
-resource none of whose properties were compared is present — `readFailed`,
-`readAborted`, `baselineRefused`, `unreadableRecord` or `unreadableMap` — with each cause present named in the
-parentheses, since calling such a resource "partially compared" understates
-it. Each entry names its own
-reason, and the per-resource detail also goes to the log, which a caller
-piping stdout does not see.
-
-The usual causes are a least-privilege role without
-`secretsmanager:GetSecretValue` / `ssm:GetParameter`, a deleted or
-rotated-away secret, and a cross-region reference cdkd refuses to resolve in
-the consumer's region because that would compare against — and under
-`--revert`, write — a different region's same-named secret.
-
-A nested stack (`<parent>~<child>`) is judged with the cross-region reads of
-every stack above it as well as its own, because a value its parent read from
-another region reaches it as a Parameter and is recorded without a region.
-cdkd reads those parent records from state. When they cannot be established
-(a parent record is missing or unreadable, or a record's parent link disagrees
-with its key), every secret reference that names no region is refused rather
-than resolved in the stack's own region: make the parent state readable or
-repair the record, or spell the reference as a full ARN.
-
-### Clearing a baseline refusal
-
-What clears a `baselineRefused` resource depends on why the import refused it,
-and the report row, the `--accept` / `--revert` refusals and
-[`cdkd state show`](cli-state.md#cdkd-state-show) each name the remedy for that
-resource:
-
-| Why the import refused it | What clears it |
-| --- | --- |
-| Its recorded properties could not position the secret redaction. | A deploy that actually changes the resource. A deploy that changes nothing does not. |
-| It reads a template parameter whose deployed value cdkd could not prove. | Replacing the resource, or re-importing it while a CloudFormation stack can prove the value. A deploy that updates it in place keeps the refusal. |
-| Recorded by an older cdkd, with no reason. | Like the first row, unless the resource reads a template parameter; then like the second. |
-
-`cdkd drift` holds no template, so for the last row it cannot tell you which of
-the two applies. The full rules are in
-[the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
-
-### What "drift unknown" excludes from the count
-
-A resource nothing was read for is **excluded from the summary's "checked"
-count** and reported separately as `N unsupported`. A stack whose only
-resource is unsupported prints:
-
-```text
-⚠ ... no drift detected, but NOTHING was compared — 0 of 1 resource checked (1 unsupported)
-```
-
-The glyph follows the question "was everything actually compared", so a stack
-in which nothing was compared does not get a reassuring `✓`. The **exit code
-is still `0`** — only the claim about coverage changes. The same applies to a
-stack whose resources are all Custom Resources, which are reported as
-`skipped`. A parent whose only rows are nested stacks is the exception: each is
-checked in its own block, so it gets a `✓` (see [Nested stacks](#nested-stacks)).
-
-Both the `N checked` and the `N of M fully checked` spellings count only
-resources a comparison was attempted for. In the `N of M` spelling the
-unsupported total sits OUTSIDE the parenthetical — `1 of 3 resources fully
-checked (2 only partially compared), 1 unsupported` — so the bracketed figure
-accounts for exactly the gap between the two numbers rather than reading as a
-third share of `M`.
-
-### What the human report does to a malformed value
-
-The report prints values it reads out of the state record, out of the S3 key
-the record was listed under and out of the AWS readback: the stack name and
-region in every heading (from the key — from the record body only for a legacy
-region-less record's region), each row's logical id and resource type and the
-state side of each change (from the record, which a hand edit can fill with
-anything `JSON.parse` accepts), each changed property's path, and the AWS side
-of each change (whatever the service returns). The report treats all of them
-as untrusted text, the way the [`cdkd state` human
-views](cli-state.md#what-the-human-views-do-to-a-malformed-record) do:
-
-- **No field passes terminal control to the terminal.** That covers a
-  newline, a C0 control, an escape sequence, LINE SEPARATOR and the bidi
-  overrides. The output is line-oriented, and this report is exactly the text a
-  reader trusts to say whether a stack matches AWS, so a newline in a logical id
-  would invent a `✓ ... no drift detected` row and an override could reorder a
-  changed-property line. In an IDENTIFIER (a stack name, region, logical id,
-  resource type or property path) a control character is replaced by a space,
-  and so is the ESC of a sequence cdkd does not parse (`ESC 7`, an OSC with no
-  terminator), leaving the rest as text; a CSI sequence (a cursor move, a
-  screen clear) and a terminated OSC (a terminal link) are removed whole, with
-  the characters around them kept. One allowance: an identifier spelling one of
-  the styling codes cdkd's own output uses (`ESC[31m` and its sibling colours,
-  bold, dim and reset) keeps it, the same allowance every logger line has, and
-  any other colour code becomes a reset. Such an identifier can set a colour
-  or a style — for the rows after it too, if it never resets it — but cannot
-  move the cursor, clear the screen or plant a link. A property VALUE is
-  handled by the next rule instead.
-- **A property value that carries a control character, has whitespace at
-  either end, or starts with `"` is shown as its JSON string.** A control
-  character here is any of C0 (newline, tab and ESC among them), DEL, C1,
-  LINE SEPARATOR, PARAGRAPH SEPARATOR and the bidi overrides, so a value
-  carrying even one of cdkd's own colour codes is quoted. So is a value
-  carrying an unpaired surrogate, which the output's UTF-8 encoding would
-  otherwise turn into the replacement character `�`. It prints as
-  `"abc\n"`, `"a\tb"`, `" value "`, `"x\u001b[2Jy"`: JSON escapes the C0
-  range, and the characters it leaves literal are written as `\uXXXX` escapes
-  too, so none of them is left between the quotes and a colour code prints as
-  escape text rather than as colour. Two strings that differ in one of those
-  characters, or in whether they have whitespace at an edge, therefore print
-  differently: a drift that differs only by a trailing newline, a tab or
-  padding still shows two visibly different sides. That is the whole
-  guarantee — a string that differs only by another invisible character (a
-  zero-width space), by one kind of space for another (a no-break space for a
-  space) or by a look-alike letter, and a string and a number or an object
-  spelling the same text, can still print alike, as before. Any other string
-  prints unquoted, exactly as it always did. A structured value (an object or
-  a list) is JSON-encoded as before and escaped the same way, so a newline, an
-  escape byte or a LINE SEPARATOR nested inside it arrives as `\n` /
-  `\u001b` / `\u2028` escape text.
-- **An identifier is cut with a `...` mark past 255 characters** (the stack
-  name past the longer bound a nested `Parent~Child` name legitimately needs),
-  which bounds how much of the screen a planted multi-kilobyte name can take —
-  a bound, not a guarantee that the rows after it stay in view, since a name
-  can still wrap within it. A property value is never cut, and neither an
-  identifier nor a value is trimmed.
-
-The plans `--accept` and `--revert` print before they ask for confirmation
-(and under `--dry-run`) follow the same three rules for the same fields: each
-heading's stack name and region, each resource's logical id and type, each
-change's path and both of its values, and the readback tag keys and paths the
-revert plan lists as preserved or left untouched. A readback key is masked for
-secrets first and only then cut and sanitized, so the cut can never leave part
-of a secret unmasked. A plan line prints `<path>: <from> → <to>`, so a string
-value that carries ASCII `->` or an arrow character (`→`, `⟶`, `➔`, `⮕` and
-the rest of the Arrows, dingbat-arrow, Supplemental Arrows-A/B/C,
-Miscellaneous Symbols and Arrows, and halfwidth-arrow ranges) is quoted there
-too: no unquoted value carries an arrow, so the only one outside quotes after
-the path is the separator. (The path itself is not quoted, as in the report.)
-The separator is `→` rather than ASCII `->` because a pasted `->` is a shell
-redirect onto the value after it. A value's own shell characters, including
-other redirect spellings such as a bare `>`, are printed as they are, as in
-the report.
-
-`--json` is not sanitised — a consumer of that mode wants the stored value. It
-is escaped instead: every control, format, line-separator and
-paragraph-separator character is written as a `\uXXXX` escape, so the payload
-parses back to exactly the stored values and printing it cannot run a control
-sequence.
-
-## Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| `0` (detection) | Nothing drifted, and every resource under `notCompared`, if any, is there for an `unresolvedToken` or a `noEchoParameter`. |
-| `0` (`--accept` / `--revert`) | The remediation run completed. This does NOT assert every comparison completed. |
-| `1` | Drift was detected on at least one resource (a **deleted** resource counts), OR the command failed (no state found, an AWS error, bad arguments). |
-| `2` (detection) | Nothing drifted, but at least one comparison did not happen for a reason you can act on. |
-| `2` (`--revert`) | The revert finished with one or more resources not reverted. |
-| `2` (`--accept` / `--revert`) | The run refused at least one **deleted** resource; see [Deleted resources](#deleted-resources). |
-
-The full cross-command table is in the
-[CLI Reference](cli-reference.md#exit-codes).
-
-**Drift outranks a partial comparison.** A run that both detects drift and
-leaves something uncompared exits `1`, not `2`. Both the drift case and the
-crash case go through the same error handler; drift detection emits the full
-human report before throwing, so that report is the only output for it.
-
-**Exit `2` on detection is narrower than `notCompared`, deliberately.** Seven of
-the causes in the [table above](#why-a-resource-was-not-compared) produce it: a
-resource cdkd `refused` to compare, one whose read or comparison `readFailed`,
-one cdkd stopped reading after repeated read failures (`readAborted`),
-one whose baseline an import refused (`baselineRefused`), one whose baseline
-holds a mask cdkd could not certify (`uncertifiedBaseline`), a state row that
-is not readable as a resource or whose `properties` map is not an object
-(`unreadableRecord`), and a `resources` map that is not an object
-(`unreadableMap`). The other two do not: a
-resource whose only uncompared properties hold an
-`unresolvedToken` is listed under `notCompared` and in the report's
-not-fully-compared block, but does not produce this exit code — cdkd resolves
-that spelling for nobody, the condition is permanent, and exiting non-zero for
-it would fail such a stack's CI forever over something unrelated. The same
-holds for `noEchoParameter`: state never holds a `NoEcho` parameter's value, so
-no re-run can compare it. A type
-Cloud Control has no READ handler for is excluded on the same grounds and
-reports `drift unknown` instead, whether the fallback signals that by
-returning nothing or by throwing `UnsupportedActionException`.
-
-**A remediation run keeps exit `0` even when the comparison was incomplete.**
-`--accept` and `--revert` keep their own exit codes, so a run whose reads were
-refused or failed still exits `0`. It says so in words instead: such a run
-prints `Comparison INCOMPLETE — nothing to accept/revert, and that is NOT a
-clean bill of health`, names how many of the stack's resources were not
-compared and why, splits them into the ones cdkd is genuinely uncertain about
-(a failed read, a refused or unresolvable dynamic reference) and the ones it
-never drift-checks by design (`Custom::*`, and types no provider reads back
-yet, reported without any uncertainty claim), and points at the detection-only
-run, which DOES report exit `2`. Nothing is written on the strength of a
-comparison that did not happen: `--accept` and `--revert` act on drifted
-resources only. `--accept` likewise exits `0` when it deliberately refused a
-secret-bearing property whose AWS-current value it could not identify — the
-refusal is warned about by name, and the drift is still reported next run.
-
-**To gate CI on "everything was actually compared"**, run `cdkd drift`
-WITHOUT `--accept` / `--revert` and read its exit code, or read `--json`'s
-`notCompared[].cause`.
-
-**Exit `2` on `--revert`** (`PartialFailureError`) covers four shapes: a
-resource refused because it was deleted outside cdkd (see
-[Deleted resources](#deleted-resources)), a
-`provider.update` call that failed, one that threw
-`ResourceUpdateNotSupportedError`, and — counted and reported separately,
-since it never reached `provider.update` at all — a resource whose recorded
-dynamic reference(s) cdkd could not re-resolve. Grant the caller
-`secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference.
-That last counter also covers a resource `--revert` refused because its
-recorded baseline holds only the redaction mask and AWS reports nothing to
-preserve there, and one refused because its baseline holds a raw
-CloudFormation intrinsic **object** (`Fn::Join` / `Ref`) cdkd cannot resolve
-outside a deploy — for both, no AWS call is made and the message names the
-remedy.
-
-A resource whose baseline a
-[`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused is
-**not** in that tally: detection declines to compare it at all, so it never
-becomes drifted and `--revert` never considers it. It is reported under
-`notCompared` with the cause `baselineRefused`, which a detection-only run
-exits `2` for.
-
-**The import refusal is the one that also stops `--accept`**, and it is
-per-resource rather than per-property. Such a resource has no baseline, so
-`--accept` would write the AWS readback into its recorded *properties*,
-positioned against properties the import already found untrustworthy — which
-can persist a resolved secret in plaintext. `--revert` has the mirror problem:
-it would push those properties to AWS, overwriting whatever the resource really
-holds. Both decline, name the resource, and point at the remedy
-[below](#clearing-a-baseline-refusal). Such a resource is **not reported as drifted either**: detection declines to
-compare it at all and reports it under `notCompared` with the cause
-`baselineRefused`. Comparing it would have meant rendering the live AWS value —
-including a decrypted secret — as one side of a drift row that nothing could
-mask, because a refused record spells no `{{resolve:...}}` for the redaction to
-key on. Successful resources are in sync; re-run `cdkd drift '<stacks...>'`
-to see what is left, then either `cdkd drift '<stacks...>' --revert` for the
-recoverable failures or `cdkd deploy '<stack>' --replace` for the
-update-not-supported ones. (That is the partial-failure message's own spelling:
-a QUOTED placeholder, because the `[stacks...]` that `cdkd drift --help` prints
-is a bracket expression when pasted — it matches one character from
-`s t a c k .`, so in a directory holding a file named `s` the line expands and
-retargets, which on the `--revert` half writes to AWS. The arity is the same
-optional variadic either way.)
-
-## Secret and redacted values
-
-**Secret dynamic references** — `{{resolve:secretsmanager:...}}`,
-`{{resolve:ssm-secure:...}}`, and `{{resolve:ssm:...}}` naming a
-`SecureString` parameter — are compared like-for-like. cdkd state is written to
-hold the unresolved expression rather than the plaintext, so `cdkd drift`
-re-resolves the baseline in memory before comparing it against the AWS-current
-snapshot. In its DETECTION modes the resolved value stays in memory for the
-comparison and nothing is written back. `--accept` is the exception: it writes
-the AWS-current values into state, and what it writes goes through the same
-redaction — which substitutes only where it can certify the position. What
-happens at a position it cannot certify depends on where the write lands: into
-`observedProperties` (a record that has one) the position is written as `***`,
-the same fail-closed rule the baseline refreshes below apply; into
-`properties` (a record with no observed baseline) the value is persisted as it
-came back from AWS, because a mask there would block `cdkd export` and the
-rollback replay over a template value that was never unknown.
-
-The stored side is a redaction pass rather than a guarantee — it substitutes
-only where it can match the value against the template position it came from,
-and a stored record can still hold a plaintext a deploy could not certify. If
-you need to know whether a given stack's state holds one, `cdkd scrub --dry-run
---fail` is the check; `cdkd drift` does not answer that question. That check
-covers only values the template names through a `{{resolve:...}}` reference: a value set out of band and
-never referenced is recorded in the baseline as AWS returned it
-([why](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it)).
-
-This means `cdkd drift` needs **read access to the referenced secrets**:
-`secretsmanager:GetSecretValue` for a `secretsmanager` reference, and
-`ssm:GetParameter` (with `kms:Decrypt` on the parameter's key) for an `ssm`
-one. If the caller lacks the permission, or the secret has been deleted, cdkd
-**warns and continues** — that one resource's secret-bearing properties are
-reported as neither clean nor drifted, and every other resource and stack in
-the run is unaffected.
-
-What the report may show at a secret-bearing property is deliberately narrow:
-
-- When AWS holds the value the reference resolves to, both sides render as the
-  `{{resolve:...}}` expression, so the property is clean and nothing is
-  printed.
-- When AWS holds anything else, the property is reported as drifted with the
-  AWS side shown as `***`. The commonest cause is a **Secrets Manager
-  rotation**, where the deployed resource still carries the previous version,
-  but an out-of-band console edit looks identical from here — cdkd cannot tell
-  a stale secret from a non-secret edit, so it prints neither.
-- When AWS returns **nothing** for that exact property, it is reported as
-  neither clean nor drifted. A write-only credential (`MasterUserPassword` and
-  friends) is not returned by any read-back, so an absence there means "cannot
-  be checked", not "was removed"; reporting it would make `cdkd drift` exit `1`
-  forever on every stack with a templated credential. This applies to the
-  property itself only. A whole block disappearing — the console's "remove all
-  environment variables" — IS reported, and `--accept` refuses it, because
-  accepting an absence deletes the key and would take the `{{resolve:...}}`
-  reference with it. Use `--revert` for that shape.
-- `--accept` **refuses** such a property and says so: it will not write `***`
-  into state, and it will not write a value it could not identify. The drift
-  keeps being reported. Properties that are not secret-bearing are accepted
-  normally in the same run, and `--accept --dry-run` prints the same refusal
-  the real run will make.
-- `--revert` re-resolves before calling the provider, so the live resource
-  receives the concrete secret rather than the literal `{{resolve:...}}` token.
-
-### Redacted (`NoEcho`) baselines
-
-Where a `NoEcho` custom-resource `Data` value was resolved into a property,
-cdkd state holds the literal mask `***` rather than an expression — the value
-was generated by the handler, so there is nothing to re-resolve. The three
-arms above therefore answer differently, and none of them needs a
-`{{resolve:...}}` reference to fire:
-
-- the report shows the position but MASKS the AWS-current side, so the live
-  value is not printed;
-- `--accept` refuses the property, because accepting would write the live
-  plaintext over a deliberate redaction;
-- `--revert` leaves that position exactly as AWS has it rather than pushing
-  the mask — *when it can tell which live value belongs there.* It refuses the
-  whole resource (counted with the other unresolvable ones, exit `2`) whenever
-  it cannot, because sending `***` would corrupt the live value and dropping
-  the key would delete a property the resource may require. Three cases
-  refuse: AWS reports nothing at that position; AWS reports a LIST whose
-  elements cannot be matched to the recorded ones; and — a defensive arm no
-  known readback shape reaches today — the mask sits inside a container cdkd
-  will not rebuild (a non-plain object such as a `Date` or binary value). A list is matched by an identity
-  field (`Name` or `Key`) when both sides carry one, and otherwise by the
-  array's own surviving literal values; a list AWS returns in another order
-  with no identity field, or one carrying two masked entries, cannot be
-  matched, and guessing would write one entry's secret onto another. Values
-  the revert itself substituted — a preserved `{{resolve:...}}` token cdkd
-  resolves for nobody — vouch for nothing, so a list whose only other values
-  are such tokens refuses too.
-
-A position a `NoEcho` template PARAMETER fills is different: the record names
-it (state schema `version: 11`), so the report lists it under
-`notCompared: noEchoParameter` by path only, it does not affect the exit code,
-and `--accept` / `--revert` leave it alone as above. The baseline either one
-rebuilds holds `***` at every such position, whatever it accepted or
-re-recorded around it, so neither writes the live value there. `--revert` keeps AWS's value
-there and never sends `***`. What follows applies to a custom-resource value.
-
-**Such a position drifts on every run, and that is expected.** cdkd's side is
-the mask and AWS's side is the real value, so the two never converge: the
-resource is reported as drifted, the report renders `***` on both sides, and
-detection-only mode exits `1` indefinitely. cdkd does NOT drop the comparison
-the way it drops an absent write-only credential — there the read is
-impossible and the comparison meaningless, whereas here the live value is
-genuinely readable and cdkd simply cannot say what belongs there. Silently
-hiding it would claim a clean bill of health it has no basis for.
-
-No deploy clears it: a fresh `NoEcho` value is masked again on its way into
-state. Where `--revert` refused because AWS reports nothing at the position,
-force the custom resource to update — change one of its properties, a nonce
-being the usual way — and re-deploy, so its handler runs again and supplies
-the value, which gives the next `--revert` a live value to keep. An ordinary
-re-deploy leaves the resource unchanged, so the handler does not run. If a
-stack in this state must gate CI on drift, either stop marking that response
-`NoEcho`, so the value round-trips normally, or gate on `--json` and filter
-the known position out.
-
-The same mask stands for the **`Fn::Base64` encoding of a secret value**, such
-as a `UserData` script built around a `{{resolve:...}}` reference: the
-encoding decodes straight back to the secret, so cdkd never records it. The
-three arms answer as they do for a `NoEcho` value, except the remedy: there is
-no custom resource to update, and a `cdkd deploy` that changes the resource
-sends it the encoded value again. Neither kind of mask is ever replaced in the
-baseline, so `--accept` keeps refusing such a position.
-
-A property whose real value happens to BE the string `***` is treated the same
-way, since nothing in state distinguishes the two — see
-[State Management](state-management.md#noecho-custom-resource-responses).
-
-#### Another cause of a masked baseline: a position cdkd could not certify
-
-The mask also reaches a baseline where cdkd could not tell a secret apart. When cdkd
-refreshes `observedProperties` — during a deploy, from
-[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed),
-from the baseline [`cdkd import`](import.md) captures for each resource it
-adopts, from `cdkd drift --accept` on a record that has one, or from the
-narrowing `--revert` records when a provider reports it delivered something
-other than what it was sent — it rewrites the decrypted value AWS returns back
-onto the `{{resolve:...}}` reference the record holds, **by position**. Where
-the readback and the record cannot be lined up at a reference-bearing position,
-cdkd has no way to tell a resolved secret from an ordinary literal, so it
-writes `***` there instead of the value AWS reported. Shapes that reach it:
-
-- AWS restructured the property (an object returned as a list, an extra nesting
-  level, a scalar returned as a container);
-- AWS normalised an identity field, so a list element lost its counterpart —
-  `Name: 'db'` echoed back as `'DB'`, or a name expanded to an ARN;
-- a list with no identity field that AWS reordered, or in which it normalised
-  one of the neighbouring literal values;
-- the record's properties hold a raw `Fn::Join` / `Fn::Sub` **object** where the
-  readback holds a string, which is what `cdkd import` writes when a reference
-  names a resource outside the imported set (it warns when it does).
-
-Everything the record itself spells at that position — the surrounding literal
-values, an already-stored `{{resolve:...}}` reference, numbers and booleans —
-is kept, so an ordinary baseline is unaffected. A neighbouring value AWS
-normalised is masked along with the secret; that is deliberate over-masking, and
-the reason is that the alternative is writing a decrypted secret into
-`state.json`.
-
-The effect on drift differs from a `NoEcho` mask. cdkd cannot say what belongs
-at such a position, so it does not call the position drifted:
-
-- when the mask is the **only** difference there — every other value at that
-  position, list lengths and order included, matches AWS — the position is
-  reported as not compared, with the cause `uncertifiedBaseline`, and a
-  detection-only run exits `2` rather than `1`;
-- anything else AWS reports there — an edited neighbouring value, a list that
-  grew, shrank or came back in another order — is still reported as drift, with
-  the AWS side masked, and `--accept` refuses it;
-- the rest of the resource is compared as usual, so a real change elsewhere
-  still reports the resource drifted (exit `1`), with the cause alongside.
-
-A secret changed *at* a masked position cannot be seen; that is inherent to a
-position cdkd cannot name. Two shapes keep reporting as drift: a masked element
-of a list declared unordered, which is sorted apart from its live counterpart,
-and a masked binary value, which only a string can match.
-
-A position reported as not compared is left alone by both remediation modes:
-`--accept` writes nothing over it, and `--revert` sends AWS's own value there
-back unchanged, even when a real change elsewhere in the same property is
-being reverted. Where it is still reported as drift, `--revert` is where this mask
-differs from a `NoEcho` or `Fn::Base64` one — a mask written for the reasons listed above exists
-*because* the record and the readback could not be matched at that position,
-which is exactly when `--revert` has no live value it may safely copy. So expect
-it to refuse the whole resource here more often than for a `NoEcho` value.
-
-The fix is a `cdkd deploy`, and it does not have to change anything. At the
-start of every deploy, the **automatic refresh** also looks at each resource
-whose baseline holds such a mask. It resolves the secret references in that
-resource's own recorded properties, reads the resource back, and replaces a
-mask with the reference when the value AWS holds there is exactly what the
-reference resolves to. It leaves the baseline alone when:
-
-- any of those references fails to resolve, or two of them resolve to the same
-  value;
-- the resource no longer reads back as its baseline records — something else
-  about it changed, and replacing the baseline would hide that drift.
-
-Every position that is not masked stays as it was, so a re-capture never takes
-in a change `cdkd drift` should still report. A position it cannot certify
-keeps its mask and keeps reporting as not compared — most often a secret that
-was **rotated** after the resource was last deployed, since AWS still holds the
-old value and the reference now resolves to the new one. A deploy that creates
-or updates the resource captures the whole baseline again, which clears that
-case too. `cdkd state refresh-observed` resolves nothing, so it writes the
-masks back.
-
-The last shape in the list — a record whose properties hold a raw `Fn::Join` /
-`Fn::Sub` **object** — has a second consequence of its own: when such a record
-also has no `observedProperties` (the same import produced neither), the raw
-object becomes the revert baseline itself. `--revert` **refuses the resource**
-rather than write it (counted with the unresolvable ones, exit `2`): cdkd
-cannot resolve an intrinsic outside a deploy, and no provider route rejects
-the raw object on cdkd's side — an SDK provider puts it straight into the wire
-call, and Cloud Control serializes it into the patch, where a JSON-string
-property would even make it a schema-valid string AWS accepts silently. The
-remedy is the same `cdkd deploy`, which resolves the template and records a
-resolvable baseline.
-
-`cdkd drift --accept` does not write this mask itself — it records what AWS
-reported. For a resource that has no baseline yet, that write lands in
-`properties` — the fallback described under `--accept` below — where a mask
-would block [`cdkd export`](cli-export.md) and the rollback replay rather than
-protect anything. For a resource that already has a baseline, `--accept` writes
-the baseline.
-
-`cdkd import`'s own baseline capture **does** write it, for the same reason a
-deploy's does: its one destination is `observedProperties`. So a stack freshly
-adopted with `cdkd import` can report a masked position on its very first
-`cdkd drift` run, before any deploy has run at all.
-
-### Tokens that are not references
-
-Every CloudFormation spelling — `secretsmanager`, `ssm` and `ssm-secure` — is
-resolved and therefore maskable, so a `{{resolve:...}}` token that survives
-the pass is text that merely looks like a reference, or a service AWS adds
-later. The value AWS holds at such a position is reported as ordinary data:
-masking it would leave a path refused by `--accept` and pinned by `--revert`
-with no remedy you could apply.
-
-A reference cdkd does not resolve at all is **not** an error and is **not**
-compared. The property is reported as neither clean nor drifted, and a warning
-names the token once per resource.
-
-What a `--revert` triggered by another drifted property on the same resource
-does to those positions depends on where the token sits:
-
-- If the property's **whole value** is the token and cdkd can **match the
-  position** against what AWS reports, the live value is left **unchanged** —
-  cdkd cannot tell what the token should resolve to, so it keeps what AWS has.
-  A token at the top level always matches; a token inside a **list** matches
-  through its element — by an identity field (`Name` or `Key`) when both sides
-  carry one, and otherwise only when the list's other literal values
-  corroborate the order (the same pairing rule the masked-baseline revert
-  uses, because a list AWS reordered would otherwise donate **another
-  element's** live value to the token's position).
-- If the position cannot be matched — AWS reports nothing there, the list was
-  reordered or resized past what its own values can vouch for, two elements
-  carry tokens, or the list holds nothing BUT tokens — or the value AWS holds
-  there is **not a string** (a list or an object at a position the token types
-  as a string), the token is written **literally**, exactly as `cdkd deploy`
-  sends it. For a stack cdkd deployed
-  that is a no-op (AWS already holds the literal); for a record adopted from
-  elsewhere it preserves whatever breakage already existed rather than
-  guessing. A **one-element list against a one-element readback always
-  matches**: there is no other element to mis-pair with, so the live value is
-  preserved there even when nothing else in the element corroborates.
-- If the token is **embedded in a longer string**, the live value is left
-  **unchanged** when every other character of that string — including any
-  secret cdkd resolved into it — is exactly what AWS holds. Otherwise (AWS
-  holds nothing there, a non-string, different surrounding text, or a
-  different value where cdkd resolved a secret, such as one rotated since the
-  last deploy; or the string is an element of a list with no identity field
-  and AWS changed it) the string is written **with the token literal**, exactly as
-  `cdkd deploy` does, so a value AWS holds there **is overwritten**.
-
-Both the drift warning and the revert warning state which of the two applies,
-and the drift one is printed before the confirmation prompt.
-
-A stack whose AWS side and state side BOTH hold a literal
-`{{resolve:ssm-secure:...}}` token — written by a cdkd release that predates
-`ssm-secure` resolution — reads as `NO_CHANGE` on the deploy diff, so
-upgrading does not repair the live value on its own. For a property the
-provider reads back, `cdkd drift` reports it (the resolved value no longer
-matches the literal) and `--revert` writes the resolved value. A write-only
-destination (`MasterUserPassword`, `LoginProfile.Password`) needs that
-property to be updated once.
+returning from a value someone set. If the live value is expected, run
+`cdkd drift --accept` to record it. Otherwise declare the value in the
+template and deploy.
 
 ## Resource type coverage
 
-Drift detection works for every resource type routed through the Cloud Control
-API, which is the majority of cdkd's surface. SDK providers add their own
-first-class read-back per type, which avoids the Cloud Control round-trip and
-lets the provider map AWS's response shape back to the CloudFormation shape
-cdkd state stores.
+Drift detection covers every resource type that can be read back. Two routes
+do the reading:
 
-These SDK-provider types ship with a first-class read-back:
+- cdkd's own SDK providers, for the types in the table below;
+- the Cloud Control API, for every other type it can read.
+
+A type neither route can read is reported as `drift unknown`.
 
 | Service | Types |
 | --- | --- |
@@ -821,308 +675,30 @@ These SDK-provider types ship with a first-class read-back:
 | `AWS::StepFunctions` | `StateMachine` |
 | `AWS::WAFv2` | `WebACL` |
 
-Five SDK-provider types have no first-class read-back yet and take the Cloud
-Control fallback described below, exactly as a type with no SDK provider does:
-`AWS::Budgets::Budget`, `AWS::CloudFormation::Stack`,
+Five types with an SDK provider have no read-back of their own and use the
+Cloud Control route: `AWS::Budgets::Budget`, `AWS::CloudFormation::Stack`,
 `AWS::CloudWatch::AnomalyDetector`, `AWS::EMR::InstanceFleetConfig` and
-`AWS::EMR::InstanceGroupConfig`. `AWS::CloudFormation::Stack` and
-`AWS::CloudWatch::AnomalyDetector` are deny-listed on that fallback. An
-anomaly detector's physicalId is a cdkd-derived metric descriptor that Cloud
-Control cannot address, so its row reports drift unknown. A nested stack's row
-is reported as described under [Nested stacks](#nested-stacks).
+`AWS::EMR::InstanceGroupConfig`.
+
+These types are always `drift unknown`, because the Cloud Control response
+differs from what state holds and would report false drift on every run:
+
+| Type | Reason |
+| --- | --- |
+| `AWS::ApiGateway::RestApi` | `Body` / `BodyS3Location` are write-only inputs the response omits. |
+| `AWS::EC2::LaunchTemplate` | The response carries version-bumped `LaunchTemplateData` and a synthetic `LatestVersionNumber`. |
+| `AWS::CloudWatch::AnomalyDetector` | Its physical id is a cdkd-derived descriptor Cloud Control cannot address. |
+
+An `AWS::CloudFormation::Stack` row is handled as described under
+[Nested stacks](#nested-stacks).
 
 > [!NOTE]
-> **physicalId formats.** Several types above
-> (`AWS::ApiGateway::Method`, `AWS::Route53::RecordSet`,
+> Several types above (`AWS::ApiGateway::Method`, `AWS::Route53::RecordSet`,
 > `AWS::AppSync::DataSource` / `Resolver` / `ApiKey`, `AWS::Glue::Table`,
-> `AWS::S3Tables::Namespace` / `Table`, and the EC2 sub-resources) are
-> identified by a **composite, `|`-delimited physical id** rather than a
-> single scalar. That composite is what `cdkd state show` /
-> `cdkd state resources` print and what
-> `cdkd import --resource '<logicalId>=<physicalId>'` expects — quote it on a
-> shell command line. The per-type format table is in
+> `AWS::S3Tables::Namespace` / `Table`, and the EC2 sub-resources) have a
+> composite, `|`-delimited physical id. Quote it on a shell command line. The
+> per-type formats are in
 > [State Management](state-management.md#composite-pipe-delimited-physicalids).
-
-### False-drift prevention on the Cloud Control fallback
-
-When an SDK provider has no read-back of its own, drift falls back to Cloud
-Control's generic `GetResource`. cdkd state's `properties` field is in
-CloudFormation-template shape — what the provider's create call was passed —
-and Cloud Control's response is usually the same shape, but for some resource
-types it diverges enough to fire false drift on every run. Two guards protect
-the fallback:
-
-1. **Deny-list.** Types with verified structural divergence short-circuit to
-   `drift unknown` before the Cloud Control call fires. Current entries are
-   `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
-   inputs the response omits, while cdkd state preserves them),
-   `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
-   CloudFormation stack exists and the row's id is a cdkd-local placeholder;
-   a nested row is decided before this point, as described under
-   [Nested stacks](#nested-stacks)), and
-   `AWS::EC2::LaunchTemplate` (the response carries version-bumped
-   `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
-2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
-   (`CreationDate`, `LastModifiedTime`, `OwnerId`, `RevisionId`, and
-   similar) are removed from Cloud Control responses before the comparator
-   sees them. The list is conservative: name-collision-prone fields that some
-   CloudFormation types use as legitimate inputs (`Status`, `State`,
-   `VersionId`, `Arn`) are NOT stripped, so a real `Status` change on
-   `AWS::ECS::CapacityProvider.ManagedScaling` still surfaces as drift.
-
-A deny-listed type is fixed by giving it a first-class SDK read-back, which
-makes the deny-list entry unreachable.
-
-## Resolving drift: `--accept` and `--revert`
-
-Once `cdkd drift` has detected drift, the same command can resolve it. The two
-flags are mutually exclusive — pick the direction that matches the intent.
-
-Both acquire the per-stack lock (the same one `cdkd deploy` uses) before
-mutating anything, and both prompt for confirmation unless `-y` / `--yes` is
-set. `--dry-run` prints the planned mutations and exits `0` without acquiring
-a lock or touching AWS / S3.
-
-Both are no-ops on a clean stack. Resources reported as `drift unknown` are
-skipped by both, because the comparator never produced a property difference
-for them.
-
-### Deleted resources
-
-Neither flag acts on a resource AWS reports **deleted**. `--revert` updates a
-resource in place and cannot recreate one. `--accept` copies AWS-current values
-into state and there are none; the only thing left for it to do would be to drop
-the record, and `--accept` does not silently erase state. Each such resource is
-refused by name, nothing is changed for it, and the run still resolves every
-other drifted resource. The run then exits `2` (`--dry-run` prints the refusal
-and exits `0`; declining the confirmation prompt exits `0`).
-
-First confirm the resource really is gone, in the AWS console or with the AWS
-CLI. A plain `cdkd deploy` does not recreate it: a deploy compares the template
-with cdkd state, not with AWS, so a resource whose template did not change is
-left alone. To recreate it, remove it from the CDK app and deploy, then restore
-it and deploy again. If it is meant to be gone, the first of those deploys is
-enough. Anything in the app that references the resource has to come out with
-it, and that deploy **deletes** those resources too.
-
-**A dropped row is REPORTED, and the run does not exit `0`.** An entry the
-detection run could not read is reported as `not compared` — it appears in the
-`--json` payload with the cause `unreadableRecord`, in the `NOT fully compared`
-block, and in the exit code, which becomes `2` — or `1` when something else
-drifted, since drift outranks a partial comparison. That matters because the
-warning goes to stderr, which `cdkd drift --json > report.json` discards: a
-record with one unreadable row would otherwise produce a clean report about a
-stack cdkd could not fully read. The healthy rows beside it are still compared.
-
-**Both write modes refuse a malformed record, where plain `cdkd drift` reports on one.**
-The direction depends on whether the run can write. A detection run cannot, so
-a `resources` bag that is not a JSON object is treated as empty and a
-`resources` entry that is not an object, or carries no resource type, is left
-out of the report — each with a
-warning naming the stack, the region and, for entries, the logical ids. A
-resource whose `properties` map is not a JSON object is not compared either:
-that map is the drift baseline whenever no `observedProperties` is recorded, and
-read as empty it would compare nothing and report the resource clean. Each is
-also reported as not compared with the cause `unreadableRecord` — one entry per
-dropped or uncompared row — and an unreadable map as one entry named
-`(resources map)` with the cause `unreadableMap`, so the run
-exits `2` rather than reading as a clean stack (or `1` when something drifted,
-since drift outranks a partial comparison). `--accept` and `--revert` write
-the record back, and both rebuild it by spreading the stored bag: spreading a
-list produces a well-formed-looking map keyed `0`, `1`, … rather than failing,
-which would persist rows for resources that do not exist and erase the only
-evidence the record was broken. So both refuse instead, naming the stack, the
-region and the offending logical ids, before the lock is acquired and before
-anything is written. A record holding an unreadable `properties` map is refused
-the same way, before any resource is read back: it is no baseline to accept
-into state or to revert the live resource to. Inspect the record with `cdkd state show '<stack>' --json`.
-
-### `--accept` (state ← AWS)
-
-Writes the AWS-current values into cdkd's S3 state file. Use it when the
-AWS-side change is the intentional source of truth — typically a manual
-console edit you want cdkd to catch up to without redeploying. **AWS resources
-are not modified.**
-
-By default the write lands in `observedProperties`, the deploy-time snapshot
-used as the drift baseline, so the next drift run reports clean while
-`properties` — the last-deployed template intent — is left untouched. For a
-resource with no `observedProperties`, the write falls back to `properties`.
-
-The state ETag captured during the read is forwarded as an `IfMatch`
-precondition on the save, so a concurrent `cdkd deploy` cannot race the write.
-
-### `--revert` (AWS ← state)
-
-Calls each drifted resource's `provider.update` to push state values back into
-AWS. The desired properties are built as the AWS-current snapshot — captured
-during the drift read, with no second AWS call — with the **drifted top-level
-subtrees overlaid from `observedProperties ?? properties`**, the same
-precedence the comparator uses. `previousProperties` is the AWS-current
-snapshot itself.
-
-Net effect: every drifted property is pushed back to its state-recorded value,
-while non-drifted properties carry their AWS-current values on both sides, so
-a diff-based `update()` (SNS, IAM Role) sees `newVal === oldVal` for them and
-does not touch AWS for those keys. `--revert` undoes exactly the delta
-`cdkd drift` reported and leaves non-drifted attributes alone.
-
-Per-resource failures are collected and surface as `PartialFailureError` at
-the end of the run; one resource's failure does not abort the rest. cdkd state's
-recorded properties are normally NOT modified — once `provider.update`
-succeeds, AWS matches state by definition, so a subsequent `cdkd drift` reports
-clean. The one exception is a provider-reported narrowing, below.
-
-The record does take the physical id and attributes the update returned. A
-provider may re-create the resource to revert it — an
-`AWS::EC2::SecurityGroupIngress` rule is revoked and re-authorized under a new
-`sgr-` id — and the record then names the new resource, which a later
-`Fn::GetAtt` and `cdkd export` read. Attributes are replaced wholesale when the update
-replaced the resource and merged key by key when it updated in place. A
-`NoEcho` attribute is stored as `***`.
-
-#### A revert does not rename an IAM Role or ManagedPolicy
-
-Their names cannot change in place, so `--revert` keeps the name the live
-resource has. When a name is reported as drifted, `--revert` reverts the other
-drifted properties on the live role or policy and warns that its name was left
-as it is. `cdkd drift` keeps reporting the name until `cdkd drift --accept`
-records the live one; only a deploy renames the resource. A drifted `Path` (or
-a managed policy's `Description`), which also cannot change in place, fails
-that resource's revert instead of replacing it.
-
-#### A stack-name-prefixed name is not drift
-
-On a stack deployed with `--prefix-user-supplied-names`, a record with no
-`observedProperties` holds the template's name (`my-role`) while AWS holds
-`MyStack-my-role`. For an IAM Role, User, Group, InstanceProfile or
-ManagedPolicy and an ELBv2 LoadBalancer or TargetGroup, `cdkd drift` treats the
-two as the same name when the live one is what cdkd derives from the template
-name, with or without the stack-name prefix. The name is then not reported, and
-neither `--accept` nor `--revert` touches it. A live name cdkd would not derive
-from the template's, such as another stack's prefix or a different name, is
-still reported as drift.
-
-#### Tags a revert preserves
-
-A drifted **top-level tag list** keeps any AWS-SERVICE-authored entry instead
-of stripping it. Every ordinary tag still reverts exactly as before: one the
-baseline lost is re-added, a changed value is reset, and a user- or
-console-added tag AWS alone carries is still REMOVED. But a service-managed
-key — `AmazonECSManaged`, or any `aws:`-reserved prefix — survives. ECS
-attaches `AmazonECSManaged` to an ASG when a capacity provider binds it, and
-managed scaling breaks without it, so a strip-everything revert would break
-the live resource.
-
-The `--revert` plan names each preserved key before the confirmation prompt.
-
-The carve-out applies to a top-level property NAMED `Tags`, or one whose name
-ends in `Tags` — the `[{Key, Value}]` shape alone is not tag-exclusive, as
-`LoadBalancerAttributes` shows — and it applies even when the recorded
-baseline list is EMPTY, since a declared-but-empty `Tags` still has an AWS
-side worth diffing. A tag list NESTED inside another property, such as an EC2
-launch template's `TagSpecifications`, still reverts wholesale.
-
-#### AWS-authored values a revert leaves alone
-
-A revert overwrites each drifted top-level subtree from
-`observedProperties ?? properties`. When a resource has NO `observedProperties`
-— older state, or a deploy-time capture that failed — the desired side is the
-raw template, and anything AWS wrote into that subtree that the template never
-declared is indistinguishable from an out-of-band change.
-
-cdkd preserves those paths and lists them before the confirmation prompt, in
-two forms:
-
-- nested object keys report dotted: `Parameters.table_type`;
-- a KEYED `[{Key, Value}]` list reports its missing entries in bracket form:
-  `LoadBalancerAttributes[deletion_protection.enabled]`. The bracket
-  distinguishes a list entry from a nested path, since attribute keys contain
-  dots of their own.
-
-A service-authored tag is not listed — the tag carve-out above preserves it
-either way. A POSITIONAL array is compared wholesale, because its elements
-have positions rather than identities, so it is neither reported nor narrowed.
-
-#### Resources with no observed-capture baseline
-
-On that same baseline the revert **leaves every untemplated value alone**:
-cdkd merges those paths into the bag it actually SENDS, instead of overlaying
-the drifted subtree wholesale. Merging on the desired side — rather than
-trimming `previousProperties` — is what makes this hold for both provider
-shapes: one that key-diffs a collection would otherwise put those paths on its
-removal path, and one that replaces a bag wholesale (`PutBucketTagging` is
-documented full-replace) never consults the previous side at all.
-
-The plan prints, per affected resource, a
-`! this resource has no observed-capture baseline ... LEAVES N AWS-authored
-values untouched` line naming each path, before the confirmation prompt and
-under `--dry-run`. A Glue Iceberg table's `table_type` / `metadata_location`,
-and the roughly eighteen untemplated attributes an ELBv2 load balancer
-reports, survive the revert instead of being reset.
-
-Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them
-reverted too. Either populates `observedProperties`, after which the baseline
-IS a deploy-time AWS snapshot, an out-of-band addition is genuinely
-identifiable and IS stripped, and the notice stops firing.
-
-Only DRIFTED top-level keys are ever narrowed; non-drifted keys keep their
-AWS-current values on both sides.
-
-#### Narrowed values written back to state
-
-Some providers answer `update()` with the bag they ACTUALLY sent, because AWS
-only accepts a narrower form than the template declares — `AWS::EC2::Route`'s
-single destination, an `AWS::EC2::SecurityGroupIngress` `IpProtocol` coerced
-to a string. `--revert` records that narrowing, writing ONLY the keys the
-provider changed into the same field the comparator uses as its baseline
-(`observedProperties` when the resource has one, else `properties`). Without
-it the next `cdkd drift` would report the identical difference and `--revert`
-would re-issue the identical call, forever.
-
-Only the provider-changed keys move. The AWS-current values that rode along in
-the bag sent to `provider.update` are NOT imported into state, so `--revert`
-never behaves like `--accept`. Two further limits keep that guarantee airtight:
-
-- only a key the baseline ALREADY declares can move, so a provider echoing
-  back an out-of-band, AWS-only key cannot insert it;
-- on a resource with no `observedProperties`, only a key REMOVAL is recorded,
-  never a value. That baseline is the raw template, the values sent to the
-  provider deliberately carry the untemplated AWS paths described above, and
-  writing one into `properties` would make the template intent describe
-  AWS-side data.
-
-The write is BEST-EFFORT: AWS has already been reverted by the time it runs,
-so a failed state write warns and the command carries on — under `--all`,
-aborting would skip every later stack's revert. The same write carries the
-physical id and attributes the revert returned, so the warn path costs two
-things: the narrowing re-surfaces on the next `cdkd drift`, and the record keeps
-the identity from before the revert, which a re-run cannot repair because the
-revert landed.
-
-#### Update-not-supported resources
-
-Some resource types are immutable in AWS (`AWS::Lambda::LayerVersion`,
-sub-resource attachments such as `AWS::Lambda::Permission` and
-`AWS::ApiGateway::Deployment`) or do not yet have an in-place `update()` in
-cdkd (`AWS::AppSync::*`, `AWS::EFS::*`,
-`AWS::KinesisFirehose::DeliveryStream`, `AWS::ApiGatewayV2::*`,
-`AWS::ApiGateway::Authorizer` / `Deployment` / `Method`,
-`AWS::Glue::Database`, `AWS::ServiceDiscovery::*`,
-`AWS::ElasticLoadBalancingV2::LoadBalancer`).
-
-For those, `--revert` surfaces a distinct
-`⊘ <stack>/<id> (<type>): could not revert — ...` line carrying a
-`ResourceUpdateNotSupportedError` and an explicit suggestion. The summary then
-names them separately (`N reverted, M update-not-supported`) and the run exits
-`2`. The fix is to redeploy the stack with `cdkd deploy --replace`, or destroy
-and redeploy — the same recovery path you would use for a CloudFormation
-immutable-property error.
-
-AWS update failures — a `provider.update()` call that returns a runtime error
-— are reported separately with a `✗` glyph and counted as `failed`. The fix
-there is to inspect the AWS error and retry once the underlying cause is
-resolved.
 
 ## JSON output
 
@@ -1156,43 +732,27 @@ resolved.
     "notSupported": [
       { "logicalId": "Function1", "type": "AWS::Lambda::Function" }
     ],
+    "skipped": [],
     "notCompared": []
   }
 ]
 ```
 
-**`--json` shape change:** `deleted` is new. A resource AWS reports deleted
-outside cdkd used to be listed in `notSupported`; it is now listed in `deleted`
-only, and it makes the detection run exit `1`.
+| Field | Holds |
+| --- | --- |
+| `drifted` | Resources with at least one differing property, with `stateValue` and `awsValue` per path. |
+| `deleted` | Resources AWS reports deleted. A nested stack row whose record is gone carries `"nestedStackRecordMissing": true`. |
+| `clean` | Resources fully compared and matching. Always `referencesUnresolved: false`. |
+| `notSupported` | Resources reported as `drift unknown`. |
+| `skipped` | Resources cdkd does not drift-check, including a nested stack row checked in its own report. |
+| `notCompared` | Resources not fully compared, each with a `cause`. A partly compared drifted resource appears here as well. |
+| `warnings` | Stack-level advisory strings. Omitted when there are none. |
 
-A nested stack's `AWS::CloudFormation::Stack` row is listed in `skipped` when
-its own record is checked in the same run, or in `deleted` with
-`"nestedStackRecordMissing": true` when that record is gone. The key is omitted
-from every other `deleted` entry. That row used to be listed in
-`notSupported`.
+`warnings` exists because cdkd's warnings go to stderr while the payload goes
+to stdout. The strings are for a human reading a log. They carry stack names,
+regions, logical ids and counts, never a property value.
 
-A report may also carry a `warnings` array of stack-level advisory strings. It
-is **omitted when there is nothing to say**, so an ordinary payload is unchanged.
-It exists because cdkd's warnings go to stderr while this payload goes to
-stdout — a pipeline that captures only stdout would otherwise miss them:
-
-```json
-[
-  {
-    "stack": "LegacyStack",
-    "region": "us-east-1",
-    "warnings": [
-      "LegacyStack (us-east-1): this stack's state predates cdkd's refused-baseline marker ..."
-    ],
-    "drifted": []
-  }
-]
-```
-
-The strings are for a human reading a log, not fields to branch on — they carry
-stack names, regions, logical ids and counts, never a property value.
-
-A populated `notCompared`, showing the two per-entry keys:
+A populated `notCompared`:
 
 ```json
 "notCompared": [
@@ -1211,83 +771,64 @@ A populated `notCompared`, showing the two per-entry keys:
 ]
 ```
 
-The `notCompared` roll-up answers one question `clean` alone cannot: **was the
-comparison complete?** When cdkd cannot resolve — or deliberately refuses to
-resolve — a dynamic reference a resource's state records, that resource's
-secret-bearing properties are not compared at all. The comparator skips those
-leaves, so nothing is reported as drifted, which on its own is
-indistinguishable from compared-and-matched. The array also carries any
-resource whose read or comparison threw, for which nothing at all was
-compared.
+| Key | Meaning |
+| --- | --- |
+| `cause` | One of the values in the [not-compared table](#why-a-resource-was-not-compared). Gate on this to tell a clearable cause from a permanent one. |
+| `referencesUnresolved` | `true` for the causes where the rest of the resource was compared, `false` where nothing was. |
 
-Such a resource appears under `notCompared` and **not** under `clean`, so
-every `clean` entry always carries `referencesUnresolved: false`. A `drifted`
-entry can carry `referencesUnresolved: true` and is rolled up under
-`notCompared` as well.
+Do not filter on `referencesUnresolved` to find uncompared resources: that
+drops the entries for which nothing was compared at all. Gate on
+`notCompared.length` or on `cause`.
 
-Each `notCompared` entry carries two keys of its own:
-
-- **`cause`** — one of the values in the
-  [table above](#why-a-resource-was-not-compared). This is the key
-  to gate on when you need to tell a clearable cause from a permanent one; the
-  exit code says the run had at least one clearable cause but cannot say which
-  resource.
-- **`referencesUnresolved`** — `true` for the causes where the rest of the
-  resource was compared (`refused`, `unresolvedToken`, `uncertifiedBaseline`,
-  `noEchoParameter`) and `false` for every
-  other one, where nothing
-  was compared at all and references are beside the point. A consumer written
-  as `notCompared.filter(n => n.referencesUnresolved)` therefore drops those
-  entries. Gate on `notCompared.length` — the documented predicate — or on
-  `cause`.
-
-So a CI job that gates on drift should read `notCompared`, not just `drifted`:
-
-```bash
-# "everything was actually checked, and nothing drifted"
-cdkd drift --all --json | jq -e 'all(.[]; .drifted == [] and .notCompared == [])'
-```
+Older cdkd releases listed a resource deleted outside cdkd, and a nested stack
+row, in `notSupported`.
 
 ### Streams under `--json`
 
-With `--json`, **stdout carries the payload and nothing else**, so
-`cdkd drift ... --json | jq ...` is safe in every mode, `--accept` and
-`--revert` included. Every human-facing line the command would otherwise print
-on stdout goes to **stderr** instead: the `--accept` / `--revert` plan, the
-confirmation prompt, the `--dry-run` notice,
-`No drift detected — nothing to accept.`, the `Comparison INCOMPLETE` block,
-the `✓ State updated` and `Revert summary` lines, and `--verbose` debug
-output. Warnings and errors were already on stderr and are unaffected.
-
-The lines are **moved, not suppressed**: run the command in a terminal, or
-with `2>&1` into a pager, and you see exactly what you would see without
-`--json`. Redirect the two streams separately to keep both:
+With `--json`, stdout carries the payload and nothing else, in every mode. The
+lines the command would otherwise print on stdout go to stderr: the
+`--accept` / `--revert` plan, the confirmation prompt, the `--dry-run` notice,
+the `Comparison INCOMPLETE` block, the `✓ State updated` and `Revert summary`
+lines, and `--verbose` output.
 
 ```bash
 cdkd drift MyStack --json --accept --yes > report.json 2> progress.log
 ```
 
-Without `--json`, nothing moves on `cdkd drift` — its human modes print to
-stdout as before.
-
-The same contract holds for **every `--json` surface**: `cdkd events --json`
-(and its `--format json` alias) and `cdkd state {resources,show,info} --json`
-route their `--verbose` debug output and the `Assumed role ...` notice from
-`--role-arn` / `CDKD_ROLE_ARN` runs to stderr while `--json` is in effect.
-`cdkd diff --json` instead demotes the logger to `warn`, which suppresses
-rather than moves its info-level lines.
-
-Neither `cdkd list` nor [`cdkd state list`](cli-state.md#cdkd-state-list) is in
-that set, because their reservation is not conditional: they reserve stdout in
-EVERY mode, `--json` or not, along with `cdkd synth`,
-`cdkd local invoke` and `cdkd local invoke-agentcore` — see
+The payload is not sanitised, because a consumer wants the stored value.
+Control, format and line-separator characters are written as `\uXXXX` escapes,
+so it parses back to the stored values and printing it cannot run a terminal
+control sequence. Which other commands reserve stdout is under
 [Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
+
+## What the human report does to a malformed value
+
+The report prints text it reads from the state record and from AWS: stack
+names, regions, logical ids, resource types, property paths and values. It
+treats all of it as untrusted, so a crafted value cannot forge a report line
+or send control sequences to your terminal. The `--accept` and `--revert`
+plans follow the same rules.
+
+| Text | What the report does |
+| --- | --- |
+| A control character in an identifier | Replaces it with a space. Cursor-movement and link escape sequences are removed whole. |
+| An identifier longer than 255 characters | Cuts it and appends `...`. |
+| A property value with a control character, edge whitespace, or a leading `"` | Prints it as a JSON string, such as `"abc\n"` or `" value "`. |
+| Any other string value | Prints it unquoted and unchanged. |
+| An object or list value | JSON-encodes it, with the same escaping. |
+| A plan value containing `->` or an arrow character | Quotes it, so the only unquoted `→` on a plan line is the separator. |
+
+Two values that differ only by a trailing newline, a tab or padding therefore
+print differently. Values that differ only by another invisible character or a
+look-alike letter can still print alike. The full rules are in
+[cdkd drift internals](cli-drift-internals.md#what-the-human-report-does-to-a-malformed-value).
 
 ## Related
 
-- [Drift Detection](drift.md) — the same subject, summarised for a first read
-- [State Management](state-management.md) — the state schema, `observedProperties`, and `cdkd state refresh-observed`
-- [`cdkd scrub`](cli-scrub.md) — keeping secret plaintext out of the state records drift compares against
-- [`cdkd diff`](cli-diff.md) — the template-vs-state comparison, as opposed to state-vs-AWS
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
-- [Troubleshooting](troubleshooting.md) — what to do when a drift run fails
+- [Drift Detection](drift.md): the same subject, summarised for a first read
+- [State Management](state-management.md): the state schema, `observedProperties`, and `cdkd state refresh-observed`
+- [`cdkd scrub`](cli-scrub.md): keeping secret plaintext out of the state records drift compares against
+- [`cdkd diff`](cli-diff.md): the template-vs-state comparison
+- [CLI Reference](cli-reference.md): every command and the full exit-code table
+- [Troubleshooting](troubleshooting.md): what to do when a drift run fails
+- [cdkd drift internals](cli-drift-internals.md): the rules behind the edge cases

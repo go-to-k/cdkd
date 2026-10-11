@@ -1,26 +1,63 @@
 ---
 title: "Deploy: safety & compatibility flags"
-description: "Safety and compatibility flags for cdkd deploy — unsupported types and properties, recreate/replace escape hatches, strict GetAtt, unaddressed resources, and the CloudFormation-fallback opt-out."
+description: "What cdkd deploy refuses by default, whether your data is at risk when it does, and the flag that gets each refusal through."
 ---
 
 # Deploy: safety & compatibility flags
 
-cdkd refuses a few things by default rather than letting them fail halfway
-through a deploy or succeed with a resource that is quietly missing a field.
-This page covers those guards and the flags that open them, plus the two flags
-that make a deploy stricter (`--strict-getatt`) or more permissive
-(`--allow-unaddressed`) than the default. The rest of the deploy flags live
-under [Deploy: waits & concurrency](cli-deploy.md) and
+`cdkd deploy` refuses a few things up front instead of failing halfway or
+losing data: an unsupported resource type, a replacement that would delete a
+database, a name that is already taken. This page says what each refusal means,
+which flag gets you through, and what that flag costs. The other deploy flags
+are under [Deploy: waits & concurrency](cli-deploy.md) and
 [Deploy: tuning](cli-deploy-tuning.md).
 
 ```bash
+cdkd deploy MyStack --replace --yes                         # replace what AWS cannot update in place
+cdkd deploy MyStack --replace --force-stateful-recreation   # same, and accept the data loss
+cdkd deploy MyStack --recreate-via-cc-api MyLambda --yes    # destroy + recreate one resource via Cloud Control
 cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh
-cdkd deploy MyStack --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig
-cdkd deploy MyStack --recreate-via-cc-api MyLambda --yes
-cdkd deploy MyStack --replace --yes
-cdkd deploy MyStack --strict-getatt          # fail on any guessed Fn::GetAtt value
-cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resolution
-cdkd deploy --require-approval=destructive   # ask before replacing or deleting anything
+cdkd deploy MyStack --strict-getatt                         # fail on any guessed Fn::GetAtt value
+cdkd deploy --require-approval=destructive                  # ask before replacing or deleting anything
+```
+
+## When a deploy is refused
+
+Find the refusal in the first column. In each of them the resource the message
+names has not been deleted.
+
+| The deploy says | What it means | Your data | Way through |
+| --- | --- | --- | --- |
+| `The following resource types are not supported by cdkd` | AWS cannot manage the type through Cloud Control and cdkd has no provider for it | Untouched | [`--allow-unsupported-types`](#allow-unsupported-types-deploy-destroy) |
+| `STATEFUL_REPLACE_BLOCKED`, or `requires replacement ... but it is a stateful resource` | A template change replaces a data-bearing resource | Lost if you proceed | [`--force-stateful-recreation`](#force-stateful-recreation), or `UpdateReplacePolicy: Retain` |
+| `cannot be updated in place by the provisioning layer` | The update was rejected, the fallback is a replacement, and the resource is data-bearing | Lost if you proceed | [`--force-stateful-recreation`](#force-stateful-recreation) |
+| `ResourceUpdateNotSupportedError` | An immutable property changed on a type AWS has no update API for | Lost only for a stateful type | [`--replace`](#replace-deploy) |
+| `NAMED_REPLACEMENT_COLLISION`, `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The replacement cannot be created while the old resource holds the name | A short outage; lost for a stateful type | [`--replace`](#same-name-replacement-delete-first-ordering), or rename the resource |
+| `NAMED_CREATE_COLLISION` | A resource with that explicit name already exists | Untouched | Delete it or [adopt it](#a-create-under-a-name-that-is-already-taken) |
+| `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` | A create-only property that `--prefer-sdk-route` kept off AWS now needs a replacement | Lost only for a stateful type | [`--recreate-via-cc-api`](#create-only-drop-needs-replacement) or `--replace` |
+| `TYPE_CHANGE_NESTED_STACK` | A logical id changes type into or out of a nested stack | Untouched | No flag: [use a new logical id](#type-changes-into-or-out-of-a-nested-stack-type-change-nested-stack) |
+| AWS refuses the delete of a protected resource | Deletion protection is on, and deploy cannot turn it off | Untouched | [Turn protection off](#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it), then re-run |
+| Exit `2` with `Skipped (not deleted)` or `orphaned predecessor` | The deploy finished and left a resource alive | Still in AWS | [`--allow-unaddressed`](#allow-unaddressed-deploy) for the exit code |
+
+Most of these are one question: the deploy has to delete a resource and create
+a new one, and cdkd will not do that to a data-bearing resource without being
+told. The [stateful-resource guard](#stateful-resource-guard) decides it like
+this for a replacement that a template change or a rejected update causes:
+
+```text diagram=safety-replacement-guard
+A deploy has to replace a resource (delete the old one, create a new one)
+        |
+        v
+Is the type stateful? ------------- no --> Replaced, no flag needed
+        | yes
+        v
+UpdateReplacePolicy: Retain? ------ yes -> New one created, old one kept
+        | no                               in AWS, no longer tracked
+        v
+--force-stateful-recreation? ------ no --> Refused, nothing is deleted
+        | yes
+        v
+Deleted and re-created: all data in the old resource is lost
 ```
 
 ## Options
@@ -28,12 +65,12 @@ cdkd deploy --require-approval=destructive   # ask before replacing or deleting 
 | Flag | Applies to | Description |
 | --- | --- | --- |
 | `--allow-unsupported-types <types>` | deploy, destroy, state destroy | Attempt a resource type cdkd rejects at pre-flight as unsupported. |
-| `--prefer-sdk-route <entries>` | deploy | Pin a resource to the SDK provider and accept a silently dropped property, instead of the default Cloud Control auto-route. |
-| `--recreate-via-cc-api <LogicalId>` | deploy | Destroy + recreate one resource via Cloud Control API, for a dropped property the auto-route's in-place update cannot deliver. |
-| `--recreate-via-sdk-provider <LogicalId>` | deploy | The reverse: destroy + recreate one resource via cdkd's SDK provider. |
-| `--pin-cc-api <LogicalId>` | deploy | Decline the automatic return to the SDK provider for one resource, keeping it on Cloud Control for this deploy. |
+| `--prefer-sdk-route <entries>` | deploy | Keep a resource on cdkd's SDK provider and accept that the named property is not written to AWS. |
+| `--recreate-via-cc-api <LogicalId>` | deploy | Destroy and recreate one resource through Cloud Control API. |
+| `--recreate-via-sdk-provider <LogicalId>` | deploy | Destroy and recreate one resource through cdkd's SDK provider. |
+| `--pin-cc-api <LogicalId>` | deploy | Keep one resource on Cloud Control for this deploy when it would return to the SDK provider. |
 | `--replace` | deploy | Replace (DELETE + CREATE) a resource whose in-place update AWS has no API for. |
-| `--force-stateful-recreation` | deploy | Bypass the [stateful-resource guard](#stateful-resource-guard) for every target in the run, nested stacks included. |
+| `--force-stateful-recreation` | deploy | Confirm the data loss when any replacement in the run targets a [stateful resource](#stateful-resource-guard). |
 | `--strict-getatt` | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
 | `--allow-unaddressed` | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
 | `--no-cfn-fallback` | deploy, diff | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. |
@@ -41,24 +78,27 @@ cdkd deploy --require-approval=destructive   # ask before replacing or deleting 
 
 ## Which routing flag, when
 
-Four of the flags above decide **which provisioning layer manages a resource** —
-cdkd's hand-written SDK provider or the Cloud Control API. They are easy to
-confuse, and the choice usually starts from what you want rather than from a
-flag name, so the decision map lives with the concept:
-[Provisioning Layers](provisioning-layers.md#choosing-a-flag). This page owns
-the per-flag detail each row links to.
+Four flags decide which provisioning layer manages a resource: cdkd's SDK
+provider or the Cloud Control API. Most deploys need none of them, because cdkd
+picks the layer itself.
+
+| You want | Flag | Cost |
+| --- | --- | --- |
+| A property the SDK provider does not write to reach AWS | None. cdkd routes the resource through Cloud Control | None; updated in place |
+| To stay on the SDK provider and go without that property | [`--prefer-sdk-route`](#prefer-sdk-route-deploy) | The property is missing in AWS |
+| To move a resource to Cloud Control when the in-place route cannot | [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) | Destroy and recreate: downtime, and data loss for a stateful type |
+| To move a resource back to the SDK provider | [`--recreate-via-sdk-provider`](#recreate-via-sdk-provider-deploy) | Destroy and recreate, as above |
+| To hold a resource on Cloud Control for one deploy | [`--pin-cc-api`](#pin-cc-api-deploy) | None; the resource is not touched |
+
+[Provisioning Layers](provisioning-layers.md) explains the two layers and how
+cdkd picks between them.
 
 ## `--allow-unsupported-types` (deploy + destroy)
 
-cdkd rejects genuinely-unsupported resource types at **pre-flight** — before
-any resource is touched — instead of letting them fail mid-deploy with an
-opaque Cloud Control error. A type is "unsupported" when AWS reports it as
-`ProvisioningType: NON_PROVISIONABLE` (the provider-coverage **Tier 3** set:
-Cloud Control API cannot create, update or delete it) AND cdkd has no SDK
-provider for it.
-
-When pre-flight hits one, the error names each type, the reason, a one-click
-pre-filled GitHub issue link to request support, and the exact re-run command:
+cdkd rejects an unsupported resource type at pre-flight, before any resource is
+touched. A type is unsupported when AWS reports it as `NON_PROVISIONABLE`
+(Cloud Control cannot create, update or delete it) and cdkd has no SDK provider
+for it. The error names each type and the re-run command:
 
 ```text
 The following resource types are not supported by cdkd:
@@ -71,45 +111,28 @@ To attempt deployment anyway (Cloud Control will likely fail for
 NON_PROVISIONABLE types), re-run with: --allow-unsupported-types AWS::AppMesh::Mesh
 ```
 
-`--allow-unsupported-types <types>` is the **escape hatch**: a comma-separated
-(and repeatable) list of types to attempt via Cloud Control anyway. It is
-per-type rather than a blanket override so you explicitly acknowledge each
-type. It is most useful for a type cdkd's bundled coverage data marks Tier 3
-that AWS has since made provisionable — the permanent fix ships with the cdkd
-release that refreshes that data.
-
-The flag is accepted by `cdkd deploy`, `cdkd destroy` and `cdkd state destroy`,
-so a stack deployed with it can also be torn down.
+The flag takes a comma-separated, repeatable list of types and attempts each
+through Cloud Control anyway. Pass the same list to `cdkd destroy` or
+`cdkd state destroy` to tear the stack down.
 
 ```bash
 cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
 cdkd destroy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
 ```
 
+Cloud Control will likely still fail for these types. The flag helps when AWS
+has made a type provisionable since cdkd's bundled coverage data was built; the
+cdkd release that refreshes that data makes the flag unnecessary.
+
 ## `--prefer-sdk-route` (deploy)
 
 ### Default: the Cloud Control auto-route
 
-When a CDK template uses a **top-level CFn property** that cdkd's SDK provider
-would silently drop on write — AWS adds `CapacityProviderConfig` to
-`AWS::Lambda::Function`, CDK adds support, you write it in your CDK code, but
-cdkd's Lambda provider does not read it yet — cdkd **routes that resource
-through Cloud Control API** instead. Cloud Control forwards the full property
-map to AWS verbatim, so the silent drop is closed with no user intervention:
-the field reaches AWS.
-
-The routing decision is recorded on the resource's state record as
-`provisionedBy: 'cc-api'` and stays sticky for the resource's lifetime.
-`cdkd drift`, `cdkd destroy` and everything else route through the same layer
-that created the resource, even after cdkd adds first-class SDK support for the
-property. `cdkd state show '<stack>'` displays the `ProvisionedBy:` field so you
-can audit which layer owns each resource.
-
-Property coverage is tracked for **Tier 1** (SDK provider) types only. Tier 2
-(Cloud Control fallback) types already forward the full property map to AWS, so
-the auto-route is a no-op for them.
-
-When the auto-route fires, cdkd logs an info line per affected resource:
+cdkd's SDK providers do not write every CloudFormation property. When your
+template sets a top-level property the SDK provider for that type would drop,
+cdkd routes that resource through Cloud Control instead, which forwards the
+whole property map to AWS. No flag is needed, and cdkd logs one line per
+resource:
 
 ```text
 [info] MyLambda (AWS::Lambda::Function): routing via Cloud Control API
@@ -118,13 +141,17 @@ When the auto-route fires, cdkd logs an info line per affected resource:
         --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig.)
 ```
 
-A property missing from cdkd's CFn schema snapshot (one AWS published after
-it, a typo, or an `addPropertyOverride` key) triggers the auto-route too.
-Cloud Control applies a real property and rejects a misspelled one with
+The layer is recorded on the resource as `provisionedBy: 'cc-api'` and stays
+that way: later deploys, `cdkd drift` and `cdkd destroy` use the layer that
+created the resource. `cdkd state show '<stack>'` prints it as `ProvisionedBy:`.
+
+A property that cdkd's schema snapshot does not know (one AWS published later,
+a typo, an `addPropertyOverride` key) routes the same way. Cloud Control applies
+a real property and rejects a misspelled one with
 `Model validation failed (#: extraneous key [...] is not permitted)`, as
 CloudFormation does.
 
-These stay on the SDK provider, with a warning that names the property:
+These cases stay on the SDK provider, with a warning that names the property:
 
 | Property | Why it does not route |
 | --- | --- |
@@ -132,316 +159,119 @@ These stay on the SDK provider, with a warning that names the property:
 | Missing from the snapshot, on a type Cloud Control cannot manage | There is no Cloud Control route for the type. |
 | Missing from the snapshot, and unchanged since the resource was deployed on the SDK provider | An existing resource keeps its route. Changing the value routes it. |
 
+The auto-route applies to types that have an SDK provider. A type cdkd already
+manages through Cloud Control always sends the full property map.
+
 ### The override
 
-`--prefer-sdk-route <entries>` is the **opt-out** from that
-auto-route. Each entry is a `<ResourceType>:<PropertyName>` token
-(comma-separated and repeatable); the flag pins the resource to the SDK
-provider path and **accepts the silent drop** for the named property. A warn
-line is logged so the drop is auditable.
+`--prefer-sdk-route <entries>` opts out of the auto-route. Each entry is a
+`<ResourceType>:<PropertyName>` pair, comma-separated and repeatable. The
+resource stays on its SDK provider and the named property is not written to
+AWS. cdkd logs a warning for each one.
 
 ```bash
-cdkd deploy MyStack --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig,AWS::Lambda::Function:FunctionScalingConfig
+cdkd deploy MyStack \
+  --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig,AWS::Lambda::Function:FunctionScalingConfig
 ```
 
-Entries are per type-and-property pair, not blanket, so you acknowledge each
-drop explicitly. The flag is `deploy`-only: destroy works from the per-resource
-physical ID and the state-recorded `provisionedBy` layer, not from the template
-properties.
-
-**The state record follows the drop.** A property accepted this way is not
-written to the resource's `properties` bag in cdkd state either — state
-describes what cdkd sent to AWS, not what the template asked for. Two
-consequences worth knowing:
-
-- **Removing the flag is usually enough to close the drop.** The property is
-  then a genuine addition against the record, so the deploy re-routes the
-  resource through Cloud Control and the value reaches AWS in place. (Older cdkd
-  versions recorded the property anyway, and the re-routed update — computed as
-  a patch against a record that already claimed the value — sent nothing.) The
-  main exception is a create-only property; see below. The narrower one is
-  where the re-route happens but cannot land — the physical-id bullet under
-  [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy). A type the Cloud
-  Control route cannot serve — no Cloud Control handlers, or a provider that
-  declines the fallback — is refused at pre-flight instead.
-- **`cdkd diff` and `cdkd deploy` disagree about the property, on purpose.**
-  `diff` registers no `--prefer-sdk-route`, so it previews the
-  flag-less deploy and shows the property as a pending change with the
-  `[via CC API: <Prop>]` annotation. Re-running `deploy` WITH the flag reports
-  no change for it, because that deploy will not write it.
-
-Three exceptions:
-
-- **A resource carrying a second silent-drop property you did not name.** One
-  un-allowed drop routes the whole resource through Cloud Control, which
-  forwards the full map — so the property you opted out of reaches AWS anyway
-  and is recorded. cdkd warns that your preference had no effect, naming the
-  property that overrode it; widening `--prefer-sdk-route` to cover that one
-  too is what keeps the resource on its SDK provider.
-- **A resource already recorded `provisionedBy: cc-api`.** The routing is
-  sticky, so the flag changes nothing: Cloud Control keeps writing the whole
-  map.
-- **A property CloudFormation marks create-only.** Applying one to a live
-  resource requires a replacement, so cdkd keeps it in the record — the drop
-  is still accepted and still warned about, but removing the flag later does
-  not apply it in place. A deploy without the flag refuses with
-  [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](#create-only-drop-needs-replacement)
-  instead of replacing the resource on its own. Applying it means recreating
-  the resource, with
-  [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) or `--replace` — and
-  the recreate flag is refused while the same property is still named in
-  `--prefer-sdk-route`, so drop the entry in the same run. A
-  stateful type also needs
-  [`--force-stateful-recreation`](#force-stateful-recreation). A type the Cloud
-  Control route cannot serve (no Cloud Control handlers, or a provider that
-  declines the fallback) cannot be recreated that way at all, and removing the
-  flag makes its deploy refuse at pre-flight; the warn line says so.
-
-### When to use it
-
-- **You need the SDK provider's fast synchronous-call path** and the dropped
-  property is non-essential for your use case — for example a structural CDK
-  construct emits a property you do not care about.
-- **A Cloud Control side-effect bothers you.** Cloud Control may name a
-  resource differently than cdkd's SDK provider would, and you want the SDK
-  naming convention to win.
-- **You have an existing SDK-managed resource** (`provisionedBy: 'sdk'`) that
-  you want to keep on the SDK path after a new property appears in the
-  template. Without the flag, the next deploy auto-routes it through Cloud
-  Control: the routing decision is re-evaluated per deploy, and only a resource
-  whose state already says `'cc-api'` is sticky. A still-SDK resource that
-  gains a silent-drop property re-routes.
-
-### When not to use it
-
-- **The dropped property is security-meaningful** — `KmsKeyArn`,
-  `MonitoringRoleArn`, `MasterUserSecret`, IAM policy attachments,
-  resource-policy fields, encryption settings, TLS configuration. A silent drop
-  here is a real-world incident. Without the flag the auto-route sends the
-  property to AWS; with the flag you opt back into the drop.
-- **You are prototyping** and do not care about routing. The default already
-  gets the property to AWS.
-
-### Decision summary
-
-| Situation | Recommended action |
+| Use it when | Do not use it when |
 | --- | --- |
-| Fresh deploy, template uses a silent-drop property | Default auto-route via Cloud Control — no flag needed |
-| Existing Cloud-Control-managed resource, want to stay there | Default routing is sticky — no flag needed, unless the type is exempt from stickiness ([`--pin-cc-api`](#pin-cc-api-deploy)) |
-| Existing SDK-managed resource, new silent-drop property appears | Default re-routes through Cloud Control; use this flag to stay on SDK |
-| You explicitly want SDK semantics and accept the drop | This flag |
-| The property is security-meaningful | Do not use the flag — let the auto-route close the drop |
+| The property does not matter to you and you want the SDK provider's faster calls | The property is security-relevant: a KMS key, an IAM or resource policy, encryption or TLS settings |
+| Cloud Control would name the resource differently than the SDK provider | You have no preference about routing; the default already gets the property to AWS |
+| An SDK-managed resource gained such a property and you want it to stay where it is | |
 
-### What the flag is NOT
+The flag is not stored. Pass it on every deploy for as long as you want the
+override; a deploy without it routes the resource through Cloud Control.
 
-- **NOT** a request for cdkd to start handling the property. The provider is
-  unchanged; with the flag the property is silently dropped at write time.
-  Without the flag the resource takes the Cloud Control route and the property
-  reaches AWS verbatim.
-- **NOT** free to undo for a **create-only** property. Such a property is
-  recorded in cdkd state even though it was never written — deliberately, since
-  narrowing it out would turn it into a replacement of an untouched resource —
-  so simply dropping the flag later does not deliver it. See
-  [the caveat under `--recreate-via-cc-api`](#recreate-via-cc-api-deploy). For
-  every other dropped property, dropping the flag usually delivers it: the
-  record never claimed it, so the next deploy re-routes and Cloud Control sends
-  it. Usually, not always. The auto-routed update still has to be able to
-  ADDRESS the resource, and where it cannot it fails at update time — the
-  physical-id bullet in that same section. The Cloud Control route also has to
-  be able to serve the type at all: with no Cloud Control handlers, or a
-  provider that declines the fallback, dropping the flag is refused at
-  pre-flight rather than being silently ineffective.
-- **NOT** persisted in cdkd state. Every deploy must pass the flag if the
-  override is still wanted. The resource's `provisionedBy` state field reflects
-  the routing actually used at the last deploy, not the flag.
+#### What state records, and what `cdkd diff` shows
 
-cdkd is a dev/test tool. The auto-route closes the silent-drop bug class by
-default; for production workloads, use the AWS CDK CLI until cdkd's property
-coverage matches your needs.
+A property dropped this way is left out of the resource's state record too,
+because state describes what cdkd sent to AWS. Two things follow:
+
+- Removing the flag is usually enough to apply the property. The next deploy
+  sees an addition, routes the resource through Cloud Control, and updates it
+  in place.
+- `cdkd diff` has no `--prefer-sdk-route`, so it previews the deploy without
+  the flag and shows the property as a pending change marked
+  `[via CC API: <Prop>]`. A deploy with the flag reports no change for it.
+
+#### When the flag does not do what you expect
+
+| Case | What happens |
+| --- | --- |
+| The resource has a second dropped property you did not name | The whole resource routes through Cloud Control, so the property you named reaches AWS anyway. cdkd warns and names the property to add. |
+| The resource is already recorded `provisionedBy: cc-api` | The flag changes nothing. Cloud Control keeps writing the whole map. |
+| The property is create-only | The drop is accepted, but removing the flag later cannot apply it in place: see [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](#create-only-drop-needs-replacement). |
+| The type cannot be served by Cloud Control at all | Removing the flag makes the deploy refuse at pre-flight. The warning says so when you first pass the flag. |
 
 ## `--recreate-via-cc-api` (deploy)
 
-`--recreate-via-cc-api <LogicalId>` (repeatable, one flag per resource)
-destroys and recreates the named resource via Cloud Control API in this deploy,
-so a previously silently-dropped top-level CFn property reaches AWS on the
-recreated copy. Mid-life deploys get the auto-route for free too, so this flag
-is for the cases that route cannot serve rather than for reaching Cloud Control
-in general — see "When to use it" just below.
-
-The argument is a single CloudFormation logical id. There is no comma split —
-repeat the flag for more targets. A logical id that does not match CFn's
-alphanumeric rule is rejected at parse time, so a typo surfaces immediately
-rather than being silently skipped.
+`--recreate-via-cc-api <LogicalId>` deletes the named resource and creates it
+again through Cloud Control API in this deploy. The recreated resource is
+recorded `provisionedBy: 'cc-api'` and stays on Cloud Control afterwards.
 
 ```bash
-# Recreate a single Lambda (stateless, no extra flag needed)
 cdkd deploy MyStack --recreate-via-cc-api MyLambda --yes
 
-# Recreate two Lambdas in one deploy (repeat the flag)
+# Two resources: repeat the flag (there is no comma-separated form)
 cdkd deploy MyStack \
   --recreate-via-cc-api MyLambda \
   --recreate-via-cc-api OtherFn \
   --yes
 
-# Recreate a stateful resource — two flags required, data loss acknowledged
+# A stateful resource also needs the data-loss flag
 cdkd deploy MyStack \
   --recreate-via-cc-api MyTable \
   --force-stateful-recreation \
   --yes
 ```
 
-It is also how to apply a new value to a create-only property a `NoEcho`
-parameter feeds where the deploy cannot: state holds only `***` there, so the
-deploy replaces such a resource on its own only when AWS was proven to report
-the property exactly, and otherwise warns on every deploy whose readback cannot
-confirm the value (see
-[`version: 11` stores `NoEcho` values as `***`](state-management.md#version-11-stores-noecho-values-as-current-writers)).
+The cost is a delete and a create: the resource is unavailable in between, a
+physical id that AWS assigns changes, and a stateful resource loses its data.
+An argument that is not a valid CloudFormation logical id is rejected when the
+command line is parsed.
 
-The template does not have to change. Moving a resource between provisioning
-layers is not a template edit, so a target is recreated even when its diff is
-otherwise empty, and the deploy counts it as an update. Both `--recreate-via-*`
-flags behave this way. A target this deploy deletes instead (for example, its
-`Condition` now evaluates false) is not recreated, and cdkd prints a warning
-naming it.
+The template does not have to change. A named target is recreated even when its
+diff is empty, and the deploy counts it as an update. A target the same deploy
+deletes (its `Condition` is now false, say) is not recreated, and cdkd warns.
 
-A recreated resource whose physical id AWS assigns (an
-`AWS::EC2::SecurityGroup`, an `AWS::ApiGateway::RestApi`) comes back under a
-new id, and the resources in the same stack that read it through `Ref` or
-`Fn::GetAtt` follow it in the same deploy, as they do for a replacement a
-property change causes:
+### Check whether you need it
 
-- A reader whose referencing property can be updated in place is updated to
-  the new id.
-- A reader whose referencing property is create-only (an `AWS::EC2::Volume`'s
-  `KmsKeyId`, say) is **replaced**, and so are the create-only readers of that
-  reader in turn. The confirmation prompt lists them under "Replaced if the id
-  changes", with **DATA LOSS** on a stateful one.
-- A stateful reader that would be replaced needs `--force-stateful-recreation`
-  exactly as a stateful target does, and the same flag covers both. Without
-  it, the deploy (and `--dry-run`) is refused after the diff and before any
-  resource is touched (`STATEFUL_REPLACE_BLOCKED`), naming the reader. A
-  reader with `UpdateReplacePolicy: Retain` keeps its old resource and is not
-  refused, and neither is one a false `Condition` removes from the deploy or
-  one that reads the target only on an untaken `Fn::If` arm. The prompt's list
-  is read before conditions are evaluated, so it can name such a reader.
-- A target whose physical id is its name, fixed as a literal in the template
-  and equal to the recorded one (a function with an explicit
-  `FunctionName`), keeps that id across the recreate. A reader that
-  references it only by `Ref` (or `${Target}` in an `Fn::Sub`) is neither
-  listed nor refused, and the deploy leaves it as it is. A reader of one of
-  its attributes (`Fn::GetAtt`, `${Target.Attr}`) still is: a fixed-name
-  recreate keeps the id but can change an attribute, such as a DynamoDB
-  table's `StreamArn` or a database's endpoint. Any other target (an
-  AWS-assigned id, a generated or computed name, a type whose name cdkd
-  rewrites) is treated as one whose id moves.
-- The list and that early refusal cover a direct chain of create-only
-  references only. A stateful resource reached through an in-place hop (it
-  reads a custom resource's `Data`, and the custom resource reads the
-  target), through a nested stack's `Parameters` into a resource of the child
-  stack, or replaced by the Cloud Control `UnsupportedActionException`
-  update fallback, is neither listed nor refused early: the replacement guard
-  refuses it mid-deploy, after the target was recreated, and
-  `--force-stateful-recreation` covers it there too.
+Usually you do not. The routing decision is made again on every deploy, so
+adding a dropped property to a resource on the SDK provider routes it through
+Cloud Control on the next plain deploy, in place, with the physical id kept.
 
-The plan, `--dry-run` included, counts every reader as an update, since whether
-the id moves is known for certain only once the target is recreated. Where the
-recreate keeps the id after all, a create-only reader that the plan (and, for a
-target not known to keep it, the prompt) shows as a possible replacement is
-left in place, and a reader with nothing to change is skipped. Readers in other
-stacks are covered by
-[cross-stack reference propagation](#cross-stack-reference-propagation).
+| Situation | What to do |
+| --- | --- |
+| You just added the property to an SDK-managed resource | Deploy without the flag. The auto-route applies it in place. |
+| The resource is not deployed yet | Deploy without the flag. |
+| The resource is already `provisionedBy: 'cc-api'`, or its type has no SDK provider | Drop the flag. cdkd refuses at pre-flight, because the recreate would change nothing. |
+| You added a create-only property | Deploy without the flag. cdkd plans the [replacement](#property-driven-replacement-and-stateful-replace-blocked) itself, and asks for `--force-stateful-recreation` on a stateful type. |
+| The deploy refused with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` | Use this flag, or `--replace`. |
+| The auto-routed update failed because Cloud Control cannot address the resource by the id the SDK provider stored | Use this flag. |
+| A create-only property fed by a `NoEcho` parameter needs a new value, and the deploy warns that it cannot confirm the value | Use this flag. State holds only `***` there ([State Management](state-management.md)). |
 
-Some resources live inside another one and are deleted with it: a Lambda
-function's permissions, versions, aliases and event invoke config, an SNS
-topic's subscriptions and policies, an SQS queue's or S3 bucket's policy, a log
-group's streams and metric and subscription filters, an IAM role's, user's or
-group's inline policies. When a deploy
-destroys such a parent and re-creates it under the same physical id (a
-fixed-name function recreated by this flag, or the delete-first `--replace` of
-a replacement), each of those children in the same stack is re-created too,
-without a delete: the old one went with the old parent. A child the same
-deploy moves from another parent onto the recreated one is replaced as usual,
-which removes its copy from the parent it left. A policy that names
-several parents (a topic or queue policy, an IAM policy on several roles,
-users or groups) is written again in place instead. What is merely ATTACHED to
-a re-created IAM role, user or group -- a managed policy, an instance profile's
-role, a group's members (a user's `Groups`, a `UserToGroupAddition`) -- survives
-it, but IAM refuses to delete a principal that still has one, so cdkd detaches
-it first; cdkd then updates the attached resource in place, which attaches it
-to the re-created principal again (also when the same deploy edits the list).
-A Lambda function URL is not handled this way. The same holds when the parent
-is re-created by the update-failure fallback (an in-place update the provider
-refuses, re-created under `--replace`, or automatically when Cloud Control
-reports `UnsupportedAction`): its children are re-created as soon as it is,
-before any pending resource that reads them.
-If the deploy fails after re-creating the parent and before restoring such a
-child, cdkd drops the child's state record, since AWS no longer has it, and the
-next deploy creates it again; until then the parent runs without it. A policy
-that also names parents the deploy did not re-create keeps its record, minus
-the re-created ones, so the next deploy writes it to them again. A child whose
-own restore was attempted and then failed may be in AWS after all: it keeps its
-record when a `--recreate-via-*` flag can write it again, and the warning names
-that flag; otherwise its record is dropped as above, and the warning says the
-write may still be on the parent, to be removed by hand if the child leaves the
-template before the next deploy. An attached resource's
-record is never dropped: it is kept minus the re-created principals (a
-`UserToGroupAddition` on a re-created group keeps no members), so the next
-deploy attaches it to them again.
+Whether a property is create-only is read from the type's CloudFormation schema
+through `cloudformation:DescribeType`, where cdkd has no rule of its own.
+Without that permission cdkd warns and uses its bundled schema snapshot. For a
+type with no bundled schema it treats the change as in place, and where nothing
+rejects that update the deploy can report success with the property unapplied.
 
-### When to use it
+### `CREATE_ONLY_DROP_NEEDS_REPLACEMENT`
 
-**First check whether you need it at all.** Adding a silent-drop property to an
-already-deployed `provisionedBy: 'sdk'` resource does NOT by itself require
-this flag: the routing decision is re-made every deploy, so the next one
-auto-routes that resource through Cloud Control. Where the type's SDK-stored
-physical id is also a valid Cloud Control identifier — a per-type fact, not a
-guarantee; see the second bullet below — the property reaches AWS as an update
-in place, with the physical id preserved. Where it is not, that update fails
-rather than silently doing nothing. Measured on a live resource by
-[`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/),
-which adds `EvaluationWindow` to a deployed `AWS::CloudWatch::Alarm` with no
-flag and then asserts: the deploy renders the per-resource verb `updated` and
-not `replaced`, the record moved to `'cc-api'`, the physical id is unchanged,
-the property reads back from `DescribeAlarms`, and a tag attached out of band
-before the redeploy survived. A later phase deliberately recreates the alarm
-and checks that tag DIES, so its survival above means something. This section
-said the opposite until that run measured it.
+A create-only property can only be set when the resource is created. If an
+earlier deploy accepted its drop with `--prefer-sdk-route`, AWS never held the
+value, and applying it now means replacing the resource. cdkd refuses to do
+that on its own.
 
-**An earlier opt-out deploy does not defeat this, with one exception.** cdkd
-records only what the SDK provider actually sent, so after a
-[`--prefer-sdk-route`](#prefer-sdk-route-deploy) deploy a removable drop is
-simply absent from the record: the later flag-less deploy sees a genuine
-addition, re-routes the resource, and Cloud Control sends the field. The same
-`sdk-to-cc-autoroute` fixture measures that pair — its `--prefer-sdk-route`
-phase asserts the record does NOT carry `EvaluationWindow`, and the flag-less
-phase after it reads the property back off the live alarm.
+The refusal fires when that property is the only thing asking for a
+replacement and the template still asks for it unchanged. Two things trigger
+it: removing the flag, and adding another dropped property the flag does not
+cover (one uncovered property routes the whole resource through Cloud Control).
 
-**The exception is a create-only drop.** cdkd keeps such a property IN the
-record, so a redeploy that still passes the flag sees no difference and does not
-replace the resource. A deploy WITHOUT the flag does see one: AWS never held
-the value, and an added create-only property is a replacement. cdkd refuses
-that replacement rather than doing it on its own — see
-[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](#create-only-drop-needs-replacement).
-The same `sdk-to-cc-autoroute` fixture measures it on an `AWS::EC2::Subnet`'s
-`AvailabilityZoneId`.
-
-#### `CREATE_ONLY_DROP_NEEDS_REPLACEMENT`
-
-The deploy refuses when the ONLY thing asking for a replacement is a
-create-only property that an earlier `--prefer-sdk-route` deploy kept off AWS,
-and that the template still asks for unchanged. That happens when the flag is
-removed, and also when another silent-drop property it does not cover is added,
-since one uncovered property routes the whole resource through Cloud Control.
-cdkd knows a property was kept off AWS only when the deploy that created the
-resource recorded it so. An imported resource's create-only properties, and
-those of a record an older cdkd wrote, are taken to be in AWS and never refused
-— so for a resource an older cdkd created with the flag, the property may still
-be missing while the deploy without the flag reports no change.
-[`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) is what applies it there.
-
-The refusal comes when the deploy reaches that resource. This resource is not
-touched, but other resources of the same deploy may already have changed, and
-they roll back as for any failure. The error names:
+The refused resource is not touched. Other resources of the same deploy may
+already have changed, and they roll back as for any failure. The error names
+these remedies:
 
 | Remedy | What it does |
 | --- | --- |
@@ -450,363 +280,240 @@ they roll back as for any failure. The error names:
 | `--force-stateful-recreation` | Also required for a stateful type |
 | `--prefer-sdk-route <Type>:<Prop>,...` | Keeps the resource on its SDK provider and keeps dropping the property |
 
-A replacement something else in the template already requires goes ahead and
-applies the property too, and a template that removes such a property does not
-replace the resource. `cdkd diff` previews the flag-less deploy, so it shows
-the replacement and warns that the deploy refuses it; the warning does not
-change `cdkd diff`'s exit code.
+`--recreate-via-cc-api` is refused while the same property is still named in
+`--prefer-sdk-route`, so drop that entry in the same run.
 
-Reach for the flag when the auto-routed **update** cannot deliver the property,
-which is a narrower case:
+A replacement that something else in the template already requires goes ahead
+and applies the property. A template that removes the property does not replace
+the resource. `cdkd diff` shows the replacement and warns that the deploy
+refuses it; the warning does not change `cdkd diff`'s exit code.
 
-- **The property is create-only.** No update on either layer can set it, so the
-  resource has to be created again with the property present. The CFn resource
-  schema's `createOnlyProperties` is what to check. Whether you need this flag
-  depends on what the record holds. If it does NOT already claim the value —
-  the ordinary case, where you just added the property — the change reads as an
-  addition, and unless one of cdkd's own rules says that property can change in
-  place it becomes a
-  [property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked),
-  so cdkd recreates the resource for you with no flag. (Where cdkd has no rule
-  of its own, that verdict is read from the type's CFn schema through
-  `cloudformation:DescribeType`. Without that permission cdkd warns and reads
-  the verdict from its bundled schema snapshot, for the types it ships one
-  for. For any other type it classifies the change as in-place instead, so that
-  property-driven replacement does not happen — and where nothing rejects the
-  in-place update, the deploy can report success with the property
-  unapplied.) A stateful type
-  is refused until `--force-stateful-recreation`, **unless** it declares
-  `UpdateReplacePolicy: Retain` — that is exempt from the consent flag, because
-  the old resource is orphaned rather than deleted. Where the record DOES claim
-  the value — the `--prefer-sdk-route` sequence above — the deploy refuses
-  instead, and this flag (or `--replace`) is how to opt in.
-- **The SDK-created resource's physical id is not a valid Cloud Control
-  identifier.** Cloud Control addresses a resource by the `Identifier` its
-  schema's `primaryIdentifier` defines, while an SDK provider stores whatever
-  its create returned; the two agree per type or they do not, and cdkd treats
-  that as an empirical per-type fact rather than a guarantee (see the
-  `STICKY_CC_MIGRATION_EXEMPT` admission bar in
-  `src/provisioning/provider-registry.ts`). Where they disagree, the auto-routed
-  update fails and the recreate is the way through.
+cdkd knows a property was kept off AWS only when the deploy that created the
+resource recorded it. An imported resource, or one an older cdkd created with
+the flag, is taken to have the value: the deploy reports no change while the
+property may still be missing. `--recreate-via-cc-api` applies it there.
 
-Both bullets are reasoned from the routing model, not measured — unlike the
-`sdk-to-cc-autoroute` paragraph that opens this section. They do not fail the
-same way, so they are not reached for the same way. The second one fails
-loudly: the auto-routed update errors, and the flag is a remedy you reach for
-after a failure rather than a precaution you take before one. The first one
-fails loudly too: when the record does not already claim the property the
-replacement is planned (and refused for a stateful type without
-`UpdateReplacePolicy: Retain`), and when it does the deploy refuses with
-`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`, naming this flag.
+### What else the recreate changes
 
-### When not to use it
+**Resources that reference the target.** When AWS assigns the physical id (a
+security group, a REST API), the recreated resource gets a new one. Resources
+in the same stack that read it through `Ref` or `Fn::GetAtt` follow it in the
+same deploy:
 
-- **The resource is still `provisionedBy: 'sdk'` and you have only just added
-  the property.** Deploy first: the auto-route very likely applies it in place,
-  and a recreate you did not need costs downtime. See the paragraph above.
+| The reader's referencing property | What happens to the reader |
+| --- | --- |
+| Can be updated in place | Updated to the new id |
+| Is create-only (an `AWS::EC2::Volume`'s `KmsKeyId`) | Replaced, and so are its own create-only readers |
+| Is create-only, and the reader is stateful | Refused with `STATEFUL_REPLACE_BLOCKED` before anything is touched, unless `--force-stateful-recreation` is passed or the reader declares `UpdateReplacePolicy: Retain` |
 
-- **The resource is already `provisionedBy: 'cc-api'`, or its type has no SDK
-  provider** (whatever its record says: an earlier `cdkd import` recorded every
-  resource `sdk`). The update path already routes via Cloud Control, so the
-  recreate is a no-op that would produce identical end state at the cost of
-  unnecessary downtime, and of whatever AWS deletes with the resource (an
-  Application Auto Scaling target's scaling policies). cdkd refuses at
-  pre-flight; drop the flag for that resource.
-- **Fresh deploy** — the resource is not yet in cdkd state. The auto-route
-  handles fresh silent-drop deploys with no flag.
+The confirmation prompt lists the readers under "Replaced if the id changes",
+with **DATA LOSS** on a stateful one. A target whose physical id is a name
+fixed as a literal in the template (a function with an explicit `FunctionName`)
+keeps its id, so a reader that only uses `Ref` is left alone. A reader of one
+of its attributes is still listed, because an attribute such as a table's
+`StreamArn` can change.
 
-### Interactive confirmation
+The early refusal covers a direct chain of create-only references. A stateful
+resource reached another way (through a custom resource, a nested stack's
+`Parameters`, or a rejected in-place update) is refused mid-deploy instead,
+after the target was recreated. `--force-stateful-recreation` covers it there
+too.
 
-Before any resource is destroyed or created, cdkd prints a per-target plan —
-logical id, resource type, direction tag (`[SDK → CC]`), and the `stateful`
-reason where one applies — and asks:
+**Resources that live inside the target.** Some resources are deleted with
+their parent: a Lambda function's permissions, versions and aliases, an SNS
+topic's subscriptions, a queue's or bucket's policy, a log group's filters, an
+IAM role's inline policies. When the parent is recreated under the same
+physical id, cdkd re-creates those children in the same stack too. Managed
+policies and group memberships attached to a recreated IAM principal are
+detached first and attached again. A Lambda function URL is not handled this
+way.
+
+[Deploy safety internals](cli-deploy-safety-internals.md#resources-that-follow-a-recreated-resource)
+has the exact rules for both, including what state holds if the deploy fails
+between the parent and a child.
+
+### Confirmation prompt
+
+Before anything is destroyed, cdkd prints one row per target (logical id, type,
+a direction tag such as `[SDK → CC]`) and asks:
 
 ```text
 Continue? (y/N):
 ```
 
-The default is `N`, because a destroy-and-recreate cycle is irreversible per
-resource. One prompt covers the whole stack, and it is shared with
-[`--recreate-via-sdk-provider`](#recreate-via-sdk-provider-deploy): naming
-targets in both directions produces one plan carrying both direction tags.
+One prompt covers the whole stack and both `--recreate-via-*` flags.
 
-- `--yes` / `-y` skips the prompt for non-interactive runs. The plan is
-  warn-logged once and the deploy proceeds.
-- A non-TTY run **without** `--yes` is rejected with an actionable error rather
-  than hanging on a closed stdin.
-- Stateful targets — those that reached pre-flight only because
-  `--force-stateful-recreation` was passed — get a `**DATA LOSS**` prefix on
-  their plan row plus an explicit `DATA: all data in <logical id> will be lost
-  (no automatic data migration)` line. That is the third stop-and-think moment
-  on top of the two-flag opt-in.
-- The two **conditionally** stateful types get that prefix too, even though
-  `--force-stateful-recreation` skips the emptiness probes entirely: with no
-  probe result to go on, every S3 bucket and every log group in the plan is
-  shown as data-bearing. The plan errs toward warning, because an emptiness
-  nothing measured is not an emptiness.
-- A bucket whose emptiness probe **ran and failed** is shown as a third case,
-  neither of the two above — a role without `s3:ListBucketVersions`, a rate
-  limit that outlived the retries, a region mismatch, or anything else that
-  stops the call from answering. It still proceeds, because the S3 probe fails
-  open by design, but its row says so:
+| Run | Behaviour |
+| --- | --- |
+| `--yes` / `-y` | The plan is logged once as a warning and the deploy proceeds |
+| No terminal, no `--yes` | Rejected with an error instead of waiting on a closed stdin |
 
-  ```text
-    - MyBucket (AWS::S3::Bucket) [SDK → CC] — emptiness NOT established: the live probe failed, so cdkd does not know whether this resource holds data
-      UNKNOWN: if MyBucket holds data, the destroy + recreate loses it (no automatic data migration)
-  ```
+A stateful target's row carries a `**DATA LOSS**` prefix and the line
+`DATA: all data in <logical id> will be lost (no automatic data migration)`.
+Under `--force-stateful-recreation` every S3 bucket and log group in the plan
+is shown that way, because the emptiness checks are skipped.
 
-  No `**DATA LOSS**` prefix, because cdkd observed no contents and will not
-  assert any; no silence either, which would have made it indistinguishable
-  from a bucket the probe measured and found empty. A bucket AWS reports as
-  **not existing** is not this case — that is an answer, so it passes through
-  silently like a measured-empty one. A log group cannot reach this case at
-  all: its probe promotes on both failure paths.
+A bucket whose emptiness check ran and failed (a missing permission, a rate
+limit, a region mismatch) is shown as a third case. It still proceeds, and its
+row says cdkd does not know:
+
+```text
+  - MyBucket (AWS::S3::Bucket) [SDK → CC] — emptiness NOT established: the live probe failed, so cdkd does not know whether this resource holds data
+    UNKNOWN: if MyBucket holds data, the destroy + recreate loses it (no automatic data migration)
+```
 
 ### Cross-stack reference propagation
 
-The recreated resource gets a fresh physical id, so downstream stacks that read
-its outputs via `Fn::GetStackOutput` / `Fn::ImportValue` must be re-deployed
-before they see the new id. cdkd walks the state bucket at plan time and names
-the downstream consumer stacks it finds in the warn block (a recorded name,
-region or export name that is not a plain identifier is described rather than
-printed). If that walk fails
-to read — a permissions problem, say — cdkd falls back to the generic caveat
-without failing the deploy, so an empty consumer list is not proof there are
-none. Plan multi-stack recreates from leaf to root.
-
-### Interaction with `--prefer-sdk-route`
-
-`--recreate-via-cc-api MyLambda` combined with
-`--prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig`,
-on a resource whose template carries `CapacityProviderConfig`, is **ambiguous
-intent**:
-
-- Does the user want SDK plus the silent drop (the override path)?
-- Does the user want the Cloud Control migration (the recreate path)?
-
-cdkd refuses with a pre-flight error naming the overlap. Pick one strategy per
-resource.
+Other stacks that read the recreated resource's outputs through
+`Fn::GetStackOutput` or `Fn::ImportValue` see the new physical id only after
+they are deployed again. cdkd looks through the state bucket at plan time and
+names the consumer stacks it finds in the warning. If it cannot read the
+bucket it prints a generic caveat instead, so an empty list is not proof there
+are none. Recreate from leaf stacks to root.
 
 ### Going back to the SDK provider
 
-Once a resource is `provisionedBy: 'cc-api'` it normally stays there. A later
-cdkd release that wires the property you originally needed does not by itself
-migrate it back — sticky state is what stops resources ping-ponging between
-layers on every release. Use
-[`--recreate-via-sdk-provider`](#recreate-via-sdk-provider-deploy) to move it
-back deliberately.
+A resource recorded `provisionedBy: 'cc-api'` normally stays on Cloud Control,
+even after a cdkd release adds SDK support for the property that sent it there.
+Use [`--recreate-via-sdk-provider`](#recreate-via-sdk-provider-deploy) to move
+it back.
 
-The exception is a type carrying an `'sdk-coverage'` exemption from the sticky
-rule, for which the return happens automatically, in place, and without a
-recreate — see [`--pin-cc-api`](#pin-cc-api-deploy) and
-[State Management](state-management.md#version-7-adds-provisionedby-v7-writers).
-Check which case applies before reaching for the flag; the recreate is
-destructive and the automatic return is not.
+Some types return on their own, in place and without a recreate. Check
+[`--pin-cc-api`](#pin-cc-api-deploy) for that case before reaching for the
+flag: the recreate is destructive and the automatic return is not.
 
 ### Nested stacks
 
-Both flags take a logical id of the stack you are deploying, and cdkd honours a
-target only in that stack. Resources that live inside a nested stack
-(`AWS::CloudFormation::Stack`) are not addressable:
+Both `--recreate-via-*` flags take a logical id of the stack you are deploying
+and act only in that stack.
 
-- A logical id that exists only in a child is not in the parent's synth
-  template, so the pre-flight refuses the deploy before any resource is
-  touched. The error names the parent's nested stacks so the refusal is not
-  mistaken for a typo.
-- A logical id the parent and a child both declare — the same construct id in
-  both stacks, or an `overrideLogicalId` — recreates the **top-level** resource
-  only. The child's same-named resource is left alone. Earlier versions
-  recreated the child's copy too, in any deploy that also updated it, with
-  neither the pre-flight probe nor the mid-deploy stateful guard having
-  examined it.
-- The nested stack's own `AWS::CloudFormation::Stack` resource is refused as a
-  target. Recreating one would delete the whole child stack — every resource it
-  owns, with no per-resource confirmation — and re-create it through a layer
-  that does not implement cdkd's nested-stack handling. There is no
-  `--force-stateful-recreation` bypass for that refusal.
+| Target | Result |
+| --- | --- |
+| A logical id that exists only in a nested stack | Refused at pre-flight. The error names the parent's nested stacks. |
+| A logical id the parent and a child both declare | Only the parent's resource is recreated |
+| The nested stack's own `AWS::CloudFormation::Stack` resource | Refused, with no bypass: it would delete the whole child stack |
 
-### What `--recreate-via-cc-api` is NOT
+A resource inside a nested stack cannot be recreated with these flags.
 
-- **NOT** a per-stack shortcut. There is no
-  `--recreate-via-cc-api-all-with-silent-drops` form — name each target
-  explicitly to acknowledge the cost.
-- **NOT** persisted in cdkd state. The next deploy without the flag routes the
-  recreated resource via Cloud Control anyway (sticky); the flag is only needed
-  to trigger the initial destroy and recreate.
-- **NOT** compatible with cross-account or cross-region migration. The flag
-  operates within the current deploy's environment only.
-- **NOT** available for a type Cloud Control cannot create: a
-  `NON_PROVISIONABLE` type (such as `AWS::CodeBuild::Project` or
-  `AWS::IAM::Policy`, which cdkd manages through its SDK provider), or a type
-  whose SDK provider opts out of the Cloud Control fallback. The recreate
-  deletes the existing resource before creating it through Cloud Control, so
-  cdkd refuses the deploy before anything is touched. There is no bypass flag.
-- **NOT** available for a type whose Cloud Control handler cannot manage it
-  (`AWS::Scheduler::Schedule`, `AWS::RDS::DBProxyTargetGroup`,
-  `AWS::Lambda::EventInvokeConfig`). cdkd always keeps these on their SDK
-  provider, so the recreate would only delete the resource and create it again
-  on the same route. cdkd refuses the deploy before anything is touched.
-- **NOT** compatible with multi-region types such as
-  `AWS::DynamoDB::GlobalTable`. See
-  [Multi-region types are refused outright](#multi-region-types-are-refused-outright).
-- **NOT** a way to recreate a resource inside a nested stack. See
-  [Nested stacks](#nested-stacks).
+### Limits
+
+| Not possible | Why |
+| --- | --- |
+| A stack-wide form | Name each target, so each recreate is acknowledged |
+| The same resource's property in `--prefer-sdk-route` | The two ask for opposite things; cdkd refuses at pre-flight |
+| A type Cloud Control cannot create (`AWS::CodeBuild::Project`, `AWS::IAM::Policy`), or one whose SDK provider opts out of Cloud Control | Refused before anything is touched, with no bypass |
+| A type whose Cloud Control handler cannot manage it (`AWS::Scheduler::Schedule`, `AWS::RDS::DBProxyTargetGroup`, `AWS::Lambda::EventInvokeConfig`) | cdkd keeps these on the SDK provider, so the recreate would land on the same route |
+| `AWS::DynamoDB::GlobalTable` | [Multi-region types are refused outright](#multi-region-types-are-refused-outright) |
+| Another account or region | The flag works within the deploy's own environment |
 
 ## `--recreate-via-sdk-provider` (deploy)
 
-`--recreate-via-sdk-provider <LogicalId>` (repeatable, one flag per resource)
-is the reverse direction. It destroys and recreates the named resource via
-cdkd's SDK provider, so a resource currently sticky on
-`provisionedBy: 'cc-api'` flips back to `provisionedBy: 'sdk'`.
-
-It is symmetric to `--recreate-via-cc-api`: same per-resource explicit naming,
-same destroy-then-create ordering (create first when the template also renames
-the resource — see
-[When the new name belongs to another resource](#when-the-new-name-belongs-to-another-resource)), same
-[stateful-resource guard](#stateful-resource-guard), same multi-region
-refusal, and the same shared `Continue? (y/N)` prompt with `**DATA LOSS**` on
-stateful rows. The two flags are mutually exclusive per resource — naming the
-same logical id in both is refused as ambiguous.
+`--recreate-via-sdk-provider <LogicalId>` is the reverse direction. It deletes
+the named resource and creates it again through cdkd's SDK provider, so a
+resource recorded `provisionedBy: 'cc-api'` becomes `provisionedBy: 'sdk'`.
 
 ```bash
-# Mid-life CC → SDK migration after a release added SDK coverage
-# for Lambda's LoggingConfig:
 cdkd deploy MyStack --recreate-via-sdk-provider MyLambda --yes
 
-# Multiple targets:
 cdkd deploy MyStack \
   --recreate-via-sdk-provider MyLambda \
   --recreate-via-sdk-provider OtherFn \
   --yes
 ```
 
-### When to use it
+Use it when a resource went to Cloud Control for a property the SDK provider
+did not write, and either a later cdkd release added that property or you
+removed it from the template. Everything else matches `--recreate-via-cc-api`:
+one flag per resource, the same cost, the same
+[stateful-resource guard](#stateful-resource-guard), the same shared prompt,
+the same [nested-stack scope](#nested-stacks).
 
-- A `provisionedBy: 'cc-api'`-sticky resource — it landed on Cloud Control
-  because you originally needed a top-level CFn property cdkd's SDK provider
-  did not wire, for example Lambda's `LoggingConfig` — is now eligible for SDK
-  routing because a later cdkd release added SDK coverage for that property.
-  The flag forces the destroy-and-recreate cycle so the new physical resource
-  lands on SDK and gets the SDK provider's performance, diagnostic clarity and
-  narrower IAM scope.
-- A `provisionedBy: 'cc-api'` resource where you no longer need the Cloud
-  Control route — you removed the silent-drop property from the template — and
-  want to consolidate routing back to SDK for the same reasons.
+cdkd refuses the deploy in these cases:
 
-### When not to use it
+| Case | Why |
+| --- | --- |
+| The resource is already `provisionedBy: 'sdk'`, or its record predates the field | Nothing to move |
+| The type has no SDK provider | The recreate would land on Cloud Control again |
+| The template still has a dropped property not named in `--prefer-sdk-route` | The next deploy would route it straight back. Remove the property or name it in `--prefer-sdk-route`. |
+| The same logical id is also in `--recreate-via-cc-api` or `--pin-cc-api` | Opposite requests for one resource |
+| The type is `AWS::DynamoDB::GlobalTable` | [Multi-region types are refused outright](#multi-region-types-are-refused-outright) |
 
-- **The resource is already `provisionedBy: 'sdk'`**, or its state record
-  predates the `provisionedBy` field (treated as SDK). The reverse migration is
-  a no-op and cdkd refuses with a clear error.
-- **The resource type has no SDK provider registered** — a Tier 2,
-  Cloud-Control-only type. The destroy and recreate would route via Cloud
-  Control again, so cdkd refuses. Registration is checked narrowly: a type that
-  is merely *routable* (Cloud Control, custom resource, escape hatch) does not
-  qualify.
-- **The template still uses a silent-drop property that is not listed in
-  `--prefer-sdk-route`.** The auto-route would send the
-  SDK-recreated resource straight back to Cloud Control on the very next
-  routing decision, so cdkd refuses as inverse ambiguous intent. Fix it by
-  removing the property from the template, or by accepting the drop with
-  `--prefer-sdk-route <Type>:<Prop>`.
-
-### What `--recreate-via-sdk-provider` is NOT
-
-- **NOT** a per-stack shortcut. Per-resource explicit naming only.
-- **NOT** the only path to SDK routing. Fresh CREATEs land on SDK whenever an
-  SDK provider is registered for the type and the template carries no
-  silent-drop property. This flag is for the existing-state Cloud Control → SDK
-  migration only.
-- **NOT** compatible with `--recreate-via-cc-api` on the same logical id — pick
-  one direction per resource.
-- **NOT** a way to recreate a resource inside a nested stack — same scope rule
-  as its forward twin. See
-  [Nested stacks](#nested-stacks).
+A new resource lands on the SDK provider on its own whenever its type has one
+and the template has no dropped property. This flag is only for a resource
+already on Cloud Control.
 
 ## `--pin-cc-api` (deploy)
 
-`--pin-cc-api <LogicalId>` (repeatable, one flag per resource) keeps a resource
-recorded as `provisionedBy: 'cc-api'` on the Cloud Control route for this
-deploy, declining the automatic return to cdkd's SDK provider.
+`--pin-cc-api <LogicalId>` keeps a resource recorded `provisionedBy: 'cc-api'`
+on Cloud Control for this deploy. The resource is not touched; the flag only
+decides which provider issues its update.
 
-**What it declines.** Once a resource is recorded `'cc-api'` it normally stays
-there ([state management](state-management.md) has the full rule). Types whose
-Cloud Control routing works but is slower (apart from at most a defect only an
-update reaches) can carry an `'sdk-coverage'` exemption, and a resource of such a type returns to the SDK provider on its
-next mutating deploy — provided neither its template properties nor its
-recorded ones carry a property cdkd would silently drop. The physical id is
-preserved; the resource is updated in place, not replaced.
+```bash
+cdkd deploy MyStack --pin-cc-api MyListener
+```
 
-`cdkd diff` shows the pending change as `[returning to SDK provider]`, so it
-is visible before it happens.
+It exists because a few types return to the SDK provider on their own. For
+those types Cloud Control works but is slower, so on the next deploy that
+changes the resource cdkd moves it back in place, keeping the physical id,
+provided neither the template nor the record carries a property the SDK
+provider would drop. `cdkd diff` marks the pending move
+`[returning to SDK provider]`. The pin declines that move for one deploy, for
+example while you are investigating something and want the same layer as last
+time.
 
-**When you would want it.** The flip is conditioned on that resource's own
-coverage, so declining it is a judgement about a specific deploy rather than a
-standing preference — for example wanting one deploy to go through the same
-layer as the last one while investigating something. It is deliberately
-per-deploy: pass it again next time, or stop passing it and let the flip
-happen.
+| Behaviour | Detail |
+| --- | --- |
+| Per deploy | Pass it again next time, or stop and let the move happen |
+| A logical id in no stack of the run | An error, raised before any stack deploys. The flag prints nothing when it works, so a typo must not pass silently. |
+| Under `--all` | An id that applies to some stacks is reported once, naming the stacks that have it and those that do not |
+| A resource already on the SDK provider, or a new one | No effect |
+| A type that left Cloud Control because Cloud Control cannot manage it (`AWS::Scheduler::Schedule`) | The pin is ignored |
+| A replacement | The new resource is routed as any new resource is |
+| A resource inside a nested stack | Not reachable from the parent; pass the flag in a deploy of that child |
+| With `--recreate-via-sdk-provider` on the same id | Refused |
 
-Pinning keeps Cloud Control's behavior for that deploy, gaps included. For an
+Pinning keeps Cloud Control's behaviour for that deploy, gaps included. For an
 `AWS::ElasticLoadBalancingV2::Listener`, a deploy that removes a
-`ListenerAttributes` key under the pin leaves that key at its old value; the
+`ListenerAttributes` key under the pin leaves that key at its old value. The
 SDK provider is the route that resets it.
-
-**It is not a way to keep a broken type on Cloud Control.** A type admitted
-because Cloud Control *cannot* manage it (`'cc-broken'`, e.g.
-`AWS::Scheduler::Schedule`) ignores the pin — honoring it would re-pin the
-resource to the handler that cannot address it, which is the bug the exemption
-exists to escape.
-
-It also has no effect on a resource already recorded `'sdk'`, and none on a
-fresh resource, which routes by the ordinary matrix.
-
-**A logical id present in no stack of the run is an error, not a no-op.** The
-flag produces no output when it works, so a typo would otherwise give you
-exactly the routing change you passed it to decline, indistinguishable from
-success. The check is run-level rather than per-stack on purpose: under
-`--all`, an id that belongs to one stack is legitimately absent from the
-others, and failing per-stack would abort the run over a correct invocation.
-It is raised before any stack deploys.
-
-`--pin-cc-api X` together with `--recreate-via-sdk-provider X` is refused —
-they are opposite requests for the same resource.
-
-Under `--all`, an id that applies to some stacks but not all is reported once,
-naming both the stacks it applies to and the ones that do not declare it — so
-you can see the flag's reach without a line per non-matching stack.
-
-A resource inside a NESTED child stack cannot be pinned from the parent's
-deploy; name it in a deploy of that child. And the pin does not apply to a
-REPLACEMENT: when a template change forces a destroy + recreate, the new
-resource routes by the ordinary matrix — the stickiness the pin declines exists
-to spare an EXISTING resource from churn, and a replacement is not that.
-
-Contrast with the two `--recreate-via-*` flags above: those DESTROY and
-recreate to change layer, so they are the heavy option and refuse a stateful
-type without `--force-stateful-recreation`. This flag changes nothing about the
-resource — only which provider issues its update.
 
 ## `--replace` (deploy)
 
-`--replace` replaces (DELETE + CREATE) a resource whose **in-place update is
-rejected because an immutable property changed and AWS exposes no update API
-for it**. Some resource types are immutable on AWS: there is no `Update<Thing>`
-call, so any property change must publish or register a new physical resource.
-Examples are `AWS::Lambda::LayerVersion` content, `AWS::EFS::AccessPoint`,
-`AWS::ECS::TaskDefinition`, `AWS::Glue::SecurityConfiguration`, and several
-`AWS::ApiGatewayV2::*` identity fields.
+Some resource types cannot be updated: AWS has no update call for them, so a
+property change means a new physical resource. Examples are
+`AWS::EFS::AccessPoint`, `AWS::ECS::TaskDefinition`,
+`AWS::Glue::SecurityConfiguration` and several `AWS::ApiGatewayV2::*` identity
+fields. For these the provider rejects the update with
+`ResourceUpdateNotSupportedError` and the deploy fails.
 
-For a few of these cdkd has a built-in replacement rule —
-`AWS::Lambda::LayerVersion` auto-replaces with no flag. For the rest, cdkd's
-diff classifies the change as an in-place UPDATE, the provider's update
-hard-rejects with `ResourceUpdateNotSupportedError`, and without this flag the
-deploy fails. `--replace` opts into catching that rejection and falling back to
-a DELETE + CREATE, the same replacement path the Cloud Control
-`UnsupportedActionException` auto-fallback already uses, and matching what
-CloudFormation would do.
+`--replace` turns that failure into a DELETE + CREATE, which is what
+CloudFormation does for the same change.
 
-Glue names live nested inside an input block, and a rename through one follows
+```bash
+# A Glue SecurityConfiguration's EncryptionConfiguration changed
+cdkd deploy MyStack --replace --yes
+```
+
+It is stack-wide and names no resource. It acts only where an update is
+rejected; a resource whose update succeeds in place is unaffected.
+
+| Cost | Detail |
+| --- | --- |
+| A new physical id | Stacks that consume the resource need a redeploy. `--replace` neither prompts nor lists them. |
+| Data loss on a stateful type | Refused unless `--force-stateful-recreation` is also passed, and that flag covers every target in the run |
+| A short outage on the delete-first path | See [Same-name replacement](#same-name-replacement-delete-first-ordering) |
+
+To move one resource between provisioning layers, use the `--recreate-via-*`
+flags instead.
+
+Where cdkd has a replacement rule for the changed property, it replaces the
+resource without the flag: `AWS::Lambda::LayerVersion` content is one such
+case. See
+[property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked).
+
+### Glue renames
+
+Glue names live inside an input block. A rename through one follows
 CloudFormation:
 
 | Change | Plan | To apply it |
@@ -815,266 +522,183 @@ CloudFormation:
 | `ConnectionInput.Name` (`AWS::Glue::Connection`) | Replacement | nothing extra |
 | `DatabaseInput.Name` (`AWS::Glue::Database`) | Update, refused by the provider | `--replace --force-stateful-recreation` |
 
-A table name differing only in letter case is the same table (Glue folds table
-names to lowercase), so it updates in place. The replacement creates the
-renamed resource before deleting the old one, so if another table already holds
-the new name, the create fails and nothing is deleted; pick a free name.
-`--replace` refuses that collision too, with nothing deleted: the old table
-does not hold the new name, so deleting it first would only collide again. A
-table replacement that keeps its database, catalog and name (a change to the
-top-level `Name` alone) collides with the old table itself, and `--replace`
-deletes the old table first and re-creates it. Renaming a database through
-`DatabaseInput.Name` fails in CloudFormation too; cdkd refuses it before any
-AWS call, because the update would leave the state naming the old database.
-
-A `CatalogId` change on a Glue database is refused the same way: `CatalogId`
-is not create-only there, and the update would address the same-named
-database in the other Data Catalog. An absent `CatalogId` and your own account
-id count as the same catalog, so switching a database between those two
-spellings still updates in place. On a table or connection `CatalogId` is
-create-only, so any change to it is planned as a replacement instead.
-
-Unlike `--recreate-via-cc-api` / `--recreate-via-sdk-provider`, which name a
-specific logical id and force a routing migration, `--replace` is a stack-wide
-opt-in that fires only for resources whose update genuinely hard-rejects. A
-resource whose update succeeds in place is unaffected.
-
-```bash
-# A Glue SecurityConfiguration's EncryptionConfiguration changed (immutable) —
-# fails without the flag, replaces cleanly with it
-cdkd deploy MyStack --replace --yes
-```
-
-### When to use it
-
-- A deploy failed because an immutable property changed on a type AWS has no
-  update API for, and you accept the DELETE + CREATE. This is what
-  CloudFormation does for the same change.
-- A deploy failed with `NAMED_REPLACEMENT_COLLISION` or
-  `NAMED_REPLACEMENT_IDEMPOTENT_CREATE`, and you accept the brief
-  unavailability that the delete-first order below implies.
-
-### When not to use it
-
-- **You want to move one resource between routing layers.** That is
-  `--recreate-via-cc-api` / `--recreate-via-sdk-provider`, which name a target.
-  `--replace` is stack-wide and fires wherever an update hard-rejects.
-- **Downstream consumers have not been re-deployed.** A replacement mints a
-  fresh physical id, and unlike the recreate flags `--replace` neither prompts
-  nor enumerates downstream consumer stacks for you.
-- **The target is stateful and you have not settled the data loss.** Adding
-  `--force-stateful-recreation` to clear the guard clears it for EVERY target
-  in the run, not only the one that failed.
+- A table name that differs only in letter case is the same table (Glue
+  lowercases table names), so it updates in place.
+- The replacement creates the renamed table first. If another table holds the
+  new name, the create fails and nothing is deleted, with or without
+  `--replace`. Pick a free name.
+- A table replacement that keeps its database, catalog and name collides with
+  the old table itself. `--replace` deletes the old table first and re-creates
+  it.
+- Renaming a database through `DatabaseInput.Name` fails in CloudFormation too.
+  cdkd's provider refuses the update before any AWS call, because it would
+  leave state naming the old database.
+- A `CatalogId` change on a database is refused the same way. An absent
+  `CatalogId` and your own account id are the same catalog, so switching
+  between those updates in place. On a table or connection `CatalogId` is
+  create-only, so a change is a replacement.
 
 ### Same-name replacement: delete-first ordering
 
-cdkd replaces create-first by default — the new resource is created before the
-old one is deleted, which is CloudFormation's safe order. That order cannot
-work when the resource carries a physical name the old copy still holds. Two
-shapes hit this, and both name `--replace` in their error text:
+By default cdkd creates the new resource before deleting the old one, which is
+CloudFormation's order. That cannot work when the new resource needs a physical
+name the old one still holds. Two failures report it, and both name `--replace`:
 
-| Failure | What happened | Without `--replace` | With `--replace` |
-| --- | --- | --- | --- |
-| `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name — only once cdkd [shows the old resource holds that name](#when-cdkd-cannot-show-the-old-resource-holds-the-name) |
-| `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path — except after a rename, where the update-failure fallback and `--recreate-via-*` create first: there nothing is deleted, and you delete the old resource by hand if it is yours |
+| Failure | What happened |
+| --- | --- |
+| `NAMED_REPLACEMENT_COLLISION` | The create collided with the existing resource's name |
+| `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The create API is idempotent by name and returned the old resource's id instead of a new one, as `CreateQueue` does for an unchanged `QueueName` |
 
-`cdkd rollback` raises `NAMED_REPLACEMENT_COLLISION` too, and neither column
-above applies there — `--replace` is a deploy flag. A rollback reversing a
-replacement re-creates the old resource, and when the resource the replacement
-created declares `UpdateReplacePolicy: Retain`, cdkd will not delete that
-pinned copy to free the name. The op fails with the journal kept, so the revert
-resumes once you delete the new resource yourself or drop the policy; to leave
-that one resource alone and let the rest of the rollback finish, re-run with
-`cdkd rollback --orphan '<logicalId>'`. See
-[cli-rollback.md](cli-rollback.md#reversing-a-replacement).
+Without `--replace` the deploy fails and suggests renaming the resource. With
+`--replace` cdkd deletes the old resource first and recreates it under the same
+name, so the resource is briefly unavailable. Renaming the resource in your CDK
+code avoids the outage, because the create-first order then has a free name.
 
-The resource is briefly unavailable while it is deleted and recreated. The
-alternative remedy in both messages is to rename the resource so the
-create-first order has a free name to take.
+`--replace` does not help in three cases, and in each nothing is deleted:
+
+| Case | Why |
+| --- | --- |
+| The old resource declares `UpdateReplacePolicy: Retain` | The old resource keeps the name, so a same-name replacement can never proceed |
+| The template also changes the name, and another resource holds the new one | Deleting the old resource does not free that name; see below |
+| cdkd cannot show that the old resource is what holds the name | See [below](#when-cdkd-cannot-show-the-old-resource-holds-the-name) |
+
+`cdkd rollback` can raise `NAMED_REPLACEMENT_COLLISION` too, and `--replace` is
+not a rollback flag. See
+[Reversing a replacement](cli-rollback.md#reversing-a-replacement).
 
 #### When the new name belongs to another resource
 
-A replacement that also **changes** the physical name can collide with a
-resource that is not the one being replaced — for example, you renamed a
-function to a name another stack already uses. Deleting the old resource first
-cannot free that name, so cdkd does not offer `--replace` there:
+A replacement that also changes the physical name can collide with a resource
+that is not the one being replaced, for example a function renamed to a name
+another stack uses. cdkd compares the name the template declares with the name
+the old resource holds. When they differ, the deploy fails with
+`NAMED_REPLACEMENT_COLLISION` saying the name is held by another resource. Pick
+a free name, or delete the resource holding it if it is yours.
 
-- It compares the name your template declares with the name the old resource
-  holds, from state and its physical id.
-- When they differ, the deploy fails with `NAMED_REPLACEMENT_COLLISION` saying
-  the name is held by another resource. **Even with `--replace`, nothing is
-  deleted.**
-- Pick a free name, or delete the resource holding it if it is yours.
+The replacements that otherwise delete first (the rejected-update fallback and
+the `--recreate-via-*` flags) create first when the names differ. A collision
+there also fails with nothing deleted, and so does a name-idempotent create
+that returns the resource already holding the new name. Delete that resource
+by hand if it is yours.
 
-The two replacements that otherwise delete first — the
-[update-failure fallback](#the-stateful-guard-on-this-path) and the
-`--recreate-via-*` flags — create first when the names differ, since the old
-resource does not hold the new name. A collision then fails the same way with
-nothing deleted, and the old resource is deleted only once the new one exists.
+#### A create under a name that is already taken
 
-Some create APIs do not collide at all: SQS `CreateQueue`, SNS `CreateTopic`,
-Step Functions `CreateStateMachine` and ECS `CreateCluster` return the resource
-already holding the name, as do ELBv2 `CreateLoadBalancer` and
-`CreateTargetGroup` when the settings match, EventBridge `PutRule` and
-CloudWatch `PutMetricAlarm` overwrite it, and
-cdkd's CloudWatch Logs provider reads `ResourceAlreadyExistsException` as
-success, as its S3 provider reads `BucketAlreadyOwnedByYou` for a generated
-bucket name (an explicit `BucketName` a bucket already holds is refused, except the bucket an earlier attempt of the same create made and could not delete, which its retry takes back while that bucket's name, region and creation date are unchanged). For those types
-on cdkd's SDK providers, a replacement that changes the name — or moves an
-EventBridge rule to another bus, or changes `Type` onto one of these types, or,
-for an ELBv2 load balancer or target group, sends another name only because
-`--prefix-user-supplied-names` differs from the deploy that created it —
-first looks the new name up. When another resource holds it, the deploy fails
-with `NAMED_REPLACEMENT_COLLISION` and nothing is created or deleted — the
-create would otherwise take that resource over and record it as the stack's,
-for a later `cdkd destroy` to delete. A lookup that cannot run fails the same
-way.
+Some create APIs do not fail on a taken name. They return or overwrite the
+resource that already holds it: SQS queues, SNS topics, Step Functions state
+machines, ECS clusters, ELBv2 load balancers and target groups, EventBridge
+rules, CloudWatch alarms, log groups and S3 buckets. A create that went through
+would record someone else's resource as the stack's, for a later
+`cdkd destroy` to delete.
 
-A plain create of one of these types with an explicit name looks the name up
-too. When a resource already holds it, or the lookup cannot run, the deploy
-fails with `NAMED_CREATE_COLLISION` and nothing is created, as
-CloudFormation's create fails with "already exists". This holds even when the resource is this stack's
-own, left by an earlier interrupted deploy or kept by a `cdkd destroy` under
-`DeletionPolicy: Retain`: nothing in AWS tells the two apart. Delete it, or
-adopt it with [`cdkd import`](import.md), then re-run; the error ends on the
+So for those types on cdkd's SDK providers, a create with an explicit name
+looks the name up first:
+
+| Deploy step | When the name is taken, or the lookup cannot run |
+| --- | --- |
+| A plain create | Fails with `NAMED_CREATE_COLLISION`; nothing is created |
+| A replacement that changes the name, moves a rule to another bus, or changes `Type` onto one of these types | Fails with `NAMED_REPLACEMENT_COLLISION`; nothing is created or deleted |
+
+`NAMED_CREATE_COLLISION` fires even when the resource is this stack's own, left
+by an interrupted deploy or kept under `DeletionPolicy: Retain`: nothing in AWS
+tells the two apart. Delete the resource, or adopt it with
+[`cdkd import`](import.md), then re-run. The error ends with the
 `cdkd import <stack> --resource <logicalId>=<physicalId>` command for the
-resource it found — confirm the resource is yours before running it. An S3
-bucket gets no command, since the lookup also finds a bucket another account
-owns and lets you list. When the
-holder is this stack's own resource under another logical id (a construct moved
-or renamed, keeping its name), the error names that id: give the new resource
-another name, or deploy that id's removal first. A log group declared
-explicitly that something else already created — for example a Lambda
-function's `/aws/lambda/<name>` group, created on its first invocation — is
-refused the same way. A create under a name cdkd generates is not looked up.
-An ELBv2 load balancer or target group is looked up under the name the create
-sends, which carries the stack-name prefix under `--prefix-user-supplied-names`.
+resource it found. Confirm the resource is yours before running it.
+
+- An S3 bucket gets no command, because the lookup also finds buckets other
+  accounts own.
+- When the holder is this stack's own resource under another logical id (a
+  construct moved or renamed), the error names that id. Give the new resource
+  another name, or deploy that id's removal first.
+- A log group you declare that something else already created, such as a
+  Lambda function's `/aws/lambda/<name>` group, is refused the same way.
+- A create under a name cdkd generates is not looked up.
+- A load balancer or target group is looked up under the name the create
+  sends, which carries the stack-name prefix under
+  `--prefix-user-supplied-names`.
 
 #### When cdkd cannot show the old resource holds the name
 
-A collision says a name is taken, not who holds it. An orphan left by an earlier
-failed attempt, a retried create, or a resource made outside the stack collides
-exactly like the old resource does. So before `--replace` deletes anything, cdkd
-checks that the old resource holds the name the create actually sent:
+A collision says a name is taken, and nothing about who holds it. An orphan
+from an earlier failed attempt or a resource made outside the stack collides
+exactly as the old resource does. So before `--replace` deletes anything, cdkd
+checks that the old resource holds the name the create sent, from the name in
+state and the old resource's physical id.
 
-| The create sent | Shown to be the old resource's when |
-| --- | --- |
-| An explicit name from the template | State records that name for the old resource, or its physical id names it |
-| No name (cdkd generates one) | The old resource's physical id names the name cdkd generates for this deploy — for types whose generated name cdkd can predict |
-| A name the provider rewrites (IAM, ELBv2 prefix the stack name) | The old resource's physical id names the rewritten name this deploy sends |
-| A type cdkd has no name property for (Cloud Control only) | Both were created through Cloud Control, the create sent the old physical id itself as a `...Name` / `...Identifier` property, and every such property it sent matches the old resource's |
+When the check fails or cannot decide, the deploy fails with
+`NAMED_REPLACEMENT_COLLISION`, nothing is deleted, and the error does not
+suggest `--replace`. Remove or rename whatever holds the name if it is yours.
+If that is the resource being replaced, delete it by hand. Then re-run.
 
-A name placed inside a parent (an API's stage, a cluster's service) must also
-be in the same parent, and the old resource's state record and its last
-read-back must not name it differently (a resource renamed outside cdkd). When the check fails or cannot decide, the deploy fails
-with `NAMED_REPLACEMENT_COLLISION` and **nothing is deleted** — with or without
-`--replace`, and without advising `--replace`, which would refuse the same way.
-Remove or rename whatever holds the name if it is yours — if that is the
-resource being replaced, delete it by hand — then re-run the deploy.
-
-`UpdateReplacePolicy: Retain` hard-fails in both shapes **regardless of
-`--replace`**: with Retain the old resource keeps the name, so a same-name
-replacement can never proceed. The same two shapes, and the same two error
-codes, are reachable from the update-failure fallback covered below — under
-`Retain` that path also creates first, so it inherits the same constraint.
+The per-case rules are in
+[Deploy safety internals](cli-deploy-safety-internals.md#how-replace-proves-the-old-resource-holds-the-name).
 
 ### The stateful guard on this path
 
-`--replace` shares the [stateful-resource guard](#stateful-resource-guard):
-when the replacement target is a stateful type, the DELETE + CREATE loses all
-its data, so cdkd refuses unless `--force-stateful-recreation` is also passed.
-The details that matter here:
+When the resource `--replace` would replace is stateful, the DELETE + CREATE
+loses its data, so cdkd refuses unless `--force-stateful-recreation` is also
+passed. Three things differ from the `--recreate-via-*` flags:
 
-- **The guard is evaluated mid-deploy**, at the moment the immutable-update
-  rejection is caught — not at pre-flight, as it is for the `--recreate-via-*`
-  flags. The error names the resource and the data-loss reason.
-- **Every `AWS::S3::Bucket` counts as stateful here**, empty or not, and so
-  does every `AWS::Logs::LogGroup` that is not already stateful from its
-  recorded retention. There is no opportunity mid-deploy to run the emptiness
-  probes the pre-flight path uses, so cdkd assumes both hold data. That applies
-  to **both** triggers this section covers, not only the `--replace` opt-in:
-  replacing either needs `--force-stateful-recreation` whether you passed
-  `--replace` or the Cloud Control auto-fallback took you there on a plain
-  `cdkd deploy` — unless the resource declares `UpdateReplacePolicy: Retain`,
-  which exempts both triggers because the old resource survives (see below).
-- **The Cloud Control `UnsupportedActionException` auto-fallback is guarded on
-  the same terms.** That fallback still needs no flag to REACH the replacement
-  — when AWS rejects the in-place update because the type has no Cloud Control
-  UPDATE handler, cdkd replaces the resource on a plain `cdkd deploy`. But a
-  **stateful** target on that path now requires `--force-stateful-recreation`
-  too, exactly as the `--replace` opt-in does. Which of the two triggers fired
-  no longer decides whether the guard runs: the discriminator used to be the
-  provisioning layer a type happens to route through, which cdkd re-decides
-  every deploy. The error names the trigger the user actually hit rather than
-  `--replace`, which does not gate this path:
+- The guard runs mid-deploy, when the update is rejected. Other resources may
+  already have changed.
+- Every `AWS::S3::Bucket` and every `AWS::Logs::LogGroup` counts as stateful
+  here, empty or not, because the emptiness checks cannot run mid-deploy.
+- A plain `cdkd deploy` reaches the same guard without `--replace`. When Cloud
+  Control rejects an update because the type has no update handler
+  (`UnsupportedActionException`), cdkd falls back to a replacement on its own,
+  and a stateful target is refused on the same terms:
 
-  ```text
-  MyTable (AWS::DynamoDB::Table) cannot be updated in place by the provisioning
-  layer it routes through, so applying this change would DELETE + CREATE it —
-  but it is a stateful resource: destroy loses all data in the resource. Re-run
-  with --force-stateful-recreation to confirm the data loss, or change the
-  resource definition to avoid the update.
-  ```
+```text
+MyTable (AWS::DynamoDB::Table) cannot be updated in place by the provisioning
+layer it routes through, so applying this change would DELETE + CREATE it —
+but it is a stateful resource: destroy loses all data in the resource. Re-run
+with --force-stateful-recreation to confirm the data loss, or change the
+resource definition to avoid the update.
+```
 
-  `UpdateReplacePolicy: Retain` **is** an exemption on both of the triggers
-  this section covers, exactly as it is for the property-driven replacement
-  described below. Under `Retain` the replacement becomes create-ONLY: cdkd
-  leaves the old physical resource in place — orphaned, with its data, and no
-  longer tracked in state, so it keeps incurring cost and `cdkd destroy` will
-  not remove it; delete it yourself once you no longer need the data — and only
-  creates the new one. Nothing is destroyed,
-  so there is no data loss for `--force-stateful-recreation` to confirm, and
-  the flag is not required. It is also not an override: passing it does **not**
-  make cdkd delete a resource the template asked to keep.
+Types that are not stateful (a layer version, a Glue security configuration, a
+task definition) replace with `--replace` alone.
 
-  Retaining means the replacement create runs beside the live old resource, so
-  it cannot reuse a physical name that resource still holds. Both shapes of
-  that collision hard-fail, with the same error codes the property-driven path
-  uses (see [Same-name replacement](#same-name-replacement-delete-first-ordering)):
+#### Under `UpdateReplacePolicy: Retain`
 
-  ```text
-  MyTable (AWS::DynamoDB::Table) requires replacement because the provisioning
-  layer cannot update it in place — but its physical name is still held by the
-  existing resource AND UpdateReplacePolicy: Retain pins that resource in place.
-  The resource has a user-supplied physical name (my-table). Either rename the
-  resource in your CDK code (a fresh name lets the safe create-first order
-  proceed) — with Retain, the old resource keeps the name, so a same-name
-  replacement can never proceed. Removing UpdateReplacePolicy: Retain lets cdkd
-  delete the old resource first, which destroys it and any data it holds.
-  ```
+`Retain` exempts the resource from the guard. cdkd creates the new resource and
+leaves the old one in AWS with its data. The flag is not required, and passing
+it does not make cdkd delete a resource the template asked to keep.
 
-  Retaining leaves a resource cdkd no longer tracks, so the replacement reports
-  itself as a **partial** update rather than a clean one: the row prints
-  `partial (…)`, the run summary counts it under "of which left an orphaned
-  predecessor", `cdkd events` records the survivor's physical id, and the
-  deploy exits 2 unless you pass `--allow-unaddressed`. Nothing will retry it —
-  state points at the replacement — so deleting the survivor is yours to do.
-  Inside a nested stack the summary counts it on its own row, "Left an orphaned
-  predecessor in a nested stack", instead, and the exit code still covers it:
-  see [Nested stacks](#nested-stacks-and-the-exit-code).
+The old resource is no longer tracked in state. It keeps costing money,
+`cdkd destroy` will not remove it, and deleting it is yours to do. The deploy
+reports the replacement as partial:
 
-  This path previously deleted the old resource whatever the policy said, and
-  its refusal appended a note stating so. Both are gone: a resource explicitly
-  marked to survive its replacement is no longer destroyed by the
-  update-failure fallback.
+- the row prints `partial (…)`;
+- the summary counts it under `of which left an orphaned predecessor` (inside a
+  nested stack, `Left an orphaned predecessor in a nested stack`);
+- `cdkd events` records the old resource's physical id;
+- the deploy exits `2` unless you pass
+  [`--allow-unaddressed`](#allow-unaddressed-deploy).
 
-Non-stateful immutable types — LayerVersion, Glue SecurityConfiguration, ECS
-TaskDefinition, ApiGatewayV2 sub-resources — replace with `--replace` alone.
+The new resource is created beside the old one, so it cannot reuse a physical
+name the old one holds. That collision fails the deploy:
+
+```text
+MyTable (AWS::DynamoDB::Table) requires replacement because the provisioning
+layer cannot update it in place — but its physical name is still held by the
+existing resource AND UpdateReplacePolicy: Retain pins that resource in place.
+The resource has a user-supplied physical name (my-table). Either rename the
+resource in your CDK code (a fresh name lets the safe create-first order
+proceed) — with Retain, the old resource keeps the name, so a same-name
+replacement can never proceed. Removing UpdateReplacePolicy: Retain lets cdkd
+delete the old resource first, which destroys it and any data it holds.
+```
 
 ### Property-driven replacement and `STATEFUL_REPLACE_BLOCKED`
 
-The stateful guard also covers **property-driven replacement**: a replacement
-cdkd detects directly from the diff, because an immutable / createOnly property
-changed in the template. Examples are a change to
-`AWS::EFS::FileSystem.PerformanceMode`, an `AWS::EC2::Volume`
-`AvailabilityZone` move, or an S3 `BucketName` rename. This is a different
-trigger from a provider's mid-deploy update rejection, and it fires on a plain
-`cdkd deploy` with **no `--replace` flag at all**.
+A property-driven replacement is one cdkd sees in the diff: a create-only
+property changed in the template. Examples are an `AWS::EFS::FileSystem`
+`PerformanceMode` change, an `AWS::EC2::Volume` `AvailabilityZone` move, or an
+S3 `BucketName` rename. A plain `cdkd deploy` performs it with no `--replace`.
 
-A plain deploy that would DELETE + CREATE a **stateful** resource because of
-such a change requires `--force-stateful-recreation` and fails with
-`STATEFUL_REPLACE_BLOCKED` without it. The error names the immutable properties
-that changed:
+When the resource is stateful, the deploy fails with `STATEFUL_REPLACE_BLOCKED`
+unless `--force-stateful-recreation` is passed. The error names the properties:
 
 ```text
 MyFileSystem (AWS::EFS::FileSystem) requires replacement (immutable property
@@ -1085,341 +709,77 @@ loss, or change the resource definition to avoid the immutable-property change.
 
 Three exemptions apply to this trigger specifically:
 
-- **`UpdateReplacePolicy: Retain` is exempt.** The old resource and its data
-  survive the replacement — orphaned rather than deleted — so there is no data
-  loss to confirm.
-- **`UpdateReplacePolicy: Snapshot` is NOT exempt.** cdkd does take a final
-  snapshot on the replacement's delete, but a snapshot is a point-in-time copy,
-  not a surviving resource: the live resource is still destroyed and recreated,
-  so the consent flag is still required.
-- **A target already named by `--recreate-via-cc-api` /
-  `--recreate-via-sdk-provider` is exempt**, because those flags ran their own
-  pre-flight stateful probe before the deploy started.
+| Case | Guarded? |
+| --- | --- |
+| `UpdateReplacePolicy: Retain` | No. The old resource and its data stay in AWS, untracked. |
+| `UpdateReplacePolicy: Snapshot` | Yes. cdkd takes the final snapshot, but the live resource is still destroyed. |
+| A target named by `--recreate-via-cc-api` / `--recreate-via-sdk-provider` | No. Those flags checked it at pre-flight. |
 
-As with `--replace`, this mid-deploy check treats every `AWS::S3::Bucket` and
-every `AWS::Logs::LogGroup` as stateful — neither emptiness probe can run here.
-Non-stateful types still replace freely on a plain `cdkd deploy` with no flag.
+As with `--replace`, every S3 bucket and every log group counts as stateful
+here. Types that are not stateful replace freely.
 
 ### Type changes on an existing logical id
 
-Changing a resource's `Type` while keeping its logical id is a replacement too,
-and always one: it is never applied as an in-place update, and never skipped as
-"no changes" even when the two types declare identical properties. The two
-halves of that replacement involve two different types, so cdkd routes each on
-its own:
+Changing a resource's `Type` while keeping its logical id is always a
+replacement. It is never applied in place and never skipped as "no changes",
+even when the two types declare identical properties.
 
-- The **existing resource** is deleted through the provider of the type cdkd
-  **recorded** for it, on the provisioning layer it was created through.
-  Everything that decides whether that delete may happen evaluates the recorded
-  type as well — the stateful guard above, so leaving an `AWS::SSM::Parameter`
-  for an `AWS::SNS::Topic` needs `--force-stateful-recreation` and the reverse
-  does not, and `UpdateReplacePolicy: Snapshot`.
-- The **new resource** is created through the provider of the type the
-  **template** declares, with a fresh routing decision.
+| Half | Handled as |
+| --- | --- |
+| The existing resource | Deleted through the provider of the type cdkd recorded. The stateful guard and `UpdateReplacePolicy: Snapshot` judge that recorded type. |
+| The new resource | Created through the provider of the type the template declares, routed as a new resource |
 
-A `Type` change onto a type whose create adopts a taken name (see
-[When the new name belongs to another resource](#when-the-new-name-belongs-to-another-resource))
-looks the name up first even when it is unchanged: the old resource holds it
-in another type's name space. Any resource found there fails the deploy with
-nothing created or deleted.
+So leaving an `AWS::SSM::Parameter` for an `AWS::SNS::Topic` needs
+`--force-stateful-recreation`, and the reverse does not.
 
-Two physical ids that happen to be equal across the two types — an SSM parameter
-and a log group can share a bare name — are treated as two resources. The
-exception is a change between two custom resource types (`Custom::*`,
-`AWS::CloudFormation::CustomResource`), whose handler picks the id: there an
-equal id is the existing resource, and the replacement is refused with
-`NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created
-(`--replace` deletes the old resource first instead, as for any name-idempotent
-create).
-Within one type an equal id is the same resource, with one exception: two
-`AWS::Glue::Table` records in DIFFERENT databases can share an id when either
-name contains `|` (table `db|orders` in database `my`, table `orders` in
-database `my|db`). When both records' `DatabaseName` prefix the shared id and
-differ, cdkd treats them as two tables, so such a replacement keeps the new
-table and deletes the old one through its own record, and a rollback reverses
-it.
-When the new resource's create collides on a name instead, the error says that
-the holder may be an unrelated resource of the new type, which `--replace`
-cannot free. Under `--replace`, cdkd deletes the old resource first only
-between two types that share one name space (RDS, DocumentDB and Neptune
-clusters, instances and subnet groups; DynamoDB tables and global tables);
-any other pair fails with nothing deleted.
+Name collisions follow the rules above, with two differences. A change onto a
+type whose create [adopts a taken name](#a-create-under-a-name-that-is-already-taken)
+looks the name up even when it is unchanged, and any resource found fails the
+deploy. And under `--replace`, cdkd deletes the old resource first only between
+two types that share one name space (RDS, DocumentDB and Neptune clusters,
+instances and subnet groups; DynamoDB tables and global tables). Any other pair
+fails with nothing deleted.
 
-`cdkd rollback` and the automatic rollback reverse such a replacement the same
-way: the old resource is re-created through its own type's provider and the new
-one deleted through its own. A rollback journal written by an older cdkd names
-only the new type on the operation, so the old type is read from the previous
-resource record the journal also carries. When a journal names no old type at
-all, or names two different ones, that one operation is refused with
-`ROLLBACK_REPLACEMENT_UNROUTABLE` and the journal is kept; fix forward with
-`cdkd deploy`, or pass `--orphan <LogicalId>` to leave the resource as it is and
-let the rest of the rollback proceed.
+`cdkd rollback` and the automatic rollback reverse a type change through both
+types. When a rollback journal cannot name the old type, that one operation is
+refused with `ROLLBACK_REPLACEMENT_UNROUTABLE` and the journal is kept. Fix
+forward with `cdkd deploy`, or pass `--orphan <LogicalId>` to leave the
+resource and let the rest of the rollback proceed.
+
+How two equal physical ids across types are told apart is in
+[Deploy safety internals](cli-deploy-safety-internals.md#equal-physical-ids-across-a-type-change).
 
 ### Type changes into or out of a nested stack (`TYPE_CHANGE_NESTED_STACK`)
 
-One type pair is refused rather than replaced. A nested stack's row owns a whole child stack —
-its own state record at `<stack>~<logicalId>` and every resource in it — and a
-replacement deletes its old half as a best-effort cleanup step whose failure is
-only a warning. For a single resource that strands one resource; for a nested
-stack it would strand a child stack under a deploy that reports success.
+One type pair is refused instead of replaced. A nested stack's row owns a whole
+child stack, and a failed cleanup of the old half would strand that child under
+a deploy that reports success.
 
-So a plain `cdkd deploy` (and `cdkd deploy --dry-run`) **refuses**, before any
-resource is touched, when a logical id's recorded type and its template type
-differ with `AWS::CloudFormation::Stack` on either side:
+`cdkd deploy` and `cdkd deploy --dry-run` refuse before any resource is touched
+when a logical id's recorded type and template type differ with
+`AWS::CloudFormation::Stack` on either side:
 
 ```text
 Refusing to deploy MyStack: a resource changes its Type into or out of AWS::CloudFormation::Stack, which cdkd does not replace in place (issue #2668).
   - Thing: Type changes from AWS::SNS::Topic to AWS::CloudFormation::Stack (the existing AWS::SNS::Topic is arn:aws:sns:us-east-1:111122223333:thing).
-    Replacing a single resource BY a nested stack is not supported: ...
 ```
 
-`cdkd diff` previews the same refusal under `Blocking (cdkd deploy will
-refuse):` and exits `3`.
+`cdkd diff` shows the same refusal under
+`Blocking (cdkd deploy will refuse):` and exits `3`.
 
-There is no flag that overrides this refusal. Deploy the change as two changes
-instead: give the new resource a **different logical id** (in CDK, rename the
-construct) so the old row is deleted through its own type's provider, or remove
-the resource in one deploy and add its replacement in the next. A rollback
-journal from an older cdkd that recorded such a change is refused per operation
-in the same way as an unroutable one above.
-
-`--recreate-via-cc-api` / `--recreate-via-sdk-provider` refuse a nested stack's
-own row for the same reason; see [Nested stacks](#nested-stacks).
-
-### Cyclic nested templates are refused
-
-Each nested child template is located through its parent row's
-`Metadata['aws:asset:path']`. Right after synthesis, `cdkd deploy` walks every
-nested template reachable from each stack it is about to deploy, and refuses
-when a path resolves to a template already on the same nesting chain:
-
-```text
-SynthesisError: The nested template tree under stack Parent contains a
-cycle: Child (/path/to/cdk.out/child.json) then Loop
-(/path/to/cdk.out/child.json). Nested stack Loop (declared in stack
-Parent~Child) resolves to a template that is already on that nesting chain,
-so its Metadata['aws:asset:path'] closes a cycle. CDK emits an acyclic nested
-template tree with relative asset paths, so this indicates the synth output was
-hand-modified or generated by a non-CDK toolchain. Refusing to start the
-deploy; nothing has been published or provisioned.
-```
-
-CDK emits an acyclic tree, so a well-formed `cdk.out` never reaches this. The
-refusal covers a hand-modified or non-CDK-generated assembly.
-
-The check runs for every stack in the deploy set, including stacks pulled in as
-dependencies, and before anything else happens to any of them: no macro is
-expanded, no asset is published, no lock is taken, no state record is written
-and no resource of the parent stack is created. One malformed stack stops the
-whole run, `--dry-run` included, with exit code 1. A stack outside the deploy
-set is not checked.
-
-The whole tree is checked up front, however deep the cycle sits. Each nested
-level is a real deployment, which is why the check does not wait until the walk
-reaches the repeat.
-
-The nested-stack provider repeats the same walk on the subtree under its own
-row before it deploys the first nested level. With the check above in place that
-second walk finds nothing; it is what still refuses the tree if a nested deploy
-is ever started some other way, and its message begins with
-`NestedStackProvider:` and ends with `Refusing to deploy any level of it.`
-
-The same walk refuses an `aws:asset:path` that resolves **outside** the
-directory its template sits in — `path.join` folds `..`, so `../../etc/passwd`
-would otherwise be read and deployed as a nested template:
-
-```text
-SynthesisError: The nested template tree under stack Parent has nested stack
-Child (reached through Child (/path/to/cdk.out/child.json)) with
-Metadata['aws:asset:path']=../../etc/passwd which resolves to
-/etc/passwd, outside /path/to/cdk.out. CDK emits assembly paths that stay
-inside the assembly directory; one that leaves it indicates the synth output
-was hand-modified or generated by a non-CDK toolchain. Refusing to start the
-deploy; nothing has been published or provisioned.
-```
-
-A path that stays inside the directory only until a symbolic link is followed
-is refused the same way, naming the link's target — including a link whose
-target does not exist yet, since a write follows such a link and creates the
-file where it points. Every other assembly-supplied path is held to the same
-rule wherever cdkd turns one into a file it reads, publishes or writes:
-
-| Where it comes from | What cdkd would otherwise do with it |
-| --- | --- |
-| a nested assembly's `directoryName` | read that directory's `manifest.json` |
-| a stack's `templateFile` | deploy whatever parses as its template |
-| an asset manifest's `file` | read the list of assets to publish |
-| a file asset's `source.path` | zip it and upload it to the bucket the manifest names |
-| a Docker asset's `source.directory` | send it to the image build as the context |
-| a stack's metadata side file | read its annotations |
-| a stack name, under `cdkd synth --verbose` | write `<name>.template.json` there |
-
-The asset rows are the reason this matters beyond a misleading error: the
-destination bucket is named by the same manifest, so an escaping `source.path`
-would upload a file from outside the assembly using your credentials. The last
-row is the only one that WRITES.
-
-**The two asset rows are measured against the app's output directory, not the
-manifest's own.** A `Stage`'s assets are staged into the app's `cdk.out` while
-the Stage's asset manifest sits in `cdk.out/assembly-<Stage>/`, so CDK writes
-`source.path: "../asset.<hash>"` there by design — and a nested Stage reaches
-up further still. Those paths load normally. What is refused is a **relative**
-path leaving the output directory, from a Stage manifest and a top-level one
-alike.
-
-**An ABSOLUTE `source.path` or `source.directory` is accepted, and nothing
-refuses it.** `cdk synth --no-staging` emits exactly that shape — under
-`aws:cdk:disable-asset-staging` CDK writes each asset's absolute SOURCE
-directory instead of a staged copy — and the CDK CLI publishes such a path
-without any containment check of its own, so refusing would reject the output
-of a documented flag and be stricter than the tool cdkd complements.
-
-**For an absolute path the warning is the entire protection.** cdkd prints one
-when the path falls outside the output directory, naming the directory and
-naming where the bytes go — the destination bucket and key, or the image build.
-There is no second gate behind it. A Cloud Assembly you did not synthesize can
-name any directory your user account can read, and cdkd will package it and
-upload it to a bucket that same manifest names, using your credentials. So the
-line is worth reading, and it is deliberately rare:
-
-| Value | What cdkd does |
-| --- | --- |
-| absolute, inside the output directory | accepted, silently — this is where every staged asset is |
-| absolute, outside it | accepted, **with a warning** naming the directory and the destination |
-| naming the output directory *itself*, by any spelling | accepted, **with a warning** — the whole assembly becomes the asset, and no `cdk synth` emits this |
-| relative, escaping the output directory | refused |
-
-"By any spelling" is meant literally: a symbolic link to the output directory,
-or the path a `realpath` would print for it, is that directory, and cdkd says
-so for all of them.
-
-The relative refusal catches an accidental or legacy `..` and costs nothing,
-which is why it stays. It is not a boundary against a value someone chose: the
-absolute spelling of the same path is accepted with a warning.
-
-The `cdkd local *` commands apply the same rule to SOME of the assembly they
-read — including a path the deploy side has no equivalent of, a Lambda's
-`Handler` for an inline `Code.ZipFile`, which cdkd materializes as a file
-before running it. **`cdkd local invoke`, `cdkd local start-api`,
-`cdkd local start-alb` and `cdkd local start-cloudfront`** — every command that
-bind-mounts Lambda code — refuse a **relative** escaping `aws:asset:path`
-before mounting it into the container, and accept an **absolute** one with the
-same warning, for the same reason. Other assembly-supplied paths are not
-covered yet; [Local Execution](local-emulation.md) states the trade and lists
-which are which.
-
-One consequence of measuring against the app's output directory: pointing `-a`
-at a Stage SUB-assembly (`cdkd deploy -a cdk.out/assembly-MyStage`) refuses that
-Stage's own `../asset.<hash>`, because the assembly you named really does end
-where you said it does and the asset really is outside it. Point `-a` at the
-app's `cdk.out` and select the stack by its display path
-(`cdkd deploy 'MyStage/*'`) instead.
-
-## A pre-synthesized assembly is trusted input
-
-The containment rules above cover the paths in that table and no others. The
-rest of an asset manifest is forwarded **as the manifest writes it**, and cdkd
-does that deliberately, matching the CDK CLI. What it will not do is stay quiet
-about it:
-
-| Manifest value | What cdkd does with it | When it warns |
-| --- | --- | --- |
-| `source.executable` | **runs it on this machine** — an arbitrary command line | on every command that builds a Docker asset, naming the command |
-| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside the output directory; a path inside the build context is usually left quiet |
-| a `dest=` in `dockerOutputs` or a cache option | **writes** to that host path | when the path is outside the output directory, wherever the build context is |
-| `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
-
-The read/write split follows the `dest=` key, not the field: a `cacheFrom`
-carrying a `dest=` is a write and a `cacheTo` carrying a `src=` is a read.
-
-**Two of those are worth stating plainly.** Deploying from a pre-synthesized
-assembly *does* execute code from it, because a Docker asset may declare
-`source.executable` instead of a Dockerfile — so an assembly is not only data.
-Every `cdkd local` command that builds such an asset runs it too, and every one
-of them prints the line first. And a build secret, an SSH key or a cache
-directory is a host path the CloudFormation template never shows, so reading
-the template is not enough to know what a deploy will touch.
-
-Each distinct command is announced once per run, not once per build: a
-long-running `cdkd local start-service` rebuilds per replica and again after a
-crash-loop restart, and repeating a paragraph that size would bury it. Repeats
-go to `--verbose`.
-
-The destination check is a **name-shape** check, not a proof of ownership: a
-bucket named like a CDK bootstrap bucket for your account can still live in
-someone else's. It narrows what a careless manifest gets away with, nothing
-more.
-
-Pointing `-a` at an assembly you did not produce is the same decision as running
-someone else's build output. cdkd cannot make that decision for you: anyone who
-can rewrite a manifest can equally rewrite the Dockerfile, the Lambda asset and
-the template, so a refusal here would stop nothing while breaking the
-split-synth/deploy pipelines that are the normal shape. Synthesize it yourself,
-or read it first.
-
-The nested-stack walk separately refuses an **absolute** `aws:asset:path`, which
-is a "not CDK-generated" tripwire rather than an escape. It is a different
-question from the asset rows above and keeps a different answer: there the value
-is a nested-stack TEMPLATE that CDK always writes into the output directory, so
-`--no-staging` does not relocate it and an absolute one means the assembly was
-not CDK-generated. Its message says `which is absolute` where the containment
-one says `which resolves to ...`, so the two are told apart at a glance. Also refused is a tree nested more than 512 levels
-deep, which could not deploy anyway: each level lengthens the child's state key,
-and S3 caps a key at 1024 bytes. A tree with more than 10,000 nested-stack rows to
-follow is refused as well. That is far beyond any CDK-generated assembly; in
-practice it takes symlinked directories, which give one template file many
-paths.
-
-**A `Stage` whose own `manifest.json` cannot be read stops every command**,
-as the AWS CDK CLI does — the Stage was never synthesized, or its directory is
-gone:
-
-```
-Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json.
-Every stack under it is missing from the cloud assembly, so cdkd will not act
-on the app. Re-synthesize the app so the Stage is written, or point --app at a
-complete cloud assembly.
-```
-
-This holds whatever is selected — `--all`, no stack, a wildcard, or an exact
-stack name, including one outside the Stage — and for `cdkd destroy` too,
-which otherwise falls back to state when an app cannot be synthesized at all.
-To reach a deployed stack by name without the app, use
-`cdkd state destroy '<stack>'`. Earlier releases tolerated the Stage and acted
-on the stacks that did load, so a run over the app could exit `0` having never
-looked at the Stage's stacks. `cdkd scrub` treats it as a refusal and exits
-`2` (`SCRUB_STAGE_LOAD_FAILED`), never `--fail`'s `1`, which means plaintext
-was found.
-
-Every other refusal under a Stage — an escaping or absent `templateFile`, an
-unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —
-aborts the run, with the Stage named ahead of the refusal
-(`Stage MyStage: Stack MyStage-Api ...`). For a Stage inside a Stage, the
-innermost one is named.
-
-Two sibling rows naming the **same** template are fine — that is a shared child,
-not a cycle. Only a repeat along one root-to-child path is refused, so the
-cycle rule itself never limits nesting depth. A row's `Condition` is not evaluated: a template
-that includes itself behind a condition is refused too, as it is by
-[`cdkd diff --recursive`](cli-diff.md#cyclic-nested-templates-are-refused).
+No flag overrides it. Make it two changes: give the new resource a different
+logical id (rename the construct), or remove the resource in one deploy and add
+its replacement in the next.
 
 ## Stateful-resource guard
 
-Destroying and recreating most resource types loses nothing — an IAM role or a
-Lambda function comes back identical. For **data-bearing** types the destroy
-loses everything in the resource: rows in a DynamoDB table, objects in an S3
-bucket, log lines in a log group, images in an ECR repository. AWS does not
-migrate any of it to the replacement.
+Destroying and recreating most resources loses nothing: an IAM role or a Lambda
+function comes back identical. A **stateful** resource holds data that the
+delete destroys and AWS does not copy to the replacement: rows in a DynamoDB
+table, objects in a bucket, lines in a log group, images in an ECR repository.
 
-So cdkd refuses to destroy-and-recreate a stateful resource unless
-`--force-stateful-recreation` is passed. On the paths you reach by asking for a
-replacement — `--recreate-via-cc-api`, `--recreate-via-sdk-provider`,
-`--replace` — that is a second flag beside the first, mirroring
-[`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
-on destroy. On the rest it is the **only** flag: a plain `cdkd deploy` can reach
-a replacement on its own, and then this is what it asks for.
-
-Every path that consults this guard:
+cdkd refuses to destroy and recreate a stateful resource unless
+`--force-stateful-recreation` is passed. Every path that consults this guard:
 
 | Path | When the guard runs |
 | --- | --- |
@@ -1430,115 +790,118 @@ Every path that consults this guard:
 | Property-driven replacement on a plain `cdkd deploy` | Mid-deploy, from the diff |
 | A resource a `--recreate-via-*` deploy replaces because it reads a target through a direct chain of create-only properties | After the diff, before any resource is touched (other paths fall to the rows above, mid-deploy) |
 
+The Cloud Control fallback and the property-driven replacement need no other
+flag, so a plain `cdkd deploy` can ask for this one.
+
+### `--force-stateful-recreation`
+
+```bash
+cdkd deploy MyStack --force-stateful-recreation
+
+# In CI, recreating a stateful resource takes three flags
+cdkd deploy MyStack \
+  --recreate-via-cc-api MyTable \
+  --force-stateful-recreation \
+  --yes
+```
+
+> [!CAUTION]
+> The flag has no per-resource form. It clears the guard for every replacement
+> in the run, nested stacks included. All data in each replaced resource is
+> lost, and nothing migrates it.
+
+Inside a nested stack the flag does two things:
+
+- A stateful resource that a template change or a rejected update replaces is
+  replaced instead of refused.
+- The delete empties the resource first. A non-empty S3 bucket has its objects
+  deleted, and an ECR repository is deleted with its images. Without the flag
+  cdkd refuses to delete either while it holds data, unless the resource opted
+  in itself (CDK's `autoDeleteObjects`, `emptyOnDelete`, `autoDeleteImages`).
+
+The recreate prompt lists only the `--recreate-via-*` targets of the stack you
+deploy, so it does not show replacements inside nested stacks. Check them
+first:
+
+```bash
+cdkd diff MyStack --recursive
+```
+
+The diff shows the replacements a template change drives. A replacement that
+follows a rejected in-place update is decided during the deploy and does not
+appear there.
+
 ### Deletion protection blocks a replacement, and deploy cannot clear it
 
-`--force-stateful-recreation` clears cdkd's own data guard. It does not clear
-AWS's: a resource carrying a deletion-protection flag refuses every deletion
-operation until the flag is turned off, and a replacement is a delete plus a
-create.
+`--force-stateful-recreation` clears cdkd's guard. It does not clear AWS's: a
+resource with deletion protection on refuses every delete, and a replacement
+includes a delete. `cdkd destroy` has `--remove-protection` for this.
+`cdkd deploy` has no such flag, so no combination of replace flags deletes a
+protected resource.
 
-`cdkd destroy --remove-protection` exists for that on the destroy side.
-**`cdkd deploy` has no `--remove-protection`**, so no combination of replace
-flags gets a deploy to delete a protected resource. What happens instead depends
-on the order the replacement runs in:
+What happens depends on the order the replacement runs in:
 
 | Order | When a deploy uses it | Outcome while protection is on |
 | --- | --- | --- |
 | Delete first | `--recreate-via-*`, the update-failure fallback (`--replace` or the Cloud Control auto-fallback), and `--replace`'s retry after a name collision or a name-idempotent create | The deploy fails at the delete |
 | Create first | A property-driven replacement, and `--recreate-via-*` or the update-failure fallback when the template also renames the resource | The deploy completes, warning that the old resource could not be deleted |
 
-A create-first replacement does not stop: the old resource, and its data, stay
-in AWS, no longer tracked by cdkd, and you delete it yourself once protection is
-off. Under `UpdateReplacePolicy: Retain` neither row applies, because the old
-resource is never deleted — see the `Retain` case below.
+On the create-first order the old resource and its data stay in AWS, no longer
+tracked by cdkd. You delete it yourself once protection is off.
 
-So turn protection off before the deploy that replaces the resource — or, after
-a delete-first failure, turn it off and re-run:
+Turn protection off immediately before the deploy that replaces the resource,
+or after a delete-first failure, then re-run:
 
 ```bash
-# CloudWatch Logs — the log group whose LogGroupClass you are changing
+# CloudWatch Logs: the log group whose LogGroupClass you are changing
 aws logs put-log-group-deletion-protection \
   --log-group-identifier /my/log/group --no-deletion-protection-enabled
 
 cdkd deploy MyStack --replace --force-stateful-recreation
 ```
 
-Clearing the flag from the template in the SAME deploy does not work where cdkd
-refuses the change before it applies any property — the `AWS::Logs::LogGroup`
-`LogGroupClass` guard is one such refusal. That route takes two deploys: one
-that turns protection off with the immutable-property change reverted, then one
-that re-applies it with the replace flags.
+You are turning protection off on the resource that is about to be deleted. The
+new resource is created from your template and gets whatever protection the
+template declares, so there is nothing to turn back on.
 
-Two kinds of refusal name this dead end explicitly:
+> [!WARNING]
+> If the deploy does not complete, protection stays off and no later
+> `cdkd deploy` notices: the template and the state record both still say it is
+> on. [`cdkd drift`](cli-drift.md) shows it, and `cdkd drift --revert` restores
+> it.
 
-- **The stateful-resource guard's refusals** on `--recreate-via-*`, `--replace`,
-  the Cloud Control auto-fallback and a property-driven replacement add a note
-  for any stateful type in
-  [`--remove-protection`'s table](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
-  whose protection flag is on. The note names the flag, both outcomes above,
-  and this section, and leaves turning the flag off to the console or the
-  service's own API. A target under `UpdateReplacePolicy: Retain` gets no note.
-- **Some types' own refusals** read their own protection property and name the
-  command that turns it off: `AWS::Logs::LogGroup`,
+**Clearing the flag in the template takes two deploys.** For most types cdkd
+refuses the immutable change before it applies any property, so removing the
+protection property in the same deploy has no effect. Deploy once with
+protection off and the immutable change reverted, then again with the change
+and the replace flags. `AWS::Cognito::UserPool` is the exception: its refusal
+comes after the update applied `DeletionProtection`, so the failed deploy
+already turned it off and the next run succeeds.
+
+**Under `UpdateReplacePolicy: Retain`, do not turn protection off.** A retaining
+replacement never deletes the old resource, so protection blocks nothing. When
+the replacement would land on the same physical name (the case for an
+`AWS::Logs::LogGroup`) it cannot complete either, and fails with
+`NAMED_REPLACEMENT_IDEMPOTENT_CREATE` or `NAMED_REPLACEMENT_COLLISION`. You
+would end up with the original resource, its protection removed by hand, and
+the change still unapplied. Remove the `Retain` policy, or revert the immutable
+change.
+
+Some refusals mention protection themselves:
+
+- The guard's refusals add a note when cdkd's records show protection on, for
+  any type `cdkd destroy --remove-protection` covers
+  ([Destroy flags & guards](cli-destroy.md)). Protection enabled outside cdkd
+  after its last read is not in those records, so the note can be missing while
+  AWS still refuses the delete.
+- Six types name the command that turns protection off: `AWS::Logs::LogGroup`,
   `AWS::ElasticLoadBalancingV2::LoadBalancer`, `AWS::EMR::Cluster`,
   `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
   `AWS::AutoScaling::AutoScalingGroup`. They point at the console instead when
-  the resource's id cannot be printed safely on a command line: it would be
-  changed by sanitizing, it holds whitespace or a character a shell acts on
-  (a quote, a backtick), or something the AWS CLI itself acts on (a leading
-  `file://` or `-`).
+  the resource's id cannot be printed safely on a command line.
 
-The guard's note does not ask AWS: it reads the properties cdkd recorded and
-the AWS read-back it stored after its last write. Protection you enabled out of
-band after that read is in neither, so such a resource gets the guard's shorter
-message. The six types' own refusals do not read the stored read-back at all:
-they read the properties cdkd recorded (`AWS::Cognito::UserPool` reads the
-template's value first), so protection that only the read-back shows gets their
-shorter message. AWS refuses the delete either way, for every type in
-`--remove-protection`'s table whenever a deploy has to replace one, whether or
-not its refusal says so — a failed deploy or an untracked old resource, per the
-table above.
-
-`AWS::AutoScaling::AutoScalingGroup` is the one whose refusal is narrower than
-the type's protection setting, and deliberately: the group's three levels are
-`none`, `prevent-force-deletion` and `prevent-all-deletion`, and only the last
-blocks a replacement, because the deploy path's delete does not pass
-`ForceDelete`. At `prevent-force-deletion` there is nothing to disable.
-
-`AWS::Cognito::UserPool` is the one exception to the two-deploys rule above.
-Its refusal fires AFTER `UpdateUserPool` has already applied the template's
-`DeletionProtection`, so clearing it in the template DOES take effect in that
-same (failed) deploy — the next run with the replace flags then succeeds. Its
-refusal reads the desired value first for exactly that reason. Do not
-generalize it: every other type above refuses before applying anything.
-
-You are disabling protection on the resource that is about to be **deleted**,
-not on the one you end up with: every replacement path re-creates from your
-template, so the new resource gets whatever protection flag the template
-declares — and none, if the template declares none. There is nothing to restore
-afterwards on that path, and correspondingly, if you turn protection back on by
-hand you create drift against a template that says otherwise.
-
-Two cases break that, and both are worth checking before you disable anything.
-
-**If the deploy does not complete, the flag stays off — and cdkd will not
-notice.** cdkd diffs your template against its state record; both still say
-protection is on, so no later `cdkd deploy` ever issues the flip. Only
-[`cdkd drift`](cli-drift.md) surfaces it, and `cdkd drift --revert` restores it.
-Disable immediately before the deploy, not as a separate earlier step.
-
-**Under `UpdateReplacePolicy: Retain`, do not disable it at all.** A retaining
-replacement does not delete the old resource ([above](#replace-deploy)), so
-protection was never going to block anything — the disable buys you nothing.
-Worse, when the replacement would land on the **same physical name** — the case
-for `AWS::Logs::LogGroup`, whose only replacement-triggering property is
-`LogGroupName` — the retaining replacement cannot complete either. cdkd refuses
-it, with `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` when the create is idempotent and
-returns the existing resource's id, or `NAMED_REPLACEMENT_COLLISION` when AWS
-rejects the duplicate name outright. You end up with the original resource, its
-protection stripped by hand, and the **immutable** change still unapplied — a
-mutable property in the same deploy may well have landed. Remove the `Retain`
-policy, or revert the immutable change.
+For an Auto Scaling group only the `prevent-all-deletion` level blocks a
+replacement. At `prevent-force-deletion` there is nothing to turn off.
 
 ### Always-stateful types
 
@@ -1566,266 +929,86 @@ Destroy loses all data for these, unconditionally.
 | Nested stacks | `AWS::CloudFormation::Stack` — replacing a nested stack destroys the whole child stack, every resource it owns, with no per-resource guard. Its `StackName` is immutable, so a `StackName` edit deployed with `--prefer-sdk-route AWS::CloudFormation::Stack:StackName` is a replacement |
 | Edge / identifier immutability | `AWS::CloudFront::Distribution` — the URL changes, which breaks consumers, and propagation takes roughly 20 minutes. `AWS::SMSVOICE::PhoneNumber` and `AWS::SMSVOICE::SenderId` are the same class: a release returns the identifier to the pool, the replacement gets a different one, and the original may be unobtainable |
 
-The list has mechanical lower bounds cdkd enforces in unit tests, so it is
-checked rather than only hand-curated.
+The list only grows; [the changelog](changelog-cdkd.md) records when each type
+joined. Where it is not knowable from outside whether a delete destroys data,
+the type is guarded.
 
-- **Every type cdkd takes a final snapshot of before a destroy is on it.** cdkd
-  snapshots the types CloudFormation lets you tag `DeletionPolicy: Snapshot`,
-  and CloudFormation permits that attribute exactly where deleting the resource
-  destroys data worth capturing first — so a type cdkd snapshots on destroy
-  must not be replaceable mid-deploy without consent. `AWS::Redshift::Cluster`,
-  `AWS::ElastiCache::CacheCluster` and `AWS::ElastiCache::ReplicationGroup`
-  joined the guard for that reason.
-- **Every type whose delete consumes the `--force-stateful-recreation` consent
-  is on it.** A resource whose deletion needs that flag to clear its own data
-  guard is by definition data-bearing. `AWS::S3Express::DirectoryBucket` joined
-  for that reason.
-- **Every type a tier-2 sweep proposes is either on it or written off with a
-  reason.** The two bounds above are derived from cdkd's own SDK providers, so
-  neither can see the 1371 CloudFormation types that have no provider and route
-  a replacement through Cloud Control API — the larger population by two orders
-  of magnitude, and the one the guard was reaching with no flag at all. cdkd now
-  reads every one of their registry schemas and proposes the types that declare
-  an immutable property (so a rename replaces the resource on a plain
-  `cdkd deploy`) and look like they store something. Each proposal must end up
-  on this list or be written off in the sweep's own file with the reason; a
-  proposal in neither fails the build. Most of the table above joined this way.
+A few types are deliberately not guarded, as CloudFormation also replaces them
+without asking:
 
-Unlike the first two, that third bound is a **heuristic**: no AWS-published
-artifact says "deleting this destroys user data", so what it buys is that the
-next widening is checkable, not that the current list is complete. Where it
-proposes a type whose answer is not knowable from the outside, the type is
-guarded — an unprovable emptiness must not read as empty. The write-offs are
-the cases where the schema settles it: `AWS::RDS::GlobalCluster`,
-`AWS::Neptune::GlobalCluster` and `AWS::DocDB::GlobalCluster` group regional
-clusters that outlive them; `AWS::RedshiftServerless::Workgroup` is compute
-against a namespace that is guarded; `AWS::Amplify::Domain`,
-`AWS::Cognito::UserPoolDomain` and `AWS::Lightsail::Domain` are DNS rather than
-stores; `AWS::EC2::TransitGatewayRouteTable` and its siblings hold nothing but
-tags, their routes being separate template resources. The full list of
-write-offs, each with its reason, is in
-`scripts/audit-stateful-candidates.ts`, and the proposals themselves — with the
-immutable properties that make each one reachable — in
-[`docs/_generated/stateful-candidates.md`](_generated/stateful-candidates.md).
+- `AWS::EC2::Instance`: its root volume is ephemeral by design. Keep persistent
+  data on an `AWS::EC2::Volume`, which is guarded.
+- `AWS::SQS::Queue`: a queue's backlog is transient.
+- `AWS::KMS::Alias`: deleting an alias removes a pointer, and the key material
+  stays.
+- `AWS::S3Tables::Namespace`: AWS refuses to delete a namespace that still
+  holds a table, so a replacement cannot take a table with it. A create-first
+  replacement warns `Failed to delete old resource` and leaves the old
+  namespace and its tables in AWS, untracked. A delete-first one fails at the
+  delete.
 
-The rest are hand-curated, because no lower bound can see a delete that
-destroys data with **no opt-in at all**: `AWS::S3Tables::TableBucket` and
-`AWS::S3Vectors::VectorBucket` empty themselves first, `AWS::S3Tables::Table`
-holds the rows themselves rather than a catalog entry, `AWS::KMS::Key`
-schedules the key material for deletion (`AWS::KMS::ReplicaKey` is guarded on
-the same footing, but routes through Cloud Control and is unmeasured here), and
-`AWS::CodeCommit::Repository` drops the git history. `AWS::KMS::Alias` is
-deliberately not guarded — deleting an alias removes a pointer, not key
-material.
-
-`AWS::EC2::Instance` and `AWS::SQS::Queue` are deliberately not guarded either.
-An instance's root volume is ephemeral by design — keep persistent data on an
-`AWS::EC2::Volume`, which is guarded — and a queue's backlog is transient.
-Asking for `--force-stateful-recreation` on every AMI refresh or queue rename
-would cost a dev/test workflow more than it protects, and CloudFormation
-replaces both without asking as well.
-
-`AWS::S3Tables::Namespace` is deliberately **not** guarded: AWS refuses to delete a namespace that still holds a
-table, answering `BadRequestException: The namespace that you tried to delete
-is not empty.`, and the Cloud Control delete fails the same way. cdkd's own
-delete for a namespace issues a bare `DeleteNamespace` and enumerates no
-tables, so a namespace rename (a replacement a plain `cdkd deploy` reaches with
-no flag) cannot take a table with it. The replacement creates the new
-namespace first; if the old one still holds tables, its delete is refused and
-cdkd warns `Failed to delete old resource` and carries on. The old namespace
-and its tables stay in AWS, no longer tracked in state, for you to move or
-delete by hand. A delete-first replacement (`--recreate-via-*`, or `--replace`
-when the create collides) fails at that delete instead — unless the template
-also renames the resource, which makes `--recreate-via-*` create first and warn
-the same way.
-
-Replacing a type in the table above asks for `--force-stateful-recreation`.
-The guard list widens over time and always in that direction; see
-[the changelog](changelog-cdkd.md) for when each type joined.
+How the list is derived and checked is in
+[Deploy safety internals](cli-deploy-safety-internals.md#how-the-stateful-list-is-kept-complete).
 
 ### Conditionally stateful types
 
-These types carry a CONDITION instead of being unconditionally stateful. The
-condition is what the guard evaluates; it is not a promise that a type failing
-it holds no data.
+Two types are judged by a condition instead of always counting as stateful.
 
 | Type | Guard fires when | Guard does not fire when |
 | --- | --- | --- |
 | `AWS::S3::Bucket` | The bucket has at least one current version, prior version, or delete-marker, or the probe page was truncated | The bucket is provably empty — but see the per-path note below |
 | `AWS::Logs::LogGroup` | `RetentionInDays > 0` in EITHER of cdkd's two recorded property bags, or the log group has at least one log stream | Neither bag records a positive retention AND the log group has no log streams — but see the per-path note below |
 
-**Retention is not an emptiness signal.** An unset or zero `RetentionInDays`
-is CloudWatch Logs' **never expire** setting — the most data-bearing
-configuration the type has, and the one cdkd records as `0`. It used to be read
-as "nothing to lose", so a never-expiring log group renamed in the template was
-destroyed on a plain `cdkd deploy` with no consent flag. An unset retention now
-DEFERS instead: at pre-flight the emptiness probe below decides, and mid-deploy,
-where no probe can run, the log group counts as stateful.
-
-**Which retention cdkd reads.** A state record carries two property bags —
-`properties`, what the last deploy applied, and `observedProperties`, what it
-read back from AWS — and a positive `RetentionInDays` in EITHER settles the
-guard. Neither bag takes precedence; either one proving a retention is
-enough. That is what lets a retention set OUT OF BAND (the console,
-`aws logs put-retention-policy`) count, and a record imported by
-`cdkd import --migrate-from-cloudformation` whose template never declared the
-property. The value is COERCED rather than type-tested, so the stringly-typed
-`RetentionInDays: '30'` a hand-written L1 or an `Fn::Sub` result produces
-counts as 30 rather than as no retention. A zero recorded in one bag never
-cancels a positive recorded in the other: zero is never-expire, which is not a
-statement that the group is empty.
-
-The guard's coercion is JavaScript's `Number()`, filtered to finite values.
-That is wider than CloudFormation's own Integer parsing — `Number()` also
-accepts `'0x1e'`, `'0o36'`, `'1e3'` and `'30.5'` — and in the GUARD the
-difference is safe in the only direction that matters: a wider accepted set
-can only produce MORE `has-retention` verdicts, i.e. more refusals.
-
-The **provider** is the half that forwards the number to
-`logs:PutRetentionPolicy`, and it reads the property
-the way CloudFormation does, measured rather than assumed (live A/B on
-`AWS::Logs::LogGroup`, us-east-1, 2026-09-14): an optional sign and decimal
-digits, with surrounding whitespace trimmed — `30`, `'30'`, `'+30'` and
-`' 30 '` all deploy as 30 — while `'0x1e'`, `'1e3'`, `'30.5'` and `'30.0'`
-are REFUSED before any AWS call, as CloudFormation refuses them. The falsy
-family was measured in the same pass: an absent property, an
-empty string and a whitespace-only string are CloudFormation's spellings of
-"no retention" and remove the live policy on an update, while `0`, `'0'`,
-`false` and `null` are rejected by CloudFormation and are refused by cdkd
-rather than silently removing a retention you set on purpose. The one
-cdkd-side exception is `cdkd drift --revert`, where a numeric `0` is cdkd's
-own readback spelling of a never-expiring log group and reverts a
-console-added retention as expected.
-
 ### How the conditional types are judged, per path
 
-The two guard timings answer the emptiness question differently, and the
-difference is what decides whether you need `--force-stateful-recreation` for a
-bucket or a log group.
+Whether you need `--force-stateful-recreation` for a bucket or a log group
+depends on when the guard runs.
 
-**At pre-flight** (`--recreate-via-cc-api` / `--recreate-via-sdk-provider`)
-cdkd issues a single-page `s3:ListObjectVersions(MaxKeys=1)` against each
-targeted bucket's recorded physical id, in the stack's deploy region. Empty
-buckets pass through; non-empty ones are refused. cdkd uses
-`ListObjectVersions` rather than `ListObjectsV2` so the probe's view of "empty"
-matches what the destroy-and-recreate cycle would actually wipe — a versioned
-bucket whose current keys are all soft-deleted still holds prior versions and
-delete-markers.
+| Guard timing | Paths | Bucket or log group counts as stateful |
+| --- | --- | --- |
+| Pre-flight | `--recreate-via-cc-api`, `--recreate-via-sdk-provider` | When a live check finds data, per the table above |
+| Mid-deploy | `--replace`, property-driven replacement, the Cloud Control auto-fallback | Always. No check can run there. |
 
-A page carrying a continuation marker with no entry in either list does not
-settle the question — the listing is unfinished, so that page's emptiness is
-not the bucket's — and such a bucket is refused rather than passed. A page
-that simply OMITS the version and delete-marker lists is different, and does
-count as empty: S3 omits an empty collection rather than sending an empty
-list, so omission is how an empty bucket answers.
+Mid-deploy, the one exemption is `UpdateReplacePolicy: Retain`: the old
+resource stays, so there is no data loss to confirm.
 
-Both emptiness probes retry a throttling response — a throttling error code,
-or HTTP 429 / 503 — up to three times with exponential backoff, at most
-3.5 seconds per target. Every other failure goes straight to the per-type
-behaviour described below, because it is either an answer or something an
-identical retry will not change. When the retries are exhausted the probe
-lands in that same per-type behaviour.
+At pre-flight cdkd asks AWS once per target:
 
-If the probe itself fails — permission denied, bucket not found mid-flight, a
-transient network error — cdkd logs a warning and leaves the target
-**un-promoted**, which means the guard does not fire and the recreate proceeds
-without `--force-stateful-recreation`. The probe fails open, so treat that
-warning as a prompt to decide for yourself: pass
-`--force-stateful-recreation` if the bucket might hold data.
+| Type | Check | If the check fails |
+| --- | --- | --- |
+| `AWS::S3::Bucket` | Lists one object version or delete-marker, so soft-deleted objects in a versioned bucket count as data | cdkd warns and lets the recreate proceed without the flag |
+| `AWS::Logs::LogGroup` | Lists one log stream. A group with a stream counts as holding data, even when the stream is empty | cdkd warns and treats the group as stateful |
 
-For a log group, the same pre-flight issues a single-page
-`logs:DescribeLogStreams(limit=1)` against the recorded log group name. A log
-group with no log stream can hold no log event — every event belongs to a
-stream — so zero streams is the one signal that proves the group empty, and
-cdkd uses it rather than a byte count: `LogStream.storedBytes` has been
-reported as zero by the API since June 2019, and stream presence needs no size
-semantics at all. A group holding only empty streams therefore counts as
-non-empty, which is the safe direction.
+> [!WARNING]
+> The bucket check fails open. If cdkd warns that it could not check a bucket
+> (a missing `s3:ListBucketVersions` permission, for example), decide for
+> yourself whether the bucket holds data before you confirm the recreate.
 
-Only one answer clears the guard: a log group whose response carries a
-**present, empty** stream list and **no continuation token**. A response with
-no stream list at all, or an empty page that still carries a `nextToken`, has
-not settled the question, so cdkd warns and treats the group as stateful — the
-same direction a failed probe takes.
+An answer that the bucket or the log group does not exist counts as empty. A
+throttled check is retried up to three times first.
 
-**Unlike the bucket probe, the log-group probe fails CLOSED**: if
-`DescribeLogStreams` errors, cdkd warns and treats the log group as stateful,
-so you get a refusal naming `--force-stateful-recreation` rather than a silent
-recreate. The asymmetry is deliberate — the whole point of the log-group
-condition is that an emptiness cdkd cannot prove must not read as empty.
+**Log group retention.** An unset or zero `RetentionInDays` means the log group
+never expires, so it says nothing about the group being empty: at pre-flight
+the stream check decides, and mid-deploy the group counts as stateful. A
+positive retention counts wherever cdkd recorded it, including one set outside
+cdkd (the console, `aws logs put-retention-policy`) and a string such as
+`'30'`.
 
-One error is the exception, because it is an answer rather than a failure to
-get one: a `ResourceNotFoundException` means AWS says the log group does not
-exist, so it provably holds no events and the guard is cleared. cdkd trusts
-that only after confirming the CloudWatch Logs client is pointing at the region
-cdkd's state records for the resource — a not-found from the wrong region says
-nothing about the log group. When that check cannot be satisfied, the group is
-treated as not provably empty like any other unsettled answer.
-
-**Mid-deploy** — `--replace`, property-driven replacement, and the Cloud
-Control `UnsupportedActionException` auto-fallback, which a plain `cdkd deploy`
-reaches with no flag — there is no opportunity to run either probe, so cdkd
-assumes the resource has data. Every bucket and every log group needs
-`--force-stateful-recreation` on those paths — a recorded `RetentionInDays > 0`
-(in either bag) does not exempt a log group there, it is simply a second reason
-the same guard fires. The one exemption on all three is `UpdateReplacePolicy: Retain`: the old
-resource survives the replacement, so there is no data loss to confirm and the
-flag is not required (and does not override the policy).
-
-### `--force-stateful-recreation`
-
-The flag is a boolean with **no per-resource granularity**. When set, EVERY
-named recreate or replacement target in the run bypasses the stateful guard.
-That is deliberate: you are opting into a footgun, and a per-resource form
-would imply a precision the flag does not have.
-
-**"The run" includes every nested stack the deploy reaches.** The flag names no
-resource, so unlike the `--recreate-via-*` targets (which apply only to the
-stack you deploy — see [Nested stacks](#nested-stacks)) it is passed unchanged
-to each nested child stack's deploy. Inside a child it does two things:
-
-- A child resource whose OWN template change forces a replacement is replaced
-  even when it is stateful, instead of being refused with
-  `STATEFUL_REPLACE_BLOCKED`. The same holds for a stateful child resource
-  whose in-place update AWS rejects and cdkd then replaces (the update-failure
-  fallback; see [The stateful guard on this path](#the-stateful-guard-on-this-path)).
-- The delete of the replaced resource empties it first: a non-empty S3 bucket
-  (general purpose or directory) has its objects deleted, and an ECR repository
-  is deleted with its images. Without the flag, cdkd refuses to delete either
-  while it holds data, as CloudFormation does, unless the resource opted in
-  itself (CDK's `autoDeleteObjects`, `emptyOnDelete` or `autoDeleteImages`).
-
-The recreate confirmation prompt lists only the `--recreate-via-*` targets of
-the stack you deploy, so it does not show these child resources. Before passing
-the flag to a stack with nested stacks, check each child's diff
-(`cdkd diff --recursive`) for a replacement of a stateful resource. The diff
-shows only the replacements the template drives. A replacement that follows
-a rejected in-place update is decided during the deploy and does not appear
-there.
-
-For a CI run on a stateful resource, the full opt-in is three flags:
-
-```bash
-cdkd deploy MyStack \
-  --recreate-via-cc-api MyTable \
-  --force-stateful-recreation \
-  --yes
-```
+The exact probe rules, and how `RetentionInDays` values are parsed, are in
+[Deploy safety internals](cli-deploy-safety-internals.md#the-emptiness-probes).
 
 ### Multi-region types are refused outright
 
-`AWS::DynamoDB::GlobalTable` is refused by **both** recreate directions
-regardless of `--force-stateful-recreation`. There is no bypass flag: the
-destroy-and-recreate cycle across replica regions involves automated backups
-and eventual consistency across the replication mesh, and cdkd does not attempt
-it. The refusal is distinct from the stateful guard, which gates on data loss
-and is bypassable.
+Both `--recreate-via-*` flags refuse `AWS::DynamoDB::GlobalTable`, and
+`--force-stateful-recreation` does not change that. A destroy and recreate
+across replica regions involves backups and replication that cdkd does not
+attempt. There is no bypass.
 
 ## `--strict-getatt` (deploy)
 
-`--strict-getatt` fails the deploy on ANY `Fn::GetAtt` that falls back to the
-resource's physical ID because cdkd cannot construct the requested attribute,
-and on any stack Output that cannot be resolved.
+`--strict-getatt` fails the deploy on any `Fn::GetAtt` cdkd cannot resolve to
+the real attribute, and on any stack Output it cannot resolve. Use it in CI so
+a guessed value never ships quietly.
 
 ```bash
 cdkd deploy MyStack --strict-getatt
@@ -1833,15 +1016,10 @@ cdkd deploy MyStack --strict-getatt
 
 ### Default behaviour
 
-When a template requests an attribute that is neither captured in the state
-record's `attributes` nor constructible by the resolver's per-type mappings,
-cdkd first re-reads the resource's attributes from AWS once — a state record
-written by an older release, or before AWS assigned the value, can simply lack
-one — and uses and records the value when the read supplies it (see
-["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)).
-Otherwise it falls back to the resource's **physical ID**. What happens next
-depends on whether the fallback value is knowably wrong for the attribute's
-name:
+When the state record does not hold a requested attribute and cdkd cannot
+construct it, cdkd re-reads the resource from AWS once and uses the value if
+the read supplies it. Otherwise it falls back to the resource's **physical
+ID**, and what happens next depends on the attribute's name:
 
 | Attribute name | Fallback value | Result |
 | --- | --- | --- |
@@ -1849,221 +1027,179 @@ name:
 | Ends in `Url` | Not an http(s) URL | Deploy fails, naming the resource, attribute, and an issue link |
 | Any other suffix | Any | Warn `Unknown attribute X for resource type Y, returning physical ID` and continue |
 
-The hard-fail rows apply to the resolver's final unknown-type fallback and to
-every per-type handler's unknown-attribute default branch. Other suffixes only
-warn because an alias or an endpoint is shape-indistinguishable from a plain
-name, so hard-failing there would fail correct deploys.
+Other suffixes only warn because an alias or an endpoint cannot be told apart
+from a plain name by its shape, so failing there would break correct deploys. A summary line counts the fallbacks,
+once per distinct site and per stack (a nested stack counts its own):
 
-Four further rules round out the default:
+```text
+2 attribute resolution(s) fell back to the physical ID (potentially wrong values); re-run with --strict-getatt to fail on these
+```
 
-- **An attribute cdkd reads live never falls back to the physical ID.** A
-  few attributes are read from AWS at resolution time when the state record
-  does not hold them: an EC2 instance's `PrivateIp` / `PublicIp` /
-  `PrivateDnsName` / `PublicDnsName` / `AvailabilityZone`, a VPC's
-  `DefaultSecurityGroup`, a CloudFront distribution's `DomainName`, a
-  security group's `VpcId` (recorded at create from `DescribeSecurityGroups`,
-  so a group declared without `VpcId` resolves to the default VPC's id as
-  CloudFormation answers, and re-read when the record lacks it — or holds
-  `''`, which an older cdkd wrote for such a group; that record keeps `''`
-  until the group's next update, only the resolution changes — so on such a
-  record `cdkd diff` issues one `DescribeSecurityGroups` and shows a one-time
-  `'' → vpc-…` Output delta, which `--fail` exits 1 on once and the next
-  deploy's Outputs persist heals; if the read is refused, the Output lands in
-  the failed keys and the Outputs section is suppressed with a warning). When
-  the read finds the value not yet assigned (an instance still `pending`
-  under `--no-wait`) or the read fails, cdkd refuses to resolve the reference
-  rather than substituting the instance / VPC / distribution / group ID,
-  which can never be the right value there; the message names the resource, the
-  attribute, what was observed (the instance state, or the error class —
-  `--verbose` shows the AWS text) and the remedy. Nothing is cached, so the
-  next deploy re-reads. An RDS `DBProxy` / `DBProxyEndpoint` `VpcId` the
-  record lacks is refused the same way without a live read. The
-  `--no-wait` section of [`cdkd deploy`](cli-deploy.md#what-a-second-deploy-started-too-early-runs-into)
-  says what the refusal does in a resource property versus an Output.
-- **The same refusals apply inside `Fn::Sub`.** A `${LogicalId.Attribute}`
-  placeholder resolves through the same code path, so a reference that
-  hard-fails as a resource property hard-fails there too. A variable that
-  genuinely does not exist still warns and keeps its `${...}` placeholder, and
-  the warning names the actual reason.
-- **A summary line counts the fallbacks** so the warnings do not scroll away on
-  a green deploy:
+Three more rules apply by default:
 
-  ```text
-  2 attribute resolution(s) fell back to the physical ID (potentially wrong values); re-run with --strict-getatt to fail on these
-  ```
-
-  Each distinct fallback site is counted once per run — diff-phase resolutions
-  are not double-counted against provisioning-phase ones. The count is per
-  stack: a nested-stack child's fallbacks are counted by the child's own deploy
-  engine and are not aggregated into the parent's summary line.
-- **An unresolvable Output is warned about and skipped.** No value is persisted
-  or exported, and the deploy still exits 0.
+- **Attributes cdkd reads live never fall back.** These are an EC2 instance's
+  `PrivateIp`, `PublicIp`, `PrivateDnsName`, `PublicDnsName` and
+  `AvailabilityZone`, a VPC's `DefaultSecurityGroup`, a CloudFront
+  distribution's `DomainName` and a security group's `VpcId`. When the value is
+  not assigned yet (an instance still `pending` under `--no-wait`) or the read
+  fails, cdkd refuses to resolve the reference. The message names the resource,
+  the attribute, what was observed and the remedy. An RDS `DBProxy` or
+  `DBProxyEndpoint` `VpcId` missing from the record is refused the same way.
+  [`cdkd deploy`](cli-deploy.md) describes the effect under `--no-wait`.
+- **The same applies inside `Fn::Sub`.** A `${LogicalId.Attribute}` placeholder
+  that would fail as a resource property fails there too. A variable that does
+  not exist warns and keeps its `${...}` text.
+- **An unresolvable Output is warned about and skipped.** No value is stored or
+  exported, and the deploy exits 0.
 
 ### With the flag
 
-- EVERY unknown-attribute physical-ID fallback is a hard error — any suffix,
-  including an ARN-shaped fallback for an `*Arn` attribute.
-- An Output resolution failure fails the deploy instead of silently publishing
-  nothing, which would otherwise break downstream `Fn::ImportValue` consumers
-  with "export not found" long after this deploy exited 0. The failure fires
-  AFTER all resource operations succeeded, so cdkd persists the provisioning
-  result to state BEFORE failing: created and updated resources are recorded,
-  previously persisted outputs are kept, no rollback runs, and a follow-up
-  `cdkd deploy` or `cdkd destroy` sees them. Even on a first deploy, nothing
-  becomes an invisible orphan.
+- Every physical-ID fallback is an error, whatever the suffix, including an
+  ARN-shaped fallback for an `*Arn` attribute.
+- An unresolvable Output fails the deploy. Without the flag it would break
+  `Fn::ImportValue` consumers with "export not found" long after this deploy
+  exited 0.
 
-### When to use it
+The Output failure comes after every resource operation succeeded, so cdkd
+saves state first: created and updated resources are recorded, earlier outputs
+are kept, and no rollback runs. A follow-up `cdkd deploy` or `cdkd destroy`
+sees everything.
 
-Use it in CI to guarantee no potentially-wrong `Fn::GetAtt` value ever ships
-quietly. Drop it — the default — when a known-benign fallback is acceptable,
-for instance a physical ID that genuinely is the attribute value for a type
-cdkd has not enriched yet. Nested-stack child deploys inherit the flag from the
-parent deploy.
+Nested stacks inherit the flag from the parent deploy. Leave it off when a
+fallback is known to be right, for instance a type whose physical ID is the
+attribute value.
 
 ## `--allow-unaddressed` (deploy)
 
-A deploy that finishes without a single resource FAILING can still leave a
-resource cdkd was responsible for alive in AWS. That outcome exits `2`,
-matching what `cdkd destroy` does for the identical case. Three cases produce
-it, reported on three summary rows, and they differ in whether they heal
-themselves:
-
-| Summary row | Cause | Next `cdkd deploy` retries it? |
-| --- | --- | --- |
-| `Skipped (not deleted): N` | A resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state — or whose record has no usable `physicalId` at all (absent, not a string, empty or whitespace; `skipped (state record has no physical id)`, no AWS call; a nested stack row is exempt unless its record names Cloud Control) | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
-| `Skipped (not deleted): N` | A resource a failed CREATE made before it failed, recorded only in the rollback journal, that the deploy could not delete, that a state record may own, or whose identity it could not prove (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)) | **Only when the deploy could not act on it** (a delete that failed, an interrupt, or a record it could not read): the journal is KEPT (reduced to that entry where it can) and the next successful deploy retries. One a record may own, or whose identity is unproven, is warned about, naming its physical id, and dropped with the journal — delete it by hand if it is not that record's, or not in use |
-| `of which left an orphaned predecessor: N` | A replacement the provider performed INSIDE its own `update()` whose old resource it could not retire, or an update-failure replacement where `UpdateReplacePolicy: Retain` said not to delete it | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
-| `Left an orphaned predecessor in a nested stack: N` | The same as the row above, for a resource inside a nested child or grandchild stack | **No**, as above |
-
-A record with no usable `physicalId` that the template still declares is
-handled differently when the template CHANGES it: the deploy fails on that
-resource before anything is sent (`STATE_RESOURCES_MALFORMED`), and the usual
-automatic rollback follows unless `--no-rollback` is set, since skipping the
-update would finish the deploy without the change. A record the template leaves unchanged is not touched.
-Repair the `physicalId` in `state.json` and re-run.
-
-To give up on a skipped DELETE instead, delete the resource by hand and drop
-its record with the command its warning prints last:
-`cdkd state orphan <stack> --stack-region <region> --resource <logicalId>`,
-which drops that record only
-([one resource's record](cli-state.md#removing-one-resource-from-the-record)).
-For a nested stack's row the command names the child's own record,
-`'<stack>~<logicalId>'`, with no `--resource`: the child is being removed with
-the row, and once its record is gone the next deploy drops the row. Dropping it
-untracks everything the child still holds, so delete those resources by hand
-first (`cdkd state show '<stack>~<logicalId>' --show-nested` lists every
-level; a grandchild record needs the same drop). When the child's destroy was
-interrupted, the warning says to re-run `cdkd deploy` instead, which resumes it. Never run
-`cdkd state orphan` on the deployed stack without `--resource`: that drops
-every resource's record, and the next deploy re-creates or collides with all
-of them.
+A deploy in which no resource failed can still leave a resource alive in AWS
+that cdkd was responsible for. That outcome exits `2`, as `cdkd destroy` does
+for the same case. `--allow-unaddressed` makes it exit `0`.
 
 ```bash
-cdkd deploy MyStack                       # exit 2 if any of these rows is non-zero
+cdkd deploy MyStack                       # exit 2 if any row below is non-zero
 cdkd deploy MyStack --allow-unaddressed   # exit 0 for the same run
 ```
 
-### Nested stacks and the exit code
+The summary reports the cases on separate rows:
 
-A resource left unaddressed inside a nested stack, at any depth, counts toward
-the deploy's exit code exactly as one in the stack you deployed:
+| Summary row | Cause | Next `cdkd deploy` retries it? |
+| --- | --- | --- |
+| `Skipped (not deleted): N` | A resource removed from the template whose delete cdkd could not issue | Yes. Its state record is kept. |
+| `Skipped (not deleted): N` | A resource a failed CREATE made, known only to the rollback journal, that the deploy could not delete | Only when the deploy could not act on it. See below. |
+| `of which left an orphaned predecessor: N` | A replacement whose old resource was not deleted: the provider could not retire it, or `UpdateReplacePolicy: Retain` kept it | No. State points at the new resource; delete the old one by hand. |
+| `Left an orphaned predecessor in a nested stack: N` | The same, inside a nested stack at any depth | No, as above |
 
-- **A skipped DELETE** inside a nested stack is counted in
-  `Skipped (not deleted)` and the first deploy exits `2`. Its state record is
-  kept, and a plain re-deploy re-attempts it even when the nested template is
-  unchanged: that run also exits `2` until the DELETE lands.
-- **An orphaned predecessor** inside a nested stack is counted in
-  `Left an orphaned predecessor in a nested stack` and the deploy exits `2`.
-  The `Updated:` total counts only the deployed stack's own resources, so this
-  row is not part of it. Nothing retries the survivor.
+A resource inside a nested stack, at any depth, counts toward the exit code
+exactly as one in the stack you deployed. Its skipped DELETE is retried by a
+plain re-deploy even when the nested template is unchanged, and every deploy
+exits `2` until it lands. The nested stack prints its own warning and
+`partial (…)` or `skipped (…)` row, naming the resource. The `Updated:` total
+counts only the deployed stack's own resources.
 
-The nested stack's own warning and `partial (…)` or `skipped (…)` row print
-during its deploy and name the resource.
+### A DELETE that was skipped
 
-### What the flag keeps
+The delete is skipped when the state record's `physicalId` is malformed, or
+absent, empty, whitespace or not a string. The row prints
+`skipped (state record has no physical id)` and no AWS call is made. A nested
+stack's row is exempt unless its record names Cloud Control.
 
-The flag changes the **exit code**, and with it the run-level error message.
-Everything else is emitted unchanged:
+To give up on the delete, remove the resource by hand and drop its record with
+the command the warning prints last:
 
-- The summary rows above.
-- Each resource's own warning, naming its cause and remedy.
-- The switched banner.
-- The `skipped` figure in `cdkd events`.
-- The `RUN_FINISHED` `result: 'FAILED'` record.
+```bash
+cdkd state orphan MyStack --stack-region us-east-1 --resource MyQueue
+```
 
-So a run that used the flag still says — in its log and in its durable
-post-mortem — that a resource survived. The events store records what happened,
-not what the operator chose to tolerate.
+> [!CAUTION]
+> Never run `cdkd state orphan` on the deployed stack without `--resource`.
+> That drops every resource's record, and the next deploy re-creates or
+> collides with all of them.
 
-### What the flag takes away
+For a nested stack's row the command names the child's own record,
+`'<stack>~<logicalId>'`, with no `--resource`. Dropping it untracks everything
+the child still holds, so delete those resources first;
+`cdkd state show '<stack>~<logicalId>' --show-nested` lists them. When the
+child's destroy was interrupted, the warning says to re-run `cdkd deploy`,
+which resumes it.
 
-Beyond the exit code, two things:
+A record with no usable `physicalId` that the template changes is different:
+the deploy fails on that resource before anything is sent
+(`STATE_RESOURCES_MALFORMED`) and rolls back unless `--no-rollback` is set.
+Repair the `physicalId` in `state.json` and re-run. A record the template
+leaves unchanged is not touched.
 
-- **The `PartialFailureError` message is not raised at all.** That message is
-  the only place the run-level remediation text appears ("a skipped DELETE
-  keeps its state record… a replacement's survivor is not tracked — delete it
-  by hand"), along with the count of stacks that were cancelled and never
-  deployed.
-- **The banner's closing sentence differs.**
+### A resource a failed CREATE left behind
 
-If you set the flag in CI, the per-resource warnings remain your route to the
-cause.
+A CREATE that made its resource and then failed is recorded only in the
+rollback journal. A later successful deploy deletes it when it can. When the
+delete fails, the deploy is interrupted, or a record cannot be read, the
+journal entry is kept and the next successful deploy retries.
 
-### Why it exists
+When a state record may own the resource, or cdkd cannot prove the resource is
+the one it made, the deploy warns with the physical id and drops the entry.
+Delete the resource by hand if it is not in use. See
+[Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource).
 
-The orphaned-predecessor case has a legitimate not-yet-fixable window. The
-commonest instance is an ACM certificate replacement rejected because a
-consumer — often a CloudFront distribution in another stack not yet updated —
-still references the old certificate. The delete succeeds on its own once
-`DescribeCertificate.InUseBy` is empty. Until then a pipeline would be red for
-a cause it cannot act on.
+### What the flag changes
 
-Prefer the flag over wrapping the command in a shell exit-code test. `cdkd
-deploy` also exits `2` for `MacroExpansionError` (a synth-time macro failure)
-and `ResourceUpdateNotSupportedError`, so `cdkd deploy || [ $? -eq 2 ]` would
-silence those unrelated real failures. `--allow-unaddressed` is scoped to this
-one cause.
+Only the exit code and the run-level error. The summary rows, each resource's
+own warning, the banner (its closing sentence differs), the `skipped` figure in
+`cdkd events` and the `RUN_FINISHED` `result: 'FAILED'` record are still
+emitted, so the log still says a resource survived.
+
+With the flag the `PartialFailureError` message is not raised. That message
+carries the run-level remediation text and the count of stacks that were
+cancelled, so in CI the per-resource warnings become your route to the cause.
+
+### When to use it
+
+Use it for an orphaned predecessor you cannot act on yet. The common case is an
+ACM certificate replacement where a consumer in another stack, often a
+CloudFront distribution, still uses the old certificate. The delete succeeds
+once `DescribeCertificate.InUseBy` is empty, and until then the pipeline would
+be red for a cause it cannot act on.
+
+Prefer the flag to a shell test on the exit code. `cdkd deploy` also exits `2`
+for `MacroExpansionError` and `ResourceUpdateNotSupportedError`, so
+`cdkd deploy || [ $? -eq 2 ]` would hide those failures.
 
 ## `--no-cfn-fallback` (deploy / diff)
 
-By default, a cross-stack reference that is not found in cdkd state falls back
-to CloudFormation, so a cdkd-deployed consumer can reference a producer stack
-still managed by CloudFormation (`cdk deploy` or raw CFn):
+By default a cross-stack reference that cdkd state does not hold falls back to
+CloudFormation. That lets a cdkd-deployed stack consume a stack still managed
+by CloudFormation.
 
-- `Fn::ImportValue` → CloudFormation `ListExports` in the consumer's region,
-  which is CloudFormation's own semantic for the intrinsic.
-- `Fn::GetStackOutput` → CloudFormation `DescribeStacks` outputs in the target
-  region. Same-account only — the `RoleArn` (cross-account) form never takes
-  the fallback.
-
-Three rules govern that fallback:
-
-- **cdkd state wins.** The fallback fires ONLY after a cdkd-state miss, so
-  existing cdkd-to-cdkd references are untouched and a name collision resolves
-  to the cdkd export.
-- **A CloudFormation-sourced resolution is a weak reference.** It is not
-  recorded into `state.imports` / `state.outputReads`, so there is no
-  destroy-time protection in either direction: deleting the CloudFormation
-  producer breaks the consumer's next resolve, not the producer's delete.
-- **A lookup failure degrades gracefully.** A missing
-  `cloudformation:ListExports` / `cloudformation:DescribeStacks` permission
-  logs a warning and surfaces the original not-found error.
+| Intrinsic | Fallback lookup |
+| --- | --- |
+| `Fn::ImportValue` | CloudFormation `ListExports` in the consumer's region |
+| `Fn::GetStackOutput` | CloudFormation `DescribeStacks` outputs in the target region; same account only |
 
 ```bash
-cdkd deploy MyStack --no-cfn-fallback   # cdkd-state-only resolution
-cdkd diff MyStack --no-cfn-fallback     # preview with the same semantics
+cdkd deploy MyStack --no-cfn-fallback   # resolve from cdkd state only
+cdkd diff MyStack --no-cfn-fallback     # preview with the same rule
 ```
 
-Pass the flag when you want cdkd-state-only semantics — IAM kept minimal, or an
-export-name typo failing fast instead of accidentally matching an unrelated
-CloudFormation export in the account. Nested-stack child deploys inherit the
-flag from the parent deploy, and `cdkd diff` honors it in its best-effort
-resolvers so preview and apply resolve identically.
+Pass the flag to keep IAM permissions minimal, or to make an export-name typo
+fail instead of matching an unrelated CloudFormation export. Nested stacks
+inherit it, and `cdkd diff` honours it so preview and deploy resolve alike.
+
+Three rules govern the fallback when it is on:
+
+- **cdkd state wins.** The fallback runs only after cdkd state has no match, so
+  a name that exists in both resolves to the cdkd export.
+- **The reference is weak.** It is not recorded in state, so nothing protects
+  either side at destroy time. Deleting the CloudFormation producer breaks the
+  consumer's next deploy.
+- **A failed lookup is not fatal by itself.** Without
+  `cloudformation:ListExports` or `cloudformation:DescribeStacks`, cdkd warns
+  and reports the original not-found error.
+
+[Cross-Stack References](cross-stack-references.md) covers the design.
 
 ## `--require-approval` (deploy)
 
-`--require-approval` asks for a confirmation before a stack's changes are
-deployed, matching `cdk deploy --require-approval`. It is also read from
+`--require-approval` asks for confirmation before a stack's changes are
+deployed, like `cdk deploy --require-approval`. It is also read from
 `"requireApproval"` in `cdk.json`; the flag wins.
 
 | Level | Asks when the stack has |
@@ -2073,11 +1209,8 @@ deployed, matching `cdk deploy --require-approval`. It is also read from
 | `destructive` | a change that replaces, deletes or orphans an existing resource. |
 
 `destructive` uses the classification of
-[`cdkd diff --fail-on=destructive`](cli-diff.md#destructive), counts a
-`--recreate-via-cc-api` / `--recreate-via-sdk-provider` target as a
-replacement, and lists the
-affected resources before the question, so additions and in-place updates
-deploy unattended while anything that could lose data stops for a human:
+[`cdkd diff --fail-on=destructive`](cli-diff.md), counts a `--recreate-via-*`
+target as a replacement, and lists the affected resources before the question:
 
 ```console
 $ cdkd deploy --require-approval=destructive
@@ -2090,21 +1223,170 @@ Stack includes destructive updates and "--require-approval" is set to 'destructi
 Do you wish to deploy these changes? (y/n)
 ```
 
-- **The question comes after the diff and before any change.** Answering no
-  fails the stack's deploy with nothing changed (exit `1`). `--dry-run` never
-  asks.
-- **Without a terminal the deploy fails instead of asking**, for example in
-  CI. `--yes` approves without asking.
-- **A nested stack asks for its own changes** when the parent's deploy reaches
-  it. Declining fails that nested-stack row, and the parent rolls back like
-  any other failure. The row's `--resource-timeout` clock stops while the
-  question is open. Under `any-change`, a parent whose only changes are
-  nested-stack updates does not ask for them itself.
-- **Stacks deployed in parallel ask one at a time.**
-- **`broadening`, the AWS CDK CLI's default, is not available**: cdkd does not
-  compute a security diff. The flag refuses it; a `"requireApproval":
-  "broadening"` in `cdk.json` is ignored with a warning, so no approval is
-  asked.
+| Situation | Behaviour |
+| --- | --- |
+| Answering no | The stack's deploy fails with nothing changed (exit `1`) |
+| `--dry-run` | Never asks |
+| No terminal (CI) | The deploy fails instead of asking, unless `--yes` is given |
+| A nested stack | Asks for its own changes when the parent reaches it. Declining fails that row and the parent rolls back. |
+| Stacks deployed in parallel | Ask one at a time |
+
+Under `any-change`, a parent whose only changes are nested-stack updates does
+not ask for them itself. A nested stack's `--resource-timeout` clock stops
+while its question is open.
+
+`broadening`, the AWS CDK CLI's default, is not available, because cdkd does
+not compute a security diff. The flag refuses it, and a
+`"requireApproval": "broadening"` in `cdk.json` is ignored with a warning, so
+no approval is asked.
+
+## Checks on the cloud assembly
+
+Right after synthesis, before any macro is expanded, asset published, lock
+taken or resource created, `cdkd deploy` checks the assembly's nested templates
+and file paths. One malformed stack stops the whole run, `--dry-run` included,
+with exit code 1. A CDK-generated `cdk.out` passes all of these; they catch a
+hand-modified assembly or one from another tool.
+
+### Cyclic nested templates are refused
+
+Each nested stack's template is located through its parent row's
+`Metadata['aws:asset:path']`. cdkd walks every nested template reachable from
+each stack in the deploy set, dependencies included, and refuses when a path
+resolves to a template already on the same nesting chain:
+
+```text
+SynthesisError: The nested template tree under stack Parent contains a
+cycle: Child (/path/to/cdk.out/child.json) then Loop
+(/path/to/cdk.out/child.json). Nested stack Loop (declared in stack
+Parent~Child) resolves to a template that is already on that nesting chain,
+so its Metadata['aws:asset:path'] closes a cycle. CDK emits an acyclic nested
+template tree with relative asset paths, so this indicates the synth output was
+hand-modified or generated by a non-CDK toolchain. Refusing to start the
+deploy; nothing has been published or provisioned.
+```
+
+- Two sibling rows naming the same template are a shared child and are fine.
+  Only a repeat along one root-to-child path is refused.
+- A row's `Condition` is not evaluated, so a template that includes itself
+  behind a condition is refused too, as by
+  [`cdkd diff --recursive`](cli-diff.md).
+- An absolute `aws:asset:path` is refused (the message says
+  `which is absolute`), because CDK always writes nested templates into the
+  output directory.
+- A tree nested more than 512 levels deep, or with more than 10,000
+  nested-stack rows, is refused.
+- A stack outside the deploy set is not checked.
+
+### Paths that leave the assembly directory
+
+The same walk refuses an `aws:asset:path` that resolves outside the directory
+its template sits in:
+
+```text
+SynthesisError: The nested template tree under stack Parent has nested stack
+Child (reached through Child (/path/to/cdk.out/child.json)) with
+Metadata['aws:asset:path']=../../etc/passwd which resolves to
+/etc/passwd, outside /path/to/cdk.out. CDK emits assembly paths that stay
+inside the assembly directory; one that leaves it indicates the synth output
+was hand-modified or generated by a non-CDK toolchain. Refusing to start the
+deploy; nothing has been published or provisioned.
+```
+
+A path that leaves the directory only through a symbolic link is refused the
+same way, naming the link's target. Every other path the assembly supplies is
+held to the same rule:
+
+| Where it comes from | What cdkd would otherwise do with it |
+| --- | --- |
+| a nested assembly's `directoryName` | read that directory's `manifest.json` |
+| a stack's `templateFile` | deploy whatever parses as its template |
+| an asset manifest's `file` | read the list of assets to publish |
+| a file asset's `source.path` | zip it and upload it to the bucket the manifest names |
+| a Docker asset's `source.directory` | send it to the image build as the context |
+| a stack's metadata side file | read its annotations |
+| a stack name, under `cdkd synth --verbose` | write `<name>.template.json` there |
+
+The two asset rows are measured against the app's output directory (`cdk.out`),
+because a `Stage`'s asset manifest legitimately points up to
+`../asset.<hash>`. They treat relative and absolute paths differently:
+
+| `source.path` / `source.directory` | What cdkd does |
+| --- | --- |
+| absolute, inside the output directory | accepted, silently — this is where every staged asset is |
+| absolute, outside it | accepted, **with a warning** naming the directory and the destination |
+| naming the output directory *itself*, by any spelling | accepted, **with a warning** — the whole assembly becomes the asset, and no `cdk synth` emits this |
+| relative, escaping the output directory | refused |
+
+> [!WARNING]
+> An absolute asset path outside the output directory is uploaded. cdkd accepts
+> it because `cdk synth --no-staging` produces such paths, and the warning is
+> the only protection. An assembly you did not synthesize can name any
+> directory your user can read and upload it to a bucket the same manifest
+> names, with your credentials.
+
+Pointing `-a` at a Stage sub-assembly (`cdkd deploy -a cdk.out/assembly-MyStage`)
+refuses that Stage's own `../asset.<hash>`, since the asset is outside the
+directory you named. Point `-a` at the app's `cdk.out` and select the stack by
+its display path instead:
+
+```bash
+cdkd deploy -a cdk.out 'MyStage/*'
+```
+
+The `cdkd local` commands that mount Lambda code (`invoke`, `start-api`,
+`start-alb`, `start-cloudfront`) apply the same rule to `aws:asset:path`:
+a relative escaping path is refused and an absolute one is accepted with the
+warning. [Local Execution](local-emulation.md) lists which other paths are
+covered.
+
+### A pre-synthesized assembly is trusted input
+
+Outside the paths above, cdkd uses an asset manifest as written, as the CDK CLI
+does. It warns about the values that reach outside the assembly:
+
+| Manifest value | What cdkd does with it | When it warns |
+| --- | --- | --- |
+| `source.executable` | **runs it on this machine** — an arbitrary command line | on every command that builds a Docker asset, naming the command |
+| `dockerFile`, `dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`, `cacheTo` | reads that host path during the image build | when the path is outside the output directory; a path inside the build context is usually left quiet |
+| a `dest=` in `dockerOutputs` or a cache option | **writes** to that host path | when the path is outside the output directory, wherever the build context is |
+| `dest.bucketName`, the ECR repository | uploads there with your credentials | when the name is neither CDK-bootstrap-shaped nor cdkd-managed, once per name |
+
+> [!IMPORTANT]
+> Deploying a pre-synthesized assembly can run code from it: a Docker asset may
+> declare `source.executable` instead of a Dockerfile. Pointing `-a` at an
+> assembly you did not produce is the same decision as running someone else's
+> build output. Synthesize it yourself, or read it first.
+
+- Every `cdkd local` command that builds such an asset runs the executable too,
+  and prints the warning first.
+- Each distinct command is announced once per run; repeats go to `--verbose`.
+- A build secret, an SSH key or a cache directory is a host path the template
+  never shows, so reading the template does not tell you what a deploy touches.
+- The read/write split follows the `dest=` key: a `cacheFrom` carrying a
+  `dest=` is a write, and a `cacheTo` carrying a `src=` is a read.
+- The destination check looks at the bucket's name only. A bucket named like a
+  CDK bootstrap bucket for your account can still belong to someone else.
+
+### A Stage that failed to load stops every command
+
+When a `Stage`'s own `manifest.json` cannot be read (the Stage was never
+synthesized, or its directory is gone), cdkd stops, as the AWS CDK CLI does:
+
+```text
+Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json.
+Every stack under it is missing from the cloud assembly, so cdkd will not act
+on the app. Re-synthesize the app so the Stage is written, or point --app at a
+complete cloud assembly.
+```
+
+This holds whatever you select, including a stack outside the Stage, and for
+`cdkd destroy` too. To reach a deployed stack by name without the app, use
+`cdkd state destroy '<stack>'`. `cdkd scrub` exits `2`
+(`SCRUB_STAGE_LOAD_FAILED`) for it.
+
+Any other refusal under a Stage aborts the run with the innermost Stage named
+ahead of it (`Stage MyStage: Stack MyStage-Api ...`).
 
 ## Exit codes
 
@@ -2122,6 +1404,8 @@ other two are unaffected by it.
 - [Deploy: waits & concurrency](cli-deploy.md) — concurrency knobs and the wait-semantics table
 - [Deploy: tuning](cli-deploy-tuning.md) — timeouts, name prefixing, observed-state capture
 - [Destroy flags & guards](cli-destroy.md) — the destroy-side data guards and `--remove-protection`
+- [Provisioning Layers](provisioning-layers.md) — the SDK provider and Cloud Control routes
 - [Supported Resources](supported-resources.md) — the per-type tier table and property-level coverage
 - [Cross-Stack References](cross-stack-references.md) — the full design behind `--no-cfn-fallback`
 - [cdkd State Management Specification](state-management.md) — where `provisionedBy` lives in the state record
+- [Deploy safety internals](cli-deploy-safety-internals.md) — the exact rules behind the guards on this page

@@ -1,484 +1,426 @@
 ---
 title: Deployment Events
-description: "Durable per-resource deployment event history via cdkd events — cdkd's equivalent of CloudFormation DescribeStackEvents, with S3 layout and pruning."
+description: "What cdkd records for each deploy, destroy and rollback run, how to read a failed run back with cdkd events, and how the history is stored and pruned."
 ---
 
 # Deployment Events (`cdkd events`)
 
-When a `cdkd deploy` / `cdkd destroy` / `cdkd state destroy` run fails, the
-only durable artifact used to be the (partial) `state.json` snapshot —
-per-resource lifecycle information (which operation failed, why, in what
-order, with what AWS error) existed only as terminal output via the logger,
-which writes to stdout/stderr. With CloudFormation, `DescribeStackEvents` gives any tool
-(human or AI assistant) the full server-side deploy history via the AWS
-API. cdkd now records an equivalent stream of **deployment events** to S3,
-readable with `cdkd events`.
-
-This makes post-hoc troubleshooting possible — especially handing failure
-context to an AI agent on a different machine / session: one command gives
-the full ordered run history.
+Every `cdkd deploy`, `cdkd destroy`, `cdkd state destroy` and `cdkd rollback`
+run records what it did to each resource: which operation started, whether it
+succeeded, and the AWS error if it failed. The events are stored in the state
+bucket, so you can read a failed run back later, from another machine, or
+after the stack is gone. It is cdkd's equivalent of CloudFormation's
+`DescribeStackEvents`.
 
 ```bash
-cdkd events MyStack                    # list recorded runs, newest first
-cdkd events MyStack --run '<id>'       # one run's full ordered event stream
-cdkd events MyStack --format json      # machine-readable, for tooling
-cdkd events MyStack --stack-region us-east-1   # disambiguate a multi-region name
-cdkd events prune MyStack --yes        # keep the newest 20 runs, delete the rest
-cdkd events prune MyStack --all --yes  # purge all history for the stack
+cdkd events MyStack                          # list recorded runs, newest first
+cdkd events MyStack --run 20260813T051530123Z-1a2b3c4d   # one run, in order
+cdkd events MyStack --run '<runId>' --json   # the same, as JSON for tooling
+cdkd events prune MyStack --keep 5           # delete all but the newest 5 runs
 ```
 
-## What gets recorded
+Flags and defaults are in the [`cdkd events`](cli-events.md) reference. This
+page explains what the events mean.
 
-Each deploy / destroy run appends one **JSONL** line per lifecycle event:
+## Read a failed run
 
-| Event type | When |
+::: steps
+1. List the runs
+
+   ```bash
+   cdkd events MyStack
+   ```
+
+   ```text
+   Deployment runs for MyStack (us-east-1)
+     20260813T051530123Z-1a2b3c4d  deploy  FAILED  2026-08-13T05:15:30.123Z -> 2026-08-13T05:15:41.870Z  cdkd 0.296.28  9 events
+     20260812T101502456Z-9f8e7d6c  deploy  SUCCEEDED  2026-08-12T10:15:02.456Z -> 2026-08-12T10:15:20.011Z  cdkd 0.296.28  8 events
+   ```
+
+   Each row is one run: run id, command, result, start and end time, the cdkd
+   version, and the number of events.
+
+2. Read the failed run
+
+   ```bash
+   cdkd events MyStack --run 20260813T051530123Z-1a2b3c4d
+   ```
+
+   Events print in the order they were recorded. A failed resource has its
+   error on the line below it: the error name, the AWS error code in
+   parentheses, the message, and `requestId=<id>` when AWS returned one.
+
+3. Hand it to a tool
+
+   ```bash
+   cdkd events MyStack --run 20260813T051530123Z-1a2b3c4d --json > run.json
+   ```
+:::
+
+A stack with history in more than one region needs `--stack-region <region>`.
+The command reads only the state bucket: it does not synthesize the CDK app
+and takes no lock.
+
+## What one event holds
+
+Each event is one JSON object, stored as one line of the run's file:
+
+```json
+{
+  "timestamp": "2026-08-13T05:15:33.412Z",
+  "eventType": "RESOURCE_SUCCEEDED",
+  "stackName": "MyStack",
+  "operation": "CREATE",
+  "logicalId": "Uploads5E5E9B2F",
+  "resourceType": "AWS::S3::Bucket",
+  "physicalId": "acme-uploads",
+  "provisionedBy": "sdk",
+  "durationMs": 1840
+}
+```
+
+`cdkd events --run` prints the same event as one row:
+
+```text
+  2026-08-13T05:15:33.412Z  RESOURCE_SUCCEEDED  Uploads5E5E9B2F (AWS::S3::Bucket)  CREATE  [sdk]  1840ms
+```
+
+| Field | On | Meaning |
+| --- | --- | --- |
+| `timestamp` | every event | ISO 8601 time the event was recorded |
+| `eventType` | every event | One of the [event types](#event-types) |
+| `stackName` | every event | The stack; a nested child's events name the child and sit in the parent's run |
+| `command`, `region`, `cdkdVersion` | `RUN_STARTED` | `deploy`, `destroy` or `rollback`; a `cdkd state destroy` records `destroy` |
+| `result` | `RUN_FINISHED` | `SUCCEEDED` or `FAILED` |
+| `counts` | `RUN_FINISHED` | `created`, `updated`, `deleted`, and `failed` / `skipped` when non-zero |
+| `operation` | resource events | `CREATE`, `UPDATE` or `DELETE` |
+| `logicalId`, `resourceType` | resource events | The template logical id and its type |
+| `physicalId` | success and skip events | The AWS id, when known |
+| `provisionedBy` | resource events | `sdk` or `cc-api`: the layer that handled it |
+| `durationMs` | success, failure, `RUN_FINISHED` | Elapsed milliseconds |
+| `reason` | skip and guard events | One line saying why |
+| `guard` | `RESOURCE_GUARD_INDETERMINATE` | The id of the guard that could not answer |
+| `error` | failure events | `{ name, message, awsErrorCode?, requestId?, ownLines? }` |
+
+`error.awsErrorCode` and `error.requestId` come from the innermost AWS SDK
+error behind the failure. Events never carry resource properties.
+
+## Event types
+
+```text diagram=events-run
+  RUN_STARTED                       command, region, cdkd version
+       │
+       ▼
+  RESOURCE_STARTED                  one per resource operation
+       │
+       ├──────────────────────┐
+       ▼                      ▼
+  RESOURCE_SUCCEEDED     RESOURCE_FAILED          carries the error
+       │                      │
+       │                      ▼
+       │                 ROLLBACK_STARTED to ROLLBACK_FINISHED
+       │                      │
+       └──────────┬───────────┘
+                  ▼
+  RUN_FINISHED                      result and counts
+```
+
+| Event type | Recorded when |
 | --- | --- |
-| `RUN_STARTED` / `RUN_FINISHED` | Once per deploy / destroy / rollback run (carries command, region, cdkd version, terminal result, per-op counts). The `command` field is `deploy`, `destroy`, or `rollback`; a `cdkd state destroy` run records `destroy`, since it runs the same destroy. |
-| `RESOURCE_STARTED` / `RESOURCE_SUCCEEDED` / `RESOURCE_FAILED` | Per per-resource CREATE / UPDATE / DELETE (carries logicalId, resourceType, `provisionedBy`, physicalId on success, duration, error metadata on failure). |
-| `RESOURCE_RETAINED` | Destroy-side skip for a `DeletionPolicy: Retain` resource — the AWS resource is kept **on purpose** and its state record is dropped. |
-| `RESOURCE_SKIPPED` | A skip where cdkd could **not address** the resource, so it may still exist. Emitted by `cdkd destroy` / `cdkd state destroy` AND by the `cdkd deploy` DELETE branch (a resource removed from the template whose provider refused the delete). Three producers: a malformed composite physicalId in state (no AWS call issued at all); a state record missing the id or the property the delete is addressed BY — Lambda layer / permission, Custom Resource, IAM policy / user-group (also no AWS call at all); and a nested stack whose own destroy skipped or was interrupted (the child's other resources *were* deleted first) — so the invariant is "this row was not destroyed", not "nothing happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the AWS resource is not intended, and the state record is **kept** so the orphan stays traceable. Carries no `error` (nothing failed); the cause is in `reason`. It is ALSO emitted for a **partial UPDATE**: a replacement whose inner delete left the OLD resource alive. That row is the one case where `RESOURCE_SKIPPED` sits NEXT TO a `RESOURCE_SUCCEEDED` for the same logical id rather than replacing it — the resource named by the SUCCEEDED event was updated, and the SKIPPED event names the predecessor that survived and is no longer in state. Reading the pair as a contradiction is the mistake to avoid: the invariant above still holds, because the row the skip describes is the old resource, not the new one. |
-| `RESOURCE_GUARD_INDETERMINATE` | A **pre-flight safety guard** ran on this resource, could **not reach a verdict**, and was therefore not enforced — cdkd proceeded anyway. Carries `guard` (a stable machine-readable id, e.g. `cc-delete-region-identity`) and `reason` (why it could not answer). This row says nothing about whether the operation succeeded: it sits **alongside** the resource's own `RESOURCE_SUCCEEDED` / `RESOURCE_SKIPPED` row rather than replacing it, and it does **not** move any `counts` field or the run's `result`. Carries no `error` — nothing failed. The durability is the point: a guard is disabled by DENYING the permission it depends on (an `s3:GetBucketLocation` `Deny` in a bucket policy, settable by anyone holding `s3:PutBucketPolicy` on the target), and the `logger.warn` cdkd prints does not survive the run — so without this row, a destroy that proceeded **without** confirming its target was indistinguishable, afterwards, from one that confirmed it. Emitted by `cdkd destroy`, `cdkd state destroy`, `cdkd deploy` (a resource removed from the template, and the delete inside a replacement, a `--recreate-via-*` recreate, the cleanup of a replaced resource, or the update-not-supported fallback) and a rollback (automatic or `cdkd rollback`). **`operation` is always `DELETE`**, the call the guard ran on, even when that delete is an internal step of an UPDATE whose own row carries `operation: UPDATE`; a rollback records this same event type, not a `ROLLBACK_`-prefixed one. A guard travels back on the delete's RETURN value, so a delete that threw carries none: on destroy the row therefore never accompanies a `RESOURCE_FAILED`. On deploy and rollback it can, when the guarded delete returned and a later step of the same operation failed (for example the re-create after a replacement's delete). On a rollback the companion is the op's own `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` row rather than a `RESOURCE_*` one. |
-| `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Rollback phase — emitted both by the deploy-failure automatic rollback AND by a standalone `cdkd rollback` run, which records them under its own `runId` (with `command: rollback` in `index.json`). |
-| `ROLLBACK_RESOURCE_SKIPPED` | A rollback op the replay **declined**, leaving the resource exactly as the failed deploy left it: a resource the deploy deleted (a rollback cannot re-create it), a record or recorded `properties` baseline that is missing, a physical id a later attempt changed, or a failed op with nothing to revert it to. Carries no `error` (nothing failed) and no `physicalId`; the cause is in `reason`. An automatic rollback that skipped an op keeps the rollback journal instead of settling it, so the record of the unreverted op survives; a later `cdkd rollback` replays it, records the skip again and exits 2. |
+| `RUN_STARTED`, `RUN_FINISHED` | Once each per run. |
+| `RESOURCE_STARTED` | A resource create, update or delete begins. |
+| `RESOURCE_SUCCEEDED` | It completed. |
+| `RESOURCE_FAILED` | It failed; `error` says why. |
+| `RESOURCE_RETAINED` | A delete skipped a `DeletionPolicy: Retain` resource. The resource is kept on purpose and its state record is dropped. |
+| `RESOURCE_SKIPPED` | cdkd could not address the resource, so it may still exist. Its state record is kept. |
+| `RESOURCE_GUARD_INDETERMINATE` | A safety check before a delete could not reach a verdict, and cdkd proceeded. |
+| `ROLLBACK_STARTED`, `ROLLBACK_FINISHED` | A rollback begins and ends. |
+| `ROLLBACK_RESOURCE_SUCCEEDED`, `ROLLBACK_RESOURCE_FAILED` | One operation was reverted, or could not be. |
+| `ROLLBACK_RESOURCE_SKIPPED` | The rollback declined one operation and left the resource as the failed deploy left it. |
 
-A `RUN_FINISHED` additionally carries `counts.skipped` when non-zero, on
-destroy AND on deploy. **Both verbs
-record `result: 'FAILED'` for it.** Deploy previously recorded
-`SUCCEEDED` on the grounds that the state record was kept and the next deploy
-re-attempts the delete — but that run now exits 2, and a post-mortem saying a
-run succeeded while the same run returned 2 is a split verdict, not a nuance.
-(Self-healing is still real, and is why the resource is a warning rather than a
-failed ROW; it is not why the RUN would have succeeded.) `--allow-unaddressed`
-changes the exit code only — the run is still recorded `FAILED`, because what
-the events store records is what happened, not what the operator chose to
-tolerate. On destroy the `FAILED` result also keeps `--purge-events` from
-discarding the history. `cdkd
-events` renders the count as `⚠N` after the `+created/~updated/-deleted` triple:
+Rollback events are recorded both by the automatic rollback of a failed deploy
+and by a standalone `cdkd rollback`, which records them under its own run id
+with `command: rollback`.
+
+### `RESOURCE_SKIPPED`: the resource was not destroyed
+
+A skip means "this row was not destroyed". Nothing failed, so the event has no
+`error`; the cause is in `reason`, printed on its own line:
 
 ```text
-2026-08-13T05:15:35Z  RUN_FINISHED  destroy  us-east-1  FAILED  +0/~0/-1  ⚠1
-2026-08-13T05:15:35Z  RESOURCE_SKIPPED  MyTable (AWS::Glue::Table)  DELETE
+  2026-08-13T05:15:35.201Z  RESOURCE_SKIPPED  MyTable (AWS::Glue::Table)  DELETE
       malformed physicalId in state — no delete issued
+  2026-08-13T05:15:35.640Z  RUN_FINISHED  FAILED  +0/~0/-1 ⚠1
 ```
 
-`RESOURCE_SKIPPED` carries a **`reason`** — the same one-line cause shown on the
-destroy status line — rendered on its own line beneath the event. The events
-store is the durable post-mortem, so a skip recorded without a cause would be
-close to useless there. Like every other event field this is metadata only:
-provider-authored prose about the *identifier*, never resource properties.
+It is recorded by `cdkd destroy`, `cdkd state destroy`, and by a `cdkd deploy`
+that deletes a resource removed from the template. The causes:
 
-`RESOURCE_GUARD_INDETERMINATE` carries the same **`reason`** field, plus a
-**`guard`** id. `reason` is likewise the whole value of the row — the outcome
-("cdkd proceeded") is already implied by the event type, so what is left to say
-is why the guard could not answer; distinct causes get distinct text even where
-they reach the same proceed-anyway outcome, because the remedies differ (grant
-an IAM permission vs. repair a state record vs. fix a credential chain).
-`cdkd events` renders `guard=<id>` as a column and the reason on its own line:
+| Cause | AWS call issued |
+| --- | --- |
+| The composite physical id in state is malformed | None |
+| The state record lacks the id or property the delete is addressed by (Lambda layer or permission, Custom Resource, IAM policy, IAM user-group addition) | None |
+| A nested stack's own destroy skipped or was interrupted | The child's other resources were deleted first |
+| A replacement whose delete left the old resource alive | The update itself succeeded |
+
+In the last case `RESOURCE_SKIPPED` sits next to a `RESOURCE_SUCCEEDED` for
+the same logical id. The two are not a contradiction: the success names the
+new resource, and the skip names the predecessor that survived and is no
+longer in state.
+
+### A run with a skipped resource is recorded `FAILED`
+
+`RUN_FINISHED` carries `counts.skipped` when it is non-zero, and the run's
+`result` is `FAILED`, on deploy and on destroy. `cdkd events` prints the count
+as `⚠N` after the `+created/~updated/-deleted` triple.
+
+`--allow-unaddressed` changes the exit code only. The run is still recorded
+`FAILED`, because the events record what happened. On destroy, the `FAILED`
+result also keeps `--purge-events` from discarding the history.
+
+### `RESOURCE_GUARD_INDETERMINATE`: a check could not answer
+
+Before some deletes, cdkd runs a safety check on the target. When the check
+cannot reach a verdict (for example because `s3:GetBucketLocation` is denied),
+cdkd proceeds and records this event with the guard's id and the reason:
 
 ```text
-2026-09-02T05:15:35Z  RESOURCE_GUARD_INDETERMINATE  MyBucket (AWS::S3::Bucket)  DELETE  guard=cc-delete-region-identity  [cc-api]
+  2026-09-02T05:15:35.118Z  RESOURCE_GUARD_INDETERMINATE  MyBucket (AWS::S3::Bucket)  DELETE  guard=cc-delete-region-identity  [cc-api]
       s3:GetBucketLocation on my-bucket could not be answered: Access Denied
-2026-09-02T05:15:36Z  RESOURCE_SUCCEEDED  MyBucket (AWS::S3::Bucket)  DELETE  [cc-api]  980ms
+  2026-09-02T05:15:36.098Z  RESOURCE_SUCCEEDED  MyBucket (AWS::S3::Bucket)  DELETE  [cc-api]  980ms
 ```
 
-The destroy summary carries the count half of the same signal
-(`Stack MyStack destroyed (1 deleted, 1 unverified, 0 errors)`) plus a warning
-naming the resources and pointing back at `cdkd events`. Note that
-`cdkd destroy --purge-events` deletes this history along with the rest after a
-clean destroy — that flag is an explicit "delete my history" instruction and
-this row is history like any other. An attacker who can deny a probe cannot
-make an operator pass the flag, so the two are independent; if you want the
-record kept, do not pass it.
+The event records that a delete went ahead without its target being confirmed.
+A guard can be disabled by denying the permission it depends on, and the
+warning cdkd prints does not outlive the run; this row does.
 
-`cdkd state destroy` records the same events, under `command: destroy`. It
-takes no `--purge-events`, so its history is always kept; run
-`cdkd events prune '<stack>' --all` afterwards to drop it. The one destroy that
-records nothing is a nested-stack child's, run from inside its parent's destroy:
-for a guard suppressed there, the summary line and its warning are the only
-surface.
+How to read it:
 
-`cdkd deploy` and a rollback record the row but add no summary count: the
-`RUN_FINISHED` `counts` carry no "unverified" field, and the run's `result` is
-unchanged. The live warning the guard prints is the in-run surface there.
+- It sits beside the resource's own outcome row and does not replace it. It
+  changes no `counts` field and not the run's `result`.
+- `operation` is always `DELETE`, the call the guard ran on, even when that
+  delete is a step inside an update or replacement.
+- It is recorded by destroy, by a deploy that deletes (a removed resource, a
+  replacement, a `--recreate-via-*` recreate), and by a rollback. A rollback
+  uses this same event type, beside its `ROLLBACK_RESOURCE_*` row.
+- A delete that threw carries no guard event, so on destroy it never
+  accompanies a `RESOURCE_FAILED`. On deploy and rollback it can, when the
+  guarded delete returned and a later step of the same operation failed.
 
-Failure events carry an `error` object: `{ name, message, awsErrorCode?,
-requestId?, ownLines? }`. The AWS error code + request id are extracted from the
-innermost AWS-SDK-shaped error in the thrown error's `.cause` chain. `ownLines`
-is `true` only on a rollback refusal cdkd built itself (see
-[Rendering](#rendering-the-human-path-sanitises-json-output-escapes)).
+The destroy summary also counts these
+(`Stack MyStack destroyed (1 deleted, 1 unverified, 0 errors)`) and warns,
+naming the resources. Deploy and rollback add no summary count.
 
-### Security: no resource properties, and a MASKED error message
+A nested-stack child destroyed from inside its parent's destroy records no
+events of its own. For a guard suppressed there, the summary line and its
+warning are the only trace.
 
-Events carry **error + metadata only**. Resource properties are **never**
-recorded in events (they may contain secrets); properties already live in
-`state.json`. The error object is the outermost error's name/message plus
-the AWS error code / request id — no payloads.
+### `ROLLBACK_RESOURCE_SKIPPED`: an operation the rollback declined
 
-**Withholding the payload is not sufficient on its own**, which is the part
-this section used to leave unsaid. AWS validation errors routinely quote the
-offending property VALUE back inside the `message` — `Value 'hunter2' at
-'password' failed to satisfy constraint ...` — so a resolved Secrets Manager /
-SSM `SecureString` value can reach the event `message` without any property ever
-being recorded. Because `deployments/{runId}.jsonl` is a **durable S3 sink**,
-that is worse than a terminal line: it persists after the run.
+The rollback leaves the resource exactly as the failed deploy left it when it
+cannot revert the operation:
 
-Each of the two producers that holds a resolved secret bag therefore masks the
-message before it is recorded, substituting the `{{resolve:...}}` expression the
-way state redaction does: `DeployEngine` masks
-every event through `maskSecretsInEvent`, and the **rollback executor** masks
-its own. The rollback half lives in the executor rather than in each caller
-because the replay re-resolves journaled properties to plaintext and has two
-entry points that would otherwise diverge: the standalone `cdkd rollback`
-command recorded events with no masking at all, while a deploy's in-process
-auto-rollback masked with the DEPLOY's secrets bag — a different generation from
-the one the replay resolved from the journal, so a rotated secret or a reference
-only the previous generation carried was missed. Masking at the shared executor
-makes both callers equal; the deploy engine's own `maskSecretsInEvent` still runs
-and double-masking is a no-op.
+- the deploy deleted the resource (a rollback cannot re-create it);
+- the record or its recorded `properties` baseline is missing;
+- a later attempt changed the physical id;
+- the operation failed and there is nothing to revert it to.
 
-`cdkd destroy` and `cdkd state destroy` resolve no secret, but a resource can be
-NAMED from one: its record (or, for a resource a failed deploy created, its
-rollback-journal entry) spells the name as its `{{resolve:...}}` reference. Each
-delete's event `reason` and error message are masked with that name's spellings
-and with those of the secret-named resources its record holds, the same needles
-that mask the delete's log lines. Every other path that deletes such a journaled
-resource masks its events the same way: a successful `cdkd deploy` removing its
-journal, a failed deploy's automatic rollback, and `cdkd rollback`. Both rollbacks
-also revert the deploy's completed operations under such needles.
+The event has a `reason` and no `error` or `physicalId`. An automatic rollback
+that skipped an operation keeps the rollback journal, so a later
+`cdkd rollback` replays it, records the skip again and exits `2`.
 
-`cdkd deploy` masks every event with those needles too, in the same pass as the
-resource's own secrets. Every match of any needle is masked, and overlapping
-matches are masked as one, so no needle leaves part of another behind. A nested stack deploys under its parent
-row's needles. When the parent passes the child a value read from a resource
-named from a secret, such as that queue's ARN, an AWS error in the child that
-quotes the value is masked as well.
+## Where events are stored
 
-The `name`, `awsErrorCode` and `requestId` fields are NOT masked — they are AWS
-enum-shaped identifiers that never carry a caller-supplied value.
+Events live beside `state.json` under their own keys, so they survive
+`cdkd destroy`:
 
-#### What the masking does NOT cover
-
-The mask is a **literal-occurrence substitution**, so it is bounded in four
-ways. The first two are inherited from `maskSecretsInText`; the third is the
-limit of how `NoEcho` parameter values reach it; the fourth is a choice about
-one field. All four are worth stating
-HERE rather than only at the log sites, because a durable sink keeps whatever
-gets through:
-
-- **Secrets shorter than 4 characters are not substituted**
-  (`MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction/rules.ts`) unless the whole
-  message IS the secret. A 1-3 character needle would rewrite unrelated text
-  across every message, so the substring scan declines it.
-- **Only a VERBATIM occurrence is matched.** A message that quotes the value
-  back JSON-escaped, truncated (`Value 'hunte...'`), re-cased, or URL-encoded
-  passes through unchanged, because the scanned string no longer contains the
-  recorded plaintext.
-- **A `NoEcho: true` template parameter is masked only where the run resolved
-  it.** A `Ref` or `Fn::Sub` variable serving one records the value for that
-  resource, so an event whose message quotes it is masked. Nothing re-derives
-  it elsewhere: a `cdkd rollback` run in its own process re-resolves a journal
-  that names no parameter, so its events are not masked. A piece of the value
-  (`Fn::Split` over it, or a nested child's list parameter split out of it) is
-  recorded too, but a 1-3 character value or piece inside a longer message is
-  not substituted, per the first bullet.
-- **An event's `physicalId` field is stored as AWS returned it**, even for a
-  resource whose name came from a secret. Wherever the masking above covers
-  an event's `reason` and error message, it leaves this field alone: it is
-  the identity a cleanup needs, and `state.json` beside the stream records
-  the same id.
-
-Treat `deployments/*.jsonl` as sensitive on that basis, and rotate any secret
-whose plaintext a run is known to have quoted — masking a later write does not
-un-persist an earlier one, and deleting the stream afterwards does not make
-the secret safe again
-([what the purge does not reach](#deleting-a-run-stream-also-purges-its-earlier-versions)).
-
-### Rendering: the human path sanitises, JSON output escapes
-
-Events are read back with a plain `JSON.parse`, which restores whatever bytes
-the writer stored — and several fields are provider- or template-authored (a
-logical id, a resource type, a `reason` that interpolates a user-chosen
-physical name, an AWS error message). The human `cdkd events` output therefore
-routes every stored value through cdkd's shared `displaySafe` helper, so a
-terminal escape sequence embedded in one of them cannot clear the screen or
-repaint a line of the post-mortem. A stored value that sanitises to nothing
-renders as `<unrenderable>` rather than as an empty column — with the two
-exceptions named below — a counter that is not a number renders as `?`, and a
-run result cdkd cannot render is coloured as unknown rather than as a failure.
-cdkd's own colouring is unaffected: the sanitising wraps the value, not the
-coloured token.
-
-An error `message` is folded onto one line unless the event's `error.ownLines`
-is `true`. cdkd sets that only on a rollback refusal it built itself, whose
-every line break is its own. Such a message is sanitised one LINE at a time,
-and each line after the first prints on its own, indented deeper than any event
-row or detail line. The refusal keeps a provider's text and its `To orphan it:`
-command on separate lines so that a value shown beside a pasteable command
-cannot run when the line is pasted. Any other message folds, because a
-provider's own newline could otherwise forge such a row. An event written
-before the field existed has no marker and folds.
-
-The reader trusts the stored marker. A principal who can write the state
-bucket can therefore set `ownLines: true` on a message with newlines of its
-own, but that principal can already forge the whole event, so the marker grants
-no privilege beyond write access to the store.
-
-`<unrenderable>` is a statement about the INPUT — "something was recorded here
-and sanitising consumed it" — so on the error line, the one field there that
-can be legitimately empty with nothing forged is exempt: an error's `message`
-is copied verbatim from the thrown error, so a bare `new Error()` stores `''`,
-and that row renders as `Error` with no trailing separator rather than claiming
-a suppressed value. Every other field on the ERROR line requires write access
-to the event store to be blank.
-
-Two fields deliberately do NOT make that distinction. The run listing's
-`startedAt` / `finishedAt` render `?` both when no timestamp was recorded — cdkd
-itself writes `''` for them when it rebuilds the run list from the JSONL keys —
-and when a stored one sanitised away, so `?` there means "not shown", not "never
-recorded". They keep the spelling the listing already used rather than gaining a
-second one: an earlier revision generalised the present-versus-consumed
-distinction across the whole renderer and each review round found it making the
-same false claim on a different input class.
-
-The run listing also prints each field only as ONE token of at most 64
-printable characters, because the listing sits above the
-`Read one run's events with:` line an operator copies. A stored value with
-spaces in it could wrap on screen into a counterfeit copy of that line, so a
-field that is not one token renders as `<unrenderable>`, or `?` for the two
-timestamps, exactly as a field sanitising consumed would. The header names the
-stack and region only when each is a plain identifier, and otherwise reads
-`a stack name that is not a plain identifier` / `a region that is not a plain
-identifier`. Every value cdkd writes itself passes, so an ordinary listing is
-unchanged.
-
-`--json` / `--format json` is deliberately **not** sanitised: it is a
-machine-consumed payload, and a substitution inside a value would corrupt what
-tooling reads back. It is **escaped** instead: every control, format,
-line-separator and paragraph-separator character — the C0 range, DEL, the C1
-range (`U+009B` is CSI in UTF-8), `U+2028` / `U+2029`, the bidi controls and
-the zero-width characters — is written as a `\uXXXX` escape (C0 may take
-JSON's short forms such as `\n`). The payload parses back to exactly the
-stored values, and `cat`-ing it cannot run a control sequence.
-
-## Where it lives (S3 key layout)
-
-Events are a **separate key family** from `state.json` — there is **no
-state schema bump** (state stays at its current version), so the change is
-fully backward compatible and triggers no schema-migration tooling.
-
-```
-s3://{bucket}/{prefix}/{stackName}/{region}/deployments/{runId}.jsonl   # one per run
-s3://{bucket}/{prefix}/{stackName}/{region}/deployments/index.json      # last N runs (newest first)
+```text
+s3://<state-bucket>/<state-prefix>/<stack>/<region>/deployments/
+├── 20260813T051530123Z-1a2b3c4d.jsonl   one file per run, one event per line
+├── 20260812T101502456Z-9f8e7d6c.jsonl
+└── index.json                           the newest 20 runs, newest first
 ```
 
-- `{runId}` is time-sortable + unique (e.g. `20260613T012345678Z-1a2b3c4d`).
-- `index.json` is a small derived view: the last 20 runs (runId, command,
-  cdkd version, start/end, result, event count), newest first.
-- Because the key family is separate from `state.json`, **event files
-  survive `cdkd destroy`** — a destroyed stack's failure history stays
-  readable.
+A run id starts with its timestamp, so run files sort by time. `index.json`
+is a derived summary (run id, command, cdkd version, start and end, result,
+event count); the run files are the source of truth.
 
-### Bounded growth
+| Situation | What `cdkd events` does |
+| --- | --- |
+| `index.json` is missing or unreadable | Lists the run files and takes each result from the run's last `RUN_FINISHED`. |
+| A run has no `RUN_FINISHED` (interrupted) | Reports its result as `UNKNOWN`, never as `FAILED`. |
+| A run file ends in a torn line | Skips that line and prints the rest. |
+| The stack was destroyed | Still finds the history: the region is discovered from the stored keys. |
 
-Three mechanisms keep the `deployments/` prefix from growing without bound:
+### Recording never blocks a run
 
-- **Self-bounding at write time.** When a run finalizes, the writer prunes
-  `{runId}.jsonl` streams that have fallen out of the 20-run index window —
-  so the per-run files stay bounded to the same window as `index.json`, not
-  just the index. The prune is best-effort (a failure warns once and never
-  blocks the run) and concurrency-safe: only streams strictly older than the
-  oldest retained run id are deleted, and run ids are time-sortable, so a
-  concurrent newer run can never be pruned out from under its writer.
-- **Explicit purge: `cdkd events prune`.** `cdkd destroy` and
-  `cdkd state destroy` deliberately keep event history (post-mortem context),
-  so an object listing of the state bucket is never empty after a destroy on
-  its own.
-  `cdkd events prune '<stack>'` is the way to clear that listing — see
-  [Pruning event history](#pruning-event-history-cdkd-events-prune).
-- **Purge as part of destroy: `cdkd destroy --purge-events`.** Opts into
-  deleting the stack's event history immediately after a *clean* destroy, so
-  one command leaves the listing empty. Kept on a failed /
-  interrupted destroy (those events aid the retry); equivalent for an
-  already-destroyed stack, and for `cdkd state destroy`, which has no such
-  flag, is `cdkd events prune '<stack>' --all`.
+Events are buffered in memory and flushed to S3 in the background. A failed
+write warns once and the deploy or destroy continues. Each run writes its own
+file, so runs never contend; `index.json` is last-writer-wins, and
+`cdkd events --run '<runId>'` reads a run directly even if the index lost a
+race. A `--dry-run` records nothing.
 
-All three also purge earlier versions, because the state bucket is
-versioned: the writer's prune and a partial `cdkd events prune` those of the
-keys they delete, and `--all` / `--purge-events` every earlier version under
-the stack's `deployments/` prefix — see
-[Deleting a run stream also purges its earlier versions](#deleting-a-run-stream-also-purges-its-earlier-versions).
+### How long history is kept
 
-### Best-effort, never blocking
+| Mechanism | Effect |
+| --- | --- |
+| Every run, when it finishes | Deletes run files that fell out of the newest 20. Best-effort; a failure warns once. |
+| `cdkd events prune MyStack` | Deletes runs by the retention you choose. |
+| `cdkd destroy --purge-events` | Deletes all of the stack's history after a clean destroy. Kept when the destroy fails or is interrupted. |
 
-Event recording can **never fail or block** a deploy / destroy:
+`cdkd destroy` and `cdkd state destroy` keep the history by default, so the
+state bucket is not empty after a destroy. `cdkd state destroy` has no
+`--purge-events`; run `cdkd events prune MyStack --all` afterwards.
 
-- Events are buffered in memory as the run proceeds; nothing is written
-  to S3 inline with a resource operation.
-- Flushes are asynchronous (debounced timer + a size threshold) and
-  serialized on a write chain.
-- A failed S3 write warns **at most once** and then degrades to
-  debug-level logging. The deploy / destroy proceeds regardless.
+## What events do not contain
 
-### No locking
+Events carry metadata and errors only. Resource properties are never recorded,
+because they may hold secrets.
 
-Each run writes to its own unique `{runId}.jsonl` key, so there is no
-concurrent writer by construction. `index.json` is written with
-**last-writer-wins** (no optimistic locking) — it is a derived view; the
-per-run `.jsonl` files are the source of truth, and `cdkd events --run
-'<id>'` reads a run directly by id even if the index lost a race.
+That is not enough alone, because an AWS validation error can quote a property
+value back inside its message (`Value '...' at 'password' failed to satisfy
+constraint`). cdkd therefore masks secret values in an event's `reason` and
+error message before recording it, replacing each with its `{{resolve:...}}`
+reference:
 
-## Reading events back: `cdkd events`
+- `cdkd deploy`, its automatic rollback and `cdkd rollback` mask the secrets
+  they resolved. A nested stack is masked under its parent's secrets too.
+- `cdkd destroy` and `cdkd state destroy` resolve no secret, but mask the name
+  of a resource that was named from one.
 
-```bash
-# List recorded runs for a stack, newest first
-cdkd events MyStack
+`error.name`, `awsErrorCode` and `requestId` are not masked. They are AWS
+identifiers and never carry a value you supplied.
 
-# Read one run's full ordered event stream
-cdkd events MyStack --run 20260613T012345678Z-1a2b3c4d
+### What the masking does not cover
 
-# Machine-readable JSON (for tooling / AI-agent hand-off)
-cdkd events MyStack --format json
-cdkd events MyStack --run '<id>' --format json
+The mask replaces literal occurrences of a known secret, so it has limits:
 
-# Disambiguate a stack with event history in more than one region
-cdkd events MyStack --stack-region us-east-1
-```
+| Limit | Detail |
+| --- | --- |
+| Secrets shorter than 4 characters | Not replaced unless the whole message is the secret. |
+| A value AWS quotes back altered | JSON-escaped, truncated, re-cased or URL-encoded text does not match. |
+| `NoEcho` template parameters | Masked only where the run resolved them. A standalone `cdkd rollback` re-resolves a journal that names no parameter, so its events are not masked. |
+| The `physicalId` field | Stored as AWS returned it, even for a resource named from a secret. A cleanup needs that id, and `state.json` records it too. |
 
-- With no `--run`: lists the runs from `index.json` (newest first). When
-  the index is missing or unreadable it falls back to enumerating the
-  `{runId}.jsonl` keys directly and deriving each run's result from its
-  own JSONL (the last `RUN_FINISHED` event) — a run whose stream has no
-  terminal `RUN_FINISHED` (interrupted, or its index write lost the
-  last-writer-wins race) is reported as `UNKNOWN`, never fabricated as
-  `FAILED`.
-- With `--run <id>`: prints that run's ordered events. Malformed / torn
-  final lines (from an interrupted flush) are skipped, never hiding the
-  rest of the stream.
-- `--format json` (or `--json`) emits the stored values as JSON, unsanitised
-  but escaped (see [Rendering](#rendering-the-human-path-sanitises-json-output-escapes)).
-- Region is auto-discovered from the `deployments/` key listing (not
-  `state.json`), so it works for destroyed stacks too; `--stack-region`
-  disambiguates when a stack has history in more than one region.
+> [!WARNING]
+> Treat `deployments/*.jsonl` as sensitive, and rotate any secret a run is
+> known to have quoted. Masking a later write does not remove an earlier one,
+> and deleting the run afterwards does not make the secret safe again; see
+> [what the purge does not reach](#deleting-a-run-stream-also-purges-its-earlier-versions).
 
-The command is **state-driven** — it only reads the S3 state bucket and
-does not need the CDK app (no synth). It does not take a lock (the keys are
-per-run unique and the index is last-writer-wins).
+## Rendering: the human path sanitises, JSON output escapes
+
+Several stored fields are written by a provider or come from your template: a
+logical id, a `reason` that includes a physical name, an AWS error message.
+The plain `cdkd events` output sanitises every stored value before printing
+it, so a terminal escape sequence inside one cannot clear the screen or
+repaint a line.
+
+| You see | It means |
+| --- | --- |
+| `<unrenderable>` | A value was recorded and sanitising left nothing of it. |
+| `?` in place of a count | The stored counter is not a number. |
+| `?` in place of a start or end time | The time is not shown: none was recorded, or it sanitised away. |
+| A result in grey | The result is `UNKNOWN` or could not be rendered; it is not reported as a failure. |
+| An error line with a name and no message | The error had an empty message. |
+
+The run listing prints each field only as one token of at most 64 printable
+characters, and names the stack and region in its header only when each is a
+plain identifier. The listing sits above a command you copy, and a stored
+value containing spaces could otherwise imitate that line. Values cdkd writes
+itself always pass.
+
+An error message is folded onto one line, with one exception. A rollback
+refusal that cdkd built itself is marked `error.ownLines: true` and prints one
+line per line, indented deeper than any event row, so its `To orphan it:`
+command stays on a line apart from provider text. Any other message folds,
+because a provider's own newline could otherwise forge such a row.
+
+`--json` and `--format json` are not sanitised, because replacing characters
+would corrupt what tooling reads. The output is escaped instead: every
+control, format and line-separator character (C0, DEL, C1, `U+2028`, `U+2029`,
+the bidi controls, the zero-width characters) is written as a `\uXXXX` escape.
+The payload parses back to exactly the stored values, and printing it cannot
+run a control sequence.
+
+The reader trusts what is stored. Someone who can write the state bucket can
+forge a whole event, `ownLines` included.
 
 ## Pruning event history (`cdkd events prune`)
 
 ```bash
-# Keep the newest 20 runs (default), delete the rest
-cdkd events prune MyStack
-
-# Keep only the newest 5 runs
-cdkd events prune MyStack --keep 5
-
-# Delete runs older than 24 hours
-cdkd events prune MyStack --older-than 24h
-
-# Purge ALL event history for the stack (and remove the index)
-cdkd events prune MyStack --all
-
-# Skip the confirmation prompt (CI)
-cdkd events prune MyStack --all --yes
+cdkd events prune MyStack                    # keep the newest 20 runs
+cdkd events prune MyStack --keep 5           # keep the newest 5
+cdkd events prune MyStack --older-than 24h   # delete runs older than 24 hours
+cdkd events prune MyStack --all --yes        # delete everything, no prompt
 ```
 
-Retention selection:
+| Flag | Deletes |
+| --- | --- |
+| none | Everything but the newest 20 runs. |
+| `--keep <N>` | Everything but the newest N runs. |
+| `--older-than <duration>` | Runs older than `<n>s`, `<n>m` or `<n>h`. A run id with no readable timestamp is kept. |
+| `--keep` with `--older-than` | Only runs that are both outside the newest N and older than the duration. |
+| `--all` | Every run and `index.json`. Cannot be combined with the other two. |
 
-- `--all` — delete every recorded run **and** the `index.json`, and purge every
-  earlier version under the stack's `deployments/` prefix, including streams
-  deleted before (see below). Mutually exclusive with `--keep` / `--older-than`.
-- `--keep <N>` — retain the newest N runs, delete the rest.
-- `--older-than <duration>` — delete runs whose run-id timestamp is older
-  than the duration (`<n>s` / `<n>m` / `<n>h`). A run id without a parseable
-  timestamp is kept (the safe direction).
-- `--keep <N>` **and** `--older-than <dur>` together — a run is deleted only
-  when it is **both** beyond the newest-N window **and** older than the
-  cutoff (the most conservative combination).
-- No retention flag — defaults to keeping the newest 20 runs (matching the
-  index window the writer self-bounds to).
-
-Prompts for confirmation unless `-y` / `--yes` is passed; `--stack-region`
-disambiguates a stack with history in more than one region. Like `cdkd
-events`, it is **state-driven** (no synth) and does not take a lock — but
-unlike the writer's best-effort auto-prune, errors surface to the caller.
-
-After deleting the matching `{runId}.jsonl` streams it rewrites `index.json`
-to drop the pruned runs, or removes the index entirely when no runs remain —
-so a full `--all` purge (or a destroy followed by `prune --all`) leaves the
-stack's `deployments/` prefix listing nothing and, on a versioned bucket, no
-readable earlier version under that prefix either.
+The command asks for confirmation unless you pass `--yes`, and reports errors
+instead of only warning. After deleting run files it rewrites `index.json`, or
+removes it when no runs remain.
 
 ### Deleting a run stream also purges its earlier versions
 
-`cdkd bootstrap` turns **versioning** on for the state bucket, so a delete by
-key alone only writes a DELETE MARKER: the key disappears from an ordinary
-listing while every earlier version stays readable through `GetObject` with a
-`VersionId`. Those versions are not a rounding error here — a run's
-`{runId}.jsonl` body is re-written **in full on every flush**, so one run
-leaves one noncurrent version per flush.
+`cdkd bootstrap` turns versioning on for the state bucket. A delete by key
+then only writes a delete marker, and every earlier version stays readable
+with `GetObject` and a `VersionId`. A run file is rewritten in full on every
+flush, so one run leaves several earlier versions.
 
-So every delete on this path also deletes **noncurrent versions**, scoped by
-what the delete empties:
+Every delete of event history therefore also deletes noncurrent versions:
 
-- **`cdkd events prune --all` and `cdkd destroy --purge-events`** empty the
-  stack's whole `deployments/` directory, so they purge every noncurrent
-  version under the exact `<state-prefix>/<stack>/<region>/deployments/`
-  prefix. That includes streams an earlier delete left behind a delete marker
-  (a cdkd release without this purge, or a purge that warned), which no
-  ordinary listing names. The trailing `/` keeps a stack whose name extends
-  this one's (`MyStack2`) out of the sweep, and each key's CURRENT version is
-  kept, so a run a concurrent deploy is writing loses only its earlier flushes,
-  which its current body supersedes.
-- **`cdkd events prune --keep` / `--older-than` and the writer's self-bounding
-  prune** purge only the keys they delete, so a retained run keeps its flush
-  history. The writer's prune is included because a stream it drops is no
-  longer listed, so only a later prefix-wide `--all` could find it again.
+| Delete | Versions purged |
+| --- | --- |
+| `cdkd events prune --all`, `cdkd destroy --purge-events` | Every noncurrent version under the stack's `deployments/` prefix, including run files deleted earlier. |
+| `cdkd events prune --keep` / `--older-than`, and the automatic prune when a run finishes | Only those of the run files they delete. |
 
-On an unversioned bucket there are no noncurrent versions and nothing extra is
-deleted.
+The `--all` sweep is scoped to the exact
+`<state-prefix>/<stack>/<region>/deployments/` prefix, so a stack whose name
+extends this one's (`MyStack2`) is untouched. Each key's current version is
+kept, so a run that a concurrent deploy is writing loses only earlier flushes.
+On an unversioned bucket nothing extra is deleted.
 
-The purge is fail-soft and needs `s3:ListBucketVersions` and
-`s3:DeleteObjectVersion` on the state bucket (see the
-[recommended bucket policy](state-management.md#recommended-bucket-policy-with-least-privilege)).
-Without them the prune or destroy still succeeds, and a warning naming the two
-grants prints before the summary line — `Pruned` / `Purged`, or, for an
-`--all` prune with nothing current left, `No runs matched` — which is why that
-line says "unless a warning above says otherwise" or that the versions "could
-not be purged". On the `No runs matched` line (an `--all` prune with nothing
-current left), a sweep that removed no earlier version with content (delete
-markers do not count) says it found no earlier versions, naming the region, so
-a mistyped `--stack-region` is visible, and a sweep that could not finish says
-"could not be purged; see the warning above". Because the writer's self-bounding
-prune purges too, a `cdkd deploy` or `cdkd destroy` of a stack past 20 runs can
-print the same warnings — including the replication one when the state bucket
-is replicated — and does so again on every such deploy or destroy, since each
-one prunes a stream.
+The purge needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` on the
+state bucket; [State Management](state-management.md) has a bucket policy that
+grants them. Without them the prune or destroy still succeeds, and a warning
+naming the two actions prints before the summary line. Because the automatic
+prune purges too, a deploy or destroy of a stack past 20 runs can print the
+same warning each time.
 
-What it does not reach:
+What the purge does not reach:
 
-- **Streams deleted earlier, on a partial prune.** `--keep` / `--older-than`
-  and the writer's prune act on the keys they delete, found by an ordinary
-  listing, so a stream already behind a delete marker is not revisited.
-  `cdkd events prune '<stack>' --all` (or `cdkd destroy --purge-events`)
-  reaches it, along with the rest of that region's history. The sweep covers
-  ONE region, and region discovery reads current keys only, so a region where
-  none of the stack's history is current any more (including one the stack
-  has left) is not picked on its own: pass `--stack-region <that region>`.
-  Without it the prune either stops with "No deployment-event history found"
-  or, when another region still has current history, sweeps only that one.
-- **Earlier versions of a REWRITTEN `index.json`.** A partial prune
-  (`--keep` / `--older-than`) rewrites the index rather than deleting it, so
-  its earlier versions survive; they hold run summaries (run id, command,
-  version, timestamps, result, event count), never event bodies. An `--all`
-  prune deletes the index and purges them.
-- **A replicated bucket's destination**, which keeps its own copies — see
-  [S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+- **Run files deleted earlier by a partial prune.** `--keep`, `--older-than`
+  and the automatic prune find keys by an ordinary listing, so a file already
+  behind a delete marker is not revisited. `--all` (or
+  `cdkd destroy --purge-events`) reaches it.
+- **A region with no current history.** The sweep covers one region, and
+  region discovery reads current keys only. For a region where none of the
+  stack's history is current any more, pass `--stack-region <region>`.
+  Without it the prune stops with "No deployment-event history found", or
+  sweeps only another region that still has current history.
+- **Earlier versions of a rewritten `index.json`.** A partial prune rewrites
+  the index, so its earlier versions survive. They hold run summaries, never
+  event bodies. `--all` deletes the index and purges them.
+- **A replicated bucket's destination**, which keeps its own copies. See
+  [State Management](state-management.md).
 
-To see what survives for a stack, and to remove it yourself:
+After an `--all` prune with nothing current left, the summary line reads
+`No runs matched`. It says it found no earlier versions, naming the region,
+when the sweep removed none with content, so a mistyped `--stack-region` is
+visible. It says the versions could not be purged when the sweep could not
+finish.
+
+To see what survives for a stack, and remove it yourself:
 
 ```bash
-# `cdkd` is the default --state-prefix; substitute yours if you set one.
+# cdkd is the default --state-prefix; substitute yours if you set one.
 aws s3api list-object-versions --bucket <state-bucket> \
   --prefix "<state-prefix>/<stack>/<region>/deployments/" \
   --query 'Versions[?IsLatest==`false`].{Key:Key,Id:VersionId,Size:Size}' \
@@ -489,12 +431,15 @@ aws s3api delete-object --bucket <state-bucket> \
   --version-id <VersionId>
 ```
 
-A purge is still not a remediation for a run that quoted a secret on its own —
-**rotate the secret**: the run's events were readable until the purge, and a
-replica or a pre-purge copy may hold them.
+A purge does not remedy a run that quoted a secret. Rotate the secret: the
+events were readable until the purge, and a replica or an earlier copy may
+still hold them.
 
-## Out of scope (follow-ups)
+## Related
 
-A diagnostic bundle command (`cdkd doctor --bundle`) and
-MCP server exposure of state / events / diff are deliberately left as
-follow-ups.
+- [`cdkd events`](cli-events.md): flags and defaults
+- [`cdkd rollback`](cli-rollback.md): the rollback whose events are recorded
+  here
+- [State Management](state-management.md): the state bucket, its policy and
+  replication
+- [Troubleshooting](troubleshooting.md): what to do with a failed deploy

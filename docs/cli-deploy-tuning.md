@@ -1,240 +1,215 @@
 ---
 title: "Deploy: tuning"
-description: "Deploy-time tuning flags — VPC dependency relaxation, observed-state capture, physical name prefixing, per-resource warn/timeout budgets, and CDK annotation handling."
+description: "cdkd deploy tuning flags: per-resource warn and timeout budgets, physical name prefixing, observed-state capture, VPC dependency relaxation, and CDK annotation handling."
 ---
 
 # Deploy: tuning
 
-`cdkd deploy` takes a handful of flags that change how it orders work, how much
-it records, what it names resources, and how long it lets a single resource run.
-None of them change what the template means — they change what the deploy costs
-and what it leaves behind. The rest of the deploy flags live under
-[Deploy: waits & concurrency](cli-deploy.md) and
-[Deploy: safety & compatibility flags](cli-deploy-safety.md).
+These `cdkd deploy` flags change how long one resource may run, what cdkd names
+resources, how much it records for drift detection, and how it orders VPC
+work. None of them change what the template means. For the full list of
+deploy flags, see [Deploy: waits & concurrency](cli-deploy.md#options).
 
 ```bash
-cdkd deploy --no-aggressive-vpc-parallel        # keep CDK's defensive VPC ordering
-cdkd deploy --no-capture-observed-state         # skip the drift baseline capture
-cdkd deploy --prefix-user-supplied-names        # prefix declared names with the stack name
-cdkd deploy --resource-warn-after 90s --resource-timeout 10m
-cdkd deploy --resource-timeout AWS::CloudFront::Distribution=1h
-cdkd deploy --strict                            # fail on warning annotations too
+cdkd deploy MyStack --resource-timeout 10m                 # abort a stuck resource sooner
+cdkd deploy MyStack --resource-timeout AWS::RDS::DBCluster=1h30m
+cdkd deploy MyStack --prefix-user-supplied-names           # prefix declared names with the stack name
+cdkd deploy MyStack --no-capture-observed-state            # skip the drift baseline
+cdkd deploy MyStack --no-aggressive-vpc-parallel           # keep CDK's VPC route ordering
+cdkd deploy MyStack --strict                               # fail on CDK warning annotations too
 ```
 
 ## Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--no-aggressive-vpc-parallel` | off (relaxation on) | Keep the CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes. |
-| `--no-capture-observed-state` | off (capture on) | Skip recording each resource's AWS-current properties as the drift baseline. |
-| `--prefix-user-supplied-names` | off | Prefix user-declared physical names with the stack name. |
-| `--no-prefix-user-supplied-names` | — | Deprecated. Already the default; setting it warns and changes nothing. |
-| `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
-| `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
-| `--strict` | off | Also fail when a stack carries CDK warning annotations. |
-| `--ignore-errors` | off | Print CDK annotations but never fail the run. |
+| `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation runs longer than this. Repeatable. |
+| `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that runs longer than this. Repeatable. |
+| `--prefix-user-supplied-names` | `false` | Prefix physical names you declared with the stack name. |
+| `--no-capture-observed-state` | capture on | Skip recording each resource's current AWS properties as the drift baseline. |
+| `--no-aggressive-vpc-parallel` | relaxation on | Keep CDK's `DependsOn` edges from VPC Lambdas onto private-subnet routes. |
+| `--strict` | `false` | Also fail when a stack carries CDK warning annotations. |
+| `--ignore-errors` | `false` | Print CDK annotations but never fail the run. |
 
-`--resource-warn-after` and `--resource-timeout` are also accepted by
-`cdkd destroy` and `cdkd state destroy`. `--strict` and `--ignore-errors` are
-also accepted by `cdkd synth`. The rest are deploy-only.
+Which other commands accept them:
 
-## `--no-aggressive-vpc-parallel`
-
-CDK injects defensive `DependsOn` edges from VPC Lambdas — and from the IAM
-Role / Policy, `AWS::Lambda::Url` and `AWS::Lambda::EventSourceMapping`
-resources around them — onto the private subnet's default route and route-table
-association. By default cdkd drops those edges, so downstream consumers can
-start while the NAT gateway is still stabilizing. The consumer this matters most
-for is a `AWS::CloudFront::Distribution` whose origin is a Lambda Function URL:
-without the relaxation, creating the distribution waits for the NAT route; with
-it, the two proceed in parallel.
-
-The relaxation is safe because every deploy-time consumer of a VPC Lambda
-accepts the function while its ENI is still being provisioned —
-`CreateFunctionUrlConfig`, `AddPermission` and `CreateEventSourceMapping` all
-succeed before ENI provisioning finishes. The one consumer that synchronously
-invokes the function, a Lambda-backed Custom Resource, waits for the function to
-report `Active` immediately before the invoke, regardless of this flag.
-
-```bash
-cdkd deploy --no-aggressive-vpc-parallel
-```
-
-### When to opt out
-
-Opt out when your stack has a Custom Resource that synchronously invokes a VPC
-Lambda **outside** cdkd's own `Active` wait — through SNS, or as a Step
-Functions task — and you want CDK's strict ordering to guarantee the NAT route
-is up before the function is hit. Most stacks do not need this: cdkd's Custom
-Resource provider already covers the standard Lambda-ServiceToken case.
-
-There is one other reason. If a Lambda's asynchronous ENI provisioning fails
-*after* the deploy has already started a `CreateDistribution` against its
-Function URL, the rollback has to delete both, and deleting a distribution takes
-around five minutes on its own. Opting out keeps that worst case off the table.
-
-How much the relaxation saves depends on your wait mode. Under
-[`--full-wait`](cli-deploy.md#what-full-wait-adds), cdkd waits for the
-distribution to reach `Deployed`, so the difference is a serial
-NAT-then-CloudFront critical path versus the longer of the two. On the default
-wait mode the distribution's create call returns in seconds, so the deploy
-itself finishes at about the same time either way — but propagation starts
-minutes earlier, because the create was issued without waiting for NAT.
-
-### Which edges are dropped
-
-Only `DependsOn` edges matching one of these type pairs. `Ref` and `Fn::GetAtt`
-edges are untouched, and so is any `DependsOn` outside the list.
-
-| Depender (`from`) | Dependee (`to`) |
+| Flags | Also accepted by |
 | --- | --- |
-| `AWS::IAM::Role` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
-| `AWS::IAM::Policy` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
-| `AWS::Lambda::Function` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
-| `AWS::Lambda::Url` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
-| `AWS::Lambda::EventSourceMapping` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
+| `--resource-warn-after`, `--resource-timeout` | `cdkd destroy`, `cdkd state destroy` |
+| `--strict`, `--ignore-errors` | `cdkd synth` |
+| The rest | `cdkd deploy` only |
 
-The relaxation is **deploy-only**. `cdkd destroy` orders deletes the same way
-with or without the flag: the route `DependsOn` does not constrain delete-time
-correctness, and the real destroy bottleneck — releasing a Lambda's hyperplane
-ENIs — is handled separately.
+## Per-resource timeout
 
-## `--no-capture-observed-state`
-
-Immediately after each create or update succeeds, `cdkd deploy` reads the
-resource back from AWS and records its current properties on the state record.
-That snapshot is the baseline [`cdkd drift`](drift.md) compares against. Without
-it, drift can only compare what you templated, so a console-side change to a key
-you never templated is invisible.
-
-The readbacks are fire-and-forget: the deploy critical path never blocks on
-them. The in-flight set is drained just before the final state save, so the cost
-is roughly one readback's latency — around 200-300 ms in practice — not one per
-resource.
+`cdkd deploy`, `cdkd destroy` and `cdkd state destroy` put a wall-clock
+deadline on every create, update and delete. A stuck Cloud Control poll, a hung
+custom resource handler or a slow ENI release then cannot block the run
+forever.
 
 ```bash
-# Skip the capture for one deploy
-cdkd deploy --no-capture-observed-state
+# Warn sooner and give up sooner in a fast dev loop
+cdkd deploy MyStack --resource-warn-after 90s --resource-timeout 10m
 
-# Pin it off for the whole project, in cdk.json
-# {
-#   "context": {
-#     "cdkd": { "captureObservedState": false }
-#   }
-# }
+# Keep the default, and raise it only for types known to take longer
+cdkd deploy MyStack \
+  --resource-timeout AWS::CloudFront::Distribution=1h \
+  --resource-timeout AWS::RDS::DBCluster=1h30m
 ```
 
-Highest wins: `--no-capture-observed-state` on the command line, then `cdk.json`
-`context.cdkd.captureObservedState`, then the default `true`. With the capture
-off, drift compares state-recorded properties only. Use the flag when deploy
-speed matters more than drift fidelity.
+| Threshold | What happens when it passes |
+| --- | --- |
+| `--resource-warn-after` | The progress line gains `[taking longer than expected, Nm+]` and a `WARN` line is logged. |
+| `--resource-timeout` | The deploy or destroy fails, and the usual rollback and state-preservation path runs. |
 
-The flag does not turn off the one readback that decides a replacement: when a
-[`NoEcho` custom resource](state-management.md#noecho-custom-resource-responses)
-re-runs and a resource holds its value in a property that cannot change in
-place, cdkd reads that resource back to see whether AWS already holds the value.
-That readback is compared in memory and never stored, so it has nothing to do
-with the drift baseline.
+The timeout error names the resource, type, region, elapsed time and operation:
 
-### Backfilling the baseline after an upgrade
+```text
+Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
+This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
+slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket='<DURATION>'
+to bump the budget for this resource type only, or --verbose to see the
+underlying provider activity.
+```
 
-A stack deployed by cdkd earlier than 0.47 — the release where observed-state
-capture shipped — has state records with no baseline at
-all. The first deploy after the upgrade backfills them: when `cdkd deploy` loads
-state and finds resources without one, it starts the same readbacks in parallel
-with the rest of the deploy and drains them into state at the final save. The
-critical path does not wait on them, the cost is again bounded by the longest
-single readback, and it happens once — later deploys are unaffected.
-`--no-capture-observed-state` skips the backfill along with the regular capture.
+### Value format
 
-`cdkd state refresh-observed '<stack>'` is the manual equivalent, for refreshing
-the baseline without deploying — useful for resources no upcoming deploy will
-touch.
+Both flags are repeatable and take either form on each use:
+
+| Form | Example | Effect |
+| --- | --- | --- |
+| A bare duration | `30m` | Sets the default for every type. The last one wins. |
+| `TYPE=DURATION` | `AWS::CloudFront::Distribution=1h` | Overrides the default for that type only. |
+
+Durations are a number followed by `s`, `m` or `h`: `30s`, `90s`, `5m`, `1.5h`.
+cdkd rejects these before anything runs:
+
+- a zero or negative duration, or one with a missing or unknown unit;
+- a `TYPE` that does not look like `AWS::Service::Resource`;
+- a warn threshold that is not less than its timeout, for the default or for
+  one type.
+
+If you lower `--resource-timeout` below `5m` and pass no
+`--resource-warn-after`, cdkd lowers the warn threshold to
+`min(5m, half the timeout)` and logs the value it chose.
+
+### Which deadline applies to a resource
+
+A `TYPE=DURATION` override always wins. Without one, the deadline is the
+largest of your default and the minimum cdkd carries for that type:
+
+| Types | Built-in minimum | Why |
+| --- | --- | --- |
+| `AWS::CloudFormation::CustomResource` | 1 hour | cdkd polls asynchronous handlers (the `isCompleteHandler` pattern) for up to an hour. |
+| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | 30 minutes | A delete stacks several polling waits that share one allowance. |
+| Slow types such as `AWS::OpenSearchService::Domain`, and Redshift, ElastiCache and RDS clusters | 60 minutes | Deleting one routinely runs 15-30 minutes. |
+
+Consequences:
+
+- Custom resources get their full hour under the default `30m`. To make them
+  abort sooner, name the type:
+
+  ```bash
+  cdkd deploy MyStack --resource-timeout AWS::CloudFormation::CustomResource=5m
+  ```
+
+- A minimum is per type, not per operation. `--resource-timeout 5m` does not
+  shorten a DynamoDB table's create or update deadline either. Use
+  `--resource-timeout AWS::DynamoDB::Table=5m` for that.
+- The 60-minute minimum also raises the Cloud Control provider's own poll
+  limit, which is otherwise 15 minutes. A slow delete routed through Cloud
+  Control is then not cut off before the deadline.
+
+The default is `30m` and not `1h` so that one stuck resource of an ordinary
+type does not hold the stack for an hour.
+
+### Waits under `--full-wait`
+
+`--resource-timeout` also reaches the waits inside cdkd's SDK providers, so an
+inner wait does not give up before the deadline you raised. Under
+[`--full-wait`](cli-deploy.md#what-full-wait-adds):
+
+| Wait | Limit |
+| --- | --- |
+| ECS service steady state | The larger of 600 seconds and the resolved `--resource-timeout`. |
+| CloudFront `Deployed` | The larger of 20 minutes and the resolved `--resource-timeout`. |
 
 ## `--prefix-user-supplied-names`
 
-cdkd creates AWS resources with the **exact name you declared** in CDK code.
-`new iam.Role(this, 'CRRole', { roleName: 'my-role' })` in stack `MyStack`
-produces a role named `my-role`, and that holds for every resource type.
+By default cdkd creates a resource with the exact name you declared in CDK
+code. This role, in stack `MyStack`, is named `my-role`:
 
-`--prefix-user-supplied-names` switches the affected types back to prefixing
-those names with the stack name (`MyStack-my-role`). Auto-generated names — the
-ones you did *not* declare — keep the prefix either way, because they rely on it
-for cross-stack uniqueness.
-
-```bash
-# One invocation
-cdkd deploy --prefix-user-supplied-names
-
-# Per shell
-export CDKD_PREFIX_USER_SUPPLIED_NAMES=true
-cdkd deploy
-
-# Per project, in cdk.json
-# {
-#   "context": {
-#     "cdkd": { "prefixUserSuppliedNames": true }
-#   }
-# }
+```ts
+new iam.Role(this, 'DeployRole', {
+  roleName: 'my-role',
+  assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+});
 ```
 
-Highest wins: the `--prefix-user-supplied-names` flag, then
-`CDKD_PREFIX_USER_SUPPLIED_NAMES=true`, then `cdk.json`
-`context.cdkd.prefixUserSuppliedNames: true`, then the default (no prefix).
+`--prefix-user-supplied-names` prefixes declared names with the stack name on
+the types below, giving `MyStack-my-role`.
 
-Two things the flag does not do. It is decided once per deploy and applied to
-every name generated in that run — you cannot scope it to one resource. And it
-controls only **what cdkd asks AWS to create**: once a resource exists, its name
-is recorded as the state record's physical ID, and flipping the flag afterwards
-does not rename it. It proposes a replacement instead — see below.
-
-A deploy that fails records the setting in its rollback journal, so
-[`cdkd rollback`](cli-rollback.md) re-creates resources under the names this
-deploy would have used without the flag being passed again. A resource an
-earlier deploy created under the other setting comes back under the name it had.
-
-The old `--no-prefix-user-supplied-names` flag, its
-`CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` env var, and its
-`context.cdkd.noPrefixUserSuppliedNames` cdk.json entry are deprecated: they now
-say the same thing as the default, so setting any of them prints a deprecation
-warning and changes nothing. Remove them from your config.
-
-### Affected resource types
-
-Only the types in the first row ever prefixed a user-declared name. Everything
-else was always unprefixed and is unchanged by the flag.
-
-| Types | Default | With `--prefix-user-supplied-names` |
+| Types | Default | With the flag |
 | --- | --- | --- |
 | IAM Role, User, Group, InstanceProfile, ManagedPolicy; ELBv2 LoadBalancer, TargetGroup | `my-role` | `MyStack-my-role` |
-| Lambda Function, S3 Bucket, SNS Topic, SQS Queue, DynamoDB Table, Logs LogGroup, Events Rule, and the rest | `my-bucket` | No effect — already unprefixed |
-| Any type, name not declared in CDK code | `MyStack-LogicalId-<hash>` | No effect — prefix kept for uniqueness |
+| Lambda Function, S3 Bucket, SNS Topic, SQS Queue, DynamoDB Table, Logs LogGroup, Events Rule, and the rest | `my-bucket` | No effect |
+| Any type, when you declared no name | `MyStack-LogicalId-<hash>` | No effect |
 
-### Migrating from pre-0.94.0
+Names cdkd generates keep the stack-name prefix either way, because they rely
+on it to be unique across stacks.
 
-Changed in v0.94.0: names you declare are used verbatim. Before that, cdkd
-prefixed them on the types in the first row above and left every other type
-alone — an inconsistency that surfaced through `cdkd export`, whose
-CloudFormation import check rejected a template declaring `RoleName: 'my-role'`
-against a deployed role actually named `MyStack-my-role`.
+### Where to set it
 
-For a stack deployed under the old convention, the first deploy on 0.94.0 or
-later proposes a **replacement** of every affected resource: the deployed name
-is `MyStack-my-role` and the template now means `my-role`, which is an immutable
-property change. Three ways out, most conservative first:
+| Where | Setting |
+| --- | --- |
+| Command line | `--prefix-user-supplied-names` |
+| Environment | `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` |
+| `cdk.json` | `context.cdkd.prefixUserSuppliedNames: true` |
 
-1. **Pin `--prefix-user-supplied-names`** for that stack. Nothing in AWS is
-   touched.
-2. **Accept the one-time replacement.** The pre-flight prompt below makes it
-   explicit before anything runs.
-3. **Drop the explicit `roleName` / `userName` / … from your CDK code** and let
-   CDK generate the name. Also a one-time replacement, but the resulting name is
-   stable from then on.
+The first one set wins, in that order.
 
-Because that replacement would otherwise be silent, `cdkd deploy` runs a
-pre-flight check. When a state record holds an affected resource whose physical
-name is exactly the prefixed form of the name you declared, the deploy lists
-them and asks before any provider call runs:
+```json
+{
+  "context": {
+    "cdkd": { "prefixUserSuppliedNames": true }
+  }
+}
+```
+
+### What the flag does not do
+
+- It cannot be scoped to one resource. It is decided once per deploy and
+  applies to every name generated in that run.
+- It does not rename an existing resource. The name is recorded as the
+  resource's physical ID, so changing the setting later proposes a
+  replacement.
+
+A deploy that fails records the setting in its rollback journal.
+[`cdkd rollback`](cli-rollback.md) then creates resources again under the names
+that deploy would have used, without the flag being passed again.
+
+`--no-prefix-user-supplied-names`, `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` and
+`context.cdkd.noPrefixUserSuppliedNames` are deprecated. They ask for what is
+already the default, so setting one prints a deprecation warning and changes
+nothing.
+
+### Stacks deployed before v0.94.0
+
+Changed in v0.94.0: declared names are used as written. Earlier versions
+prefixed them on the types in the first row of the table above.
+
+For a stack deployed under the old convention, the first deploy on v0.94.0 or
+later proposes a replacement of every affected resource. The deployed name is
+`MyStack-my-role`, the template now means `my-role`, and a name cannot change
+in place. You have three options, most conservative first:
+
+| Option | Effect |
+| --- | --- |
+| Pass `--prefix-user-supplied-names` for that stack | Nothing in AWS changes. |
+| Accept the replacement | One replacement per affected resource, after the prompt below. |
+| Remove the explicit `roleName`, `userName` and so on from your CDK code | Also one replacement, and CDK generates a stable name from then on. |
+
+Before any provider call, `cdkd deploy` lists the resources that would be
+replaced and asks:
 
 ```text
 WARNING: --no-prefix-user-supplied-names will REPLACE 2 resource(s) whose
@@ -247,187 +222,170 @@ the stack-name prefix.
 Continue? (y/N):
 ```
 
-The prompt defaults to **no**, because the side effect is destructive.
-Declining exits cleanly with nothing modified. Pass `-y` / `--yes` to confirm it
-in CI; without it, a non-interactive run is refused rather than left hanging.
+The prompt defaults to no, and declining exits with nothing modified. Pass
+`-y` / `--yes` to confirm it in CI. Without it, a non-interactive run is
+refused.
 
-The match is exact, not a "starts with `MyStack-`" test, and that matters if you
-follow the common convention of building the name from the stack name — setting
-`roleName` to `${this.stackName}-role`, for instance. Such a name was
-already taken verbatim, so its physical ID equals what the next deploy will ask
-for, no replacement is pending, and it is not flagged. The check is also a no-op
-on a first deploy, on a stack that never used the prefix, and whenever
-`--prefix-user-supplied-names` is set.
+A resource is listed only when its physical name is exactly the prefixed form
+of the name you declared. A name you built from the stack name yourself, such
+as `` roleName: `${this.stackName}-role` ``, was already used as written and is
+not listed. The check does nothing on a first deploy, on a stack that never
+used the prefix, or when `--prefix-user-supplied-names` is set.
 
-The check reads the state cdkd has already loaded under the stack lock, so it
-sees exactly what the diff will consume and no concurrent deploy can change it
-in between. The lock is held while the prompt is open; declining releases it,
-and accepting keeps it for the deploy that follows.
+The stack lock is held while the prompt is open. Declining releases it.
 
-## Per-resource timeout
+## `--no-capture-observed-state`
 
-`cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`) put a
-wall-clock deadline on every individual CREATE / UPDATE / DELETE, so a stuck
-Cloud Control polling loop, a hung Custom Resource handler, or a slow ENI
-release cannot block the run forever.
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--resource-warn-after <duration_or_type=duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
-| `--resource-timeout <duration_or_type=duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
-
-When the warn threshold passes, the live progress line gains a
-`[taking longer than expected, Nm+]` suffix and a `WARN` line is logged — above
-the live area on a terminal, on plain stderr otherwise. When the timeout passes,
-the deploy or destroy fails and the usual rollback and state-preservation path
-runs.
-
-Durations are `<number>s`, `<number>m` or `<number>h` — `30s`, `90s`, `5m`,
-`1.5h`. Zero, negative, missing-unit and unknown-unit values are rejected before
-anything runs. Both flags take either form on each use:
-
-- **A bare duration** (`30m`) sets the global default. The last one wins.
-- **`TYPE=DURATION`** (`AWS::CloudFront::Distribution=1h`) overrides the global
-  default for that type only.
-
-`TYPE` must look like `AWS::Service::Resource`; anything else is rejected at
-parse time. So is a warn threshold that is not less than its timeout, globally
-or per type — `--resource-warn-after AWS::X=10m --resource-timeout AWS::X=5m` is
-a parse error.
+After each create or update succeeds, `cdkd deploy` reads the resource back
+from AWS and records its current properties in state. That snapshot is the
+baseline [`cdkd drift`](drift.md) compares against.
 
 ```bash
-# Surface "still running" warnings sooner on a fast-feedback dev loop
-cdkd deploy --resource-warn-after 90s --resource-timeout 10m
-
-# Keep the global default tight, raise it only for resources known to take longer
-cdkd deploy \
-  --resource-timeout 30m \
-  --resource-timeout AWS::CloudFront::Distribution=1h \
-  --resource-timeout AWS::RDS::DBCluster=1h30m
-
-# Force Custom Resources to abort earlier than their 1h self-reported cap
-cdkd deploy --resource-timeout AWS::CloudFormation::CustomResource=5m
+cdkd deploy MyStack --no-capture-observed-state
 ```
 
-If you lower `--resource-timeout` below the inherited 5m warn default and do not
-pass a matching `--resource-warn-after`, cdkd lowers the warn threshold for you
-to `min(5m, half the timeout)` and logs the value it chose. Passing both flags
-explicitly turns that off — and an explicitly reversed pair is a hard parse
-error, not something cdkd repairs.
+Without the baseline, drift can compare only the properties you put in the
+template. A console change to a property you never set is then invisible. Use
+the flag when deploy speed matters more than that.
 
-The timeout error names the resource, type, region, elapsed time and operation:
+The capture costs little. The read-backs run in the background and the deploy
+waits for the outstanding ones once, just before the final state save, which
+adds roughly 200-300 ms in total.
 
-```text
-Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
-This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
-slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket='<DURATION>'
-to bump the budget for this resource type only, or --verbose to see the
-underlying provider activity.
+To turn the capture off for a whole project, set it in `cdk.json`:
+
+```json
+{
+  "context": {
+    "cdkd": { "captureObservedState": false }
+  }
+}
 ```
 
-### Why the default is 30m, not 1h
+The command-line flag wins over `cdk.json`, which wins over the default of
+`true`.
 
-cdkd's Custom Resource provider polls asynchronous handlers (the
-`isCompleteHandler` pattern) for up to an hour before giving up. Setting the
-global default to 1h would let a single stuck resource of any other type hold
-the stack for an hour, when no other type ever needs more than a few minutes.
-30m catches stuck operations sooner, and the types that genuinely need longer
-ask for it themselves — the next three sections.
+One read-back is not affected by the flag. When a
+[`NoEcho` custom resource](state-management.md#noecho-custom-resource-responses)
+runs again and a resource holds its value in a property that cannot change in
+place, cdkd reads that resource back to decide whether a replacement is
+needed. That read is compared in memory and never stored.
 
-### Custom Resource self-report
+### Resources with no baseline yet
 
-The Custom Resource provider reports its 1h polling cap to the deploy engine,
-and the engine takes the larger of that and your global `--resource-timeout`. So
-Custom Resources get their full hour without you having to remember
-`--resource-timeout 1h`.
+A resource record written by a cdkd earlier than v0.47 has no baseline. The
+first deploy that loads such a record fills the baseline in, with the same
+background read-backs, and later deploys are unaffected.
+`--no-capture-observed-state` skips this as well.
 
-To make them abort sooner, pass an explicit per-type override:
+To refresh the baseline without deploying, for resources no upcoming deploy
+will touch, run:
 
 ```bash
-cdkd deploy --resource-timeout AWS::CloudFormation::CustomResource=5m
+cdkd state refresh-observed MyStack
 ```
 
-A per-type override always wins over a provider's self-report. That is what it
-is for.
+## `--no-aggressive-vpc-parallel`
 
-### DynamoDB self-report
-
-`AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable` both self-report 30
-minutes, for the same reason: their DELETE path stacks several polling waits —
-replica removal, an index-settle gate, an index-busy `DeleteTable` retry, and a
-confirm-gone wait — that share one allowance sized to fit inside it.
-
-At the default `--resource-timeout 30m` this changes nothing. But the
-self-report is per **type**, not per operation, so lowering the global default
-for fail-fast CI (`--resource-timeout 5m`) does not shorten these types' CREATE
-or UPDATE deadline either. Use a per-type override to get the shorter deadline
-back:
+CDK adds defensive `DependsOn` edges from VPC Lambdas, and from the resources
+around them, onto the private subnet's default route and route-table
+association. By default cdkd drops those edges, so work that does not need the
+route can start while the NAT gateway is still coming up.
 
 ```bash
-cdkd deploy --resource-timeout AWS::DynamoDB::Table=5m
+cdkd deploy MyStack --no-aggressive-vpc-parallel   # keep CDK's ordering
 ```
 
-### The slow-type floor
+The case that gains most is a CloudFront distribution whose origin is a Lambda
+Function URL. With the edges dropped, the distribution and the NAT route are
+created in parallel.
 
-Some resource types are slow to create or delete no matter which provider
-handles them. Deleting an `AWS::OpenSearchService::Domain` routinely runs 15-30
-minutes, and Redshift, ElastiCache and RDS clusters are the same class. cdkd
-carries a built-in 60-minute floor for these, folded into the same "largest
-wins" resolution, so a plain `cdkd destroy` waits long enough for the delete to
-actually finish instead of aborting mid-delete.
+Dropping the edges is safe because the deploy-time consumers of a VPC Lambda
+accept the function while its ENI is still being provisioned:
+`CreateFunctionUrlConfig`, `AddPermission` and `CreateEventSourceMapping` all
+succeed. A Lambda-backed custom resource, which invokes the function, waits
+for it to report `Active` first, whatever this flag says.
 
-The floor also lifts the Cloud Control provider's internal poll cap, which is
-otherwise a flat 15 minutes — so a Cloud-Control-routed slow delete is not cut
-off before the outer deadline. An explicit
-`--resource-timeout <TYPE>=<DURATION>` still wins over the floor.
+### When to opt out
 
-### Inner waiters under `--full-wait`
+- **A custom resource invokes a VPC Lambda indirectly**, through SNS or as a
+  Step Functions task, and you want the NAT route up before the function is
+  hit. cdkd's own `Active` wait covers only a Lambda used directly as the
+  `ServiceToken`.
+- **You want to avoid a slow rollback.** If a Lambda's ENI provisioning fails
+  after the deploy has started creating a distribution against its Function
+  URL, the rollback has to delete both, and deleting a distribution takes
+  around five minutes.
 
-`--resource-timeout` also reaches the waits inside cdkd's SDK providers, so an
-inner waiter can never abort before the outer deadline you raised. Under
-[`--full-wait`](cli-deploy.md#what-full-wait-adds):
+How much the default saves depends on the wait mode:
 
-- the ECS Service steady-state waiter's 600s cap becomes the larger of 600s and
-  the resolved `--resource-timeout`;
-- the CloudFront `Deployed` wait budget becomes the larger of 20 minutes and the
-  resolved `--resource-timeout`.
+| Wait mode | With the edges dropped |
+| --- | --- |
+| `--full-wait` | The deploy takes the longer of the NAT and CloudFront waits, not their sum. |
+| default | The deploy finishes at about the same time, but CloudFront propagation starts minutes earlier. |
+
+### Which edges are dropped
+
+Only `DependsOn` edges between these type pairs. `Ref` and `Fn::GetAtt` edges
+are untouched, and so is any other `DependsOn`.
+
+| Depender (`from`) | Dependee (`to`) |
+| --- | --- |
+| `AWS::IAM::Role` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
+| `AWS::IAM::Policy` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
+| `AWS::Lambda::Function` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
+| `AWS::Lambda::Url` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
+| `AWS::Lambda::EventSourceMapping` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
+
+The flag affects deploys only. `cdkd destroy` orders deletes the same way with
+or without it.
 
 ## CDK annotation messages
 
-`cdkd synth` and `cdkd deploy` surface CDK `Annotations` with the same semantics
-as the CDK CLI.
+`cdkd synth` and `cdkd deploy` handle CDK `Annotations` the way the CDK CLI
+does.
 
-`Annotations.of(scope).addError(...)` prints each error as
-`[Error at /Construct/Path] message`, appends `Found errors`, and exits non-zero
-**without deploying anything**. `deploy` checks the final stack selection —
-including dependency stacks it pulled in automatically — before any AWS
-mutation; an error annotation on a stack *outside* the selection does not block
-the deploy, matching `cdk deploy`.
+```ts
+import { Annotations } from 'aws-cdk-lib';
 
-`addWarning(...)` and `addInfo(...)` print as `[Warning at /path] ...` and
-`[Info at /path] ...`, and the run proceeds.
+Annotations.of(this).addWarning('Bucket has no lifecycle rule');
+Annotations.of(this).addError('A retention period is required');
+```
 
-`cdkd synth` checks every synthesized stack unless you name one, in which
-case it checks that stack.
-Other synth-driven commands — `diff`, `list`, `import` and friends — do not fail
-on error annotations, matching the upstream CLI.
+| Annotation | Printed as | Effect |
+| --- | --- | --- |
+| `addError(...)` | `[Error at /Construct/Path] message` | The run prints `Found errors` and exits non-zero. Nothing is deployed. |
+| `addWarning(...)` | `[Warning at /Construct/Path] message` | The run proceeds, unless `--strict` is set. |
+| `addInfo(...)` | `[Info at /Construct/Path] message` | The run proceeds. |
+
+Which stacks are checked:
+
+| Command | Stacks checked |
+| --- | --- |
+| `cdkd deploy` | The stacks it will deploy, dependencies it pulled in included, before any AWS change. |
+| `cdkd synth` | Every stack, or only the stack you named. |
+| `cdkd diff`, `cdkd list`, `cdkd import` and the other commands that synthesize | They do not fail on error annotations. |
+
+An error annotation on a stack outside a deploy's selection does not block the
+deploy, as with `cdk deploy`.
 
 ### `--strict`
 
-Also fail when any warning annotation exists, with `Found warnings (--strict
-mode)` and a non-zero exit. Info messages never fail a run. Errors still fail
-with `Found errors`; when both are present, the error check wins.
+Also fail when any warning annotation exists, with
+`Found warnings (--strict mode)` and a non-zero exit. Info messages never fail
+a run. When errors and warnings are both present, the run fails with
+`Found errors`.
 
 ### `--ignore-errors`
 
-Display every annotation but never fail the run. As with the CDK CLI flag, this
-"ignores synthesis errors, which will likely produce an invalid deployment".
-Combined with `--strict`, strict wins and warnings and errors fail again —
-again matching CDK CLI precedence.
+Print every annotation but never fail the run. As the CDK CLI says of its own
+flag, this ignores synthesis errors, "which will likely produce an invalid
+deployment". With `--strict` as well, `--strict` wins and both warnings and
+errors fail the run.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md) — concurrency knobs and what "done" means per resource type
-- [Deploy: safety & compatibility flags](cli-deploy-safety.md) — the guards and their escape hatches
-- [Destroy flags & guards](cli-destroy.md) — the destroy side of the timeout flags
-- [`cdkd drift`](drift.md) — what the observed-state baseline is for
+- [Deploy: waits & concurrency](cli-deploy.md): every deploy flag, wait modes and the stack lock
+- [Deploy: safety & compatibility flags](cli-deploy-safety.md): the guards and their escape hatches
+- [Destroy flags & guards](cli-destroy.md): the destroy side of the timeout flags
+- [Drift Detection](drift.md): what the observed-state baseline is for

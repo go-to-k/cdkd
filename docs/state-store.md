@@ -1,70 +1,96 @@
 ---
 title: State Store
-description: cdkd records what it deployed in an S3 state store, so a whole estate can be listed, inspected, and torn down by name — without the CDK app that created it.
+description: "cdkd records what it deployed in an S3 state store, so a whole estate can be listed, inspected and torn down by name, without the CDK app that created it."
 ---
 
 # The state store
 
-Because cdkd does not deploy through CloudFormation, there is no server-side
-stack to ask about a deployment. What cdkd created is recorded in an S3
-**state store** instead — one JSON record per `(stack, region)` pair, under
-`s3://<bucket>/cdkd/<stackName>/<region>/state.json`. That record is the
-source of truth for every later operation: what a diff compares against, what
-a drift check baselines on, and what a destroy walks to know which physical
-resources to delete.
-
-The consequence worth knowing is that this store is addressable on its own.
-CloudFormation ties every operation to a stack you name; the cdkd state store
-holds the whole estate in one place, so `cdkd state` can enumerate it, act on
-several stacks at once, or — with `cdkd state refresh-observed --all` — act on
-every stack in the bucket. Destroying is deliberately narrower: the bucket is
-shared by every CDK app in the account, so `cdkd state destroy` deletes only
-the stacks you name.
+cdkd does not deploy through CloudFormation, so there is no CloudFormation
+stack to ask what a deployment contains. cdkd writes that record itself, to
+an S3 bucket called the **state store**: one JSON record per stack and
+region. Every later command works from it. A diff compares against it, a
+drift check uses it as the baseline, and a destroy reads it to know which
+physical resources to delete.
 
 ```bash
-cdkd state info                     # which bucket cdkd is using, and how much is in it
-cdkd state list                     # every stack in the bucket, not just this app's
-cdkd state list --tree              # nested-stack parents and children
-cdkd state show MyStack             # one record in full, including resource properties
-cdkd state destroy StackA StackB    # destroy named stacks without the CDK app
+cdkd state info                    # which bucket cdkd uses, and how many stacks are in it
+cdkd state list                    # every stack in the bucket, across all CDK apps
+cdkd state list --tree             # nested stacks under their parents
+cdkd state show MyStack            # one record: outputs and every resource
+cdkd state destroy StackA StackB   # delete named stacks and their resources
 ```
 
-## No CDK app required
+## What is in the bucket
 
-None of these commands synthesizes. They read the bucket, so they work from a
-machine that never had the repository — which is what makes them the cleanup
-path for a CI runner whose branch has been deleted, or for a stack whose source
-is simply gone. `cdkd state destroy` runs the identical deletion pipeline as
-`cdkd destroy`, sourced from the record rather than from a fresh synth.
+```text
+s3://cdkd-state-<accountId>/cdkd/
+  └── MyStack/
+      └── us-east-1/
+          ├── state.json              # the record: resources, outputs
+          ├── lock.json               # the stack lock
+          └── rollback-journal.json   # what a failed deploy did
+```
 
-The price of that independence is that stacks are identified by their physical
-CloudFormation names — the CDK display paths and wildcards `cdkd destroy`
-accepts are not available without an app to resolve them against.
+One bucket serves every CDK app in the account, and a stack deployed to two
+regions has a record under each. `cdkd bootstrap` creates the bucket.
 
-## Removing a record is not deleting resources
+## These commands need no CDK app
 
-Two operations look similar and are not: `cdkd state destroy` deletes the AWS
-resources and then the record, while `cdkd state orphan` deletes only the
-record and leaves everything running. Orphaning is the escape hatch for a
-resource cdkd can no longer manage — and it is a sharp one, because the
-resources it leaves behind are no longer tracked by anything. See
-[Orphan vs Destroy](orphan-vs-destroy.md) for which of the four cleanup
-commands applies.
+`cdkd state` commands read the bucket and never synthesize. They work on a
+machine that has never had your repository, which makes them the cleanup path
+for a CI runner whose branch is already deleted, or for a stack whose source
+is gone.
 
-## Records outlive the binary that wrote them
+`cdkd state destroy` deletes resources the same way `cdkd destroy` does. It
+takes what to delete from the record where `cdkd destroy` takes it from a
+fresh synth.
 
-The record carries a schema version, and every older version is read and
-upgraded in memory by the current binary; the next write persists the new
-shape silently. Upgrading cdkd never asks you to migrate a record's *contents*.
+Without an app, a stack is identified by its physical CloudFormation name.
+The CDK display paths and wildcards `cdkd destroy` accepts need an app to
+resolve, so they are not available here.
 
-Two things around the record are not covered by that. A record still written
-under the original key layout, from before keys carried a region, is rewritten
-under the current one by the next `cdkd deploy` into that region. And the
-bucket *name* changed once: installations predating the region-free default
-need a one-time `cdkd state migrate` per region, which both the deprecation
-warning and `cdkd state info` point at.
+## Acting on more than one stack
 
-See **[`cdkd state`](cli-state.md)** for the full reference: every subcommand,
-its flags, the confirmation and lock behavior, and the exit codes. The record
-schema itself — every field, the v1 → v11 history, and the lock mechanism — is
-documented in [State Management](state-management.md).
+The bucket holds the whole estate, so a command can cover several stacks at
+once:
+
+```bash
+cdkd state list --long                   # resource count, last modified, lock
+cdkd state refresh-observed --all        # refresh the drift baseline of every stack
+cdkd state destroy StackA StackB --yes   # only the stacks you name
+```
+
+`cdkd state destroy` has no `--all`. The bucket is shared by every CDK app in
+the account, so it deletes only the stacks you name.
+
+## Removing a record does not delete resources
+
+> [!WARNING]
+> `cdkd state destroy` deletes the AWS resources and then the record.
+> `cdkd state orphan` deletes only the record and leaves everything running,
+> tracked by nothing.
+
+Orphaning is for a resource or stack cdkd should stop managing.
+[Orphan vs Destroy](orphan-vs-destroy.md) says which of the cleanup commands
+applies.
+
+## Upgrading cdkd does not require migrating records
+
+Each record carries a schema version. A newer cdkd reads every older version
+and writes the current one the next time it saves the record. You are never
+asked to migrate a record's contents.
+
+Two things outside the record's contents did change once:
+
+| What changed | Who is affected | What happens |
+| --- | --- | --- |
+| The key layout gained the region | A record written before keys carried a region | The next `cdkd deploy` into that region rewrites it under the current key |
+| The default bucket name lost its region suffix | An installation that still uses `cdkd-state-<accountId>-<region>` | Run `cdkd state migrate` once per region; the deprecation warning and `cdkd state info` both point at it |
+
+## Related
+
+- [`cdkd state`](cli-state.md): every subcommand, its flags, the confirmation
+  and lock behavior, and the exit codes
+- [State Management](state-management.md): the record's fields, the schema
+  versions and the lock mechanism
+- [Orphan vs Destroy](orphan-vs-destroy.md): choosing a cleanup command

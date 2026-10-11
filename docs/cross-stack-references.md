@@ -1,215 +1,221 @@
 ---
 title: Cross-Stack References
-description: "cdkd's two cross-stack reference mechanisms — strong Fn::ImportValue and weak Fn::GetStackOutput — and the exports index design behind them."
+description: "The two ways one cdkd stack reads another's outputs, strong Fn::ImportValue and weak Fn::GetStackOutput, and what to do when a destroy is refused because of one."
 ---
 
 # Cross-Stack References
 
-cdkd supports two cross-stack reference mechanisms with deliberately
-different semantics:
+A cross-stack reference lets one stack (the **consumer**) use a value another
+stack (the **producer**) published as an output. cdkd supports two kinds, and
+they differ in what happens when you destroy the producer:
 
-| Intrinsic | Strength | Behavior on producer destroy | Use when |
-|---|---|---|---|
-| `Fn::ImportValue` | **strong** | Refuse with `StackHasActiveImportsError` | You want CloudFormation parity — the producer must be protected as long as consumers reference it |
-| `Fn::GetStackOutput` (cdkd-specific) | weak | Proceeds; consumer's next resolve fails | You want the producer to be deletable independently of consumers (cross-region / cross-stage / staging) |
+| Intrinsic | Strength | Destroying the producer | Use when |
+| --- | --- | --- | --- |
+| `Fn::ImportValue` | Strong | Refused with `StackHasActiveImportsError` while a consumer imports from it | The producer must stay as long as anything uses it. This is what CloudFormation does. |
+| `Fn::GetStackOutput` | Weak | Proceeds; the consumer fails the next time it resolves the value | The producer must be deletable on its own, or lives in another region or account |
 
-This page covers what each mechanism means for you: which to reach for, what a
-refused destroy is telling you, and how to resolve one. The exports index, the
-state schema behind it, the resolver's decision flow and the measured cost of
-each path are in
-[Cross-stack reference internals](cross-stack-internals.md).
-
----
-
-## Why strong references
-
-CloudFormation's `Fn::ImportValue` is a strong reference:
-
-```text
-$ aws cloudformation delete-stack --stack-name Producer
-An error occurred (ValidationError): Export Producer:BucketArn cannot
-be deleted as it is in use by stack Consumer.
+```text diagram=guide-cross-stack
+                      Producer stack
+                     publishes outputs
+               │                          │
+        Fn::ImportValue           Fn::GetStackOutput
+               ▼                          ▼
+        Strong reference           Weak reference
+        cdkd records the import    the producer can be destroyed
+        destroying the producer    at any time; the consumer then
+        is refused while this      fails the next time it resolves
+        consumer exists            the value
 ```
 
-cdkd once silently allowed producer destruction even
-when consumers referenced its outputs. The consumer's next deploy
-would then fail at resolve time with `export 'BucketArn' not found in
-any stack`. This violated user expectations and was inconsistent with
-CloudFormation's safety model.
+## Strong reference: `Fn::ImportValue`
 
-cdkd now matches CFn: `cdkd destroy '<producer>'` refuses with a clear
-error that names every consumer still referencing the producer.
+The producer exports a value under a name, and the consumer imports it by
+that name:
 
-### Why no `--force` escape hatch
+```ts
+// ProducerStack
+new cdk.CfnOutput(this, 'BucketArnOutput', {
+  value: bucket.bucketArn,
+  exportName: 'BucketArn',
+});
 
-CloudFormation does not provide one and cdkd intentionally matches
-that. If you want a producer that can be destroyed independently of
-consumers, use `Fn::GetStackOutput` (cdkd-specific weak reference) at
-template-authoring time instead of bolting on an after-the-fact
-override. See the "Resolving a refused destroy" section below for the
-two valid recovery paths.
+// ConsumerStack
+const bucketArn = cdk.Fn.importValue('BucketArn');
+```
 
----
+CDK also generates this pair for you when you pass a construct from one stack
+to another in the same region.
 
-## CloudFormation fallback (mixed cdkd / CloudFormation estates)
+When the consumer deploys, cdkd records the import in the consumer's state
+record. From then on the producer is protected:
 
-A cdkd-deployed consumer can reference a producer stack that is still
-managed by CloudFormation (`cdk deploy` / raw CFn) — the typical
-mixed-estate scenario where shared infrastructure stays on the CDK CLI
-while app stacks deploy via cdkd:
+```bash
+cdkd destroy ProducerStack
+```
 
-- **`Fn::ImportValue`**: when the export is in NO cdkd state record,
-  the resolver falls back to CloudFormation `ListExports` (paginated) in
-  the consumer's region. CloudFormation's own semantic for
-  `Fn::ImportValue` IS `ListExports`, so this closes a template
-  compatibility gap.
-- **`Fn::GetStackOutput`** (same-account only): when the producer has no
-  cdkd state record at `cdkd/{StackName}/{Region}/state.json`, the
-  resolver falls back to CloudFormation `DescribeStacks` and reads the
-  stack's `Outputs` in the target region. The `RoleArn` (cross-account)
-  path never takes the fallback — it keeps reading the producer
-  account's cdkd state exclusively.
+```text
+Cannot destroy stack 'ProducerStack' (us-east-1): the following stacks still import its outputs via Fn::ImportValue:
+  - ConsumerStack (us-east-1): imports export 'BucketArn'
 
-Design points:
+This matches CloudFormation's strong-reference semantics — exports are
+protected as long as a consumer references them.
 
-- **cdkd-first precedence is inherent.** The fallback only runs after a
-  cdkd-state miss, so existing cdkd-to-cdkd references are untouched and
-  a name collision between a cdkd export and a CFn export resolves to
-  the cdkd one.
-- **CFn-sourced resolutions are WEAK references.** They are NOT recorded
-  into `state.imports` / `state.outputReads`: cdkd cannot protect a
-  producer it does not manage at destroy time, and CloudFormation's own
-  export-in-use protection cannot see cdkd consumers. Deleting the CFn
-  producer therefore breaks the consumer's NEXT resolve, not the
-  producer's delete. No state schema change is involved.
-- **Graceful degradation.** A fallback lookup failure (most commonly a
-  caller lacking `cloudformation:ListExports` /
-  `cloudformation:DescribeStacks`) logs a warning and surfaces the
-  original not-found error — without the fallback the deploy would have
-  failed with the same error anyway.
-- **Opt-out**: `--no-cfn-fallback` (on `deploy` and `diff`) disables the
-  fallback entirely for cdkd-state-only semantics — e.g. to keep IAM
-  minimal, or to keep an export-name typo failing fast instead of
-  accidentally matching an unrelated CloudFormation export in the
-  account. The diff resolvers honor the same flag so preview and apply
-  resolve identically.
-- **Mixed sources need no per-reference configuration.** Resolution is
-  per-reference, so one stack can consume some values from cdkd
-  producers and others from CFn producers with the same syntax.
-- This also relaxes the `cdkd export` leaf-first ordering constraint:
-  after a producer is exported to CloudFormation, remaining cdkd
-  consumers resolve its outputs via the fallback instead of failing.
+To proceed:
+  1. Destroy the consumer first: cdkd destroy <consumer-stack>
+  2. Or remove the Fn::ImportValue from the consumer's template
+     (e.g. inline the value, or refactor) and re-deploy the consumer,
+     then retry this destroy.
 
----
+Note: cdkd's Fn::GetStackOutput intrinsic is a weak alternative that
+does NOT protect the producer — use it when you intentionally want
+the producer to be deletable independently of consumers.
+```
 
-## Strong-reference scan at destroy
+The command exits `2` and deletes nothing. There is no `--force` to override
+it, as there is none in CloudFormation. If you want a producer that can be
+destroyed independently, use a weak reference when you write the template.
 
-Implemented in [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
-via `scanActiveConsumers`. Steps:
+## Weak reference: `Fn::GetStackOutput`
 
-1. Only fires when the producing stack's `state.outputs` is non-empty
-   (export-less stacks short-circuit, saving the scan entirely).
-2. `stateBackend.listStacks()` to enumerate all stacks in the bucket.
-3. Parallel `getState` for each (excluding the producer itself).
-4. Filter each consumer's `imports[]` for entries matching
-   `(sourceStack=producerStack, sourceRegion=producerRegion)`.
-5. If any match, throw `StackHasActiveImportsError` with the full
-   consumer list.
+`Fn::GetStackOutput` reads an output by stack name and output name. The
+output needs no `exportName`:
 
-The scan is intentionally **not** delegated to the exports index —
-the index does not store the consumer-side reverse mapping
-(`ListImports` equivalent), and trusting a potentially-stale index
-here would risk allowing a destructive destroy. Destroy is also
-not the perf-critical path; the user-visible UX trade-off accepts
-the O(N) scan cost at destroy time.
+```ts
+// ConsumerStack, reading from ProducerStack in us-west-2
+const bucketArn = cdk.Fn.getStackOutput('ProducerStack', 'BucketArnOutput', 'us-west-2');
+```
 
----
+In the template this is:
+
+```json
+{
+  "Fn::GetStackOutput": {
+    "StackName": "ProducerStack",
+    "OutputName": "BucketArnOutput",
+    "Region": "us-west-2"
+  }
+}
+```
+
+| Argument | Required | Meaning |
+| --- | --- | --- |
+| `StackName` | Yes | The producer stack |
+| `OutputName` | Yes | The output to read |
+| `Region` | No | The producer's region; defaults to the consumer's |
+| `RoleArn` | No | A role in the producer's account to assume for the read |
+
+Nothing protects the producer. `cdkd destroy ProducerStack` succeeds, and the
+consumer's next deploy fails when it cannot resolve the value.
+
+### Read from another account
+
+Pass a `RoleArn` to read an output from a stack in another AWS account. cdkd
+assumes the role and reads the producer account's cdkd state:
+
+```ts
+const vpcId = cdk.Fn.getStackOutput(
+  'PlatformVpc',
+  'SharedVpcId',
+  'us-east-1',
+  'arn:aws:iam::111122223333:role/cdkd-state-reader',
+);
+```
+
+- The `RoleArn` must be a literal string. A `Ref` or `Fn::Sub` is rejected.
+- The role needs `s3:GetBucketLocation` on the producer's state bucket and
+  `s3:GetObject` on its state records. Its trust policy must allow the
+  identity your cdkd run uses.
+- An output that holds a secret is refused on this path. Export the secret's
+  ARN and resolve it in the consumer.
+
+The policy to attach is under
+[IAM permissions](cross-stack-internals.md#iam-permissions).
+
+## Which one to use
+
+| Situation | Use |
+| --- | --- |
+| Same region, same account, and the producer should be protected | `Fn::ImportValue` |
+| The producer is in another region | `Fn::GetStackOutput` with `Region` |
+| The producer is in another account | `Fn::GetStackOutput` with `RoleArn` |
+| The producer must be destroyable while consumers exist | `Fn::GetStackOutput` |
+| The producer is managed by CloudFormation | Either; see [Mixed Estates](mixed-estates.md) |
 
 ## Resolving a refused destroy
 
-When `cdkd destroy '<producer>'` refuses with `StackHasActiveImportsError`,
-the user has two valid resolution paths:
+When `cdkd destroy ProducerStack` refuses with `StackHasActiveImportsError`,
+the message names every consumer. There are two ways forward.
 
-### Path 1 — destroy the consumer first
+### Destroy the consumer first
 
 ```bash
 cdkd destroy ConsumerStack
 cdkd destroy ProducerStack    # now succeeds
 ```
 
-This is the CFn-style answer: respect the dependency by destroying
-top-down.
+### Remove the reference, then redeploy the consumer
 
-### Path 2 — remove the `Fn::ImportValue` reference, redeploy consumer
-
-```typescript
+```ts
 // Before
 new lambda.Function(this, 'Handler', {
-  environment: {
-    BUCKET_ARN: cdk.Fn.importValue('BucketArn'),
-  },
+  // ...
+  environment: { BUCKET_ARN: cdk.Fn.importValue('BucketArn') },
 });
 
-// After: inline the value, or refactor to a different reference scheme
+// After: inline the value, or switch to Fn.getStackOutput
 new lambda.Function(this, 'Handler', {
-  environment: {
-    BUCKET_ARN: 'arn:aws:s3:::known-bucket',
-  },
+  // ...
+  environment: { BUCKET_ARN: 'arn:aws:s3:::known-bucket' },
 });
 ```
 
-Redeploy the consumer (its `state.imports[]` no longer contains the
-producer reference), then retry the producer destroy.
+```bash
+cdkd deploy ConsumerStack     # the consumer no longer records the import
+cdkd destroy ProducerStack    # now succeeds
+```
 
 ### What about `cdkd state orphan`?
 
-`cdkd state orphan '<consumer>'` is **not** an intended escape hatch
-for this error. It removes the consumer's state record entirely
-(including all its resources from cdkd's bookkeeping), which is
-disproportionate to the goal of "break a single reference."
+`cdkd state orphan ConsumerStack` would also clear the refusal, but it is the
+wrong tool. It removes the consumer's whole state record, so cdkd stops
+tracking every resource in that stack, in order to break one reference. Use
+one of the two paths above.
 
-If you find yourself reaching for `state orphan` to bypass the
-strong-reference check, you probably want Path 1 (destroy the
-consumer) or Path 2 (remove the reference) instead. cdkd does not
-document `state orphan` as an escape hatch from this error because
-it is a sledgehammer for a precise problem.
+## A producer managed by CloudFormation
 
----
+Both intrinsics also resolve against a stack that CloudFormation manages.
+When cdkd state has no match, cdkd asks CloudFormation: `ListExports` for
+`Fn::ImportValue`, and the stack's outputs for `Fn::GetStackOutput` (same
+account only; a `RoleArn` read never falls back).
 
-## Comparison with CloudFormation
+A value found this way is always a weak reference, even through
+`Fn::ImportValue`. cdkd cannot protect a producer it does not manage.
+`--no-cfn-fallback` on `cdkd deploy` and `cdkd diff` turns the fallback off.
+[Mixed Estates](mixed-estates.md) covers this case.
 
-| Feature | CFn | cdkd (this design) |
-|---|---|---|
-| `Fn::ImportValue` resolves to producer's Output | ✓ | ✓ (via index or state.json scan) |
-| Producer destroy refused while consumer imports | ✓ | ✓ (`StackHasActiveImportsError`) |
-| `--force` to override strong-ref | ✗ | ✗ (deliberately) |
-| Index for fast `ListExports` lookup | ✓ (internal) | ✓ (`_index/{region}/exports.json`) |
-| Weak cross-stack reference alternative | ✗ | ✓ (`Fn::GetStackOutput`) |
-| Cross-region exports | ✗ (same region only) | ✓ (`Fn::GetStackOutput`) |
-| Cross-account exports | via shared bootstrap | ✓ (`Fn::GetStackOutput` with `RoleArn`) |
-| Reference a producer managed by the OTHER engine | ✗ (CFn cannot read cdkd state) | ✓ (CloudFormation fallback, weak — see above) |
+## Compared with CloudFormation
 
-The departures from CFn (`Fn::GetStackOutput` weak-ref, cross-region)
-are cdkd-specific extensions. The strong-reference behavior is
-faithful to CFn.
+| | CloudFormation | cdkd |
+| --- | --- | --- |
+| `Fn::ImportValue` resolves to the producer's output | Yes | Yes |
+| Producer destroy refused while a consumer imports | Yes | Yes (`StackHasActiveImportsError`) |
+| A force flag to override that | No | No |
+| A weak reference | No | Yes (`Fn::GetStackOutput`) |
+| Cross-region references | No | Yes (`Fn::GetStackOutput`) |
+| Cross-account references | Via shared bootstrap | Yes (`Fn::GetStackOutput` with `RoleArn`) |
+| A producer managed by the other engine | No | Yes (CloudFormation fallback, weak) |
 
----
-
-## References
-
-- Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts)
-- Index store: [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts)
-- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts); `Fn::ImportValue` in [`src/deployment/intrinsic-resolver/cross-stack.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cross-stack.ts), `Fn::GetStackOutput` in [`stack-output.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/stack-output.ts), the CloudFormation fallback in [`cfn-fallback.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cfn-fallback.ts)
-- Destroy scan: [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
-- Error class: [`src/utils/error-handler.ts`](https://github.com/go-to-k/cdkd/blob/main/src/utils/error-handler.ts)
+One difference in naming: cdkd keeps export names and output names of a stack
+in one namespace. If an output's export name equals another output's name in
+the same stack, cdkd skips the export, keeps the output, and warns on the
+producer's deploy.
 
 ## Related
 
-- [Cross-stack reference internals](cross-stack-internals.md) — the exports
-  index, the resolver flow, and what each path costs
-- [Mixed Estates](mixed-estates.md) — consuming a CloudFormation-managed
+- [Cross-stack reference internals](cross-stack-internals.md): the exports
+  index, the resolver flow, the destroy-time scan and what each path costs
+- [Mixed Estates](mixed-estates.md): consuming a CloudFormation-managed
   producer
-- [Stack Outputs](stack-outputs.md) — declaring the values a consumer imports
-- [Destroy flags & guards](cli-destroy.md) — the refusal this page's guard
-  produces
-- [CLI Reference](cli-reference.md) — every command and the full exit-code table
+- [Stack Outputs](stack-outputs.md): declaring the values a consumer reads
+- [Destroy flags & guards](cli-destroy.md): the other things that stop a
+  destroy
