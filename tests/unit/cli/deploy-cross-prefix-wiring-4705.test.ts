@@ -85,7 +85,15 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
           ? null
           : { prefix: scanCalls.markerPrefix, etag: '"e"' };
       }),
-      claimRegistryMarker: vi.fn(async (stack: string, region: string) => {
+      claimRegistryMarker: vi.fn(async (stack: string, region: string, ifMatch?: string) => {
+        // A first deploy claims (If-None-Match) before any read: a request
+        // that never answers stands for the pending marker request here.
+        if (scanCalls.readNever) {
+          backend.reads++;
+          return new Promise<never>((_resolve, reject) => aborts.push(reject));
+        }
+        // A marker there loses the If-None-Match claim, as S3 answers 412.
+        if (ifMatch === undefined && scanCalls.markerPrefix !== null) return 'conflict';
         scanCalls.claims.push([stack, region]);
         return 'claimed';
       }),
@@ -381,8 +389,9 @@ describe('cdkd deploy wires the cross-prefix checks into each engine (go-to-k/cd
     } finally {
       process.removeListener('unhandledRejection', unhandled);
     }
-    // A first deploy's marker read was started on the PREFLIGHT backend (the
-    // first one built) and was still pending when the command ended.
+    // A first deploy's marker request (its claim, go-to-k/cdkd#4705 perf) was
+    // started on the PREFLIGHT backend (the first one built) and was still
+    // pending when the command ended.
     const preflight = scanCalls.backends[0]!;
     expect(preflight.reads).toBeGreaterThan(0);
     expect(scanCalls.backends.slice(1).every((b) => b.reads === 0)).toBe(true);
