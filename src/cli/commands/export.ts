@@ -6124,7 +6124,7 @@ const CFN_IMPORT_REFUSED_DESPITE_REGISTRY: ReadonlyMap<string, string> = new Map
 ]);
 
 /**
- * The dated measurement behind a {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}
+ * The measurement behind a {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}
  * entry, or `undefined` when CloudFormation has not been measured refusing the
  * type. Exported for unit tests.
  */
