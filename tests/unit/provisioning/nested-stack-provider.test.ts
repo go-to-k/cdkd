@@ -1017,7 +1017,14 @@ describe('NestedStackProvider', () => {
     });
 
     it('keeps the row skipped when the child skipped a recorded resource beside its journaled orphans (go-to-k/cdkd#4738)', async () => {
-      childCounts.value = { deletedCount: 0, skippedCount: 3, journaledOrphanSkips: 2 };
+      // A recorded skip makes the runner preserve the child state, so it reports
+      // `stateDeleted: false`.
+      childCounts.value = {
+        deletedCount: 0,
+        skippedCount: 3,
+        journaledOrphanSkips: 2,
+        stateDeleted: false,
+      };
       const provider = new NestedStackProvider();
 
       const { value: result, unaddressed } = await withNestedStackContext(makeContext(), () =>
@@ -1046,6 +1053,8 @@ describe('NestedStackProvider', () => {
         skippedCount: 1,
         journaledOrphanSkips: 1,
         interrupted: true,
+        // An interrupted run preserves the child state.
+        stateDeleted: false,
       };
       const provider = new NestedStackProvider();
 
