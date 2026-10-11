@@ -88,7 +88,16 @@ describe('a first deploy (the claim)', () => {
       kind: 'found',
       prefixes: ['team-b'],
     });
-    expect(b.getRegistryMarker).toHaveBeenCalledTimes(2);
+    // perf: the first deploy claims before any read; the lost claim is then
+    // read once (and the next lost one would re-read once more).
+    expect(b.getRegistryMarker).toHaveBeenCalledTimes(1);
+  });
+
+  it('perf: a first deploy with no marker is ONE conditional write, no read', async () => {
+    const b = backendOf({});
+    await expect(new CrossPrefixGuard(b).firstDeploy('App', 'r')).resolves.toEqual({ kind: 'clear' });
+    expect(b.claimRegistryMarker.mock.calls).toEqual([['App', 'r', undefined]]);
+    expect(b.getRegistryMarker).not.toHaveBeenCalled();
   });
 
   it('a dry run reads but never writes the registry', async () => {
@@ -138,7 +147,10 @@ describe('a marker naming a prefix', () => {
       kind: 'in-progress',
       prefix: 'team-b',
     });
-    expect(b.claimRegistryMarker).not.toHaveBeenCalled();
+    // Only the If-None-Match attempt, which a marker there loses; never a
+    // re-claim over it.
+    expect(b.claimRegistryMarker.mock.calls).toEqual([['App', 'r', undefined]]);
+    expect(b.markers.get('App')?.prefix).toBe('team-b');
   });
 
   it('another prefix with nothing at all: stale, re-claimed with If-Match on the version read', async () => {
@@ -196,12 +208,14 @@ describe('a stale marker is re-claimed only after the one-time scan (review CB-2
     });
     expect(b.claimRegistryMarker).not.toHaveBeenCalled();
     expect(b.markers.get('App')?.prefix).toBe('team-c');
-    // A first deploy meets the same stale marker: scanned too, refused.
+    // A first deploy meets the same stale marker: scanned too, refused. Its
+    // only write is the If-None-Match attempt the marker there loses.
     await expect(new CrossPrefixGuard(b).firstDeploy('App', 'r')).resolves.toMatchObject({
       kind: 'found',
       prefixes: ['team-b'],
     });
-    expect(b.claimRegistryMarker).not.toHaveBeenCalled();
+    expect(b.claimRegistryMarker.mock.calls).toEqual([['App', 'r', undefined]]);
+    expect(b.markers.get('App')?.prefix).toBe('team-c');
   });
 
   it('marker -> C (stale) and a clear scan: re-claimed, with the scan paid once', async () => {

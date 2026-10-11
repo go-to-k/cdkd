@@ -177,6 +177,12 @@ export interface GuardTiming {
   cooldownStepMs: number;
 }
 
+/**
+ * go-to-k/cdkd#4705 perf: how long the first planned intent write waits for
+ * the other types' lookups to answer, so they share one write.
+ */
+const GROUP_WINDOW_MS = 15;
+
 /** The defaults (exported so an engine-level test can shorten the waits). */
 export const DEFAULT_TIMING: GuardTiming = {
   now: () => Date.now(),
@@ -268,6 +274,10 @@ export class GeneratedNameGuard {
   /** The planned intent writes after approval, one per type, and the creates each covers. */
   private plannedWrites: Map<string, Promise<void>> | undefined;
   private readonly plannedIds = new Set<string>();
+  /** The group commit of planned intents ({@link commitPlanned}). */
+  private groupPending: Candidate[] = [];
+  private groupNext: Promise<void> | undefined;
+  private groupInFlight: Promise<void> = Promise.resolve();
   private queued: Candidate[] = [];
   private flushing: Promise<void> | undefined;
   /** Every intent write started, so `settle` awaits them all. */
@@ -439,17 +449,37 @@ export class GeneratedNameGuard {
       if (c.deferred) continue;
       byType.set(c.resourceType, [...(byType.get(c.resourceType) ?? []), c]);
     }
+    // perf: the first write waits for every type's lookup to answer, or for
+    // GROUP_WINDOW_MS, whichever comes first -- parallel lookups answer within
+    // milliseconds of each other, so they usually share ONE write, while a
+    // slow type still never holds the others for longer than the window.
+    let typesWaiting = byType.size;
+    let allArrived!: () => void;
+    const arrived = new Promise<void>((resolve) => (allArrived = resolve));
+    const window = new Promise<void>((resolve) => {
+      setTimeout(resolve, GROUP_WINDOW_MS).unref?.();
+    });
+    this.groupInFlight = Promise.race([arrived, window]);
+    const arrive = (): void => {
+      typesWaiting--;
+      if (typesWaiting === 0) allArrived();
+    };
     for (const [resourceType, group] of byType) {
       const write = (async () => {
-        const verdicts = await Promise.all(
-          group.map((c) => this.firstVerdicts.get(c.logicalId) ?? this.verdicts.get(c.logicalId)!)
-        );
+        let verdicts: GeneratedNameVerdict[];
+        try {
+          verdicts = await Promise.all(
+            group.map((c) => this.firstVerdicts.get(c.logicalId) ?? this.verdicts.get(c.logicalId)!)
+          );
+        } finally {
+          arrive();
+        }
         const batch = group.filter(
           (_c, i) => verdicts[i]!.kind === 'free' || verdicts[i]!.kind === 'licensed'
         );
         if (batch.length === 0) return;
         for (const c of batch) this.plannedIds.add(c.logicalId);
-        await this.writeIntents(batch);
+        await this.commitPlanned(batch);
       })();
       this.plannedWrites.set(resourceType, write);
       this.writes.add(write);
@@ -608,6 +638,33 @@ export class GeneratedNameGuard {
       this.writes.add(flush);
     }
     return this.flushing;
+  }
+
+  /**
+   * go-to-k/cdkd#4705 perf: a type's planned intents, group-committed. Types
+   * whose lookups answer while a write is in flight share the NEXT write, so a
+   * deploy makes at most two serial intent writes before its last type's
+   * creates however many types it has, and no type waits for a slower one's
+   * lookup (review G-2).
+   */
+  private commitPlanned(batch: readonly Candidate[]): Promise<void> {
+    this.groupPending.push(...batch);
+    if (this.groupNext === undefined) {
+      const next = this.groupInFlight
+        .then(
+          () => undefined,
+          () => undefined
+        )
+        .then(async () => {
+          const carried = this.groupPending;
+          this.groupPending = [];
+          this.groupNext = undefined;
+          await this.writeIntents(carried);
+        });
+      this.groupNext = next;
+      this.groupInFlight = next;
+    }
+    return this.groupNext;
   }
 
   /** One ledger write of `batch`'s intents. */

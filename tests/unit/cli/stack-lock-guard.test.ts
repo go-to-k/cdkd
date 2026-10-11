@@ -178,6 +178,40 @@ describe('acquireStackLock (go-to-k/cdkd#2174)', () => {
     await lock.release({ failureMessage: 'x' });
   });
 
+  it('holdUntil (go-to-k/cdkd#4705): release() returns at once; the lock goes, then the handler, only once the work settles', async () => {
+    const lm = makeLockManager();
+    const lock = await acquireStackLock(opts(lm));
+    newListener(before);
+    let finish!: () => void;
+    const work = new Promise<void>((r) => (finish = r));
+    const deferred: Array<Promise<void>> = [];
+    const beforeRelease = vi.fn();
+    await lock.release({ failureMessage: 'x', beforeRelease, holdUntil: { work, defer: (p) => deferred.push(p) } });
+    expect(beforeRelease).toHaveBeenCalledOnce();
+    expect(deferred).toHaveLength(1);
+    await new Promise((r) => setImmediate(r));
+    // Still held, handler still armed (a second Ctrl-C can still release it).
+    expect(lm.releaseLock).not.toHaveBeenCalled();
+    expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(1);
+    finish();
+    await deferred[0];
+    expect(lm.releaseLock).toHaveBeenCalledOnce();
+    expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0);
+  });
+
+  it('holdUntil: work that rejects still releases the lock and removes the handler', async () => {
+    const lm = makeLockManager();
+    const lock = await acquireStackLock(opts(lm));
+    const deferred: Array<Promise<void>> = [];
+    await lock.release({
+      failureMessage: 'x',
+      holdUntil: { work: Promise.reject(new Error('marker 503')), defer: (p) => deferred.push(p) },
+    });
+    await deferred[0];
+    expect(lm.releaseLock).toHaveBeenCalledOnce();
+    expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0);
+  });
+
   it('rule 3: a force-quit AFTER the release does not fire a second, owner-blind release', async () => {
     const lm = makeLockManager();
     const lock = await acquireStackLock(opts(lm));

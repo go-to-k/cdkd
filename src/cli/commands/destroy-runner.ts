@@ -227,6 +227,16 @@ export interface DestroyRunnerContext {
   crossPrefixCheck?: { cache: CrossPrefixSource };
 
   /**
+   * go-to-k/cdkd#4705: when set (`destroy --all`), the writes that follow a
+   * stack's record delete -- its kept list or tombstone, then its registry
+   * marker's release -- are handed here instead of awaited, with that stack's
+   * lock held until they settle, so they overlap the next stack's destroy and
+   * nothing costs a round trip per stack. The caller MUST await every promise
+   * it collects before the command ends.
+   */
+  deferRegistryTail?: (released: Promise<void>) => void;
+
+  /**
    * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
    * forwarded to a nested child only from its delete's own context, so a
    * deploy's nested-stack removal never carries it (go-to-k/cdkd#2115). Passed
@@ -1257,6 +1267,14 @@ export async function runDestroyForStack(
   // point must therefore NOT be able to report this stack as interrupted; see
   // the re-sync's own comment for the window that made it possible.
   let statePreserved = false;
+  // go-to-k/cdkd#4705: the writes that follow the record's delete and must
+  // finish under this stack's lock -- the kept list or tombstone, then the
+  // marker's release -- when the caller lets them overlap its next stack
+  // (`ctx.deferRegistryTail`); `undefined` when they were awaited here.
+  let heldTail: Promise<void> | undefined;
+  // Set once this stack's destroy has ended: a first Ctrl-C while its lock is
+  // still held for `heldTail` has nothing of this stack to drain.
+  let stackFinished = false;
   // go-to-k/cdkd#4584: the share of `errorCount` that is journaled orphans,
   // whose remedy differs (the summary never offers `cdkd state orphan`).
   let journaledOrphanFailures = 0;
@@ -1267,6 +1285,7 @@ export async function runDestroyForStack(
     // Route the notice through the live renderer so it doesn't collide with
     // the in-flight task display.
     onFirstSignal: () => {
+      if (stackFinished) return;
       renderer.printAbove(() => {
         process.stderr.write(
           '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
@@ -2351,7 +2370,13 @@ export async function runDestroyForStack(
       // lookup doesn't return stale values. Best-effort — failures don't fail
       // the destroy (state.json is the canonical record, and the index
       // self-heals on next deploy / fallback).
-      await Promise.all([
+      //
+      // With `ctx.deferRegistryTail` (`destroy --all`), the kept-list /
+      // tombstone write and the marker's release are not awaited here: this
+      // stack's lock is held until they settle (`holdUntil` below) while the
+      // command moves on, so they cost no round trip per stack. The exports
+      // index is still awaited here.
+      const registryTail = Promise.all([
         recordRetainedForReadoption(
           ctx.stateBackend,
           stackName,
@@ -2361,8 +2386,16 @@ export async function runDestroyForStack(
           retainedEarlier
         ),
         releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
-        ctx.exportIndexStore?.removeStack(stackName, regionForState),
-      ]);
+      ]).then(() => undefined);
+      if (ctx.deferRegistryTail !== undefined) {
+        heldTail = registryTail;
+        await ctx.exportIndexStore?.removeStack(stackName, regionForState);
+      } else {
+        await Promise.all([
+          registryTail,
+          ctx.exportIndexStore?.removeStack(stackName, regionForState),
+        ]);
+      }
     } else {
       // Final authoritative write of the remaining state (not-yet-deleted +
       // failed + retained resources). The incremental persists above are
@@ -2586,6 +2619,10 @@ export async function runDestroyForStack(
     try {
       await lock.release({
         failureMessage: `Failed to release lock for stack ${displayStackName(stackName)}`,
+        ...(heldTail !== undefined &&
+          ctx.deferRegistryTail !== undefined && {
+            holdUntil: { work: heldTail, defer: ctx.deferRegistryTail },
+          }),
         beforeRelease: async () => {
           // Stop live renderer before releasing the lock so any pending
           // in-flight task lines are cleared cleanly.
@@ -2615,6 +2652,7 @@ export async function runDestroyForStack(
           logger.debug('Releasing lock...');
         },
       });
+      stackFinished = true;
     } finally {
       // Restore the cross-region switch HERE, in a guaranteed `finally`, so a
       // throwing release step cannot skip it and leak the target region /

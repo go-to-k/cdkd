@@ -91,9 +91,9 @@ stack's own evidence names that resource:
 - its rollback journal: a completed operation, or a failed one that recorded
   the resource's physical id;
 - its create-token ledger, which records the names of the deploy's planned
-  creates as the stack's intent, one write per resource type after the
-  approval prompt and under the deploy's lock, before the first of that
-  type's creates is sent, so a
+  creates as the stack's intent, written per resource type (types that answer
+  together share a write) after the approval prompt and under the deploy's
+  lock, before the first of that type's creates is sent, so a
   re-run after a crash between a create and its record takes the resource
   back. When the deploy ends, it drops the intents of creates that were not
   sent, that came back (their resource is then in the record, or the
@@ -197,10 +197,11 @@ name is looked up once the plan is known, all at once, and each create waits
 only for its own answer, so a first deploy pays about one round trip whatever
 its size. Each API has one concurrency limit across the whole run,
 `deploy --all` included, so a burst queues instead of throttling. The
-intents cost one ledger write per resource type the deploy creates by name
-(plus one for a name that frees up only later, and one per nested stack),
-each written as soon as that type's lookups answer, so a slow type never
-delays another type's creates; and the
+intents usually cost one ledger write: the types whose lookups answer
+within a few milliseconds of each other share it, and a type that answers
+later shares the next one, so at most two serial writes come before any
+create (plus one for a name that frees up only later, and one per nested
+stack) and a slow type never delays another type's creates; and the
 success path's ledger cleanup runs beside the other writes that follow the
 state save. Only when a `--require-approval` prompt ran (up front, or for a
 replacement decided late) are the verdicts decided before its answer read
@@ -314,9 +315,11 @@ naming its prefix and the `cdkd state orphan` command that removes it.
 
 **What it costs.** One read of one small object, once per command run, only on
 the commands above (a destroy starts it beside its own state read); a first
-deploy adds one conditional write, overlapped with its diff. A destroy ends
-with two writes run beside the exports-index update it always made, so no
-round trip of their own: `retained.json` -- what it kept, or, kept nothing,
+deploy adds one conditional write (no read when there is no marker),
+overlapped with its diff. A destroy ends with two writes, after its record
+is gone and under its lock, run beside the exports-index update it always
+made -- and with `destroy --all` while the next stack is destroyed, its lock
+held until they finish -- so no round trip of their own: `retained.json` -- what it kept, or, kept nothing,
 the empty one (written only when there is none) -- and the marker's release, conditional on the version read earlier. Records written
 before the registry existed have no marker: the first command that needs the
 answer for such a stack lists the bucket's top-level prefixes once (50

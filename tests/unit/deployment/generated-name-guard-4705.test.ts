@@ -1235,3 +1235,85 @@ it('N1: the default cooldown sleep never holds the process open (its timer is un
     spy.mockRestore();
   }
 });
+
+describe('perf: planned intents are group-committed (go-to-k/cdkd#4705)', () => {
+  it('types whose lookups answer while a write is in flight share the next write: at most two serial writes', async () => {
+    const { recordAdoptingCreates } = await import('../../../src/provisioning/providers/create-token-ledger.js');
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => (releaseFirst = r));
+    let calls = 0;
+    (recordAdoptingCreates as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async (creates: Array<{ logicalId: string; resourceType: string; name: string }>) => {
+        calls++;
+        if (calls === 1) await firstGate;
+        ledger.writes.push(creates);
+      }
+    );
+    try {
+      const gates = new Map<string, () => void>();
+      const slow = (type: string) => {
+        const p = providerOf();
+        p.lookupNames.mockImplementation(async () => {
+          await new Promise<void>((r) => gates.set(type, r));
+          return new Map();
+        });
+        return p;
+      };
+      const guard = GeneratedNameGuard.start(
+        inputOf([create('Q', QUEUE), create('L', LOGS), create('A', ALARM)], {
+          [QUEUE]: providerOf(),
+          [LOGS]: slow(LOGS),
+          [ALARM]: slow(ALARM),
+        })
+      )!;
+      guard.recordPlannedIntents();
+      const q = guard.admit('Q', {});
+      // The queue's write starts once the window passes; the other two types
+      // answer while it is in flight.
+      for (let i = 0; i < 50 && gates.size < 2; i++) await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setTimeout(r, 40));
+      expect(calls).toBe(1);
+      gates.get(LOGS)!();
+      gates.get(ALARM)!();
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      releaseFirst();
+      await Promise.all([q, guard.admit('L', {}), guard.admit('A', {})]);
+      expect(ledger.writes.map((w) => w.map((e) => e.logicalId).sort())).toEqual([['Q'], ['A', 'L']]);
+    } finally {
+      (recordAdoptingCreates as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+        async (creates: Array<{ logicalId: string; resourceType: string; name: string }>) => {
+          if (ledger.writeError) throw ledger.writeError;
+          ledger.writes.push(creates);
+        }
+      );
+    }
+  });
+});
+
+it('perf: types whose lookups answer within the window share ONE intent write', async () => {
+  const gates: Array<() => void> = [];
+  const slowish = () => {
+    const p = providerOf();
+    p.lookupNames.mockImplementation(async () => {
+      await new Promise<void>((r) => gates.push(r));
+      return new Map();
+    });
+    return p;
+  };
+  const guard = GeneratedNameGuard.start(
+    inputOf([create('Q', QUEUE), create('L', LOGS), create('A', ALARM)], {
+      [QUEUE]: slowish(),
+      [LOGS]: slowish(),
+      [ALARM]: slowish(),
+    })
+  )!;
+  guard.recordPlannedIntents();
+  for (let i = 0; i < 50 && gates.length < 3; i++) await new Promise((r) => setImmediate(r));
+  // Three answers a few milliseconds apart, as parallel lookups arrive.
+  for (const g of gates) {
+    g();
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  await Promise.all([guard.admit('Q', {}), guard.admit('L', {}), guard.admit('A', {})]);
+  expect(ledger.writes.map((w) => w.map((e) => e.logicalId).sort())).toEqual([['A', 'L', 'Q']]);
+});

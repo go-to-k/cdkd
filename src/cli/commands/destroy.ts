@@ -343,6 +343,10 @@ async function destroyCommand(
   // go-to-k/cdkd#4705 (review R4-2): the backend may REPLACE its client with a
   // bucket-region one, which `awsClients.destroy()` does not reach.
   let stateBackendForCleanup: S3StateBackend | undefined;
+  // go-to-k/cdkd#4705: each stack's post-record writes and lock release, when
+  // several stacks are destroyed (`deferRegistryTail`); awaited in `finally`.
+  const deferredTails: Array<Promise<void>> = [];
+  let deferRegistryTail: ((released: Promise<void>) => void) | undefined;
   try {
     // 1. Initialize components
     const stateConfig = {
@@ -791,6 +795,12 @@ async function destroyCommand(
     // Only in the region the loop will destroy, and not for a stack its
     // termination protection skips.
     const crossPrefixCheck = { cache: new CrossPrefixGuard(stateBackend) };
+    // go-to-k/cdkd#4705: with several stacks, each one's post-record writes
+    // (kept list or tombstone, marker release) finish under its held lock
+    // while the next stack is destroyed, and are all awaited before the
+    // command ends (the `finally` below) -- nothing costs a round trip per
+    // stack.
+    if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
     for (const name of stackNames) {
       const synth = appStacks.find((s) => s.stackName === name);
       if (synth?.terminationProtection === true && !options.removeProtection) continue;
@@ -1014,6 +1024,7 @@ async function destroyCommand(
                 stackDestroy: true,
                 // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
                 crossPrefixCheck,
+                ...(deferRegistryTail !== undefined && { deferRegistryTail }),
                 exportIndexStore,
                 // go-to-k/cdkd#4682: the synthesized template, so a custom
                 // resource reading a NoEcho parameter gets its value back on
@@ -1218,6 +1229,9 @@ async function destroyCommand(
       );
     }
   } finally {
+    // go-to-k/cdkd#4705: every stack's deferred post-record writes and lock
+    // release, before any handler or client goes away.
+    await Promise.allSettled(deferredTails);
     unforwardSigterm();
     // Issue #2117: disposed LAST of the destroy-side handlers — the runner
     // drops its own listener before its lock release and its `return`, so this

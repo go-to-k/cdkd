@@ -714,6 +714,37 @@ describe('cdkd destroy: terminationProtection guard', () => {
     getLoggerSpy.mockRestore();
   });
 
+  it('go-to-k/cdkd#4705 perf: --all hands each stack a deferRegistryTail, and awaits every deferred release before the client goes', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Plain', 'us-east-1'), makeStackInfo('Unguarded', 'us-east-1', false)],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Plain', region: 'us-east-1' },
+      { stackName: 'Unguarded', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({ state: makeStackState(name), etag: '"x"' }));
+    const order: string[] = [];
+    mockRunDestroyForStack.mockImplementation(async (name: string, _state: unknown, ctx: { deferRegistryTail?: (p: Promise<void>) => void }) => {
+      order.push(`destroy:${name}`);
+      ctx.deferRegistryTail?.(
+        new Promise<void>((r) => setTimeout(r, 5)).then(() => {
+          order.push(`released:${name}`);
+        })
+      );
+      return { stackName: name, cancelled: false, deletedCount: 0, errorCount: 0, skippedCount: 0, retainedCount: 0, guardIndeterminateCount: 0, skippedEmpty: false, interrupted: false };
+    });
+    await runDestroy(['--all', '--yes']);
+    expect(mockRunDestroyForStack.mock.calls.every((c) => typeof c[2].deferRegistryTail === 'function')).toBe(true);
+    // Both stacks were destroyed before the first deferred release finished...
+    expect(order.indexOf('destroy:Unguarded')).toBeLessThan(order.findIndex((o) => o.startsWith('released:')));
+    // ...and every release finished before the command's client was destroyed.
+    expect(order.filter((o) => o.startsWith('released:'))).toHaveLength(2);
+    const backend = mockRunDestroyForStack.mock.calls[0]![2].stateBackend;
+    expect(backend.destroyClient).toHaveBeenCalledTimes(1);
+  });
+
   it('--all with one protected + one unprotected: unprotected destroys, protected counts as failure (exit 2)', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},

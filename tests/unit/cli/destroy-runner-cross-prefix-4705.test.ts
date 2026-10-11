@@ -266,6 +266,70 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     expect(h.ensureRetainedTombstone).not.toHaveBeenCalled();
   });
 
+  it('perf (--all): with deferRegistryTail the runner returns before its tombstone / marker writes; the lock is held until they settle', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => (finish = r));
+    h.ensureRetainedTombstone.mockImplementation(async () => {
+      await gate;
+    });
+    const removeStack = vi.fn(async () => undefined);
+    const deferred: Array<Promise<void>> = [];
+    const provider = { delete: vi.fn(async () => undefined) };
+    const ctx = {
+      ...h.ctx,
+      providerRegistry: {
+        getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
+        getProvider: vi.fn(() => provider),
+      },
+      exportIndexStore: { removeStack },
+      deferRegistryTail: (p: Promise<void>) => deferred.push(p),
+    } as unknown as Parameters<typeof runDestroyForStack>[2];
+    const releaseLock = (h.ctx.lockManager as unknown as { releaseLock: ReturnType<typeof vi.fn> }).releaseLock;
+    const withResource: StackState = {
+      ...emptyState(),
+      resources: {
+        Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
+      } as unknown as StackState['resources'],
+    };
+    const result = await runDestroyForStack('App', withResource, ctx);
+    expect(result.errorCount).toBe(0);
+    // Returned with the tombstone still in flight: the next stack is not held.
+    expect(h.deleteState).toHaveBeenCalledTimes(1);
+    expect(removeStack).toHaveBeenCalledTimes(1);
+    expect(deferred).toHaveLength(1);
+    expect(releaseLock).not.toHaveBeenCalled();
+    finish();
+    await deferred[0];
+    // Record, tombstone and marker, THEN the lock.
+    expect(h.releaseRegistryMarker).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(h.deleteState.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.ensureRetainedTombstone.mock.invocationCallOrder[0]!
+    );
+    expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeLessThan(
+      releaseLock.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('perf: without deferRegistryTail (a single destroy) the tail is awaited before the runner returns', async () => {
+    const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    const releaseLock = (h.ctx.lockManager as unknown as { releaseLock: ReturnType<typeof vi.fn> }).releaseLock;
+    const provider = { delete: vi.fn(async () => undefined) };
+    (h.ctx as unknown as { providerRegistry: unknown }).providerRegistry = {
+      getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
+      getProvider: vi.fn(() => provider),
+    };
+    await runDestroyForStack('App', {
+      ...emptyState(),
+      resources: {
+        Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
+      } as unknown as StackState['resources'],
+    }, h.ctx);
+    expect(h.releaseRegistryMarker).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
   it('H-2/(h): the kept-resource write runs in the tail beside the marker release, adding no round trip', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     let started = 0;

@@ -66,6 +66,15 @@ export interface ReleaseOptions {
    * the listener is still removed.
    */
   beforeRelease?: () => Promise<void> | void;
+  /**
+   * go-to-k/cdkd#4705: keep the lock until `work` settles, without making the
+   * caller wait for it: `release()` returns once `beforeRelease` ran, and the
+   * S3 release (then the handler's removal) follows `work`, as one promise
+   * handed to `defer`. Whoever collects it MUST await it before the command
+   * ends. `destroy --all` uses it so one stack's post-record writes, which
+   * must stay under that stack's lock, overlap the next stack's destroy.
+   */
+  holdUntil?: { work: Promise<unknown>; defer: (released: Promise<void>) => void };
 }
 
 export interface HeldStackLock {
@@ -164,11 +173,10 @@ export async function acquireStackLock(opts: StackLockOptions): Promise<HeldStac
     get interrupted() {
       return interrupted;
     },
-    async release({ failureMessage, beforeRelease }: ReleaseOptions): Promise<void> {
+    async release({ failureMessage, beforeRelease, holdUntil }: ReleaseOptions): Promise<void> {
       if (released) return;
       released = true;
-      try {
-        await beforeRelease?.();
+      const releaseNow = async (): Promise<void> => {
         try {
           await lockManager.releaseLock(stackName, region);
           // Cleared so a signal arriving after the release cannot fire the
@@ -182,12 +190,32 @@ export async function acquireStackLock(opts: StackLockOptions): Promise<HeldStac
           // a lock that lapses on its own.
           getLogger().warn(safeMsg`${failureMessage}: ${describeAwsFailure(releaseErr).detail}`);
         }
+      };
+      let deferred = false;
+      try {
+        await beforeRelease?.();
+        if (holdUntil !== undefined) {
+          // The handler stays armed until the deferred release ran, so a
+          // second Ctrl-C still releases this lock and prints its recovery.
+          holdUntil.defer(
+            holdUntil.work
+              .then(
+                () => undefined,
+                () => undefined
+              )
+              .then(releaseNow)
+              .finally(() => process.removeListener('SIGINT', sigintHandler))
+          );
+          deferred = true;
+          return;
+        }
+        await releaseNow();
       } finally {
         // DO NOT add an `await` between this removal and the caller's return:
         // once this handler is gone a second Ctrl-C is answered by
         // `watchCommandInterrupt` (issue #2117), which has no per-stack context
         // and prints only a hedged `cdkd force-unlock <stack-name>`.
-        process.removeListener('SIGINT', sigintHandler);
+        if (!deferred) process.removeListener('SIGINT', sigintHandler);
       }
     },
   };
