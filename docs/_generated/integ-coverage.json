@@ -1030,6 +1030,7 @@
       "integs": [
         "dynamodb-globaltable",
         "dynamodb-globaltable-implied-stream",
+        "globaltable-fix-forward-orphan",
         "lambda",
         "rollback-replay-effective-props"
       ],
@@ -1042,6 +1043,9 @@
         "dynamodb-globaltable-implied-stream": [
           "l1",
           "literal"
+        ],
+        "globaltable-fix-forward-orphan": [
+          "l1"
         ],
         "lambda": [
           "l2",

@@ -1178,6 +1178,11 @@
       ]
     },
     {
+      "name": "globaltable-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "glue-securityconfig-replace",
       "annotated": false,
       "scenarios": []
@@ -3290,6 +3295,7 @@
     "fallback-recreate-children",
     "fifo-sqs-event-source",
     "getatt-fallback-guard",
+    "globaltable-fix-forward-orphan",
     "glue-securityconfig-replace",
     "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
