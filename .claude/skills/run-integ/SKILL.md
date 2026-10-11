@@ -123,13 +123,13 @@ verify, clean up.
 
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell
-   # Budget: 2x the last PASS's duration, floor 1500s. A FAIL row times the
-   # failure, not a pass: walk the ledger's history back to a numeric PASS.
+   # Budget: 2x the LONGEST PASS in the ledger's last 300 commits, floor 1500s —
+   # not the last: PASS durations vary with AWS-side waits (go-to-k/cdkd#4720),
+   # and a FAIL row times the failure, not a pass.
    L=../../../docs/_generated/integ-last-run.tsv; T="<test-name>"
    P='$1==t && $3=="PASS" && $4~/^[0-9]+$/{print $4; exit}'
-   LAST=$(awk -F'\t' -v t="$T" "$P" "$L")
-   [ -n "$LAST" ] || LAST=$(git log -n 300 --format=%h -- "$L" | while read -r c; do
-     git show "$c:docs/_generated/integ-last-run.tsv" | awk -F'\t' -v t="$T" "$P"; done | head -n 1)
+   LAST=$( { awk -F'\t' -v t="$T" "$P" "$L"; git log -n 300 --format=%h -- "$L" | while read -r c; do
+     git show "$c:docs/_generated/integ-last-run.tsv" | awk -F'\t' -v t="$T" "$P"; done; } | sort -n | tail -n 1)
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
    POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
