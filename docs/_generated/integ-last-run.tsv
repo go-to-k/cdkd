@@ -11,7 +11,7 @@ alb	2026-10-11T09:33:22Z	PASS	551	verify.sh	PR #4720 (#4705) final c53f78f real-
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-10-08T06:25:38Z	PASS	70	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
-apigatewayv2-update-removal	2026-10-11T09:33:22Z	PASS	206	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+apigatewayv2-update-removal	2026-10-11T16:48:28Z	PASS	208	verify.sh	PR #4796, rc ok, orph clean
 apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 apigw-stage-props	2026-10-11T09:33:22Z	PASS	160	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 apigw-stage-throttling	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -102,13 +102,13 @@ dynamodb-fix-forward-orphan	2026-10-09T17:56:31Z	PASS	176	verify.sh	PR #4778 (#4
 dynamodb-globaltable	2026-10-07T20:26:24Z	PASS	1613	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-gsi-update	2026-10-09T10:06:32Z	PASS	1784	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
-dynamodb-ondemand	2026-10-07T21:11:42Z	PASS	276	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
+dynamodb-ondemand	2026-10-11T16:48:28Z	PASS	367	verify.sh	PR #4796, rc ok, orph clean
 dynamodb-sse	2026-10-03T04:28:40Z	PASS	57	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-08T06:25:38Z	PASS	265	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-03T04:28:29Z	PASS	68	verify.sh	rc ok, orph clean (#4283 PR #4449)
-ec2-instance	2026-10-08T06:25:38Z	PASS	210	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
+ec2-instance	2026-10-11T16:48:28Z	PASS	181	verify.sh	PR #4796, rc ok, orph clean
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-10-05T14:42:45Z	PASS	606	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
