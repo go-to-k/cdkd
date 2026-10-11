@@ -869,6 +869,17 @@ expect_eq "MovingFilter's recorded LogGroupName after the dry run" "${LOG_GROUP_
   "$(state_property MovingFilter LogGroupName)"
 
 echo "==> Step 5d: the same move, deployed: the replacement's delete lines withhold the old group (go-to-k/cdkd#3869)"
+# PREMISE: the old filter's id embeds the group's name (`<LogGroupName>|<FilterName>`),
+# so the old-id lines below WOULD name it unmasked. Otherwise the absence
+# check passes whatever cdkd masks.
+MOVING_FILTER_OLD_ID="$(state_physical_id MovingFilter)"
+case "${MOVING_FILTER_OLD_ID}" in
+  "${LOG_GROUP_NAME}|"?*) ;;
+  *)
+    echo "FAIL: premise: MovingFilter's physical id does not start with \${LOG_GROUP_NAME}| (the old-id lines would not carry the group's name)" >&2
+    exit 1
+    ;;
+esac
 set +e
 SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
