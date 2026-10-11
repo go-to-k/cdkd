@@ -650,9 +650,12 @@ describe('Scheduler Schedule GroupName: confirmed by the recorded identity (go-t
     // re-redact the way the record was written.
     const bag = new Map([[NAME, REF]]);
     recordPhysicalNameCopy(bag, NAME);
-    fakeAws(answeredWith(new Date('2026-10-05T12:34:57.789Z')));
+    // No schedule under the resolved group: a re-pointed reference would be
+    // the typed `--replace` refusal; an unchanged one is the rotation refusal.
+    fakeAws(notFoundAnswer);
     const error = await caught(update(REF, { ...context, recordedAttributes: recorded }, bag));
-    expect((error as Error).message).toContain('the secret may have been rotated');
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain('holds no schedule of this name');
     expect(sent()).toEqual(['GetScheduleCommand']);
   });
 
