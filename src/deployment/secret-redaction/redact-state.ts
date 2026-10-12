@@ -23,7 +23,11 @@ import {
   isStrictlyInsideASpan,
 } from './fresh-noecho.js';
 import { refuseUncertifiedReadbackPositions } from './readback-certification.js';
-import { physicalNameCopiesOf, physicalNameSpans } from './physical-name-copies.js';
+import {
+  attributeIdCopiesOf,
+  physicalNameCopiesOf,
+  physicalNameSpans,
+} from './physical-name-copies.js';
 
 /**
  * Deep-clone `bag`, replacing every occurrence of a recorded secret value with
@@ -450,13 +454,16 @@ export function scrubResourceRecord<
     // the id does, in plaintext: a resource NAMED from a `NoEcho` value would
     // otherwise store the attribute as `***`, and a later `Fn::GetAtt` reader
     // could not resolve it. Nothing new reaches state, since `physicalId` is
-    // beside it. A value equal to the secret WHOLE (`TopicName`) is no copy
-    // of the id and stays masked.
+    // beside it. Another value containing the secret (`TopicName`, unless the
+    // physical id IS the value) is no copy of the id and stays masked. The
+    // ids a nested row's outputs copy (`attributeIdCopiesOf`) join it here.
     const ownId = (record as { physicalId?: unknown }).physicalId;
+    const ids = [...(attributeIdCopiesOf.get(secrets) ?? [])];
+    if (typeof ownId === 'string' && ownId !== '') ids.push(ownId);
     const attributes = record.attributes;
     next.attributes =
-      typeof ownId === 'string' && ownId !== ''
-        ? withPhysicalNameCopies(secrets, [ownId], () => redactSecretsForState(attributes, secrets))
+      ids.length > 0
+        ? withPhysicalNameCopies(secrets, ids, () => redactSecretsForState(attributes, secrets))
         : redactSecretsForState(attributes, secrets);
   }
   if (record.observedProperties) {

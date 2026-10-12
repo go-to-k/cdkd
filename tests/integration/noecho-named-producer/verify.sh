@@ -227,13 +227,15 @@ if [ "$(aws sns get-subscription-attributes --subscription-arn "${SUB_ARN}" --re
   exit 1
 fi
 deploy_stack "second producer deploy (edited reader)" "${STACK}" CDKD_TEST_UPDATE=true
-if grep -qiE 'replac' <<< "${DEPLOY_OUT}"; then
-  echo "FAIL: the edited deploy reports a replacement" >&2
-  exit 1
-fi
 STATE_P3=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")
 assert_value_only_in_arn "state.json after the edited deploy" "${STATE_P3}"
 SUB_ARN_P3=$(jq -r '.resources.Sub.physicalId' <<< "${STATE_P3}")
+# Structural, not a grep of cdkd's wording: a replaced subscription gets a new
+# ARN.
+if [ "${SUB_ARN_P3}" != "${SUB_ARN}" ]; then
+  echo "FAIL: the edited deploy replaced the subscription (${SUB_ARN} -> ${SUB_ARN_P3}); raw delivery is an in-place update" >&2
+  exit 1
+fi
 if [ "$(aws sns get-subscription-attributes --subscription-arn "${SUB_ARN_P3}" --region "${REGION}" \
   --query Attributes.RawMessageDelivery --output text)" != "true" ]; then
   echo "FAIL: the edit did not reach AWS (raw delivery is not on)" >&2
@@ -254,10 +256,13 @@ echo "    OK: the edited reader redeployed; the edit reached AWS; the topic was 
 # --- Phase 4 ------------------------------------------------------------------
 echo "==> Phase 4: no object version carries the value outside the ARN"
 VERSIONS_SCANNED=0
-for prefix in "${STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}"; do
+# The two stack prefixes, and every version of the shared exports index KEY
+# (`--prefix` on the key, then an exact-key filter).
+for prefix in "${STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${INDEX_KEY}"; do
   VERSION_ROWS=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
     --prefix "${prefix}" --output json \
-    | jq -r '.Versions // [] | .[] | "\(.Key)\t\(.VersionId)"')
+    | jq -r --arg index "${INDEX_KEY}" --arg prefix "${prefix}" \
+      '.Versions // [] | .[] | select($prefix != $index or .Key == $index) | "\(.Key)\t\(.VersionId)"')
   while IFS=$'\t' read -r version_key version_id || [ -n "${version_key}" ]; do
     [ -n "${version_key}" ] || continue
     VERSION_FILE=$(mktemp)

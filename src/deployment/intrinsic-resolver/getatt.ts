@@ -274,6 +274,18 @@ export async function resolveGetAtt(
       // attribute as a list. Normalize that legacy state shape at the read
       // boundary so Fn::Join works without requiring users to recreate or
       // manually edit an existing state file.
+      // go-to-k/cdkd#4849: a masked copy of the record's own physical id.
+      const ownIdRead = this.healMaskedOwnIdAttribute(
+        logicalId,
+        resource,
+        attributeName,
+        flatValue,
+        context
+      );
+      if (ownIdRead !== undefined) {
+        const ownId = await ownIdRead;
+        if (ownId !== undefined) return ownId;
+      }
       if (
         resource.resourceType === 'AWS::Route53::HostedZone' &&
         attributeName === 'NameServers' &&

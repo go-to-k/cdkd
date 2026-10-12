@@ -63,7 +63,7 @@ import {
   markSameGenerationBag,
   passedNoEchoParametersOf,
   physicalNameCopiesOf,
-  recordPhysicalNameCopy,
+  recordAttributeIdCopy,
   recoverMaskedOutput,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -1074,8 +1074,9 @@ export class NestedStackProvider implements ResourceProvider {
     const attributes = this.buildOutputsAttributes(childStateData.state.outputs ?? {});
     // go-to-k/cdkd#4849: an output holding a child resource's physical id (an
     // ARN `!Ref` / `Fn::GetAtt` exported up) is a copy of that id, which the
-    // child's record stores in plaintext. The row's bag records it as one, so
-    // the row's own record keeps it as written even when the row passed the
+    // child's record stores in plaintext. The row's bag records it as one for
+    // its ATTRIBUTES only (`properties` keep their reference form), so the
+    // row's own record keeps it as written even when the row passed the
     // child a `NoEcho` value the id embeds, and a parent `Fn::GetAtt` reader
     // of it still resolves.
     const rowSecrets = getCurrentResourceSecrets();
@@ -1089,7 +1090,7 @@ export class NestedStackProvider implements ResourceProvider {
           : [];
       for (const value of Object.values(attributes)) {
         if (typeof value !== 'string') continue;
-        for (const id of ids) if (value.includes(id)) recordPhysicalNameCopy(rowSecrets, id);
+        for (const id of ids) if (value.includes(id)) recordAttributeIdCopy(rowSecrets, id);
       }
     }
     const noEchoAttributeNames: string[] = [];

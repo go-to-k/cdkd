@@ -14,7 +14,7 @@ import {
   getAccountInfo,
   isStructured,
 } from './support.js';
-import { carriesSecretMask } from '../secret-redaction.js';
+import { SECRET_MASK, carriesSecretMask } from '../secret-redaction.js';
 import {
   type StaleAttributeHealOutcome,
   StaleAttributeMissSignal,
@@ -43,6 +43,8 @@ declare module '../intrinsic-function-resolver.js' {
     constructGuardedAttribute: OmitThisParameter<typeof constructGuardedAttribute>;
     /** @internal */
     healBeforeConstructing: OmitThisParameter<typeof healBeforeConstructing>;
+    /** @internal */
+    healMaskedOwnIdAttribute: OmitThisParameter<typeof healMaskedOwnIdAttribute>;
   }
 }
 
@@ -431,4 +433,52 @@ export function healBeforeConstructing(
   context: ResolverContext
 ): void {
   if (context.staleAttributeHeal?.phase === 'probe') throw new StaleAttributeMissSignal();
+}
+
+/**
+ * go-to-k/cdkd#4849: may a re-read value replace the `***` a record holds at
+ * `key`? Only when it EQUALS the record's own physical id, which state already
+ * holds in plaintext: an earlier cdkd masked such a copy (the `TopicArn` of a
+ * topic named from a `NoEcho` value), and a reader of it could not deploy. Any
+ * other value (the name attribute, which IS the value) stays masked, and so
+ * does an attribute the producer declared `NoEcho` (a malformed declaration
+ * reads as declared). Shared by the resolver's serve and the persist merge.
+ */
+export function isMaskedOwnIdCopy(
+  record: ResourceState,
+  key: string,
+  recorded: unknown,
+  healed: unknown
+): boolean {
+  if (recorded !== SECRET_MASK) return false;
+  const physicalId = record.physicalId as unknown;
+  if (typeof physicalId !== 'string' || physicalId === '' || healed !== physicalId) return false;
+  const declared = record.noEchoAttributeNames as unknown;
+  if (declared === undefined) return true;
+  return Array.isArray(declared) && declared.every((n) => typeof n === 'string' && n !== key);
+}
+
+/**
+ * go-to-k/cdkd#4849: a `Fn::GetAtt` of an attribute the record holds as `***`
+ * re-reads the record through the #1852 heal and serves the read when it is a
+ * copy of the record's own physical id ({@link isMaskedOwnIdCopy}); the deploy
+ * then persists it in place of the mask (`withHealedAttributes`). `undefined`
+ * (synchronously, for every other stored value) leaves the masked-read refusal
+ * as it was.
+ */
+export function healMaskedOwnIdAttribute(
+  this: IntrinsicFunctionResolver,
+  logicalId: string,
+  resource: ResourceState,
+  attributeName: string,
+  stored: unknown,
+  context: ResolverContext
+): Promise<unknown> | undefined {
+  if (stored !== SECRET_MASK || context.attributeHealer === undefined) return undefined;
+  return (async () => {
+    const outcome = await this.healStaleAttributes(logicalId, resource, context);
+    const healed = this.usableHealedAttribute(outcome, attributeName);
+    if (!isMaskedOwnIdCopy(resource, attributeName, stored, healed)) return undefined;
+    return this.serveHealedAttribute(logicalId, attributeName, healed, context);
+  })();
 }

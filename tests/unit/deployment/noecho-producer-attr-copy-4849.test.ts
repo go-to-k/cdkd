@@ -14,8 +14,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
-import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
-import { getLogger } from '../../../src/utils/logger.js';
+import { isMaskedOwnIdCopy } from '../../../src/deployment/intrinsic-resolver/getatt-heal.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 
@@ -41,13 +40,6 @@ const renderer = {
 };
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
-// Per-test DescribeType knobs (review round 8): a type's write-only list, and
-// a lookup that fails outright (the snapshot fallback then answers).
-const describeType = vi.hoisted(() => ({
-  writeOnly: new Map<string, string[]>(),
-  fail: false,
-}));
-
 vi.mock('../../../src/utils/aws-clients.js', async () => {
   const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
     '../../../src/provisioning/create-only-snapshot.generated.js'
@@ -57,7 +49,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
       cloudFormation: {
         send: vi.fn((command: { input?: { TypeName?: string } }) => {
           const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
-          if (paths === undefined || describeType.fail) {
+          if (paths === undefined) {
             return Promise.reject(
               Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
                 name: 'AccessDeniedException',
@@ -68,9 +60,6 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
           return Promise.resolve({
             Schema: JSON.stringify({
               createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
-              writeOnlyProperties: (describeType.writeOnly.get(command.input?.TypeName ?? '') ?? []).map(
-                (name) => `/properties/${name}`
-              ),
             }),
           });
         }),
@@ -101,8 +90,6 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
   };
 
   beforeEach(() => {
-    describeType.writeOnly.clear();
-    describeType.fail = false;
     clearCreateOnlyPropertiesCache();
     clearWriteOnlyPropertiesCache();
     vi.clearAllMocks();
@@ -116,6 +103,8 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
       delete: vi.fn().mockResolvedValue(undefined),
       getAttribute: vi.fn(),
       readCurrentState: vi.fn(() => Promise.resolve({ TopicName: TOPIC })),
+      // The #1852 heal's read: what AWS reports for the topic.
+      import: vi.fn(),
     };
     stateBackend = {
       getState: vi.fn(),
@@ -150,28 +139,6 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
       } as never
     );
   }
-
-  const topicCalls = (fn: ReturnType<typeof vi.fn>): number =>
-    fn.mock.calls.filter((c) => c[0] === 'Topic').length;
-
-  /** What a binary before the change wrote: a marked record, `TopicName` stored as `stored`. */
-  const markedState = (topicName: unknown, displayName: unknown, leaves: string[][]): StackState => ({
-    version: STATE_SCHEMA_VERSION_CURRENT,
-    region: REGION,
-    stackName: STACK,
-    resources: {
-      Topic: {
-        physicalId: TOPIC_ARN,
-        resourceType: 'AWS::SNS::Topic',
-        properties: { TopicName: topicName, DisplayName: displayName },
-        attributes: {},
-        dependencies: [],
-        noEchoLeaves: leaves,
-      } as ResourceState,
-    },
-    outputs: {},
-    lastModified: 0,
-  });
 
   const template = (endpoint: string, outputs = false): CloudFormationTemplate =>
     ({
@@ -208,6 +175,15 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
       Promise.resolve(attribute === 'TopicArn' ? TOPIC_ARN : TOPIC)
     );
     provider.readCurrentState.mockImplementation(() => Promise.resolve({ TopicName: TOPIC }));
+    // The #1852 heal's read, and the create's name-holder check: AWS knows the
+    // topic once a deploy has created it (a later deploy here).
+    provider.import.mockImplementation((input: { knownPhysicalId?: string }) =>
+      Promise.resolve(
+        stateBackend.saveState.mock.calls.length > 0 && input.knownPhysicalId === TOPIC_ARN
+          ? { physicalId: TOPIC_ARN, attributes: { TopicArn: TOPIC_ARN, TopicName: TOPIC } }
+          : null
+      )
+    );
   });
 
   const lastSaved = (): StackState => stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState;
@@ -235,6 +211,41 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
     expect((created[0]![2] as Record<string, unknown>)['TopicArn']).toBe(TOPIC_ARN);
   });
 
+  it('a record an earlier cdkd wrote, holding *** at the ARN attribute, is repaired by the reader edit', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com'));
+    const first = JSON.parse(JSON.stringify(lastSaved())) as StackState;
+    // What the persist wrote before the change.
+    first.resources['Topic']!.attributes = { TopicArn: '***', TopicName: '***' };
+    provider.create.mockClear();
+    stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-2' });
+    await makeEngine().deploy(STACK, template('b@example.com'));
+    const created = provider.create.mock.calls.filter((c) => c[0] === 'Sub');
+    expect(created).toHaveLength(1);
+    expect((created[0]![2] as Record<string, unknown>)['TopicArn']).toBe(TOPIC_ARN);
+    // The heal's read replaced the mask over the id copy only; the name stays masked.
+    expect(lastSaved().resources['Topic']?.attributes).toEqual({
+      TopicArn: TOPIC_ARN,
+      TopicName: '***',
+    });
+  });
+
+  it('a masked attribute the producer declared NoEcho is not re-read into the record', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com'));
+    const first = JSON.parse(JSON.stringify(lastSaved())) as StackState;
+    first.resources['Topic']!.attributes = { TopicArn: '***', TopicName: '***' };
+    first.resources['Topic']!.noEchoAttributeNames = ['TopicArn'];
+    stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-2' });
+    await makeEngine().deploy(STACK, template('b@example.com'));
+    // A declared attribute is served per resolution by its own arm (#4043),
+    // never re-read into the record: the mask stays.
+    expect(lastSaved().resources['Topic']?.attributes).toEqual({
+      TopicArn: '***',
+      TopicName: '***',
+    });
+  });
+
   it('an output and an export holding the id keep it; an output of the value itself stays masked', async () => {
     stateBackend.getState.mockResolvedValue(null);
     await makeEngine().deploy(STACK, template('a@example.com', true));
@@ -254,5 +265,39 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
     } as never;
     await makeEngine().deploy(STACK, t);
     expect(lastSaved().resources['Note']?.properties['Value']).toBe('***');
+  });
+});
+
+describe('isMaskedOwnIdCopy (go-to-k/cdkd#4849)', () => {
+  const record = (extra: Record<string, unknown> = {}): ResourceState =>
+    ({
+      physicalId: TOPIC_ARN,
+      resourceType: 'AWS::SNS::Topic',
+      properties: {},
+      attributes: { TopicArn: '***' },
+      ...extra,
+    }) as ResourceState;
+
+  it('replaces a mask only with a value equal to the physical id', () => {
+    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', TOPIC_ARN)).toBe(true);
+    expect(isMaskedOwnIdCopy(record(), 'TopicName', '***', TOPIC)).toBe(false);
+    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`)).toBe(false);
+    expect(isMaskedOwnIdCopy(record(), 'TopicArn', 'plain', TOPIC_ARN)).toBe(false);
+    expect(isMaskedOwnIdCopy(record({ physicalId: '' }), 'TopicArn', '***', '')).toBe(false);
+  });
+
+  it('never for a declared NoEcho attribute, and a malformed declaration reads as declared', () => {
+    expect(
+      isMaskedOwnIdCopy(record({ noEchoAttributeNames: ['TopicArn'] }), 'TopicArn', '***', TOPIC_ARN)
+    ).toBe(false);
+    expect(
+      isMaskedOwnIdCopy(record({ noEchoAttributeNames: ['Other'] }), 'TopicArn', '***', TOPIC_ARN)
+    ).toBe(true);
+    expect(
+      isMaskedOwnIdCopy(record({ noEchoAttributeNames: 'TopicArn' }), 'TopicArn', '***', TOPIC_ARN)
+    ).toBe(false);
+    expect(
+      isMaskedOwnIdCopy(record({ noEchoAttributeNames: [7] }), 'TopicArn', '***', TOPIC_ARN)
+    ).toBe(false);
   });
 });

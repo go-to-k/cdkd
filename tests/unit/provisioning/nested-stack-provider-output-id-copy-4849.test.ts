@@ -18,6 +18,7 @@ import {
 import type { StackState } from '../../../src/types/state.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import {
+  attributeIdCopiesOf,
   physicalNameCopiesOf,
   recordNoEchoParameterFreshValue,
   redactSecretsForState,
@@ -102,15 +103,15 @@ function makeContext(
 
 const create = async (
   state: StackState,
-  bag: RecordedSecretValues
+  bag: RecordedSecretValues | undefined
 ): Promise<{ attributes: Record<string, unknown> }> => {
   const provider = new NestedStackProvider();
+  const run = () =>
+    provider.create('Child', 'AWS::CloudFormation::Stack', {
+      TemplateURL: 'https://example.com/child.json',
+    });
   return (await withNestedStackContext(makeContext(state), () =>
-    withCurrentResourceSecrets(bag, () =>
-      provider.create('Child', 'AWS::CloudFormation::Stack', {
-        TemplateURL: 'https://example.com/child.json',
-      })
-    )
+    bag === undefined ? run() : withCurrentResourceSecrets(bag, run)
   )) as { attributes: Record<string, unknown> };
 };
 
@@ -131,7 +132,7 @@ describe("NestedStackProvider records a child output copying a child's id (go-to
       bag
     );
     expect(attributes['Outputs.TopicArnOut']).toBe(TOPIC_ARN);
-    expect([...(physicalNameCopiesOf.get(bag) ?? [])]).toEqual([TOPIC_ARN]);
+    expect([...(attributeIdCopiesOf.get(bag) ?? [])]).toEqual([TOPIC_ARN]);
     // What the parent's persist then stores for the row.
     const saved = scrubResourceRecord(
       { physicalId: 'arn:aws:cloudformation:stack/child', properties: {}, attributes },
@@ -143,7 +144,36 @@ describe("NestedStackProvider records a child output copying a child's id (go-to
   it('negative control: an output that only embeds the value, copying no child id, stays masked', async () => {
     const bag = rowBag();
     const { attributes } = await create(childState({ Note: `note-${NAME}` }), bag);
-    expect(physicalNameCopiesOf.get(bag)).toBeUndefined();
+    expect(attributeIdCopiesOf.get(bag)).toBeUndefined();
     expect(redactSecretsForState(attributes, bag)['Outputs.Note']).toBe('***');
+  });
+
+  it("scopes the copy to the row's attributes: its Parameters keep their reference form", async () => {
+    // A row passing a SecureString-named value: the child's topic is named
+    // from it, and the row's `Parameters` spell the reference.
+    const ref = '{{resolve:ssm-secure:/p/name}}';
+    const bag: RecordedSecretValues = new Map([[NAME, ref]]);
+    const { attributes } = await create(childState({ TopicArnOut: TOPIC_ARN }), bag);
+    expect(physicalNameCopiesOf.get(bag)).toBeUndefined();
+    const saved = scrubResourceRecord(
+      {
+        physicalId: 'arn:aws:cloudformation:stack/child',
+        properties: { Parameters: { TopicName: NAME } },
+        attributes,
+      },
+      bag
+    );
+    expect(saved.properties['Parameters']).toEqual({ TopicName: ref });
+    expect(saved.attributes?.['Outputs.TopicArnOut']).toBe(TOPIC_ARN);
+  });
+
+  it('records nothing without a bound row bag, and reads a non-object resources bag as no ids', async () => {
+    const { attributes } = await create(childState({ TopicArnOut: TOPIC_ARN }), undefined);
+    expect(attributes['Outputs.TopicArnOut']).toBe(TOPIC_ARN);
+    const bag = rowBag();
+    const torn = childState({ TopicArnOut: TOPIC_ARN });
+    (torn as { resources: unknown }).resources = null;
+    await create(torn, bag);
+    expect(attributeIdCopiesOf.get(bag)).toBeUndefined();
   });
 });
