@@ -327,7 +327,7 @@ schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#34
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 sdk-to-cc-autoroute	2026-10-11T09:33:22Z	PASS	231	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-secret-derived-immutable-names	2026-10-12T07:32:41Z	PASS	481	verify.sh	rc ok, orph clean; PR #4817 on 686a6273c (main incl. #4823); pre-fix arm red at step 3 Queues premise
+secret-derived-immutable-names	2026-10-12T10:11:16Z	PASS	497	verify.sh	rc ok, orph clean; PR #4803 on a7506be54 step 5e auto-rollback restore; pre-fix arm red at restored Queues
 secrets-array-nested	2026-10-12T00:02:47Z	PASS	393	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-dynamic-ref	2026-10-12T00:02:47Z	PASS	733	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
