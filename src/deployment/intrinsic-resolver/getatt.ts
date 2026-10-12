@@ -2,6 +2,7 @@ import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.j
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   isSensitiveAttributeName,
   stringifyAttributeForLog,
@@ -24,6 +25,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import {
   carriesSecretMask,
   crossStackSourceKey,
+  dynamicReferenceTokens,
   recordFreshNoEchoValuesIn,
   MIN_NEEDLE_LENGTH,
   recordLogOnlyValue,
@@ -45,6 +47,10 @@ declare module '../intrinsic-function-resolver.js' {
     publicNoEchoTokens: OmitThisParameter<typeof publicNoEchoTokens>;
     /** @internal */
     noteAttributeSecrecy: OmitThisParameter<typeof noteAttributeSecrecy>;
+    /** @internal */
+    reresolveRecordedReferences: OmitThisParameter<typeof reresolveRecordedReferences>;
+    /** @internal */
+    referencesMatchPhysicalId: OmitThisParameter<typeof referencesMatchPhysicalId>;
     /** @internal */
     rejectPlaceholderArnAttribute: OmitThisParameter<typeof rejectPlaceholderArnAttribute>;
     /** @internal */
@@ -359,7 +365,13 @@ export async function resolveGetAtt(
           crossStackSourceKey({ 'Fn::GetAtt': getAtt })
         );
       }
-      return notedFlatValue;
+      return await this.reresolveRecordedReferences(
+        notedFlatValue,
+        logicalId,
+        context,
+        `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+        crossStackSourceKey({ 'Fn::GetAtt': getAtt })
+      );
     }
 
     // Issue #381: nested-path fallback. CC API providers store CFn nested
@@ -412,8 +424,15 @@ export async function resolveGetAtt(
         // resource's `Data` is written into `attributes` verbatim, so a
         // handler answering `{"Data": {"Endpoint": {"Password": "..."}}}`
         // lands a sensitive leaf on exactly this walk. Serving one branch and
-        // not the other is how a redaction ships half-applied.
-        return notedCursor;
+        // not the other is how a redaction ships half-applied. The same holds
+        // for a leaf redacted to its `{{resolve:` spelling (go-to-k/cdkd#4800).
+        return await this.reresolveRecordedReferences(
+          notedCursor,
+          logicalId,
+          context,
+          `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+          crossStackSourceKey({ 'Fn::GetAtt': getAtt })
+        );
       }
     }
   }
@@ -577,7 +596,10 @@ export function publicNoEchoTokens(
  * `attributes` bag must call this, and so must one serving (or embedding) a
  * persisted `properties` leaf, which a mask-only needle masks whole
  * (go-to-k/cdkd#2936: the VPC `CidrBlock` and Events rule `Arn` arms) — and
- * that is not a shape a compiler can enforce. `constructGuardedAttribute`'s return is deliberately outside it:
+ * that is not a shape a compiler can enforce. A branch serving `attributes`
+ * also hands what it serves through {@link reresolveRecordedReferences}
+ * (go-to-k/cdkd#4800); the VPC `CidrBlock` and Events rule `Arn` arms do not,
+ * since no physical id proves which generation of their value AWS holds. `constructGuardedAttribute`'s return is deliberately outside it:
  * that value is fetched from AWS in this run, not read back from state, so
  * it can be neither a stale mask nor a value a provider declared `NoEcho`.
  *
@@ -712,6 +734,174 @@ export function recordSecretNamedRead(
       }
     }
   }
+}
+
+/**
+ * Re-resolve the `{{resolve:...}}` references in a value served out of a
+ * PERSISTED record of this stack (go-to-k/cdkd#4800). State stores a secret
+ * plaintext as the expression that produced it, in `attributes` too (an SQS
+ * `Arn` around a queue NAMED from a secret persists as
+ * `arn:...:{{resolve:secretsmanager:...}}`), so serving the leaf as it is sends
+ * that spelling to AWS whenever the producer is `NO_CHANGE`. A producer updated
+ * in this run serves the provider's fresh value and never reaches here with one.
+ *
+ * Resolved by THIS resolver, and only when every token is PROVEN to be one the
+ * producer's own template leaves spell (see {@link referencesProvenLocal}): a
+ * record can also hold the expression a cross-region `Fn::GetStackOutput`
+ * handed it, which this region would answer from a same-named secret, silently,
+ * and the deploy context carries no producer-region evidence to refuse it.
+ * Each plaintext is recorded into the reader's bag, so the reader's record
+ * persists the expression back, and a diff context (`skipDynamicReferences`)
+ * keeps the secret's spelling, comparing expression with expression.
+ *
+ * Unchanged: a value carrying no reference; one carrying the MASK, which
+ * {@link noteAttributeSecrecy} already reported for the deploy to refuse; a
+ * value with a token not proven local, or whose resolution the producer's
+ * physical id does not contain ({@link referencesMatchPhysicalId}: a rotated
+ * secret, or a value that is no name), served as before with a warning; and
+ * any value in a context with no bag to record the plaintext into, since its
+ * caller could persist the plaintext unredacted.
+ */
+export async function reresolveRecordedReferences(
+  this: IntrinsicFunctionResolver,
+  value: unknown,
+  logicalId: string,
+  context: ResolverContext,
+  origin: string,
+  sourceKey: string | undefined
+): Promise<unknown> {
+  if (!carriesDynamicReference(value) || carriesSecretMask(value)) return value;
+  if (context.recordedSecretValues === undefined) return value;
+  if (!referencesProvenLocal(value, logicalId, context)) {
+    this.logger.debug(
+      safeMsg`Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, so the region that resolved them is unknown`
+    );
+    return value;
+  }
+  // The GENERATION proof: each reference must still resolve to text the
+  // producer's physical id holds. A secret rotated since the producer was
+  // deployed leaves it NO_CHANGE (the diff compares references), still under
+  // the old name, and today's value would name a resource that does not exist.
+  if (!(await this.referencesMatchPhysicalId(value, logicalId, context))) {
+    this.logger.warn(
+      safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
+    );
+    return value;
+  }
+  return await this.reresolveCrossStackValue(value, undefined, context, origin, sourceKey);
+}
+
+/**
+ * Does every `{{resolve:...}}` token in `value` resolve to text the producer's
+ * physical id contains (go-to-k/cdkd#4800 review)? The physical id is stored
+ * in plaintext and names what was DEPLOYED, so a match proves the reference
+ * still resolves to that generation. A plaintext under
+ * {@link MIN_NEEDLE_LENGTH} proves nothing and refuses; a token left unresolved
+ * (a diff context's `skipDynamicReferences`) is not sent resolved, so it passes.
+ * Each token is resolved through the resolver's per-instance cache, so the
+ * re-resolution that follows makes no second lookup.
+ */
+export async function referencesMatchPhysicalId(
+  this: IntrinsicFunctionResolver,
+  value: unknown,
+  logicalId: string,
+  context: ResolverContext
+): Promise<boolean> {
+  const record = Object.hasOwn(context.resources, logicalId)
+    ? context.resources[logicalId]
+    : undefined;
+  const physicalId = typeof record?.physicalId === 'string' ? record.physicalId.toLowerCase() : '';
+  for (const leaf of wholeStringLeavesOf(value)) {
+    for (const token of dynamicReferenceTokens(leaf)) {
+      const plaintext = await this.resolveDynamicReferences(token, context);
+      if (plaintext.includes('{{resolve:')) continue;
+      if (plaintext.length < MIN_NEEDLE_LENGTH) return false;
+      if (!physicalId.includes(plaintext.toLowerCase())) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Is `node` a read whose value another stack resolved, possibly in another
+ * region: `Fn::ImportValue`, `Fn::GetStackOutput`, or a nested stack's
+ * `Fn::GetAtt Child.Outputs.X`? Such a read can hand the producer's record a
+ * region-less expression spelled like a literal token beside it.
+ */
+function readsAnotherStack(node: Record<string, unknown>): boolean {
+  if (Object.hasOwn(node, 'Fn::ImportValue') || Object.hasOwn(node, 'Fn::GetStackOutput')) {
+    return true;
+  }
+  if (!Object.hasOwn(node, 'Fn::GetAtt')) return false;
+  const getAtt = node['Fn::GetAtt'];
+  const attributeName =
+    typeof getAtt === 'string'
+      ? splitGetAttStringForm(getAtt)?.attributeName
+      : Array.isArray(getAtt)
+        ? getAtt[1]
+        : undefined;
+  // A non-literal attribute name proves nothing either.
+  return (
+    typeof attributeName !== 'string' ||
+    attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX)
+  );
+}
+
+/** The taken branch of an `Fn::If` node whose condition `context` evaluated, else `undefined`. */
+function takenIfBranch(node: object, context: ResolverContext): { branch: unknown } | undefined {
+  if (Array.isArray(node) || !Object.hasOwn(node, 'Fn::If')) return undefined;
+  const args = (node as Record<string, unknown>)['Fn::If'];
+  if (!Array.isArray(args) || args.length !== 3 || typeof args[0] !== 'string') return undefined;
+  const conditions = context.conditions;
+  if (conditions === undefined || !Object.hasOwn(conditions, args[0])) return undefined;
+  const verdict = conditions[args[0]];
+  if (typeof verdict !== 'boolean') return undefined;
+  return { branch: verdict ? args[1] : args[2] };
+}
+
+/**
+ * Does the producer's own template `Properties` spell, as a literal string
+ * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
+ * read of another stack anywhere in them ({@link readsAnotherStack})? A literal
+ * token is resolved by the producer's template-leaf route in THIS resolver's
+ * region, so re-resolving it here answers from the region the record's value
+ * came from; whether it is still the same VALUE is
+ * {@link referencesMatchPhysicalId}'s question. A token assembled by
+ * an intrinsic, or read from another stack, proves nothing about its region
+ * (go-to-k/cdkd#4800 security review). The walk covers one resource's
+ * properties, so it does not scale with the stack.
+ */
+function referencesProvenLocal(
+  value: unknown,
+  logicalId: string,
+  context: ResolverContext
+): boolean {
+  const resources = context.template.Resources ?? {};
+  if (!Object.hasOwn(resources, logicalId)) return false;
+  const literals: string[] = [];
+  let crossStack = false;
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      if (node.includes('{{resolve:')) literals.push(node);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    if (!Array.isArray(node) && readsAnotherStack(node as Record<string, unknown>))
+      crossStack = true;
+    // An `Fn::If` whose condition is known contributes its TAKEN branch only:
+    // a token spelled in the other one never reached the record.
+    const taken = takenIfBranch(node, context);
+    if (taken !== undefined) {
+      walk(taken.branch);
+      return;
+    }
+    for (const child of Object.values(node as Record<string, unknown>)) walk(child);
+  };
+  walk(resources[logicalId]?.Properties);
+  if (crossStack) return false;
+  return [...wholeStringLeavesOf(value)].every((leaf) =>
+    dynamicReferenceTokens(leaf).every((token) => literals.some((l) => l.includes(token)))
+  );
 }
 
 /**

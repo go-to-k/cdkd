@@ -191,7 +191,19 @@ export async function resolveRef(
     this.logger.debug(
       `Resolved Ref to resource: ${this.logRender(logicalId, context)} resolved to ${this.logRender(String(refValue), context)}`
     );
-    return refValue;
+    // A `Ref` served out of the record's `properties` / `attributes` (an
+    // AppSync data source's `DataSourceArn`) can be a leaf persisted as its
+    // `{{resolve:` spelling (go-to-k/cdkd#4800); it is re-resolved only where
+    // the physical id proves the value (`referencesMatchPhysicalId`).
+    // No source key: `crossStackSourceKey` keys no resource `Ref`, so the
+    // persist path positions this leaf through the value scan.
+    return await this.reresolveRecordedReferences(
+      refValue,
+      logicalId,
+      context,
+      `Ref ${logicalId}`,
+      undefined
+    );
   }
 
   // Check if it's a parameter

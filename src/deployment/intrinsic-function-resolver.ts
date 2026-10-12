@@ -938,6 +938,10 @@ IntrinsicFunctionResolver.prototype.pushRedactedAttributeRead =
 IntrinsicFunctionResolver.prototype.resolveGetAtt = getAttMixin.resolveGetAtt;
 IntrinsicFunctionResolver.prototype.publicNoEchoTokens = getAttMixin.publicNoEchoTokens;
 IntrinsicFunctionResolver.prototype.noteAttributeSecrecy = getAttMixin.noteAttributeSecrecy;
+IntrinsicFunctionResolver.prototype.reresolveRecordedReferences =
+  getAttMixin.reresolveRecordedReferences;
+IntrinsicFunctionResolver.prototype.referencesMatchPhysicalId =
+  getAttMixin.referencesMatchPhysicalId;
 IntrinsicFunctionResolver.prototype.rejectPlaceholderArnAttribute =
   getAttMixin.rejectPlaceholderArnAttribute;
 IntrinsicFunctionResolver.prototype.staleRecordRemedy = getAttHealMixin.staleRecordRemedy;
