@@ -1,3 +1,9 @@
+overrides:
+  # The docs build's OG renderer runs on the playwright that @ox-content pins
+  # exactly, while CI installs Chromium through the ROOT playwright's CLI. Two
+  # versions want two browser builds, so the renderer finds none and silently
+  # skips the OG images. One version everywhere keeps them in step.
+  playwright: '$playwright'
 allowBuilds:
   esbuild: true
   # Transitive via @mermaid-js/mermaid-cli (an ox-content dependency); no docs
