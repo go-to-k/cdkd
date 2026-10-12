@@ -106,6 +106,9 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER}" "${REGION}")"
 INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 
+# ISO-8601 UTC, comparable as a string with S3's LastModified; one second
+# earlier so a write in the same second is not skipped.
+RUN_STARTED_AT=$(date -u -v-1S +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '1 second ago' +%Y-%m-%dT%H:%M:%S)
 SCRATCH_FILES=()
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -251,18 +254,20 @@ if [ "${P3_SHAPE}" != '[true,true,"***",true]' ]; then
   echo "FAIL: state.json after the edited deploy lost the ARN or the TopicName mask (got ${P3_SHAPE})" >&2
   exit 1
 fi
-echo "    OK: the edited reader redeployed; the edit reached AWS; the topic was not replaced"
+echo "    OK: the edited reader redeployed; the edit reached AWS; the subscription was not replaced"
 
 # --- Phase 4 ------------------------------------------------------------------
 echo "==> Phase 4: no object version carries the value outside the ARN"
 VERSIONS_SCANNED=0
-# The two stack prefixes, and every version of the shared exports index KEY
-# (`--prefix` on the key, then an exact-key filter).
+# The two stack prefixes, and the versions of the shared exports index KEY this
+# run wrote (`--prefix` on the key, an exact-key filter, and LastModified at or
+# after the run's start, so other stacks' history is not downloaded).
 for prefix in "${STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${INDEX_KEY}"; do
   VERSION_ROWS=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
     --prefix "${prefix}" --output json \
     | jq -r --arg index "${INDEX_KEY}" --arg prefix "${prefix}" \
-      '.Versions // [] | .[] | select($prefix != $index or .Key == $index) | "\(.Key)\t\(.VersionId)"')
+      --arg since "${RUN_STARTED_AT}" \
+      '.Versions // [] | .[] | select($prefix != $index or (.Key == $index and .LastModified >= $since)) | "\(.Key)\t\(.VersionId)"')
   while IFS=$'\t' read -r version_key version_id || [ -n "${version_key}" ]; do
     [ -n "${version_key}" ] || continue
     VERSION_FILE=$(mktemp)

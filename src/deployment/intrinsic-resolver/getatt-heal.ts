@@ -14,7 +14,14 @@ import {
   getAccountInfo,
   isStructured,
 } from './support.js';
-import { SECRET_MASK, carriesSecretMask } from '../secret-redaction.js';
+import {
+  type RecordedSecretValues,
+  SECRET_MASK,
+  carriesSecretMask,
+  hasMaskableValues,
+  redactSecretsForState,
+  withPhysicalNameCopies,
+} from '../secret-redaction.js';
 import {
   type StaleAttributeHealOutcome,
   StaleAttributeMissSignal,
@@ -437,31 +444,49 @@ export function healBeforeConstructing(
 
 /**
  * go-to-k/cdkd#4849: may a re-read value replace the `***` a record holds at
- * `key`? Only when it EQUALS the record's own physical id, which state already
- * holds in plaintext: an earlier cdkd masked such a copy (the `TopicArn` of a
- * topic named from a `NoEcho` value), and a reader of it could not deploy. Any
- * other value (the name attribute, which IS the value) stays masked, and so
- * does an attribute the producer declared `NoEcho` (a malformed declaration
- * reads as declared). Shared by the resolver's serve and the persist merge.
+ * `key`? An earlier cdkd masked a copy of the record's own physical id (the
+ * `TopicArn` of a topic named from a `NoEcho` value, a function's `Arn`), and a
+ * reader of it could not deploy. The read is accepted when it EQUALS the
+ * physical id, which state already holds in plaintext, or CONTAINS it and is
+ * left unchanged by the producer's own redaction with that id exempted
+ * (`producerSecrets`, this run's bag, which must hold a maskable value): every
+ * recorded secret it carries lies inside the id. Anything else (the name
+ * attribute, which IS the value) stays masked, and so does an attribute the
+ * producer declared `NoEcho` (a malformed declaration reads as declared).
+ * Shared by the resolver's serve and the persist merge.
  */
 export function isMaskedOwnIdCopy(
   record: ResourceState,
   key: string,
   recorded: unknown,
-  healed: unknown
+  healed: unknown,
+  producerSecrets?: RecordedSecretValues
 ): boolean {
-  if (recorded !== SECRET_MASK) return false;
+  if (recorded !== SECRET_MASK || typeof healed !== 'string') return false;
   const physicalId = record.physicalId as unknown;
-  if (typeof physicalId !== 'string' || physicalId === '' || healed !== physicalId) return false;
+  if (typeof physicalId !== 'string' || physicalId === '' || !healed.includes(physicalId)) {
+    return false;
+  }
   const declared = record.noEchoAttributeNames as unknown;
-  if (declared === undefined) return true;
-  return Array.isArray(declared) && declared.every((n) => typeof n === 'string' && n !== key);
+  if (
+    declared !== undefined &&
+    !(Array.isArray(declared) && declared.every((n) => typeof n === 'string' && n !== key))
+  ) {
+    return false;
+  }
+  if (healed === physicalId) return true;
+  if (producerSecrets === undefined || !hasMaskableValues(producerSecrets)) return false;
+  return (
+    withPhysicalNameCopies(producerSecrets, [physicalId], () =>
+      redactSecretsForState(healed, producerSecrets)
+    ) === healed
+  );
 }
 
 /**
  * go-to-k/cdkd#4849: a `Fn::GetAtt` of an attribute the record holds as `***`
- * re-reads the record through the #1852 heal and serves the read when it is a
- * copy of the record's own physical id ({@link isMaskedOwnIdCopy}); the deploy
+ * re-reads the record through the #1852 heal and serves the read when it is
+ * the record's own physical id, or carries it and no other recorded secret ({@link isMaskedOwnIdCopy}); the deploy
  * then persists it in place of the mask (`withHealedAttributes`). `undefined`
  * (synchronously, for every other stored value) leaves the masked-read refusal
  * as it was.
@@ -478,7 +503,8 @@ export function healMaskedOwnIdAttribute(
   return (async () => {
     const outcome = await this.healStaleAttributes(logicalId, resource, context);
     const healed = this.usableHealedAttribute(outcome, attributeName);
-    if (!isMaskedOwnIdCopy(resource, attributeName, stored, healed)) return undefined;
+    const producer = context.producerSecrets?.(logicalId);
+    if (!isMaskedOwnIdCopy(resource, attributeName, stored, healed, producer)) return undefined;
     return this.serveHealedAttribute(logicalId, attributeName, healed, context);
   })();
 }

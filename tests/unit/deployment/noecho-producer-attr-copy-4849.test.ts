@@ -15,6 +15,7 @@ import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { isMaskedOwnIdCopy } from '../../../src/deployment/intrinsic-resolver/getatt-heal.js';
+import { recordNoEchoParameterFreshValue } from '../../../src/deployment/secret-redaction.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 
@@ -230,6 +231,49 @@ describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-
     });
   });
 
+  it('a record whose physical id IS the name: its masked ARN, which carries the id, is repaired', async () => {
+    // A name-identified resource (a function, a role, a table): the ARN
+    // CONTAINS the physical id rather than equalling it.
+    provider.create.mockImplementation((logicalId: string) =>
+      Promise.resolve(
+        logicalId === 'Topic'
+          ? { physicalId: TOPIC, attributes: { TopicArn: TOPIC_ARN } }
+          : { physicalId: `${logicalId}-arn-${provider.create.mock.calls.length}`, attributes: {} }
+      )
+    );
+    provider.import.mockImplementation((input: { knownPhysicalId?: string }) =>
+      Promise.resolve(
+        stateBackend.saveState.mock.calls.length > 0 && input.knownPhysicalId === TOPIC
+          ? { physicalId: TOPIC, attributes: { TopicArn: TOPIC_ARN } }
+          : null
+      )
+    );
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com'));
+    const first = JSON.parse(JSON.stringify(lastSaved())) as StackState;
+    expect(first.resources['Topic']?.attributes?.['TopicArn']).toBe(TOPIC_ARN);
+    first.resources['Topic']!.attributes = { TopicArn: '***' };
+    provider.create.mockClear();
+    stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-2' });
+    await makeEngine().deploy(STACK, template('b@example.com'));
+    const created = provider.create.mock.calls.filter((c) => c[0] === 'Sub');
+    expect((created[0]![2] as Record<string, unknown>)['TopicArn']).toBe(TOPIC_ARN);
+    expect(lastSaved().resources['Topic']?.attributes).toEqual({ TopicArn: TOPIC_ARN });
+  });
+
+  it('a key the record lacks, which the same re-read returns holding the value, lands masked', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com'));
+    const first = JSON.parse(JSON.stringify(lastSaved())) as StackState;
+    first.resources['Topic']!.attributes = { TopicArn: '***' };
+    stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-2' });
+    await makeEngine().deploy(STACK, template('b@example.com'));
+    expect(lastSaved().resources['Topic']?.attributes).toEqual({
+      TopicArn: TOPIC_ARN,
+      TopicName: '***',
+    });
+  });
+
   it('a masked attribute the producer declared NoEcho is not re-read into the record', async () => {
     stateBackend.getState.mockResolvedValue(null);
     await makeEngine().deploy(STACK, template('a@example.com'));
@@ -278,10 +322,28 @@ describe('isMaskedOwnIdCopy (go-to-k/cdkd#4849)', () => {
       ...extra,
     }) as ResourceState;
 
-  it('replaces a mask only with a value equal to the physical id', () => {
+  /** The producer's bag: the NoEcho value its name came from. */
+  const producerBag = (): Map<string, string> => {
+    const bag = new Map<string, string>();
+    recordNoEchoParameterFreshValue(TOPIC, bag);
+    return bag;
+  };
+
+  it('replaces a mask with the physical id, or a value carrying it and no other secret', () => {
     expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', TOPIC_ARN)).toBe(true);
     expect(isMaskedOwnIdCopy(record(), 'TopicName', '***', TOPIC)).toBe(false);
+    expect(isMaskedOwnIdCopy(record(), 'TopicName', '***', TOPIC, producerBag())).toBe(false);
+    // Carrying the id: only with the producer's bag proving nothing else is secret.
     expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`)).toBe(false);
+    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`, new Map())).toBe(false);
+    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`, producerBag())).toBe(
+      true
+    );
+    // The value again OUTSIDE the id: refused.
+    expect(
+      isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/${TOPIC}`, producerBag())
+    ).toBe(false);
+    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', 42, producerBag())).toBe(false);
     expect(isMaskedOwnIdCopy(record(), 'TopicArn', 'plain', TOPIC_ARN)).toBe(false);
     expect(isMaskedOwnIdCopy(record({ physicalId: '' }), 'TopicArn', '***', '')).toBe(false);
   });

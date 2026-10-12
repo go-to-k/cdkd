@@ -148,8 +148,8 @@ export async function readStaleAttributes(
  * The record to persist for `logicalId`: `record` itself, or a copy whose
  * `attributes` gained what this deploy's heal read. MERGED, never replaced —
  * only `attributes` is touched, and within it only keys the record does not
- * hold (or holds as a pre-#1681 placeholder ARN, or as `***` over a copy of its
- * own physical id, go-to-k/cdkd#4849). Skipped when the record no
+ * hold (or holds as a pre-#1681 placeholder ARN, or as `***` over a value carrying its
+ * own physical id and no other recorded secret, go-to-k/cdkd#4849). Skipped when the record no
  * longer describes the resource that was read: a replacement or a Type change
  * this deploy made.
  */
@@ -176,7 +176,7 @@ export function withHealedAttributes(
     (key, value, healedValue) =>
       isStalePlaceholderArnAttribute(record.resourceType, key, value) ||
       // go-to-k/cdkd#4849: a masked copy of the record's own physical id.
-      isMaskedOwnIdCopy(record, key, value, healedValue)
+      isMaskedOwnIdCopy(record, key, value, healedValue, this.perResourceSecrets.get(logicalId))
   );
   return merged === record.attributes || merged === undefined
     ? record
