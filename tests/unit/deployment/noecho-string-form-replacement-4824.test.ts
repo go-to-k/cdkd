@@ -176,8 +176,8 @@ describe('DeployEngine - honouring NoEcho "true" replaces nothing on an unchange
   it.each([
     // A case variant the persist arm never marked: it stays out of every arm.
     ['a case variant ("True") feeding the create-only TopicName', 'True'],
-    // The exact string: the positional arm always marked it, so nothing moves.
-    ['the exact string ("true") feeding the create-only TopicName', 'true'],
+    // A control: the exact string, which the positional arm always marked.
+    ['control: the exact string ("true") feeding the create-only TopicName', 'true'],
   ])('%s', async (_l, spelling) => {
     const template = {
       Parameters: {
@@ -203,7 +203,7 @@ describe('DeployEngine - honouring NoEcho "true" replaces nothing on an unchange
     expect(topicCalls(provider.delete)).toBe(0);
   });
 
-  it('a create-only literal EQUAL to an exact-string NoEcho value (the value arm now masks it) is not replaced', async () => {
+  it('a create-only literal EQUAL to an exact-string NoEcho value is not replaced: the value arm stays boolean-only (#4831)', async () => {
     const template = {
       Parameters: {
         Token: { Type: 'String', NoEcho: 'true', Default: TOPIC },
