@@ -93,6 +93,7 @@ function livePool(deletionProtection: 'ACTIVE' | 'INACTIVE'): Record<string, unk
     UserPoolTier: 'PLUS',
     KeyConfiguration: { KeyType: 'AWS_OWNED_KEY' },
     IssuerConfiguration: { Type: 'ORIGINAL' },
+    AcrConfiguration: { Level1: { AcrValue: 'urn:example:level1' } },
   };
 }
 
@@ -289,6 +290,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // A member moved between them is a behaviour change (echoed or not) that
     // the partition fence alone would accept.
     expect([...USER_POOL_ECHO_MEMBERS].sort()).toEqual([
+      'AcrConfiguration',
       'AdminCreateUserConfig',
       'AutoVerifiedAttributes',
       'DeviceConfiguration',

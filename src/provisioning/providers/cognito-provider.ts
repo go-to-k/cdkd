@@ -115,7 +115,10 @@ import {
  *   AttributesRequireVerificationBeforeUpdate must exist in
  *   AutoVerifiedAttributes" -- the bare flip could not turn the guard off.
  * - Not measured, so echoed: `SmsVerificationMessage`,
- *   `EmailVerificationMessage`, `EmailVerificationSubject`.
+ *   `EmailVerificationMessage`, `EmailVerificationSubject`, and
+ *   `AcrConfiguration` (added by a later SDK; the API reference says a level
+ *   the write does not name keeps its DEFAULT name, so omission likely resets
+ *   a custom one).
  *
  * The echo was ACCEPTED on every pool measured, MFA `ON` with TOTP only and
  * no `SmsConfiguration` included, and left the pool byte-identical apart from
@@ -134,6 +137,7 @@ export const USER_POOL_ECHO_MEMBERS = [
   'SmsVerificationMessage',
   'EmailVerificationMessage',
   'EmailVerificationSubject',
+  'AcrConfiguration',
 ] as const satisfies ReadonlyArray<keyof UserPoolType & keyof UpdateUserPoolCommandInput>;
 
 /**
