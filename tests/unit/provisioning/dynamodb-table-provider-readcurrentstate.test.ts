@@ -203,4 +203,60 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
 
     expect((result as Record<string, unknown> | undefined)?.['Tags']).toEqual([]);
   });
+
+  it('issues every follow-up read at once and keeps the serial key order', async () => {
+    // A deploy waits for this capture after its last resource, so the reads
+    // that only need DescribeTable must not queue behind each other.
+    const followUps = 6;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const answers: Record<string, unknown> = {
+      ListTagsOfResourceCommand: { Tags: [{ Key: 'team', Value: 'a' }] },
+      DescribeContinuousBackupsCommand: {
+        ContinuousBackupsDescription: {
+          PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'ENABLED' },
+        },
+      },
+      DescribeTimeToLiveCommand: {
+        TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED', AttributeName: 'ttl' },
+      },
+      GetResourcePolicyCommand: { Policy: '{"Version":"2012-10-17"}' },
+      DescribeKinesisStreamingDestinationCommand: {
+        KinesisDataStreamDestinations: [{ StreamArn: 'arn:k', DestinationStatus: 'ACTIVE' }],
+      },
+      DescribeContributorInsightsCommand: { ContributorInsightsStatus: 'ENABLED' },
+    };
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      const name = command.constructor.name;
+      if (name === 'DescribeTableCommand') {
+        return {
+          Table: { TableName: 'my-table', TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table' },
+        };
+      }
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Answer on a later tick, so a serial chain never has two outstanding.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return answers[name];
+    });
+
+    const result = (await provider.readCurrentState(
+      'my-table',
+      'Logical',
+      'AWS::DynamoDB::Table'
+    )) as Record<string, unknown>;
+
+    expect(mockSend).toHaveBeenCalledTimes(1 + followUps);
+    expect(maxInFlight).toBe(followUps);
+    expect(Object.keys(result)).toEqual([
+      'TableName',
+      'Tags',
+      'PointInTimeRecoverySpecification',
+      'TimeToLiveSpecification',
+      'ResourcePolicy',
+      'KinesisStreamSpecification',
+      'ContributorInsightsSpecification',
+    ]);
+  });
 });
