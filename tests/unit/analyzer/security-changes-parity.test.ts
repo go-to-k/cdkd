@@ -195,6 +195,7 @@ const EDGE_CASES: Array<[string, Resources, Resources]> = [
   ['a resource cell that is a line-prefix of another', {}, { P: policy([allow('s3:GetObject', ['arn:a', 'arn:b']), allow('s3:PutObject', 'arn:a')]) }],
   ['an emoji with a variation selector', {}, { P: policy([allow('x:Y', 'arn:aws:s3:::❤️')]) }],
   ['Hangul', {}, { P: policy([allow('x:Y', 'arn:aws:s3:::한국')]) }],
+  ['a flag emoji', {}, { P: policy([allow('x:Y', 'r🇯🇵r')]) }],
   ['fullwidth Latin', {}, { P: policy([allow('x:Y', 'arn:aws:s3:::ＡＢＣ')]) }],
   ['text-presentation pictographs', {}, { P: policy([allow('x:Y', 'r©r™↔‼☺')]) }],
   ['emoji with a variation selector and a skin tone', {}, { P: policy([allow('x:Y', 'a☺️b🏻c👍🏽d')]) }],

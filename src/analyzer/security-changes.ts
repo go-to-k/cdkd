@@ -1173,7 +1173,7 @@ function summarizeSecurityGroups(changes: SecurityChanges, color: boolean): stri
 function displayWidth(text: string): number {
   let width = 0;
   for (const ch of text.replace(
-    /(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)\p{Emoji_Modifier}?(?:\u200D(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?)\p{Emoji_Modifier}?)*/gu,
+    /(?:\p{Regional_Indicator}{2}|\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)\p{Emoji_Modifier}?(?:\u200D(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?)\p{Emoji_Modifier}?)*/gu,
     '  '
   )) {
     const code = ch.codePointAt(0)!;
