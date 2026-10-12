@@ -1457,6 +1457,11 @@ export async function doDeployWithPrefetch(
     // this point the deploy critical path is over, so awaiting the
     // remaining captures only adds the longest still-pending read
     // (typically <300ms in practice for medium stacks; see PR notes).
+    // The state save, the ledger and the events flush below share the state
+    // backend's client; open its connections now, beside the drain (#4837).
+    if (!this.options.dryRun) {
+      void this.stateBackend.warmConnections?.(stackName, this.stackRegion, 3);
+    }
     await this.drainObservedCaptures(newState.resources);
 
     // A part the drain cap stopped waiting for can record its secret after

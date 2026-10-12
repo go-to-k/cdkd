@@ -313,7 +313,8 @@ export class LockManager {
 
   /**
    * Await every release purge `deferReleasePurge` left running. Never throws:
-   * `purgeLockVersions` never does.
+   * `purgeLockVersions` never does. It waits only for the purges started
+   * before it is called, so call it after this manager's last release.
    */
   async settleDeferredPurges(): Promise<void> {
     await Promise.all(this.deferredPurges);

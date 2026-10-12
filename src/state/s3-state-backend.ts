@@ -336,6 +336,31 @@ export class S3StateBackend {
    * journal already absent (an earlier delete whose purge did not finish
    * leaves readable bodies behind). Never throws.
    */
+  /**
+   * Open `count` connections to the state bucket now, each with a HeadObject
+   * on the stack's state key (`s3:GetObject`, which every deploy already
+   * needs; a first deploy's 404 still completes the handshake). S3 closes a
+   * keep-alive socket left idle about five seconds, which a deploy's last
+   * resource usually outwaits, so the writes after it would each open a new
+   * TLS connection. Read-only; never throws.
+   */
+  async warmConnections(stackName: string, region: string, count: number): Promise<void> {
+    try {
+      await this.ensureClientForBucket();
+      const owner = await this.ownerParam();
+      const key = this.getStateKey(stackName, region);
+      await Promise.allSettled(
+        Array.from({ length: count }, () =>
+          this.s3Client.send(
+            new HeadObjectCommand({ Bucket: this.config.bucket, ...owner, Key: key })
+          )
+        )
+      );
+    } catch {
+      // Only a warm-up: the writes it serves open their own connections.
+    }
+  }
+
   async purgeRollbackJournalVersions(stackName: string, region: string): Promise<void> {
     await this.purgeNoncurrentVersions([this.rollbackJournalKey(stackName, region)], {
       objectDescription: ROLLBACK_JOURNAL_OBJECT_DESCRIPTION,
