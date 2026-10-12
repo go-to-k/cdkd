@@ -484,13 +484,18 @@ if [ "${STRING_SHAPE}" != "true" ]; then
   echo "FAIL: premise: the synthesized template does not declare NoEchoStringToken with NoEcho \"true\" (a string) and this run's Default, read by NoEchoStringConsumer" >&2
   exit 1
 fi
-if [[ "${DEPLOY_OUT_P1}" != *'NoEchoStringConsumer'* ]]; then
-  echo "FAIL: premise: the Phase 1 --verbose log never names NoEchoStringConsumer -- the deploy did not reach it" >&2
-  diag_output "${DEPLOY_OUT_P1}"
-  exit 1
-fi
 if [[ "${DEPLOY_OUT_P1}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 1 --verbose log carries the value of a parameter declared NoEcho \"true\" (the string form) in plaintext (go-to-k/cdkd#4824)" >&2
+  exit 1
+fi
+# PREMISE for the negative above: NoEchoStringConsumer's substitution logged
+# a masked line, either `str-***` (its value is log-only masked, so the inert
+# frame may stay) or a second whole `***` beside NoEchoConsumer's. Neither
+# means its line went missing and the negative passed for free.
+P1_SUB_MASKED=$(grep -cE 'Resolved Fn::Sub: \*\*\*$' <<< "${DEPLOY_OUT_P1}" || true)
+if ! grep -qE 'Resolved Fn::Sub: str-\*\*\*$' <<< "${DEPLOY_OUT_P1}" && [ "${P1_SUB_MASKED:-0}" -lt 2 ]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries ${P1_SUB_MASKED:-0} masked 'Resolved Fn::Sub:' line(s), not one per NoEcho consumer (2) -- NoEchoStringConsumer's substitution was not logged, or not masked" >&2
+  diag_output "${DEPLOY_OUT_P1}"
   exit 1
 fi
 STRING_CONSUMER_VALUE=$(aws ssm get-parameter --name "${STRING_CONSUMER_NAME}" --region "${REGION}" \
@@ -836,7 +841,7 @@ if ! DEPLOY_OUT_P1B=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME 
   diag_output "${DEPLOY_OUT_P1B}"
   exit 1
 fi
-if [[ "${DEPLOY_OUT_P1B}" == *"${TOKEN}"* ]]; then
+if [[ "${DEPLOY_OUT_P1B}" == *"${TOKEN}"* ]] || [[ "${DEPLOY_OUT_P1B}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 1b deploy output carries the NoEcho value in plaintext" >&2
   exit 1
 fi
@@ -926,7 +931,7 @@ P1C_ORIGINAL=""
 # The planted alias spells OLD_SHORT, so it is a needle here too.
 if grep -qE "(^|[^A-Za-z0-9])${SHORT_TOKEN}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" \
   || grep -qE "(^|[^A-Za-z0-9])${OLD_SHORT}([^A-Za-z0-9]|$)" <<< "${SCRUB_OUT_P1C}" \
-  || [[ "${SCRUB_OUT_P1C}" == *"${TOKEN}"* ]]; then
+  || [[ "${SCRUB_OUT_P1C}" == *"${TOKEN}"* ]] || [[ "${SCRUB_OUT_P1C}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 1c 'cdkd scrub' output carries a NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
@@ -953,7 +958,7 @@ if [[ "${DIFF_OUT_P1C}" == *"${OLD_SHORT}"* ]] || grep -qF -- "${OLD_SHORT}" "${
   echo "FAIL: 'cdkd diff' prints the previous NoEcho value inside the planted alias's name (go-to-k/cdkd#4723)" >&2
   exit 1
 fi
-if [[ "${DIFF_OUT_P1C}" == *"${TOKEN}"* ]] || grep -qF -- "${TOKEN}" "${P1C_JSON}" "${P1C_JSON_ERR}"; then
+if [[ "${DIFF_OUT_P1C}" == *"${TOKEN}"* ]] || [[ "${DIFF_OUT_P1C}" == *"${STRING_TOKEN}"* ]] || grep -qF -- "${TOKEN}" "${P1C_JSON}" "${P1C_JSON_ERR}" || grep -qF -- "${STRING_TOKEN}" "${P1C_JSON}" "${P1C_JSON_ERR}"; then
   echo "FAIL: the Phase 1c 'cdkd diff' output carries the NoEcho value in plaintext" >&2
   exit 1
 fi
@@ -979,7 +984,7 @@ set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON_P1B}" 2>"${DRIFT_ERR_P1B}"
 DRIFT_RC_P1B=$?
 set -e
-if grep -qF -- "${TOKEN}" "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}"; then
+if grep -qF -- "${TOKEN}" "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}" || grep -qF -- "${STRING_TOKEN}" "${DRIFT_JSON_P1B}" "${DRIFT_ERR_P1B}"; then
   echo "FAIL: the Phase 1b 'cdkd drift' output carries the NoEcho value in plaintext (issue #4043)" >&2
   exit 1
 fi
@@ -1042,7 +1047,7 @@ set -e
 # library reporting template text, measured on the first live run, not a cdkd
 # surface; the value is in cdk.out in the clear by construction.
 P2_CDKD_OUT=$(grep -vE "^WARNING Tier: '.*' is not one of \[.*\] \(CloudFormation Validate\)$" <<< "${DEPLOY_OUT_P2}" || true)
-if [[ "${P2_CDKD_OUT}" == *"${TOKEN}"* ]]; then
+if [[ "${P2_CDKD_OUT}" == *"${TOKEN}"* ]] || [[ "${P2_CDKD_OUT}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 2 deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
   exit 1
 fi
@@ -1088,7 +1093,7 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
   SCRATCH_FILES+=("${EVENT_FILE}")
   aws s3 cp "s3://${STATE_BUCKET}/${event_key}" "${EVENT_FILE}" --quiet
   EVENTS_SCANNED=$((EVENTS_SCANNED + 1))
-  if grep -qF -- "${TOKEN}" "${EVENT_FILE}"; then
+  if grep -qF -- "${TOKEN}" "${EVENT_FILE}" || grep -qF -- "${STRING_TOKEN}" "${EVENT_FILE}"; then
     echo "FAIL: deployment events object ${event_key} carries the NoEcho value in plaintext (issue #1998)" >&2
     exit 1
   fi
@@ -1335,7 +1340,7 @@ while IFS=$'\t' read -r version_key version_id version_latest || [ -n "${version
     P2_NONCURRENT_STATE=$((P2_NONCURRENT_STATE + 1))
   fi
   if grep -qF -- "${TOKEN_RB}" "${VERSION_FILE}" || grep -qF -- "${TOKEN_RB2}" "${VERSION_FILE}" \
-    || grep -qF -- "${TOKEN}" "${VERSION_FILE}"; then
+    || grep -qF -- "${TOKEN}" "${VERSION_FILE}" || grep -qF -- "${STRING_TOKEN}" "${VERSION_FILE}"; then
     echo "FAIL: an object version of ${version_key} carries a NoEcho value in plaintext (issue #4043)" >&2
     exit 1
   fi
@@ -1371,11 +1376,11 @@ DIFF_JSON_RC_P3A=$?
 set -e
 DIFF_JSON_STDERR_P3A=$(cat "${DIFF_JSON_ERR}")
 # The disclosure check FIRST, over everything both runs printed.
-if [[ "${DIFF_OUT_P3A}" == *"${TOKEN}"* ]]; then
+if [[ "${DIFF_OUT_P3A}" == *"${TOKEN}"* ]] || [[ "${DIFF_OUT_P3A}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 3a 'cdkd diff --verbose' output carries the NoEcho value in plaintext (issue #4049)" >&2
   exit 1
 fi
-if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}" == *"${TOKEN}"* ]]; then
+if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}" == *"${TOKEN}"* ]] || [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 3a 'cdkd diff --json' output carries the NoEcho value in plaintext (issue #4049)" >&2
   exit 1
 fi
@@ -1644,7 +1649,7 @@ if ! DEPLOY_OUT_P4A=$(CDKD_TEST_NOECHO_SNAPSHOT=true env -u CDKD_TEST_NOECHO_REJ
   diag_output "${DEPLOY_OUT_P4A}"
   exit 1
 fi
-if [[ "${DEPLOY_OUT_P4A}" == *"${TOKEN}"* ]]; then
+if [[ "${DEPLOY_OUT_P4A}" == *"${TOKEN}"* ]] || [[ "${DEPLOY_OUT_P4A}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 4a deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
   exit 1
 fi
@@ -1669,7 +1674,7 @@ if ! DEPLOY_OUT_P4B=$(env -u CDKD_TEST_NOECHO_SNAPSHOT -u CDKD_TEST_NOECHO_REJEC
   diag_output "${DEPLOY_OUT_P4B}"
   exit 1
 fi
-if [[ "${DEPLOY_OUT_P4B}" == *"${TOKEN}"* ]]; then
+if [[ "${DEPLOY_OUT_P4B}" == *"${TOKEN}"* ]] || [[ "${DEPLOY_OUT_P4B}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 4b deploy output carries the NoEcho value in plaintext (issue #1998)" >&2
   exit 1
 fi
@@ -1792,7 +1797,7 @@ if [ -z "${P5_DELETE_LINE}" ]; then
   echo "FAIL: sentinel: the Phase 5 destroy printed no 'Deleting SNS topic NoEchoRenamed: ' line -- its wording drifted, so the check below is vacuous" >&2
   exit 1
 fi
-if [[ "${DESTROY_OUT_P5}" == *"${TOKEN}"* ]]; then
+if [[ "${DESTROY_OUT_P5}" == *"${TOKEN}"* ]] || [[ "${DESTROY_OUT_P5}" == *"${STRING_TOKEN}"* ]]; then
   echo "FAIL: the Phase 5 destroy prints a name taken from the NoEcho value in plaintext -- a pre-v11 record holds it unmarked, and the destroy did not judge it with the stack's NoEcho values (go-to-k/cdkd#3869)" >&2
   mask_literals "${P5_DELETE_LINE}" "${TOKEN}" >&2
   echo >&2

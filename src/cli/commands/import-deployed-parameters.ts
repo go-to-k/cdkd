@@ -50,7 +50,6 @@ import { DescribeStacksCommand, type CloudFormationClient } from '@aws-sdk/clien
 import { coerceParameterTypedValue } from '../../deployment/intrinsic-function-resolver.js';
 import { ssmResolvedValueType } from '../../utils/parameter-types.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
-import { declaresNoEcho } from '../../deployment/noecho-declared.js';
 
 /** Minimal logger surface this module needs. */
 interface WarnLogger {
@@ -234,7 +233,10 @@ export function divergentParameterNames(
     // A `NoEcho` parameter is NEVER provable: `DescribeStacks` answers `****`
     // whatever was deployed, so a `Default` that is literally `****` would
     // otherwise compare equal. The mask is the unverifiable-input signal itself.
-    if (declaresNoEcho(record)) {
+    const noEcho = record?.['NoEcho'];
+    // Case-folded on purpose (wider than `isNoEchoDeclared`): this only
+    // WITHHOLDS a proof, so a wider match never persists anything.
+    if (noEcho === true || (typeof noEcho === 'string' && noEcho.toLowerCase() === 'true')) {
       divergent.add(name);
       continue;
     }

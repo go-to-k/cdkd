@@ -1,5 +1,5 @@
 /**
- * A parameter declared `NoEcho: "true"` (the string, in any case) is NoEcho to
+ * A parameter declared `NoEcho: "true"` (the string) is NoEcho to
  * every reader of the flag (go-to-k/cdkd#4824): the deploy's diff log masker,
  * the resolver's needle recording, the export secret scan, the condition and
  * skipped-output records, the masked-input classes, the destroy's
@@ -52,9 +52,11 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
 const VALUE = 'string-form-noecho-value-4824';
-/** The spellings: the boolean, the string forms (declared), and two that are not. */
-const DECLARED: unknown[] = [true, 'true', 'True', 'TRUE'];
-const NOT_DECLARED: unknown[] = [false, 'false', undefined, 1, 'yes'];
+/** The spellings CloudFormation declares NoEcho with, and ones that are not. */
+const DECLARED: unknown[] = [true, 'true'];
+// A case variant stays OUT: the persist and compare arms never marked one, so
+// widening them would replace a create-only resource on the next deploy.
+const NOT_DECLARED: unknown[] = [false, 'false', undefined, 1, 'yes', 'True', 'TRUE'];
 
 const template = (noEcho: unknown, extra: Partial<CloudFormationTemplate> = {}) =>
   ({
@@ -64,10 +66,11 @@ const template = (noEcho: unknown, extra: Partial<CloudFormationTemplate> = {}) 
   }) as unknown as CloudFormationTemplate;
 
 describe('isNoEchoDeclared / declaresNoEcho (go-to-k/cdkd#4824)', () => {
-  it('accepts the boolean and the string in any case, and nothing else', () => {
+  it('accepts the boolean and the string "true", and nothing else', () => {
     for (const v of DECLARED) expect(isNoEchoDeclared(v), String(v)).toBe(true);
     for (const v of NOT_DECLARED) expect(isNoEchoDeclared(v), String(v)).toBe(false);
-    expect(declaresNoEcho({ NoEcho: 'True' })).toBe(true);
+    expect(declaresNoEcho({ NoEcho: 'true' })).toBe(true);
+    expect(declaresNoEcho({ NoEcho: 'True' })).toBe(false);
     expect(declaresNoEcho(null)).toBe(false);
     expect(declaresNoEcho('NoEcho')).toBe(false);
   });
