@@ -43,6 +43,7 @@ import {
   coerceParameterTypedValue,
 } from '../../deployment/intrinsic-function-resolver.js';
 import type { ProducerLookup } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
+import { declaresNoEcho } from '../../deployment/noecho-declared.js';
 import {
   computeOutputsDiff,
   isWholeSecretReferenceToken,
@@ -1763,15 +1764,13 @@ export async function computeStackDiff(
     template,
     new Set(
       Object.entries(template.Parameters ?? {})
-        .filter(
-          ([, definition]) => (definition as { NoEcho?: unknown } | undefined)?.NoEcho === true
-        )
+        .filter(([, definition]) => declaresNoEcho(definition))
         .map(([name]) => name)
     )
   );
   for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
     if (
-      (definition as { NoEcho?: unknown } | undefined)?.NoEcho === true &&
+      declaresNoEcho(definition) &&
       mergedParameters !== undefined &&
       Object.prototype.hasOwnProperty.call(mergedParameters, name) &&
       // A value that IS a `{{resolve:...}}` token is an expression the diff
