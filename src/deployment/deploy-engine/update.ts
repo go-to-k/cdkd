@@ -52,6 +52,7 @@ import {
   replaceEmbeddedPhysicalNameRewrites,
   repairEmbeddedPhysicalNamesTowards,
   isSingleDynamicReferenceToken,
+  physicalNameCopiesOf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
@@ -77,6 +78,7 @@ import {
   persistedTokenResolverContext,
   resolveRecordSecrets,
 } from '../masked-baseline-recapture.js';
+import { getCurrentProducerRegions } from '../producer-regions-scope.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
 import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
@@ -514,16 +516,31 @@ export async function provisionUpdate(
   // The legacy spellings come from today's bag, plus (review M2 on PR #4817)
   // from the RECORD's own references resolved into a map of their own: the
   // secret that rewrote the copy may no longer be one today's template reads
-  // (a literal reference since removed). A wrong answer there (another
-  // region's same-named secret) yields no legacy spelling, so nothing is
-  // repaired; the map persists and decides nothing else.
-  const recordOwnSecrets = recordHoldsEmbeddedReference(currentResource)
-    ? await resolveRecordSecrets(
-        { properties: currentResource.properties, attributes: currentResource.attributes },
-        (token, own) =>
-          this.resolver.resolveDynamicReferences(token, persistedTokenResolverContext(own, []))
-      )
-    : undefined;
+  // (a literal reference since removed). Only for a record that read some
+  // physical id and holds a reference embedded where such an id's legacy
+  // spelling could sit, so an ordinary `jdbc://...{{resolve:...}}@host` leaf
+  // costs no lookup. Resolved with the stack's producer-region evidence, as
+  // the masked-baseline re-capture is: a region-less reference this stack may
+  // have read from another region refuses (all or nothing: no map) rather than
+  // answering from a same-named secret here; with no complete evidence there
+  // is no lookup. For a PROPERTIES leaf a wrong answer still repairs nothing
+  // (the equal-to-today guard below); the map persists and decides nothing else.
+  const copies = physicalNameCopiesOf.get(updateSecrets);
+  const regionEvidence = getCurrentProducerRegions()?.();
+  const recordOwnSecrets =
+    copies !== undefined &&
+    copies.size > 0 &&
+    regionEvidence?.complete === true &&
+    recordHoldsEmbeddedReference(currentResource, copies)
+      ? await resolveRecordSecrets(
+          { properties: currentResource.properties, attributes: currentResource.attributes },
+          (token, own) =>
+            this.resolver.resolveDynamicReferences(
+              token,
+              persistedTokenResolverContext(own, regionEvidence.regions)
+            )
+        )
+      : undefined;
   const embeddedRewrites = [
     ...embeddedPhysicalNameRewrites(updateSecrets),
     ...(recordOwnSecrets === undefined || recordOwnSecrets.size === 0
@@ -1699,19 +1716,28 @@ function recordPreviousNoEchoLeaves(
 }
 
 /**
- * Does the record hold a `{{resolve:` reference EMBEDDED in a longer string, in
- * its properties or attributes: the shape a pre-go-to-k/cdkd#4810 deploy left
- * for a reader's copy of a physical id. A whole-token leaf is a literal
- * reference, never such a copy, so it costs no lookup.
+ * Does the record hold a `{{resolve:` reference EMBEDDED in a longer string,
+ * in its properties or attributes, where the text before it could be the
+ * start of one of `copies` (a read physical id): the shape a
+ * pre-go-to-k/cdkd#4810 deploy left for a reader's copy of one. A whole-token
+ * leaf is a literal reference, never such a copy, and a reference after text
+ * no copy contains (`jdbc://user:`) cannot be one either; neither costs a
+ * lookup.
  */
-function recordHoldsEmbeddedReference(record: {
-  properties?: unknown;
-  attributes?: unknown;
-}): boolean {
+function recordHoldsEmbeddedReference(
+  record: { properties?: unknown; attributes?: unknown },
+  copies: ReadonlySet<string>
+): boolean {
+  const couldBeCopy = (leaf: string): boolean => {
+    const at = leaf.indexOf('{{resolve:');
+    if (at === -1 || isSingleDynamicReferenceToken(leaf)) return false;
+    const before = leaf.slice(Math.max(0, at - 12), at);
+    if (before === '') return true;
+    for (const copy of copies) if (copy.includes(before)) return true;
+    return false;
+  };
   const walk = (node: unknown): boolean => {
-    if (typeof node === 'string') {
-      return node.includes('{{resolve:') && !isSingleDynamicReferenceToken(node);
-    }
+    if (typeof node === 'string') return couldBeCopy(node);
     if (node === null || typeof node !== 'object') return false;
     return Object.values(node as Record<string, unknown>).some(walk);
   };

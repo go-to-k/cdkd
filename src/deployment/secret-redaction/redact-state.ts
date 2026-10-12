@@ -573,6 +573,29 @@ export function withoutPhysicalNameCopies<T>(secrets: RecordedSecretValues, run:
 }
 
 /**
+ * `run` with `ids` added to the pass's physical-name copies for its duration
+ * only (go-to-k/cdkd#4810), for a caller whose bag also feeds a reader that
+ * must keep rewriting them. The previous side set is restored afterwards,
+ * also on a throw; the walk is synchronous.
+ */
+export function withPhysicalNameCopies<T>(
+  secrets: RecordedSecretValues,
+  ids: readonly string[],
+  run: () => T
+): T {
+  const previous = physicalNameCopiesOf.get(secrets);
+  const names = new Set(previous);
+  for (const id of ids) if (id !== '') names.add(id);
+  physicalNameCopiesOf.set(secrets, names);
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) physicalNameCopiesOf.delete(secrets);
+    else physicalNameCopiesOf.set(secrets, previous);
+  }
+}
+
+/**
  * A RECORD written before go-to-k/cdkd#4810 holds a reader's copy of a read
  * physical id in its rewritten, `{{resolve:` form. Returns `stored` with each
  * leaf that holds exactly what `legacy` (today's value persisted the old way)

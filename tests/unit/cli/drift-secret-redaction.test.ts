@@ -4663,6 +4663,56 @@ describe('cdkd drift keeps a reader copy of a secret-named physical id (go-to-k/
     expect(saved.Environment.Variables['QUEUE_URL']).toBe(URL);
   });
 
+  it('the drift REPORT still prints a drifted copy in its reference form (the copies are scoped to the write)', async () => {
+    // Review M3 on PR #4817: the bag also redacts the report, which must keep
+    // rewriting the secret's text inside a physical id it prints.
+    const drifted = (): ResourceState => ({
+      ...reader(),
+      properties: { ...readerBag(), Environment: { Variables: { QUEUE_URL: 'old', SECRET_PASSWORD: SECRET_EXPR, PLAIN: 'ok' } } },
+      observedProperties: { ...readerBag(), Environment: { Variables: { QUEUE_URL: 'old', SECRET_PASSWORD: SECRET_EXPR, PLAIN: 'ok' } } },
+    });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Queue: queue(), Reader: drifted() }));
+    providers({ readCurrentState: async () => readback() });
+
+    const { output } = await runDrift(['TestStack']);
+
+    // Premise: the copy's drift is reported.
+    expect(output).toContain('Environment.Variables.QUEUE_URL');
+    expect(output).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it("--accept keeps a record's OWN embedded name in reference form (a deploy records no self-copy)", async () => {
+    // Review minor-B on PR #4817: a producer NAMED from the secret through an
+    // `Fn::Sub`, whose own id embeds the plaintext. Only OTHER records' ids are
+    // copies.
+    const own = `${SECRET_PLAINTEXT}-fn`;
+    const producerBag = (name: string, plain: string): Record<string, unknown> => ({
+      FunctionName: name,
+      Environment: { Variables: { PLAIN: plain } },
+    });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Producer: {
+          physicalId: own,
+          resourceType: LAMBDA_TYPE,
+          properties: producerBag(`${SECRET_EXPR}-fn`, 'ok'),
+          observedProperties: producerBag(`${SECRET_EXPR}-fn`, 'ok'),
+        },
+      })
+    );
+    providers({ readCurrentState: async () => producerBag(own, 'edited') });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2].resources['Producer']!.observedProperties!;
+    // Premise: the accept wrote the edit.
+    expect(saved).toMatchObject({ Environment: { Variables: { PLAIN: 'edited' } } });
+    expect(saved['FunctionName']).toBe(`${SECRET_EXPR}-fn`);
+  });
+
   it("--revert keeps the reader copy of the queue URL in the provider's attributes", async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(makeState({ Queue: queue(), Reader: reader() }));

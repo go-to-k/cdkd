@@ -150,6 +150,7 @@ import {
   recordNoEchoAttributeValues,
   recordPhysicalNameCopy,
   redactSecretsForState,
+  withPhysicalNameCopies,
   SECRET_MASK,
   STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_READBACK_RULES,
@@ -3525,9 +3526,6 @@ async function runDriftForStack(
       // the try body would be out of scope in the catch, and a `let` reassigned
       // there is the same thing with a mutable binding nothing needs.
       const secrets: RecordedSecretValues = new Map();
-      // go-to-k/cdkd#4810: this bag later redacts the record `--accept`
-      // writes, and a reader's copy of a physical id is kept as the id is.
-      seedPhysicalNameCopies(secrets, state.resources);
       try {
         // Schema v7+ (#614): route reads via state-recorded
         // `provisionedBy` so a CC-managed resource is read through Cloud
@@ -4860,11 +4858,19 @@ async function runAccept(
         // than a refusal (`cdkd export` blocks the record and the rollback
         // replay refuses the operation over a template value that was never
         // unknown), which is the whole reason the flag is declared per site.
-        const redactedBaseline = redactSecretsForState(
-          newBaseline,
+        // go-to-k/cdkd#4810: a reader's copy of another record's physical id is
+        // kept as the id is. Scoped to THIS write: the bag also redacts the
+        // drift report, which keeps rewriting it.
+        const redactedBaseline = withPhysicalNameCopies(
           outcome.secrets,
-          existing.properties ?? {},
-          hasObserved ? STATE_SOURCED_BASELINE_RULES : STATE_SOURCED_READBACK_RULES
+          otherPhysicalIds(report.state.resources, outcome.logicalId),
+          () =>
+            redactSecretsForState(
+              newBaseline,
+              outcome.secrets,
+              existing.properties ?? {},
+              hasObserved ? STATE_SOURCED_BASELINE_RULES : STATE_SOURCED_READBACK_RULES
+            )
         );
         let recordedChanges = 0;
         for (const change of accepted) {
@@ -6845,7 +6851,9 @@ async function runRevert(
                 const secrets: RecordedSecretValues = new Map();
                 // go-to-k/cdkd#4810: the revert's attribute scan keeps a
                 // reader's copy of a physical id, as the deploy's save does.
-                seedPhysicalNameCopies(secrets, report.state.resources);
+                for (const id of otherPhysicalIds(report.state.resources, outcome.logicalId)) {
+                  recordPhysicalNameCopy(secrets, id);
+                }
                 const revertBaseline =
                   stateResource.observedProperties ?? stateResource.properties ?? {};
                 // No `secretPaths` here, deliberately: nothing on this path masks by
@@ -9230,16 +9238,20 @@ export function maskMarkedNoEchoBaselineWithLeaves(
 }
 
 /**
- * Record every physical id of `resources` as a physical-name copy of `secrets`
+ * The physical ids of every record of `resources` OTHER than `logicalId`'s
  * (go-to-k/cdkd#4810). Drift resolves state with no resource records, so no
- * `Ref` / `Fn::GetAtt` read records one; each id is stored in plaintext in its
- * own record, so keeping a reader's copy of it adds nothing to state.
+ * `Ref` / `Fn::GetAtt` read records a copy; each of these ids is stored in
+ * plaintext in its own record, so a reader's copy of one adds nothing to
+ * state. The record's OWN id is left out, as a deploy records none: a
+ * resource never reads itself.
  */
-function seedPhysicalNameCopies(
-  secrets: RecordedSecretValues,
-  resources: Record<string, ResourceState> | undefined
-): void {
-  for (const record of Object.values(resources ?? {})) {
-    if (typeof record?.physicalId === 'string') recordPhysicalNameCopy(secrets, record.physicalId);
+function otherPhysicalIds(
+  resources: Record<string, ResourceState> | undefined,
+  logicalId: string
+): string[] {
+  const ids: string[] = [];
+  for (const [id, record] of Object.entries(resources ?? {})) {
+    if (id !== logicalId && typeof record?.physicalId === 'string') ids.push(record.physicalId);
   }
+  return ids;
 }

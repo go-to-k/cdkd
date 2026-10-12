@@ -102,6 +102,7 @@ export {
 } from './secret-redaction/log-only.js';
 export {
   withoutPhysicalNameCopies,
+  withPhysicalNameCopies,
   repairPhysicalNameCopyLeaves,
   embeddedPhysicalNameRewrites,
   replaceEmbeddedPhysicalNameRewrites,

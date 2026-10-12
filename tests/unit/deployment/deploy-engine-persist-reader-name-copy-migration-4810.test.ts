@@ -69,7 +69,8 @@ interface Run {
 async function deploy(
   resources: StackState['resources'],
   templateResources: Record<string, unknown>,
-  order: string[][]
+  order: string[][],
+  extra: Partial<StackState> = {}
 ): Promise<Run> {
   const state = {
     version: 11,
@@ -78,6 +79,7 @@ async function deploy(
     resources,
     outputs: {},
     lastModified: 0,
+    ...extra,
   } as StackState;
   const calls: string[] = [];
   const provider = {
@@ -305,5 +307,47 @@ describe('a record an earlier deploy rewrote is repaired, never replaced (#4810)
     expect(run.calls).toEqual([]);
     expect(run.persisted?.properties['Queues']).toEqual([QUEUE_URL]);
     expect(run.persisted?.attributes?.['cdkd:WrittenQueues']).toBe(QUEUE_URL);
+  });
+
+  it("the record's own reference is NOT looked up where the stack reads another region (it could answer for that region's secret)", async () => {
+    // Review minor-A on PR #4817: with a foreign producer region on record, a
+    // region-less reference refuses (`ambiguous`), so there is no map and no
+    // repair: the update goes out as before rather than a guess.
+    const policyDocument = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 'sqs:SendMessage', Resource: '*' }],
+    };
+    const run = await deploy(
+      {
+        SecretQueue: {
+          physicalId: QUEUE_URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: REF },
+          attributes: {},
+          dependencies: [],
+        },
+        Reader: {
+          physicalId: 'reader-policy',
+          resourceType: 'AWS::SQS::QueuePolicy',
+          properties: { Queues: [REWRITTEN_URL], PolicyDocument: policyDocument },
+          attributes: {},
+          dependencies: ['SecretQueue'],
+        },
+      } as StackState['resources'],
+      {
+        SecretQueue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF } },
+        Reader: {
+          Type: 'AWS::SQS::QueuePolicy',
+          Properties: { Queues: [{ Ref: 'SecretQueue' }], PolicyDocument: policyDocument },
+        },
+      },
+      [['SecretQueue'], ['Reader']],
+      {
+        imports: [
+          { exportName: 'X', producerStack: 'P', sourceRegion: 'eu-west-1' },
+        ] as unknown as StackState['imports'],
+      }
+    );
+    expect(run.calls).toEqual(['update:Reader']);
   });
 });

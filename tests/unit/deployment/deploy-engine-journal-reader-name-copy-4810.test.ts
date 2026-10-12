@@ -56,6 +56,7 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { StackState } from '../../../src/types/state.js';
+import { recordPhysicalNameCopy } from '../../../src/deployment/secret-redaction.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/sdin-q-1';
@@ -156,5 +157,51 @@ describe('the rollback journal keeps a reader copy of a read physical id (#4810)
     // carries the copies it read: the Queues URL stays the physical id.
     expect(ops).toContain(`"Queues":["${URL}"]`);
     expect(ops).not.toContain('/123456789012/{{resolve:');
+  });
+
+  it("the save after an automatic rollback keeps the restored reader's copy (the final save's writer)", () => {
+    // The automatic rollback has TWO writers: the replay's own restore
+    // redaction (go-to-k/cdkd#4801, PR #4803) and the FINAL save, which
+    // re-scans the restored record with the failing deploy's per-resource bag.
+    // That bag is the resolution's own instance, which carries the copies.
+    const engine = new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      new DiffCalculator(),
+      {} as never,
+      { dryRun: false },
+      'us-east-1'
+    ) as unknown as {
+      perResourceSecrets: Map<string, Map<string, string>>;
+      redactStateForPersist: (state: StackState) => StackState;
+    };
+    const restored = {
+      version: 11,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Reader: {
+          physicalId: 'reader-policy',
+          resourceType: 'AWS::SQS::QueuePolicy',
+          properties: { Queues: [URL], PolicyDocument: policyDocument('A', RECORDED_ARN) },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const withCopy = new Map([['sdin-q-1', REF]]);
+    recordPhysicalNameCopy(withCopy, URL);
+    engine.perResourceSecrets.set('Reader', withCopy);
+    expect(engine.redactStateForPersist(restored).resources['Reader']!.properties['Queues']).toEqual([
+      URL,
+    ]);
+    // Control: the same bag without the copies is the pre-fix rewrite.
+    engine.perResourceSecrets.set('Reader', new Map([['sdin-q-1', REF]]));
+    expect(engine.redactStateForPersist(restored).resources['Reader']!.properties['Queues']).toEqual([
+      `https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`,
+    ]);
   });
 });
