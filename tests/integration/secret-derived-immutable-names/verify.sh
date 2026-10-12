@@ -958,8 +958,12 @@ if [ "${ROLLBACK_RC}" -eq 0 ]; then
   exit 1
 fi
 # PREMISE: the policy was updated, the breaker failed, and the rollback
-# restored the policy, so the record read below is the restore's.
-for marker in "RollbackBreaker" "Rollback: SecretQueueReaderPolicy restored successfully" \
+# restored the policy, so the record read below is the restore's. The
+# breaker's needle is the SSM provider's own failure line, the shape
+# noecho-parameter-masking's NoEchoReject asserts: the bare logical id is also
+# in the plan output, which a deploy that never created it prints too.
+for marker in "Failed to create SSM parameter RollbackBreaker" \
+  "Rollback: SecretQueueReaderPolicy restored successfully" \
   "The automatic rollback restored the pre-deploy state."; do
   if ! grep -qF -- "${marker}" "${DEPLOY_LOG}"; then
     echo "FAIL: premise: the SDIN_ROLLBACK deploy's log has no '${marker}' line (the rollback did not restore the policy, or the wording drifted)" >&2
