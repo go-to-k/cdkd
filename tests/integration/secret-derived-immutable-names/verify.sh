@@ -1337,7 +1337,7 @@ if ! awk 'index($0, "Detached managed policy ") && index($0, " from role ") && i
   log_tail
   exit 1
 fi
-for needle_var in QUEUE_NAME POLICY_PATH; do
+for needle_var in QUEUE_NAME POLICY_PATH AQ_QUEUE_NAME AQ_QUEUE_NAME_2; do
   if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
     HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
     echo "FAIL: the destroy log names a secret-derived name in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2

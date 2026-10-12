@@ -98,6 +98,11 @@ async function deploy(opts: {
   readerReadsKind?: boolean;
   /** `--replace`: delete the old queue first, as a same-name replacement needs. */
   replace?: boolean;
+  /**
+   * The reader is an event source mapping: its `EventSourceArn` (the queue's
+   * ARN) is CREATE-ONLY, and a tag spells the secret.
+   */
+  esmReader?: boolean;
 }): Promise<Run> {
   const built = {
     version: 11,
@@ -112,7 +117,19 @@ async function deploy(opts: {
         attributes: { Arn: RECORDED_ARN, QueueUrl: URL, Kind: 'standard' },
         dependencies: [],
       },
-      Reader: {
+      Reader: opts.esmReader
+        ? {
+            physicalId: 'esm-1',
+            resourceType: 'AWS::Lambda::EventSourceMapping',
+            properties: {
+              EventSourceArn: opts.readerStoredValue,
+              FunctionName: 'f',
+              Tags: [{ Key: 'n', Value: REF }],
+            },
+            attributes: {},
+            dependencies: ['SecretQueue'],
+          }
+        : {
         physicalId: '/p/reader',
         resourceType: 'AWS::SSM::Parameter',
         properties: {
@@ -198,7 +215,16 @@ async function deploy(opts: {
             ...(opts.fifo && { FifoQueue: true }),
           },
         },
-        Reader: {
+        Reader: opts.esmReader
+          ? {
+              Type: 'AWS::Lambda::EventSourceMapping',
+              Properties: {
+                EventSourceArn: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] },
+                FunctionName: 'f',
+                Tags: [{ Key: 'n', Value: REF }],
+              },
+            }
+          : {
           Type: 'AWS::SSM::Parameter',
           Properties: {
             Name: '/p/reader',
@@ -247,6 +273,8 @@ describe('a reader of a queue replaced under a rotated secret (#4838)', () => {
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toContain('create:SecretQueue');
     expect(run.sent.map((p) => p['Value'])).toEqual([PLAIN_ARN_2]);
+    // Stored in reference form, never the rotated plaintext.
+    expect(run.persistedValue).toBe(RECORDED_ARN);
     expect(run.last?.resources['Reader']?.properties?.['Tags']).toEqual({ Name: REF });
   });
 
@@ -275,6 +303,20 @@ describe('a reader of a queue replaced under a rotated secret (#4838)', () => {
     });
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toContain('create:SecretQueue');
+    expect(run.calls).not.toContain('update:Reader');
+  });
+
+  it('a reader whose CREATE-ONLY property reads the replaced queue is replaced, not updated in place', async () => {
+    secret.queue = 'sdin-q-2';
+    const run = await deploy({
+      queueVisibility: 60,
+      readerDescription: 'a',
+      readerStoredValue: RECORDED_ARN,
+      fifo: true,
+      esmReader: true,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('create:Reader');
     expect(run.calls).not.toContain('update:Reader');
   });
 

@@ -300,11 +300,16 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       value: assembledQueue.attrArn,
       description:
         process.env.SDIN_READER_EDIT === 'true' ? 'cdkd integ: reader edited' : 'cdkd integ: initial',
-      // go-to-k/cdkd#4838: the reader SPELLS the queue name's original token,
-      // so its own bag maps the rotated name to it: the replaced queue's new
-      // ARN redacted to the reference it stored for the old queue, and the
-      // reader was skipped, left on the deleted queue's ARN (step 5g).
-      tags: { AqName: aqueueToken(':SecretString:aqueue::}}') },
+      // go-to-k/cdkd#4838: from step 5f on (SDIN_READER_EDIT=true) the reader
+      // SPELLS the queue name's original token, so its own bag maps the rotated
+      // name to it: the replaced queue's new ARN redacted to the reference it
+      // stored for the old queue, and the reader was skipped, left on the
+      // deleted queue's ARN (step 5g). Not before 5f, where its absence keeps
+      // the step-2 create storing the plaintext ARN and step 4 updating it
+      // (go-to-k/cdkd#4805).
+      ...(process.env.SDIN_READER_EDIT === 'true' && {
+        tags: { AqName: aqueueToken(':SecretString:aqueue::}}') },
+      }),
     });
 
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
