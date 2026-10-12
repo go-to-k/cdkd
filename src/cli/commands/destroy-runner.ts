@@ -1064,12 +1064,7 @@ export async function runDestroyForStack(
   // is still pending: a later call (the deletes, after a slow prompt) takes
   // the binding's value once it settles.
   let binding:
-    | {
-        bound: Promise<RecordedSecretValues | undefined>;
-        capped: Promise<undefined>;
-        settled: boolean;
-        value: RecordedSecretValues | undefined;
-      }
+    | { bound: Promise<RecordedSecretValues | undefined>; capped: Promise<undefined> }
     | undefined;
   const stackNoEchoValues = (): Promise<RecordedSecretValues | undefined> => {
     if (binding === undefined) {
@@ -1089,21 +1084,12 @@ export async function runDestroyForStack(
         .then(() => ctx.noEchoReresolver?.printingNoEchoValues())
         .catch(() => undefined)
         .finally(() => clearTimeout(timer));
-      const created = {
-        bound,
-        capped,
-        settled: false,
-        value: undefined as RecordedSecretValues | undefined,
-      };
-      void bound.then((value) => {
-        created.settled = true;
-        created.value = value;
-      });
-      binding = created;
+      binding = { bound, capped };
     }
-    const current = binding;
-    if (current.settled) return Promise.resolve(current.value);
-    return Promise.race([current.bound, current.capped]);
+    // Each call races afresh, the binding FIRST: once both have settled,
+    // `Promise.race` takes the first in order, so a binding that settled after
+    // an earlier call's cap still wins.
+    return Promise.race([binding.bound, binding.capped]);
   };
   const orphansAtDestroy = state.orphans ?? [];
   if (orphansAtDestroy.length > 0) {
