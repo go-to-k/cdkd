@@ -313,9 +313,8 @@ exits `1`.
 
 `broadening` asks when a change adds an IAM statement, a managed-policy
 attachment, an `AWS::Lambda::Permission`, or a security-group ingress or
-egress rule. cdkd decides it with the AWS CDK CLI's own security diff
-(`@aws-cdk/cloudformation-diff`), and prints the same table before the
-question:
+egress rule. cdkd decides it with the same rules as the AWS CDK CLI's security diff, and
+prints the same table before the question:
 
 ```text
 Security Group Changes

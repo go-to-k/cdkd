@@ -18,8 +18,8 @@ const ask = (level: RequireApprovalLevel) =>
     secretMask,
   });
 
-// go-to-k/cdkd#4601: the security diff (and the package behind it) is paid for
-// only when `broadening` is the level.
+// go-to-k/cdkd#4601: the security diff is paid for only when `broadening` is
+// the level.
 describe('requireDeploymentApproval security-diff cost', () => {
   beforeEach(() => {
     diffSecurity.mockClear();
