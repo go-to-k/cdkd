@@ -288,7 +288,12 @@ swapping names, and a policy renamed away from a name a new policy takes.
 Without the wait, each could remove the name the other had just written. This
 ordering is decided before anything runs. It applies only to those resources,
 and to IAM resources whose policy name or principal cdkd cannot read before
-resolving it, which it treats as possibly the same.
+resolving it, which it treats as possibly the same. An `AWS::IAM::RolePolicy`,
+`UserPolicy` or `GroupPolicy` always waits for the other resource. Cloud
+Control refuses to create a policy name the principal still holds, and the
+other resource may be the one releasing it. When such a policy is replaced,
+deleting its old name leaves that name in place if another resource of the
+deploy has already written it there.
 
 The log line `DAG: <n> levels` reports the depth of the graph. Levels are not
 used to schedule anything.

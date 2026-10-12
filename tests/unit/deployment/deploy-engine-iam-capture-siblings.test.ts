@@ -237,6 +237,49 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
     expect(captureContextFor('FnDefaultPolicy')).toBeUndefined();
   });
 
+  // go-to-k/cdkd#4821: a standalone AWS::IAM::RolePolicy manages its one name
+  // on the role its RoleName names; a UserPolicy is another principal kind.
+  it('passes a sibling AWS::IAM::RolePolicy naming the role, and not a UserPolicy, as capture context', async () => {
+    const doc = { Version: '2012-10-17', Statement: [] };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        FnRole: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: doc } },
+        Attach: {
+          Type: 'AWS::IAM::RolePolicy',
+          Properties: { PolicyName: 'attached', RoleName: { Ref: 'FnRole' }, PolicyDocument: doc },
+        },
+        OnUser: {
+          Type: 'AWS::IAM::UserPolicy',
+          Properties: { PolicyName: 'on-user', UserName: { Ref: 'FnRole' }, PolicyDocument: doc },
+        },
+        OtherRole: {
+          Type: 'AWS::IAM::RolePolicy',
+          Properties: { PolicyName: 'elsewhere', RoleName: 'some-other-role', PolicyDocument: doc },
+        },
+      },
+    };
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>(
+        Object.entries(template.Resources!).map(([id, r]) => [
+          id,
+          { logicalId: id, changeType: 'CREATE', resourceType: r.Type, desiredProperties: r.Properties },
+        ])
+      )
+    );
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['FnRole'], ['Attach', 'OnUser', 'OtherRole']]);
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(captureContextFor('FnRole')).toEqual({
+      siblings: {
+        Attach: {
+          resourceType: 'AWS::IAM::Policy',
+          properties: { Roles: ['phys-FnRole'], PolicyName: 'attached' },
+        },
+      },
+    });
+  });
+
   it('passes no capture context for a Role with no sibling AWS::IAM::Policy', async () => {
     const template: CloudFormationTemplate = {
       Resources: {

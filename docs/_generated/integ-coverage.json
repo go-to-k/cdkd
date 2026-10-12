@@ -7656,6 +7656,7 @@
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
     "AWS::HealthImaging::Datastore",
+    "AWS::IAM::RolePolicy",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",

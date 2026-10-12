@@ -104,9 +104,13 @@ export interface DeleteContext {
    * created copy, or the new copy of a reversed rename or re-adopted
    * replacement), answering from the rollback's own completed reverts
    * (go-to-k/cdkd#4225). A rollback also hands it to a role / group / user
-   * delete, whose provider does not read it.
-   * Absent on `cdkd destroy` and on a deploy replacement's or fallback's
-   * delete of the old copy.
+   * delete, whose provider does not read it. go-to-k/cdkd#4821: also set for
+   * an `AWS::IAM::RolePolicy` / `GroupPolicy` / `UserPolicy` delete (a DELETE
+   * row, a deploy replacement's delete of the old copy, a rollback delete),
+   * which the Cloud Control provider skips when another completed writer
+   * claims its name on its principal.
+   * Absent on `cdkd destroy` and on every other deploy replacement's or
+   * fallback's delete of the old copy.
    */
   inlinePolicyClaimed?: InlinePolicyClaimed | undefined;
 

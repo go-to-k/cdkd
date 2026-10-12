@@ -239,11 +239,20 @@ export async function drainObservedCaptures(
   return installed;
 }
 
+/** The standalone inline policy type naming a principal of each kind, and its field. */
+const STANDALONE_SIBLING: Record<'Roles' | 'Users' | 'Groups', { type: string; field: string }> = {
+  Roles: { type: 'AWS::IAM::RolePolicy', field: 'RoleName' },
+  Users: { type: 'AWS::IAM::UserPolicy', field: 'UserName' },
+  Groups: { type: 'AWS::IAM::GroupPolicy', field: 'GroupName' },
+};
+
 /**
  * Build a sibling context for the deploy-time `observedProperties`
  * capture of an IAM principal (`AWS::IAM::Role` / `::User` / `::Group`)
  * so that inline policies managed by a SEPARATE `AWS::IAM::Policy`
- * resource are filtered OUT of the captured `Policies` baseline —
+ * resource (or a standalone `AWS::IAM::RolePolicy` / `UserPolicy` /
+ * `GroupPolicy`, go-to-k/cdkd#4821) are filtered OUT of the captured
+ * `Policies` baseline —
  * exactly as the `cdkd drift` read path already does via
  * `buildReadCurrentStateContext`.
  *
@@ -310,11 +319,15 @@ export async function buildObservedCaptureSiblings(
   const siblings: NonNullable<
     import('../../types/resource.js').ReadCurrentStateContext['siblings']
   > = {};
+  // go-to-k/cdkd#4821: a standalone `AWS::IAM::RolePolicy` / `UserPolicy` /
+  // `GroupPolicy` names its ONE principal in a scalar field instead.
+  const standaloneType = STANDALONE_SIBLING[attachmentField];
   for (const [lid, res] of Object.entries(resources)) {
     if (lid === capturedLogicalId) continue;
-    if (res.Type !== 'AWS::IAM::Policy') continue;
+    if (res.Type !== 'AWS::IAM::Policy' && res.Type !== standaloneType.type) continue;
     const props = (res.Properties ?? {}) as Record<string, unknown>;
-    const attachments = props[attachmentField];
+    const attachments =
+      res.Type === 'AWS::IAM::Policy' ? props[attachmentField] : [props[standaloneType.field]];
     if (!Array.isArray(attachments)) continue;
     // CDK emits `Roles: [{Ref: <principalLogicalId>}]`; hand-written
     // templates may use the literal physical name. Match either.

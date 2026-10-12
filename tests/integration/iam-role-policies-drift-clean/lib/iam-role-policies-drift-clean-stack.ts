@@ -39,7 +39,11 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * FORCED-ROLLBACK phase deploys the same
  * hand-off with a failing resource after it, and asserts the rollback leaves
  * every name with its first owner (go-to-k/cdkd#4225, and go-to-k/cdkd#4408
- * for the name a rolled-back create took over).
+ * for the name a rolled-back create took over). The hand-off also swaps a
+ * name between an `AWS::IAM::Policy` and an `AWS::IAM::RolePolicy` on a second
+ * role, and asserts that role keeps both, that the rollback restores both, and
+ * that the RolePolicy's name is no `Policies` drift on its role
+ * (go-to-k/cdkd#4821).
  */
 export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -170,6 +174,32 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       handoff ? 'cdkd-iam-drift-clean-to-role-moved' : 'cdkd-iam-drift-clean-to-role',
       'sqs:PurgeQueue'
     );
+    // go-to-k/cdkd#4821: an `AWS::IAM::Policy` and an `AWS::IAM::RolePolicy`
+    // (Cloud Control; its `PolicyName` is create-only, so a rename is a
+    // replacement) SWAP names on one role, with no dependency between them.
+    // CloudFormation ends this swap holding only the RolePolicy's new name;
+    // cdkd must keep both. Their own role, which declares an inline policy of
+    // its own so `cdkd drift` compares its `Policies` (a standalone policy's
+    // name is not the role's). In the forced-rollback deploy the rollback
+    // reverses the policy before the RolePolicy, whose re-create of its old
+    // name Cloud Control refuses while the policy still holds it.
+    const mixedSwap = handoff;
+    const mixedRole = new iam.Role(this, 'MixedRole', {
+      roleName: 'cdkd-iam-drift-clean-mixed-role',
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      inlinePolicies: { MixedDeclared: doc('sqs:GetQueueUrl') },
+    });
+    const mixedPolicy = new iam.CfnPolicy(this, 'MixedPolicy', {
+      policyName: mixedSwap ? 'cdkd-iam-drift-clean-mixed-y' : 'cdkd-iam-drift-clean-mixed-x',
+      policyDocument: doc('sqs:ListMessageMoveTasks'),
+      roles: [mixedRole.roleName],
+    });
+    const mixedRolePolicy = new iam.CfnRolePolicy(this, 'MixedRolePolicy', {
+      policyName: mixedSwap ? 'cdkd-iam-drift-clean-mixed-x' : 'cdkd-iam-drift-clean-mixed-y',
+      policyDocument: doc('sqs:CancelMessageMoveTask'),
+      roleName: mixedRole.roleName,
+    });
+
     // go-to-k/cdkd#4225: AWS rejects this queue (MessageRetentionPeriod is
     // out of range), failing the deploy only after the swap, the role's
     // update, the to-role rename and HandoffNew's create completed. The rollback then reverses
@@ -186,6 +216,8 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       failing.addDependency(unorderedSwapB);
       failing.addDependency(unorderedRenamed);
       if (unorderedNew) failing.addDependency(unorderedNew);
+      failing.addDependency(mixedPolicy);
+      failing.addDependency(mixedRolePolicy);
       failing.addDependency(role.node.defaultChild as cdk.CfnResource);
     }
 

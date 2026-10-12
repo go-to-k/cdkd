@@ -237,6 +237,10 @@ An IAM inline policy name moved between resources on one role, group or user in
 the failed deploy (two `AWS::IAM::Policy` resources swapping names, or a policy
 renamed away from a name the role's own `Policies` took) is kept by each revert
 that would remove it once another revert of the same rollback has put it back.
+When one of the two is an `AWS::IAM::RolePolicy`, `UserPolicy` or
+`GroupPolicy`, the rollback reverses the other resource first. Re-creating the
+standalone policy's old name would otherwise be refused while the other
+resource still held it.
 
 When a revert or delete removes a name another resource's state record still
 holds on that principal (a policy created under a name another policy still

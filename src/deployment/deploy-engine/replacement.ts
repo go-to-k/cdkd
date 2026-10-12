@@ -24,6 +24,7 @@ import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-saf
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import { reportDeleteGuards } from '../delete-guard-scope.js';
+import { isStandaloneInlinePolicyType } from '../inline-policy-claims.js';
 import {
   type ReplacementNameChange,
   probeErrorMeansNameHeld,
@@ -722,6 +723,14 @@ export async function deleteReplacedAfterCreate(
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
   let deleteFailed = false;
+  // go-to-k/cdkd#4821: a replaced standalone inline policy (`PolicyName` /
+  // `RoleName` are create-only) removes its OLD name here, right after its
+  // create; another writer of this deploy may have just put that name on the
+  // same principal (a swap of names with an `AWS::IAM::Policy`). Only those
+  // types are handed the predicate, so every other replacement is unchanged.
+  const inlinePolicyClaimed = isStandaloneInlinePolicyType(oldResourceType)
+    ? this.inlinePolicyClaimedFor(oldResourceType, logicalId, this.deployStateResources)
+    : undefined;
   try {
     deleteResult = await deleteProvider.delete(
       logicalId,
@@ -738,6 +747,7 @@ export async function deleteReplacedAfterCreate(
         // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
         recordedNoEchoLeaves: currentResource.noEchoLeaves,
         ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+        ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
       }
     );
   } catch (deleteError) {

@@ -68,6 +68,7 @@ import { shellQuote } from '../state/lock-contention-message.js';
 // registry -> provider ring: `delete-outcome.ts` is a documented LEAF whose only
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
+import { standaloneInlinePolicyHandedOff } from '../deployment/inline-policy-claims.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
@@ -1612,6 +1613,27 @@ export class CloudControlProvider implements ResourceProvider {
       logicalId,
       physicalId
     );
+
+    // go-to-k/cdkd#4821: a standalone inline policy whose (principal, name)
+    // another resource of this deploy has ALREADY written (a completed
+    // writer, `context.inlinePolicyClaimed`) is a name handed off, not one to
+    // remove: deleting it would strip that writer's live grant. Anything the
+    // predicate cannot answer deletes, as before, and so does a physical id
+    // that does not name the same policy.
+    if (
+      standaloneInlinePolicyHandedOff(
+        resourceType,
+        properties,
+        context?.inlinePolicyClaimed,
+        physicalId
+      )
+    ) {
+      // The logical id only: a policy or principal name can be secret-derived.
+      this.logger.info(
+        `  ${logicalId}: not deleting its inline policy, which another resource of this deploy now holds under the same name`
+      );
+      return;
+    }
 
     // Pre-flight identity confirmation (issue #2283). Deliberately placed
     // ahead of EVERY mutating step below -- the `--remove-protection` flips,

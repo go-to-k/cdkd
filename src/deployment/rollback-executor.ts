@@ -57,7 +57,7 @@ import {
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
-import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
+import { orderInlinePolicyReversals, RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { restoreHeldInlinePolicies } from './rollback-executor/replay-inline-policy-restore.js';
 import {
   type CompletedOperation,
@@ -269,14 +269,16 @@ async function replayRollbackUnbound(
 
   const { createOps, otherOps } = partitionOps(operations);
 
-  // Step 1: UPDATE/DELETE rollbacks in reverse completion order.
-  for (let i = otherOps.length - 1; i >= 0; i--) {
+  // Step 1: UPDATE/DELETE rollbacks in reverse completion order, except that
+  // a standalone inline policy is reversed after an IAM writer sharing its
+  // name on its principal (go-to-k/cdkd#4821).
+  for (const op of orderInlinePolicyReversals([...otherOps].reverse(), stateResources)) {
     if (options.isInterrupted?.()) {
       result.interrupted = true;
       break;
     }
     await replaySingle(
-      otherOps[i]!,
+      op,
       stateResources,
       stackName,
       ctx,

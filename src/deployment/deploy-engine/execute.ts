@@ -95,6 +95,8 @@ export async function executeDeployment(
   const concurrency = this.options.concurrency!;
   this.deployChanges = changes;
   const newResources: Record<string, ResourceState> = { ...currentState.resources };
+  // go-to-k/cdkd#4821: read by a replacement's delete of its old copy.
+  this.deployStateResources = newResources;
   const actualCounts: ProvisionCounts = {
     created: 0,
     updated: 0,
