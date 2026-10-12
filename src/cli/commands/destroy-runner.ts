@@ -1068,7 +1068,7 @@ export async function runDestroyForStack(
     const capped = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => {
         logger.debug(
-          `The stack's NoEcho values were not bound within ${NOECHO_PRINTING_BIND_CAP_MS / 1000}s; ` +
+          safeMsg`The stack's NoEcho values were not bound within ${NOECHO_PRINTING_BIND_CAP_MS / 1000}s; ` +
             `a name a record holds in plaintext is judged from the record alone.`
         );
         resolve(undefined);
