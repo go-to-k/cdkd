@@ -1,10 +1,14 @@
+import { createRequire } from 'node:module';
 import { describe, expect, it, vi } from 'vite-plus/test';
 
-// cdkd always colors the table, so compare with the AWS CDK CLI as it prints in
-// a terminal: chalk's colors change its row order (removals sort first).
+// Colors change the AWS CDK CLI's row order (removals sort first), so each pair
+// is compared both ways: chalk on (a terminal) and off (a CI log or a pipe).
 vi.hoisted(() => {
   process.env['FORCE_COLOR'] = '1';
 });
+const cdkChalk = createRequire(require.resolve('@aws-cdk/cloudformation-diff'))('chalk') as {
+  level: number;
+};
 import { fullDiff, formatSecurityChanges as cdkFormat } from '@aws-cdk/cloudformation-diff';
 import { loadAwsServiceSpecSync } from '@aws-cdk/aws-service-spec';
 import {
@@ -12,6 +16,7 @@ import {
   PROPERTY_SCRUTINY,
   RESOURCE_SCRUTINY,
   SecurityChanges,
+  stdoutSupportsColor,
   type SecurityTemplate,
 } from '../../../src/analyzer/security-changes.js';
 
@@ -23,7 +28,8 @@ import {
 
 type Resources = SecurityTemplate['Resources'];
 
-function cdk(oldResources: Resources, newResources: Resources) {
+function cdk(oldResources: Resources, newResources: Resources, color = true) {
+  cdkChalk.level = color ? 1 : 0;
   const diff = fullDiff(
     structuredClone({ Resources: oldResources }),
     structuredClone({ Resources: newResources })
@@ -44,7 +50,7 @@ function cdk(oldResources: Resources, newResources: Resources) {
   };
 }
 
-function ours(oldResources: Resources, newResources: Resources) {
+function ours(oldResources: Resources, newResources: Resources, color = true) {
   const changes = new SecurityChanges(
     structuredClone({ Resources: oldResources }),
     structuredClone({ Resources: newResources })
@@ -53,7 +59,7 @@ function ours(oldResources: Resources, newResources: Resources) {
     broadened: changes.permissionsBroadened,
     any: changes.permissionsAnyChanges,
     // eslint-disable-next-line no-control-regex
-    table: formatSecurityChanges(changes, { Role: '/Stack/MyRole/Resource' }).replace(/\u001b\[[0-9;]*m/g, ''),
+    table: formatSecurityChanges(changes, { Role: '/Stack/MyRole/Resource' }, color).replace(/\u001b\[[0-9;]*m/g, ''),
   };
 }
 
@@ -186,11 +192,19 @@ const EDGE_CASES: Array<[string, Resources, Resources]> = [
   ['a wide-character condition value', {}, { P: policy([allow('s3:GetObject', '*', { Condition: { StringEquals: { 'aws:PrincipalTag/team': '開発チーム' } } })]) }],
   ['an emoji in a resource', {}, { P: policy([allow('s3:GetObject', 'arn:aws:s3:::🚀')]) }],
   ['an empty-string statement', {}, { P: policy(['']) }],
+  ['a resource cell that is a line-prefix of another', {}, { P: policy([allow('s3:GetObject', ['arn:a', 'arn:b']), allow('s3:PutObject', 'arn:a')]) }],
+  ['an emoji with a variation selector', {}, { P: policy([allow('x:Y', 'arn:aws:s3:::❤️')]) }],
+  ['Hangul', {}, { P: policy([allow('x:Y', 'arn:aws:s3:::한국')]) }],
+  ['fullwidth Latin', {}, { P: policy([allow('x:Y', 'arn:aws:s3:::ＡＢＣ')]) }],
+  ['text-presentation pictographs', {}, { P: policy([allow('x:Y', 'r©r™↔‼☺')]) }],
+  ['emoji with a variation selector and a skin tone', {}, { P: policy([allow('x:Y', 'a☺️b🏻c👍🏽d')]) }],
+  ['an added statement with no Resource beside a removal', { P: policy([allow('a:A', 'z')]) }, { P: policy([{ Effect: 'Allow', Action: 'x:Y' }]) }],
 ];
 
 describe('security classifier parity with the AWS CDK CLI', () => {
   it.each([...CASES, ...EDGE_CASES])('%s', (_name, oldResources, newResources) => {
     expect(ours(oldResources, newResources)).toEqual(cdk(oldResources, newResources));
+    expect(ours(oldResources, newResources, false)).toEqual(cdk(oldResources, newResources, false));
   });
 });
 
@@ -240,7 +254,7 @@ describe('the table colors', () => {
       { Resources: { P: policy([allow('s3:GetObject')]) } },
       { Resources: { P: policy([allow('s3:PutObject')]) } }
     );
-    const table = formatSecurityChanges(changes);
+    const table = formatSecurityChanges(changes, {}, true);
     expect(table).toContain('\u001b[32ms3:PutObject\u001b[0m');
     expect(table).toContain('\u001b[31ms3:GetObject\u001b[0m');
     expect(table).toContain('\u001b[90m│\u001b[0m');
@@ -250,3 +264,104 @@ describe('the table colors', () => {
     expect(table).toMatch(/│\u001b\[0m Resource +\u001b\[90m│/);
   });
 });
+
+describe('text the AWS CDK CLI cannot lay out', () => {
+  // Its `table` drops a combining mark and a control character, and throws on a
+  // ZWJ emoji; cdkd prints each as given, every line one width wide.
+  it.each([
+    ['a combining mark', 'café'],
+    ['a control character', 'a\u0007b'],
+    ['a ZWJ emoji', 'x👨‍👩‍👧y'],
+  ])('%s keeps every line of the table one width', (_name, resource) => {
+    const changes = new SecurityChanges(
+      { Resources: {} },
+      { Resources: { P: policy([allow('s3:GetObject', resource), allow('s3:PutObject', 'arn:a')]) } }
+    );
+    const lines = formatSecurityChanges(changes, {}, false)
+      .split('\n')
+      .filter((line) => /^[┌├│└]/.test(line));
+    const widths = new Set(lines.map((line) => displayWidthForTest(line)));
+    expect(lines.length).toBeGreaterThan(4);
+    expect(widths.size).toBe(1);
+    expect(lines.some((line) => line.includes(resource))).toBe(true);
+  });
+});
+
+describe('stdoutSupportsColor (chalk 4 on stdout)', () => {
+  it.each([
+    ['a terminal', {}, [], true, true],
+    ['a pipe', {}, [], false, false],
+    ['a pipe with FORCE_COLOR=1', { FORCE_COLOR: '1' }, [], false, true],
+    ['a terminal with FORCE_COLOR=0', { FORCE_COLOR: '0' }, [], true, false],
+    ['a terminal with --no-color', {}, ['node', 'cdkd', '--no-color'], true, false],
+    ['a pipe with --color', {}, ['node', 'cdkd', '--color'], false, true],
+    ['a terminal on TERM=dumb', { TERM: 'dumb' }, [], true, false],
+    ['a truecolor terminal on TERM=dumb', { TERM: 'dumb', COLORTERM: 'truecolor' }, [], true, false],
+    ['a GitHub Actions terminal', { CI: 'true', GITHUB_ACTIONS: 'true' }, [], true, true],
+    ['another CI terminal', { CI: 'true' }, [], true, false],
+    ['a pipe in GitHub Actions', { CI: 'true', GITHUB_ACTIONS: 'true' }, [], false, false],
+    ['a terminal with no TERM', {}, [], true, false],
+  ] as Array<[string, Record<string, string>, string[], boolean, boolean]>)(
+    '%s',
+    (_name, env, argv, isTTY, expected) => {
+      const term = _name === 'a terminal' ? { TERM: 'xterm-256color', ...env } : env;
+      expect(stdoutSupportsColor(term, argv, isTTY, 'darwin')).toBe(expected);
+    }
+  );
+
+  it('matches supports-color 7 on the same inputs', () => {
+    const cases: Array<[Record<string, string>, boolean]> = [
+      [{ TERM: 'xterm-256color' }, true],
+      [{ TERM: 'xterm-256color' }, false],
+      [{ TERM: 'dumb', FORCE_COLOR: '1' }, true],
+      [{ TERM: 'dumb', COLORTERM: 'truecolor' }, true],
+      [{ COLORTERM: 'truecolor' }, true],
+      [{ TERM_PROGRAM: 'Apple_Terminal' }, true],
+      [{ CI: 'true', BUILDKITE: '1' }, true],
+      [{ TEAMCITY_VERSION: '9.1.0' }, true],
+      [{ TEAMCITY_VERSION: '8.0.0' }, true],
+      [{}, true],
+    ];
+    const require = createRequire(require_resolve_chalk());
+    for (const [env, isTTY] of cases) {
+      const saved = { ...process.env };
+      for (const key of Object.keys(process.env)) delete process.env[key];
+      Object.assign(process.env, env);
+      const modulePath = require.resolve('supports-color');
+      delete require.cache[modulePath];
+      try {
+        const { supportsColor } = require('supports-color') as {
+          supportsColor: (stream: { isTTY: boolean }) => false | { level: number };
+        };
+        const theirs = supportsColor({ isTTY }) !== false;
+        expect([env, isTTY, stdoutSupportsColor(env, [], isTTY, 'darwin')]).toEqual([
+          env,
+          isTTY,
+          theirs,
+        ]);
+      } finally {
+        for (const key of Object.keys(process.env)) delete process.env[key];
+        Object.assign(process.env, saved);
+        delete require.cache[modulePath];
+      }
+    }
+  });
+});
+
+function require_resolve_chalk(): string {
+  return createRequire(require.resolve('@aws-cdk/cloudformation-diff')).resolve('chalk');
+}
+
+/** Terminal columns, ANSI and zero-width characters aside, for the table-width cases. */
+function displayWidthForTest(line: string): number {
+  // eslint-disable-next-line no-control-regex
+  const plain = line.replace(/\u001b\[[0-9;]*m/g, '');
+  let width = 0;
+  const segmenter = new Intl.Segmenter();
+  for (const { segment } of segmenter.segment(plain)) {
+    const code = segment.codePointAt(0)!;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) continue;
+    width += /\p{Extended_Pictographic}/u.test(segment) ? 2 : 1;
+  }
+  return width;
+}
