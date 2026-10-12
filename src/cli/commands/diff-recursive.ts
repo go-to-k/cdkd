@@ -119,6 +119,7 @@ import {
   type DestructiveChange,
   type DestructiveImpact,
 } from '../../analyzer/destructive-changes.js';
+import { diffSecurity, type SecurityDiff } from '../../analyzer/security-diff.js';
 import { childTemplateLoader } from '../../deployment/nested-output-templates.js';
 import {
   findNestedStackTypeChanges,
@@ -280,6 +281,11 @@ export interface DiffTreeNode {
   region: string;
   /** Per-resource changes for this node (includes `NO_CHANGE` entries — filter with {@link nodeHasChanges}). */
   changes: Map<string, ResourceChange>;
+  /**
+   * {@link StackDiffResult.securityDiff}: `--fail-on=broadening` only. Every
+   * node `buildDiffTree` makes carries it; optional only for hand-built nodes.
+   */
+  securityDiff?: () => Promise<SecurityDiff>;
   /**
    * Per-resource Cloud Control API auto-route hits (issue [#614]). Maps each
    * logical ID that #614's auto-fallback would route via CC API to the
@@ -805,6 +811,13 @@ async function loadStateOrEmpty(
 export interface StackDiffResult {
   /** Per-resource changes, including `NO_CHANGE` entries. */
   changes: Map<string, ResourceChange>;
+  /**
+   * `--fail-on=broadening` (go-to-k/cdkd#4601): this stack's security diff,
+   * computed only when called. It reads the UNMASKED changes (the verdict
+   * must see what the deploy sends) and renders through this node's printing
+   * mask; nothing else of the unmasked changes leaves this function.
+   */
+  securityDiff: () => Promise<SecurityDiff>;
   /** Per-key Outputs changes (issue #1921); empty when unchanged or unresolvable. */
   outputChanges: OutputChange[];
   /**
@@ -2565,6 +2578,14 @@ export async function computeStackDiff(
 
   return {
     changes: shownChanges,
+    securityDiff: () =>
+      diffSecurity({
+        stackName,
+        changes: changes.values(),
+        records: stateForDiff.resources,
+        template: effectiveTemplate,
+        secretMask: () => printing.mask,
+      }),
     outputChanges: shownOutputChanges,
     adoptedOrphans,
     adoptedRecords,
@@ -3390,6 +3411,7 @@ export async function buildDiffTree(args: {
   }
   const {
     changes,
+    securityDiff,
     outputChanges,
     adoptedOrphans,
     adoptedRecords,
@@ -3420,6 +3442,7 @@ export async function buildDiffTree(args: {
     displayName,
     region,
     changes,
+    securityDiff,
     ccApiRoutes,
     outputChanges,
     adoptedOrphans,
@@ -3700,7 +3723,7 @@ async function buildDeletedSubtree(
     inheritedDerivedNames,
     stateDerivedNames(state.resources ?? {}),
   ]);
-  const { changes, outputChanges } = await computeStackDiff(
+  const { changes, securityDiff, outputChanges } = await computeStackDiff(
     state,
     EMPTY_TEMPLATE,
     region,
@@ -3719,6 +3742,7 @@ async function buildDeletedSubtree(
     displayName: stackName,
     region,
     changes,
+    securityDiff,
     // State-only DELETE branches do not consult the template — routing is
     // already recorded on each resource's `provisionedBy`, and the diff line
     // only shows the type. No annotation surface.

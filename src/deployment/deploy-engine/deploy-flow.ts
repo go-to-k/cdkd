@@ -1370,6 +1370,15 @@ export async function doDeployWithPrefetch(
       records: currentState.resources,
       template: effectiveTemplate,
       recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+      // go-to-k/cdkd#4601: the `broadening` table prints resolved values;
+      // built only if that level asks.
+      secretMask: () =>
+        this.diffLogMasker(
+          diffResolverContext.recordedSecretValues,
+          effectiveTemplate,
+          parameterValues,
+          currentState.resources
+        ),
     });
     // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
     // it are read again at each create.

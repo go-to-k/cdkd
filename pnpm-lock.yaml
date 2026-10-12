@@ -166,6 +166,9 @@ importers:
 
   .:
     dependencies:
+      '@aws-cdk/cloudformation-diff':
+        specifier: ^2.187.1
+        version: 2.187.1(@aws-sdk/client-cloudformation@3.1145.0)
       '@aws-sdk/client-acm':
         specifier: ^3.1053.0
         version: 3.1145.0

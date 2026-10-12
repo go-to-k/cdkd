@@ -2043,6 +2043,11 @@
       "scenarios": []
     },
     {
+      "name": "require-approval-broadening",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "retain-orphan-redeploy",
       "annotated": false,
       "scenarios": []
@@ -3363,6 +3368,7 @@
     "replace-squatter-refusal",
     "replacement-immutable-name",
     "replacement-rename-onto-holder",
+    "require-approval-broadening",
     "retain-orphan-redeploy",
     "retain-orphan-secret",
     "rollback-command",

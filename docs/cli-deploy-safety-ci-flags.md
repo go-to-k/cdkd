@@ -279,7 +279,11 @@ changes, like `cdk deploy --require-approval`. cdkd also reads the level from
 | --- | --- |
 | `never` (default) | Nothing; cdkd deploys without asking |
 | `any-change` | Any change, including one to Outputs only |
+| `broadening` | A change that broadens IAM permissions or security-group rules |
 | `destructive` | A change that replaces, deletes or orphans an existing resource |
+
+cdkd's default stays `never`, unlike the AWS CDK CLI's `broadening`: set the
+level to have cdkd ask.
 
 `destructive` uses the same classification as
 [`cdkd diff --fail-on=destructive`](cli-diff.md), and counts a
@@ -305,21 +309,62 @@ Do you wish to deploy these changes? (y/n)
 If you answer no, that stack's deploy fails with nothing changed, and cdkd
 exits `1`.
 
+### `broadening`
+
+`broadening` asks when a change adds an IAM statement, a managed-policy
+attachment, an `AWS::Lambda::Permission`, or a security-group ingress or
+egress rule. cdkd decides it with the AWS CDK CLI's own security diff
+(`@aws-cdk/cloudformation-diff`), and prints the same table before the
+question:
+
+```text
+Security Group Changes
+┌───┬───────────────┬─────┬──────────┬─────────────────┐
+│   │ Group         │ Dir │ Protocol │ Peer            │
+├───┼───────────────┼─────┼──────────┼─────────────────┤
+│ + │ ${Sg.GroupId} │ In  │ TCP 22   │ Everyone (IPv4) │
+└───┴───────────────┴─────┴──────────┴─────────────────┘
+(NOTE: There may be security-related changes not in this list. See https://github.com/aws/aws-cdk/issues/1299)
+
+Stack MyStack: 1 to create, 0 to update, 0 to delete.
+Stack includes security-sensitive updates and "--require-approval" is set to 'broadening'.
+Do you wish to deploy these changes? (y/n)
+```
+
+The AWS CDK CLI compares the template CloudFormation holds with the new one.
+cdkd keeps no deployed template, so it compares what its state records with
+the change it is about to make:
+
+- A created resource is compared as the template declares it.
+- A changed property is compared as the recorded value against the new value,
+  resolved as far as `cdkd diff` resolves it. A property that only reads a
+  parameter or another stack's output can therefore count as changed when that
+  value moved, where the AWS CDK CLI sees no change.
+- A reference to a replaced resource is not a change, as in the AWS CDK CLI.
+
+A value that holds a secret, such as a `NoEcho` parameter's value in a policy
+condition, is shown as `***` in the table; the decision to ask still reads it.
+When a masked value in a policy or a security-group rule changed, cdkd cannot
+tell whether the change broadens anything, so it asks, and names the resource
+and property without the value.
+
 ### Edge cases
 
 - **`--dry-run`** never asks.
 - **No terminal, as in CI.** The deploy fails instead of asking, unless you
   pass `--yes`.
-- **A nested stack** asks for its own changes when the parent reaches it.
+- **A nested stack** asks for its own changes when the parent reaches it. For
+  `broadening` this is stricter than the AWS CDK CLI, whose deploy checks the
+  root template only.
   Declining fails the nested stack, and the parent rolls back. The nested
   stack's `--resource-timeout` clock stops while its question is open.
 - **Under `any-change`**, a parent whose only changes are nested-stack updates
   does not ask for them itself.
 - **Stacks deployed in parallel** ask one at a time.
-- **`broadening`**, the AWS CDK CLI's default, is not available, because cdkd
-  does not compute a security diff. The flag refuses the value. A
-  `"requireApproval": "broadening"` in `cdk.json` is ignored with a warning,
-  so cdkd asks for no approval.
+- **Under `broadening`**, a replacement decided only once a value is read
+  back during the deploy is not asked about: it changes no permission.
+- **The security diff fails** (an unreadable change): the deploy fails before
+  anything changes, rather than deploying without asking.
 
 ## Related
 

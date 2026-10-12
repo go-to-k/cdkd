@@ -101,9 +101,9 @@ reads it too. The flag wins over the file:
 > `cdkd diff --fail-on=destructive` before the deploy step.
 
 A `--recreate-via-*` target counts as a replacement, so it asks too.
-`--dry-run` never asks. The AWS CDK CLI's `broadening` level is not available,
-because cdkd does not compute a security diff; in `cdk.json` it is ignored
-with a warning.
+`--dry-run` never asks. To ask about IAM and security-group changes instead,
+use the
+[`broadening` level](cli-deploy-safety-ci-flags.md#broadening).
 
 ## Related
 

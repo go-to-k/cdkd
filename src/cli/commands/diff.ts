@@ -69,12 +69,17 @@ import {
 import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
 import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 
+/** This node and every descendant, DFS order. */
+function treeNodes(node: DiffTreeNode): DiffTreeNode[] {
+  return [node, ...node.children.flatMap(treeNodes)];
+}
+
 /**
- * The `--fail-on` values: which kind of change makes `cdkd diff` exit 1. The
- * AWS CDK CLI's `cdk diff --fail-on` (aws/aws-cdk-cli#2020, #2011) also takes
- * `broadening`, which cdkd does not offer: it has no security diff to decide it.
+ * The `--fail-on` values: which kind of change makes `cdkd diff` exit 1, the
+ * AWS CDK CLI's `cdk diff --fail-on` four (aws/aws-cdk-cli#2020, #2011;
+ * `broadening` go-to-k/cdkd#4601).
  */
-export const DIFF_FAIL_ON_VALUES = ['never', 'any-change', 'destructive'] as const;
+export const DIFF_FAIL_ON_VALUES = ['never', 'any-change', 'broadening', 'destructive'] as const;
 export type DiffFailOn = (typeof DIFF_FAIL_ON_VALUES)[number];
 
 /**
@@ -455,10 +460,11 @@ async function diffCommand(
       inRegion: (healRegion, fn) =>
         runWithStackAwsClients(stackRegionScope(healRegion).clients, fn),
     });
-    // `--fail-on=destructive` walks nested stacks whether or not `--recursive`
-    // was given: it is a gate on losing a resource, and `cdk diff` checks
-    // nested stacks too, so a destructive change inside a child must not pass.
-    const recursive = (options.recursive ?? false) || failOn === 'destructive';
+    // `--fail-on=destructive` / `broadening` walk nested stacks whether or not
+    // `--recursive` was given: each is a gate, and `cdk diff` checks nested
+    // stacks for both, so such a change inside a child must not pass.
+    const recursive =
+      (options.recursive ?? false) || failOn === 'destructive' || failOn === 'broadening';
 
     // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
     // §7 asset-reference rewrite is applied to the template before diffing
@@ -577,6 +583,32 @@ async function diffCommand(
         throw new DiffDetectedError();
       }
     }
+    if (failOn === 'broadening') {
+      // go-to-k/cdkd#4601: computed only here, so no other diff loads the
+      // security diff. Every stack's table is printed before the exit.
+      let broadening = 0;
+      for (const node of trees.flatMap(treeNodes)) {
+        // A node without one cannot be judged; a gate does not pass it.
+        if (node.securityDiff === undefined) {
+          throw new CdkdError(
+            safeMsg`No security diff for stack ${node.displayName}; --fail-on=broadening cannot decide it.`,
+            'SECURITY_DIFF_FAILED'
+          );
+        }
+        const security = await node.securityDiff();
+        if (!security.broadening) continue;
+        broadening++;
+        // `error`, so it reaches stderr under `--json` too.
+        logger.error(
+          safeMsg`\n❌  Stack ${node.displayName} broadens permissions (--fail-on=broadening):`
+        );
+        // One call per table row: a value cannot add a row of its own.
+        for (const row of security.rendered.replace(/\n+$/, '').split('\n')) {
+          logger.error(safeMsg`${row}`);
+        }
+      }
+      if (broadening > 0) throw new DiffDetectedError();
+    }
   } finally {
     for (const { clients } of stackRegionScopes.values()) clients.destroy();
     awsClients.destroy();
@@ -609,7 +641,7 @@ export function createDiffCommand(): Command {
     .addOption(
       new Option(
         '--fail-on <kind>',
-        'Exit with code 1 when the diff contains the given kind of change: "any-change" fails on any difference, "destructive" only on changes that replace, delete or orphan a resource, "never" does not fail (default). "destructive" always checks nested stacks (as --recursive); the others do with --recursive. Cannot be used with --fail / --no-fail.'
+        'Exit with code 1 when the diff contains the given kind of change: "any-change" fails on any difference, "broadening" only on changes that broaden IAM permissions or security-group rules, "destructive" only on changes that replace, delete or orphan a resource, "never" does not fail (default). "broadening" and "destructive" always check nested stacks (as --recursive); "any-change" does with --recursive. Cannot be used with --fail / --no-fail.'
       )
         // `choices` for the help text; the `argParser` after it replaces the
         // parser `choices` installs, so it also refuses a repeated flag.

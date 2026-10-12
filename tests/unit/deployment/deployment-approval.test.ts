@@ -18,7 +18,7 @@ const change = (
 ): ResourceChange => ({ logicalId, changeType, resourceType, propertyChanges: [] });
 
 function run(
-  level: 'never' | 'any-change' | 'destructive',
+  level: 'never' | 'any-change' | 'broadening' | 'destructive',
   changes: ResourceChange[],
   approve: (r: DeploymentApprovalRequest) => Promise<boolean>,
   extra: { recreateTargetIds?: string[]; records?: Record<string, ResourceState> } = {}
@@ -52,6 +52,39 @@ describe('requireDeploymentApproval', () => {
     await expect(run('any-change', [change('Q', 'CREATE')], yes)).resolves.toBe(false);
     expect(yes).toHaveBeenCalledTimes(1);
     await expect(run('any-change', [change('Q', 'CREATE')], approve)).resolves.toBe(true);
+  });
+
+  describe('broadening (go-to-k/cdkd#4601)', () => {
+    const doc = (...actions: string[]) => ({
+      Version: '2012-10-17',
+      Statement: actions.map((Action) => ({ Effect: 'Allow', Action, Resource: '*' })),
+    });
+    const before = { PolicyName: 'P', Roles: ['r'], PolicyDocument: doc('s3:GetObject') };
+    const policyUpdate = (after: unknown): ResourceChange => ({
+      logicalId: 'Pol',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::IAM::Policy',
+      currentProperties: before,
+      propertyChanges: [
+        { path: 'PolicyDocument', oldValue: before.PolicyDocument, newValue: after, requiresReplacement: false },
+      ],
+    });
+    const records = { Pol: { physicalId: 'p', resourceType: 'AWS::IAM::Policy', properties: before } as ResourceState };
+
+    it('asks for a change that broadens a policy, handing the security table to the approver', async () => {
+      await run('broadening', [policyUpdate(doc('s3:GetObject', 's3:PutObject'))], approve, { records });
+      expect(approve).toHaveBeenCalledTimes(1);
+      const request = approve.mock.calls[0]![0];
+      expect(request.level).toBe('broadening');
+      expect(request.securityChanges).toContain('s3:PutObject');
+    });
+
+    it('does not ask for a narrowing, a non-security change, or a destructive one', async () => {
+      await run('broadening', [policyUpdate(doc())], approve, { records });
+      await run('broadening', [change('Q', 'CREATE'), change('T', 'DELETE')], approve);
+      await run('broadening', [change('Fn', 'UPDATE')], approve, { recreateTargetIds: ['Fn'] });
+      expect(approve).not.toHaveBeenCalled();
+    });
   });
 
   it('does not ask under destructive for a plain in-place update', async () => {
@@ -145,7 +178,7 @@ describe('approveLateReplacement (go-to-k/cdkd#4656)', () => {
     ],
   };
   const late = (
-    level: 'never' | 'any-change' | 'destructive',
+    level: 'never' | 'any-change' | 'broadening' | 'destructive',
     approve?: (r: DeploymentApprovalRequest) => Promise<boolean>
   ): Promise<boolean> =>
     approveLateReplacement({
@@ -159,6 +192,8 @@ describe('approveLateReplacement (go-to-k/cdkd#4656)', () => {
   it('asks nothing under never or without an approver', async () => {
     const approve = vi.fn(async () => false);
     await expect(late('never', approve)).resolves.toBe(true);
+    // go-to-k/cdkd#4601: a replacement changes no permission.
+    await expect(late('broadening', approve)).resolves.toBe(true);
     await expect(late('destructive')).resolves.toBe(true);
     expect(approve).not.toHaveBeenCalled();
   });
