@@ -74,6 +74,22 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     ).toEqual({ Queues: [URL], Other: SECRET_MASK });
   });
 
+  it('the NoEcho containment arm keeps a copy EQUAL to the NoEcho value', () => {
+    const bag: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue(NAME, bag);
+    recordPhysicalNameCopy(bag, NAME);
+    expect(redactSecretsForState({ LogGroupName: NAME }, bag)).toEqual({ LogGroupName: NAME });
+  });
+
+  it('a NoEcho occurrence STRADDLING a copy edge is still flattened', () => {
+    // The copy ends inside the value (`.../sdin-q`), so the occurrence of
+    // `sdin-q-1` is not inside it.
+    const bag: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue(NAME, bag);
+    recordPhysicalNameCopy(bag, 'https://sqs.us-east-1.amazonaws.com/123456789012/sdin-q');
+    expect(redactSecretsForState({ Queues: [URL] }, bag)).toEqual({ Queues: [SECRET_MASK] });
+  });
+
   it('control: without the copy, the NoEcho containment arm flattens the URL', () => {
     const bag: RecordedSecretValues = new Map();
     recordNoEchoParameterFreshValue(NAME, bag);

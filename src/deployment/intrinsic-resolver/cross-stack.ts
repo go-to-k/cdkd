@@ -1,5 +1,6 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { importableOutputKeys } from '../../types/state.js';
 import { sameRegion } from '../../utils/aws-partition.js';
@@ -258,7 +259,12 @@ export async function reresolveCrossStackValue(
         producerOutput.stackName,
         // An index entry can carry an empty region; the resolver reads that as
         // its own (`resolverForProducerRegion`), and so does this read.
-        producerOutput.region || this.resolverRegion
+        producerOutput.region || this.resolverRegion,
+        // Names the producer's coordinate only, masked, never a value.
+        () =>
+          this.logger.debug(
+            safeMsg`Could not read the state of producer ${this.displayMasked(producerOutput.stackName, context)} for its physical ids; no cross-stack copy of one is kept (go-to-k/cdkd#4819)`
+          )
       );
       for (const leaf of plain) {
         if (ids.has(leaf)) recordPhysicalNameCopy(context.recordedSecretValues, leaf);
@@ -812,7 +818,8 @@ function producerPhysicalIds(
   scope: object,
   stateBackend: NonNullable<ResolverContext['stateBackend']>,
   stackName: string,
-  region: string
+  region: string,
+  onFailure: () => void
 ): Promise<ReadonlySet<string>> {
   let reads = producerPhysicalIdReads.get(scope);
   if (reads === undefined) {
@@ -831,7 +838,8 @@ function producerPhysicalIds(
           if (typeof id === 'string' && id !== '') ids.add(id);
         }
       } catch {
-        // Fail closed: no id, so no copy is kept.
+        // Fail closed: no id, so no copy is kept. The caller logs it.
+        onFailure();
       }
       return ids;
     })();
