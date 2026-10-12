@@ -106,7 +106,9 @@
 #      is REPLACED under the rotated name. AssembledQueueReader spells the
 #      original token in a tag, so the new ARN redacted to the reference it
 #      stored for the old queue and the reader was skipped, left on the deleted
-#      queue's ARN. Now its SSM value is the new queue's ARN.
+#      queue's ARN. Now its SSM value is the new queue's ARN. AqSubscription,
+#      whose create-only Endpoint reads the ARN and whose filter policy spells
+#      the token, is REPLACED onto the new queue.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -295,6 +297,9 @@ RB_QUEUE_NAME="sdin-rbq-${SUFFIX}"
 AQ_QUEUE_NAME="sdin-aq-${SUFFIX}"
 # go-to-k/cdkd#4838: the name step 5g rotates aqueue to; the queue is replaced under it.
 AQ_QUEUE_NAME_2="sdin-aq2-${SUFFIX}"
+# go-to-k/cdkd#4838: the topic AqSubscription subscribes the queue to, named per run.
+export SDIN_AQ_TOPIC_NAME="cdkd-integ-sdin-aqt-${SUFFIX}"
+AQ_TOPIC_NAME="${SDIN_AQ_TOPIC_NAME}"
 # Step 5c's log group, named from the secret (go-to-k/cdkd#3869).
 LOG_GROUP_NAME="sdin-lg-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
@@ -374,6 +379,12 @@ cleanup() {
       --query QueueUrl --output text 2>/dev/null)"
     if [ -n "${LEFT_AQ_QUEUE_URL}" ] && [ "${LEFT_AQ_QUEUE_URL}" != "None" ]; then
       aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_AQ_QUEUE_URL}" >/dev/null 2>&1
+    fi
+    # The topic by its per-run name; deleting it removes AqSubscription too.
+    LEFT_AQ_TOPIC_ARN="$(aws sns list-topics --region "${REGION}" \
+      --query "Topics[?ends_with(TopicArn, ':${AQ_TOPIC_NAME}')].TopicArn | [0]" --output text 2>/dev/null)"
+    if [ -n "${LEFT_AQ_TOPIC_ARN}" ] && [ "${LEFT_AQ_TOPIC_ARN}" != "None" ]; then
+      aws sns delete-topic --region "${REGION}" --topic-arn "${LEFT_AQ_TOPIC_ARN}" >/dev/null 2>&1
     fi
     LEFT_AQ2_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME_2}" \
       --query QueueUrl --output text 2>/dev/null)"
@@ -1281,6 +1292,21 @@ assert_gone "the replaced AssembledNameQueue still exists" \
 expect_eq "AssembledQueueReader's SSM parameter after the replacement (go-to-k/cdkd#4838)" "${AQ2_ARN_LIVE}" \
   "$(aws ssm get-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}" \
     --query 'Parameter.Value' --output text)"
+# LOAD-BEARING: AqSubscription's create-only Endpoint read the queue's ARN,
+# so it is REPLACED onto the new queue: one subscription, to the new ARN.
+if ! awk 'index($0, "AqSubscription") && index($0, "(AWS::SNS::Subscription)") && index($0, "replaced") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy's log has no 'AqSubscription (AWS::SNS::Subscription) replaced' line: the subscription was skipped, or updated in place (go-to-k/cdkd#4838)" >&2
+  log_tail
+  exit 1
+fi
+AQ_TOPIC_ARN="$(state_physical_id AqTopic)"
+if [ -z "${AQ_TOPIC_ARN}" ]; then
+  echo "FAIL: premise: the state records no AqTopic" >&2
+  exit 1
+fi
+expect_eq "AqTopic's subscription endpoints after the replacement (go-to-k/cdkd#4838)" "${AQ2_ARN_LIVE}" \
+  "$(aws sns list-subscriptions-by-topic --region "${REGION}" --topic-arn "${AQ_TOPIC_ARN}" \
+    --query 'Subscriptions[].Endpoint' --output text)"
 for needle_var in AQ_QUEUE_NAME AQ_QUEUE_NAME_2; do
   if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
     echo "FAIL: the rotated-secret redeploy's log carries \${${needle_var}} in plaintext (go-to-k/cdkd#3869)" >&2
@@ -1589,6 +1615,8 @@ assert_gone "AssembledNameQueue still exists after destroy" \
   aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME}"
 assert_gone "AssembledNameQueue's replacement still exists after destroy" \
   aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME_2}"
+assert_gone "AqTopic still exists after destroy" \
+  aws sns get-topic-attributes --region "${REGION}" --topic-arn "${AQ_TOPIC_ARN}"
 assert_gone "API ${API_ID} still exists after destroy" \
   aws apigatewayv2 get-api --region "${REGION}" --api-id "${API_ID}"
 assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \

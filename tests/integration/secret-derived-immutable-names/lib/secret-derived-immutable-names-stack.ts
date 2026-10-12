@@ -4,6 +4,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as appsync from 'aws-cdk-lib/aws-appsync';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
@@ -178,6 +179,8 @@ class QueueReaderChild extends cdk.NestedStack {
  * covers: AWS::IAM::Role
  * covers: AWS::CloudFormation::Stack
  * covers: AWS::SSM::Parameter
+ * covers: AWS::SNS::Topic
+ * covers: AWS::SNS::Subscription
  */
 export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -310,6 +313,20 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       ...(process.env.SDIN_READER_EDIT === 'true' && {
         tags: { AqName: aqueueToken(':SecretString:aqueue::}}') },
       }),
+    });
+    // go-to-k/cdkd#4838: a reader whose CREATE-ONLY `Endpoint` reads the queue's
+    // ARN and whose filter policy spells the same token. Step 5g's replacement
+    // must replace it onto the new queue; before the fix it was skipped and
+    // stayed subscribed to the deleted one.
+    const aqTopic = new sns.CfnTopic(this, 'AqTopic', {
+      // Named per run by `verify.sh`, so its cleanup can delete it by name.
+      topicName: process.env.SDIN_AQ_TOPIC_NAME ?? 'cdkd-integ-sdin-unset-aq-topic',
+    });
+    new sns.CfnSubscription(this, 'AqSubscription', {
+      topicArn: aqTopic.ref,
+      protocol: 'sqs',
+      endpoint: assembledQueue.attrArn,
+      filterPolicy: { aq: [aqueueToken(':SecretString:aqueue::}}')] },
     });
 
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
