@@ -327,9 +327,6 @@ schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#34
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 sdk-to-cc-autoroute	2026-10-11T09:33:22Z	PASS	231	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-secret-derived-immutable-names	2026-10-11T19:13:47Z	FAIL	411	verify.sh	early run PR #4804: 5e passed; step 6 destroy failed on QueuePolicy Queues persisted as {{resolve:} (#4810 class), state hand-orphaned, AWS clean
-secrets-array-nested	2026-10-09T10:13:13Z	PASS	401	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
-secrets-dynamic-ref	2026-10-11T09:33:22Z	PASS	857	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 secret-derived-immutable-names	2026-10-12T07:32:41Z	PASS	481	verify.sh	rc ok, orph clean; PR #4817 on 686a6273c (main incl. #4823); pre-fix arm red at step 3 Queues premise
 secrets-array-nested	2026-10-12T00:02:47Z	PASS	393	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-dynamic-ref	2026-10-12T00:02:47Z	PASS	733	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
