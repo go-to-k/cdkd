@@ -8,7 +8,7 @@ import type { SsgNavigationGroup } from '@ox-content/vite-plugin';
 import { oxContentVue } from '@ox-content/vite-plugin-vue';
 import vize from '@vizejs/vite-plugin';
 import { homeTitlePlugin } from './plugins/home-title.js';
-import { navOpenCurrentScript, navToggleScript } from './plugins/nav-toggle.js';
+import { navOpenCurrentScript, navRememberScript, navToggleScript } from './plugins/nav-toggle.js';
 import {
   type SearchScope,
   scopeShortcutsScript,
@@ -411,7 +411,8 @@ const THEME_CSS = [
 // The sidebar, built from `navigation` above as Ox Content's theme sidebar:
 // that form carries `collapsed` / `stickyCollapsed`, so every group folds,
 // opens by default, and remembers what the reader closed, and the SSG marks
-// the current page's link itself.
+// the current page's link itself. The groups inside a group start folded and
+// are remembered by plugins/nav-toggle.ts instead.
 const sidebar = navigation.map((group) => ({
   text: group.title,
   collapsed: false,
@@ -583,8 +584,10 @@ const theme = (command: 'build' | 'serve') =>
       // One button per search scope under the search input
       // (plugins/search-scopes.ts).
       scopeShortcutsScript(SEARCH_SCOPES),
-      // The sidebar groups' open and close, where CSS alone cannot animate
-      // it (plugins/nav-toggle.ts).
+      // The sidebar's folding groups (plugins/nav-toggle.ts): the ones the
+      // reader opened on an earlier page, the one the current page is in, and
+      // their open and close where CSS alone cannot animate it.
+      navRememberScript(),
       navOpenCurrentScript(),
       navToggleScript(Number.parseInt(tokens.motion.duration.normal, 10), tokens.motion.ease),
     ].join('\n'),
