@@ -21,6 +21,7 @@ import {
   QUOTABLE_RENDER,
   quotedRender,
 } from './support.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -438,7 +439,7 @@ export function recordNoEchoParameterValue(
   context: ResolverContext
 ): void {
   const bag = context.recordedSecretValues;
-  if (paramDef?.NoEcho !== true || bag === undefined) return;
+  if (!declaresNoEcho(paramDef) || bag === undefined) return;
   // One spelling rule, shared with the deploy's diff log masker, which
   // records every `NoEcho` value up front (go-to-k/cdkd#4049).
   recordLogOnlyParameterValue(bag, value);

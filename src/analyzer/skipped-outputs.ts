@@ -169,6 +169,7 @@
 
 import { createHash } from 'node:crypto';
 import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.js';
+import { declaresNoEcho } from '../deployment/noecho-declared.js';
 
 /**
  * JSON with object keys sorted at every level. Arrays keep their order (an
@@ -244,7 +245,7 @@ function withNoEchoDefaultsMasked(parameters: unknown): unknown {
   for (const [name, decl] of Object.entries(parameters as Record<string, unknown>)) {
     const body = decl as Record<string, unknown> | null;
     masked[name] =
-      typeof body === 'object' && body !== null && body['NoEcho'] === true && 'Default' in body
+      typeof body === 'object' && body !== null && declaresNoEcho(body) && 'Default' in body
         ? { ...body, Default: NO_ECHO_DEFAULT_MASK }
         : decl;
   }

@@ -38,7 +38,8 @@ export interface TemplateParameter {
    * CloudFormation echoes the value. cdkd honors it by redacting the value
    * in `--verbose` debug logs (issue #1329).
    */
-  NoEcho?: boolean;
+  /** A boolean, or the string `"true"` (go-to-k/cdkd#4824): read it with `isNoEchoDeclared`. */
+  NoEcho?: boolean | string;
 }
 
 /**

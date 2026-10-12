@@ -57,6 +57,7 @@ import {
 } from './secret-redaction.js';
 import type { RecordedSecretValues } from './secret-redaction.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
+import { declaresNoEcho } from './noecho-declared.js';
 
 /**
  * What a parameter contributes to a fingerprint. `token` is a value fed from a
@@ -223,7 +224,7 @@ export function conditionFingerprint(
       inputs[parameter] = { token: input.expression };
       hasToken = true;
     } else {
-      if (isPlainObject(definition) && definition['NoEcho'] === true) return undefined;
+      if (declaresNoEcho(definition)) return undefined;
       if (typeof input.value !== 'string') return undefined;
       if (carriesDynamicReference(input.value)) return undefined;
       if (coerceParameterTypedValue(input.value, type) !== input.value) return undefined;

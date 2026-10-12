@@ -24,6 +24,7 @@ import { readRecordAttributes } from '../read-only-attribute-healer.js';
 import { type FreshNoEchoReadback, keyOrderFreeJson } from '../deploy-value-equality.js';
 import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -277,8 +278,7 @@ export function noEchoParameterNamesOf(
   const declared = template?.Parameters;
   if (declared === null || typeof declared !== 'object') return names;
   for (const [name, definition] of Object.entries(declared)) {
-    const noEcho = (definition as { NoEcho?: unknown } | undefined)?.NoEcho;
-    if (noEcho === true || noEcho === 'true') names.add(name);
+    if (declaresNoEcho(definition)) names.add(name);
   }
   return names;
 }
