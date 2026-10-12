@@ -115,7 +115,7 @@ a CDK CLI premise by running the inputs through its parser from `node_modules`
 — one read off its source refused more (#2221).
 
 **A decision-blocked issue is a candidate, not an exclusion**: return its
-options, each with its fix and what CFn / the CDK CLI does, for ONE up-front
+options, each with its fix and what CFn / the CDK CLI does, for ONE
 `AskUserQuestion` (gotchas.md).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
@@ -164,7 +164,7 @@ what survives both, in order, moving on only to break a tie:
 `Effort` / `Estimate` rank nothing; they gate what this run can AFFORD. A
 user-reported breakage outranks the whole table except rule 1.
 
-Rules 4–5 read §1's title prefix (`fix(deploy): ...`):
+Rules 4–5 read §1's title prefix (`fix(deploy):`); rule 3 reads a label:
 
 ```bash
 # rule 3's input is a LABEL — no per-candidate view:

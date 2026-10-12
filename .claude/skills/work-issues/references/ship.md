@@ -17,10 +17,10 @@ running BOTH the integ and the merge there (the marker is per tree). A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
 before the marker, re-running an integ the fix touches (#4561). Never two
-lanes' integs or merges at once; a turn blocked on a fixture fix yields the
-slot to the next merge-ready lane. A turn holding for HOURS: tell the user
+lanes' integs or merges at once; a turn blocked on a fixture fix yields to
+the next merge-ready lane. A turn holding for HOURS: tell the user
 unasked its ETA and the PRs queued. A subagent running a turn's integs, marker
-and ledger is told to block until EVERY run ends and report ONCE (§8-e).
+and ledger is told to block until EVERY run ends and report ONCE.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -176,7 +176,7 @@ tree it runs in** (a concurrent lane's sibling under `<MAIN_CHECKOUT>` takes the
 block above, every `git` line prefixed with `-C <MAIN_CHECKOUT>`, and so is
 not in this block's `-D` list).
 `<LAUNCH_BRANCH>` and `<each branch this run created in THIS tree>` are
-PLACEHOLDERS, not shell variables:
+PLACEHOLDERS for `launch-mode.md`'s probe values, not shell variables:
 
 ```bash
 git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
