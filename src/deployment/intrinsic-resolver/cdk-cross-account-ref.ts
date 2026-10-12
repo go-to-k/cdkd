@@ -1,6 +1,6 @@
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { derivePartitionAndUrlSuffix, sameRegion } from '../../utils/aws-partition.js';
-import { displayIdent, displayStackName } from '../../utils/display-safe.js';
+import { displayAwsMessage, displayIdent, displayStackName } from '../../utils/display-safe.js';
 import { parseIamRoleArn } from '../../utils/role-arn.js';
 import { markNonRetryable } from '../retryable-errors.js';
 
@@ -237,6 +237,12 @@ export interface CdkCrossAccountRefRefusalParts {
   readonly consumerAccount: string | undefined;
   /** Why cdkd could not read through the lookup role, as a rendered clause. */
   readonly reason: string;
+  /**
+   * The producer artifact names NO lookup role (a synthesizer such as
+   * `CliCredentialsStackSynthesizer`), so bootstrapping alone cannot help:
+   * remedy (1) then says to synthesize the producer with one that does.
+   */
+  readonly noLookupRole?: boolean;
 }
 
 /** A value inside a pasteable call: single-quoted when bare, as-is when already JSON-quoted. */
@@ -256,6 +262,17 @@ export function cdkCrossAccountRefRefusal(parts: CdkCrossAccountRefRefusalParts)
     parts.consumerAccount !== undefined && /^\d{12}$/.test(parts.consumerAccount)
       ? parts.consumerAccount
       : '<consumer-account>';
+  // ONE period between the reason and the next sentence, whatever the reason
+  // (an AWS message often ends in its own) brings.
+  const reason = parts.reason.replace(/[\s.]+$/, '');
+  const trust =
+    `'cdk bootstrap --trust-for-lookup ${consumerAccount}' ` + `(or '--trust ${consumerAccount}')`;
+  const remedyOne = parts.noLookupRole
+    ? `(1) synthesize stack ${parts.producer} with a stack synthesizer that names a lookup ` +
+      `role (the default DefaultStackSynthesizer), and in account ${parts.producerAccount} run ` +
+      `${trust} so the identity running cdkd can assume it; or `
+    : `(1) in account ${parts.producerAccount}, run ${trust} so the identity running cdkd ` +
+      `can assume the lookup role; or `;
   return (
     `Fn::GetStackOutput: cannot read output ${parts.output} of stack ${parts.producer} ` +
     `(region ${parts.region}, account ${parts.producerAccount})` +
@@ -263,10 +280,9 @@ export function cdkCrossAccountRefRefusal(parts: CdkCrossAccountRefRefusalParts)
     `Its RoleArn names ${parts.roleName}, a role the AWS CDK generates for a cross-account ` +
     `reference that trusts only the consumer account's CloudFormation execution role, which ` +
     `cdkd does not use; cdkd reads the producer's cdkd state through the producer ` +
-    `account's CDK lookup role instead, but ${parts.reason}. ` +
+    `account's CDK lookup role instead, but ${reason}. ` +
     `Fix it one of two ways: ` +
-    `(1) in account ${parts.producerAccount}, run 'cdk bootstrap --trust-for-lookup ${consumerAccount}' ` +
-    `(or '--trust ${consumerAccount}') so the identity running cdkd can assume the lookup role; or ` +
+    remedyOne +
     `(2) write the reference as cdk.Fn.getStackOutput(${quotedArg(parts.producer)}, ` +
     `${quotedArg(parts.output)}, ${quotedArg(parts.region)}, '<roleArn>') with a role in ` +
     `account ${parts.producerAccount} that trusts the identity running cdkd and allows ` +
@@ -316,6 +332,29 @@ export function isLookupRoleDenial(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * The INNERMOST error of a failed read through the lookup role, rendered as
+ * `<name>: <message>`. The AssumeRole and state-read paths wrap the AWS error
+ * in text written for a user-chosen role (a trust-policy hint); for the
+ * generated reference that advice is wrong, so only AWS's own words are shown.
+ */
+export function describeInnermostAwsError(error: unknown): string {
+  let innermost: unknown = error;
+  for (let depth = 0; depth < 6; depth++) {
+    const cause: unknown =
+      innermost !== null && typeof innermost === 'object'
+        ? (innermost as { cause?: unknown }).cause
+        : undefined;
+    if (cause === null || typeof cause !== 'object') break;
+    innermost = cause;
+  }
+  if (!(innermost instanceof Error)) return displayAwsMessage(String(innermost));
+  const code = (innermost as { Code?: unknown }).Code;
+  const name = typeof code === 'string' && code !== '' ? code : innermost.name;
+  const message = displayAwsMessage(innermost.message);
+  return name && name !== 'Error' ? `${displayIdent(name)}: ${message}` : message;
 }
 
 /** One `Fn::GetStackOutput` argument carrying a `RoleArn`, as a template holds it. */
@@ -370,6 +409,7 @@ export function refuseUnreadableCdkCrossAccountRefs(
           roleName: displayIdent(shape.roleName),
           consumerAccount: consumerStack.account,
           reason,
+          noLookupRole: verdict.kind === 'generated',
         })
       )
     );

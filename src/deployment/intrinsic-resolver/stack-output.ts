@@ -5,7 +5,6 @@ import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
 import {
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
-  displayAwsMessage,
   displayIdent,
   displaySafe,
   displayStackName,
@@ -27,6 +26,7 @@ import {
   type CdkCrossAccountRefVerdict,
   cdkCrossAccountRefRefusal,
   classifyCdkCrossAccountRef,
+  describeInnermostAwsError,
   isLookupRoleDenial,
   noLookupRoleReason,
   producerAbsentReason,
@@ -380,7 +380,7 @@ export async function resolveGetStackOutput(
   if (cdkRef !== undefined) {
     const ref = cdkRef;
     const producerAccount = ref.shape.accountId;
-    const refuseCdkRef = (reason: string, cause?: unknown): Error =>
+    const refuseCdkRef = (reason: string, cause?: unknown, noLookupRole = false): Error =>
       markNonRetryable(
         new Error(
           cdkCrossAccountRefRefusal({
@@ -394,6 +394,7 @@ export async function resolveGetStackOutput(
             roleName: displayIdent(ref.shape.roleName),
             consumerAccount: this.consumerAccount,
             reason,
+            noLookupRole,
           }),
           cause === undefined ? undefined : { cause }
         )
@@ -402,19 +403,20 @@ export async function resolveGetStackOutput(
       throw refuseCdkRef(producerAbsentReason(producerAccount));
     }
     if (ref.lookupRoleArn === undefined) {
-      throw refuseCdkRef(noLookupRoleReason(producerAccount));
+      throw refuseCdkRef(noLookupRoleReason(producerAccount), undefined, true);
     }
     readRoleArn = ref.lookupRoleArn;
     const shownLookupRoleArn = displayIdent(readRoleArn, {
       maxCodePoints: ROLE_ARN_MAX_CODE_POINTS,
     });
     // A DENIED AssumeRole or state read is the refusal naming the remedies,
-    // never a fallback to other credentials. The cause is AWS's text, sanitized,
-    // and the error itself rides along as `cause`.
+    // never a fallback to other credentials. It quotes the INNERMOST AWS error
+    // (the wrappers' advice is about a user-chosen role), sanitized, and the
+    // error itself rides along as `cause`.
     refuseCdkRead = (error: unknown): Error =>
       refuseCdkRef(
         `assuming the lookup role ${shownLookupRoleArn} or reading cdkd-state-${producerAccount} ` +
-          `with it was denied: ${displayAwsMessage(error instanceof Error ? error.message : String(error))}`,
+          `with it was denied: ${describeInnermostAwsError(error)}`,
         error
       );
     this.logger.debug(
@@ -664,7 +666,11 @@ export async function resolveGetStackOutput(
       new CrossAccountSecretRefusalError(
         `Fn::GetStackOutput: output ${loggedOutputName} of stack ${loggedStackName} (${displayIdent(loggedRegion)}) is a ` +
           `redacted dynamic reference, and this is a CROSS-ACCOUNT reference (RoleArn ` +
-          `${shownRoleArn}). cdkd will not resolve a producer account's secret with the consumer's ` +
+          `${shownRoleArn}${
+            readRoleArn !== roleArn
+              ? `, read through the producer account's CDK lookup role ${shownReadRoleArn}`
+              : ''
+          }). cdkd will not resolve a producer account's secret with the consumer's ` +
           `credentials — a same-named secret in the consumer account would answer instead. ` +
           `Export a non-secret value (e.g. the secret's ARN) and resolve it in the consumer ` +
           `stack, or reference the producer stack from within its own account.`

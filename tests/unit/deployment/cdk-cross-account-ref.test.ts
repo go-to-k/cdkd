@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 import {
   cdkCrossAccountRefRefusal,
   classifyCdkCrossAccountRef,
+  describeInnermostAwsError,
   isGeneratedReaderRole,
   isLookupRoleDenial,
   producerLookupOver,
@@ -298,6 +299,48 @@ describe('the refusal message', () => {
     }
   });
 
+  it('names a synthesizer remedy when the producer names no lookup role, and one period per join', () => {
+    const base = {
+      consumer: 'Consumer',
+      output: 'O',
+      producer: 'Producer',
+      region: 'us-east-1',
+      producerAccount: PRODUCER_ACCOUNT,
+      roleName: 'R',
+      consumerAccount: CONSUMER_ACCOUNT,
+      reason: 'AWS said no.',
+    };
+    const bootstrap = cdkCrossAccountRefRefusal(base);
+    expect(bootstrap).toContain(
+      `(1) in account ${PRODUCER_ACCOUNT}, run 'cdk bootstrap --trust-for-lookup ${CONSUMER_ACCOUNT}'`
+    );
+    expect(bootstrap).not.toContain('synthesizer');
+    expect(bootstrap).toContain('but AWS said no. Fix it');
+    const synth = cdkCrossAccountRefRefusal({ ...base, noLookupRole: true });
+    expect(synth).toContain(
+      '(1) synthesize stack Producer with a stack synthesizer that names a lookup role ' +
+        `(the default DefaultStackSynthesizer), and in account ${PRODUCER_ACCOUNT} run ` +
+        `'cdk bootstrap --trust-for-lookup ${CONSUMER_ACCOUNT}'`
+    );
+    expect(synth).toContain(
+      "(2) write the reference as cdk.Fn.getStackOutput('Producer', 'O', 'us-east-1', '<roleArn>')"
+    );
+  });
+
+  it('describes the innermost AWS error of a wrapped failure', () => {
+    const aws = Object.assign(new Error('User is not authorized.'), { name: 'AccessDenied' });
+    const wrapped = new Error('AssumeRole into x failed: ... If this is a trust-policy issue.', {
+      cause: aws,
+    });
+    expect(describeInnermostAwsError(wrapped)).toBe('AccessDenied: User is not authorized.');
+    expect(
+      describeInnermostAwsError(
+        new Error('outer', { cause: Object.assign(new Error('m'), { Code: 'NoSuchEntity' }) })
+      )
+    ).toBe('NoSuchEntity: m');
+    expect(describeInnermostAwsError(new Error('plain'))).toBe('plain');
+  });
+
   it('carries no issue number and no date', () => {
     expect(message).not.toMatch(/#\d/);
     expect(message).not.toMatch(/\b20\d\d-\d\d-\d\d\b/);
@@ -389,6 +432,7 @@ describe('the deploy pre-flight', () => {
     expect(caught).toBeInstanceOf(Error);
     expect(isMarkedNonRetryable(caught)).toBe(true);
     expect((caught as Error).message).toContain('names no CDK lookup role');
+    expect((caught as Error).message).toContain('(1) synthesize stack Producer with a stack synthesizer');
     expect((caught as Error).message).toContain(`--trust-for-lookup ${CONSUMER_ACCOUNT}`);
   });
 
