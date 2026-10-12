@@ -39,7 +39,7 @@ the outputs.
 | --- | --- | --- |
 | Where a value is read from | The stack's exports and outputs in CloudFormation | The producer's state record in cdkd's state bucket |
 | What a cross-account `RoleArn` needs | `cloudformation:DescribeStacks` | Read access to the producer account's cdkd state bucket |
-| A cross-account reference CDK generates for you | Works | Does not work; write `cdk.Fn.getStackOutput()` yourself |
+| A cross-account reference CDK generates for you | Read through the role CDK generates | Read through the producer account's CDK lookup role |
 | Who refuses a producer's destroy | CloudFormation | cdkd, from the imports it recorded in each consumer's state |
 | A producer the other engine manages | Not readable | Readable from CloudFormation, as a weak reference |
 
@@ -119,14 +119,25 @@ Use one of the two ways above.
 ## Reading from another account
 
 > [!WARNING]
-> A cross-account reference that CDK generates for you does not work with
-> cdkd. For a producer in another account, CDK synthesizes
-> `Fn::GetStackOutput` with a `RoleArn` built by `Fn::Join`, which cdkd refuses
-> because it accepts only a literal `RoleArn`. The role it names is one CDK
-> creates in the producer stack, which trusts only the consumer's
-> CloudFormation execution role and allows only
-> `cloudformation:DescribeStacks`, so it could not read cdkd's state either. Write the reference
-> yourself with `cdk.Fn.getStackOutput()`, naming a role set up as below.
+> For a producer in another account, CDK synthesizes `Fn::GetStackOutput`
+> with a `RoleArn` naming a role it adds to the producer stack. That role
+> trusts only the consumer account's CloudFormation execution role and allows
+> only `cloudformation:DescribeStacks`, so cdkd cannot use it. cdkd recognizes
+> the reference and reads the producer's state through the producer account's
+> CDK lookup role instead, which needs two things:
+>
+> - The producer account bootstrapped with
+>   `cdk bootstrap --trust-for-lookup <consumer-account>` (or `--trust`), so
+>   the identity running cdkd can assume the lookup role.
+> - The consumer account CDK-bootstrapped too: the generated role trusts the
+>   consumer's CloudFormation execution role, and IAM refuses a trust policy
+>   naming a role that does not exist (`MalformedPolicyDocument: Invalid
+>   principal in policy`), so deploying the producer needs that role to exist.
+>
+> When the lookup role cannot be used, cdkd refuses the reference and names
+> both remedies: bootstrap as above, or write the reference yourself with
+> `cdk.Fn.getStackOutput()`, naming a role set up as below. cdkd never reads
+> it with its own credentials.
 
 `Fn::GetStackOutput` with a `RoleArn` reads the producer's output from cdkd's
 state in the producer's account, not from CloudFormation. cdkd assumes the
@@ -149,7 +160,8 @@ Three rules apply:
   `cloudformation:DescribeStacks` is not enough. The policy to attach is
   under [IAM permissions](cross-stack-internals.md#iam-permissions).
 - The `RoleArn` must be a literal string. cdkd rejects a `Ref` or `Fn::Sub`
-  there.
+  there, and accepts CDK's own `Fn::Join` form only for the reference CDK
+  generates.
 - cdkd refuses to read an output that holds a secret this way. Export the
   secret's ARN instead, and resolve the secret in the consumer.
 

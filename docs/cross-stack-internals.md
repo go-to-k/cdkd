@@ -572,7 +572,8 @@ When `RoleArn` is set, cdkd's resolver:
   resolver layer: the context isn't guaranteed to have the producer's
   account id available at intrinsic-resolution time, and a typo'd role
   lookup is far worse than a clear template-author-time error. Inline
-  the ARN.
+  the ARN. The one exception is the reference CDK generates, described
+  after this list.
 - **Producer must be on the canonical region-free bucket layout**
   (`cdkd-state-{accountId}`). Legacy region-suffixed buckets
   (`cdkd-state-{accountId}-{region}`) are not consulted on the
@@ -588,6 +589,45 @@ When `RoleArn` is set, cdkd's resolver:
   `Fn::GetStackOutput` is a narrow read-only operation, and the
   spread-defaults-first order is what keeps this client's own explicit
   credentials winning over that publication.
+
+#### The cross-account reference CDK generates
+
+For a producer in another account, aws-cdk-lib writes the consumer's
+`RoleArn` as
+`{"Fn::Join":["",["arn:",{"Ref":"AWS::Partition"},":iam::<producer>:role/<name>"]]}`
+(a literal ARN under `@aws-cdk/core:enablePartitionLiterals`), and adds that
+role to the producer stack. The role trusts only the consumer account's
+CloudFormation execution role, so cdkd cannot assume it. cdkd recognizes the
+reference when BOTH hold:
+
+| Check | Holds when |
+| --- | --- |
+| Shape | The `RoleArn` is a literal role ARN, or exactly the `Fn::Join` above |
+| Producer | The producer stack in the same cloud assembly (by name, account and region) declares an `AWS::IAM::Role` with that `RoleName`, trusting only CloudFormation execution roles |
+
+It then assumes the producer stack artifact's CDK lookup role
+(`lookupRole.arn`, its partition taken from the producer region) instead, and
+reads the state as in steps 2 to 5 above. The secret refusal and the
+weak-reference semantics below apply unchanged. Only `cdkd deploy` and
+`cdkd diff` recognize it; they hold the cloud assembly, and the check runs
+only for a reference that carries a `RoleArn`.
+
+The lookup role must trust the identity running cdkd: bootstrap the producer
+account with `cdk bootstrap --trust-for-lookup <consumer-account>` (or
+`--trust`). When the producer artifact names no lookup role, or the
+`sts:AssumeRole` or the state read is denied, cdkd refuses the reference and
+names that remedy and the other: a `cdk.Fn.getStackOutput()` whose role is set
+up as under [IAM permissions](#iam-permissions). It never falls back to its own
+credentials. For a top-level stack's resource that every deploy resolves (no
+`Condition`, no enclosing `Fn::If`), `cdkd deploy` refuses what it can tell
+without credentials (no producer stack in the assembly for the `Fn::Join`
+form, or no lookup role) before anything is published or provisioned. A
+reference anywhere else, a nested stack's included, is refused when it is
+resolved.
+
+A reference that matches the shape but not the producer check (a role you
+wrote) keeps the literal-string rule under Constraints: a literal ARN is assumed as written, and the
+`Fn::Join` form is rejected.
 
 #### IAM permissions
 

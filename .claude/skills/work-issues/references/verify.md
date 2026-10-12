@@ -16,9 +16,8 @@
 A lane cannot touch AWS, so only the parent finds an AWS-side rejection: run a
 NEW arm once EARLY too, as soon as the lane has written it and between review
 rounds (never during a `src` fix round); that run sets no marker and is no
-§8-d proof. Two new arms failed their first AWS contact on a policy shape the
-service rejects, one also measuring a normalization that reshaped the fix
-(#4618, #4626). Sequence: dispatch reviewers → (new arm: early run) → apply
+§8-d proof — a new arm's first AWS contact can reject its shape (#4618).
+Sequence: dispatch reviewers → (new arm: early run) → apply
 EVERY finding, nits included → rebase → integ → marker. A UNIT-test-only fix
 round may overlap the parent's integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
 build rewrites the live fixture's `dist/`), no rebase or install, never the
@@ -154,7 +153,8 @@ aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                      # cdkd r
 
 **A docker-dependent fixture is an environment blocker — prefer one reaching
 the same code without it.** Where docker is required (any `local-*` fixture),
-verify registry reach FIRST: `docker pull hello-world` under a 120s cap.
+verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
+`[verify] SKIP` exits 0 and is NOT a pass.
 
 ### 8-g. Prose claims are verified to the bar code is
 
@@ -190,10 +190,10 @@ run AGENTS.md's leftover check, which the `deployments/` store survives.
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
 never substitute for it** (go-to-k/cdkd#2383) — they are its children and
 inherit its premise. The parent runs its round once the lane reports
-merge-ready, ONCE, on the final sha — brief each reviewer to read by explicit
-sha after `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`:
-`FETCH_HEAD` is shared across worktrees (a peer's fetch swaps it mid-read), the
-short `pull/<N>/head` source under `fetch.prune` DELETES the named ref on a
-re-fetch, and without `+` a force-pushed fix round is rejected. A later fix
-round goes to the same reviewer with the delta. **The reviewer set is
+merge-ready, ONCE, on the final sha — brief each reviewer with the maintainer's
+design answers and "what does this break that CFn or the CDK CLI accepts?", to
+read by explicit sha after
+`git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
+shared across worktrees, `fetch.prune` DELETES a ref fetched from the short
+`pull/<N>/head`, and without `+` a force-push is rejected. A later fix round goes to the same reviewer with the delta. **The reviewer set is
 `/review-pr`'s**, which sizes `src/**` only: count the FIXTURE into it too.

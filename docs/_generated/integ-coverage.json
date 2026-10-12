@@ -4301,6 +4301,7 @@
       "resourceType": "AWS::IAM::Policy",
       "integs": [
         "asset-migration",
+        "cdk-cross-account-lookup-role",
         "export",
         "iam-propagation-stress",
         "iam-recreate-reattach",
@@ -4311,6 +4312,10 @@
       ],
       "signals": {
         "asset-migration": [
+          "literal"
+        ],
+        "cdk-cross-account-lookup-role": [
+          "l1",
           "literal"
         ],
         "export": [
@@ -4351,6 +4356,7 @@
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "cc-write-only-create-only",
+        "cdk-cross-account-lookup-role",
         "ci-cd",
         "cloudtrail-trail",
         "composite-stack",
@@ -4459,6 +4465,10 @@
         ],
         "cc-write-only-create-only": [
           "l2"
+        ],
+        "cdk-cross-account-lookup-role": [
+          "l1",
+          "literal"
         ],
         "ci-cd": [
           "l2"
@@ -6913,6 +6923,7 @@
       "resourceType": "AWS::SSM::Parameter",
       "integs": [
         "bench-sdk",
+        "cdk-cross-account-lookup-role",
         "composite-stack",
         "conditions-and-if",
         "conditions-update-2",
@@ -7014,6 +7025,10 @@
       "signals": {
         "bench-sdk": [
           "l2"
+        ],
+        "cdk-cross-account-lookup-role": [
+          "l1",
+          "literal"
         ],
         "composite-stack": [
           "l2",

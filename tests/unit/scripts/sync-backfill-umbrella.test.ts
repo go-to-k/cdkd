@@ -600,10 +600,9 @@ describe('cross-file fences', () => {
     const sources = ['triage.md', 'retro.md'].map((f) =>
       readFileSync(join(REPO_ROOT, '.claude/skills/work-issues/references', f), 'utf8')
     );
-    // Per COMMAND, not per fenced block: §3-a carries TWO listings in one
-    // block, so a block-granular scan found 3 where there are 4 and would have
-    // passed with one of them unfiltered. Commands are separated by blank lines
-    // inside a block.
+    // Per COMMAND, not per fenced block: a block can carry TWO listings, and a
+    // block-granular scan would then pass with one of them unfiltered. Commands
+    // are separated by blank lines inside a block.
     const listings = sources
       .flatMap((src) => src.split('```').filter((_, i) => i % 2 === 1))
       .flatMap((b) => b.split(/\n\s*\n/))
@@ -614,9 +613,9 @@ describe('cross-file fences', () => {
       );
     expect(
       listings.length,
-      'the backlog-listing scan found a different number than the 5 this fence was calibrated ' +
+      'the backlog-listing scan found a different number than the 4 this fence was calibrated ' +
         'against — a listing was added, removed, or reshaped past what the split recognises'
-    ).toBe(5);
+    ).toBe(4);
     for (const listing of listings) {
       const first =
         listing.trim().split('\n').find((l) => l.trim().startsWith('gh')) ?? listing.slice(0, 60);

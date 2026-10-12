@@ -1032,6 +1032,83 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
   });
 });
 
+describe('buildDiffTree producerLookup threading', () => {
+  // Every resolver the diff builds consults the command's producer lookup for
+  // a `Fn::GetStackOutput` carrying a `RoleArn`, as the deploy engine's does:
+  // the root diff, the nested-child input-parameter resolution and the child's
+  // own diff. The lookup answers nothing, so each read is refused, which the
+  // best-effort diff swallows; the CALLS are the wiring under test.
+  const SSM = 'AWS::SSM::Parameter';
+  const ref = (stackName: string): unknown => ({
+    'Fn::GetStackOutput': {
+      StackName: stackName,
+      OutputName: 'Out',
+      Region: 'us-east-1',
+      RoleArn: {
+        'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':iam::111111111111:role/Gen']],
+      },
+    },
+  });
+
+  it('reaches the root, the child-parameter resolution and the nested child', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-producer-lookup-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Parameters: { InP: { Type: 'String' } },
+          Resources: { C: { Type: SSM, Properties: { Value: ref('ProdC') } } },
+        })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Resources: {
+          P: { Type: SSM, Properties: { Value: ref('ProdA') } },
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: { Parameters: { InP: ref('ProdB') } },
+          },
+        },
+      };
+      const states: Record<string, StackState> = {
+        S: st('S', { P: res(SSM, { Value: 'x' }), Child: res(NESTED, {}) }),
+        'S~Child': st('S~Child', { C: res(SSM, { Value: 'y' }) }),
+      };
+      const producerLookup = vi.fn(() => undefined);
+      await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: {
+          getState: async (stackName: string) => {
+            const state = states[stackName];
+            return state ? { state, etag: 'fake' } : null;
+          },
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        producerLookup,
+      });
+      // Counted, not deduplicated: each resolver memoizes its own verdicts, so
+      // ProdB is looked up once by the root diff (the row's own properties)
+      // and once by the child-parameter resolution. Dropping the lookup from
+      // either site changes a count.
+      const counts: Record<string, number> = {};
+      for (const call of producerLookup.mock.calls) {
+        const name = String((call as unknown[])[0]);
+        counts[name] = (counts[name] ?? 0) + 1;
+      }
+      expect(counts).toEqual({ ProdA: 1, ProdB: 2, ProdC: 1 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('computeStackDiff', () => {
   it('reports all CREATE against an empty state', async () => {
     const template: CloudFormationTemplate = {

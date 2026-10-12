@@ -7,6 +7,7 @@ import type { ForeignHolding } from '../rollback-executor/journaled-orphans.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
+import type { ProducerLookup } from '../intrinsic-resolver/cdk-cross-account-ref.js';
 
 /**
  * Default per-resource warn threshold: warn the user when a single
@@ -425,6 +426,21 @@ export interface DeployEngineOptions {
    * engines inherit it via the options spread in `NestedStackProvider`.
    */
   cfnFallback?: boolean;
+
+  /**
+   * The cloud assembly's producer artifacts, consulted lazily by an
+   * `Fn::GetStackOutput` carrying a `RoleArn` only — see
+   * `IntrinsicFunctionResolverOptions.producerLookup`. Threaded into the
+   * engine's resolver at construction.
+   */
+  producerLookup?: ProducerLookup;
+
+  /**
+   * The deployed stack's synthesized account, for the refusal of an
+   * aws-cdk-lib-generated cross-account reference — see
+   * `IntrinsicFunctionResolverOptions.consumerAccount`.
+   */
+  consumerAccount?: string;
 
   /**
    * `--skip-final-snapshot` (issues #1352 / #1354) — delete
