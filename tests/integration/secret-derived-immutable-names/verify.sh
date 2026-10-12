@@ -1095,7 +1095,10 @@ expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIV
     --query 'Parameter.Value' --output text)"
 # go-to-k/cdkd#4819: ChildQueuePolicy reads the parent-passed URL and ARN.
 # PREMISE: its bag carried the queue name (the ARN it read is recorded in its
-# reference form), so the save's value scan met the URL.
+# reference form), so the save's value scan met the URL. Since go-to-k/cdkd#4802
+# the pair is carried from step 4, the update that kept the queue's physical
+# id, so the record checked here may be that save's rather than this deploy's;
+# either way the URL met the scan beside the name.
 CHILD_POLICY_RESOURCE="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
   | jq -r '.resources.ChildQueuePolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
 case "${CHILD_POLICY_RESOURCE}" in
