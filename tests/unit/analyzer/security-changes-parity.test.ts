@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
+
+// cdkd always colors the table, so compare with the AWS CDK CLI as it prints in
+// a terminal: chalk's colors change its row order (removals sort first).
+vi.hoisted(() => {
+  process.env['FORCE_COLOR'] = '1';
+});
 import { fullDiff, formatSecurityChanges as cdkFormat } from '@aws-cdk/cloudformation-diff';
 import { loadAwsServiceSpecSync } from '@aws-cdk/aws-service-spec';
 import {
@@ -46,7 +52,8 @@ function ours(oldResources: Resources, newResources: Resources) {
   return {
     broadened: changes.permissionsBroadened,
     any: changes.permissionsAnyChanges,
-    table: formatSecurityChanges(changes, { Role: '/Stack/MyRole/Resource' }),
+    // eslint-disable-next-line no-control-regex
+    table: formatSecurityChanges(changes, { Role: '/Stack/MyRole/Resource' }).replace(/\u001b\[[0-9;]*m/g, ''),
   };
 }
 
@@ -126,8 +133,63 @@ const CASES: Array<[string, Resources, Resources]> = [
   ['an unknown type', {}, { U: { Type: 'Custom::Thing', Properties: { Policy: { Statement: [allow('*')] } } } }],
 ];
 
+
+const pol = (statements: unknown[], extra: Record<string, unknown> = {}) => ({
+  Type: 'AWS::IAM::Policy',
+  Properties: { PolicyName: 'p', Roles: ['r'], PolicyDocument: { Statement: statements }, ...extra },
+});
+const A = (action: unknown, extra: Record<string, unknown> = {}) => ({
+  Effect: 'Allow',
+  Action: action,
+  Resource: '*',
+  ...extra,
+});
+
+/** Branches the first list leaves unreached: one SSO type alone, `Groups`, `Sid`, ordering, edge intrinsics. */
+const EDGE_CASES: Array<[string, Resources, Resources]> = [
+  ['type change Role->User with Policies', { X: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: { Statement: [] }, Policies: [{ PolicyName: 'i', PolicyDocument: { Statement: [A('s3:*')] } }] } } }, { X: { Type: 'AWS::IAM::User', Properties: { Policies: [{ PolicyName: 'i', PolicyDocument: { Statement: [A('s3:*')] } }] } } }],
+  ['type change scrutinized->unscrutinized', { X: pol([A('s3:*')]) }, { X: { Type: 'AWS::SQS::Queue', Properties: {} } }],
+  ['SG desc change + string port', { SG: sg({ SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '10.0.0.0/8' }] }) }, { SG: sg({ GroupDescription: 'h', SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: '443', ToPort: '443', CidrIp: '10.0.0.0/8' }] }) }],
+  ['Sid change', { P: pol([A('s3:GetObject', { Sid: 'a' })]) }, { P: pol([A('s3:GetObject', { Sid: 'b' })]) }],
+  ['action reorder', { P: pol([A(['s3:GetObject', 's3:PutObject'])]) }, { P: pol([A(['s3:PutObject', 's3:GetObject'])]) }],
+  ['logs resource policy (???)', {}, { L: { Type: 'AWS::Logs::ResourcePolicy', Properties: { PolicyName: 'n', PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { Service: 'es.amazonaws.com' }, Action: 'logs:PutLogEvents', Resource: '*' }] } } } }],
+  ['lambda EventSourceToken+SourceAccount', {}, { P: { Type: 'AWS::Lambda::Permission', Properties: { Action: 'lambda:InvokeFunction', FunctionName: 'f', Principal: 'alexa-appkit.amazon.com', SourceAccount: '1', EventSourceToken: 't' } } }],
+  ['lambda principal Ref', {}, { P: { Type: 'AWS::Lambda::Permission', Properties: { Action: 'lambda:InvokeFunction', FunctionName: 'f', Principal: { Ref: 'AWS::AccountId' } } } }],
+  ['managed arns Fn::If', { R: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: {} } } }, { R: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: {}, ManagedPolicyArns: { 'Fn::If': ['C', ['arn:a'], { Ref: 'AWS::NoValue' }] } } } }],
+  ['inline policy element Fn::If', { R: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: {} } } }, { R: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: {}, Policies: [{ 'Fn::If': ['C', { PolicyName: 'i', PolicyDocument: { Statement: [A('s3:*')] } }, { Ref: 'AWS::NoValue' }] }] } } }],
+  ['SG rule element Fn::If', { SG: sg({}) }, { SG: sg({ SecurityGroupIngress: [{ 'Fn::If': ['C', { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' }, { Ref: 'AWS::NoValue' }] }] }) }],
+  ['SSO assignment only', {}, { A: { Type: 'AWS::SSO::Assignment', Properties: { InstanceArn: 'i', PermissionSetArn: 'p', PrincipalId: 'u', PrincipalType: 'USER', TargetId: '1', TargetType: 'AWS_ACCOUNT' } } }],
+  ['SSO ACA only', {}, { A: { Type: 'AWS::SSO::InstanceAccessControlAttributeConfiguration', Properties: { InstanceArn: 'i', AccessControlAttributes: [{ Key: 'k', Value: { Source: ['a'] } }] } } }],
+  ['SSO permset only (no inline)', {}, { A: { Type: 'AWS::SSO::PermissionSet', Properties: { InstanceArn: 'i', Name: 'n', PermissionsBoundary: { ManagedPolicyArn: 'arn:b' } } } }],
+  ['SSO assignment removed', { A: { Type: 'AWS::SSO::Assignment', Properties: { InstanceArn: 'i', PermissionSetArn: 'p', PrincipalId: 'u', PrincipalType: 'USER', TargetId: '1', TargetType: 'AWS_ACCOUNT' } } }, {}],
+  ['Effect intrinsic', {}, { P: pol([{ Effect: { Ref: 'E' }, Action: 's3:*', Resource: '*' }]) }],
+  ['Groups', {}, { P: pol([A('s3:*')], { Roles: undefined, Groups: ['g'] }) }],
+  ['Deny NotAction added', { P: pol([A('s3:*')]) }, { P: pol([A('s3:*'), { Effect: 'Deny', NotAction: 's3:Get*', Resource: '*' }]) }],
+  ['NotPrincipal/NotResource', {}, { BP: { Type: 'AWS::S3::BucketPolicy', Properties: { Bucket: 'b', PolicyDocument: { Statement: [{ Effect: 'Allow', NotPrincipal: { AWS: ['arn:x', 'arn:y'] }, Action: 's3:*', NotResource: 'arn:z' }] } } } }],
+  ['DependsOn only', { P: { ...pol([A('s3:*')]), DependsOn: ['a', 'b'] } }, { P: { ...pol([A('s3:*')]), DependsOn: ['b', 'c'] } }],
+  ['GetAtt 3-part', {}, { P: pol([A('s3:*', { 'Fn::GetAtt': 'Db.Endpoint.Address' })]) }],
+  ['Fn::Sub resource', {}, { P: pol([A('s3:*', { 'Fn::Sub': 'arn:${AWS::Partition}:s3:::b/*' })]) }],
+  ['SG standalone no GroupId', {}, { I: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: { GroupName: 'default', IpProtocol: 'tcp', FromPort: 1, ToPort: 1 } } }],
+  ['SG rule moved between groups', { I: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: { GroupId: 'sg-1', IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' } } }, { I: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: { GroupId: 'sg-2', IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' } } }],
+  ['In+Out same group', { SG: sg({}) }, { SG: sg({ SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 1, ToPort: 1, CidrIp: '1.1.1.1/32' }], SecurityGroupEgress: [{ IpProtocol: 'tcp', FromPort: 2, ToPort: 2, CidrIp: '2.2.2.2/32' }] }) }],
+  ['bool vs string prop', { P: pol([A('s3:*', { Condition: { Bool: { 'aws:SecureTransport': true } } })]) }, { P: pol([A('s3:*', { Condition: { Bool: { 'aws:SecureTransport': 'true' } } })]) }],
+  ['bool vs string prop + other change', { P: pol([A('s3:*', { Condition: { Bool: { 'aws:SecureTransport': true } } })]) }, { P: pol([A('s3:*', { Condition: { Bool: { 'aws:SecureTransport': 'true' } } })], { PolicyName: 'q' }) }],
+  ['Join non-array', {}, { P: pol([A('s3:*', { 'Fn::Join': ['', { Ref: 'L' }] })]) }],
+  ['Policies is intrinsic', { R: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: {} } } }, { R: { Type: 'AWS::IAM::Role', Properties: { AssumeRolePolicyDocument: {}, Policies: { 'Fn::If': ['C', [], []] } } } }],
+  ['intrinsic statement removed', { P: pol([{ 'Fn::If': ['C', A('s3:*'), { Ref: 'AWS::NoValue' }] }]) }, { P: pol([]) }],
+  ['no peer', {}, { I: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: { GroupId: 'sg', IpProtocol: 'tcp', FromPort: 1, ToPort: 1 } } }],
+  ['a removal and an addition on one resource', { P: policy([allow('s3:GetObject', 'arn:aws:s3:::a')]) }, { P: policy([allow('s3:PutObject', 'arn:aws:s3:::a')]) }],
+  ['a removal and an addition on two resources', { P: policy([allow('s3:GetObject', 'arn:aws:s3:::b')]) }, { P: policy([allow('s3:PutObject', 'arn:aws:s3:::a')]) }],
+  ['two ingress rules removed and one added', { SG: sg({ SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 1, ToPort: 1, CidrIp: '1.1.1.1/32' }, { IpProtocol: 'tcp', FromPort: 2, ToPort: 2, CidrIp: '2.2.2.2/32' }] }) }, { SG: sg({ SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 3, ToPort: 3, CidrIp: '3.3.3.3/32' }] }) }],
+  ['a multi-line resource cell on both sides', { P: policy([allow('s3:GetObject', ['arn:aws:s3:::a', 'arn:aws:s3:::b'])]) }, { P: policy([allow('s3:PutObject', ['arn:aws:s3:::a', 'arn:aws:s3:::c'])]) }],
+  ['an SNS topic with both policies', { T: { Type: 'AWS::SNS::Topic', Properties: {} } }, { T: { Type: 'AWS::SNS::Topic', Properties: { ArchivePolicy: { Statement: [{ Effect: 'Allow', Action: 'a:Z' }] }, DataProtectionPolicy: { Statement: [{ Effect: 'Allow', Action: 'a:A' }] } } } }],
+  ['a wide-character condition value', {}, { P: policy([allow('s3:GetObject', '*', { Condition: { StringEquals: { 'aws:PrincipalTag/team': '開発チーム' } } })]) }],
+  ['an emoji in a resource', {}, { P: policy([allow('s3:GetObject', 'arn:aws:s3:::🚀')]) }],
+  ['an empty-string statement', {}, { P: policy(['']) }],
+];
+
 describe('security classifier parity with the AWS CDK CLI', () => {
-  it.each(CASES)('%s', (_name, oldResources, newResources) => {
+  it.each([...CASES, ...EDGE_CASES])('%s', (_name, oldResources, newResources) => {
     expect(ours(oldResources, newResources)).toEqual(cdk(oldResources, newResources));
   });
 });
@@ -148,6 +210,43 @@ describe('scrutiny tables', () => {
       }
     }
     expect(RESOURCE_SCRUTINY).toEqual(resources);
-    expect(PROPERTY_SCRUTINY).toEqual(properties);
+    // In order: the classifier reads a type's properties in this order.
+    expect(Object.entries(PROPERTY_SCRUTINY).map(([t, p]) => [t, Object.entries(p)])).toEqual(
+      Object.entries(properties)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([t, p]) => [t, Object.entries(p)])
+    );
+  });
+});
+
+describe('a statement that is neither an object nor a string', () => {
+  it('throws, as the AWS CDK CLI does, without naming the value', () => {
+    const resources = { P: policy([4242]) };
+    expect(() => cdk({}, resources)).toThrow();
+    let message = '';
+    try {
+      ours({}, resources);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe('An IAM policy statement is neither an object nor a string');
+    expect(message).not.toContain('4242');
+  });
+});
+
+describe('the table colors', () => {
+  it('shows an added row green, a removed row red, borders gray, the heading bold and the note yellow', () => {
+    const changes = new SecurityChanges(
+      { Resources: { P: policy([allow('s3:GetObject')]) } },
+      { Resources: { P: policy([allow('s3:PutObject')]) } }
+    );
+    const table = formatSecurityChanges(changes);
+    expect(table).toContain('\u001b[32ms3:PutObject\u001b[0m');
+    expect(table).toContain('\u001b[31ms3:GetObject\u001b[0m');
+    expect(table).toContain('\u001b[90m│\u001b[0m');
+    expect(table).toContain('\u001b[1mIAM Statement Changes\u001b[0m');
+    expect(table).toContain('\u001b[33m(NOTE: There may be');
+    // The header row is not colored.
+    expect(table).toMatch(/│\u001b\[0m Resource +\u001b\[90m│/);
   });
 });

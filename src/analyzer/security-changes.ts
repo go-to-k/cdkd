@@ -11,9 +11,11 @@
  * cdkd's own code: cdkd has no runtime dependency on a CDK library.
  * `tests/unit/analyzer/security-changes-parity.test.ts` runs both over the same
  * templates (the package is a devDependency for that alone) and
- * `security-changes.test.ts` holds {@link RESOURCE_SCRUTINY} /
+ * its last case holds {@link RESOURCE_SCRUTINY} /
  * {@link PROPERTY_SCRUTINY} to the service-spec database they were read from.
  */
+
+import { bold, gray, green, red, yellow } from '../utils/colors.js';
 
 /** A resource type the security diff reads as a whole. */
 type ResourceScrutiny =
@@ -79,7 +81,10 @@ export const RESOURCE_SCRUTINY: Readonly<Record<string, ResourceScrutiny>> = {
   'AWS::VpcLattice::ResourcePolicy': 'ResourcePolicyResource',
 };
 
-/** `scrutinizable` of each resource property in `@aws-cdk/aws-service-spec` that has one. */
+/**
+ * `scrutinizable` of each resource property in `@aws-cdk/aws-service-spec` that
+ * has one, per type in the database's property order (the order rows are read).
+ */
 export const PROPERTY_SCRUTINY: Readonly<
   Record<string, Readonly<Record<string, PropertyScrutiny>>>
 > = {
@@ -127,8 +132,8 @@ export const PROPERTY_SCRUTINY: Readonly<
     ReplayPolicy: 'InlineResourcePolicy',
   },
   'AWS::SNS::Topic': {
-    ArchivePolicy: 'InlineResourcePolicy',
     DataProtectionPolicy: 'InlineResourcePolicy',
+    ArchivePolicy: 'InlineResourcePolicy',
   },
   'AWS::SQS::Queue': { RedriveAllowPolicy: 'InlineResourcePolicy' },
   'AWS::SSO::PermissionSet': {
@@ -244,7 +249,8 @@ function dependsOnEqual(lvalue: Json, rvalue: Json): boolean {
   }
   if (Array.isArray(lvalue) && Array.isArray(rvalue)) {
     if (lvalue.length !== rvalue.length) return false;
-    // The AWS CDK CLI's loop compares each element with the same index only.
+    // As the AWS CDK CLI's loop: each element is compared with the FIRST of
+    // `rvalue`, and only a one-element list can differ.
     for (let i = 0; i < lvalue.length; i++) {
       if (!cfnEqual(lvalue[i], rvalue[0]) && lvalue.length === 1) return false;
     }
@@ -404,6 +410,11 @@ class Statement {
       this.condition = undefined;
       this.serializedIntrinsic = statement;
     } else {
+      // The AWS CDK CLI throws here too (`in` on a non-object), and the gate
+      // fails closed on it; this message names no value, as one may be secret.
+      if (typeof statement !== 'object' || statement === null) {
+        throw new Error('An IAM policy statement is neither an object nor a string');
+      }
       this.sid = typeof statement.Sid === 'string' ? statement.Sid : undefined;
       this.effect =
         statement.Effect === 'Allow' || statement.Effect === 'Deny' ? statement.Effect : 'Unknown';
@@ -434,7 +445,7 @@ class Statement {
   }
 
   render(): string[] {
-    return this.serializedIntrinsic !== undefined
+    return this.serializedIntrinsic
       ? [this.serializedIntrinsic, '', '', this.principals.render(), '']
       : [
           this.resources.render(),
@@ -1012,11 +1023,26 @@ function withHeader(
   then: (row: string[]) => number = () => 0
 ): string[][] {
   rows.sort((a, b) => {
-    if (a[1]! < b[1]!) return -1;
-    if (b[1]! < a[1]!) return 1;
+    const keyA = sortKey(a);
+    const keyB = sortKey(b);
+    if (keyA < keyB) return -1;
+    if (keyB < keyA) return 1;
     return then(a) - then(b);
   });
   return [header, ...rows];
+}
+
+/**
+ * A row's second column as the AWS CDK CLI compares it in a terminal: colored
+ * by its sign (chalk's codes, reopened around each line break). So a removal
+ * (red) sorts before every addition (green), and a separator divides the two
+ * even on one resource.
+ */
+function sortKey(row: string[]): string {
+  const open = row[0] === '-' ? '\u001b[31m' : row[0] === '+' ? '\u001b[32m' : '';
+  if (open === '') return row[1]!;
+  const close = '\u001b[39m';
+  return open + row[1]!.replace(/\r?\n/g, (m) => close + m + open) + close;
 }
 
 function summarizeStatements(changes: SecurityChanges): string[][] {
@@ -1136,28 +1162,78 @@ function summarizeSecurityGroups(changes: SecurityChanges): string[][] {
 }
 
 /**
+ * Terminal columns a line takes (`string-width`): East Asian wide characters
+ * and emoji take two, control and combining characters none.
+ */
+function displayWidth(text: string): number {
+  let width = 0;
+  for (const ch of text.replace(
+    /\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*/gu,
+    '  '
+  )) {
+    const code = ch.codePointAt(0)!;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) continue;
+    if (code >= 0x300 && code <= 0x36f) continue;
+    width += isFullwidth(code) ? 2 : 1;
+  }
+  return width;
+}
+
+function isFullwidth(c: number): boolean {
+  return (
+    c >= 0x1100 &&
+    (c <= 0x115f ||
+      c === 0x2329 ||
+      c === 0x232a ||
+      (c >= 0x2e80 && c <= 0x3247 && c !== 0x303f) ||
+      (c >= 0x3250 && c <= 0x4dbf) ||
+      (c >= 0x4e00 && c <= 0xa4c6) ||
+      (c >= 0xa960 && c <= 0xa97c) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe10 && c <= 0xfe19) ||
+      (c >= 0xfe30 && c <= 0xfe6b) ||
+      (c >= 0xff01 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6) ||
+      (c >= 0x1b000 && c <= 0x1b001) ||
+      (c >= 0x1f200 && c <= 0x1f251) ||
+      (c >= 0x20000 && c <= 0x3fffd))
+  );
+}
+
+/**
  * A box-drawn table; the first row is the header. A line separates rows whose
- * second column differs.
+ * second column differs. An added row (`+`) is green, a removed one (`-`) red,
+ * the borders gray; widths are measured before any color.
  */
 function formatTable(cells: string[][]): string {
   const lines = cells.map((row) => row.map((cell) => String(cell).split('\n')));
   const widths = cells[0]!.map((_, i) =>
-    Math.max(...lines.map((row) => Math.max(...row[i]!.map((l) => l.length))))
+    Math.max(...lines.map((row) => Math.max(...row[i]!.map(displayWidth))))
   );
   const rule = (left: string, join: string, right: string): string =>
-    left + widths.map((w) => '─'.repeat(w + 2)).join(join) + right;
+    gray(left + widths.map((w) => '─'.repeat(w + 2)).join(join) + right);
+  const bar = gray('│');
   const out: string[] = [rule('┌', '┬', '┐')];
   lines.forEach((row, r) => {
-    if (r > 0 && (r === 1 || cells[r - 1]![1] !== cells[r]![1])) out.push(rule('├', '┼', '┤'));
+    if (r > 0 && (r === 1 || sortKey(cells[r - 1]!) !== sortKey(cells[r]!))) {
+      out.push(rule('├', '┼', '┤'));
+    }
+    const sign = r === 0 ? '' : cells[r]![0];
+    const color = sign === '+' ? green : sign === '-' ? red : (text: string) => text;
     const height = Math.max(...row.map((cell) => cell.length));
     for (let l = 0; l < height; l++) {
-      out.push(
-        '│' + row.map((cell, i) => ' ' + (cell[l] ?? '').padEnd(widths[i]!) + ' ').join('│') + '│'
-      );
+      const cellsOut = row.map((cell, i) => {
+        const text = cell[l] ?? '';
+        return (
+          ' ' + (text === '' ? '' : color(text)) + ' '.repeat(widths[i]! - displayWidth(text)) + ' '
+        );
+      });
+      out.push(bar + cellsOut.join(bar) + bar);
     }
   });
   out.push(rule('└', '┴', '┘'));
-  return out.map((line) => line.trimEnd()).join('\n');
+  return out.join('\n');
 }
 
 /**
@@ -1178,7 +1254,7 @@ export function formatSecurityChanges(
     });
   let out = '';
   const section = (title: string): void => {
-    out += `${title}\n`;
+    out += `${bold(title)}\n`;
   };
   const table = (rows: string[][]): void => {
     out += formatTable(rows.map((row) => row.map(substitute))) + '\n';
@@ -1205,8 +1281,7 @@ export function formatSecurityChanges(
     section('Security Group Changes');
     table(summarizeSecurityGroups(changes));
   }
-  out +=
-    '(NOTE: There may be security-related changes not in this list. See https://github.com/aws/aws-cdk/issues/1299)\n';
+  out += `${yellow('(NOTE: There may be security-related changes not in this list. See https://github.com/aws/aws-cdk/issues/1299)')}\n`;
   out += '\n';
   return out;
 }
