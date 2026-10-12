@@ -69,17 +69,17 @@ the deploy, and cdkd re-masks it on the way into state, which is what the
 export reads. cdkd never records the `Fn::Base64` encoding of a secret, so
 re-deploying the same template does not clear that mask either.
 
-A mask in a record's `attributes` is a different population. `cdkd import`
-writes the mask there for every Cloud Control model key it cannot certify as
-an `Fn::GetAtt` attribute (the whole model when `cloudformation:DescribeType`
-was unavailable),
-so a Cloud-Control-imported record routinely carries masked attributes, and
-those records export normally. The export reads `attributes` at exactly one
-position, the recorded identifier of the few types whose cdkd physical id is
-not CloudFormation's identifier. Only a mask at that position blocks, because
-it would become the resource's identity in the import changeset. Re-deploying
-does not clear it (the import re-masks). Whatever produced the identifier, a
-value equal to the mask is refused before the changeset is built.
+A mask in a record's `attributes` is a different population. A deploy and
+`cdkd import` both write the mask there for every Cloud Control model key they
+cannot certify as an `Fn::GetAtt` attribute (an import masks the whole model
+when `cloudformation:DescribeType` was unavailable), so a Cloud Control record
+routinely carries masked attributes, and those records export normally. The
+export reads `attributes` at exactly one position, the recorded identifier of
+the few types whose cdkd physical id is not CloudFormation's identifier. Only
+a mask at that position blocks, because it would become the resource's
+identity in the import changeset. A deploy that does not update the resource
+leaves the mask in place. Whatever produced the identifier, a value equal to
+the mask is refused before the changeset is built.
 
 ## The import-support pre-flight
 

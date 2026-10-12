@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { buildStackState, reimportedAttributes } from '../../../src/cli/commands/import.js';
+import {
+  buildStackState,
+  reimportedAttributes,
+  templateGetAttReads,
+  READS_EVERY_KEY,
+} from '../../../src/cli/commands/import.js';
 import { TemplateParser } from '../../../src/analyzer/template-parser.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -115,9 +120,18 @@ describe('reimportedAttributes (issue #2927)', () => {
 });
 
 describe('buildStackState on a re-import (issue #2927)', () => {
-  const template: CloudFormationTemplate = {
-    Resources: { Db: { Type: 'AWS::Some::Thing', Properties: {} } },
-  };
+  // The kept-mask warning names only keys the template READS (issue #2925),
+  // so the consumer reads both keys these cases mask.
+  let template: CloudFormationTemplate;
+  const readsOf = (...attributes: string[]): CloudFormationTemplate => ({
+    Resources: {
+      Db: { Type: 'AWS::Some::Thing', Properties: {} },
+      Reader: {
+        Type: 'AWS::Some::Consumer',
+        Properties: { Values: attributes.map((a) => ({ 'Fn::GetAtt': ['Db', a] })) },
+      },
+    },
+  });
   const existing = (physicalId: string, attributes: Record<string, unknown>) =>
     ({
       version: 10,
@@ -159,13 +173,17 @@ describe('buildStackState on a re-import (issue #2927)', () => {
 
   let warn: ReturnType<typeof vi.spyOn>;
   let info: ReturnType<typeof vi.spyOn>;
+  let debug: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
+    template = readsOf('Address', 'Evil\u001b[2K\rKey');
     warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     info = vi.spyOn(getLogger(), 'info').mockImplementation(() => undefined);
+    debug = vi.spyOn(getLogger(), 'debug').mockImplementation(() => undefined);
   });
   afterEach(() => {
     warn.mockRestore();
     info.mockRestore();
+    debug.mockRestore();
   });
 
   it('a masked readback no longer overwrites a good deploy-recorded bag', () => {
@@ -214,5 +232,109 @@ describe('buildStackState on a re-import (issue #2927)', () => {
     expect(line).not.toContain('\u001b');
     expect(line).not.toContain('\r');
     expect(line).toContain('Evil');
+  });
+
+  // Issue #2925: a deploy now masks every non-attribute Cloud Control key too,
+  // so warning on every kept mask fired on each re-import of a deployed
+  // resource for keys no Fn::GetAtt can read.
+  it.each([
+    ['Fn::GetAtt array form', { 'Fn::GetAtt': ['Db', 'Address'] }],
+    ['Fn::GetAtt string form', { 'Fn::GetAtt': 'Db.Address' }],
+    ['Fn::Sub ${X.Y}', { 'Fn::Sub': 'host=${Db.Address}' }],
+    ['Fn::Sub with a variable map', { 'Fn::Sub': ['${Db.Address}:${P}', { P: '1' }] }],
+  ])('warns only for the read key (%s); an unread kept mask goes to debug', (_form, read) => {
+    template = {
+      Resources: {
+        Db: { Type: 'AWS::Some::Thing', Properties: {} },
+        Reader: { Type: 'AWS::Some::Consumer', Properties: { Value: read } },
+      },
+    };
+    build({}, existing('db-1', { Address: SECRET_MASK, Unread: SECRET_MASK }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain('recorded under Address,');
+    expect(line).not.toContain('Unread');
+    const debugLines = debug.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(debugLines.some((l: string) => l.includes('Unread') && !l.includes('Address'))).toBe(true);
+  });
+
+  it('warns for a nested stack output the parent reads (a FLAT dotted record key)', () => {
+    template = {
+      Resources: {
+        Db: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+        Reader: {
+          Type: 'AWS::Some::Consumer',
+          Properties: { Value: { 'Fn::GetAtt': ['Db', 'Outputs.Secret'] } },
+        },
+      },
+    };
+    build({}, existing('db-1', { 'Outputs.Secret': SECRET_MASK, 'Outputs.Other': SECRET_MASK }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain('Outputs.Secret');
+    expect(line).not.toContain('Outputs.Other');
+  });
+
+  it('a non-literal Fn::GetAtt attribute name reads every key, so every kept mask warns', () => {
+    template = {
+      Resources: {
+        Db: { Type: 'AWS::Some::Thing', Properties: {} },
+        Reader: {
+          Type: 'AWS::Some::Consumer',
+          Properties: { Value: { 'Fn::GetAtt': ['Db', { Ref: 'AttrParam' }] } },
+        },
+      },
+    };
+    build({}, existing('db-1', { Address: SECRET_MASK, Unread: SECRET_MASK }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain('recorded under Address, Unread,');
+  });
+
+  it('a kept mask the template does not read prints no warning at all', () => {
+    template = readsOf('Arn');
+    build({}, existing('db-1', { Arn: 'arn:db', Unread: SECRET_MASK }));
+    expect(warn).not.toHaveBeenCalled();
+    expect(debug.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('Unread');
+  });
+});
+
+describe('templateGetAttReads (issue #2925)', () => {
+  it('collects array, string and Fn::Sub forms by logical id and TOP-LEVEL attribute', () => {
+    const reads = templateGetAttReads({
+      Resources: {
+        A: {
+          Type: 'T',
+          Properties: {
+            One: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+            Two: { 'Fn::GetAtt': 'Queue.QueueName' },
+            Three: { 'Fn::Sub': ['${Bucket.Arn}/${!Literal.Text}/${Param}', { V: 'x' }] },
+            Nested: [{ 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Topic', 'TopicName'] }]] }],
+            Deep: { 'Fn::GetAtt': ['Deep', 'A.B.C'] },
+          },
+        },
+      },
+      Outputs: {
+        // A nested stack's output is an attribute read of the stack resource.
+        Out: { Value: { 'Fn::GetAtt': ['Child', 'Outputs.TableName'] } },
+      },
+    });
+    expect(Object.fromEntries([...reads].map(([id, attrs]) => [id, [...attrs]]))).toEqual({
+      Bucket: ['Arn'],
+      Deep: ['A', 'A.B', 'A.B.C'],
+      Child: ['Outputs', 'Outputs.TableName'],
+      Db: ['Endpoint', 'Endpoint.Address'],
+      Queue: ['QueueName'],
+      Topic: ['TopicName'],
+    });
+  });
+
+  it('treats a non-literal attribute name as reading every key of that resource', () => {
+    const reads = templateGetAttReads({
+      Resources: {
+        A: { Type: 'T', Properties: { V: { 'Fn::GetAtt': ['Db', { Ref: 'AttrParam' }] } } },
+      },
+    });
+    expect([...reads]).toEqual([['Db', new Set([READS_EVERY_KEY])]]);
   });
 });
