@@ -235,7 +235,10 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
   // A template spelling the reference itself puts the queue's name in the
   // FAILING deploy's map for the policy, so the journal's scrub of the
   // previous record was a second writer of the reference into `Queues`; the
-  // journal is what `cdkd rollback` restores from.
+  // journal is what `cdkd rollback` restores from. A REGRESSION GUARD over the
+  // two keeps together: since go-to-k/cdkd#4810 the scan itself keeps this
+  // physical-name copy, so it stays green without the journal's keep. The
+  // adopted-orphan case below is the one that tells the journal's keep apart.
   it('journals the reader’s previous record as state held it, under a literal-reference template', async () => {
     const { segments } = await deployAndRollBack({
       SecretQueue: {
