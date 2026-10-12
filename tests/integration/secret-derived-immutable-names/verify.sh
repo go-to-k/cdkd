@@ -70,6 +70,14 @@
 #      sidestepping go-to-k/cdkd#4800 (a NO_CHANGE queue's readers were sent
 #      the recorded `{{resolve:` spelling) and the rollback after it,
 #      go-to-k/cdkd#4801.
+#   5e. SDIN_ROLLBACK=true updates SecretQueue and SecretQueueReaderPolicy,
+#      then RollbackBreaker's create fails (SSM refuses a Standard-tier value
+#      over 4096 characters), WITHOUT --no-rollback. LOAD-BEARING: the
+#      automatic rollback restores the policy with its `Queues` and
+#      `cdkd:WrittenQueues` holding the queue's URL in plaintext; the replay
+#      resolved the queue name from the policy's literal reference, and the
+#      restore rewrote both into the reference, so step 6's destroy failed
+#      (go-to-k/cdkd#4801).
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -136,6 +144,11 @@
 # src/cli/commands/rollback.ts (step 6c) or src/deployment/deploy-engine/rollback.ts
 # (step 6d) ALONE and that step fails naming ${RB_QUEUE_NAME} on the SQS
 # provider's delete line (not yet measured on real AWS).
+# Revert go-to-k/cdkd#4801's src changes (src/deployment/rollback-executor/
+# replay-secrets.ts and its callers, src/deployment/deploy-engine/rollback.ts,
+# which imports the keep) and step 5e fails "SecretQueueReaderPolicy's
+# restored Queues": the record holds `https://sqs.../{{resolve:secretsmanager:...}}`
+# (not yet measured on real AWS).
 # Revert the `secretNameNeedles` / `secretNameSink` lines of
 # src/cli/commands/diff-recursive.ts ALONE and step 5b fails naming
 # ${QUEUE_NAME}; revert the `withPrintingSecrets` wrap in
@@ -926,6 +939,53 @@ expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
+
+echo "==> Step 5e: an automatic rollback restores SecretQueueReaderPolicy with its queue URL in plaintext (go-to-k/cdkd#4801)"
+# SDIN_ROLLBACK=true updates SecretQueue (VisibilityTimeout 50) and the policy
+# (a new Sid), then creates RollbackBreaker after the policy, which SSM refuses.
+# The deploy runs WITHOUT --no-rollback, so the automatic rollback reverts the
+# policy. Its replay re-resolves the policy's literal reference, which puts the
+# queue name into the op's secrets; the restore then rewrote the plaintext
+# `Queues` URL into the reference, and step 6's destroy sent that to AWS.
+set +e
+SDIN_ROLLBACK=true SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+ROLLBACK_RC=$?
+set -e
+if [ "${ROLLBACK_RC}" -eq 0 ]; then
+  echo "FAIL: premise: the SDIN_ROLLBACK deploy exited 0 (RollbackBreaker was not refused, so nothing rolled back)" >&2
+  log_tail
+  exit 1
+fi
+# PREMISE: the policy was updated, the breaker failed, and the rollback
+# restored the policy, so the record read below is the restore's.
+for marker in "RollbackBreaker" "Rollback: SecretQueueReaderPolicy restored successfully" \
+  "The automatic rollback restored the pre-deploy state."; do
+  if ! grep -qF -- "${marker}" "${DEPLOY_LOG}"; then
+    echo "FAIL: premise: the SDIN_ROLLBACK deploy's log has no '${marker}' line (the rollback did not restore the policy, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+done
+# The revert reached AWS: the live policy carries the pre-deploy Sid again.
+LIVE_READER_POLICY="$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+  --attribute-names Policy --query 'Attributes.Policy' --output text)"
+case "${LIVE_READER_POLICY}" in
+  *SdinReaderUpdated*) ;;
+  *)
+    echo "FAIL: premise: the live queue policy does not carry the pre-deploy Sid 'SdinReaderUpdated' after the rollback" >&2
+    exit 1
+    ;;
+esac
+# LOAD-BEARING (go-to-k/cdkd#4801): what the queue-policy provider deletes by.
+expect_eq "SecretQueueReaderPolicy's restored Queues (go-to-k/cdkd#4801)" "${QUEUE_URL}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r '.resources.SecretQueueReaderPolicy.properties.Queues[0] // empty')"
+expect_eq "SecretQueueReaderPolicy's restored cdkd:WrittenQueues (go-to-k/cdkd#4801)" "${QUEUE_URL}" \
+  "$(state_attribute SecretQueueReaderPolicy 'cdkd:WrittenQueues')"
+expect_eq "SecretQueue's VisibilityTimeout after the rollback" "45" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 
 echo "==> Step 6: destroy"
 set +e
