@@ -790,9 +790,20 @@ export async function provisionUpdate(
   // no masked property whose template expression moved (go-to-k/cdkd#4451),
   // since `***` equals `***` whatever the edit. ONE predicate, so the two
   // skips cannot disagree on it.
+  //
+  // go-to-k/cdkd#4838: a `{{resolve:` reference does not say which value it
+  // stood for. When a resource this one reads was REPLACED in this run (a new
+  // physical id: a queue renamed after its secret rotated), a plaintext the
+  // redaction rewrote can be the NEW generation's, and the equal reference
+  // form then hides a value AWS does not hold (the reader kept the deleted
+  // queue's ARN). Such a resource is sent, never skipped.
   const recordMatchesDesired =
     movedMasked.size === 0 &&
-    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten);
+    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten) &&
+    !(
+      redactionRewroteDesired(resolvedProps, desiredForSkipCheck, comparisonCoordinates) &&
+      readsProducerReplacedThisRun.call(this, template, logicalId, stateResources)
+    );
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
   const applyAttributeOnlyUpdate = (
@@ -1777,4 +1788,38 @@ function recordHoldsEmbeddedReference(record: {
     return Object.values(node as Record<string, unknown>).some(walk);
   };
   return walk(record.properties) || walk(record.attributes);
+}
+
+/**
+ * Did the redaction rewrite a plaintext of `resolvedProps` into a reference
+ * (go-to-k/cdkd#4838)? Compared after the same coordinate masking the skip
+ * check applies, so a `NoEcho` mask is no rewrite.
+ */
+function redactionRewroteDesired(
+  resolvedProps: Record<string, unknown>,
+  desiredForSkipCheck: Record<string, unknown>,
+  comparisonCoordinates: Parameters<typeof maskAtCoordinates>[1]
+): boolean {
+  return (
+    keyOrderFreeJson(maskAtCoordinates({ ...resolvedProps }, comparisonCoordinates)) !==
+    keyOrderFreeJson(desiredForSkipCheck)
+  );
+}
+
+/**
+ * Does `logicalId` read (`Ref`, `Fn::GetAtt`, `DependsOn`) a resource whose
+ * physical id this run changed from the one it loaded (go-to-k/cdkd#4838)?
+ */
+function readsProducerReplacedThisRun(
+  this: DeployEngine,
+  template: CloudFormationTemplate | undefined,
+  logicalId: string,
+  stateResources: Record<string, ResourceState>
+): boolean {
+  return (this.extractAllDependencies(template, logicalId) ?? []).some((id) => {
+    const loaded = Object.hasOwn(this.healBaseline, id) ? this.healBaseline[id] : undefined;
+    if (loaded === undefined) return false;
+    const now = Object.hasOwn(stateResources, id) ? stateResources[id] : undefined;
+    return now !== undefined && now.physicalId !== loaded.physicalId;
+  });
 }

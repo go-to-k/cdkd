@@ -281,12 +281,17 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       type: 'String',
       default: secretName,
     });
+    const aqueueToken = (suffix: string): string =>
+      cdk.Fn.join('', ['{{resolve:secretsmanager:', secretRef.valueAsString, suffix]);
+    // go-to-k/cdkd#4838: step 5g rotates the secret's `aqueue` field and
+    // RESPELLS this token (the same value, by version stage), a create-only
+    // change, so the queue is REPLACED under the rotated name.
     const assembledQueue = new sqs.CfnQueue(this, 'AssembledNameQueue', {
-      queueName: cdk.Fn.join('', [
-        '{{resolve:secretsmanager:',
-        secretRef.valueAsString,
-        ':SecretString:aqueue::}}',
-      ]),
+      queueName: aqueueToken(
+        process.env.SDIN_AQ_RESPELL === 'true'
+          ? ':SecretString:aqueue:AWSCURRENT}}'
+          : ':SecretString:aqueue::}}'
+      ),
     });
     new ssm.CfnParameter(this, 'AssembledQueueReader', {
       // Named per run by `verify.sh`, so its cleanup can delete it by name.
@@ -295,6 +300,11 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       value: assembledQueue.attrArn,
       description:
         process.env.SDIN_READER_EDIT === 'true' ? 'cdkd integ: reader edited' : 'cdkd integ: initial',
+      // go-to-k/cdkd#4838: the reader SPELLS the queue name's original token,
+      // so its own bag maps the rotated name to it: the replaced queue's new
+      // ARN redacted to the reference it stored for the old queue, and the
+      // reader was skipped, left on the deleted queue's ARN (step 5g).
+      tags: { AqName: aqueueToken(':SecretString:aqueue::}}') },
     });
 
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
