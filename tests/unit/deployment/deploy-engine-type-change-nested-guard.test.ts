@@ -356,7 +356,7 @@ describe('renderNestedStackTypeChangeRefusal (#2668)', () => {
     expect(message).toMatch(/DIFFERENT logical id/);
     expect(message).toMatch(/no flag that overrides this refusal/);
     expect(message).not.toMatch(/TARGET would be wrong/);
-    expect(message).toContain('#2668');
+    expect(message).not.toMatch(/#\d/);
   });
 
   it('renders the PLURAL arm when more than one row offends', () => {

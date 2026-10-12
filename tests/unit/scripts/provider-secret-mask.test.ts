@@ -1217,6 +1217,10 @@ describe('provider secret-mask critic — CI wiring', () => {
       'audit:aws-cli-removals:check',
       'needs a local AWS CLI source checkout (`--aws-root`), which no CI runner has',
     ],
+    [
+      'audit:getatt-attributes:check',
+      'a pure staleness check: CI already regenerates the table through `gen:all-matrices` and fails on the diff',
+    ],
   ]);
 
   // Parser floor: "found nothing" and "everything matches" look identical

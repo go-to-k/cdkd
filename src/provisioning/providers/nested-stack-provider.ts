@@ -245,10 +245,7 @@ export class NestedStackProvider implements ResourceProvider {
           'EnableTerminationProtection',
           'CFn-only per-nested-stack flag — cdkd records stack-level terminationProtection at CDK synth time (parent only) and `cdkd destroy` consults that for refusal',
         ],
-        [
-          'NotificationARNs',
-          'CFn-only SNS-on-stack-event surface — cdkd has no equivalent (issue #459 design §9)',
-        ],
+        ['NotificationARNs', 'CFn-only SNS-on-stack-event surface — cdkd has no equivalent'],
         [
           'RoleARN',
           'CFn-only role-assumption — cdkd uses the caller credentials directly, no per-resource role assumption',
@@ -269,7 +266,7 @@ export class NestedStackProvider implements ResourceProvider {
         ],
         [
           'TimeoutInMinutes',
-          'CFn-only stack-create deadline — cdkd uses per-resource --resource-timeout instead (issue #459 design §9)',
+          'CFn-only stack-create deadline — cdkd uses per-resource --resource-timeout instead',
         ],
       ]),
     ],

@@ -66,6 +66,14 @@ cdkd configures them as follows:
 
 - The state bucket is versioned, encrypted with AES-256, and has a bucket
   policy that admits this account only.
+- The state bucket has a lifecycle rule,
+  `cdkd-custom-resource-responses-expiration`, for objects under
+  `custom-resource-responses/cdkd-1`. A custom resource's handler writes its
+  response there, `Data` included. cdkd deletes each response once it has
+  read it, so the rule only removes responses left behind by an interrupted
+  run. The current version expires after one day, and the version that
+  leaves behind is deleted one day later. S3 rounds each step up to the next
+  midnight UTC.
 - The asset bucket is encrypted with AES-256 and has the same account-only
   policy. It is not versioned.
 - The ECR repository has immutable tags.
@@ -260,7 +268,22 @@ resources untouched and creates what is missing. That makes it the way to add
 asset storage for a new region to an account that is already bootstrapped.
 
 With `--force`, it reconfigures existing resources: it applies encryption, the
-bucket policy and ECR tag immutability again.
+bucket policy, the lifecycle rule and ECR tag immutability again.
+
+cdkd adds the lifecycle rule to the state bucket's existing lifecycle
+configuration. It keeps every rule already there, and it adds nothing when a
+rule with its ID exists. A state bucket bootstrapped before the rule existed
+gets it from the first deploy or destroy that runs a custom resource, at most
+once per run. Adding the rule needs `s3:GetLifecycleConfiguration`,
+`s3:PutLifecycleConfiguration` and `s3:ListBucket` on the state bucket.
+Without them, cdkd prints a warning, leaves the configuration unchanged, and
+carries on.
+
+Do not use `--state-prefix custom-resource-responses`. The rule would expire
+the state of a stack whose name starts with `cdkd-1` under that prefix. cdkd
+does not add the rule while such a state exists, and it warns instead. It
+checks only when it adds the rule, so a stack created after that is not
+checked.
 
 An account that was bootstrapped by an older cdkd needs no manual step. The
 first deploy into each region creates the storage. Upgrading or downgrading

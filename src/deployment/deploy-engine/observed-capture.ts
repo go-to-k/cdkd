@@ -487,7 +487,7 @@ export function kickOffAutoRefreshObservedProperties(
   }
   if (refused > 0) {
     this.logger.debug(
-      `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
+      `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused: their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
     );
   }
   if (candidates.length === 0 && masked.length === 0) return;
@@ -604,7 +604,7 @@ export function kickOffAutoRefreshObservedProperties(
       producerRegions = producerRegionsFromState(crossStackReads);
     } catch {
       this.logger.debug(
-        safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read (issue #3595).`
+        safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read.`
       );
       masked.length = 0;
     }
@@ -669,7 +669,7 @@ export function kickOffMaskedBaselineRecapture(
     if (secrets === undefined || secrets.size === 0) {
       // The CLASS only: never a reference, a value or an error's text.
       this.logger.debug(
-        safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values (issue #3595).`
+        safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values.`
       );
       return undefined;
     }
@@ -683,18 +683,16 @@ export function kickOffMaskedBaselineRecapture(
     const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
     if (recaptured === undefined) {
       this.logger.debug(
-        safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records (issue #3595).`
+        safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records.`
       );
       return undefined;
     }
     this.recapturedBaselines.set(recaptured, previous);
-    this.logger.debug(
-      safeMsg`Re-captured the masked observed baseline of ${logicalId} (issue #3595).`
-    );
+    this.logger.debug(safeMsg`Re-captured the masked observed baseline of ${logicalId}.`);
     return recaptured;
   })().catch(() => {
     this.logger.debug(
-      safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed (issue #3595).`
+      safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed.`
     );
     return undefined;
   });

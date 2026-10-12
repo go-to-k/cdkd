@@ -1018,8 +1018,8 @@ export const recreateViaSdkProviderOption = new Option(
   '--recreate-via-sdk-provider <logicalId>',
   'Destroy + recreate the named resource (by CloudFormation logical id) via ' +
     "cdkd's SDK Provider in this deploy, so a resource currently sticky on " +
-    'provisionedBy: cc-api flips back to provisionedBy: sdk. Used after a #609 ' +
-    'backfill release adds SDK coverage for a type the user originally needed CC ' +
+    'provisionedBy: cc-api flips back to provisionedBy: sdk. Used after a ' +
+    'release adds SDK coverage for a type the user originally needed CC ' +
     'for (e.g. Lambda LoggingConfig). Repeatable — pass the flag once per resource. ' +
     'Per-resource opt-in. Stateful resource types refuse unless ' +
     '--force-stateful-recreation is ALSO passed.'

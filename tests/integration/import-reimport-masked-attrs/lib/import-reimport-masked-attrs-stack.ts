@@ -4,9 +4,10 @@ import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
- * Integ probe for issue #2927: a `cdkd import --resource <id>=<physicalId>
- * --force` re-import of a Cloud-Control-routed resource must not replace a
- * good recorded attribute with the redaction mask.
+ * Integ probe for issues #3735 and #2927: a Cloud Control import records an
+ * `Fn::GetAtt` attribute that is also a writable property in the clear, and a
+ * `cdkd import --resource <id>=<physicalId> --force` re-import never replaces
+ * a good recorded attribute with the redaction mask.
  *
  * covers: AWS::StepFunctions::Activity
  * covers: AWS::SSM::Parameter
@@ -14,10 +15,10 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * WHY THIS TYPE. `AWS::StepFunctions::Activity` has no SDK provider, so both
  * the deploy and `cdkd import` go through Cloud Control. Its `Fn::GetAtt`
  * attribute `Name` is a WRITABLE property: the registry schema's
- * `readOnlyProperties` holds only `Arn` (issue #3735 is the general gap), so
- * `CloudControlProvider.import` masks `Name`, while the deploy path records the
- * whole model, `Name` included (issue #2925). An activity is free and creates
- * and deletes instantly.
+ * `readOnlyProperties` holds only `Arn`, so only the generated
+ * resource-specification table (#3735) certifies `Name`. Its other writable
+ * keys are not attributes and stay masked, which is what the #2927 phases
+ * exercise. An activity is free and creates and deletes instantly.
  *
  * The SSM parameter is the CONSUMER: its `Value` reads `Fn::GetAtt [Act, Name]`,
  * so a masked `Name` in state makes its next update fail with the

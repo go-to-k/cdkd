@@ -2209,7 +2209,7 @@ export function createLocalCommand(): Command {
       new Option(
         '--layer-role-arn <arn>',
         'Role to sts:AssumeRole before calling lambda:GetLayerVersion on every literal-ARN ' +
-          'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
+          'entry in Properties.Layers. Use only when the dev credentials cannot ' +
           'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
           'Lambda Powertools) are readable from every account and need no role.'
       )
@@ -2218,11 +2218,11 @@ export function createLocalCommand(): Command {
       new Option(
         '--ecr-role-arn <arn>',
         'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
-          'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
+          'registries. Issues sts:AssumeRole via the default credential chain and uses the ' +
           'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
           'caller does not have direct cross-account access to the target repository. ' +
           'A same-account pull in ANY region does not need this flag: the ECR client is built ' +
-          "for the image URI's own region, so crossing a region costs nothing extra (issue #2536)."
+          "for the image URI's own region, so crossing a region costs nothing extra."
       )
     )
     .addOption(

@@ -105,7 +105,7 @@ export function createLocalStartServiceCommand(): Command {
         'or stack-qualified logical ID (MyStack:MyServiceXYZ); single-stack apps may omit the ' +
         'stack prefix. When two or more <target>s are supplied, every service is booted into a ' +
         'shared Cloud Map / Service Connect registry so peer services discover each other via ' +
-        'docker --add-host overlay (Issue #460). Omit <targets> in an interactive terminal to ' +
+        'docker --add-host overlay. Omit <targets> in an interactive terminal to ' +
         'multi-select the ECS services from a list.'
     )
     .argument(

@@ -3153,7 +3153,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       log.warn(
         `AWS::ApiGatewayV2::Integration ${logicalId}: TlsConfig is only honored on a ` +
           `VPC_LINK (private) integration — AWS silently ignores it on a public one, and ` +
-          `the value will never be readable back from AWS (issue #1602).`
+          `the value will never be readable back from AWS.`
       );
     }
   }

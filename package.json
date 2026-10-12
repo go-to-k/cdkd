@@ -115,6 +115,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@aws-cdk/aws-service-spec": "0.1.182",
     "@iconify-json/lucide": "^1.2.141",
     "@ox-content/islands": "3.2.13",
     "@ox-content/vite-plugin": "3.2.13",

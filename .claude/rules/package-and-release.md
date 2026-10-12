@@ -41,8 +41,7 @@ table cdkd's own S3-endpoint and region tables are compared against.
   (build-time only, never bundled by `vp pack`).
 - `typescript-v6` — an npm alias of typescript@6, giving the codegen scripts the
   stable compiler API that TS7 ships only under `typescript/unstable/*`.
-- `marked` — used by a few unit tests to read a document's RENDERED anchors
-  rather than pattern-matching its source. Never bundled.
+- `marked` — unit tests read RENDERED document anchors with it; never bundled.
 
 ## Node.js versions
 
@@ -58,10 +57,8 @@ The floor is restated in several prose files and
 `tests/unit/scripts/node-floor-sync.test.ts` keeps them in one value — change it
 there and everywhere that test names, in the same commit.
 
-Node 24 strips type annotations, so `node scripts/foo.ts` runs a `.ts` file
-directly. Use it for ad-hoc scripts under `scripts/`; register a longer-lived
-one as a Vite+ task in `vite.config.ts`, which is how every cdkd task is
-invoked (`vp run <task>`) — there is no `package.json` `scripts` block.
+Node 24 runs `node scripts/foo.ts` directly (it strips types); a longer-lived
+script becomes a Vite+ task in `vite.config.ts`.
 
 ## Releases are batched
 
@@ -70,7 +67,13 @@ standing `chore(release): <ver>` PR; merging THAT PR cuts the tag, the GitHub
 release and the npm publish. An ordinary `feat:` / `fix:` merge publishes
 nothing, so do not wait for a version bump after a merge, and **never merge the
 release PR unless the maintainer asked for a release** — that standing rule is
-the real protection, not a gate. The maintainer merges it through the web UI.
+the real protection, not a gate.
+
+**A dependency bump that delivers a fix a user can hit** — a security or other
+fix in a bundled runtime dependency such as `cdk-local` — is titled
+`fix(deps): …` and carries a `changelog.d/entries/` fragment. `chore(deps):` is
+hidden from release-please and publishes nothing; the PR-title check accepts
+`fix:` without a `src/**` change only with such a fragment (#3548).
 
 cdkd stays at major version 0: `bump-minor-pre-major: true` maps breaking
 changes to MINOR bumps, and the publish job in `.github/workflows/release.yml`
@@ -83,9 +86,8 @@ unchanged — it logs `PR #N remained the same` and leaves the branch on the bas
 it was cut from. So anything that later lands on `main` in a file release-please
 OWNS (`CHANGELOG.md`, `package.json`'s version, `.release-please-manifest.json`)
 is missing from that branch, and merging the PR takes the branch's stale copy
-and reverts it. GitHub reports MERGEABLE throughout.
+and reverts it.
 
 **After any PR that edits one of those three files, check whether a release PR
 is open and recreate it**: close it, delete its branch, and re-run the release
-workflow (`workflow_dispatch` exists for exactly this). release-please
-recomputes the identical release from current `main`.
+workflow (`workflow_dispatch` exists for this).

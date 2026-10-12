@@ -291,8 +291,8 @@ export function renderServiceTokenRefusal(
     (refusals.length === 1
       ? `a custom resource's ServiceToken changes`
       : `${refusals.length} custom resources' ServiceTokens change`) +
-    `, which CloudFormation does not allow ("Modifying service token is not allowed") ` +
-    `(issue #4749). Nothing was sent to either handler.\n` +
+    `, which CloudFormation does not allow ("Modifying service token is not allowed"). ` +
+    `Nothing was sent to either handler.\n` +
     `${rows.join('\n')}\n` +
     `  ${REMEDY}` +
     (refusals.some((refusal) => refusal.kind === 'unjudgeable') ? `\n  ${UNJUDGEABLE_REMEDY}` : '')
@@ -303,7 +303,7 @@ export function renderServiceTokenRefusal(
 export function serviceTokenBlockingReason(refusal: ServiceTokenRefusal, mask: Mask): string {
   return (
     `${rowText(refusal, mask)} cdkd deploy refuses a changed custom-resource ServiceToken, as ` +
-    `CloudFormation does (issue #4749); give the custom resource a new logical id to move it ` +
+    `CloudFormation does; give the custom resource a new logical id to move it ` +
     `to another handler.`
   );
 }
@@ -314,7 +314,7 @@ export function deferredServiceTokenWarning(row: DeferredServiceToken): string {
     `${displayIdent(row.logicalId)}: its ServiceToken reads a resource this deploy replaces, ` +
     `creates or updates, or a value this preview cannot resolve. If it resolves to a different ARN than ` +
     `the one recorded, cdkd deploy refuses the update before invoking any handler and rolls ` +
-    `back (issue #4749). A replaced backing function is already deleted by then and the ` +
+    `back. A replaced backing function is already deleted by then and the ` +
     `rollback re-creates it; if that fails, the record names a function that no longer exists.`
   );
 }

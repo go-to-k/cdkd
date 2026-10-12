@@ -118,7 +118,7 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(error.message).toContain('(from Fn::GetAtt [Zone, NameServers])');
     // The workaround pointer: this template shape only ever worked because of
     // the pre-#1868 comma-delimited-string bug.
-    expect(error.message).toContain('#1868');
+    expect(error.message).toContain('the workaround is no longer needed');
   });
 
   it('names the source for the dotted `Fn::GetAtt` string spelling too', async () => {
@@ -203,7 +203,7 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(error.message).not.toContain('Fn::GetAtt');
     // ...and it must NOT drag in the Route 53 / #1868 story, which is about a
     // different source entirely and only confuses this reader.
-    expect(error.message).not.toContain('#1868');
+    expect(error.message).not.toContain('the workaround is no longer needed');
     expect(error.message).not.toContain('NameServers');
   });
 
@@ -275,7 +275,7 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     // The NEUTRAL remedy: neither source-specific story applies, so neither
     // the #1868 note nor the Route 53 example may appear.
     expect(error.message).toContain('Several intrinsics already return a list');
-    expect(error.message).not.toContain('#1868');
+    expect(error.message).not.toContain('the workaround is no longer needed');
     expect(error.message).not.toContain('NameServers');
   });
 
@@ -290,7 +290,7 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     // (which is what shipped, and what two reviewers caught).
     expect(error.message).toContain('Several intrinsics already return a list');
     // ...so the Route 53 example and the workaround note must NOT appear.
-    expect(error.message).not.toContain('#1868');
+    expect(error.message).not.toContain('the workaround is no longer needed');
     expect(error.message).not.toContain('NameServers');
   });
 

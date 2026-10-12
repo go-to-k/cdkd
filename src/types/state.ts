@@ -755,8 +755,9 @@ export interface ResourceState {
    * name states what the three share — the resolve did not yield a complete
    * bag whose leaves can position a redaction — and nothing about parameters.
    * A deploy that CREATEs or UPDATEs the resource clears it (the marker's own
-   * doc above). No reader branches on this value: it exists so that a marker
-   * of this class is never mistaken for an ABSENT-reason one. A binary that
+   * doc above). It exists so that a marker of this class is never mistaken for
+   * an ABSENT-reason one; the one reader that branches on it is
+   * `state refresh-observed --accept-refused`, which refuses this class. A binary that
    * predates it sees "not `'unverifiable-parameter'`" and clears on UPDATE,
    * which is the same behaviour.
    *
@@ -781,12 +782,18 @@ export interface ResourceState {
    * - `cdkd import` clears both only for a row it re-imported while it HAD a
    *   deployed-parameter source and ARM 4 did not name the resource. A
    *   re-import with no source (the CloudFormation stack is gone after a
-   *   migration) carries both forward when the physical id is unchanged.
+   *   migration) carries both forward when the physical id is unchanged;
+   * - `cdkd state refresh-observed --accept-refused` (issue #3466) clears both
+   *   for ONE resource on the user's assertion, judged fail closed against the
+   *   `--template` they deployed (`src/cli/commands/state-refresh-observed.ts`),
+   *   and only after its readback succeeded. An absent reason is accepted there
+   *   as this class.
    *
    * INVARIANT: never present without `observedBaselineRefused: true`. Every
    * reader that only asks "is a baseline refused?" keeps testing the marker;
-   * the two commands that may clear or stamp it (`cdkd deploy`, `cdkd
-   * import`) read this field through the two helpers below, and the
+   * the two commands that stamp or clear it on evidence (`cdkd deploy`,
+   * `cdkd import`) read this field through the two helpers below;
+   * `--accept-refused` (above) clears it on the user's assertion; the other
    * template-less commands read it only to word the remedy
    * (`refusedBaselineRemedy`, issue #3465).
    */

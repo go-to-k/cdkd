@@ -309,6 +309,8 @@ cdkd state refresh-observed --all --yes
 | `--all` | off | Refresh every stack in the state bucket. |
 | `--dry-run` | off | Print the per-stack count and write nothing. |
 | `--stack-region <region>` | — | Region of the record to refresh. With `--all` it filters. |
+| `--accept-refused <logicalId>` | — | Clear one resource's import baseline refusal and capture its baseline. Needs `--template` and exactly one stack. See [Accepting a refused baseline](#accepting-a-refused-baseline). |
+| `--template <file>` | — | With `--accept-refused`: the synthesized template (JSON or YAML) the stack was last deployed from. |
 
 `--dry-run` takes no lock and reads no resource from AWS. It still reads the
 records from S3.
@@ -360,8 +362,65 @@ clear the mark. To clear it:
 - Deploy a change to the resource. That rebuilds its record from your template
   and captures a baseline. A deploy that changes nothing does not.
 - If the refusal was over a template parameter whose deployed value cdkd could
-  not prove, an in-place update keeps the refusal. Replace the resource, or
-  import it again while a CloudFormation stack can prove the value.
+  not prove, an in-place update keeps the refusal. Replace the resource, import
+  it again while a CloudFormation stack can prove the value, or accept the
+  refusal yourself as described next.
+
+### Accepting a refused baseline
+
+After `--migrate-from-cloudformation` the CloudFormation stack is gone, so a
+refusal over a template parameter can usually be cleared only by replacing the
+resource. If you know the resource no longer holds a value cdkd did not send,
+you can say so for one resource:
+
+```bash
+cdkd state refresh-observed MyStack \
+  --accept-refused MyFunction \
+  --template cdk.out/MyStack.template.json
+```
+
+For example, you moved the secret into a `{{resolve:secretsmanager:...}}`
+reference in your template and deployed it.
+
+The command asks you to confirm that the template is deployed, and that AWS
+holds no secret at any position of the resource that the template does not
+spell as a dynamic reference. Whatever AWS
+holds there is written to `state.json` as the baseline. With `-y` / `--yes` the
+statement is printed as a warning instead of asked. Without `--yes`, a
+non-interactive run is refused.
+
+It then reads that one resource from AWS and stores the baseline, matched by
+position against the record like any refresh. Both the refusal and its reason
+are removed only after the read succeeds. A failed read keeps the refusal and
+writes nothing.
+
+It refuses, before taking the lock, when:
+
+- the resource carries no refusal, or its refusal is not over a template
+  parameter. That kind clears with a deploy that changes the resource.
+- the template does not define the resource, defines another type there, or
+  cannot be read.
+- in the template the resource still reads a template parameter, directly or
+  through another resource's attribute. Deploy the template that no longer does,
+  then run it again.
+- the record does not hold exactly what the template defines for the
+  resource. cdkd compares every value, working out `Ref`, `Fn::GetAtt`,
+  `Fn::Join`, `Fn::Sub` and `Fn::Select` from the stack's other records. For a
+  value that differs, deploy the template, then run the command again. A deploy
+  does not send a literal equal to the value the record already holds, so AWS
+  can still hold an earlier value there: the check passes, and only your
+  confirmation covers it. Any other
+  function, or a property cdkd does not record for the resource, is not changed
+  by a deploy; only replacing the resource clears the refusal then.
+- a value in the record holds a parameter's `Default` from the template, as the
+  whole value, or inside a longer value for a `Default` of four or more
+  characters. The record may then still hold the placeholder the refusal
+  distrusted.
+
+A refusal recorded by an older cdkd without a reason is accepted, and is treated
+as one over a template parameter. `--accept-refused` takes exactly one logical
+id and one stack name, and is refused with `--all`. For a nested stack, pass
+the child's own template. `--dry-run` runs the same checks and writes nothing.
 
 ### Secrets in the baseline
 

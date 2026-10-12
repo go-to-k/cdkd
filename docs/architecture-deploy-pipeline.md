@@ -281,6 +281,15 @@ resources are ready than the cap allows, the one with the most transitive
 dependents starts first. A slow chain, such as an Elastic IP followed by a NAT
 gateway, therefore starts early.
 
+One exception orders resources the graph leaves unordered. When two resources
+in the deploy write the same inline policy name on the same IAM role, group or
+user, one waits for the other. Examples are two `AWS::IAM::Policy` resources
+swapping names, and a policy renamed away from a name a new policy takes.
+Without the wait, each could remove the name the other had just written. This
+ordering is decided before anything runs. It applies only to those resources,
+and to IAM resources whose policy name or principal cdkd cannot read before
+resolving it, which it treats as possibly the same.
+
 The log line `DAG: <n> levels` reports the depth of the graph. Levels are not
 used to schedule anything.
 

@@ -775,7 +775,7 @@ export function rejectPlaceholderArnAttribute(
     new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ` +
         `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(this.maskValueLeaves(value, context)), '"')} is a placeholder ` +
-        `written by a cdkd version older than issue #1681 — its region and account ` +
+        `written by an older cdkd version — its region and account ` +
         `fields are literal wildcards, so it is not a usable ARN. ` +
         this.staleRecordRemedy(healOutcome, context)
     )

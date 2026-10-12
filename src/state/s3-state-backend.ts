@@ -386,7 +386,7 @@ export class S3StateBackend {
     if (options.existenceAlreadyProbed) {
       this.logger.debug(
         `Skipping the redundant HeadBucket on '${this.config.bucket}' — the default-name ` +
-          `resolution already confirmed it exists with these credentials (issue #1283).`
+          `resolution already confirmed it exists with these credentials.`
       );
       return;
     }

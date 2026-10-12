@@ -1683,7 +1683,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     // still answered `ResourceTypes [AWS::AppSync::GraphQLApi] are not
     // supported for Import` — after the lock. The heuristic is necessary, not
     // sufficient, so the type is blocked before any of that happens.
-    expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::GraphQLApi')).toMatch(/2026-09-18/);
+    expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::GraphQLApi')).toMatch(/measured against AWS/);
     // The key is NOT on the list: a standalone IMPORT changeset carrying one
     // reached CREATE_COMPLETE the same day.
     expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::ApiKey')).toBeUndefined();
@@ -1700,7 +1700,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
-    expect(plan.blocked[0]!.reason).toMatch(/measured in us-east-1 on 2026-09-18/);
+    expect(plan.blocked[0]!.reason).toMatch(/measured against AWS/);
     expect(plan.blocked[0]!.reason).toMatch(/--skip-import-support-preflight/);
     // The registry stub DOES declare a read handler, so the older heuristic
     // did not fire — the case that made the list necessary.

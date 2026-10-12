@@ -386,6 +386,9 @@ importers:
         specifier: ^2.9.0
         version: 2.9.1
     devDependencies:
+      '@aws-cdk/aws-service-spec':
+        specifier: 0.1.182
+        version: 0.1.182
       '@iconify-json/lucide':
         specifier: ^1.2.141
         version: 1.2.141
