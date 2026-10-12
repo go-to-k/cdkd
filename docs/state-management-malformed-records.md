@@ -16,7 +16,7 @@ record carries on with a warning.
 cdkd state show MyStack --stack-region us-east-1 --json
 ```
 
-This page is part of [State Management](state-management.md).
+This page is part of [State Store](state-management.md).
 
 ## What cdkd does with a damaged record
 
@@ -232,6 +232,6 @@ tracks the resource the other entry described.
 
 - [State backup and bucket security](state-management-backup-and-security.md):
   restore an earlier version of a record
-- [Orphan vs Destroy](orphan-vs-destroy.md): what dropping a record does and
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): what dropping a record does and
   does not delete
-- [State Management](state-management.md): what a healthy record contains
+- [State Store](state-management.md): what a healthy record contains

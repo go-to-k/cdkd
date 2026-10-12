@@ -37,7 +37,7 @@ the template and resolves it inside the service. Two things follow from it:
   sees no change.
 - `cdkd diff` compares references and does not fetch the secret.
 
-[State Management](state-management.md) describes what a deploy stores and
+[State Store](state-management.md) describes what a deploy stores and
 masks.
 
 ## Where scrub looks in a state file
@@ -336,4 +336,4 @@ reference. Both apply to `{{resolve:secretsmanager:...}}` and to a
 - [`cdkd scrub`](cli-scrub.md): the commands, options and exit codes
 - [cdkd scrub: across stacks](cli-scrub-multi-stack.md): `--all`, nested stacks and values read from other stacks
 - [cdkd scrub: findings and refusals](cli-scrub-findings.md): each message and code, with what to do
-- [State Management](state-management.md): what a state file stores
+- [State Store](state-management.md): what a state file stores

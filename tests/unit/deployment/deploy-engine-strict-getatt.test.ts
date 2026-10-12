@@ -246,6 +246,26 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
     });
   });
 
+  it('threads producerLookup into the resolver constructor', () => {
+    const producerLookup = vi.fn();
+    new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      { dryRun: false, producerLookup, consumerAccount: '222222222222' },
+      'us-east-1'
+    );
+    expect(vi.mocked(IntrinsicFunctionResolver)).toHaveBeenLastCalledWith('us-east-1', {
+      strictGetAtt: false,
+      cfnFallback: true,
+      producerLookup,
+      consumerAccount: '222222222222',
+    });
+    expect(producerLookup).not.toHaveBeenCalled();
+  });
+
   it('resets the fallback counter ONCE on the no-change path and surfaces it in the result', async () => {
     // Deliberate counting semantics (review of #1111 item 3): the no-change
     // path returns after the diff, so only the deploy()-start reset fires —

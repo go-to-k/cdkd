@@ -100,4 +100,4 @@ cdkd reads and reports.
 
 - [`cdkd gc`](cli-gc.md)
 - [`cdkd bootstrap`](cli-bootstrap.md)
-- [State Management](state-management.md)
+- [State Store](state-management.md)

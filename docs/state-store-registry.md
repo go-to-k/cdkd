@@ -156,7 +156,7 @@ full rules, including the order of the writes.
 
 ## Related
 
-- [The state store](state-store.md#one-stack-name-per-account-and-region): why
+- [Manage Stacks Without the App](state-store.md#one-stack-name-per-account-and-region): why
   a stack name is one deployment
 - [Name check before a create](state-store-name-check.md): the first check
 - [State backup and bucket security](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket):

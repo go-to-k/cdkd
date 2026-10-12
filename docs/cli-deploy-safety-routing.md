@@ -259,5 +259,5 @@ The cdkd release that refreshes that data makes the flag unnecessary.
 - [Provisioning Layers](provisioning-layers.md): the two routes in depth
 - [Supported Resources](supported-resources.md): which types have an SDK
   provider, and property-level coverage
-- [cdkd State Management Specification](state-management.md): where
+- [State Store](state-management.md): where
   `provisionedBy` lives in the state record

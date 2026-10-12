@@ -17,8 +17,10 @@ running BOTH the integ and the merge there (the marker is per tree). A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
 before the marker, re-running an integ the fix touches (#4561). Never two
-lanes' integs or merges at once; when a turn will hold for HOURS, tell the user
-unasked its ETA and the PRs queued.
+lanes' integs or merges at once; a turn blocked on a fixture fix yields to
+the next merge-ready lane. A turn holding for HOURS: tell the user
+unasked its ETA and queue. A subagent running a turn's integs, marker
+and ledger must block until EVERY run ends and report ONCE.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -137,10 +139,9 @@ git checkout main && git pull origin main    # bring the merges local
 pnpm install --frozen-lockfile && vp run build   # a merged dependency bump (#3951)
 ```
 
-IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
-tree, so `checkout main` fails here, and building THIS tree leaves the user on
-the old binary. `MAIN` is derived per block, never borrowed — each fenced block
-is its own shell:
+IN-PLACE — run THIS block INSTEAD, never both: `checkout main` fails here, and
+building THIS tree leaves the user on the old binary. `MAIN` is derived per
+block — each fenced block is its own shell:
 
 ```bash
 # The main checkout is always the FIRST row of `git worktree list`.
@@ -174,8 +175,8 @@ IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove th
 tree it runs in** (a concurrent lane's sibling under `<MAIN_CHECKOUT>` takes the
 block above, every `git` line prefixed with `-C <MAIN_CHECKOUT>`, and so is
 not in this block's `-D` list).
-`<LAUNCH_BRANCH>` and `<each branch this run created in THIS tree>` are SUBSTITUTION
-PLACEHOLDERS, not shell variables (`references/launch-mode.md`):
+`<LAUNCH_BRANCH>` and `<each branch this run created in THIS tree>` are
+PLACEHOLDERS, not shell variables (`<LAUNCH_BRANCH>`: `launch-mode.md`'s probe):
 
 ```bash
 git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
@@ -188,13 +189,11 @@ git branch --show-current      # must print <LAUNCH_BRANCH>
 git branch --list '<your prefix>*'             # ...and every branch this run added is gone
 ```
 
-`--no-guess`: plain `git switch` DWIMs, re-creating the branch from `origin`
-and reporting success where the run should fall through to the fallback. The
-dirty check runs FIRST and is a TEST,
-since `--porcelain` exits 0 either way and `git switch` carries uncommitted
-changes ACROSS. Unchained, a FAILED switch still runs the `-D`, which git refuses
-only for the CHECKED-OUT branch. The delete is PLURAL (§10-d adds a retro branch)
-and unconditional, so confirm each PR reads `MERGED` first.
+`--no-guess`: plain `git switch` re-creates a gone branch from `origin` and
+reports success instead of falling through. The dirty check is a TEST, since
+`--porcelain` exits 0 either way and `git switch` carries uncommitted changes
+ACROSS; unchained, a FAILED switch still runs the `-D`. The delete is PLURAL
+(§10-d adds a retro branch) and unconditional: confirm each PR reads `MERGED`.
 
 Fallback — run THIS block INSTEAD of the one above, never both. It applies ONLY
 when `LAUNCH_BRANCH` was empty at probe time (launched detached) or the branch

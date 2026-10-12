@@ -16,7 +16,7 @@ aws s3api list-object-versions \
   --prefix cdkd/MyStack/us-east-1/state.json
 ```
 
-This page is part of [State Management](state-management.md).
+This page is part of [State Store](state-management.md).
 
 ## Restore an earlier version of a record
 
@@ -292,4 +292,4 @@ bucket removes nothing from a backup or a replica.
 - [`cdkd scrub`](cli-scrub.md): remove secrets from records and their earlier
   versions
 - [`cdkd bootstrap`](cli-bootstrap.md): creates the state bucket
-- [State Management](state-management.md): the layout of the bucket
+- [State Store](state-management.md): the layout of the bucket

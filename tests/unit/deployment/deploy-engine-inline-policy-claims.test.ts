@@ -584,36 +584,97 @@ describe('DeployEngine hands AWS::IAM::Policy a live inline-policy claim predica
     expect(answers['A']).toEqual([false]);
   });
 
-  it('the predicate is LIVE: a sibling that completes after it was handed over, before the query, counts', async () => {
-    // A and B share no dependency, so both are dispatched. A's provider call
-    // holds the predicate, first asks while B is still in flight (false),
-    // then waits for B to complete and record, and asks again (true). A
-    // snapshot of the writer map, or of the state bag (B's record still names
-    // `y`), would keep answering false.
+  it('the predicate is LIVE: a writer recorded after it was handed over, before the query, counts', () => {
+    // go-to-k/cdkd#4227 orders the writers a deploy can see colliding, so a
+    // deploy no longer runs two of them at once; the predicate still reads the
+    // writer map and the state bag at query time, not at hand-over.
+    const e = engine();
+    const bag: Record<string, ResourceState> = {
+      Role: ROLE_STATE,
+      A: recordedPolicy('x'),
+      B: recordedPolicy('y'),
+    };
+    const claimed = e.inlinePolicyClaimedFor(POLICY, 'A', bag)!;
+    expect(claimed('role', 'role-phys', 'x')).toBe(false);
+    bag['B'] = recordedPolicy('x');
+    expect(claimed('role', 'role-phys', 'x')).toBe(false);
+    e.recordInlinePolicyWrite('B', 'update');
+    expect(claimed('role', 'role-phys', 'x')).toBe(true);
+  });
+
+  /** Holds each provider update open until `release`, recording the order of starts and ends. */
+  function gatedUpdates(): { events: string[]; inFlightMax: () => number } {
+    const events: string[] = [];
+    let inFlight = 0;
+    let max = 0;
+    provider.update!.mockImplementation(
+      async (l: string, _p: string, t: string, props: Record<string, unknown>, _prev: unknown, ctx: never) => {
+        ask(l, ctx);
+        events.push(`start ${l}`);
+        inFlight++;
+        max = Math.max(max, inFlight);
+        // Microtask turns only (see the network note on the aws-clients mock):
+        // long enough for every row the executor has dispatched to start.
+        for (let i = 0; i < 200; i++) await Promise.resolve();
+        inFlight--;
+        events.push(`end ${l}`);
+        return { physicalId: t === POLICY ? props['PolicyName'] : 'role-phys' };
+      }
+    );
+    return { events, inFlightMax: () => max };
+  }
+
+  it('an UNORDERED swap of two names on one role runs one writer after the other (go-to-k/cdkd#4227)', async () => {
+    // No dependency between A and B: before #4227 both ran at once, each
+    // removal missed the other's put, and the role kept neither policy.
     prime(
       { Role: ROLE_STATE, A: recordedPolicy('x'), B: recordedPolicy('y') },
       [rename('A', 'x', 'y'), rename('B', 'y', 'x')],
       [['A', 'B']]
     );
-    let releaseB!: () => void;
-    const bMayFinish = new Promise<void>((resolve) => (releaseB = resolve));
-    const seen: boolean[] = [];
+    queries = { A: [['role', 'role-phys', 'x']], B: [['role', 'role-phys', 'y']] };
+    const { events, inFlightMax } = gatedUpdates();
+
+    await engine().deploy('S', {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        A: policyTemplate('y'),
+        B: policyTemplate('x'),
+      },
+    });
+
+    expect(events).toEqual(['start A', 'end A', 'start B', 'end B']);
+    expect(inFlightMax()).toBe(1);
+    expect(answers).toEqual({ A: [false], B: [true] });
+  });
+
+  it('an UNORDERED rename beside a create of the old name runs one after the other (go-to-k/cdkd#4227)', async () => {
+    prime(
+      { Role: ROLE_STATE, A: recordedPolicy('x') },
+      [
+        rename('A', 'x', 'y'),
+        {
+          logicalId: 'B',
+          changeType: 'CREATE',
+          resourceType: POLICY,
+          desiredProperties: { PolicyName: 'x', PolicyDocument: DOC, Roles: [{ Ref: 'Role' }] },
+        },
+      ],
+      [['A', 'B']]
+    );
+    const order: string[] = [];
+    provider.create!.mockImplementation(async (l: string, _t: string, props: Record<string, unknown>) => {
+      order.push(`start ${l}`);
+      for (let i = 0; i < 200; i++) await Promise.resolve();
+      order.push(`end ${l}`);
+      return { physicalId: props['PolicyName'] };
+    });
     provider.update!.mockImplementation(
       async (l: string, _p: string, _t: string, props: Record<string, unknown>, _prev: unknown, ctx: never) => {
-        const claimed = (ctx as { inlinePolicyClaimed?: InlinePolicyClaimed }).inlinePolicyClaimed;
-        if (l === 'B') {
-          await bMayFinish;
-          return { physicalId: props['PolicyName'] };
-        }
-        seen.push(claimed?.('role', 'role-phys', 'x') ?? false);
-        releaseB();
-        // Microtask turns only: B's completion path here is promise-only, and
-        // a macrotask wait would let an unrelated engine read reach the
-        // network while A holds its call open.
-        for (let i = 0; i < 2000 && !(claimed?.('role', 'role-phys', 'x') ?? false); i++) {
-          await Promise.resolve();
-        }
-        seen.push(claimed?.('role', 'role-phys', 'x') ?? false);
+        ask(l, ctx);
+        order.push(`start ${l}`);
+        for (let i = 0; i < 200; i++) await Promise.resolve();
+        order.push(`end ${l}`);
         return { physicalId: props['PolicyName'] };
       }
     );
@@ -626,6 +687,71 @@ describe('DeployEngine hands AWS::IAM::Policy a live inline-policy claim predica
       },
     });
 
-    expect(seen).toEqual([false, true]);
+    expect(order).toEqual(['start A', 'end A', 'start B', 'end B']);
+  });
+
+  it('policies with DISTINCT names on one role still run at once (no slowdown, go-to-k/cdkd#4227)', async () => {
+    prime(
+      { Role: ROLE_STATE, A: recordedPolicy('a'), B: recordedPolicy('b') },
+      [rename('A', 'a', 'a2'), rename('B', 'b', 'b2')],
+      [['A', 'B']]
+    );
+    const { events, inFlightMax } = gatedUpdates();
+
+    await engine().deploy('S', {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        A: policyTemplate('a2'),
+        B: policyTemplate('b2'),
+      },
+    });
+
+    expect(inFlightMax()).toBe(2);
+    expect(events.slice(0, 2)).toEqual(['start A', 'start B']);
+  });
+
+  it("a role update is handed the predicate: a name its Policies drops that a completed policy put is kept (go-to-k/cdkd#4227)", async () => {
+    prime(
+      {
+        Role: {
+          physicalId: 'role-phys',
+          resourceType: 'AWS::IAM::Role',
+          properties: { Policies: [{ PolicyName: 'x', PolicyDocument: DOC }] },
+        },
+      },
+      [
+        {
+          logicalId: 'P',
+          changeType: 'CREATE',
+          resourceType: POLICY,
+          desiredProperties: { PolicyName: 'x', PolicyDocument: DOC, Roles: ['role-phys'] },
+        },
+        {
+          logicalId: 'Role',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::IAM::Role',
+          currentProperties: { Policies: [{ PolicyName: 'x', PolicyDocument: DOC }] },
+          desiredProperties: { Policies: [] },
+          propertyChanges: [{ path: 'Policies', oldValue: [], newValue: [], requiresReplacement: false }],
+        },
+      ],
+      [['P'], ['Role']]
+    );
+    queries = { Role: [['role', 'role-phys', 'x']] };
+    provider.update!.mockImplementation(
+      (l: string, _p: string, _t: string, _props: unknown, _prev: unknown, ctx: never) => {
+        ask(l, ctx);
+        return Promise.resolve({ physicalId: 'role-phys' });
+      }
+    );
+
+    await engine().deploy('S', {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: { Policies: [] } },
+        P: policyTemplate('x', ['role-phys']),
+      },
+    });
+
+    expect(answers).toEqual({ Role: [true] });
   });
 });

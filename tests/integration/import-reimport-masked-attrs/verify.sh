@@ -1,35 +1,42 @@
 #!/usr/bin/env bash
-# verify.sh — a `cdkd import --force` re-import of a Cloud-Control-routed
-# resource keeps recorded attribute values over masks (issue #2927).
+# verify.sh — Cloud Control records an `Fn::GetAtt` attribute that is also a
+# WRITABLE property in the clear (issue #3735) and masks every other model key
+# on DEPLOY as well as on import (issue #2925), and a `cdkd import --force`
+# re-import keeps recorded values over masks (issue #2927).
 #
 # WHAT THIS PROVES
 #
-# `CloudControlProvider.import` masks every model key outside the type's
-# `readOnlyProperties`, and KEEPS the key. `AWS::StepFunctions::Activity`'s
-# `Fn::GetAtt` attribute `Name` is such a key, while the deploy path records
-# the whole model, `Name` included. Before the fix, the re-import's bag of masks
-# replaced the deploy-recorded bag, so the consumer parameter's next update
-# (`Value: Fn::GetAtt [Act, Name]`) was refused. After the fix a masked value
-# never displaces an unmasked recorded one, and a mask the record already holds
-# is kept (never dropped) with a warning naming the key.
+# `CloudControlProvider` records, on create / update and on import, only the
+# type's `Fn::GetAtt` attributes in the clear and masks every other model key,
+# KEEPING the key. `AWS::StepFunctions::Activity`'s `Name` is writable yet an
+# attribute (certified by the #3735 table), so the consumer parameter
+# (`Value: Fn::GetAtt [Act, Name]`) resolves; its non-attribute keys
+# (`EncryptionConfiguration` in a live model) are masked. Before #2925 a
+# deploy recorded the whole model, so the first deploy after an import
+# replaced the import's narrowing. The #2927 merge (a mask never displaces an
+# unmasked recorded value, and a kept mask is never dropped) runs on the
+# masked keys; since #2925 a kept mask the template does not read is reported
+# at `--verbose` only, not warned.
 #
 # Phases:
-#   0. PREMISE: the registry schema's readOnlyProperties omit `Name`, so the
-#      Cloud Control import masks it. Without that, phase 2 discriminates
-#      nothing.
-#   1. `cdkd deploy` (phase=1). The activity is cc-api-routed, state records
-#      `Name` unmasked, and the parameter holds the activity name.
-#   2. KEY ASSERTION (shape 1): `cdkd import --resource Act=<arn> --force`.
-#      State still records `Name` as the activity name (pre-fix: the mask), the
-#      import said it kept the recorded value, and printed no kept-mask warning.
-#   3. `cdkd deploy -c phase=2` updates the consumer, which re-resolves
-#      `Fn::GetAtt [Act, Name]`. Pre-fix this deploy is REFUSED.
-#   4. `cdkd state orphan`, then a FRESH import of both resources. With no
-#      prior record, `Name` IS recorded as the mask: the in-run proof that the
-#      import masks it, so phase 2's pass came from the merge.
-#   5. KEY ASSERTION (shape 2): a second `--force` re-import keeps the mask
-#      (it is not dropped) and warns, naming `Name`.
-#   6. `cdkd destroy --force`, then gone-probes for the activity, the
+#   0. PREMISE: the registry schema's readOnlyProperties omit `Name`, so only
+#      the #3735 table certifies it.
+#   1. KEY ASSERTION (#2925): `cdkd deploy` (phase=1). cc-api-routed, `Name`
+#      in the clear, and at least one OTHER key masked (pre-fix: none — the
+#      deploy recorded the whole model). The parameter holds the name.
+#   2. `cdkd import --resource Act=<arn> --force`. `Name` stays clear and is
+#      not reported as masked; the record's masks are kept, reported on the
+#      `--verbose` line, and NOT warned (the template reads none of them).
+#   3. `cdkd deploy -c phase=2` updates the consumer (re-resolves `Name`).
+#   4. KEY ASSERTION (#3735): `cdkd state orphan`, then a FRESH import of both
+#      resources records `Name` in the clear (pre-fix: the mask) and masks
+#      every other key but `Arn`, by the same rule as the deploy. (Not the
+#      same KEYS: a create event's model and GetResource's may differ.)
+#   5. KEY ASSERTION (#2927 shape 2): a second `--force` re-import keeps those
+#      masks (never dropped) and reports them, still without a warning.
+#   6. KEY ASSERTION (#3735): `cdkd deploy -c phase=3` updates the consumer
+#      over the IMPORTED record. Pre-fix this deploy is REFUSED.
+#   7. `cdkd destroy --force`, then gone-probes for the activity, the
 #      parameter and the state file.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
@@ -80,8 +87,10 @@ PARAM_NAME="/cdkd-integ/import-reimport-masked-attrs/activity-name"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 CLI="node ${LOCAL_DIST}"
 MASK='***'
-# The one line `buildStackState` prints for a mask a re-import kept.
+# The default-verbosity line `buildStackState` prints for a kept mask the
+# template READS, and the `--verbose` line for one it does not (issue #2925).
 KEPT_MASK_WARNING="this import produced no value to replace the redaction mask"
+KEPT_MASK_DEBUG="the redaction mask stays recorded under"
 
 IMPORT_LOG="${TMPDIR:-/tmp}/cdkd-2927-import.$$.log"
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-2927-deploy.$$.log"
@@ -103,6 +112,55 @@ ACT_ARN="arn:${PARTITION}:states:${REGION}:${ACCOUNT_ID}:activity:${ACT_NAME}"
 
 echo "==> region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 echo "==> activity-arn=${ACT_ARN}"
+
+# The narrowing RULE, asserted on whichever model a path read (a create
+# event's and a GetResource's need not carry the same keys): every top-level
+# key of the Act record except the attributes `Arn` and `Name` is masked, and
+# `Name` is present and clear. Usage: assert_narrowed <phase label>
+assert_narrowed() {
+  local clear
+  clear="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json | python3 -c '
+import sys, json
+def masked(v):
+    if v == sys.argv[1]: return True
+    if isinstance(v, dict): return any(masked(x) for x in v.values())
+    if isinstance(v, list): return any(masked(x) for x in v)
+    return False
+attrs = json.load(sys.stdin)["state"]["resources"]["Act"].get("attributes") or {}
+# An EMPTY container has no leaf to mask (maskLeavesDeep keeps it empty), so
+# it carries no value either way and does not count as clear.
+def empty(v): return isinstance(v, (dict, list)) and not v
+print(" ".join(sorted(k for k, v in attrs.items() if not masked(v) and not empty(v))))' "${MASK}")"
+  case " ${clear} " in
+    *" Name "*) ;;
+    *)
+      echo "FAIL: $1: Name is not recorded in the clear (clear keys: '${clear}')" >&2
+      exit 1
+      ;;
+  esac
+  for key in ${clear}; do
+    case "${key}" in
+      Arn | Name) ;;
+      *)
+        echo "FAIL: $1: ${key} is recorded in the clear but is not an Fn::GetAtt attribute of AWS::StepFunctions::Activity" >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
+# The top-level keys of the Act record holding a mask leaf anywhere.
+masked_keys() {
+  ${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json | python3 -c '
+import sys, json
+def masked(v):
+    if v == sys.argv[1]: return True
+    if isinstance(v, dict): return any(masked(x) for x in v.values())
+    if isinstance(v, list): return any(masked(x) for x in v)
+    return False
+attrs = json.load(sys.stdin)["state"]["resources"]["Act"].get("attributes") or {}
+print(" ".join(sorted(k for k, v in attrs.items() if masked(v))))' "${MASK}"
+}
 
 # Reads one field of the Act record out of `cdkd state show --json`.
 act_attr() { # usage: act_attr <attribute-name>
@@ -161,14 +219,14 @@ import sys, json
 print(" ".join(json.load(sys.stdin).get("readOnlyProperties", [])))')"
 case " ${READ_ONLY} " in
   *" /properties/Name "*)
-    echo "FAIL: premise gone — /properties/Name is now read-only (${READ_ONLY}); the import no longer masks it, so this fixture discriminates nothing. Pick another type." >&2
+    echo "FAIL: premise gone — /properties/Name is now read-only (${READ_ONLY}); the #3735 table no longer decides it, so this fixture discriminates nothing. Pick another type." >&2
     exit 1
     ;;
 esac
 echo "==> Phase 0 ok: readOnlyProperties=${READ_ONLY}"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 1: cdkd deploy (phase=1)"
+echo "==> Phase 1: KEY ASSERTION — cdkd deploy (phase=1) masks the non-attribute keys"
 # ---------------------------------------------------------------------------
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" -c phase=1 --verbose
 ROUTE="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json | python3 -c '
@@ -188,10 +246,23 @@ if [ "${PARAM_VALUE}" != "${ACT_NAME}" ]; then
   echo "FAIL: ${PARAM_NAME} holds '${PARAM_VALUE}', expected '${ACT_NAME}'" >&2
   exit 1
 fi
-echo "==> Phase 1 ok: cc-api, Name recorded, parameter=${PARAM_VALUE}"
+DEPLOYED_MASKED="$(masked_keys)"
+case " ${DEPLOYED_MASKED} " in
+  *" Name "*)
+    echo "FAIL: the deploy masked Name (${DEPLOYED_MASKED}), an Fn::GetAtt attribute (issue #3735)" >&2
+    exit 1
+    ;;
+esac
+assert_narrowed "after the deploy"
+KEPT_KEY="${DEPLOYED_MASKED%% *}"
+if [ -z "${KEPT_KEY}" ]; then
+  echo "FAIL: the deploy masked no key of Act — it recorded the whole Cloud Control model (issue #2925 regression), or the model has no non-attribute key left" >&2
+  exit 1
+fi
+echo "==> Phase 1 ok: cc-api, Name recorded, masked keys: ${DEPLOYED_MASKED}, parameter=${PARAM_VALUE}"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 2: KEY ASSERTION — a --force re-import keeps the recorded Name"
+echo "==> Phase 2: a --force re-import keeps Name clear and the deploy's masks, without a warning"
 # ---------------------------------------------------------------------------
 ${CLI} import "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --resource "Act=${ACT_ARN}" --force --yes --verbose > "${IMPORT_LOG}" 2>&1 \
@@ -199,23 +270,42 @@ ${CLI} import "${STACK}" --state-bucket "${STATE_BUCKET}" \
 cat "${IMPORT_LOG}"
 REIMPORTED_NAME="$(act_attr Name)"
 if [ "${REIMPORTED_NAME}" = "${MASK}" ]; then
-  echo "FAIL: the re-import replaced the recorded Name with the mask (issue #2927 regression)" >&2
+  echo "FAIL: the re-import replaced the recorded Name with the mask (issue #2927 / #3735 regression)" >&2
   exit 1
 fi
 if [ "${REIMPORTED_NAME}" != "${ACT_NAME}" ]; then
   echo "FAIL: after the re-import Act.attributes.Name is '${REIMPORTED_NAME}', expected '${ACT_NAME}'" >&2
   exit 1
 fi
+# The record already holds the deploy's masks, so the import keeps them
+# (#2927) and, the template reading none of them, reports them on the
+# `--verbose` line instead of warning (#2925). Asserting that line first keeps
+# the negatives below from passing on a reworded message.
+if ! grep -qE "Act: ${KEPT_MASK_DEBUG} ([A-Za-z0-9]+, )*${KEPT_KEY}(, [A-Za-z0-9]+)*; this template reads none of them" "${IMPORT_LOG}"; then
+  echo "FAIL: the re-import did not report the kept ${KEPT_KEY} mask on the --verbose line" >&2
+  exit 1
+fi
 if grep -qF "${KEPT_MASK_WARNING}" "${IMPORT_LOG}"; then
-  echo "FAIL: the re-import warned about a kept mask although the record held no mask" >&2
+  echo "FAIL: the re-import warned about a kept mask the template never reads (issue #2925)" >&2
   exit 1
 fi
-# Keys are rendered sorted and comma-separated, and Cloud Control masks other
-# writable keys too (EncryptionConfiguration), so match Name within the list.
-if ! grep -qE "Act: this import recorded ([A-Za-z0-9]+, )*Name(, [A-Za-z0-9]+)* only as the redaction mask" "${IMPORT_LOG}"; then
-  echo "FAIL: the re-import kept the recorded Name without saying so" >&2
+if grep -qE "Act: (this import recorded|${KEPT_MASK_DEBUG}) ([A-Za-z0-9]+, )*Name(, [A-Za-z0-9]+)*[ ;]" "${IMPORT_LOG}"; then
+  echo "FAIL: the re-import treated Name as masked (issue #3735 regression)" >&2
   exit 1
 fi
+# INCLUSION, not equality: GetResource may carry a key the create event did
+# not, which the import masks too.
+REIMPORT_MASKED=" $(masked_keys) "
+for key in ${DEPLOYED_MASKED}; do
+  case "${REIMPORT_MASKED}" in
+    *" ${key} "*) ;;
+    *)
+      echo "FAIL: the re-import no longer masks ${key} (masked now:${REIMPORT_MASKED}), which the deploy masked — a mask was dropped or replaced" >&2
+      exit 1
+      ;;
+  esac
+done
+assert_narrowed "after the re-import"
 REIMPORTED_ARN="$(act_attr Arn)"
 if [ "${REIMPORTED_ARN}" != "${ACT_ARN}" ]; then
   echo "FAIL: after the re-import Act.attributes.Arn is '${REIMPORTED_ARN}', expected '${ACT_ARN}'" >&2
@@ -243,7 +333,7 @@ fi
 echo "==> Phase 3 ok: consumer updated, parameter=${PARAM_VALUE}"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 4: orphan state, then a FRESH import — Name IS masked with no prior record"
+echo "==> Phase 4: KEY ASSERTION — orphan state, then a FRESH import records Name in the clear"
 # ---------------------------------------------------------------------------
 ${CLI} state orphan "${STACK}" --state-bucket "${STATE_BUCKET}" --yes
 assert_gone "state ${STATE_KEY} still present after orphan" \
@@ -251,37 +341,72 @@ assert_gone "state ${STATE_KEY} still present after orphan" \
 ${CLI} import "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --resource "Act=${ACT_ARN}" --resource "NameParam=${PARAM_NAME}" --yes --verbose
 FRESH_NAME="$(act_attr Name)"
-if [ "${FRESH_NAME}" != "${MASK}" ]; then
-  echo "FAIL: a fresh import recorded Name as '${FRESH_NAME}', expected the mask — phase 2 no longer proves the merge" >&2
+if [ "${FRESH_NAME}" != "${ACT_NAME}" ]; then
+  echo "FAIL: a fresh import recorded Name as '${FRESH_NAME}', expected '${ACT_NAME}' (pre-#3735: the mask)" >&2
   exit 1
 fi
-echo "==> Phase 4 ok: fresh import masked Name"
+# The same RULE as the deploy, on the GetResource model.
+assert_narrowed "after the fresh import"
+MASKED_KEYS="$(masked_keys)"
+case " ${MASKED_KEYS} " in
+  *" ${KEPT_KEY} "*) ;;
+  *)
+    echo "FAIL: the fresh import does not mask ${KEPT_KEY} (masked: '${MASKED_KEYS}'), which phase 5 re-imports over" >&2
+    exit 1
+    ;;
+esac
+echo "==> Phase 4 ok: fresh import recorded Name=${FRESH_NAME}; masked keys: ${MASKED_KEYS}"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 5: KEY ASSERTION — a re-import over a masked record keeps it and warns"
+echo "==> Phase 5: KEY ASSERTION — a re-import over a masked record keeps the mask and reports it"
 # ---------------------------------------------------------------------------
 ${CLI} import "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --resource "Act=${ACT_ARN}" --force --yes --verbose > "${IMPORT_LOG}" 2>&1 \
   || { cat "${IMPORT_LOG}"; echo "FAIL: phase 5 import exited non-zero" >&2; exit 1; }
 cat "${IMPORT_LOG}"
-KEPT_NAME="$(act_attr Name)"
-if [ "${KEPT_NAME}" != "${MASK}" ]; then
-  echo "FAIL: the re-import left Name as '${KEPT_NAME}', expected the kept mask (never dropped)" >&2
+KEPT_VALUE="$(act_attr "${KEPT_KEY}")"
+case "${KEPT_VALUE}" in
+  *"${MASK}"*) ;;
+  *)
+    echo "FAIL: the re-import left ${KEPT_KEY} as '${KEPT_VALUE}', expected the kept mask (never dropped)" >&2
+    exit 1
+    ;;
+esac
+if ! grep -qE "Act: ${KEPT_MASK_DEBUG} ([A-Za-z0-9]+, )*${KEPT_KEY}(, [A-Za-z0-9]+)*; this template reads none of them" "${IMPORT_LOG}"; then
+  echo "FAIL: the re-import kept the ${KEPT_KEY} mask without reporting it (issue #2927)" >&2
   exit 1
 fi
-WARN_LINE="$(grep -F "${KEPT_MASK_WARNING}" "${IMPORT_LOG}" || true)"
-if [ -z "${WARN_LINE}" ]; then
-  echo "FAIL: the re-import kept a mask without warning (issue #2927)" >&2
+if grep -qF "${KEPT_MASK_WARNING}" "${IMPORT_LOG}"; then
+  echo "FAIL: the re-import warned about a kept mask the template never reads (issue #2925)" >&2
   exit 1
 fi
-if ! printf '%s\n' "${WARN_LINE}" | grep -qE "Act: ${KEPT_MASK_WARNING} recorded under ([A-Za-z0-9]+, )*Name,"; then
-  echo "FAIL: the kept-mask warning does not name Act and Name: ${WARN_LINE}" >&2
+if [ "$(act_attr Name)" != "${ACT_NAME}" ]; then
+  echo "FAIL: after the phase 5 re-import Act.attributes.Name is '$(act_attr Name)', expected '${ACT_NAME}'" >&2
   exit 1
 fi
-echo "==> Phase 5 ok: mask kept, warning printed"
+echo "==> Phase 5 ok: ${KEPT_KEY} mask kept and reported at --verbose, Name still clear"
 
 # ---------------------------------------------------------------------------
-echo "==> Phase 6: cdkd destroy --force"
+echo "==> Phase 6: KEY ASSERTION — cdkd deploy -c phase=3 resolves Fn::GetAtt [Act, Name] from the IMPORTED record"
+# ---------------------------------------------------------------------------
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" -c phase=3 --verbose > "${DEPLOY_LOG}" 2>&1 \
+  || { cat "${DEPLOY_LOG}"; echo "FAIL: phase 6 deploy exited non-zero (pre-#3735: the redacted-attribute refusal for Name)" >&2; exit 1; }
+cat "${DEPLOY_LOG}"
+PARAM_DESC="$(aws ssm describe-parameters --parameter-filters "Key=Name,Values=${PARAM_NAME}" \
+  --query 'Parameters[0].Description' --output text)"
+if [ "${PARAM_DESC}" != "cdkd issue 2927 consumer, phase 3" ]; then
+  echo "FAIL: ${PARAM_NAME} description is '${PARAM_DESC}' — the consumer was not updated, so Name was never re-resolved" >&2
+  exit 1
+fi
+PARAM_VALUE="$(aws ssm get-parameter --name "${PARAM_NAME}" --query Parameter.Value --output text)"
+if [ "${PARAM_VALUE}" != "${ACT_NAME}" ]; then
+  echo "FAIL: after the phase 6 update ${PARAM_NAME} holds '${PARAM_VALUE}', expected '${ACT_NAME}'" >&2
+  exit 1
+fi
+echo "==> Phase 6 ok: consumer updated over the imported record, parameter=${PARAM_VALUE}"
+
+# ---------------------------------------------------------------------------
+echo "==> Phase 7: cdkd destroy --force"
 # ---------------------------------------------------------------------------
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 assert_gone "activity ${ACT_ARN} still exists after destroy" \
@@ -290,8 +415,8 @@ assert_gone "parameter ${PARAM_NAME} still exists after destroy" \
   aws ssm get-parameter --name "${PARAM_NAME}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "==> Phase 6 ok: activity, parameter and state gone"
+echo "==> Phase 7 ok: activity, parameter and state gone"
 
 rm -f "${IMPORT_LOG}" "${DEPLOY_LOG}"
 trap - EXIT INT TERM
-echo "[verify] PASS — re-import keeps recorded attribute values over masks, and keeps + reports a mask it cannot replace (issue #2927)"
+echo "[verify] PASS — deploy and import record a writable Fn::GetAtt attribute in the clear (issue #3735) and mask the rest (issue #2925); re-import keeps masks and reports them (issue #2927)"

@@ -84,9 +84,9 @@ PROV_INITIAL_READ=5
 PROV_INITIAL_WRITE=5
 PROV_UPDATED_READ=20
 PROV_UPDATED_WRITE=10
-# issues #3287 / #3265: the table whose per-GSI on-demand READ ceiling changes
-# under CDKD_TEST_UPDATE=true, and whose TABLE-level ceiling declares one member
-# CloudFormation's Integer grammar rejects.
+# issues #3287 / #3286: the table whose per-GSI on-demand READ ceiling changes
+# under CDKD_TEST_UPDATE=true, and whose ceilings the Phase 1.8 refusal deploys
+# re-spell in a form CloudFormation's Integer grammar rejects.
 GSI_CEILING_TABLE="cdkd-ondemand-test-gsi-ceiling-table"
 GSI_CEILING_INDEX="gsi-ceiling"
 GSI_CEILING_INITIAL_READ=20
@@ -108,6 +108,9 @@ CEILING_REMOVAL_GSI_WRITE=39
 # and must NEVER be created.
 PITR_PERIOD=7
 PITR_REFUSED_TABLE="cdkd-ondemand-test-pitr-refused-table"
+# issue go-to-k/cdkd#3286: exists only in the create-arm ceiling refusal deploy
+# and must NEVER be created.
+CEILING_REFUSED_TABLE="cdkd-ondemand-test-ceiling-refused-table"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -129,6 +132,7 @@ cleanup() {
   aws dynamodb delete-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${PITR_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${CEILING_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -399,25 +403,24 @@ if [ "${GSI_CEILING_BASE_WRITE}" != "${GSI_CEILING_WRITE}" ]; then
 fi
 echo "    OK (Phase 1): the GSI carries ${GSI_CEILING_INITIAL_READ}/${GSI_CEILING_WRITE} before the ceiling edit"
 
-# The TABLE-level half: the template declares a padded ' 25 ' write ceiling,
-# which CloudFormation's Integer grammar rejects, so cdkd DROPS that member and
-# warns. Both members are SDK-optional, so the request SUCCEEDS -- AWS must end
-# up holding the read ceiling and NO write ceiling.
+# The TABLE-level baseline for the Phase 1.8 update arm: the template declares
+# a read ceiling only, so AWS must hold it and NO write ceiling. Without this
+# the arm's "still no write ceiling" check would pass vacuously.
 TABLE_CEILING=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
   --query 'Table.OnDemandThroughput' --output json)
 TABLE_CEILING_ACTUAL_READ=$(echo "${TABLE_CEILING}" | jq -r 'if has("MaxReadRequestUnits") then .MaxReadRequestUnits | tostring else "absent" end')
 TABLE_CEILING_ACTUAL_WRITE=$(echo "${TABLE_CEILING}" | jq -r 'if has("MaxWriteRequestUnits") then .MaxWriteRequestUnits | tostring else "absent" end')
 if [ "${TABLE_CEILING_ACTUAL_READ}" != "${TABLE_CEILING_READ}" ]; then
-  echo "FAIL (issue #3265): the legal read ceiling is '${TABLE_CEILING_ACTUAL_READ}' on AWS, expected '${TABLE_CEILING_READ}' -- the rejected sibling took a legal member with it" >&2
+  echo "FAIL (issue #3286): the table-level read ceiling is '${TABLE_CEILING_ACTUAL_READ}' on AWS, expected '${TABLE_CEILING_READ}'" >&2
   echo "${TABLE_CEILING}" | jq .
   exit 1
 fi
 if [ "${TABLE_CEILING_ACTUAL_WRITE}" != "absent" ]; then
-  echo "FAIL (issue #3265): AWS holds a write ceiling of '${TABLE_CEILING_ACTUAL_WRITE}', but the template's ' 25 ' is a spelling cdkd must DROP" >&2
+  echo "FAIL (issue #3286): AWS holds a write ceiling of '${TABLE_CEILING_ACTUAL_WRITE}', but the template declares none" >&2
   echo "${TABLE_CEILING}" | jq .
   exit 1
 fi
-echo "    OK (Phase 1): the rejected write ceiling reached neither AWS nor its legal sibling"
+echo "    OK (Phase 1): the table-level ceiling is ${TABLE_CEILING_READ} read / no write"
 
 # --- issue go-to-k/cdkd#3373 BASELINE ---------------------------------
 # The ceilings that the UPDATE phase will REMOVE, asserted LIVE first.
@@ -463,13 +466,6 @@ assert_ceiling_removal "the removal table's baseline per-index" "${CEILING_REMOV
 assert_ceiling_removal "the removal table's baseline per-index" "${CEILING_REMOVAL_GSI_BASE}" \
   MaxWriteRequestUnits "${CEILING_REMOVAL_GSI_WRITE}"
 echo "    OK (Phase 1): both ceiling positions carry ${CEILING_REMOVAL_TABLE_READ}/${CEILING_REMOVAL_TABLE_WRITE} and ${CEILING_REMOVAL_GSI_READ}/${CEILING_REMOVAL_GSI_WRITE} before the removal"
-
-# The RECORD side of the same drop is NOT asserted here, and that is a
-# DECISION: state still carries the declared ' 25 ' while AWS holds no write
-# ceiling, so `cdkd drift` reports the difference until the template is fixed.
-# Closing it needs `effectiveProperties` plus its `canonicalizeDesiredProperties`
-# twin AND an agreeing `observedProperties` capture in `deploy-engine.ts`, which
-# is issue #3286 -- open, with the evidence on the issue.
 
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -744,6 +740,78 @@ refusal_deploy create
 assert_gone "issue #3255: ${PITR_REFUSED_TABLE} exists -- the create was not refused before CreateTable" \
   aws dynamodb describe-table --table-name "${PITR_REFUSED_TABLE}" --region "${REGION}"
 echo "    OK: ${PITR_REFUSED_TABLE} was never created"
+
+# --- Phase 1.8: an OnDemandThroughput ceiling CloudFormation rejects is REFUSED
+# (issue go-to-k/cdkd#3286). Pre-fix each deploy below went GREEN: the padded
+# member was dropped with a warning, the request succeeded with that half
+# unapplied, and state recorded the declared spelling -- permanent drift. Each
+# must now FAIL before any AWS call, naming the member. All keep
+# CDKD_TEST_UPDATE=true, so the only template difference from Phase 1.5 is the
+# one under test.
+ceiling_refusal_deploy() { # usage: ceiling_refusal_deploy <arm> <expected needle>
+  local out rc=0
+  out=$(CDKD_TEST_UPDATE=true CDKD_TEST_CEILING_REFUSE="$1" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes 2>&1) || rc=$?
+  out=$(printf '%s\n' "${out}" | sed $'s/\x1b\\[[0-9;]*m//g')
+  if [ "${rc}" = 0 ]; then
+    printf '%s\n' "${out}" >&2
+    echo "FAIL (issue #3286, $1 arm): the deploy SUCCEEDED; a padded OnDemandThroughput member must be refused" >&2
+    exit 1
+  fi
+  if ! grep -qF "$2" <<<"${out}"; then
+    printf '%s\n' "${out}" >&2
+    echo "FAIL (issue #3286, $1 arm): the deploy failed (rc=${rc}), but not with the refusal naming '$2'" >&2
+    exit 1
+  fi
+  echo "    OK ($1 arm): the deploy was refused (rc=${rc}) naming $2"
+}
+CEILING_REFUSAL='must be an Integer CloudFormation accepts'
+recorded_ceiling_table() { # prints the GSI-ceiling table's recorded properties
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -c --arg t "${GSI_CEILING_TABLE}" \
+    '[.resources[] | select(.resourceType == "AWS::DynamoDB::Table" and .properties.TableName == $t) | .properties] | first'
+}
+
+echo "==> Phase 1.8a: re-spell the live table-level write ceiling as ' 25 ' (update arm)"
+# The leading ": " anchors the needle to the TABLE-level path: without it a
+# per-index refusal ("GlobalSecondaryIndexes[0].OnDemandThroughput...") matches too.
+ceiling_refusal_deploy update ": OnDemandThroughput.MaxWriteRequestUnits ${CEILING_REFUSAL}"
+TABLE_CEILING_NOW=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput' --output json)
+if [ "$(echo "${TABLE_CEILING_NOW}" | jq -r 'if type == "object" and has("MaxWriteRequestUnits") then "present" else "absent" end')" != "absent" ]; then
+  echo "FAIL (issue #3286): AWS holds a table-level write ceiling after the refused deploy" >&2
+  echo "${TABLE_CEILING_NOW}" | jq .
+  exit 1
+fi
+RECORDED=$(recorded_ceiling_table)
+if [ "$(echo "${RECORDED}" | jq -r '.OnDemandThroughput | has("MaxWriteRequestUnits")')" != "false" ]; then
+  echo "FAIL (issue #3286): state records a table-level write ceiling after the refused deploy: ${RECORDED}" >&2
+  exit 1
+fi
+echo "    OK: neither AWS nor state carries the refused table-level write ceiling"
+
+echo "==> Phase 1.8b: re-spell the live per-index write ceiling as ' 15 ' (gsi-update arm)"
+ceiling_refusal_deploy gsi-update "GlobalSecondaryIndexes[0].OnDemandThroughput.MaxWriteRequestUnits ${CEILING_REFUSAL}"
+RECORDED=$(recorded_ceiling_table)
+RECORDED_GSI_WRITE=$(echo "${RECORDED}" | jq -c '.GlobalSecondaryIndexes[0].OnDemandThroughput.MaxWriteRequestUnits')
+if [ "${RECORDED_GSI_WRITE}" != "${GSI_CEILING_WRITE}" ]; then
+  echo "FAIL (issue #3286): state records the per-index write ceiling ${RECORDED_GSI_WRITE} after the refused deploy, expected ${GSI_CEILING_WRITE}" >&2
+  exit 1
+fi
+GSI_WRITE_NOW=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_CEILING_INDEX}'].OnDemandThroughput.MaxWriteRequestUnits | [0]" --output text)
+if [ "${GSI_WRITE_NOW}" != "${GSI_CEILING_WRITE}" ]; then
+  echo "FAIL (issue #3286): AWS holds the per-index write ceiling '${GSI_WRITE_NOW}' after the refused deploy, expected ${GSI_CEILING_WRITE}" >&2
+  exit 1
+fi
+echo "    OK: state and AWS still hold the per-index write ceiling ${GSI_CEILING_WRITE}"
+
+echo "==> Phase 1.8c: a NEW table whose index declares ' 25 ' (create arm)"
+ceiling_refusal_deploy create "GlobalSecondaryIndexes[0].OnDemandThroughput.MaxWriteRequestUnits ${CEILING_REFUSAL}"
+assert_gone "issue #3286: ${CEILING_REFUSED_TABLE} exists -- the create was not refused before CreateTable" \
+  aws dynamodb describe-table --table-name "${CEILING_REFUSED_TABLE}" --region "${REGION}"
+echo "    OK: ${CEILING_REFUSED_TABLE} was never created"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

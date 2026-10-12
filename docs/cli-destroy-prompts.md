@@ -93,6 +93,7 @@ the flag that avoids the prompt. Piping `y` in does not work.
 | `cdkd state orphan` | `Remove state for <refs> from s3://...?` | `-y` / `--yes`, or `-f` / `--force` |
 | `cdkd state orphan --resource` | `Remove the record(s) of <ids> from state for <stack> (<region>)?` | `-y` / `--yes` |
 | `cdkd state refresh-observed` | `Refresh observedProperties for N stack(s)...?` | `-y` / `--yes` |
+| `cdkd state refresh-observed --accept-refused` | `Accepting the refused observed baseline of <id> ... Accept it?` | `-y` / `--yes` |
 | `cdkd orphan` | `Orphan N resource(s) from cdkd state...?` | `-y` / `--yes`, or `-f` / `--force` |
 | `cdkd import` | `Write state for <stack> with N resource(s)?` | `-y` / `--yes` |
 | `cdkd export` | Three prompts, described below | `-y` / `--yes` |

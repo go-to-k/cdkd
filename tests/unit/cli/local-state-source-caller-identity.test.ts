@@ -521,7 +521,7 @@ describe('engineRoleExposureWarning (#3240, engine channels)', () => {
     expect(msg).toContain('${AWS::AccountId}');
     expect(msg).not.toContain('--from-cfn-stack');
     expect(msg).toContain('--profile <name>');
-    expect(msg).toContain('go-to-k/cdk-local#783');
+    expect(msg).not.toMatch(/#\d/);
   });
 
   it('adds the --from-cfn-stack channel only when that flag is set', () => {

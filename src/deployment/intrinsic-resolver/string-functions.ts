@@ -573,7 +573,7 @@ export async function resolveSplit(
               `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) ` +
               `already returns a list. If you wrote the Fn::Split as a workaround for ` +
               `cdkd resolving that attribute to a comma-delimited string, that bug is ` +
-              `fixed (PR #1868) and the workaround is no longer needed.`
+              `fixed and the workaround is no longer needed.`
             : // Not an exhaustive list on purpose: the source clause above
               // already names the actual intrinsic, and several others reach
               // this arm (Fn::GetAZs, Fn::Cidr, a nested Fn::Split, an

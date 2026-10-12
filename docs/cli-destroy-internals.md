@@ -466,7 +466,7 @@ state preservation, and does **not** change the exit code: a destroy showing
 `1 unverified` and `0 errors` exits `0`. It appears on every summary arm and
 only when non-zero. A warning beneath the line names the resources; the durable
 half is a `RESOURCE_GUARD_INDETERMINATE` event, which outlives the run — see
-[Deployment Events](deployment-events.md). `cdkd state destroy` prints the same
+[Deployment Event Format](deployment-events-format.md#a-delete-cdkd-could-not-verify-resource-guard-indeterminate). `cdkd state destroy` prints the same
 figure and records the same event.
 
 ### What the run-level message counts
@@ -569,7 +569,7 @@ To act on the resources instead, inspect the record with `cdkd state show
 '<stack>' --stack-region '<region>' --json`, repair it, and re-run the destroy. An
 **absent** `resources` field is a defect and is refused too — a stack always has
 a resource map, even an empty one. Full per-command table in
-[State Management](state-management-malformed-records.md#resources-is-not-an-object).
+[State Store](state-management-malformed-records.md#resources-is-not-an-object).
 
 ### An unreadable resource record
 
@@ -603,7 +603,7 @@ and re-run. A row that names its type but no usable `physicalId` is not refused
 here: it is skipped on its own (see
 [cdkd destroy: skipped resources](cli-destroy-skipped.md#a-state-record-cdkd-cannot-address)). Full per-command
 table in
-[State Management](state-management-malformed-records.md#one-resources-entry-cannot-be-read).
+[State Store](state-management-malformed-records.md#one-resources-entry-cannot-be-read).
 
 ### An unreadable `properties` map
 
@@ -664,7 +664,7 @@ cdkd state orphan '<stack>' --stack-region '<region>'
 — which orphans whatever the record described, so prefer repairing the bag when
 the resources still matter. An **absent** `outputs` field is not
 a defect and is never refused: cdkd writes such records on purpose. The full
-per-command table is in [State Management](state-management-malformed-records.md#outputs-is-not-an-object).
+per-command table is in [State Store](state-management-malformed-records.md#outputs-is-not-an-object).
 
 ### A malformed `orphans` list
 
@@ -707,7 +707,7 @@ before anyone decides which of the two resources the stack still owns. Every fie
 prints is sanitized, so a stored value cannot forge a row or redraw the lines
 above it — and so is the list of resources to be deleted above it.
 
-The per-command tables are in State Management — one for
+The per-command tables are in State Store — one for
 [the container](state-management-malformed-records.md#orphans-is-not-a-list), one for
 [a single record](state-management-malformed-records.md#one-orphans-entry-cannot-be-read).
 

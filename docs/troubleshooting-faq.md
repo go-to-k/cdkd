@@ -48,7 +48,7 @@ cdkd export MyStack
 
 - **To cdkd**: the import adopts the resources and retires the CloudFormation
   stack record. It needs a CDK app that synthesizes the stack. Nested stacks
-  are walked recursively. See [Importing Existing Resources](import.md).
+  are walked recursively. See [Import Existing Resources](import.md).
 - **To CloudFormation**: the export builds an IMPORT change set, executes it
   and deletes cdkd state. It is all-or-nothing. It refuses up front on a
   resource with no state entry, a masked value in the recorded properties, a
@@ -90,14 +90,14 @@ cdkd import MyStack --resource MyBucket=mystack-mybucket
 A generated name is `<StackName>-<LogicalId>` when that fits the type's length
 limit. Otherwise it is truncated with `-` and 8 hex characters appended
 (`mystack-averylongconstructna-19184149`). See
-[Importing Existing Resources](import.md).
+[Import Existing Resources](import.md).
 
 ## Q: Is there a rollback feature?
 
 Yes. cdkd rolls back on failure by default. `--no-rollback` keeps the partial
 state instead, and the next deploy applies the remaining changes. To return a
 `--no-rollback` or interrupted deploy to its pre-deploy state, run
-`cdkd rollback MyStack`. See [Rollback](rollback.md).
+`cdkd rollback MyStack`. See [Roll Back a Failed Deploy](rollback.md).
 
 ## Q: Are custom resources supported?
 

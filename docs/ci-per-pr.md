@@ -1,9 +1,9 @@
 ---
-title: Per-PR Environments in CI
+title: Create Per-PR Environments in CI
 description: "Deploy one ephemeral stack per pull request with cdkd in GitHub Actions: stack naming, the deploy role, the workflow, and a teardown that leaves nothing behind."
 ---
 
-# Per-PR Environments in CI
+# Create Per-PR Environments in CI
 
 A per-PR environment is a copy of your stack that exists for one pull
 request. CI deploys it when the pull request opens, redeploys it on every
@@ -160,7 +160,7 @@ These tasks come up once PR environments are running.
 
 Use `cdkd deploy --no-wait` for environments that are only looked at by a
 reviewer. Use the default, or `--full-wait`, when end-to-end tests run right
-after the deploy. See [Wait Modes](wait-modes.md).
+after the deploy. See [Choose a Wait Mode](wait-modes.md).
 
 ### Clear a lock left by a cancelled job
 
@@ -211,7 +211,7 @@ delete or orphan a resource.
 ### Check a running environment for outside changes
 
 `cdkd drift --json` reports resources that were changed in AWS outside cdkd.
-See [Drift Detection](drift.md).
+See [Detect and Fix Drift](drift.md).
 
 ## Related
 
@@ -219,6 +219,6 @@ See [Drift Detection](drift.md).
   turn off, and what each one protects
 - [`cdkd state`](cli-state.md): `cdkd state destroy` and the other commands
   that work from state
-- [Orphan vs Destroy](orphan-vs-destroy.md): the cleanup commands compared
-- [Wait Modes](wait-modes.md): choosing what "done" means for the deploy job
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): the cleanup commands compared
+- [Choose a Wait Mode](wait-modes.md): choosing what "done" means for the deploy job
 - [CLI Reference](cli-reference.md): every command and the exit codes

@@ -16,14 +16,15 @@
  * written at all. So the return type is `ReadonlySet<string> | undefined` and
  * the failure is the `undefined`.
  *
- * WHAT `readOnlyProperties` MEANS HERE. In the CloudFormation registry schema a
- * type's `readOnlyProperties` are exactly the values `Fn::GetAtt` may read —
- * that is the definition CloudFormation itself applies, and it is why the
- * narrowing this module enables is a CORRECTNESS fix as much as a security one.
- * Cloud Control's `GetResource` returns the whole resource MODEL, whose keys are
- * every readable property, writable ones included; a `Fn::GetAtt` naming one of
- * those is rejected by CloudFormation at template validation, so nothing cdkd
- * drops here was ever a legitimate attribute.
+ * WHAT `readOnlyProperties` IS NOT. It is NOT the set of names `Fn::GetAtt`
+ * may read. CloudFormation validates `Fn::GetAtt` against the resource
+ * specification's `Attributes`, which also names some WRITABLE properties
+ * (`AWS::EC2::Subnet` `VpcId`, `AWS::SQS::Queue` `QueueName`, ...) — and the
+ * registry schema `DescribeType` returns carries no marker for those (issue
+ * #3735). So a caller deciding "is this model key an attribute" must use
+ * {@link getTopLevelAttributeNames}, which unions `readOnlyProperties` with the
+ * generated {@link WRITABLE_GETATT_ATTRIBUTES} table; certifying
+ * `readOnlyProperties` alone masks a value a valid template reads.
  *
  * TOP-LEVEL REDUCTION, deliberately the same convention as the write-only
  * sibling: a nested pointer `/properties/Endpoint/Address` reduces to
@@ -56,9 +57,14 @@
  * caller's fail-closed arm is written against, so it is honoured here rather
  * than left to the call graph.
  *
- * Only SUCCESSFUL lookups therefore survive in the cache for the process
- * lifetime, so a transient throttle on the first imported resource of a type
- * cannot poison every later one. A schema-less response is a SUCCESSFUL lookup
+ * A failure is cached for the run ONLY when AWS answered it definitively — a
+ * 4xx that is not a throttle, a missing `cloudformation:DescribeType` grant
+ * above all (issue #2925): the deploy path resolves this for every Cloud
+ * Control create / update, and without the negative entry a user lacking the
+ * permission would pay one more failing call per resource rather than per
+ * type. Anything that may pass — a throttle whose retries ran out, a 5xx, a
+ * network error with no HTTP status — is never cached, so it cannot poison
+ * every later resource of the type. A schema-less response is a SUCCESSFUL lookup
  * of an empty set, not a failure — a type AWS publishes with no
  * `readOnlyProperties` genuinely has no attributes, and answering `undefined`
  * there would make the caller emit a missing-permission warning for a healthy
@@ -66,25 +72,122 @@
  */
 
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import {
+  SHAPE_MISMATCHED_GETATT_ATTRIBUTES,
+  WRITABLE_GETATT_ATTRIBUTES,
+} from './getatt-attributes.generated.js';
+import { isThrottlingError } from '../deployment/retryable-errors.js';
+import { MAX_CAUSE_CHAIN_DEPTH } from '../deployment/retryable-errors/marks.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
 
 /**
- * Per-type cache of SUCCESSFUL lookups only, holding the in-flight promise so
- * concurrent imports of the same type share one `DescribeType` call. A failed
- * lookup removes its own entry so a later call retries.
+ * A failure AWS answered definitively: an HTTP 4xx on the error or its cause
+ * chain that is not a throttle. Only these are worth remembering for the run.
  */
-const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string> | undefined>>();
-
-/** Clear the per-type cache. Test-only helper. */
-export function clearReadOnlyPropertiesCache(): void {
-  readOnlyPropertiesCache.clear();
+function isDefinitiveRefusal(error: unknown): boolean {
+  if (isThrottlingError(error)) return false;
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
+    const status = (current as { $metadata?: { httpStatusCode?: number } }).$metadata
+      ?.httpStatusCode;
+    if (status !== undefined) return status >= 400 && status < 500;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
- * Resolve the TOP-LEVEL read-only (i.e. `Fn::GetAtt`-able) property names for a
- * resource type.
+ * Per-type cache holding the in-flight promise so concurrent lookups of the
+ * same type share one `DescribeType` call. A definitive refusal (a non-throttle
+ * 4xx) stays cached as `undefined` for the run; any other failure removes its
+ * own entry so a later call retries.
+ */
+const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string> | undefined>>();
+
+/**
+ * Per-type union built by {@link getTopLevelAttributeNames}. Only built from a
+ * SUCCESSFUL read-only lookup, which that cache never evicts, and cleared with
+ * it, so it cannot outlive the set it was built from.
+ */
+const attributeNamesCache = new Map<string, ReadonlySet<string>>();
+
+/** Clear the per-type caches. Test-only helper. */
+export function clearReadOnlyPropertiesCache(): void {
+  readOnlyPropertiesCache.clear();
+  attributeNamesCache.clear();
+  deployAttributeNamesCache.clear();
+}
+
+/**
+ * Resolve the TOP-LEVEL names `Fn::GetAtt` may read for a resource type: its
+ * registry `readOnlyProperties` UNION the writable properties the resource
+ * specification also lists as attributes ({@link WRITABLE_GETATT_ATTRIBUTES},
+ * issue #3735).
+ *
+ * Same `undefined` contract as {@link getTopLevelReadOnlyProperties}: when the
+ * schema cannot be resolved the answer stays `undefined` ("cannot certify"),
+ * NOT the table's names alone — the caller's fail-closed arm masks the whole
+ * model there, and certifying a partial set would make that arm's warning
+ * ("every imported attribute ... is recorded as masked") untrue.
+ *
+ * Never throws. The table lookup is one own-property read per call; a type with
+ * no table entry gets the cached read-only set itself, and the union is built
+ * once per type.
+ */
+export async function getTopLevelAttributeNames(
+  resourceType: string
+): Promise<ReadonlySet<string> | undefined> {
+  const readOnly = await getTopLevelReadOnlyProperties(resourceType);
+  if (readOnly === undefined) return undefined;
+  const writable = Object.hasOwn(WRITABLE_GETATT_ATTRIBUTES, resourceType)
+    ? WRITABLE_GETATT_ATTRIBUTES[resourceType]
+    : undefined;
+  if (!writable || writable.length === 0) return readOnly;
+  const cached = attributeNamesCache.get(resourceType);
+  if (cached) return cached;
+  const names: ReadonlySet<string> = new Set([...readOnly, ...writable]);
+  attributeNamesCache.set(resourceType, names);
+  return names;
+}
+
+/**
+ * Per-type union built by {@link getTopLevelDeployAttributeNames}, built once
+ * per type and cleared with the other caches.
+ */
+const deployAttributeNamesCache = new Map<string, ReadonlySet<string>>();
+
+/**
+ * The names a Cloud Control DEPLOY records in the clear (issue #2925):
+ * {@link getTopLevelAttributeNames} plus the writable `Fn::GetAtt` attributes
+ * whose attribute and property shapes differ
+ * ({@link SHAPE_MISMATCHED_GETATT_ATTRIBUTES}). The import masks those (it
+ * cannot vouch the model value is what `Fn::GetAtt` returns); the deploy keeps
+ * them, as it did before the narrowing, because a template CloudFormation
+ * accepts reads them — `AWS::DocDB::DBCluster` `Port` from CDK's
+ * `allowDefaultPortFrom` — and masking would refuse it. Same `undefined`
+ * contract.
+ */
+export async function getTopLevelDeployAttributeNames(
+  resourceType: string
+): Promise<ReadonlySet<string> | undefined> {
+  const certified = await getTopLevelAttributeNames(resourceType);
+  if (certified === undefined) return undefined;
+  const mismatched = Object.hasOwn(SHAPE_MISMATCHED_GETATT_ATTRIBUTES, resourceType)
+    ? SHAPE_MISMATCHED_GETATT_ATTRIBUTES[resourceType]
+    : undefined;
+  if (!mismatched || mismatched.length === 0) return certified;
+  const cached = deployAttributeNamesCache.get(resourceType);
+  if (cached) return cached;
+  const names: ReadonlySet<string> = new Set([...certified, ...mismatched]);
+  deployAttributeNamesCache.set(resourceType, names);
+  return names;
+}
+
+/**
+ * Resolve the TOP-LEVEL `readOnlyProperties` names for a resource type. NOT
+ * the full `Fn::GetAtt` set — see {@link getTopLevelAttributeNames}.
  *
  * Returns `undefined` when the schema could not be resolved — a missing
  * `cloudformation:DescribeType` permission, an exhausted throttle retry, or a
@@ -117,7 +220,7 @@ export function getTopLevelReadOnlyProperties(
   // hand a REJECTION to any second caller that arrived inside the failure
   // window, out of a function documented never to throw (see the header).
   const entry = fetchTopLevelReadOnlyProperties(resourceType).catch((error) => {
-    readOnlyPropertiesCache.delete(resourceType);
+    if (!isDefinitiveRefusal(error)) readOnlyPropertiesCache.delete(resourceType);
     const message = describeAwsFailure(error).detail;
     getLogger()
       .child('ReadOnlyProperties')

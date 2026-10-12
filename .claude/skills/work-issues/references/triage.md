@@ -60,8 +60,9 @@ be merged, since this repo SQUASH-merges, so ask by CONTENT
 diff disagrees with `status --porcelain`, the dirty tree wins.
 
 **A file another agent is editing is OFF-LIMITS** — read the "working on this"
-comments. An open PR — a peer session's or a fork's — holds its DIFF's hunks,
-their neighbours and code coupled to them, cross-cutting files included; read
+comments. An open PR — a peer session's or a fork's, never the standing
+`chore(release): <ver>` PR, which release-please regenerates — holds its DIFF's
+hunks, their neighbours and code coupled to them, cross-cutting files included; read
 `gh pr diff <N>` before waiting. Edit outside them, put new tests in new files,
 and stand down (claim.md) only when the fix needs those lines (#4516).
 The contested cross-cutting files:
@@ -93,10 +94,10 @@ unreached ones stood down with a four-field comment.
   RE-TAKE it after every merge, a peer's too: a candidate held at triage frees
   when its holder merges (re-run §2's `files` query, then `gh pr diff`).
 - An old packed body (`Session-fit: <d> — <reason> / Effort: <duration>` on one
-  line) is read, not bulk-rewritten: its `Effort:` is an **`Estimate`** and its
-  `severity:*` label DERIVED, never `low` by default. Upgrade it to the four-line
-  shape when you CLAIM it (§4); if you take a `next`, the claim says why that no
-  longer applies ("an integ run" is not a reason).
+  line): its `Effort:` is an **`Estimate`**, its `severity:*` label DERIVED
+  (never `low` by default); upgrade it to four lines when you CLAIM it (§4).
+  Taking a `next`, the claim says why it no longer applies ("an integ run" is
+  no reason).
 
 **Resolve every premise against the tree at CLAIM time**, the issue's OWN
 record included (its comments; a body's "conditional on #N": read N's `state`,
@@ -108,7 +109,14 @@ a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
 "premise on an unmerged branch". A fix choosing accept / refuse / replace /
 update has a CFn premise: `aws cloudformation describe-type --type RESOURCE
 --type-name <T> --query Schema` (`required`, `createOnlyProperties`), else a
-throwaway change set (delete its stack after), BEFORE design (#3769).
+throwaway change set (delete its stack after), BEFORE design (#3769). cdkd
+may refuse what CFn or the AWS CDK CLI rejects, never what they accept; MEASURE
+a CDK CLI premise by running the inputs through its parser from `node_modules`
+— one read off its source refused more (#2221).
+
+**A decision-blocked issue is a candidate, not an exclusion**: return its
+options with each fix and what CFn / the CDK CLI do, for ONE
+`AskUserQuestion` at triage (gotchas.md).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
@@ -153,21 +161,13 @@ what survives both, in order, moving on only to break a tie:
 6. **Prefer an issue landing in ONE isolated file**; spend contested files last.
 7. **Older first** (lower number / earlier `created_at`).
 
-Tiebreakers, not a formula — never average them. `Effort` / `Estimate` rank
-nothing; they gate what this run can AFFORD. A user-reported breakage outranks
-the whole table except rule 1.
+`Effort` / `Estimate` rank nothing; they gate what this run can AFFORD. A
+user-reported breakage outranks the whole table except rule 1.
 
-Detecting the signals, from the listings §1 already fetched:
+Rules 4–5 read §1's title prefix (`fix(deploy):`); rule 3 reads a label:
 
 ```bash
-# type + area from the conventional-commit title prefix: fix(deploy): ...
-gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
-  --jq '.[] | select(.pull_request | not)
-        | select([.labels[].name] | index("backfill-type") | not)
-        | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
-        | @tsv'
-
-# rule 3's input is a LABEL too — no per-candidate view:
+# rule 3's input is a LABEL — no per-candidate view:
 gh issue list --state open --limit 200 --json number,title,labels \
   --jq '.[] | select([.labels[].name] | index("backfill-type") | not)
         | [.number,

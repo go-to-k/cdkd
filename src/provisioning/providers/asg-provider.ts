@@ -2087,7 +2087,7 @@ export class ASGProvider implements ResourceProvider {
         // choice in --verbose so a user wondering why their Name didn't
         // take effect has an auditable signal.
         this.logger.debug(
-          `buildLaunchTemplate: both LaunchTemplateId (${lt.LaunchTemplateId}) and LaunchTemplateName (${lt.LaunchTemplateName}) templated; dropping Name (#551)`
+          `buildLaunchTemplate: both LaunchTemplateId (${lt.LaunchTemplateId}) and LaunchTemplateName (${lt.LaunchTemplateName}) templated; dropping Name`
         );
       }
     } else if (lt.LaunchTemplateName !== undefined) {

@@ -201,7 +201,7 @@ names the property as `OldResourceProperties.<path>`.
 ## A changed custom-resource ServiceToken is refused
 
 ```
-Refusing to deploy S: a custom resource's ServiceToken changes, which CloudFormation does not allow ("Modifying service token is not allowed") (issue #4749). Nothing was sent to either handler.
+Refusing to deploy S: a custom resource's ServiceToken changes, which CloudFormation does not allow ("Modifying service token is not allowed"). Nothing was sent to either handler.
   - Cr: ServiceToken changes to arn:aws:lambda:...:function:new, away from the handler its record names.
 ```
 

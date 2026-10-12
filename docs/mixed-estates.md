@@ -1,9 +1,9 @@
 ---
-title: Mixed Estates
+title: Run Beside CloudFormation
 description: "A stack deployed with cdkd can read the outputs of a stack CloudFormation still manages, with no change to that stack, through a CloudFormation fallback for Fn::ImportValue and Fn::GetStackOutput."
 ---
 
-# Reference CloudFormation-managed stacks (mixed estates)
+# Run Beside CloudFormation
 
 A mixed estate is an AWS account where some stacks are deployed with
 `cdk deploy`, through CloudFormation, and others with cdkd. A common split
@@ -68,7 +68,7 @@ The CloudFormation lookup depends on how the consumer refers to the value.
 For `Fn::ImportValue`, which is what `cdk.Fn.importValue` produces, cdkd
 calls `ListExports`. For `Fn::GetStackOutput`, which reads an output by stack
 name, cdkd reads the stack's outputs with `DescribeStacks`.
-[Cross-Stack References](cross-stack-references.md) explains both.
+[Use Another Stack's Outputs](cross-stack-references.md) explains both.
 
 cdkd resolves each reference separately. One stack can therefore read some
 values from stacks cdkd deployed and others from CloudFormation stacks. If a
@@ -129,8 +129,8 @@ resolve references the same way.
 
 ## Related
 
-- [Cross-Stack References](cross-stack-references.md): strong and weak
+- [Use Another Stack's Outputs](cross-stack-references.md): strong and weak
   references between stacks
-- [Importing Existing Resources](import.md): moving a CloudFormation stack
+- [Import Existing Resources](import.md): moving a CloudFormation stack
   into cdkd
-- [Exporting to CloudFormation](export.md): moving one back out
+- [Hand a Stack to CloudFormation](export.md): moving one back out

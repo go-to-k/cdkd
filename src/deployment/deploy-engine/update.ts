@@ -46,6 +46,13 @@ import {
   type FreshNoEchoLeaf,
   markSameGenerationBag,
   maskAtCoordinates,
+  withoutPhysicalNameCopies,
+  repairPhysicalNameCopyLeaves,
+  embeddedPhysicalNameRewrites,
+  replaceEmbeddedPhysicalNameRewrites,
+  repairEmbeddedPhysicalNamesTowards,
+  isSingleDynamicReferenceToken,
+  physicalNameCopiesOf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
@@ -67,6 +74,11 @@ import {
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
+import {
+  persistedTokenResolverContext,
+  resolveRecordSecrets,
+} from '../masked-baseline-recapture.js';
+import { getCurrentProducerRegions } from '../producer-regions-scope.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
 import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
@@ -481,6 +493,84 @@ export async function provisionUpdate(
     redactSecretsForState(markSameGenerationBag({ ...resolvedProps }), updateSecrets, desiredProps),
     comparisonCoordinates
   );
+  // go-to-k/cdkd#4810: a record written before the persist walk kept a read
+  // physical id's copy in plaintext holds that copy rewritten into its
+  // `{{resolve:` form. Repaired here, before anything compares or sends it:
+  // left as it is, the copy reads as MOVED (a create-only one REPLACED the
+  // reader with no template change) and reaches the provider as a previous
+  // value (an SQS queue policy cleared `https://sqs.../{{resolve:...}}`).
+  // Position-wise against what today's value persisted the old way, so a
+  // literal reference the template spells is never touched; a provider's
+  // recorded attribute has no desired side and takes the embedded spellings
+  // only. The repaired record is what this deploy persists.
+  const legacyDesired = withoutPhysicalNameCopies(updateSecrets, () =>
+    maskAtCoordinates(
+      redactSecretsForState(
+        markSameGenerationBag({ ...resolvedProps }),
+        updateSecrets,
+        desiredProps
+      ),
+      comparisonCoordinates
+    )
+  );
+  // The legacy spellings come from today's bag, plus (review M2 on PR #4817)
+  // from the RECORD's own references resolved into a map of their own: the
+  // secret that rewrote the copy may no longer be one today's template reads
+  // (a literal reference since removed). Only for a record that read some
+  // physical id and holds an embedded reference; the resolver caches each
+  // reference's lookup. Resolved with the stack's producer-region evidence, as
+  // the masked-baseline re-capture is: a region-less reference this stack may
+  // have read from another region refuses (all or nothing: no map) rather than
+  // answering from a same-named secret here; with no complete evidence there
+  // is no lookup. For a PROPERTIES leaf a wrong answer still repairs nothing
+  // (the equal-to-today guard below); the map persists and decides nothing else.
+  const copies = physicalNameCopiesOf.get(updateSecrets);
+  const regionEvidence = getCurrentProducerRegions()?.();
+  const recordOwnSecrets =
+    copies !== undefined &&
+    copies.size > 0 &&
+    regionEvidence?.complete === true &&
+    recordHoldsEmbeddedReference(currentResource)
+      ? await resolveRecordSecrets(
+          { properties: currentResource.properties, attributes: currentResource.attributes },
+          (token, own) =>
+            this.resolver.resolveDynamicReferences(
+              token,
+              persistedTokenResolverContext(own, regionEvidence.regions)
+            )
+        )
+      : undefined;
+  const embeddedRewrites = [
+    ...embeddedPhysicalNameRewrites(updateSecrets),
+    ...(recordOwnSecrets === undefined || recordOwnSecrets.size === 0
+      ? []
+      : embeddedPhysicalNameRewrites(updateSecrets, recordOwnSecrets)),
+  ];
+  // A record whose `properties` bag went missing (a hand edit) has nothing to repair.
+  const repairable = [currentProps, currentResource.properties].filter(
+    (bag): bag is Record<string, unknown> => bag !== null && typeof bag === 'object'
+  );
+  for (const bag of new Set(repairable)) {
+    for (const key of Object.keys(bag)) {
+      // A properties leaf takes an embedded spelling only where that makes it
+      // equal today's: the spelling was the whole difference.
+      const repaired = repairEmbeddedPhysicalNamesTowards(
+        repairPhysicalNameCopyLeaves(bag[key], legacyDesired[key], desiredForSkipCheck[key]),
+        desiredForSkipCheck[key],
+        embeddedRewrites
+      );
+      if (repaired !== bag[key]) bag[key] = repaired;
+    }
+  }
+  // IN PLACE, as the properties above: the rollback journal's `previousState`
+  // is a shallow copy of this record, so both halves stay repaired together.
+  const attributes = currentResource.attributes;
+  if (attributes !== undefined && attributes !== null && embeddedRewrites.length > 0) {
+    for (const key of Object.keys(attributes)) {
+      const repaired = replaceEmbeddedPhysicalNameRewrites(attributes[key], embeddedRewrites);
+      if (repaired !== attributes[key]) attributes[key] = repaired;
+    }
+  }
   const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
     currentResource.provisionedBy !== 'cc-api' && allowedSilentDrops
@@ -1622,4 +1712,26 @@ function recordPreviousNoEchoLeaves(
       recordLogOnlyValue(registry, partlyMasked);
     }
   }
+}
+
+/**
+ * Does the record hold a `{{resolve:` reference EMBEDDED in a longer string,
+ * in its properties or attributes: the shape a pre-go-to-k/cdkd#4810 deploy
+ * left for a reader's copy of a physical id. A whole-token leaf is a literal
+ * reference, never such a copy, so it costs no lookup. Not narrowed further:
+ * a copy can sit after any text (`s3://` and a short id), and the resolver
+ * caches each reference's lookup.
+ */
+function recordHoldsEmbeddedReference(record: {
+  properties?: unknown;
+  attributes?: unknown;
+}): boolean {
+  const walk = (node: unknown): boolean => {
+    if (typeof node === 'string') {
+      return node.includes('{{resolve:') && !isSingleDynamicReferenceToken(node);
+    }
+    if (node === null || typeof node !== 'object') return false;
+    return Object.values(node as Record<string, unknown>).some(walk);
+  };
+  return walk(record.properties) || walk(record.attributes);
 }

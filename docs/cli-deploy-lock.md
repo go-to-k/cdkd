@@ -72,7 +72,7 @@ transient errors.
 
 ### What the rollback does
 
-[Rollback](rollback.md) reverts what the second deploy had done, while the
+[Roll Back a Failed Deploy](rollback.md) reverts what the second deploy had done, while the
 first deploy's resources keep coming up. It deletes what the second deploy
 created and undoes its updates, with two limits:
 
@@ -172,6 +172,6 @@ its time limit passes, and `cdkd force-unlock` clears it immediately.
 
 - [`cdkd force-unlock`](cli-force-unlock.md): deleting a lock that a dead run left behind
 - [cdkd deploy: wait mode details](cli-deploy-waits.md): what is still provisioning when a deploy returns
-- [Rollback](rollback.md): what the automatic rollback reverts
-- [State Management](state-management.md): the lock's layout, time limit and renewal
+- [Roll Back a Failed Deploy](rollback.md): what the automatic rollback reverts
+- [State Store](state-management.md): the lock's layout, time limit and renewal
 - [cdkd deploy](cli-deploy.md): every deploy flag

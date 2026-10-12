@@ -42,7 +42,7 @@ cdkd rollback MyStack --drop-failed MyQueuePolicy
 
 Rolling back is one of three ways out of a failed deploy. The other two are
 to fix the cause and run `cdkd deploy` again, or to remove the stack with
-`cdkd destroy`. [Rollback](rollback.md) explains how automatic and manual
+`cdkd destroy`. [Roll Back a Failed Deploy](rollback.md) explains how automatic and manual
 rollback fit together.
 
 ## What a rollback reverts
@@ -135,7 +135,7 @@ The journal is stored at
   `state.json` too. `cdkd list` then no longer shows the stack.
 - **A record in the wrong region.** A state record whose own `region` field
   disagrees with the region of its S3 key is refused while it still lists
-  resources. See [State Management](state-management.md).
+  resources. See [State Store](state-management.md).
 - **An unusual stack name or region.** A name that is not a plain identifier
   is possible only with a hand-written state key. The plan and the prompt
   describe it instead of printing it, and point you at
@@ -320,9 +320,9 @@ The full cross-command table is in the [CLI Reference](cli-reference.md).
 
 ## Related
 
-- [Rollback](rollback.md) — how automatic and manual rollback fit together
+- [Roll Back a Failed Deploy](rollback.md) — how automatic and manual rollback fit together
 - [cdkd destroy](cli-destroy.md) — the other way out of a failed deploy
-- [State Management](state-management.md) — state records, locks, and force-unlock
+- [State Store](state-management.md) — state records, locks, and force-unlock
 - [`cdkd gc`](cli-gc.md) — the asset retention a replay depends on
 - [Troubleshooting](troubleshooting.md) — what to do when a rollback fails
 - [cdkd rollback internals](cli-rollback-internals.md) — the exact ownership and ordering rules

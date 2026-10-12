@@ -31,6 +31,7 @@ import { cyan, red } from '../../utils/colors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { DagExecutor } from '../dag-executor.js';
+import { orderInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
@@ -201,14 +202,37 @@ export async function executeDeployment(
 
       const createUpdateExecutor = new DagExecutor<ResourceChange>();
       const provisionable = new Set(createUpdateIds);
+      const createUpdateDeps = new Map<string, Set<string>>();
       for (const id of createUpdateIds) {
         const allDeps = this.dagBuilder.getDirectDependencies(dag, id);
         // Only carry deps that are themselves being provisioned in this phase;
         // NO_CHANGE / DELETE / non-DAG deps are already satisfied.
-        const deps = new Set(allDeps.filter((d) => provisionable.has(d)));
+        createUpdateDeps.set(id, new Set(allDeps.filter((d) => provisionable.has(d))));
+      }
+      // go-to-k/cdkd#4227: rows writing the same inline policy name on the same
+      // IAM principal run one after another; every other row is untouched. A
+      // lost child enqueued later (below) re-puts only its own names onto a
+      // principal re-created under the same id, and takes no such edge.
+      const levelOf = new Map<string, number>();
+      executionLevels.forEach((level, at) => {
+        for (const id of level) levelOf.set(id, at);
+      });
+      for (const { before, after } of orderInlinePolicyWriters({
+        writes: createUpdateIds,
+        changes,
+        templateResources: template.Resources ?? {},
+        stateResources: currentState.resources,
+        dependencies: createUpdateDeps,
+        rank: (id) => levelOf.get(id) ?? Number.MAX_SAFE_INTEGER,
+      })) {
+        this.logger.debug(
+          safeMsg`${after} waits for ${before}: both write an inline policy name on the same IAM principal`
+        );
+      }
+      for (const id of createUpdateIds) {
         createUpdateExecutor.add({
           id,
-          dependencies: deps,
+          dependencies: createUpdateDeps.get(id)!,
           state: 'pending',
           data: changes.get(id)!,
         });

@@ -17,7 +17,7 @@ cdkd state info
 cdkd state show MyStack --json
 ```
 
-This page is part of [State Management](state-management.md).
+This page is part of [State Store](state-management.md).
 
 ## Upgrading cdkd
 
@@ -166,9 +166,9 @@ How the output comes back depends on where you fix it:
 
 ## Related
 
-- [State Management](state-management.md): where state lives and what a
+- [State Store](state-management.md): where state lives and what a
   record contains
 - [Provisioning Layers](provisioning-layers.md): the SDK and Cloud Control
   routes
-- [Cross-Stack References](cross-stack-references.md): how exports and
+- [Use Another Stack's Outputs](cross-stack-references.md): how exports and
   imports work between stacks

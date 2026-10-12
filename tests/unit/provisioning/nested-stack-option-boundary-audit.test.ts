@@ -74,6 +74,8 @@ const AUDITED_MEMBERS = [
   'forceStatefulRecreation',
   'strictGetAtt',
   'cfnFallback',
+  'producerLookup', // the run's whole cloud assembly, keyed by producer stack name, account and region: names no consumer
+  'consumerAccount', // the parent's synthesized account, which a nested child shares
   'skipFinalSnapshot',
   'finalSnapshotClients',
   'requireApproval', // a run-wide level naming no stack: a child asks for its own changes

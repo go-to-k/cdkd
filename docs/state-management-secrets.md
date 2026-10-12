@@ -21,7 +21,7 @@ only what cdkd writes down changes.
 
 This page covers what the record stores. To remove secrets from records that
 already hold them, use [`cdkd scrub`](cli-scrub.md). This page is part of
-[State Management](state-management.md).
+[State Store](state-management.md).
 
 ## What cdkd stores for a secret
 
@@ -46,7 +46,7 @@ its earlier object versions. cdkd cannot recognise every secret, and
   cdkd records what AWS reports in `observedProperties`, which is the baseline
   `cdkd drift` compares against. For a resource provisioned through Cloud
   Control it also records the reported values in `attributes`.
-  [Importing Existing Resources](import.md) describes this case.
+  [Import Existing Resources](import.md) describes this case.
 - A credential that a provider records in `attributes` so that `Fn::GetAtt`
   can return it, such as the `SecretAccessKey` of an `AWS::IAM::AccessKey`.
 - A `NoEcho` parameter's value in a record written before schema version 11.
@@ -83,6 +83,16 @@ The value is stored in:
 
 The queue's own `properties` still hold the reference, or `***` for a `NoEcho`
 parameter. When the name comes from a `NoEcho` parameter, the deploy warns.
+
+A copy of the physical ID itself that another resource in the same stack
+reads with `Ref` or `Fn::GetAtt`, such as a queue policy's `Queues` URL, can be
+stored as the ID is, so that cdkd can address the queue through it. This can
+hold even where the name is a secret's whole value, and even in a property of
+that resource that is itself read from the secret: those characters are
+already in the queue's `physicalId`. A leaf the template spells as the
+reference itself stays the reference. A copy read from another stack or
+through a nested stack's parameter, one of a `NoEcho` value (still `***`), a
+record an older cdkd wrote, and a `cdkd rollback` replay are not covered yet.
 
 cdkd masks the name in its logs and in `cdkd diff` output where it recognises
 that the value was read from a secret. Commands that print a stored record,
@@ -332,5 +342,5 @@ contributor page
   audit a stack
 - [State backup and bucket security](state-management-backup-and-security.md):
   who can read the bucket, and what earlier object versions keep
-- [State Management](state-management.md): where state lives and what a
+- [State Store](state-management.md): where state lives and what a
   record contains

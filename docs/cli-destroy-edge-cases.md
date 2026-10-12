@@ -105,7 +105,7 @@ The sections below say what each check protects. The reasoning and the
 behaviour for each shape are in
 [cdkd destroy internals](cli-destroy-internals.md#damaged-state-records). What
 every other command does with the same record is in
-[State Management](state-management.md).
+[State Store](state-management.md).
 
 ### A malformed `resources` map refuses the destroy
 
@@ -117,7 +117,7 @@ always has a resource map, so a record without one is refused too.
 The refusal prints the `cdkd state orphan` command as a template for you to
 fill in. When the stack name or region is not a plain identifier, it prints no
 target and points you at `cdkd state list --json` to read the exact name. See
-[State Management](state-management-malformed-records.md#resources-is-not-an-object).
+[State Store](state-management-malformed-records.md#resources-is-not-an-object).
 
 Two situations change what the refusal stops:
 
@@ -141,7 +141,7 @@ An entry that names its type but has no usable `physicalId` is not refused.
 cdkd skips that one resource; see
 [A state record cdkd cannot address](cli-destroy-skipped.md#a-state-record-cdkd-cannot-address).
 What other commands do is in
-[State Management](state-management-malformed-records.md#one-resources-entry-cannot-be-read).
+[State Store](state-management-malformed-records.md#one-resources-entry-cannot-be-read).
 
 ### An unreadable `properties` map refuses the destroy
 
@@ -179,7 +179,7 @@ use, or when two entries share a `logicalId`. cdkd checks it when it first
 reads the record and again once the stack is locked. A record with no
 `orphans` field is accepted.
 
-What other commands do is in State Management:
+What other commands do is in State Store:
 [when the field is not a list](state-management-malformed-records.md#orphans-is-not-a-list)
 and
 [when one entry cannot be read](state-management-malformed-records.md#one-orphans-entry-cannot-be-read).
@@ -221,5 +221,5 @@ that command; see
 
 - [cdkd destroy](cli-destroy.md) — the command, its options and what can stop it
 - [cdkd destroy: skipped resources](cli-destroy-skipped.md) — a resource the destroy could not confirm it deleted
-- [State Management](state-management.md) — state records, locks, and force-unlock
+- [State Store](state-management.md) — state records, locks, and force-unlock
 - [`cdkd force-unlock`](cli-force-unlock.md) — clearing a lock a forced quit left behind

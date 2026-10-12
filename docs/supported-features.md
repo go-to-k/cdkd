@@ -37,7 +37,7 @@ deploy normally.
 ### Waiting for slow resources
 
 cdkd's default waits for less than CloudFormation does, and two flags change
-that. See [Wait Modes](wait-modes.md).
+that. See [Choose a Wait Mode](wait-modes.md).
 
 ## Intrinsic Functions
 
@@ -66,7 +66,7 @@ attributes are `NameServers` of `AWS::Route53::HostedZone` and
 `Ipv6CidrBlocks` of `AWS::EC2::VPC`. Remove the `Fn::Split` and use the
 `Fn::GetAtt` directly.
 
-[Cross-Stack References](cross-stack-references.md) explains
+[Use Another Stack's Outputs](cross-stack-references.md) explains
 `Fn::ImportValue` and `Fn::GetStackOutput`, including how they read from
 CloudFormation-managed stacks.
 
@@ -128,8 +128,8 @@ AWS.
 
 ## Deploy behavior
 
-Rollback and drift detection have their own pages: [Rollback](rollback.md)
-and [Drift Detection](drift.md).
+Rollback and drift detection have their own pages: [Roll Back a Failed Deploy](rollback.md)
+and [Detect and Fix Drift](drift.md).
 
 | Feature | Status | Notes |
 | --- | --- | --- |
@@ -155,7 +155,7 @@ schema cannot be read, the update still proceeds.
 - [Supported Resources](supported-resources.md): per-type provider coverage
 - [`cdkd local invoke`](local-invoke.md): the Lambda runtimes emulated
   locally
-- [Cross-Stack References](cross-stack-references.md): how `Fn::ImportValue`
+- [Use Another Stack's Outputs](cross-stack-references.md): how `Fn::ImportValue`
   and `Fn::GetStackOutput` resolve
 - [Troubleshooting](troubleshooting.md): what to do when something is not
   supported

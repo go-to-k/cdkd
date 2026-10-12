@@ -6,7 +6,7 @@ unlisted: true
 
 # Import internals
 
-Detail behind [Importing Existing Resources](import.md) and its sub-pages
+Detail behind [Import Existing Resources](import.md) and its sub-pages
 ([Import options and the import plan](import-reference.md),
 [Importing by resource type](import-resource-types.md) and
 [After an import](import-after.md)) that you need only when debugging an
@@ -105,8 +105,10 @@ all of those cases `cdkd deploy` records the reason on its next state write.
 
 The cost is that an older refusal of the other kind on such a resource also
 stays until the resource is replaced or re-imported against a proving
-CloudFormation stack. A marker with no reason on a resource that provably
-reads no parameter is cleared by an update. Every refusal now records a reason
+CloudFormation stack, or until you
+[accept the refusal yourself](cli-state-writing.md#accepting-a-refused-baseline).
+A marker with no reason on a resource that provably reads no parameter is
+cleared by an update. Every refusal now records a reason
 (`incomplete-resolution` for the other kind), so the cautious reading applies
 only to those older records.
 
@@ -127,8 +129,11 @@ recorded value and says so, naming each key, since that value is what the last
 deploy recorded and may be stale. Certified attributes still take the freshly
 read value. When a re-import produces no value for a key the record already
 masks (`GetResource` returned no readable model, the key is masked again, or
-the import omits it), the mask is kept rather than dropped, and the import
-warns, naming each key that stays masked.
+the import omits it), the mask is kept rather than dropped. The import warns,
+naming the key, only when the template reads it through `Fn::GetAtt` or a
+`${Resource.Attribute}` in `Fn::Sub`, since that read is refused at deploy.
+Every other kept mask is listed at `--verbose`: a deploy masks every model key
+that is not an `Fn::GetAtt` attribute, so those keys are masked by design.
 
 ### Records that say `sdk` for a Cloud Control resource
 

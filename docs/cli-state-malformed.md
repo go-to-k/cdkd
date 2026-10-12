@@ -127,7 +127,7 @@ An absent or `null` `resources` is reported the same way, with one difference:
 > `cdkd deploy` and `cdkd destroy` refuse such a record. If they read it as
 > empty, a deploy would create every resource again, and a destroy would
 > delete none of them and then remove the record. Repair the record or remove
-> it. [State Management](state-management.md) lists what each command does.
+> it. [State Store](state-management.md) lists what each command does.
 
 ### With `--show-nested`
 
@@ -201,7 +201,7 @@ The value stays in the record, and you cannot edit it:
 
 Some types return to the default layer without any action.
 [cdkd deploy: safety](cli-deploy-safety.md) and
-[State Management](state-management.md) list them.
+[State Store](state-management.md) list them.
 
 ### Otherwise, rename the construct
 
@@ -244,5 +244,5 @@ of old resource need preparation:
 
 - [`cdkd state`](cli-state.md): the read-only subcommands this page describes
 - [cdkd state: writing subcommands](cli-state-writing.md): `orphan`, `destroy`, `migrate` and `refresh-observed`
-- [State Management](state-management.md): the record schema, and what `cdkd deploy` and `cdkd destroy` do with a malformed record
+- [State Store](state-management.md): the record schema, and what `cdkd deploy` and `cdkd destroy` do with a malformed record
 - [cdkd state internals](cli-state-internals.md): the full rendering rules, for contributors

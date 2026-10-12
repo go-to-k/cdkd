@@ -7,7 +7,7 @@ unlisted: true
 # State schema internals
 
 This page is the contributor reference behind
-[State Management](state-management.md). It holds the version-by-version
+[State Store](state-management.md). It holds the version-by-version
 history of the state schema, the field-by-field reference, the lifecycle of
 every object in the state bucket, and the implementation of locking and of the
 noncurrent-version purges.
@@ -65,7 +65,7 @@ drops the record and leaves the live resources standing.
 
 ## Sidecar objects in the state bucket
 
-The layout is drawn in [State Management](state-management.md#what-is-in-the-bucket). This section covers the lifecycle of each object that sits beside `state.json`.
+The layout is drawn in [State Store](state-management.md#what-is-in-the-bucket). This section covers the lifecycle of each object that sits beside `state.json`.
 
 ### Custom-resource response placeholders
 
@@ -2071,7 +2071,7 @@ The composite value is what state records, what `cdkd state show` /
 `cdkd state resources` print, and what
 `cdkd import --resource '<logicalId>=<physicalId>'` expects. A few types also
 accept a looser form on import — see
-[Importing Existing Resources](import.md#found-without-a-flag) for the
+[Import Existing Resources](import.md#found-without-a-flag) for the
 per-type notes.
 
 | Resource Type | physicalId format |

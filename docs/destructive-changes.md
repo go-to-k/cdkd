@@ -112,4 +112,4 @@ with a warning.
   `--require-approval` with nested stacks and parallel deploys
 - [cdkd deploy: replacements and name collisions](cli-deploy-safety-replacement.md):
   what a replacement does to a named resource
-- [Orphan vs Destroy](orphan-vs-destroy.md): what an orphaned resource is
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): what an orphaned resource is

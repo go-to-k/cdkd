@@ -1,9 +1,9 @@
 ---
-title: State Store
+title: Manage Stacks Without the App
 description: "cdkd records what it deployed in an S3 state store, so a whole estate can be listed, inspected and torn down by name, without the CDK app that created it."
 ---
 
-# The state store
+# Manage Stacks Without the App
 
 cdkd does not deploy through CloudFormation, so there is no CloudFormation
 stack to ask what a deployment contains. cdkd writes that record itself, to an
@@ -45,7 +45,7 @@ s3://cdkd-state-<accountId>/cdkd/
           └── rollback-journal.json   # what a failed deploy did
 ```
 
-[State Management](state-management.md) lists every object in the bucket and
+[State Store](state-management.md) lists every object in the bucket and
 every field of a record.
 
 ## These commands need no CDK app
@@ -93,7 +93,7 @@ describes.
 > and cdkd no longer tracks them.
 
 Use `cdkd state orphan` for a stack or resource that cdkd should stop
-managing. [Orphan vs Destroy](orphan-vs-destroy.md) says which cleanup command
+managing. [Orphan Instead of Destroy](orphan-vs-destroy.md) says which cleanup command
 applies to your situation.
 
 ## One stack name per account and region
@@ -147,18 +147,18 @@ One upgrade does ask for a command. If your installation still uses the old
 default bucket name, `cdkd-state-<accountId>-<region>`, cdkd prints a
 deprecation warning. Run `cdkd state migrate` once per region to copy the
 state to the current bucket;
-[State Management](state-management.md#move-off-the-old-bucket-name-with-cdkd-state-migrate)
+[State Store](state-management.md#move-off-the-old-bucket-name-with-cdkd-state-migrate)
 shows the command.
 
 ## Related
 
 - [`cdkd state`](cli-state.md): every subcommand, its flags, the confirmation
   and lock behavior, and the exit codes
-- [State Management](state-management.md): the bucket layout and the fields of
+- [State Store](state-management.md): the bucket layout and the fields of
   a record
 - [State locking](state-management-locking.md): the stack lock and how to
   clear one
 - [Name check before a create](state-store-name-check.md) and
   [Stack registry](state-store-registry.md): the two checks behind one stack
   name per account and region
-- [Orphan vs Destroy](orphan-vs-destroy.md): choosing a cleanup command
+- [Orphan Instead of Destroy](orphan-vs-destroy.md): choosing a cleanup command

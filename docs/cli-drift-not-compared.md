@@ -176,11 +176,13 @@ does not clear the refusal.
 ### The resource reads a template parameter cdkd could not prove
 
 The resource uses a template parameter, and cdkd could not prove which value
-the parameter had when the resource was deployed. Two things clear it:
+the parameter had when the resource was deployed. Three things clear it:
 
 - replacing the resource;
 - importing it again while a CloudFormation stack exists that can prove the
-  value.
+  value;
+- deploying a template that no longer reads the parameter there, then
+  [accepting the refusal yourself](cli-state-writing.md#accepting-a-refused-baseline).
 
 An update in place keeps the refusal.
 
@@ -267,5 +269,5 @@ template and deploy.
 - [`cdkd drift`](cli-drift.md): the report, the exit codes and the options
 - [cdkd drift: secrets and redacted values](cli-drift-secrets.md): the causes that involve a secret
 - [cdkd drift: JSON output](cli-drift-json.md): the `notCompared` array
-- [Importing Existing Resources](import.md): what `cdkd import` records for drift
+- [Import Existing Resources](import.md): what `cdkd import` records for drift
 - [cdkd drift internals](cli-drift-internals.md): the rules behind the edge cases

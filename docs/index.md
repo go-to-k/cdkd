@@ -59,12 +59,12 @@ The pipeline, state, and how changes are decided. [Core Concepts](concepts.md)
 :::
 
 ::: card Recover from a failure
-Undo a failed deploy with [Rollback](rollback.md), or look up the error in
+Undo a failed deploy with [Roll Back a Failed Deploy](rollback.md), or look up the error in
 [Troubleshooting](troubleshooting.md).
 :::
 
 ::: card Use it next to CloudFormation
-One CDK app, two tools. [Mixed Estates](mixed-estates.md)
+One CDK app, two tools. [Run Beside CloudFormation](mixed-estates.md)
 :::
 
 ::: card Run it on your machine

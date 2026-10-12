@@ -2225,7 +2225,7 @@ export class EC2Provider implements ResourceProvider {
       }
     }
     this.logger.debug(
-      `MapPublicIpOnLaunch=${expected} not yet visible on ${subnetId} after ${maxAttempts} reads — the observed-state capture may record the stale value (issue #1299)`
+      `MapPublicIpOnLaunch=${expected} not yet visible on ${subnetId} after ${maxAttempts} reads — the observed-state capture may record the stale value`
     );
   }
 

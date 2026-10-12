@@ -208,6 +208,6 @@ on them.
 ## Related
 
 - [cdkd deploy](cli-deploy.md): the modes and the table of affected types
-- [Wait Modes](wait-modes.md): the same choice, summarized for a first read
+- [Choose a Wait Mode](wait-modes.md): the same choice, summarized for a first read
 - [cdkd deploy: tuning](cli-deploy-tuning.md#per-resource-timeout): `--resource-timeout` in full
 - [cdkd deploy: the stack lock](cli-deploy-lock.md): why a second deploy can start during these waits

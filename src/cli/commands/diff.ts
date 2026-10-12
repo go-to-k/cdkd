@@ -67,6 +67,7 @@ import {
   type DiffTreeNode,
 } from './diff-recursive.js';
 import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
+import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 
 /**
  * The `--fail-on` values: which kind of change makes `cdkd diff` exit 1. The
@@ -474,6 +475,7 @@ async function diffCommand(
 
     // 4. Build a diff tree per target stack (nested children only when --recursive).
     const trees: DiffTreeNode[] = [];
+    const producerLookup = producerLookupOver(allStacks);
     for (const stackInfo of targetStacks) {
       logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
       // Stack region drives the state key. Falls back to the CLI region only
@@ -509,6 +511,9 @@ async function diffCommand(
           // CloudFormation fallback opt-out as deploy, so preview and apply
           // resolve cross-stack references identically.
           ...(options.cfnFallback === false && { cfnFallback: false }),
+          // Consulted lazily, by a `Fn::GetStackOutput` carrying a `RoleArn` only.
+          producerLookup,
+          ...(stackInfo.account && { consumerAccount: stackInfo.account }),
           previewOrphanAdoption,
           attributeHealerFor,
           // This IS the stack the user named, so it is the one node that

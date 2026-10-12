@@ -688,7 +688,7 @@ export class FirehoseProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it; the per-shape reverse-mapper is a follow-up to #549). Re-deploy with cdkd deploy --replace.`
+          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it). Re-deploy with cdkd deploy --replace.`
         );
       }
     }

@@ -382,4 +382,4 @@ wins, and both warnings and errors fail the run.
 - [cdkd deploy](cli-deploy.md): every deploy flag, and the wait modes
 - [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the guards and their escape hatches
 - [cdkd destroy](cli-destroy.md): the destroy side of the timeout flags
-- [Drift Detection](drift.md): what the observed-state baseline is for
+- [Detect and Fix Drift](drift.md): what the observed-state baseline is for

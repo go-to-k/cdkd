@@ -29,6 +29,12 @@
 #      delete. "The bucket is gone" is therefore a statement about that
 #      handler, not about the bucket.
 #
+#   D. Issue #2353: the state bucket's one-day expiration rule for
+#      `custom-resource-responses/`. The bucket is seeded to look bootstrapped
+#      before the rule existed, with a user rule on it; phase 1 must add the
+#      rule and keep every other rule, and phase 6 must find it present and
+#      write nothing. The teardown removes only the seeded user rule.
+#
 # PHASES. Deploy -> arm the refusal -> destroy #1 (exits 2, record kept,
 # parameter alive) -> destroy #2 (issue #2115: the backing Lambda is gone, so
 # the issue-#804 pre-check SKIPS again — exits 2, record still kept, parameter
@@ -141,6 +147,103 @@ AUTODELETE_KEY="cdkd-integ-probe-object.txt"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# --- Arm D: issue #2353, the state bucket's lifecycle rule ------------------
+# cdkd's rule (src/state/state-bucket-lifecycle.ts) and a SENTINEL standing in
+# for a user's own rule. The arm removes cdkd's rule and plants the sentinel
+# before phase 1, so the bucket looks like one bootstrapped before #2353 with a
+# user rule on it; phase 1's custom resources must then ADD cdkd's rule while
+# keeping the sentinel and every rule that was already there. The sentinel's
+# prefix holds nothing, and cdkd's rule is meant to stay, so the teardown
+# removes only the sentinel.
+LC_RULE_ID="cdkd-custom-resource-responses-expiration"
+LC_SENTINEL_ID="cdkd-integ-2353-sentinel"
+
+# Print the state bucket's lifecycle configuration as JSON; `{"Rules":[]}` for
+# a bucket that has none. Any other read failure is returned as rc 1 with the
+# error on stderr — never read as "no rules".
+# stdout and stderr are read by separate calls so a CLI warning on stderr can
+# never end up inside the JSON.
+lc_read() {
+  local out err
+  if out="$(aws s3api get-bucket-lifecycle-configuration --bucket "${STATE_BUCKET}" --output json 2>/dev/null)"; then
+    printf '%s' "${out}"
+    return 0
+  fi
+  if err="$(aws s3api get-bucket-lifecycle-configuration --bucket "${STATE_BUCKET}" --output json 2>&1 >/dev/null)"; then
+    echo "get-bucket-lifecycle-configuration failed, then succeeded on retry" >&2
+    return 1
+  fi
+  if grep -q 'NoSuchLifecycleConfiguration' <<<"${err}"; then
+    printf '%s' '{"Rules":[]}'
+    return 0
+  fi
+  printf '%s\n' "${err}" >&2
+  return 1
+}
+
+# Count the rules with ID `$2` in the configuration JSON `$1`.
+lc_count() {
+  printf '%s' "$1" | jq --arg id "$2" '[.Rules[] | select(.ID == $id)] | length'
+}
+
+# Lifecycle configuration changes propagate asynchronously, so a read right
+# after a write can be stale. Poll until rule `$1` is present ("1") or absent
+# ("0"); prints the configuration that satisfied it. rc 1 after 60s.
+lc_wait_for() {
+  local id="$1" want="$2" json attempt=1
+  while [ "${attempt}" -le 12 ]; do
+    json="$(lc_read)" || return 1
+    if [ "$(lc_count "${json}" "${id}")" = "${want}" ]; then
+      printf '%s' "${json}"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+  return 1
+}
+
+# Write `$1` (a GET-shaped JSON document) back as the whole configuration,
+# keeping its TransitionDefaultMinimumObjectSize; an empty rule list deletes
+# the configuration, since S3 refuses a PUT with no rules.
+lc_write() {
+  local json="$1" size
+  if [ "$(printf '%s' "${json}" | jq '.Rules | length')" -eq 0 ]; then
+    aws s3api delete-bucket-lifecycle --bucket "${STATE_BUCKET}"
+    return
+  fi
+  size="$(printf '%s' "${json}" | jq -r '.TransitionDefaultMinimumObjectSize // ""')"
+  if [ -n "${size}" ]; then
+    aws s3api put-bucket-lifecycle-configuration --bucket "${STATE_BUCKET}" \
+      --lifecycle-configuration "$(printf '%s' "${json}" | jq -c '{Rules: .Rules}')" \
+      --transition-default-minimum-object-size "${size}" >/dev/null
+  else
+    aws s3api put-bucket-lifecycle-configuration --bucket "${STATE_BUCKET}" \
+      --lifecycle-configuration "$(printf '%s' "${json}" | jq -c '{Rules: .Rules}')" >/dev/null
+  fi
+}
+
+# cdkd's own rule as the bucket carried it before the seed removed it (`[]` if
+# it had none). The teardown puts it back when a run died between the seed and
+# phase 1, so the shared bucket is never left without it.
+LC_OURS_BEFORE='[]'
+
+# Teardown half: drop the sentinel, restore cdkd's rule if the seed removed it
+# and no deploy re-added it, keep everything else. A no-op when there is
+# nothing to change, so the pre-run call is safe.
+lc_teardown() {
+  local json next
+  json="$(lc_read)" || return 1
+  next="$(printf '%s' "${json}" | jq --arg sentinel "${LC_SENTINEL_ID}" --arg ours "${LC_RULE_ID}" \
+    --argjson before "${LC_OURS_BEFORE}" '
+      .Rules |= (map(select(.ID != $sentinel))
+        + (if any(.[]; .ID == $ours) then [] else $before end))')"
+  if [ "$(printf '%s' "${json}" | jq -cS .)" = "$(printf '%s' "${next}" | jq -cS .)" ]; then
+    return 0
+  fi
+  lc_write "${next}"
+}
+
 # **A `cleanup` that ALSO runs pre-run must not destroy anything the run then
 # needs.** This one is called before phase 1 as well as from the traps, so every
 # line runs at least twice and the first run happens before any phase has built
@@ -184,6 +287,12 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    # Arm D: the sentinel rule this run planted on the SHARED state bucket.
+    if ! lc_teardown; then
+      echo "WARN: could not restore the lifecycle configuration of ${STATE_BUCKET}: remove rule" >&2
+      echo "    ${LC_SENTINEL_ID} by hand (its prefix holds no objects), and check that" >&2
+      echo "    ${LC_RULE_ID} is present (any custom-resource deploy re-adds it)." >&2
+    fi
   fi
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
@@ -224,12 +333,93 @@ EXPECTED_STACK_ID="arn:aws:cloudformation:${REGION}:${ACCOUNT_ID}:stack/cdkd-${C
 # The value EVERY handler saw before issue #1866, in every account and region.
 FABRICATED_STACK_ID="arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${CR_LOGICAL_ID}/cdkd"
 
+# --- Arm D seed: a pre-#2353 bucket that carries a user rule -----------------
+echo "==> Arm D: seed the state bucket's lifecycle configuration (issue #2353)"
+LC_BEFORE="$(lc_read)" || { echo "FAIL: could not read the lifecycle configuration of ${STATE_BUCKET}" >&2; exit 1; }
+LC_OURS_BEFORE="$(printf '%s' "${LC_BEFORE}" | jq -c --arg id "${LC_RULE_ID}" '[.Rules[] | select(.ID == $id)]')"
+# The sentinel takes the form the bucket's rules already use: S3 refuses a
+# configuration mixing the legacy rule-level `Prefix` with `Filter`.
+LC_SEED="$(printf '%s' "${LC_BEFORE}" | jq --arg ours "${LC_RULE_ID}" --arg sentinel "${LC_SENTINEL_ID}" '
+  (any(.Rules[]; has("Prefix"))) as $legacy
+  | .Rules |= (map(select(.ID != $ours and .ID != $sentinel))
+    + [{ID: $sentinel, Status: "Enabled", Expiration: {Days: 30}}
+       + (if $legacy then {Prefix: ($sentinel + "/")} else {Filter: {Prefix: ($sentinel + "/")}} end)])')"
+lc_write "${LC_SEED}"
+# Every rule that must survive the merge: the bucket's own rules plus the sentinel.
+LC_KEEP_IDS="$(printf '%s' "${LC_SEED}" | jq -c '[.Rules[].ID] | sort')"
+# Wait out lifecycle propagation BEFORE the deploy: a stale read inside cdkd
+# would answer `present` and fail the "Added" check below for the wrong reason.
+if ! lc_wait_for "${LC_SENTINEL_ID}" 1 >/dev/null \
+  || ! LC_SEEDED="$(lc_wait_for "${LC_RULE_ID}" 0)"; then
+  echo "FAIL: arm D premise: after 60s ${STATE_BUCKET} still does not read as seeded" >&2
+  echo "    (${LC_RULE_ID} absent, ${LC_SENTINEL_ID} present)" >&2
+  exit 1
+fi
+# The size cdkd must carry through, read back AFTER the seed: on a bucket that
+# had no configuration, the seed's PUT (which names no size) makes S3 attach
+# its default (`all_storage_classes_128K`), so the pre-seed JSON says nothing.
+LC_KEEP_SIZE="$(printf '%s' "${LC_SEEDED}" | jq -r '.TransitionDefaultMinimumObjectSize // ""')"
+echo "    OK: ${STATE_BUCKET} has no ${LC_RULE_ID} rule, and carries ${LC_SENTINEL_ID}"
+
 # --- Phase 1: deploy --------------------------------------------------------
+# --verbose is load-bearing for arm D: the debug line cdkd prints when IT wrote
+# the rule is what separates "this run added it" from "a concurrent run on the
+# same state bucket added it first".
 echo "==> Phase 1: deploy with the local binary"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+set +e
+DEPLOY1_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --verbose \
+  --yes 2>&1)
+DEPLOY1_RC=$?
+set -e
+printf '%s\n' "${DEPLOY1_OUT}"
+# Stripped ONCE into a variable; every match below reads it as a here-string.
+# A `printf | grep -q` under pipefail is unsound on a large output: grep -q
+# exits at its first match, the writer dies of SIGPIPE (141), and pipefail
+# turns a hit into a miss.
+DEPLOY1_TXT=$(printf '%s' "${DEPLOY1_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+if [ "${DEPLOY1_RC}" -ne 0 ]; then
+  echo "FAIL: phase 1 deploy exited ${DEPLOY1_RC}" >&2
+  exit 1
+fi
+
+# --- Assertion: arm D, the rule was ADDED and nothing was lost ---------------
+LC_AFTER="$(lc_wait_for "${LC_RULE_ID}" 1)" || LC_AFTER="$(lc_read)" \
+  || { echo "FAIL: could not read the lifecycle configuration after phase 1" >&2; exit 1; }
+LC_OURS="$(printf '%s' "${LC_AFTER}" | jq -c --arg id "${LC_RULE_ID}" '[.Rules[] | select(.ID == $id)]')"
+if [ "$(printf '%s' "${LC_OURS}" | jq 'length')" -ne 1 ]; then
+  echo "FAIL: expected exactly one ${LC_RULE_ID} rule after a custom-resource deploy, found:" >&2
+  printf '%s\n' "${LC_OURS}" >&2
+  echo "    => an already-bootstrapped bucket did not get the issue #2353 rule." >&2
+  exit 1
+fi
+LC_SHAPE="$(printf '%s' "${LC_OURS}" | jq -r '.[0] | [.Status, (.Filter.Prefix // .Prefix // ""), (.Expiration.Days // ""), (.NoncurrentVersionExpiration.NoncurrentDays // "")] | map(tostring) | join(" ")')"
+if [ "${LC_SHAPE}" != "Enabled custom-resource-responses/cdkd-1 1 1" ]; then
+  echo "FAIL: ${LC_RULE_ID} reads '${LC_SHAPE}', expected 'Enabled custom-resource-responses/cdkd-1 1 1'" >&2
+  exit 1
+fi
+LC_MISSING="$(printf '%s' "${LC_AFTER}" | jq -r --argjson keep "${LC_KEEP_IDS}" '$keep - [.Rules[].ID] | join(",")')"
+if [ -n "${LC_MISSING}" ]; then
+  echo "FAIL: the lifecycle merge dropped existing rule(s): ${LC_MISSING}" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${LC_AFTER}" | jq -r '.TransitionDefaultMinimumObjectSize // ""')" != "${LC_KEEP_SIZE}" ]; then
+  echo "FAIL: the lifecycle merge changed TransitionDefaultMinimumObjectSize (was '${LC_KEEP_SIZE}')" >&2
+  exit 1
+fi
+if ! grep -q 'Added the 1-day expiration lifecycle rule for custom-resource-responses/' <<<"${DEPLOY1_TXT}"; then
+  echo "FAIL: the rule is present but this deploy did not report adding it." >&2
+  echo "    Either a concurrent run on ${STATE_BUCKET} added it first (re-run), or the" >&2
+  echo "    debug line in src/state/state-bucket-lifecycle.ts was reworded (fix this grep)." >&2
+  exit 1
+fi
+if grep -q 'Could not add the 1-day expiration lifecycle rule' <<<"${DEPLOY1_TXT}"; then
+  echo "FAIL: phase 1 warned that it could not add the lifecycle rule" >&2
+  exit 1
+fi
+echo "    OK: phase 1 added ${LC_RULE_ID} and kept every existing rule (issue #2353)"
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 if [ -z "${STATE}" ]; then
@@ -315,11 +505,11 @@ echo "    OK: destroy exited 2"
 # via `src/cli/commands/destroy-runner.ts` — different producers, so one can
 # fail without the other.
 SUMMARY_SEEN=0
-if printf '%s' "${DESTROY_OUT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY_OUT}"; then
   SUMMARY_SEEN=1
 fi
 ROW_SEEN=0
-if printf '%s' "${DESTROY_OUT}" | grep -q 'skipped (Delete handler reported FAILED'; then
+if grep -q 'skipped (Delete handler reported FAILED' <<<"${DESTROY_OUT}"; then
   ROW_SEEN=1
 fi
 
@@ -333,7 +523,7 @@ if [ "${ROW_SEEN}" -eq 0 ]; then
   echo "FAIL: destroy output carried no '${CR_LOGICAL_ID} ... skipped (Delete handler reported FAILED' row" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_OUT}" | grep -q 'Destroy skipped 1 entr'; then
+if ! grep -q 'Destroy skipped 1 entr' <<<"${DESTROY_OUT}"; then
   echo "FAIL: expected EXACTLY ONE skipped entry (the refusing custom resource)" >&2
   echo "    => a second skip means another resource could not be addressed either." >&2
   exit 1
@@ -342,21 +532,21 @@ fi
 # handler refused it — so no summary line may say cdkd could not address it or
 # prescribe a physicalId repair. The positive marker comes first so a moved
 # summary fails here instead of passing every negative below blind.
-if ! printf '%s' "${DESTROY_OUT}" | grep -q 'whose delete cdkd did not confirm'; then
+if ! grep -q 'whose delete cdkd did not confirm' <<<"${DESTROY_OUT}"; then
   echo "FAIL: the exit-2 summary did not say the delete was unconfirmed (go-to-k/cdkd#2122)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_OUT}" | grep -q 'did not confirm the skipped resource(s) were deleted'; then
+if ! grep -q 'did not confirm the skipped resource(s) were deleted' <<<"${DESTROY_OUT}"; then
   echo "FAIL: the per-stack summary did not say the delete was unconfirmed (go-to-k/cdkd#2122)" >&2
   exit 1
 fi
 for FALSE_CLAIM in 'could not address' 'no delete was issued' 'Fix the physicalId' 'Repair the physicalId'; do
-  if printf '%s' "${DESTROY_OUT}" | grep -qF "${FALSE_CLAIM}"; then
+  if grep -qF "${FALSE_CLAIM}" <<<"${DESTROY_OUT}"; then
     echo "FAIL: destroy output says '${FALSE_CLAIM}' about a resource whose handler RAN and refused" >&2
     exit 1
   fi
 done
-if ! printf '%s' "${DESTROY_OUT}" | grep -q 'LEFT IN PLACE'; then
+if ! grep -q 'LEFT IN PLACE' <<<"${DESTROY_OUT}"; then
   echo "FAIL: the skip warning did not say the managed resource is left in place" >&2
   exit 1
 fi
@@ -431,23 +621,23 @@ echo "    OK: the second destroy exited 2"
 
 # The row comes from the provider's skip reason; the positive marker first, so
 # a reworded reason fails HERE rather than passing the negative below blind.
-if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'skipped (backing Lambda function is gone'; then
+if ! grep -q 'skipped (backing Lambda function is gone' <<<"${DESTROY2_TXT}"; then
   echo "FAIL: destroy output carried no '... skipped (backing Lambda function is gone' row" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY2_TXT}" | grep -q "Backing Lambda for custom resource ${CR_LOGICAL_ID} no longer exists"; then
+if ! grep -q "Backing Lambda for custom resource ${CR_LOGICAL_ID} no longer exists" <<<"${DESTROY2_TXT}"; then
   echo "FAIL: the provider's backing-Lambda-gone warning did not name ${CR_LOGICAL_ID}" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'KEEPING the state record'; then
+if ! grep -q 'KEEPING the state record' <<<"${DESTROY2_TXT}"; then
   echo "FAIL: the backing-Lambda-gone warning did not say the record is kept (issue #2115)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'Destroy skipped 1 entr'; then
+if ! grep -q 'Destroy skipped 1 entr' <<<"${DESTROY2_TXT}"; then
   echo "FAIL: expected EXACTLY ONE skipped entry (the refusing custom resource)" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY2_TXT}" | grep -q 'DROPPING its state record'; then
+if grep -q 'DROPPING its state record' <<<"${DESTROY2_TXT}"; then
   echo "FAIL: the pre-#2115 'DROPPING its state record' warning is still printed" >&2
   exit 1
 fi
@@ -599,7 +789,7 @@ if [ "${REDEPLOY_RC}" -ne 0 ]; then
   echo "    name-cooldown retry regressed -- that is what this phase fences." >&2
   exit 1
 fi
-if ! printf '%s' "${REDEPLOY_TXT}" | grep -q 'Deployment completed successfully'; then
+if ! grep -q 'Deployment completed successfully' <<<"${REDEPLOY_TXT}"; then
   echo "FAIL: the unarmed redeploy never printed 'Deployment completed successfully'" >&2
   exit 1
 fi
@@ -630,7 +820,7 @@ fi
 # opportunistic evidence that shows up sometimes, NOT as standing coverage; the
 # unit tests in tests/unit/deployment/{retryable-errors,retry}.test.ts are what
 # actually hold the classifier and the backoff grid in place on every run.
-if printf '%s' "${REDEPLOY_TXT}" | grep -qE 'Retrying .*(State Machine is being deleted|StateMachineDeleting)'; then
+if grep -qE 'Retrying .*(State Machine is being deleted|StateMachineDeleting)' <<<"${REDEPLOY_TXT}"; then
   echo "    OK: COVERED -- the redeploy hit the state-machine name cooldown and"
   echo "        retried through it (issue #2116), with no wait in the fixture"
 else
@@ -641,6 +831,27 @@ else
   echo "        it does NOT exercise the cooldown retry. Re-run before reading"
   echo "        this phase as coverage."
 fi
+
+# Arm D, idempotency: this redeploy CREATES the custom resources again in a new
+# process, which re-checks the bucket. The rule is already there, so it must
+# neither write (no "Added" line) nor leave a second copy.
+LC_AFTER6="$(lc_read)" || { echo "FAIL: could not read the lifecycle configuration after phase 6" >&2; exit 1; }
+LC_COUNT6="$(lc_count "${LC_AFTER6}" "${LC_RULE_ID}")"
+if [ "${LC_COUNT6}" != "1" ]; then
+  echo "FAIL: after the phase-6 redeploy ${STATE_BUCKET} carries ${LC_COUNT6} ${LC_RULE_ID} rules, expected 1" >&2
+  exit 1
+fi
+if grep -q 'Added the 1-day expiration lifecycle rule' <<<"${REDEPLOY_TXT}"; then
+  echo "FAIL: the phase-6 redeploy re-wrote a lifecycle rule that was already present" >&2
+  exit 1
+fi
+# A dropped `present` check would send a PUT S3 refuses (duplicate ID): the
+# count above stays 1, so only this warning shows it.
+if grep -q 'Could not add the 1-day expiration lifecycle rule' <<<"${REDEPLOY_TXT}"; then
+  echo "FAIL: the phase-6 redeploy tried to add a lifecycle rule that was already present" >&2
+  exit 1
+fi
+echo "    OK: the redeploy left exactly one ${LC_RULE_ID} rule and wrote nothing"
 
 echo "cdkd integ probe" | aws s3 cp - "s3://${AUTODELETE_BUCKET}/${AUTODELETE_KEY}" \
   --region "${REGION}" >/dev/null
@@ -665,7 +876,7 @@ if [ "${DESTROY3_RC}" -ne 0 ]; then
   echo "FAIL: the unarmed destroy exited ${DESTROY3_RC}, expected 0" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY3_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY3_TXT}"; then
   echo "FAIL: the unarmed destroy still skipped something" >&2
   exit 1
 fi
@@ -688,4 +899,5 @@ echo "    OK: state file is gone"
 
 echo ""
 echo "=== PASS: custom-resource provider integ (async Provider + #2054 refused delete + its"
-echo "          next-run bound + #1866 StackId incl. CDK autoDeleteObjects + clean destroy) ==="
+echo "          next-run bound + #1866 StackId incl. CDK autoDeleteObjects + #2353 lifecycle"
+echo "          rule + clean destroy) ==="

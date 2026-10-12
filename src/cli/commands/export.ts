@@ -6118,13 +6118,13 @@ function typeIsImportUnsupported(entry: PrimaryIdentifierCacheEntry): boolean {
 const CFN_IMPORT_REFUSED_DESPITE_REGISTRY: ReadonlyMap<string, string> = new Map([
   [
     'AWS::AppSync::GraphQLApi',
-    'measured in us-east-1 on 2026-09-18: the registry schema declares a read handler and ' +
+    'measured against AWS: the registry schema declares a read handler and ' +
       'FULLY_MUTABLE, yet CreateChangeSet --change-set-type IMPORT rejected the type',
   ],
 ]);
 
 /**
- * The dated measurement behind a {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}
+ * The measurement behind a {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}
  * entry, or `undefined` when CloudFormation has not been measured refusing the
  * type. Exported for unit tests.
  */
@@ -8873,7 +8873,7 @@ export async function runPerStackImportLoop(args: {
     const ok = await confirmPrompt(
       `Create ${perStackPlans.length} CloudFormation stack(s) by importing the cdkd ` +
         `nested-stack tree rooted at ${quotedOrNotShown(rootStackName)} (${quotedRegion(rootRegion)}) — ` +
-        `leaf-first, per-stack IMPORT loop (#464 design §4.3).` +
+        `leaf-first, per-stack IMPORT loop.` +
         phase2Note +
         recreateNote +
         (totalRecreate > 0

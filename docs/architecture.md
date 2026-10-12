@@ -283,8 +283,8 @@ Measured comparisons with CloudFormation are in [Benchmarks](benchmarks.md).
 
 ## Related
 
-- [State Management](state-management.md)
+- [State Store](state-management.md)
 - [Provisioning Layers](provisioning-layers.md)
 - [Provider Development](provider-development.md)
-- [Rollback](rollback.md)
+- [Roll Back a Failed Deploy](rollback.md)
 - [AWS Cloud Control API Reference](https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/Welcome.html)

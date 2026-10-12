@@ -12,6 +12,7 @@ import {
   isStructured,
 } from './support.js';
 import { recordSecretNamedRead } from './getatt.js';
+import { recordPhysicalNameCopy } from '../secret-redaction.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -127,6 +128,11 @@ export function lookupResourceRecord(
         'STATE_PHYSICAL_ID_NOT_STRING'
       )
     );
+  }
+  // go-to-k/cdkd#4810: the reader's copy of this id stays plaintext in its
+  // record, as the id does in the producer's (see `physicalNameCopiesOf`).
+  if (context.recordedSecretValues !== undefined) {
+    recordPhysicalNameCopy(context.recordedSecretValues, physicalId);
   }
   return resource;
 }

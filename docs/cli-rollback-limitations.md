@@ -104,7 +104,7 @@ The value never appears in the state record, the events or the log in the
 clear, and cdkd never sends `***` to AWS. There are two exceptions: a name or
 other identifier is stored as resolved, and a value shorter than 4 characters
 can appear inside a longer log line. See
-[State Management](state-management.md).
+[State Store](state-management.md).
 
 ### Edge cases
 

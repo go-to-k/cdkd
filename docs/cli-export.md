@@ -52,7 +52,7 @@ cdkd export MyStack --template template.yaml
 cdkd export
 ```
 
-[Exporting to CloudFormation](export.md) is the short guide to deciding
+[Hand a Stack to CloudFormation](export.md) is the short guide to deciding
 whether a stack is ready. This page is the reference.
 
 ## Export a stack
@@ -309,7 +309,7 @@ fallback. Pass `--strict-cross-stack` to refuse instead.
 - **Consumers outside the CDK app.** cdkd cannot see them. Check those
   yourself.
 
-[Cross-Stack References](cross-stack-references.md) describes the fallback.
+[Use Another Stack's Outputs](cross-stack-references.md) describes the fallback.
 
 ## Exit codes
 
@@ -320,9 +320,9 @@ fallback. Pass `--strict-cross-stack` to refuse instead.
 
 ## Related
 
-- [Exporting to CloudFormation](export.md): the short guide to this command
+- [Hand a Stack to CloudFormation](export.md): the short guide to this command
 - [`cdkd import`](import.md): the opposite direction, CloudFormation to cdkd
-- [State Management](state-management.md): state records, composite physical ids, locks
-- [Cross-Stack References](cross-stack-references.md): what happens to `Fn::GetStackOutput` consumers
+- [State Store](state-management.md): state records, composite physical ids, locks
+- [Use Another Stack's Outputs](cross-stack-references.md): what happens to `Fn::GetStackOutput` consumers
 - [CLI Reference](cli-reference.md): every command and the full exit-code table
 - [cdkd export internals](cli-export-internals.md): changeset mechanics, for contributors

@@ -274,4 +274,4 @@ The comparison rules and the wording of each report are in
 - [`cdkd scrub`](cli-scrub.md): the commands, options and exit codes
 - [cdkd scrub: what it covers](cli-scrub-what-it-covers.md): which values scrub rewrites and which it cannot see
 - [cdkd scrub: findings and refusals](cli-scrub-findings.md): each message and code, with what to do
-- [Cross-Stack References](cross-stack-references.md): how exports, imports and the exports index work
+- [Use Another Stack's Outputs](cross-stack-references.md): how exports, imports and the exports index work

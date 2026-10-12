@@ -5134,7 +5134,7 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
 
       await expect(
         resolver.resolve({ 'Fn::GetAtt': ['R', attributeName] }, context)
-      ).rejects.toThrow(/placeholder written by a cdkd version older than issue #1681/);
+      ).rejects.toThrow(/placeholder written by an older cdkd version/);
     }
   );
 

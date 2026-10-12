@@ -151,10 +151,10 @@ about 65 seconds before it refuses the create.
 
 ## Related
 
-- [The state store](state-store.md#one-stack-name-per-account-and-region): why
+- [Manage Stacks Without the App](state-store.md#one-stack-name-per-account-and-region): why
   a stack name is one deployment
 - [Stack registry](state-store-registry.md): the second check, on stacks in
   one bucket
 - [Lock and state errors](troubleshooting-locks-state.md#x-would-be-created-with-the-cdkd-generated-name-n-which-an-existing-resource-already-holds):
   the troubleshooting entry for this refusal
-- [Importing Existing Resources](import.md): adopting a resource into a stack
+- [Import Existing Resources](import.md): adopting a resource into a stack

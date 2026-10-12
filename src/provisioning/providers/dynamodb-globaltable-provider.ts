@@ -3402,8 +3402,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 `declares ${droppedOverrides.map((o) => maskSecrets(o)).join(' / ')}, but ` +
                 `DynamoDB offers no way to ` +
                 `CLEAR a replica-level throughput override — a -1 sentinel is stored ` +
-                `literally, and an empty override block wedges the table in UPDATING ` +
-                `(both live-probed, issue #1436). The previous override is STILL IN ` +
+                `literally, and an empty override block wedges the table in UPDATING. ` +
+                `The previous override is STILL IN ` +
                 `EFFECT on AWS. Set an explicit value, or remove and re-add the replica, ` +
                 `to change it.`
             );
@@ -5275,9 +5275,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // mid-transition pays for the poll. Best-effort — on timeout the delete
       // goes ahead and AWS's own error stays the backstop.
       if (hasTransitionalIndex(preDeleteIndexes)) {
-        this.logger.debug(
-          `Waiting for indexes on ${physicalId} to settle before DeleteTable (issue #1521)`
-        );
+        this.logger.debug(`Waiting for indexes on ${physicalId} to settle before DeleteTable`);
         await this.waitForIndexesActive(physicalId, logicalId, {
           proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
           budget,

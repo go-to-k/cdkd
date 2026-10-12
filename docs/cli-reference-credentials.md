@@ -87,7 +87,12 @@ A producer role whose trust policy still names your profile's principal makes
 the deploy fail with `AssumeRole into <producer-role> failed: AccessDenied`.
 The message names the producer role, so check its trust policy first.
 
-[Cross-Stack References](cross-stack-references.md) covers the feature, and
+The same holds for a cross-account reference CDK generates, which cdkd reads
+through the producer account's CDK lookup role: with `--role-arn`, the
+`--role-arn` role is the identity `cdk bootstrap --trust-for-lookup` must let
+assume it.
+
+[Use Another Stack's Outputs](cross-stack-references.md) covers the feature, and
 [Cross-stack reference internals](cross-stack-internals.md) has the policy
 documents.
 
@@ -179,5 +184,5 @@ nothing.
 
 - [CLI Reference](cli-reference.md#role-arn): the flag, its values and `--profile`
 - [Troubleshooting](troubleshooting.md#access-denied-error): a starting policy for permission errors
-- [Cross-Stack References](cross-stack-references.md): reading another account's outputs
+- [Use Another Stack's Outputs](cross-stack-references.md): reading another account's outputs
 - [Local Execution](local-emulation.md): the `cdkd local` commands

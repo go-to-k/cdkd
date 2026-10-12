@@ -133,7 +133,7 @@ says what to do.
 | --- | --- | --- |
 | No `--yes` and no terminal | `NON_INTERACTIVE_CONFIRM`, exit `1` | [Non-interactive runs](cli-destroy-prompts.md#non-interactive-runs) |
 | `terminationProtection: true` on the stack | `STACK_TERMINATION_PROTECTION`, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
-| Another stack imports one of its outputs | `STACK_HAS_ACTIVE_IMPORTS` | [Cross-Stack References](cross-stack-references.md) |
+| Another stack imports one of its outputs | `STACK_HAS_ACTIVE_IMPORTS` | [Use Another Stack's Outputs](cross-stack-references.md) |
 | A bucket or ECR repository that still holds data | That resource fails, exit `2` | [Non-empty buckets and repositories](cli-destroy-guards.md#non-empty-s3-buckets-and-ecr-repositories) |
 | Deletion protection on a resource | That resource fails with the AWS error, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
 | A `Snapshot` resource cdkd cannot snapshot | That resource is refused, exit `2` | [When cdkd refuses to delete](cli-destroy-guards.md#when-cdkd-refuses-to-delete) |
@@ -388,8 +388,8 @@ The full cross-command table is in the [CLI Reference](cli-reference.md).
 
 - [CLI Reference](cli-reference.md) — every command and the full exit-code table
 - [`cdkd state`](cli-state.md) — the flags of `cdkd state destroy`, and the rest of the state command family
-- [Orphan vs Destroy](orphan-vs-destroy.md) — when to drop state instead of deleting resources
+- [Orphan Instead of Destroy](orphan-vs-destroy.md) — when to drop state instead of deleting resources
 - [`cdkd rollback`](cli-rollback.md) — reverting a failed or interrupted deploy
-- [State Management](state-management.md) — state records, locks, and force-unlock
-- [Deployment Events](deployment-events.md) — the history `--purge-events` deletes
+- [State Store](state-management.md) — state records, locks, and force-unlock
+- [Review Past Deploys](deployment-events.md) — the history `--purge-events` deletes
 - [Troubleshooting](troubleshooting.md) — what to do when a destroy fails

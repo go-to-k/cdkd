@@ -42,6 +42,7 @@ import {
   parameterTypeMayLoseSecretIdentity,
   coerceParameterTypedValue,
 } from '../../deployment/intrinsic-function-resolver.js';
+import type { ProducerLookup } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import {
   computeOutputsDiff,
   isWholeSecretReferenceToken,
@@ -392,7 +393,7 @@ function nestedStackTypeChangeReason(tc: NestedStackTypeChange): string {
   return (
     `${displayIdent(tc.logicalId)}: Type changes from ${displayIdent(tc.currentType)} to ` +
     `${displayIdent(tc.desiredType)}. cdkd does not replace a resource into or out of ` +
-    `${NESTED_STACK_RESOURCE_TYPE} (issue #2668); give the new resource a different logical ` +
+    `${NESTED_STACK_RESOURCE_TYPE}; give the new resource a different logical ` +
     `id, or remove it in one deploy and add its replacement in the next.`
   );
 }
@@ -1270,6 +1271,14 @@ export async function computeStackDiff(
      */
     cfnFallback?: boolean;
     /**
+     * The cloud assembly's producer artifacts, consulted lazily by an
+     * `Fn::GetStackOutput` carrying a `RoleArn` only, as the deploy engine's
+     * resolver does (`IntrinsicFunctionResolverOptions.producerLookup`).
+     */
+    producerLookup?: ProducerLookup;
+    /** The stack's synthesized account, named by that reference's refusal. */
+    consumerAccount?: string;
+    /**
      * Force the issue #1948 "stored key the template cannot account for"
      * withholding ON, regardless of what THIS template proves.
      *
@@ -1370,6 +1379,8 @@ export async function computeStackDiff(
     parameters,
     canonicalizeProperties,
     cfnFallback,
+    producerLookup,
+    consumerAccount,
     inheritSecretBearingTemplate,
     inheritedSecrets,
     inheritedDerivedNames,
@@ -1394,6 +1405,8 @@ export async function computeStackDiff(
       : undefined;
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
+    ...(producerLookup && { producerLookup }),
+    ...(consumerAccount && { consumerAccount }),
   });
 
   // Issue #2740: the source the skipped-output digests are compared against,
@@ -3004,13 +3017,21 @@ async function resolveChildStackParameters(
    * READ (go-to-k/cdkd#3869): the child prints those values as its own
    * parameters, so the caller masks the child's walk with them.
    */
-  derivedNameSink?: RecordedSecretValues
+  derivedNameSink?: RecordedSecretValues,
+  /** As `computeStackDiff`'s `producerLookup`. */
+  producerLookup?: ProducerLookup,
+  /** As `computeStackDiff`'s `consumerAccount`. */
+  consumerAccount?: string
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
     return {};
   }
-  const resolver = new IntrinsicFunctionResolver(region, { cfnFallback: cfnFallback ?? true });
+  const resolver = new IntrinsicFunctionResolver(region, {
+    cfnFallback: cfnFallback ?? true,
+    ...(producerLookup && { producerLookup }),
+    ...(consumerAccount && { consumerAccount }),
+  });
   const resolved: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
     // go-to-k/cdkd#4479: only a value this diff KNOWS the deploy passes may
@@ -3183,6 +3204,10 @@ export async function buildDiffTree(args: {
    * the deploy engine's option. Default (undefined) = fallback enabled.
    */
   cfnFallback?: boolean;
+  /** As `computeStackDiff`'s `producerLookup`; handed to every node of the tree. */
+  producerLookup?: ProducerLookup;
+  /** As `computeStackDiff`'s `consumerAccount`; handed to every node of the tree. */
+  consumerAccount?: string;
   /**
    * Does any template ABOVE this node in the tree carry a secret-bearing
    * dynamic reference (issue #1948 review)?
@@ -3278,6 +3303,8 @@ export async function buildDiffTree(args: {
     canonicalizeProperties,
     assetRedirect,
     cfnFallback,
+    producerLookup,
+    consumerAccount,
     previewOrphanAdoption,
     attributeHealerFor,
     ancestorTemplatePaths,
@@ -3342,6 +3369,8 @@ export async function buildDiffTree(args: {
         ...(parentUnresolvedParameters && { parentUnresolvedParameters }),
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        ...(producerLookup && { producerLookup }),
+        ...(consumerAccount && { consumerAccount }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
         ...(inheritedDerivedNames && { inheritedDerivedNames }),
@@ -3548,7 +3577,9 @@ export async function buildDiffTree(args: {
       attributeHealer,
       childUnresolvedParameters,
       trust,
-      rowDerivedNames
+      rowDerivedNames,
+      producerLookup,
+      consumerAccount
     );
     // The parent's own secret-named records too (go-to-k/cdkd#3869): the
     // child's stored values can hold a name a row USED to pass down.
@@ -3572,6 +3603,8 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        ...(producerLookup && { producerLookup }),
+        ...(consumerAccount && { consumerAccount }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(attributeHealerFor && { attributeHealerFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,

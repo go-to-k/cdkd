@@ -58,6 +58,7 @@ import {
   type NoEchoCoordinate,
   STATE_SOURCED_BASELINE_RULES,
   type RecordedSecretValues,
+  splitGetAttStringForm,
 } from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
@@ -2078,6 +2079,72 @@ export function noEchoAttributeNamesCarried(
 }
 
 /**
+ * Per logical id, every attribute the template reads (each dot-prefix of its
+ * name) through
+ * `Fn::GetAtt` (array or string form) or a `${X.Attr}` in `Fn::Sub`, anywhere
+ * in it. An attribute name that is not a literal string reads every key,
+ * recorded as {@link READS_EVERY_KEY}. Issue #2925: the re-import's kept-mask warning names only
+ * keys a deploy of THIS template would actually refuse to read — since the
+ * deploy path masks every non-attribute Cloud Control key too, warning on all
+ * of them would fire on every re-import of a deployed resource.
+ */
+/** {@link templateGetAttReads}' marker for a non-literal attribute name. */
+export const READS_EVERY_KEY: unique symbol = Symbol('reads every key');
+
+export function templateGetAttReads(template: unknown): Map<string, Set<string | symbol>> {
+  const reads = new Map<string, Set<string | symbol>>();
+  const addRead = (logicalId: string, attribute: unknown): void => {
+    let attributes = reads.get(logicalId);
+    if (!attributes) {
+      attributes = new Set();
+      reads.set(logicalId, attributes);
+    }
+    if (typeof attribute === 'string') {
+      // Every spelling a record can hold the value under: each dot-prefix of
+      // the name, from the top-level container a nested walk descends into to
+      // the FLAT dotted key (`Outputs.TableName` on a nested stack,
+      // `Endpoint.Address` from the enrichment).
+      const segments = attribute.split('.');
+      for (let i = 1; i <= segments.length; i++) {
+        attributes.add(segments.slice(0, i).join('.'));
+      }
+    } else {
+      attributes.add(READS_EVERY_KEY);
+    }
+  };
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    for (const [key, inner] of Object.entries(value)) {
+      if (key === 'Fn::GetAtt') {
+        if (Array.isArray(inner) && typeof inner[0] === 'string') {
+          addRead(inner[0], inner[1]);
+        } else if (typeof inner === 'string') {
+          const split = splitGetAttStringForm(inner);
+          if (split) addRead(split.logicalId, split.attributeName);
+        }
+      } else if (key === 'Fn::Sub') {
+        const text = Array.isArray(inner) ? inner[0] : inner;
+        if (typeof text === 'string') {
+          for (const match of text.matchAll(/\$\{([^}]*)\}/g)) {
+            const ref = match[1] ?? '';
+            if (ref.startsWith('!')) continue;
+            const split = splitGetAttStringForm(ref);
+            if (split) addRead(split.logicalId, split.attributeName);
+          }
+        }
+      }
+      walk(inner);
+    }
+  };
+  walk(template);
+  return reads;
+}
+
+/**
  * Compose a `StackState` from the per-resource import outcomes plus
  * dependency info recovered from the template.
  *
@@ -2118,6 +2185,7 @@ export function buildStackState(
   // Issue #3468: computed at most once, and only when a prior record carries a
   // reason-less marker.
   let namesParameter: ParameterNamingVerdict | undefined;
+  const getAttReads = templateGetAttReads(template);
   for (const row of rows) {
     if (row.outcome !== 'imported' || !row.physicalId) continue;
     const tmplResource = template.Resources[row.logicalId];
@@ -2157,19 +2225,33 @@ export function buildStackState(
           `resource rewrites it.`
       );
     }
-    if (stillMaskedKeys.length > 0) {
+    // Only a key this template READS is refused at deploy; the rest are keys
+    // no deploy of it resolves (on a Cloud Control record, every non-attribute
+    // model key is masked by design, issue #2925), so they go to debug.
+    const readAttributes = getAttReads.get(row.logicalId);
+    const refusedKeys = stillMaskedKeys.filter(
+      (key) => readAttributes?.has(key) === true || readAttributes?.has(READS_EVERY_KEY) === true
+    );
+    const unreadKeys = stillMaskedKeys.filter((key) => !refusedKeys.includes(key));
+    if (unreadKeys.length > 0) {
+      getLogger().debug(
+        safeMsg`${displayIdent(row.logicalId)}: the redaction mask stays recorded under ` +
+          safeMsg`${unreadKeys.map((key) => displayIdent(key)).join(', ')}; this template reads none of them.`
+      );
+    }
+    if (refusedKeys.length > 0) {
       // Issue #2927: the user most likely ran this re-import BECAUSE a deploy
       // refused a masked read and told them to, so a record that still holds
       // the mask must say so here rather than let the next deploy repeat the
       // identical refusal with nothing explaining why. Both the logical id
       // (template-controlled) and the keys (the AWS model's) are rendered
       // display-safe on this default-verbosity line.
-      const keys = stillMaskedKeys.map((key) => displayIdent(key)).join(', ');
-      const pronoun = stillMaskedKeys.length === 1 ? 'it' : 'them';
+      const keys = refusedKeys.map((key) => displayIdent(key)).join(', ');
+      const pronoun = refusedKeys.length === 1 ? 'it' : 'them';
       getLogger().warn(
         safeMsg`${displayIdent(row.logicalId)}: this import produced no value to replace the redaction ` +
           safeMsg`mask recorded under ${keys}, so the mask is kept and an Fn::GetAtt reading ${pronoun} ` +
-          `is still refused at deploy. It is kept rather than cleared because an attribute missing ` +
+          `in this template is still refused at deploy. It is kept rather than cleared because an attribute missing ` +
           `from state resolves to the physical id instead of failing.`
       );
     }

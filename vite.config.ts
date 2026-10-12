@@ -496,6 +496,18 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-sdk-attr-coverage.ts --check',
         cache: false,
       },
+      // Issue #3735: the Fn::GetAtt names that are also writable properties,
+      // from the pinned `@aws-cdk/aws-service-spec` devDependency. Offline, so
+      // it is chained into `gen:all-matrices` (CI's staleness guard); `:check`
+      // is the same comparison without writing.
+      'gen:getatt-attributes': {
+        command: 'node --experimental-strip-types scripts/gen-getatt-attributes.ts',
+        cache: false,
+      },
+      'audit:getatt-attributes:check': {
+        command: 'node --experimental-strip-types scripts/gen-getatt-attributes.ts --check',
+        cache: false,
+      },
       'gen:update-wrap-coverage': {
         command: 'node --experimental-strip-types scripts/gen-update-wrap-coverage.ts',
         cache: false,
@@ -674,6 +686,7 @@ export default defineConfig({
           'vp run gen:update-wrap-coverage',
           'vp run gen:nested-key-coverage',
           'vp run gen:handled-property-wiring',
+          'vp run gen:getatt-attributes',
           // Not a matrix, but the same class of CI guard: a rebase can
           // denormalize the committed integ ledger, and the failure looks
           // identical (regenerate-and-commit).

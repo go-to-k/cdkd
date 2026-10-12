@@ -72,7 +72,7 @@ ID the SDK provider stored. The deploy reports that failure, and the recreate
 is the way through.
 
 For a `NoEcho` parameter, state holds only `***` in place of the value
-([State Management](state-management.md)). The deploy warns that it cannot
+([State Store](state-management.md)). The deploy warns that it cannot
 confirm the value, and the recreate applies the new one.
 
 ### How cdkd knows a property is create-only

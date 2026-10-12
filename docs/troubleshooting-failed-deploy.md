@@ -13,7 +13,7 @@ In those cases cdkd keeps two things in the state bucket. One is the state it
 saved for every resource that completed. The other is the rollback journal, a
 file that lists the operations the deploy completed, which `cdkd rollback`
 uses to undo them. From there you have three ways on, shown below.
-[Rollback](rollback.md) describes the mechanism.
+[Roll Back a Failed Deploy](rollback.md) describes the mechanism.
 
 On this page:
 

@@ -110,7 +110,7 @@ For a cross-account `Fn::GetStackOutput`, the trust policy belongs on the role
 in the account that owns the producer stack. It must allow the principal that
 the consuming deploy makes its calls as. If that deploy passes `--role-arn`,
 the principal is the assumed role and not the profile behind it. See
-[Cross-Stack References](cross-stack-references.md).
+[Use Another Stack's Outputs](cross-stack-references.md).
 
 ## "The state machine IAM Role is not authorized to access the Log Destination"
 

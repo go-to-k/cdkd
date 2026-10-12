@@ -267,7 +267,7 @@ resolve alike.
   `cloudformation:ListExports` or `cloudformation:DescribeStacks`, cdkd warns
   and reports the original not-found error.
 
-[Cross-Stack References](cross-stack-references.md) covers the design.
+[Use Another Stack's Outputs](cross-stack-references.md) covers the design.
 
 ## `--require-approval` (deploy)
 
@@ -330,5 +330,5 @@ exits `1`.
 - [`cdkd rollback`](cli-rollback.md): the rollback journal and failed creates
 - [`cdkd diff`](cli-diff.md): `--fail-on=destructive` and `--no-cfn-fallback`
   in a preview
-- [Cross-Stack References](cross-stack-references.md): the design behind the
+- [Use Another Stack's Outputs](cross-stack-references.md): the design behind the
   CloudFormation fallback

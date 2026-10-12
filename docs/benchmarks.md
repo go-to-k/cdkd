@@ -187,7 +187,7 @@ The Terraform comparison, with its full methodology and scripts, is in
 
 ## Related
 
-- [Wait Modes](wait-modes.md): the flags most of these numbers depend on
+- [Choose a Wait Mode](wait-modes.md): the flags most of these numbers depend on
 - [cdkd deploy](cli-deploy.md): what cdkd waits for, per
   resource type
 - [Core Concepts](concepts.md): how a deploy works

@@ -242,5 +242,5 @@ covers the replicated case.
 
 - [`cdkd bootstrap`](cli-bootstrap.md): creates the storage this command collects
 - [`cdkd rollback`](cli-rollback.md): the replay whose asset references the age guard protects
-- [State Management](state-management.md): the state bucket, its layout and the least-privilege policy
+- [State Store](state-management.md): the state bucket, its layout and the least-privilege policy
 - [CLI Reference](cli-reference.md): every command and the shared options

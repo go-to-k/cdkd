@@ -1,6 +1,6 @@
 {
   "name": "@go-to-k/cdkd",
-  "version": "0.296.30",
+  "version": "0.297.0",
   "description": "Drop-in CDK CLI for existing CDK apps - up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -115,6 +115,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@aws-cdk/aws-service-spec": "0.1.182",
     "@iconify-json/lucide": "^1.2.141",
     "@ox-content/islands": "3.2.13",
     "@ox-content/vite-plugin": "3.2.13",

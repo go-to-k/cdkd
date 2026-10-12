@@ -311,7 +311,7 @@ The closing `Done: scrubbed ...` line does not cover the following cases.
 - **The destination of a replicated bucket.** S3 does not replicate the
   deletion of a version, so the copy keeps the plaintext. Scrub warns about
   this only when it can read the bucket's replication configuration
-  (`s3:GetReplicationConfiguration`). [State Management](state-management.md)
+  (`s3:GetReplicationConfiguration`). [State Store](state-management.md)
   covers replicated state buckets.
 - **Anything under `--dry-run`.** A dry run writes and deletes nothing.
 
@@ -394,8 +394,8 @@ The table for every command is in the
 
 ## Related
 
-- [State Management](state-management.md): the state files scrub rewrites, and how a deploy stores secrets
+- [State Store](state-management.md): the state files scrub rewrites, and how a deploy stores secrets
 - [`cdkd drift`](cli-drift.md): how state that holds a reference is compared against AWS
 - [`cdkd diff`](cli-diff.md): which stored output values it withholds, and why
-- [Cross-Stack References](cross-stack-references.md): how one stack reads another's exported values
+- [Use Another Stack's Outputs](cross-stack-references.md): how one stack reads another's exported values
 - [CLI Reference](cli-reference.md): every command and the full exit-code table

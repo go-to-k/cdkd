@@ -583,4 +583,4 @@ REPO=<owner/repo> PARENT=<umbrella issue number> \
 
 - [Provider Rules](provider-rules.md) — why the job is shaped this way, and the `bogusTolerated` conventions
 - [Provider Development](provider-development.md) — adding a provider, including its first fixture capture
-- [State Management](state-management.md) — what a routing change does to an existing resource's state record
+- [State Store](state-management.md) — what a routing change does to an existing resource's state record

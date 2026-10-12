@@ -1,9 +1,9 @@
 ---
-title: Exporting to CloudFormation
+title: Hand a Stack to CloudFormation
 description: "Hand a cdkd-managed stack back to CloudFormation with cdkd export: decide whether the stack is ready, then export it in three steps."
 ---
 
-# Exporting to CloudFormation
+# Hand a Stack to CloudFormation
 
 `cdkd export` hands a stack that cdkd deployed over to CloudFormation. Use it
 when a stack you iterated on with cdkd should now be managed with
@@ -108,5 +108,5 @@ replacement there.
   order in which an export runs
 - [`cdkd import`](import.md): the opposite direction, bringing
   CloudFormation-managed resources under cdkd
-- [Mixed Estates](mixed-estates.md): running cdkd stacks next to
+- [Run Beside CloudFormation](mixed-estates.md): running cdkd stacks next to
   CloudFormation stacks

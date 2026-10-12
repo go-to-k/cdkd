@@ -1,9 +1,9 @@
 ---
-title: Wait Modes
+title: Choose a Wait Mode
 description: "Choose when cdkd deploy returns: as soon as AWS accepts each call (--no-wait), once the deploy's own dependencies are ready (default), or when everything CloudFormation waits for has settled (--full-wait)."
 ---
 
-# `--no-wait` / `--full-wait`: choose what "done" means
+# Choose a Wait Mode
 
 Some resources keep provisioning for minutes after AWS accepts the call that
 creates them: a CloudFront distribution, an RDS instance, a NAT gateway, an

@@ -46,8 +46,8 @@ The two tools work side by side: one CDK app can be deployed by cdkd to a dev
 environment and by the AWS CDK CLI to production.
 
 You can also move a stack from one tool to the other at any time.
-[Importing Existing Resources](import.md) brings a CloudFormation stack under
-cdkd, and [Exporting to CloudFormation](export.md) hands a cdkd stack back.
+[Import Existing Resources](import.md) brings a CloudFormation stack under
+cdkd, and [Hand a Stack to CloudFormation](export.md) hands a cdkd stack back.
 
 > [!IMPORTANT]
 > cdkd is for dev and test workflows only. It is early in development and not
@@ -62,11 +62,11 @@ cdkd also covers the work around a deploy:
   resource references from the deployed stack, so you do not write a `.env`
   file by hand. See [Local Execution](local-emulation.md).
 - **Rollback.** When a deploy fails, cdkd undoes what that deploy did. See
-  [Rollback](rollback.md).
+  [Roll Back a Failed Deploy](rollback.md).
 - **Drift detection.** `cdkd drift` reports resources that were changed in AWS
-  outside cdkd. See [Drift Detection](drift.md).
+  outside cdkd. See [Detect and Fix Drift](drift.md).
 - **Deployment history.** `cdkd events` shows what each past deploy did. See
-  [Deployment Events](deployment-events.md).
+  [Review Past Deploys](deployment-events.md).
 
 ## Find your way
 
@@ -82,22 +82,22 @@ The pipeline, state, and how changes are decided.
 :::
 
 ::: card Make deploys faster
-What `--no-wait` skips and when it is safe. [Wait Modes](wait-modes.md)
+What `--no-wait` skips and when it is safe. [Choose a Wait Mode](wait-modes.md)
 :::
 
 ::: card Recover from a failed deploy
-What is undone and what you run. [Rollback](rollback.md), and
+What is undone and what you run. [Roll Back a Failed Deploy](rollback.md), and
 [Troubleshooting](troubleshooting.md) for a specific error.
 :::
 
 ::: card Use cdkd next to CloudFormation
-One app, two tools. [Mixed Estates](mixed-estates.md),
-[Importing Existing Resources](import.md),
-[Exporting to CloudFormation](export.md)
+One app, two tools. [Run Beside CloudFormation](mixed-estates.md),
+[Import Existing Resources](import.md),
+[Hand a Stack to CloudFormation](export.md)
 :::
 
 ::: card Give every pull request an environment
-Deploy on open, destroy on close. [Per-PR Environments in CI](ci-per-pr.md)
+Deploy on open, destroy on close. [Create Per-PR Environments in CI](ci-per-pr.md)
 :::
 
 ::: card Run your app locally
@@ -106,7 +106,7 @@ Functions, APIs and tasks on your machine.
 :::
 
 ::: card Work with an AI coding agent
-Install the cdkd skill. [Use with AI Coding Agents](ai-agents.md)
+Install the cdkd skill. [Use cdkd with AI Coding Agents](ai-agents.md)
 :::
 
 ::: card Look something up

@@ -378,7 +378,7 @@ baseline, so `--accept` keeps refusing such a position.
 
 A property whose real value happens to BE the string `***` is treated the same
 way, since nothing in state distinguishes the two — see
-[State Management](state-management-secrets.md#custom-resource-responses-marked-noecho).
+[State Store](state-management-secrets.md#custom-resource-responses-marked-noecho).
 
 ## A masked position cdkd could not certify
 

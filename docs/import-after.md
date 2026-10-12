@@ -15,7 +15,7 @@ cdkd deploy MyStack
 cdkd drift MyStack     # later: has anything changed outside cdkd?
 ```
 
-To start an import, see [Importing Existing Resources](import.md).
+To start an import, see [Import Existing Resources](import.md).
 
 ## Check the first diff
 
@@ -189,7 +189,7 @@ Deploying a change to the resource does not clear it. `cdkd deploy` binds the
 same `Default`, and an update that leaves the parameter-bound property alone
 does not rewrite it in AWS. A baseline recorded afterwards would hold the
 deployed value, so an in-place update keeps the resource without a baseline.
-There are two ways out:
+There are three ways out:
 
 - A deploy replaces the resource, or deletes and creates it again. The new
   resource is built from the properties cdkd sent, so it gets a normal
@@ -198,9 +198,12 @@ There are two ways out:
   can prove the parameter was deployed at its `Default`. After
   `--migrate-from-cloudformation` that stack is gone, so importing the same
   physical id again keeps the resource without a baseline.
+- You deploy a template that no longer reads the parameter at this resource,
+  then clear the refusal yourself with
+  [`cdkd state refresh-observed --accept-refused`](cli-state-writing.md#accepting-a-refused-baseline).
 
-Editing the template so that nothing references the parameter does not help.
-An import clears this only by proving the parameter's value.
+Editing the template alone does not help: an import clears this only by
+proving the parameter's value.
 
 #### Edge cases
 
@@ -308,13 +311,14 @@ A hand edit lasts only while AWS no longer holds the value. cdkd records it
 again the next time it reads the resource: on a deploy that updates the
 resource, on `cdkd state refresh-observed`, or on `cdkd drift --accept`. An
 edit to `attributes` lasts until the next deploy that updates the resource,
-which writes every property back.
+which records it again (for a Cloud Control resource: its `Fn::GetAtt`
+attributes in the clear and every other property as `***`).
 
 ## Related
 
-- [Importing Existing Resources](import.md): the walkthroughs
+- [Import Existing Resources](import.md): the walkthroughs
 - [`cdkd drift`](cli-drift.md): how the baseline is compared
 - [`cdkd scrub`](cli-scrub.md): finding and removing secrets in state
-- [State Management](state-management.md): who can read the state bucket
+- [State Store](state-management.md): who can read the state bucket
 - [Import internals](import-internals.md): older baseline decisions and
   re-importing a Cloud Control resource

@@ -425,7 +425,7 @@ async function refuseUnlicensedGeneratedName(
             `created since. Since ${adoptsText}, creating it would take that resource over. ` +
             `${displaySafe(logicalId)} was not created. The likely cause: the resource is this ` +
             `stack's own, from that deploy. If it is, ${importLine} and re-run; if it is not, ` +
-            `this stack is also deployed under another state backend (go-to-k/cdkd#4705).`
+            `this stack is also deployed under another state backend.`
         );
       }
       return refuse(
@@ -436,7 +436,7 @@ async function refuseUnlicensedGeneratedName(
           `that resource over, as CloudFormation refuses with "already exists". ` +
           `${displaySafe(logicalId)} was not created. The likely cause: this stack is also deployed under another state backend ` +
           `(another --state-prefix, --state-bucket or account), where cdkd generates the same ` +
-          `names. One stack name per account and region is supported (go-to-k/cdkd#4705): ` +
+          `names. One stack name per account and region is supported: ` +
           `deploy it under one backend only, or give this stack another name. If the resource ` +
           `is this stack's own, ${importLine} and re-run.`
       );

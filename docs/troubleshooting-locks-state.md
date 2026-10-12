@@ -25,7 +25,7 @@ On this page:
 The lock error itself, and the two steps that fix it, are under
 ["Failed to acquire lock" Error](troubleshooting.md#failed-to-acquire-lock-error)
 on the main Troubleshooting page. The decision is the one in this diagram.
-[State Management](state-management.md) describes how the lock works.
+[State Store](state-management.md) describes how the lock works.
 
 ```text diagram=troubleshooting-lock-held
             ┌──────────────────────────────┐
@@ -59,8 +59,8 @@ s3://cdkd-state-123456789012/cdkd/MyStack/us-east-1/
     └── <runId>.jsonl         # one run's events
 ```
 
-[State Management](state-management.md) and
-[Deployment Events](deployment-events.md) describe these files.
+[State Store](state-management.md) and
+[Deployment Event Format](deployment-events-format.md#where-events-are-stored) describe these files.
 
 ## Reading the lock file
 
@@ -174,7 +174,7 @@ is a resource whose create was in flight when the job was killed. That
 resource can exist in AWS without a state record, and the next run then fails
 with an already-exists error. See
 ["Resource already exists" Error](troubleshooting.md#resource-already-exists-error).
-[Per-PR Environments in CI](ci-per-pr.md) has the full workflow.
+[Create Per-PR Environments in CI](ci-per-pr.md) has the full workflow.
 
 ## State File is Corrupted
 
@@ -265,7 +265,7 @@ Use `cdkd state orphan --resource` when the construct is already gone from the
 app. Only `cdkd orphan` accepts `--dry-run`. Without `--resource`,
 `cdkd state orphan MyStack` drops the whole stack record. Do not do that to a
 stack with other live resources, because the next deploy re-creates or collides
-with all of them. [Orphan vs Destroy](orphan-vs-destroy.md) compares the
+with all of them. [Orphan Instead of Destroy](orphan-vs-destroy.md) compares the
 commands.
 
 ### The resource exists in AWS but is missing from state
@@ -277,7 +277,7 @@ cdkd import MyStack --dry-run   # preview; writes no state
 cdkd import MyStack
 ```
 
-See [Importing Existing Resources](import.md) for the flags.
+See [Import Existing Resources](import.md) for the flags.
 
 ### You want to start over
 

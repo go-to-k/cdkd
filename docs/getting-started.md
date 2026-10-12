@@ -15,7 +15,7 @@ teardown. It then lists the commands you will reach for afterwards.
 > [!IMPORTANT]
 > cdkd is for dev and test environments. It is early in development and not
 > yet production-ready. Keep deploying production with the AWS CDK CLI; the
-> same CDK app serves both (see [Mixed Estates](mixed-estates.md)).
+> same CDK app serves both (see [Run Beside CloudFormation](mixed-estates.md)).
 
 ## Before you start
 
@@ -132,7 +132,7 @@ cdkd deploy --no-wait
 With `--no-wait`, the command returns once AWS has accepted each create call,
 and AWS finishes the slow resources in the background. The largest speedups in
 the [benchmarks](benchmarks.md) come from this flag.
-[Wait Modes](wait-modes.md) lists what each mode waits for and when
+[Choose a Wait Mode](wait-modes.md) lists what each mode waits for and when
 `--no-wait` is the wrong choice.
 
 ## What to run when
@@ -140,14 +140,14 @@ the [benchmarks](benchmarks.md) come from this flag.
 | You want to | Run | Read |
 | --- | --- | --- |
 | See what the next deploy would change | `cdkd diff MyStack` | [`cdkd diff`](cli-diff.md) |
-| See what changed in AWS outside cdkd | `cdkd drift MyStack` | [Drift Detection](drift.md) |
-| Keep what a failed deploy created, to inspect it | `cdkd deploy --no-rollback` | [Rollback](rollback.md) |
-| Undo a failed or interrupted deploy | `cdkd rollback MyStack` | [Rollback](rollback.md) |
+| See what changed in AWS outside cdkd | `cdkd drift MyStack` | [Detect and Fix Drift](drift.md) |
+| Keep what a failed deploy created, to inspect it | `cdkd deploy --no-rollback` | [Roll Back a Failed Deploy](rollback.md) |
+| Undo a failed or interrupted deploy | `cdkd rollback MyStack` | [Roll Back a Failed Deploy](rollback.md) |
 | Clear a lock left by a killed process | `cdkd force-unlock MyStack` | [`cdkd force-unlock`](cli-force-unlock.md) |
-| Review what past deploys did | `cdkd events MyStack` | [Deployment Events](deployment-events.md) |
-| Stop managing a resource without deleting it | `cdkd orphan MyStack/MyBucket` | [Orphan vs Destroy](orphan-vs-destroy.md) |
-| Move a stack from CloudFormation to cdkd | `cdkd import MyStack --migrate-from-cloudformation` | [Importing Existing Resources](import.md) |
-| Hand a stack back to CloudFormation | `cdkd export MyStack` | [Exporting to CloudFormation](export.md) |
+| Review what past deploys did | `cdkd events MyStack` | [Review Past Deploys](deployment-events.md) |
+| Stop managing a resource without deleting it | `cdkd orphan MyStack/MyBucket` | [Orphan Instead of Destroy](orphan-vs-destroy.md) |
+| Move a stack from CloudFormation to cdkd | `cdkd import MyStack --migrate-from-cloudformation` | [Import Existing Resources](import.md) |
+| Hand a stack back to CloudFormation | `cdkd export MyStack` | [Hand a Stack to CloudFormation](export.md) |
 | Upload assets without deploying | `cdkd publish-assets` | [`cdkd publish-assets`](cli-publish-assets.md) |
 | Delete assets no stack references | `cdkd gc --dry-run`, then `cdkd gc` | [`cdkd gc`](cli-gc.md) |
 | Run a function or API on your machine | `cdkd local invoke`, `cdkd local start-api` | [Local Execution](local-emulation.md) |
@@ -223,18 +223,18 @@ What a deploy does, where state lives, and how cdkd decides what to change.
 [Core Concepts](concepts.md)
 :::
 
-::: card Wait Modes
-Choose what "done" means for slow resources. [Wait Modes](wait-modes.md)
+::: card Choose a Wait Mode
+Choose what "done" means for slow resources. [Choose a Wait Mode](wait-modes.md)
 :::
 
-::: card Per-PR environments
+::: card Create Per-PR Environments in CI
 One short-lived stack per pull request, deployed and destroyed by your CI.
-[Per-PR Environments in CI](ci-per-pr.md)
+[Create Per-PR Environments in CI](ci-per-pr.md)
 :::
 
-::: card AI coding agents
+::: card Use cdkd with AI Coding Agents
 Install the cdkd skill so an agent deploys with cdkd.
-[Use with AI Coding Agents](ai-agents.md)
+[Use cdkd with AI Coding Agents](ai-agents.md)
 :::
 
 :::

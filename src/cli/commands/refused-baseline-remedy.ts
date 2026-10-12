@@ -5,6 +5,16 @@ import {
 } from '../../types/state.js';
 
 /**
+ * The user-asserted exit both sticky classes share (issue #3466). Holes, not
+ * values: the caller holds no stack name or template path.
+ */
+const ACCEPT_REFUSED_REMEDY =
+  'Once the deployed template no longer reads a parameter at this resource, ' +
+  "cdkd state refresh-observed '<stack>' --accept-refused '<logicalId>' --template '<file>' " +
+  'records a baseline on your assertion that AWS holds no secret the template does not spell as ' +
+  'a dynamic reference.';
+
+/**
  * The remedy a template-less command names for a resource whose observed
  * baseline a `cdkd import` run refused (`observedBaselineRefused`), issue
  * [#3465](https://github.com/go-to-k/cdkd/issues/3465).
@@ -31,7 +41,8 @@ export function refusedBaselineRemedy(
     return (
       'Deploying a change does NOT clear this refusal: the resource reads a template parameter ' +
       'whose deployed value cdkd could not prove, so only a deploy that replaces the resource, ' +
-      'or a re-import while a CloudFormation stack can prove that value, restores a baseline.'
+      'or a re-import while a CloudFormation stack can prove that value, restores a baseline. ' +
+      ACCEPT_REFUSED_REMEDY
     );
   }
   if (hasReasonlessBaselineRefusal(record)) {
@@ -39,7 +50,8 @@ export function refusedBaselineRemedy(
       'This refusal was recorded without a reason this cdkd recognizes: a deploy that actually ' +
       'CHANGES this resource restores a baseline unless the resource reads a template ' +
       'parameter, and then only a deploy that replaces the resource, or a re-import while a ' +
-      "CloudFormation stack can prove the parameter's deployed value, does."
+      "CloudFormation stack can prove the parameter's deployed value, does. " +
+      ACCEPT_REFUSED_REMEDY
     );
   }
   return undefined;

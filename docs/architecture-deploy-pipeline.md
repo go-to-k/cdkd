@@ -281,6 +281,15 @@ resources are ready than the cap allows, the one with the most transitive
 dependents starts first. A slow chain, such as an Elastic IP followed by a NAT
 gateway, therefore starts early.
 
+One exception orders resources the graph leaves unordered. When two resources
+in the deploy write the same inline policy name on the same IAM role, group or
+user, one waits for the other. Examples are two `AWS::IAM::Policy` resources
+swapping names, and a policy renamed away from a name a new policy takes.
+Without the wait, each could remove the name the other had just written. This
+ordering is decided before anything runs. It applies only to those resources,
+and to IAM resources whose policy name or principal cdkd cannot read before
+resolving it, which it treats as possibly the same.
+
 The log line `DAG: <n> levels` reports the depth of the graph. Levels are not
 used to schedule anything.
 
@@ -289,7 +298,7 @@ used to schedule anything.
 When one operation fails, the resources downstream of the failed one are
 skipped. Operations that are already in flight finish, and nothing new starts.
 The engine then rolls back what this run changed, unless the deploy ran with
-`--no-rollback`. [Rollback](rollback.md) describes what a rollback undoes.
+`--no-rollback`. [Roll Back a Failed Deploy](rollback.md) describes what a rollback undoes.
 
 ### How the diff decides what changed
 
@@ -352,4 +361,4 @@ two kinds of provider.
 - [Providers and intrinsic functions](architecture-provisioning.md)
 - [Architecture internals](architecture-internals.md): the detailed rules
   behind the diff and asset storage
-- [Rollback](rollback.md)
+- [Roll Back a Failed Deploy](rollback.md)

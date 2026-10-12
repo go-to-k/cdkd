@@ -38,6 +38,7 @@ const LISTING_FILES = [
   'src/provisioning/providers/s3-directory-bucket-provider.ts',
   'src/deployment/recreate-targets/probe.ts',
   'src/cli/commands/state.ts',
+  'src/state/state-bucket-lifecycle.ts',
 ];
 
 /**

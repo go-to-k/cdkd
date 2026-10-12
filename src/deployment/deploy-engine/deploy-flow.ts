@@ -1058,7 +1058,7 @@ export async function doDeployWithPrefetch(
         } else if (merge?.kind === 'merged' && merge.carriedKeys.length > 0) {
           this.logger.debug(
             `Kept the previously persisted value of ${merge.carriedKeys.length} output key(s), ` +
-              'carried export aliases included, that could not be resolved (no-change path, #2771)'
+              'carried export aliases included, that could not be resolved (no-change path)'
           );
         }
 
@@ -1178,7 +1178,7 @@ export async function doDeployWithPrefetch(
                 this.logger.info('Persisted Outputs-only change (no resource diff).');
               } else {
                 this.logger.debug(
-                  'Persisted export-set change (no outputs-value diff, no-change path, #2193)'
+                  'Persisted export-set change (no outputs-value diff, no-change path)'
                 );
               }
               // Update the persistent exports index so the newly-added export
@@ -1215,11 +1215,11 @@ export async function doDeployWithPrefetch(
               this.logger.debug('Persisted refreshed observedProperties (no-change path)');
             } else if (healedAttributesPending) {
               this.logger.debug(
-                'Persisted attributes re-read from AWS for a stale record (no-change path, #1852)'
+                'Persisted attributes re-read from AWS for a stale record (no-change path)'
               );
             } else {
               this.logger.debug(
-                'Persisted skipped-outputs record (no outputs-value diff, no-change path, #2740)'
+                'Persisted skipped-outputs record (no outputs-value diff, no-change path)'
               );
             }
           } catch (saveError) {

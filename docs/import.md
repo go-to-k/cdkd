@@ -1,9 +1,9 @@
 ---
-title: Importing Existing Resources
+title: Import Existing Resources
 description: "Adopt already-deployed AWS resources into cdkd state with cdkd import: migrate a CloudFormation-managed stack, adopt hand-made resources, and go back."
 ---
 
-# Importing Existing Resources
+# Import Existing Resources
 
 `cdkd import` makes cdkd the manager of AWS resources that already exist. It
 reads your CDK app, finds the real resource behind each one the app declares,
@@ -341,7 +341,7 @@ What orphaning leaves you with depends on how you imported:
   the resources managed by nobody. To return them to CloudFormation, run
   [`cdkd export`](cli-export.md), which imports the resources into a
   CloudFormation stack and deletes cdkd state.
-  [Exporting to CloudFormation](export.md) covers the types CloudFormation
+  [Hand a Stack to CloudFormation](export.md) covers the types CloudFormation
   cannot import and Custom Resources.
 
 ## After the import
@@ -480,9 +480,9 @@ The plan reports these types as `unsupported` and skips them.
 
 ## Related
 
-- [`cdkd export`](cli-export.md) and [Exporting to CloudFormation](export.md):
+- [`cdkd export`](cli-export.md) and [Hand a Stack to CloudFormation](export.md):
   the opposite direction
-- [State Management](state-management.md): state records, physical id
+- [State Store](state-management.md): state records, physical id
   formats, the bucket policy
 - [Supported Resources](supported-resources.md): which types cdkd deploys
 - [`cdkd bootstrap`](cli-bootstrap.md): cdkd-owned asset storage

@@ -35,6 +35,7 @@ import {
 } from '../../deployment/retry.js';
 import { startInterruptWatch, type InterruptWatch } from '../interrupt-watch.js';
 import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
+import { ensureCustomResourceResponseExpirationOnce } from '../../state/state-bucket-lifecycle.js';
 import {
   purgeNoncurrentKeyVersions,
   CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION,
@@ -3319,6 +3320,16 @@ export class CustomResourceProvider implements ResourceProvider {
     // `docs/provider-development.md`: a new `withRetry` that omits them leaves
     // Ctrl-C dead for the whole 47.75s schedule.
     const bucket = this.responseBucket;
+    // Issue #2353: give an already-bootstrapped state bucket the expiration
+    // rule for responses. Memoized per process, so only the FIRST response this
+    // process writes starts it (one GET, plus a listing and one PUT the first
+    // time), and it is NOT awaited: no custom resource waits on it, and Ctrl-C
+    // is not held by it. The promise never rejects; a missing lifecycle
+    // permission is a warning. Skipped for a non-default `responsePrefix`,
+    // which the rule does not name.
+    if (this.responsePrefix === CUSTOM_RESOURCE_RESPONSE_PREFIX) {
+      void ensureCustomResourceResponseExpirationOnce(this.s3Client, bucket, this.logger);
+    }
     try {
       await withRetry(
         () =>

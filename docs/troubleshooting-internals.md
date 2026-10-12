@@ -292,6 +292,6 @@ so the entry falls into the exact-match branch and can never match.
 ## Related
 
 - [Troubleshooting](troubleshooting.md)
-- [State Management](state-management.md)
-- [Rollback](rollback.md)
+- [State Store](state-management.md)
+- [Roll Back a Failed Deploy](rollback.md)
 - [Provisioning Layers](provisioning-layers.md)

@@ -39,6 +39,17 @@ export interface InferCrossStackStackDepsOptions {
    * deploy.
    */
   kinds?: readonly CrossStackRefKind[];
+  /**
+   * Called with every `Fn::GetStackOutput` argument that carries a `RoleArn`
+   * and that a deploy ALWAYS resolves, as the walk meets it (whatever `kinds`
+   * says), so `deploy` can check the cross-account references before anything
+   * is provisioned without a second walk of every template. Always resolved
+   * means inside a resource's `Properties`, the resource has no `Condition`,
+   * and no `Fn::If` encloses it: a reference elsewhere (an output, `Conditions`,
+   * a conditional branch) may never be resolved, so it is left to the
+   * resolver. A reference without a `RoleArn` never calls it.
+   */
+  onRoleArnReference?: (consumerStackName: string, args: Record<string, unknown>) => void;
 }
 
 /**
@@ -116,7 +127,7 @@ export function inferCrossStackStackDeps(
     const producers = new Set<string>();
 
     // Collect raw cross-stack references by walking the whole template.
-    collectCrossStackRefs(stack.template, (kind, value) => {
+    collectTemplateCrossStackRefs(stack.template, (kind, value, unconditional) => {
       let producer: string | undefined;
       if (kind === 'ImportValue') {
         if (!wantImportValue) return;
@@ -126,6 +137,16 @@ export function inferCrossStackStackDeps(
           producer = exportOwner.get(value);
         }
       } else {
+        if (
+          opts?.onRoleArnReference &&
+          unconditional &&
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          Object.hasOwn(value, 'RoleArn')
+        ) {
+          opts.onRoleArnReference(stack.stackName, value as Record<string, unknown>);
+        }
         if (!wantGetStackOutput) return;
         // Fn::GetStackOutput arg is an object whose StackName names the
         // producer stack directly.
@@ -148,6 +169,41 @@ export function inferCrossStackStackDeps(
   return result;
 }
 
+type OnCrossStackRef = (
+  kind: 'ImportValue' | 'GetStackOutput',
+  value: unknown,
+  unconditional: boolean
+) => void;
+
+/**
+ * Walk a whole template, marking a reference `unconditional` when a deploy
+ * always resolves it: in a `Condition`-free resource's `Properties`, outside
+ * any `Fn::If`. Every node is still visited exactly once.
+ */
+function collectTemplateCrossStackRefs(template: unknown, onRef: OnCrossStackRef): void {
+  if (!template || typeof template !== 'object' || Array.isArray(template)) {
+    collectCrossStackRefs(template, onRef, false);
+    return;
+  }
+  for (const [section, body] of Object.entries(template as Record<string, unknown>)) {
+    if (section !== 'Resources' || !body || typeof body !== 'object' || Array.isArray(body)) {
+      collectCrossStackRefs(body, onRef, false);
+      continue;
+    }
+    for (const resource of Object.values(body as Record<string, unknown>)) {
+      if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
+        collectCrossStackRefs(resource, onRef, false);
+        continue;
+      }
+      const record = resource as Record<string, unknown>;
+      const always = !Object.hasOwn(record, 'Condition');
+      for (const [key, value] of Object.entries(record)) {
+        collectCrossStackRefs(value, onRef, always && key === 'Properties');
+      }
+    }
+  }
+}
+
 /**
  * Recursively walk a template node, invoking `onRef` for every
  * `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic encountered. The
@@ -155,13 +211,14 @@ export function inferCrossStackStackDeps(
  */
 function collectCrossStackRefs(
   node: unknown,
-  onRef: (kind: 'ImportValue' | 'GetStackOutput', value: unknown) => void
+  onRef: OnCrossStackRef,
+  unconditional: boolean
 ): void {
   if (!node || typeof node !== 'object') return;
 
   if (Array.isArray(node)) {
     for (const item of node) {
-      collectCrossStackRefs(item, onRef);
+      collectCrossStackRefs(item, onRef, unconditional);
     }
     return;
   }
@@ -169,14 +226,16 @@ function collectCrossStackRefs(
   const obj = node as Record<string, unknown>;
 
   if ('Fn::ImportValue' in obj) {
-    onRef('ImportValue', obj['Fn::ImportValue']);
+    onRef('ImportValue', obj['Fn::ImportValue'], unconditional);
     // The arg itself may be a nested intrinsic; keep walking it too.
   }
   if ('Fn::GetStackOutput' in obj) {
-    onRef('GetStackOutput', obj['Fn::GetStackOutput']);
+    onRef('GetStackOutput', obj['Fn::GetStackOutput'], unconditional);
   }
 
+  // Everything under an `Fn::If` is a branch a deploy may never resolve.
+  const below = unconditional && !('Fn::If' in obj);
   for (const value of Object.values(obj)) {
-    collectCrossStackRefs(value, onRef);
+    collectCrossStackRefs(value, onRef, below);
   }
 }
