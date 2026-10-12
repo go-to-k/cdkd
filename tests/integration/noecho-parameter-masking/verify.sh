@@ -489,12 +489,11 @@ if [[ "${DEPLOY_OUT_P1}" == *"${STRING_TOKEN}"* ]]; then
   exit 1
 fi
 # PREMISE for the negative above: NoEchoStringConsumer's substitution logged
-# a masked line, either `str-***` (its value is log-only masked, so the inert
-# frame may stay) or a second whole `***` beside NoEchoConsumer's. Neither
-# means its line went missing and the negative passed for free.
-P1_SUB_MASKED=$(grep -cE 'Resolved Fn::Sub: \*\*\*$' <<< "${DEPLOY_OUT_P1}" || true)
-if ! grep -qE 'Resolved Fn::Sub: str-\*\*\*$' <<< "${DEPLOY_OUT_P1}" && [ "${P1_SUB_MASKED:-0}" -lt 2 ]; then
-  echo "FAIL: premise: the Phase 1 --verbose log carries ${P1_SUB_MASKED:-0} masked 'Resolved Fn::Sub:' line(s), not one per NoEcho consumer (2) -- NoEchoStringConsumer's substitution was not logged, or not masked" >&2
+# its masked line. Its value is a log-only needle, so the inert frame stays
+# (`str-***`, measured; `str-<value>` before the fix), unlike NoEchoConsumer's
+# whole `***`. Absent, its line went missing and the negative passed for free.
+if ! grep -qE 'Resolved Fn::Sub: str-\*\*\*$' <<< "${DEPLOY_OUT_P1}"; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Sub: str-***' line -- NoEchoStringConsumer's substitution was not logged, or not masked as measured (go-to-k/cdkd#4824)" >&2
   diag_output "${DEPLOY_OUT_P1}"
   exit 1
 fi
@@ -833,6 +832,10 @@ P1B_BEFORE=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}
   --query 'Parameter.LastModifiedDate' --output text)
 P1B_SPLIT_BEFORE=$(aws ssm get-parameter --name "${SPLIT_NAME}" --region "${REGION}" \
   --query 'Parameter.LastModifiedDate' --output text)
+# go-to-k/cdkd#4824: the string-declared reader too, the regression class
+# this phase can see while `cdkd diff`'s own reader is not yet switched.
+P1B_STRING_BEFORE=$(aws ssm get-parameter --name "${STRING_CONSUMER_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)
 if ! DEPLOY_OUT_P1B=$(env -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -850,6 +853,16 @@ P1B_AFTER=$(aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}"
   --query 'Parameter.LastModifiedDate' --output text)
 P1B_SPLIT_AFTER=$(aws ssm get-parameter --name "${SPLIT_NAME}" --region "${REGION}" \
   --query 'Parameter.LastModifiedDate' --output text)
+P1B_STRING_AFTER=$(aws ssm get-parameter --name "${STRING_CONSUMER_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)
+if [ -z "${P1B_STRING_BEFORE}" ] || [ "${P1B_STRING_BEFORE}" = "None" ]; then
+  echo "FAIL: premise: no LastModifiedDate for ${STRING_CONSUMER_NAME} before the Phase 1b redeploy" >&2
+  exit 1
+fi
+if [ "${P1B_STRING_BEFORE}" != "${P1B_STRING_AFTER}" ]; then
+  echo "FAIL: an unchanged redeploy UPDATED NoEchoStringConsumer, the reader of a parameter declared NoEcho \"true\" (the string form) (go-to-k/cdkd#4824)" >&2
+  exit 1
+fi
 if [ "${P1B_BEFORE}" != "${P1B_AFTER}" ] || [ "${P1B_SPLIT_BEFORE}" != "${P1B_SPLIT_AFTER}" ]; then
   echo "FAIL: an unchanged redeploy UPDATED a NoEcho reader -- the readback did not confirm the value AWS holds (issue #4043)" >&2
   exit 1

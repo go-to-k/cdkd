@@ -186,8 +186,12 @@ describe('each NoEcho reader honours the string form (go-to-k/cdkd#4824)', () =>
       const { parameterInput } = parameterInputsFor({ template: template(v), values: { P: VALUE } });
       expect(parameterInput('P'), String(v)).toEqual({ kind: 'secret' });
     }
-    const { parameterInput } = parameterInputsFor({ template: template(false), values: { P: VALUE } });
-    expect(parameterInput('P')).toEqual({ kind: 'value', value: VALUE });
+    // Negative controls, a case variant included: this arm compares, so it
+    // must not widen past the persist arm's spellings.
+    for (const v of [false, 'True', 'TRUE']) {
+      const { parameterInput } = parameterInputsFor({ template: template(v), values: { P: VALUE } });
+      expect(parameterInput('P'), String(v)).toEqual({ kind: 'value', value: VALUE });
+    }
 
     const classOf = (noEcho: unknown) => {
       const parent = {

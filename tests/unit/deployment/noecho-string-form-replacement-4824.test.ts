@@ -203,7 +203,10 @@ describe('DeployEngine - honouring NoEcho "true" replaces nothing on an unchange
     expect(topicCalls(provider.delete)).toBe(0);
   });
 
-  it('a create-only literal EQUAL to an exact-string NoEcho value is not replaced: the value arm stays boolean-only (#4831)', async () => {
+  it.each([
+    ['marked (another leaf already in noEchoLeaves)', true],
+    ['unmarked (no noEchoLeaves at all)', false],
+  ])('a create-only literal EQUAL to an exact-string NoEcho value is not replaced, %s: the value arm stays boolean-only (#4831)', async (_l, marked) => {
     const template = {
       Parameters: {
         Token: { Type: 'String', NoEcho: 'true', Default: TOPIC },
@@ -219,11 +222,13 @@ describe('DeployEngine - honouring NoEcho "true" replaces nothing on an unchange
       Promise.resolve({ TopicName: TOPIC, DisplayName: TOPIC })
     );
     // Before the change only the positional arm marked DisplayName; the
-    // literal TopicName was stored in plaintext.
-    stateBackend.getState.mockResolvedValue({
-      state: markedState(TOPIC, '***', [['DisplayName']]),
-      etag: 'etag-old',
-    });
+    // literal TopicName was stored in plaintext. Unmarked: a record no v11
+    // binary wrote, every leaf in plaintext and no `noEchoLeaves`.
+    const state = marked
+      ? markedState(TOPIC, '***', [['DisplayName']])
+      : markedState(TOPIC, TOPIC, []);
+    if (!marked) delete (state.resources['Topic'] as { noEchoLeaves?: unknown }).noEchoLeaves;
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
     await makeEngine().deploy(STACK, template);
     expect(topicCalls(provider.create)).toBe(0);
     expect(topicCalls(provider.delete)).toBe(0);
