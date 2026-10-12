@@ -228,21 +228,33 @@ export async function reresolveCrossStackValue(
       });
     }
   }
-  // go-to-k/cdkd#4819: the producer stored these leaves in plaintext (no
-  // reference, no mask), so a consumer's copy of one (an imported queue URL)
-  // is kept as it is, as a same-stack `Ref` copy is (go-to-k/cdkd#4810): the
-  // text is already in the producer's record. Not for a read across an
-  // ACCOUNT boundary, whose producer's bucket is not this account's, nor for
-  // this stack's own stored attributes (`reresolveRecordedReferences`, which
-  // names no producer).
+  // go-to-k/cdkd#4819: a leaf equal to one of the PRODUCER's physical ids (an
+  // exported queue URL, `Ref` of a queue) is a copy of that id, which the
+  // producer's record stores in plaintext, so the consumer's copy is kept as
+  // it is, as a same-stack `Ref` copy is (go-to-k/cdkd#4810). ONLY a physical
+  // id: an output that merely holds plaintext (a legacy record a scrub has
+  // not reached yet) is redactable and stays the redaction's. Not for a read
+  // across an ACCOUNT boundary, whose producer's bucket is not this account's,
+  // and not where no producer stack is named (a nested `Outputs.X` read, this
+  // stack's own stored attributes).
   if (
     context.recordedSecretValues !== undefined &&
-    (producerOutput !== undefined || producerRegion !== undefined) &&
-    producerOutput?.crossAccount !== true
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    context.stateBackend !== undefined
   ) {
-    for (const leaf of wholeStringLeavesOf(value)) {
-      if (!leaf.includes('{{resolve:') && !carriesSecretMask(leaf)) {
-        recordPhysicalNameCopy(context.recordedSecretValues, leaf);
+    const plain = [...wholeStringLeavesOf(value)].filter(
+      (leaf) => !leaf.includes('{{resolve:') && !carriesSecretMask(leaf)
+    );
+    if (plain.length > 0) {
+      const ids = await producerPhysicalIds(
+        context.recordedSecretValues,
+        context.stateBackend,
+        producerOutput.stackName,
+        producerOutput.region
+      );
+      for (const leaf of plain) {
+        if (ids.has(leaf)) recordPhysicalNameCopy(context.recordedSecretValues, leaf);
       }
     }
   }
@@ -778,4 +790,44 @@ export function recordImport(
     sourceStack: producerStack,
     sourceRegion: producerRegion,
   });
+}
+
+/** Per resolution pass (keyed by its bag), so one pass reads a producer's state once. */
+const producerPhysicalIdReads = new WeakMap<object, Map<string, Promise<ReadonlySet<string>>>>();
+
+/**
+ * The physical ids of a producer stack's records (go-to-k/cdkd#4819), read
+ * from its state once per resolution pass; an empty set when the read fails,
+ * so nothing is kept then.
+ */
+function producerPhysicalIds(
+  pass: object,
+  stateBackend: NonNullable<ResolverContext['stateBackend']>,
+  stackName: string,
+  region: string
+): Promise<ReadonlySet<string>> {
+  let reads = producerPhysicalIdReads.get(pass);
+  if (reads === undefined) {
+    reads = new Map();
+    producerPhysicalIdReads.set(pass, reads);
+  }
+  const key = JSON.stringify([stackName, region]);
+  let read = reads.get(key);
+  if (read === undefined) {
+    read = (async () => {
+      const ids = new Set<string>();
+      try {
+        const data = await stateBackend.getState(stackName, region);
+        for (const record of Object.values(data?.state.resources ?? {})) {
+          const id = (record as { physicalId?: unknown } | null)?.physicalId;
+          if (typeof id === 'string' && id !== '') ids.add(id);
+        }
+      } catch {
+        // Fail closed: no id, so no copy is kept.
+      }
+      return ids;
+    })();
+    reads.set(key, read);
+  }
+  return read;
 }

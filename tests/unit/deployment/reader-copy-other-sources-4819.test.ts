@@ -55,6 +55,15 @@ beforeEach(() => {
   clearRecordedSecretExpressions();
 });
 
+/** A state backend whose `Producer` stack records the queue (URL) as a physical id. */
+function producerBackend(ids: string[] = [URL]) {
+  const resources = Object.fromEntries(ids.map((id, i) => [`R${i}`, { physicalId: id }]));
+  return {
+    listStacks: vi.fn(async () => []),
+    getState: vi.fn(async () => ({ state: { resources }, etag: 'e' })),
+  };
+}
+
 describe('a reader copy of a physical id from other sources (#4819)', () => {
   it('the NoEcho containment arm keeps a copy, and still flattens the value elsewhere', () => {
     const bag: RecordedSecretValues = new Map();
@@ -93,7 +102,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
       parameters: {},
       conditions: {},
       stackName: 'Consumer',
-      stateBackend: { listStacks: vi.fn(async () => []), getState: vi.fn(async () => null) },
+      stateBackend: producerBackend(),
       exportIndex,
       recordedImports: [],
       recordedSecretValues: bag,
@@ -108,20 +117,29 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
   });
 
   it.each([
-    ['a same-account producer output', 'us-east-1', { crossAccount: false }, [URL]],
+    ['a same-account producer output holding one of its physical ids', [URL], 'us-east-1', { crossAccount: false }, [URL]],
     [
-      'a read across an ACCOUNT boundary (its bucket is not this account\'s)',
+      'a producer output that is NOT a physical id (a plaintext a scrub has not reached)',
+      ['https://sqs.us-east-1.amazonaws.com/123456789012/other'],
+      'us-east-1',
+      { crossAccount: false },
+      [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
+    ],
+    [
+      "a read across an ACCOUNT boundary (its bucket is not this account's)",
+      [URL],
       'us-east-1',
       { crossAccount: true },
       [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
     ],
     [
-      'this stack\'s own stored value (no producer named)',
-      undefined,
+      'a read naming no producer stack (a nested Outputs read, this stack\'s own value)',
+      [URL],
+      'us-east-1',
       undefined,
       [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
     ],
-  ])('a cross-stack plaintext is a copy for %s only where named', async (_l, region, output, want) => {
+  ])('a cross-stack plaintext is a copy only for %s', async (_l, ids, region, output, want) => {
     const bag: RecordedSecretValues = new Map([[NAME, REF]]);
     const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
       reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
@@ -133,11 +151,39 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     await resolver.reresolveCrossStackValue(
       URL,
       region,
-      { template: { Resources: {} }, resources: {}, recordedSecretValues: bag },
+      {
+        template: { Resources: {} },
+        resources: {},
+        recordedSecretValues: bag,
+        stateBackend: producerBackend(ids),
+      },
       'origin',
       undefined,
       producerOutput
     );
     expect(redactSecretsForState({ Queues: [URL] }, bag)).toEqual({ Queues: want });
+  });
+
+  it('a producer whose state cannot be read keeps nothing (fail closed)', async () => {
+    const bag: RecordedSecretValues = new Map([[NAME, REF]]);
+    const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
+      reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
+    };
+    await resolver.reresolveCrossStackValue(
+      URL,
+      'us-east-1',
+      {
+        template: { Resources: {} },
+        resources: {},
+        recordedSecretValues: bag,
+        stateBackend: { getState: vi.fn(async () => Promise.reject(new Error('AccessDenied'))) },
+      },
+      'origin',
+      undefined,
+      { stackName: 'Producer', region: 'us-east-1', outputKey: 'QueueUrl' }
+    );
+    expect(redactSecretsForState({ Queues: [URL] }, bag)).toEqual({
+      Queues: [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
+    });
   });
 });
