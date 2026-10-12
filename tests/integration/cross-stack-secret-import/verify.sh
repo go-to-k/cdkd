@@ -62,6 +62,12 @@
 #                     resolved, so nothing could leak); post-fix it is a real
 #                     guard, because the fix introduces a resolved plaintext
 #                     into the consumer's pass for the first time.
+#   2b. COPY (go-to-k/cdkd#4819) — the consumer's ImportedQueuePolicy keeps
+#                     its imported `Queues` URL (the producer's secret-named
+#                     queue, named from the secret's `queue` value) in
+#                     plaintext, although its own literal reference puts the
+#                     queue name into its secrets bag. Pre-fix the save
+#                     rewrote it into the reference and the destroy failed.
 #   4. CONVERGENCE  — a second consumer deploy is a no-op and `cdkd diff`
 #                     exits 0. This is the perpetual-UPDATE class (state holds
 #                     an expression, the template resolves to plaintext), so
@@ -268,6 +274,8 @@ INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 RUN_ID="${CDKD_INTEG_RUN_ID:-$(date -u +%Y%m%d%H%M%S)}"
 export CDKD_INTEG_RUN_ID="${RUN_ID}"
 EXPECTED_PLAINTEXT="integ-1934-${RUN_ID}"
+# The secret's `queue` value, which NAMES the producer's queue (go-to-k/cdkd#4819).
+QUEUE_NAME="integ-1934q-${RUN_ID}"
 
 # Resolve the built CLI without a `cd` into dist/ that fails cryptically when
 # dist/ is unbuilt -- the friendly guard below reports it instead.
@@ -346,6 +354,11 @@ sweep() {
     # window and would block the next run's create.
     aws ssm delete-parameter --name "${PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
     aws ssm delete-parameter --name "${CHAIN_PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
+    LEFT_QUEUE_URL="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME:-}" --region "${REGION}" \
+      --query QueueUrl --output text 2>/dev/null)"
+    if [ -n "${LEFT_QUEUE_URL}" ] && [ "${LEFT_QUEUE_URL}" != "None" ]; then
+      aws sqs delete-queue --queue-url "${LEFT_QUEUE_URL}" --region "${REGION}" >/dev/null 2>&1
+    fi
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
     if [ -n "${STATE_BUCKET:-}" ]; then
@@ -633,6 +646,25 @@ if [ "${LIVE_VALUE}" != "${EXPECTED_PLAINTEXT}" ]; then
   fail "the live SSM parameter does not carry the imported secret's value (expected the run's plaintext, got a value of length ${#LIVE_VALUE})"
 fi
 pass "the live SSM parameter carries the RESOLVED secret and no {{resolve: token"
+
+# go-to-k/cdkd#4819: ImportedQueuePolicy's `Queues` IMPORTS the producer's
+# secret-named queue URL, while its document spells the secret reference
+# literally, so the policy's own secrets bag holds the queue name. The save
+# rewrote the plaintext imported URL into `https://sqs.../{{resolve:...}}`,
+# and this stack's destroy (step 6) then failed with InvalidAddress. The URL is
+# the producer's physical id, stored in plaintext there.
+QUEUE_URL_LIVE="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
+  --query QueueUrl --output text)"
+case "${QUEUE_URL_LIVE}" in
+  https://*"/${QUEUE_NAME}") ;;
+  *) fail "premise: the producer's secret-named queue does not exist under the secret's queue value" ;;
+esac
+RECORDED_QUEUES_0="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - \
+  | jq -r '.resources.ImportedQueuePolicy.properties.Queues[0] // empty')"
+if [ "${RECORDED_QUEUES_0}" != "${QUEUE_URL_LIVE}" ]; then
+  fail "ImportedQueuePolicy's recorded Queues is not the imported queue URL in plaintext (go-to-k/cdkd#4819: the persist scan rewrote the imported copy)"
+fi
+pass "ImportedQueuePolicy keeps the imported secret-named queue URL as it is (go-to-k/cdkd#4819)"
 
 # The issue #2150 and #2163 reads, live. Both conditional exports reach AWS
 # through this parameter's DESCRIPTION rather than extra resources, so neither

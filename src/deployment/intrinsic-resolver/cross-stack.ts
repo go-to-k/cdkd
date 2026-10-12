@@ -21,7 +21,9 @@ import {
   isSingleDynamicReferenceToken,
   recordCrossStackExpression,
   recordFreshNoEchoValuesIn,
+  recordPhysicalNameCopy,
   recoverMaskedOutput,
+  wholeStringLeavesOf,
 } from '../secret-redaction.js';
 
 declare module '../intrinsic-function-resolver.js' {
@@ -224,6 +226,24 @@ export async function reresolveCrossStackValue(
         kind: 'cross-stack',
         display: loggedOrigin,
       });
+    }
+  }
+  // go-to-k/cdkd#4819: the producer stored these leaves in plaintext (no
+  // reference, no mask), so a consumer's copy of one (an imported queue URL)
+  // is kept as it is, as a same-stack `Ref` copy is (go-to-k/cdkd#4810): the
+  // text is already in the producer's record. Not for a read across an
+  // ACCOUNT boundary, whose producer's bucket is not this account's, nor for
+  // this stack's own stored attributes (`reresolveRecordedReferences`, which
+  // names no producer).
+  if (
+    context.recordedSecretValues !== undefined &&
+    (producerOutput !== undefined || producerRegion !== undefined) &&
+    producerOutput?.crossAccount !== true
+  ) {
+    for (const leaf of wholeStringLeavesOf(value)) {
+      if (!leaf.includes('{{resolve:') && !carriesSecretMask(leaf)) {
+        recordPhysicalNameCopy(context.recordedSecretValues, leaf);
+      }
     }
   }
   if (!carriesDynamicReference(value)) return value;
