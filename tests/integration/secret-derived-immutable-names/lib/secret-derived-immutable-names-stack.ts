@@ -11,7 +11,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * `QueueReaderChild`: stores the parent-passed queue ARN. Its description
- * changes on UPDATE, so the parent's row is updated too.
+ * changes on UPDATE, so the parent's row is updated too. `ChildQueuePolicy`
+ * reads the parent-passed URL (go-to-k/cdkd#4819).
  */
 class QueueReaderChild extends cdk.NestedStack {
   constructor(scope: Construct, id: string, props: cdk.NestedStackProps & { update: boolean }) {
@@ -20,13 +21,33 @@ class QueueReaderChild extends cdk.NestedStack {
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('QueueReaderChild');
     const queueArn = new cdk.CfnParameter(this, 'QueueArn', { type: 'String' });
     queueArn.overrideLogicalId('QueueArn');
-    // Bound and never read: its value is SecretQueue's URL, the queue's
-    // PHYSICAL id, which state records in plaintext (the recorded ARN
-    // attribute is redacted to its `{{resolve:` spelling). `cdkd diff
-    // --recursive` binds it, and its `Parameter QueueUrl:` line is the one
-    // that names the queue unless masked (go-to-k/cdkd#3869).
+    // SecretQueue's URL, the queue's PHYSICAL id, which state records in
+    // plaintext (the recorded ARN attribute is redacted to its `{{resolve:`
+    // spelling). `cdkd diff --recursive` binds it, and its `Parameter
+    // QueueUrl:` line is the one that names the queue unless masked
+    // (go-to-k/cdkd#3869).
     const queueUrl = new cdk.CfnParameter(this, 'QueueUrl', { type: 'String' });
     queueUrl.overrideLogicalId('QueueUrl');
+    // Reads the URL and the ARN, whose carried pair puts the queue name into
+    // this policy's secrets bag: the save rewrote the plaintext `Queues` URL
+    // into `https://sqs.../{{resolve:...}}`, and the destroy then failed
+    // (go-to-k/cdkd#4819).
+    const childPolicy = new sqs.CfnQueuePolicy(this, 'ChildQueuePolicy', {
+      queues: [queueUrl.valueAsString],
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'SdinChildReader',
+            Effect: 'Allow',
+            Principal: { AWS: cdk.Stack.of(this).account },
+            Action: 'sqs:GetQueueAttributes',
+            Resource: queueArn.valueAsString,
+          },
+        ],
+      },
+    });
+    childPolicy.overrideLogicalId('ChildQueuePolicy');
     new ssm.CfnParameter(this, 'ChildQueueArn', {
       // Named per run by `verify.sh`, so its cleanup can delete it by name.
       name: process.env.SDIN_CHILD_PARAM_NAME ?? '/cdkd-integ/sdin-unset/child-queue-arn',
@@ -104,7 +125,8 @@ class QueueReaderChild extends cdk.NestedStack {
  *
  *   - `QueueReaderChild` (a nested stack, go-to-k/cdkd#3869) receives
  *     SecretQueue's ARN as its `QueueArn` parameter and stores it in an SSM
- *     String parameter, and its URL as `QueueUrl`, which it only binds. The parent's read is no recorded secret of the row, and
+ *     String parameter, and its URL as `QueueUrl`, which `ChildQueuePolicy` reads
+ *     (go-to-k/cdkd#4819: step 5f). The parent's read is no recorded secret of the row, and
  *     never may be (it would seed the child's export-name verdict), so the
  *     child's `Resolved Ref to parameter: QueueArn` and provider lines printed
  *     the queue name until the row's reads joined the printing bag bound around

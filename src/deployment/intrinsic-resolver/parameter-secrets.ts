@@ -12,6 +12,9 @@ import {
   recordNoEchoParameterFreshValue,
   isNoEchoParameterPlaintext,
   MIN_NEEDLE_LENGTH,
+  physicalNameCopiesOf,
+  recordPhysicalNameCopy,
+  wholeStringLeavesOf,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import {
@@ -145,6 +148,9 @@ export function recordInheritedParameterSecrets(
   // BEFORE the size test below, which reads a bag holding only log-only
   // needles as empty.
   if (inherited && recorded) carryLogOnlyValuesCarriedBy(inherited, recorded, value);
+  // go-to-k/cdkd#4819: a physical id the parent read and passed down stays
+  // plaintext in this child resource's record, as it does in the parent's.
+  if (recorded) carryPhysicalNameCopiesCarriedBy(context, recorded, value);
   if (inherited && recorded)
     recordInheritedNoEchoListElements(this, inherited, recorded, value, context);
   if (!inherited || inherited.size === 0 || !recorded) return;
@@ -188,6 +194,34 @@ export function recordInheritedParameterSecrets(
     // stays fresh in the child resource's bag, or its no-change skip reads
     // the new value's `***` as equal to the recorded `***`.
     carryFreshNoEchoMark(inherited, recorded, plaintext);
+  }
+}
+
+/**
+ * Record in `recorded` each physical id the PARENT row read
+ * (`physicalNameCopiesOf`, go-to-k/cdkd#4810) that a string leaf of the
+ * parameter's `value` contains (go-to-k/cdkd#4819). A child reader's
+ * `{Ref: <Param>}` carrying a parent-passed queue URL otherwise met the
+ * queue name (carried from the parent, or spelled by the child itself) with
+ * no copy beside it, and the persist-time value scan rewrote the URL into its
+ * `{{resolve:` spelling. Only physical ids, which the save writes in
+ * plaintext anyway, are carried.
+ *
+ * From `inheritedPhysicalNameCopies` (a child engine's, set ungated), else the
+ * parent bag's own side set (a caller handing the bag alone).
+ */
+function carryPhysicalNameCopiesCarriedBy(
+  context: ResolverContext,
+  recorded: RecordedSecretValues,
+  value: unknown
+): void {
+  const names =
+    context.inheritedPhysicalNameCopies ??
+    (context.inheritedSecrets && physicalNameCopiesOf.get(context.inheritedSecrets));
+  if (names === undefined || names.size === 0) return;
+  const leaves = [...wholeStringLeavesOf(value)];
+  for (const name of names) {
+    if (leaves.some((leaf) => leaf.includes(name))) recordPhysicalNameCopy(recorded, name);
   }
 }
 

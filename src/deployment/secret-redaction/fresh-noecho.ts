@@ -9,6 +9,7 @@ import {
 import { MIN_NEEDLE_LENGTH, isDynamicReferenceString } from './rules.js';
 import { resolvableReferenceSpans } from './anchors.js';
 import { isOrdinaryDate } from './redact-path.js';
+import { physicalNameCopiesOf, physicalNameSpans } from './physical-name-copies.js';
 
 /**
  * Does `text` EMBED a fresh `NoEcho` value of this pass? Asked by
@@ -169,6 +170,9 @@ function freshNoEchoLeafTest(
         );
   if (fresh.size === 0) return undefined;
   const needles = containmentNeedlesOf(secrets).filter((needle) => fresh.has(needle));
+  // The equality half still answers "fresh" for a leaf EQUAL to a recorded
+  // physical-name copy, which the persist walk keeps in plaintext
+  // (go-to-k/cdkd#4810); that only costs a redundant update or readback.
   return (leaf) =>
     (fresh.has(leaf) && isMaskOnlyPlaintext(secrets, leaf)) ||
     (leaf !== SECRET_MASK && embedsNeedleOutsideReferences(leaf, needles, secrets));
@@ -247,12 +251,19 @@ function embedsNeedleOutsideReferences(
   secrets: RecordedSecretValues
 ): boolean {
   let spans: Array<{ start: number; end: number }> | undefined;
+  let names: Array<{ start: number; end: number }> | undefined;
   for (const needle of needles) {
     for (let at = leaf.indexOf(needle); at >= 0; at = leaf.indexOf(needle, at + 1)) {
       spans ??= isDynamicReferenceString(leaf)
         ? resolvableReferenceSpans(leaf, new Set(secrets.values()))
         : [];
-      if (!isStrictlyInsideASpan(spans, at, at + needle.length)) return true;
+      if (isStrictlyInsideASpan(spans, at, at + needle.length)) continue;
+      // Inside (or equal to) a read physical id: kept as the id is
+      // (go-to-k/cdkd#4819, the value-scan rule of go-to-k/cdkd#4810).
+      names ??= physicalNameSpans(physicalNameCopiesOf.get(secrets), leaf);
+      const end = at + needle.length;
+      if (names.some((n) => n.start <= at && end <= n.end)) continue;
+      return true;
     }
   }
   return false;

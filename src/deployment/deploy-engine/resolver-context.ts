@@ -152,6 +152,10 @@ export function buildResolverContext(
       hasMaskableValues(this.options.inheritedSecrets) && {
         inheritedSecrets: this.options.inheritedSecrets,
       }),
+    // go-to-k/cdkd#4819: the parent row's physical-id copies, ungated.
+    ...(this.options.inheritedPhysicalNameCopies && {
+      inheritedPhysicalNameCopies: this.options.inheritedPhysicalNameCopies,
+    }),
     // FRESH per-context map: the resolver records each resolved secret
     // (plaintext -> `{{resolve:...}}` expression) here (GHSA fix). The caller
     // captures it and stores it per-logicalId in `perResourceSecrets` (or in
