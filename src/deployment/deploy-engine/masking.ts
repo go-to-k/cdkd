@@ -42,6 +42,7 @@ import {
   secretNamesReadBy,
   storedSecretNameNeedles,
 } from '../secret-name-needles.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
@@ -121,12 +122,12 @@ export function diffLogMasker(
   // (go-to-k/cdkd#4049), for a property that stopped reading one.
   const noEchoNames = new Set(
     Object.entries(template.Parameters ?? {})
-      .filter(([, definition]) => definition?.NoEcho === true)
+      .filter(([, definition]) => declaresNoEcho(definition))
       .map(([name]) => name)
   );
   const splitDelimiters = literalSplitDelimitersOf(template, noEchoNames);
   for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
-    if (definition?.NoEcho === true && Object.hasOwn(parameterValues, name)) {
+    if (declaresNoEcho(definition) && Object.hasOwn(parameterValues, name)) {
       recordLogOnlyParameterValue(noEchoValues, parameterValues[name], splitDelimiters);
     }
   }

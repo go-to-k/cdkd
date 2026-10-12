@@ -13,6 +13,7 @@ import {
 } from './support.js';
 import { recordSecretNamedRead } from './getatt.js';
 import { recordPhysicalNameCopy } from '../secret-redaction.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -253,7 +254,7 @@ export async function resolveRef(
       `Resolved Ref to parameter: ${this.logRender(logicalId, context)} resolved to ${this.logRender(
         stringifyParameterForLog(paramDef, this.maskValueLeaves(value, context)),
         context,
-        { structured: isStructured(value), redacted: paramDef?.NoEcho === true }
+        { structured: isStructured(value), redacted: declaresNoEcho(paramDef) }
       )}`
     );
     onParameter?.();

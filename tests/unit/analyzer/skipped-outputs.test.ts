@@ -185,7 +185,7 @@ describe('skippedOutputDigest', () => {
     expect(handedIn).toEqual(pristine);
   });
 
-  it('masks on its BOUNDARIES only: strict boolean, a Default present, and the container guards each observable', () => {
+  it('masks on its BOUNDARIES only: a declared NoEcho, a Default present, and the container guards each observable', () => {
     const withParam = (decl: unknown): CloudFormationTemplate => {
       const t = base();
       t.Parameters = { ...t.Parameters, P: decl as never };
@@ -196,9 +196,13 @@ describe('skippedOutputDigest', () => {
       (t as unknown as Record<string, unknown>)['Parameters'] = section;
       return t;
     };
-    // STRICT boolean: a truthy string is not the flag, so its default IS hashed.
-    expect(skippedOutputDigest(withParam({ Type: 'String', NoEcho: 'true', Default: 'a' }), 'Leak')).not.toBe(
+    // The string `"true"` IS the flag (go-to-k/cdkd#4824), so its default is
+    // masked; any other string is not, so its default IS hashed.
+    expect(skippedOutputDigest(withParam({ Type: 'String', NoEcho: 'true', Default: 'a' }), 'Leak')).toBe(
       skippedOutputDigest(withParam({ Type: 'String', NoEcho: 'true', Default: 'b' }), 'Leak')
+    );
+    expect(skippedOutputDigest(withParam({ Type: 'String', NoEcho: 'yes', Default: 'a' }), 'Leak')).not.toBe(
+      skippedOutputDigest(withParam({ Type: 'String', NoEcho: 'yes', Default: 'b' }), 'Leak')
     );
     // No `Default` at all: nothing to mask, and adding one is observable.
     expect(skippedOutputDigest(withParam({ Type: 'String', NoEcho: true }), 'Leak')).not.toBe(

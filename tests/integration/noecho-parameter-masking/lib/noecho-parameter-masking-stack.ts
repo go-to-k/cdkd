@@ -20,6 +20,9 @@ import { Construct } from 'constructs';
  * - `NoEchoConsumer`: an SSM String parameter whose value embeds the token
  *   through `Fn::Sub`, so the resolver's `--verbose` `Resolved Fn::Sub:` line
  *   carries it; AWS holds it, and state.json holds `***` there (v11).
+ * - `NoEchoStringConsumer` (go-to-k/cdkd#4824): the same, from a parameter
+ *   declared `NoEcho: "true"` (the string form), so every NoEcho reader must
+ *   accept that spelling too.
  * - `NoEchoReject` (only under `CDKD_TEST_NOECHO_REJECT=true`): an SSM
  *   parameter whose `Tier` IS the token. `PutParameter` rejects it with a
  *   service-side `ValidationException` that quotes the value back
@@ -100,6 +103,26 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
       type: 'String',
       noEcho: true,
       default: process.env['CDKD_TEST_NOECHO_TOKEN'] ?? 'cdkd-noecho-unset-token',
+    });
+
+    // go-to-k/cdkd#4824: `NoEcho` spelled as the STRING `"true"`, as a
+    // hand-written or included template spells it. CDK emits only the boolean,
+    // so the synthesized declaration is rewritten in place.
+    const stringToken = new cdk.CfnParameter(this, 'NoEchoStringToken', {
+      type: 'String',
+      default: process.env['CDKD_TEST_NOECHO_STRING_TOKEN'] ?? 'cdkd-noecho-string-unset',
+    });
+    const declaration = stringToken as unknown as { _toCloudFormation(): unknown };
+    const synthesize = declaration._toCloudFormation.bind(stringToken);
+    declaration._toCloudFormation = () => {
+      const out = synthesize() as { Parameters: Record<string, Record<string, unknown>> };
+      for (const body of Object.values(out.Parameters)) body['NoEcho'] = 'true';
+      return out;
+    };
+    new ssm.CfnParameter(this, 'NoEchoStringConsumer', {
+      name: `cdkd-test-noecho-string-${account}`,
+      type: 'String',
+      value: cdk.Fn.sub('str-${NoEchoStringToken}'),
     });
 
     const consumer = new ssm.CfnParameter(this, 'NoEchoConsumer', {

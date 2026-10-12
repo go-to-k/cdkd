@@ -169,6 +169,7 @@
 
 import { createHash } from 'node:crypto';
 import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.js';
+import { declaresNoEcho } from '../deployment/noecho-declared.js';
 
 /**
  * JSON with object keys sorted at every level. Arrays keep their order (an
@@ -202,7 +203,8 @@ const NO_ECHO_DEFAULT_MASK = '<cdkd:noecho-default>';
  * constant, for hashing only.
  *
  * The pre-resolution snapshot already keeps RESOLVED secret values out of the
- * digest. An authored `Default` under `NoEcho: true` is not one of those — it
+ * digest. An authored `Default` under a declared `NoEcho` (`true`, or the
+ * string `"true"`, go-to-k/cdkd#4824) is not one of those — it
  * is template text, and it went into the hash. With the rest of the
  * non-`Resources` sections known, a reader of `state.json` holds a confirm
  * ORACLE for a low-entropy default: guess it, recompute, compare.
@@ -244,7 +246,7 @@ function withNoEchoDefaultsMasked(parameters: unknown): unknown {
   for (const [name, decl] of Object.entries(parameters as Record<string, unknown>)) {
     const body = decl as Record<string, unknown> | null;
     masked[name] =
-      typeof body === 'object' && body !== null && body['NoEcho'] === true && 'Default' in body
+      typeof body === 'object' && body !== null && declaresNoEcho(body) && 'Default' in body
         ? { ...body, Default: NO_ECHO_DEFAULT_MASK }
         : decl;
   }

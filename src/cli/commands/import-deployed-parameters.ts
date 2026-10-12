@@ -234,6 +234,8 @@ export function divergentParameterNames(
     // whatever was deployed, so a `Default` that is literally `****` would
     // otherwise compare equal. The mask is the unverifiable-input signal itself.
     const noEcho = record?.['NoEcho'];
+    // Case-folded on purpose (wider than `isNoEchoDeclared`): this only
+    // WITHHOLDS a proof, so a wider match never persists anything.
     if (noEcho === true || (typeof noEcho === 'string' && noEcho.toLowerCase() === 'true')) {
       divergent.add(name);
       continue;

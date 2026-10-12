@@ -9,6 +9,7 @@ import {
   type NoEchoPositionSources,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 
 /**
  * Mirrors `secret-redaction`'s own `MIN_NEEDLE_LENGTH`. Duplicated rather than
@@ -637,7 +638,7 @@ export function noEchoParameterValueSeed(
   if (values === undefined) return seed;
   for (const [name, value] of Object.entries(values)) {
     if (isWholeDynamicReferenceValue(value)) continue;
-    if (parameters?.[name]?.NoEcho === true) {
+    if (parameters !== undefined && declaresNoEcho(parameters[name])) {
       const type = parameters[name]?.Type;
       const ssmTyped = typeof type === 'string' && type.startsWith('AWS::SSM::Parameter::Value<');
       const spelled = Object.prototype.hasOwnProperty.call(userParameters ?? {}, name)
