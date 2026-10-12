@@ -601,6 +601,14 @@ export class DeployEngine {
   /** @internal */
   perResourceResolvedType = new Map<string, string>();
   /**
+   * go-to-k/cdkd#4831: per logical id, the coordinates where the migration
+   * witness CONFIRMED a MARKED record's stored plaintext equal to today's
+   * `NoEcho` value. `noEchoLeavesFor` adds them to the record's own field on
+   * its save, so the leaf persisted as `***` is also named there.
+   */
+  /** @internal */
+  witnessConfirmedLeaves = new Map<string, (string | number)[][]>();
+  /**
    * The stack's `NoEcho` parameter values, set once parameters resolve
    * (go-to-k/cdkd#4451): a masked property whose template text holds one is
    * refused a fingerprint at the save. Reset per `deploy()`.
@@ -990,6 +998,7 @@ export class DeployEngine {
     // map's whole job is to answer "do those needles describe THIS record",
     // and a reused engine carrying last deploy's answer is the #2516 class.
     this.perResourceResolvedType = new Map();
+    this.witnessConfirmedLeaves = new Map();
     this.fingerprintNoEchoValues = undefined;
     this.preDeploySecretNamedRecords = undefined;
     this.fingerprintParameters = undefined;

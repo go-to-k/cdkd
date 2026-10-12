@@ -111,6 +111,35 @@ function isWhollyMask(value: unknown): boolean {
   return false;
 }
 
+/**
+ * Does `stored` hold a value other than the mask where `persisted` (what this
+ * deploy writes) holds `***` (go-to-k/cdkd#4831)? The only shape in which the
+ * migration witness can say anything: a stored mask, or a leaf the record
+ * lacks, is no witness. A container standing where a scalar mask is written,
+ * or the reverse, counts, since the witness compares such a shape whole.
+ */
+function holdsPlaintextWhereMasked(stored: unknown, persisted: unknown): boolean {
+  if (stored === undefined) return false;
+  if (persisted === SECRET_MASK) return !carriesSecretMask(stored);
+  if (Array.isArray(persisted)) {
+    if (!Array.isArray(stored))
+      return persisted.some(carriesSecretMask) && !carriesSecretMask(stored);
+    return persisted.some((item, i) => holdsPlaintextWhereMasked(stored[i], item));
+  }
+  if (persisted !== null && typeof persisted === 'object') {
+    const entries = Object.entries(persisted as Record<string, unknown>);
+    if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) {
+      return entries.some(([, child]) => carriesSecretMask(child)) && !carriesSecretMask(stored);
+    }
+    return entries.some(
+      ([key, child]) =>
+        Object.hasOwn(stored, key) &&
+        holdsPlaintextWhereMasked((stored as Record<string, unknown>)[key], child)
+    );
+  }
+  return false;
+}
+
 /** A copy of `bag` with the leaf at `coordinate` set to `value` (containers copied on the path). */
 function setAtCoordinate(
   bag: Record<string, unknown>,
@@ -609,19 +638,35 @@ export async function provisionUpdate(
   // form), an equal leaf is an unchanged value with no readback, and a
   // different one a change the comparison below sees as moved.
   const unmarkedRecord = noEchoLeavesOf(currentResource) === undefined;
-  const todayAsWritten = unmarkedRecord
-    ? redactSecretsForState(
-        markSameGenerationBag({ ...resolvedProps }),
-        withoutNoEchoParameterEntries(updateSecrets),
-        desiredProps
-      )
-    : undefined;
+  // For a MARKED record too (go-to-k/cdkd#4831): it can still hold a
+  // plaintext where today's template masks, a leaf a `NoEcho` declaration
+  // reaches only since that write. A leaf it holds as `***` is no witness
+  // (`witnessNormalize` leaves it), so a fully-v11 record reads as before.
+  const todayAsWritten =
+    unmarkedRecord || holdsPlaintextWhereMasked(recordedAsWritten, desiredForSkipCheckAsWritten)
+      ? redactSecretsForState(
+          markSameGenerationBag({ ...resolvedProps }),
+          withoutNoEchoParameterEntries(updateSecrets),
+          desiredProps
+        )
+      : undefined;
   const witness =
     todayAsWritten === undefined
       ? undefined
       : witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten);
   const currentPropsAsWritten =
     witness === undefined ? recordedAsWritten : (witness.current as Record<string, unknown>);
+  // A MARKED record keeps its own `noEchoLeaves` on a save it was not written
+  // by (`noEchoLeavesFor`), so a leaf the witness CONFIRMED here is named for
+  // that save: its stored plaintext equals today's value, so the mask and the
+  // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
+  // differing one keeps the old plaintext the record holds until it is sent.
+  if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
+    this.witnessConfirmedLeaves.set(
+      logicalId,
+      witness.confirmed.map((coordinate) => [...coordinate])
+    );
+  }
   // go-to-k/cdkd#4741: a witness that DIFFERS keeps the record's stored
   // plaintext, the PREVIOUS value of a `NoEcho` position, on the side handed
   // to the provider as the previous properties (and to a replacement's
