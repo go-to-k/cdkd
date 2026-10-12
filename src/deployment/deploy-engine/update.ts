@@ -111,35 +111,6 @@ function isWhollyMask(value: unknown): boolean {
   return false;
 }
 
-/**
- * Does `stored` hold a value other than the mask where `persisted` (what this
- * deploy writes) holds `***` (go-to-k/cdkd#4831)? The only shape in which the
- * migration witness can say anything: a stored mask, or a leaf the record
- * lacks, is no witness. A container standing where a scalar mask is written,
- * or the reverse, counts, since the witness compares such a shape whole.
- */
-function holdsPlaintextWhereMasked(stored: unknown, persisted: unknown): boolean {
-  if (stored === undefined) return false;
-  if (persisted === SECRET_MASK) return !carriesSecretMask(stored);
-  if (Array.isArray(persisted)) {
-    if (!Array.isArray(stored))
-      return persisted.some(carriesSecretMask) && !carriesSecretMask(stored);
-    return persisted.some((item, i) => holdsPlaintextWhereMasked(stored[i], item));
-  }
-  if (persisted !== null && typeof persisted === 'object') {
-    const entries = Object.entries(persisted as Record<string, unknown>);
-    if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) {
-      return entries.some(([, child]) => carriesSecretMask(child)) && !carriesSecretMask(stored);
-    }
-    return entries.some(
-      ([key, child]) =>
-        Object.hasOwn(stored, key) &&
-        holdsPlaintextWhereMasked((stored as Record<string, unknown>)[key], child)
-    );
-  }
-  return false;
-}
-
 /** A copy of `bag` with the leaf at `coordinate` set to `value` (containers copied on the path). */
 function setAtCoordinate(
   bag: Record<string, unknown>,
@@ -642,14 +613,20 @@ export async function provisionUpdate(
   // plaintext where today's template masks, a leaf a `NoEcho` declaration
   // reaches only since that write. A leaf it holds as `***` is no witness
   // (`witnessNormalize` leaves it), so a fully-v11 record reads as before.
-  const todayAsWritten =
-    unmarkedRecord || holdsPlaintextWhereMasked(recordedAsWritten, desiredForSkipCheckAsWritten)
-      ? redactSecretsForState(
-          markSameGenerationBag({ ...resolvedProps }),
-          withoutNoEchoParameterEntries(updateSecrets),
-          desiredProps
-        )
-      : undefined;
+  // Where the witness compares depends only on the stored and persisted
+  // shapes, so a probe with no reference answers whether it can say anything
+  // (every such leaf reads as differing), by the witness's own shape rules.
+  const witnessCanSpeak =
+    unmarkedRecord ||
+    witnessNormalize(recordedAsWritten, undefined, desiredForSkipCheckAsWritten).differing.length >
+      0;
+  const todayAsWritten = witnessCanSpeak
+    ? redactSecretsForState(
+        markSameGenerationBag({ ...resolvedProps }),
+        withoutNoEchoParameterEntries(updateSecrets),
+        desiredProps
+      )
+    : undefined;
   const witness =
     todayAsWritten === undefined
       ? undefined
@@ -661,6 +638,12 @@ export async function provisionUpdate(
   // that save: its stored plaintext equals today's value, so the mask and the
   // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
   // differing one keeps the old plaintext the record holds until it is sent.
+  // A deploy that MIGRATES a leaf to the mask on the witness's word: a
+  // pre-v11 record, or a marked one whose plaintext the witness confirmed
+  // (go-to-k/cdkd#4831). Its readback is handed the mask at every parameter
+  // coordinate and taken even when nothing else reads (the echo fidelity a
+  // later change of that value needs, #4656).
+  const witnessMigrates = unmarkedRecord || (witness?.confirmed.length ?? 0) > 0;
   if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
     this.witnessConfirmedLeaves.set(
       logicalId,
@@ -850,7 +833,7 @@ export async function provisionUpdate(
   // copy with `***` at every `NoEcho` parameter coordinate (#4656, rule 1):
   // a provider that echoes its argument then reports the mask.
   const readbackRecord =
-    unmarkedRecord && parameterCoordinates.length > 0
+    witnessMigrates && parameterCoordinates.length > 0
       ? {
           ...currentResource,
           properties: maskAtCoordinates(currentResource.properties, parameterCoordinates),
@@ -962,7 +945,7 @@ export async function provisionUpdate(
   // echo-fidelity readback even when its witness settles every value (so no
   // block below would read), before the skip just below can return.
   if (
-    unmarkedRecord &&
+    witnessMigrates &&
     !typeChanged &&
     echoCandidates.length > 0 &&
     hasAddressablePhysicalId(currentResource)

@@ -644,7 +644,6 @@ export function noEchoComparison(options: {
   templateProperties: Record<string, unknown>;
   desired: Record<string, unknown>;
   current: Record<string, unknown>;
-  record: { noEchoLeaves?: unknown };
 }) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined {
   const { sources, values, minNeedleLength, publicTokens } = options;
   return ({ templateProperties, desired, current }) => {

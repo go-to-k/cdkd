@@ -119,7 +119,6 @@ describe('DiffCalculator - NoEcho comparison (schema v11)', () => {
       templateProperties: { V: { Ref: 'L' } },
       desired: { V: ['newv'] },
       current: { V: ['oldsecret1', 'oldsecret2'] },
-      record: {},
     });
     expect(JSON.stringify(out)).not.toContain('oldsecret');
     expect(out?.current).toEqual({ V: PREVIOUS_NOECHO_VALUE });
@@ -137,13 +136,12 @@ describe('DiffCalculator - NoEcho comparison (schema v11)', () => {
     // The diff resolves with secret references left as written.
     const desired = { V: `${TOKEN}-${SM}` };
     expect(
-      compare({ templateProperties, desired, current: { V: `${TOKEN}-${SM}` }, record: {} })
+      compare({ templateProperties, desired, current: { V: `${TOKEN}-${SM}` } })
     ).toEqual({ desired: { V: '***' }, current: { V: '***' } });
     const changed = compare({
       templateProperties,
       desired,
       current: { V: `old-token-value-x-${SM}` },
-      record: {},
     });
     expect(changed?.current).toEqual({ V: PREVIOUS_NOECHO_VALUE });
   });

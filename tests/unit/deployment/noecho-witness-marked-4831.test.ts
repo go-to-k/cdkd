@@ -212,4 +212,66 @@ describe('DeployEngine - the migration witness on a MARKED record (go-to-k/cdkd#
     expect(topicCalls(provider.create)).toBe(1);
     expect(topicCalls(provider.delete)).toBe(1);
   });
+  it('records the echo fidelity of a migrated create-only leaf, so a later change of its value is not kept back', async () => {
+    stateBackend.getState.mockResolvedValue({ state: before(), etag: 'etag-old' });
+    await makeEngine().deploy(STACK, template(TOPIC));
+    const saved = stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState | undefined;
+    // The readback was handed the mask there (#4656 rule 1), and the provider
+    // reported the deployed name exactly.
+    const handedTopicNames = provider.readCurrentState.mock.calls.flatMap((call) =>
+      call
+        .filter((arg): arg is Record<string, unknown> => arg !== null && typeof arg === 'object')
+        .filter((arg) => Object.hasOwn(arg, 'TopicName'))
+        .map((arg) => arg['TopicName'])
+    );
+    expect(handedTopicNames.length).toBeGreaterThan(0);
+    expect(handedTopicNames.every((name) => name === '***')).toBe(true);
+    expect(saved?.resources['Topic']?.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+  });
+
+  it.each([
+    ['an array element (Tags[0].Value)', { Tags: [{ Key: 'k', Value: { Ref: 'TopicName' } }] }, { Tags: [{ Key: 'k', Value: TOPIC }] }, ['Tags', 0, 'Value']],
+    ['a nested object leaf (ArchivePolicy.Name)', { ArchivePolicy: { Name: { Ref: 'TopicName' } } }, { ArchivePolicy: { Name: TOPIC } }, ['ArchivePolicy', 'Name']],
+  ])('a nested leaf newly declared NoEcho, value unchanged: %s', async (_l, templateProps, stored, coordinate) => {
+    const t = template(TOPIC);
+    const topicProps = (t.Resources['Topic']!.Properties ?? {}) as Record<string, unknown>;
+    t.Resources['Topic']!.Properties = { DisplayName: topicProps['DisplayName'], TopicName: 'literal-topic-4831', ...templateProps };
+    const state = markedState('literal-topic-4831', '***', [['DisplayName']]);
+    Object.assign(state.resources['Topic']!.properties, stored);
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    await makeEngine().deploy(STACK, t);
+    expect(topicCalls(provider.create)).toBe(0);
+    expect(topicCalls(provider.update)).toBe(0);
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState).resources['Topic'];
+    expect(JSON.stringify(saved?.properties)).not.toContain(TOPIC);
+    expect(saved?.noEchoLeaves).toEqual(expect.arrayContaining([['DisplayName'], coordinate]));
+  });
+
+  it('negative control: a marked record already masked everywhere today masks reads as before', async () => {
+    stateBackend.getState.mockResolvedValue({
+      state: markedState('***', '***', [['DisplayName'], ['TopicName']]),
+      etag: 'etag-old',
+    });
+    await makeEngine().deploy(STACK, template(TOPIC));
+    expect(topicCalls(provider.create)).toBe(0);
+    expect(topicCalls(provider.update)).toBe(0);
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState | undefined)?.resources['Topic'];
+    expect(saved?.noEchoLeaves ?? [['DisplayName'], ['TopicName']]).toEqual([['DisplayName'], ['TopicName']]);
+  });
+
+  it("an engine reused for a second deploy carries no confirmed leaf over (reset per deploy)", async () => {
+    const engine = makeEngine();
+    stateBackend.getState.mockResolvedValue({ state: before(), etag: 'etag-old' });
+    await engine.deploy(STACK, template(TOPIC));
+    // Second deploy: the parameter is ordinary again, the record as before
+    // the first; nothing confirmed THIS deploy may mark TopicName.
+    stateBackend.saveState.mockClear();
+    const plainTemplate = template(TOPIC);
+    (plainTemplate.Parameters!['TopicName'] as { NoEcho?: unknown }).NoEcho = false;
+    stateBackend.getState.mockResolvedValue({ state: before(), etag: 'etag-2' });
+    await engine.deploy(STACK, plainTemplate);
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState | undefined)?.resources['Topic'];
+    expect(saved?.noEchoLeaves).toEqual([['DisplayName']]);
+    expect(saved?.properties['TopicName']).toBe(TOPIC);
+  });
 });

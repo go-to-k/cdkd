@@ -43,6 +43,7 @@ import {
   type DiffTreeNode,
 } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { PREVIOUS_NOECHO_VALUE } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -143,6 +144,7 @@ describe('cdkd diff reads a MARKED record through the migration witness (go-to-k
     const result = await diff('topic-4831-diff-renamed');
     const change = result.changes.get('A')?.propertyChanges?.find((pc) => pc.path === 'TopicName');
     expect(change?.requiresReplacement).toBe(true);
+    expect(change?.oldValue).toBe(PREVIOUS_NOECHO_VALUE);
     expect(printed(nodeOf(result))).not.toContain(TOPIC);
     expect(printed(nodeOf(result))).not.toContain('topic-4831-diff-renamed');
   });

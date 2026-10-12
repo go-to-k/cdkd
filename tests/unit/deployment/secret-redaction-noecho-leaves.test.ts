@@ -225,7 +225,6 @@ describe('noEchoComparison', () => {
       templateProperties: { Value: { Ref: 'Token' }, Desc: 'has tok-1234 inside', Other: 'x' },
       desired: { Value: 'tok-1234', Desc: 'has tok-1234 inside', Other: 'x' },
       current: { Value: 'tok-1234', Desc: 'has tok-1234 inside', Other: 'x' },
-      record: {},
     });
     expect(out).toEqual({
       desired: { Value: SECRET_MASK, Desc: SECRET_MASK, Other: 'x' },
@@ -238,7 +237,6 @@ describe('noEchoComparison', () => {
       templateProperties: { Value: { Ref: 'Token' } },
       desired: { Value: 'tok-1234' },
       current: { Value: 'old-value' },
-      record: {},
     });
     expect(out?.current).toEqual({ Value: PREVIOUS_NOECHO_VALUE });
     expect(out?.desired).toEqual({ Value: SECRET_MASK });
@@ -249,9 +247,30 @@ describe('noEchoComparison', () => {
       templateProperties: { Value: { Ref: 'Token' } },
       desired: { Value: 'tok-1234' },
       current: { Value: SECRET_MASK },
-      record: { noEchoLeaves: [['Value']] },
     });
     expect(out).toEqual({ desired: { Value: SECRET_MASK }, current: { Value: SECRET_MASK } });
+  });
+
+  it('reads a plaintext a MARKED record still holds where today masks through the witness (#4831)', () => {
+    // The record's own markers are not consulted: a stored mask is no witness,
+    // a stored plaintext is compared exactly.
+    expect(
+      compare({
+        templateProperties: { Value: { Ref: 'Token' }, Other: { Ref: 'Token' } },
+        desired: { Value: 'tok-1234', Other: 'tok-1234' },
+        current: { Value: 'tok-1234', Other: SECRET_MASK },
+      })
+    ).toEqual({
+      desired: { Value: SECRET_MASK, Other: SECRET_MASK },
+      current: { Value: SECRET_MASK, Other: SECRET_MASK },
+    });
+    expect(
+      compare({
+        templateProperties: { Value: { Ref: 'Token' }, Other: { Ref: 'Token' } },
+        desired: { Value: 'tok-1234', Other: 'tok-1234' },
+        current: { Value: 'old-value', Other: SECRET_MASK },
+      })?.current
+    ).toEqual({ Value: PREVIOUS_NOECHO_VALUE, Other: SECRET_MASK });
   });
 
   it('returns nothing for a resource reading no NoEcho source', () => {
@@ -260,7 +279,6 @@ describe('noEchoComparison', () => {
         templateProperties: { Value: 'lit' },
         desired: { Value: 'lit' },
         current: { Value: 'lit' },
-        record: {},
       })
     ).toBeUndefined();
   });
