@@ -231,6 +231,8 @@ describe('TemplateNoEchoReresolver.printingNoEchoValues (go-to-k/cdkd#3869)', ()
     ['inheritedSecrets', 'inheritedSecrets'],
     ['a print-only seed', 'printingSeed'],
   ])('a stack declaring no NoEcho parameter still answers what it was handed: %s', async (_l, key) => {
+    // Nothing of its own to bind: no parameter lookup runs.
+    const bind = vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolveParameters');
     const handed = new Map<string, string>();
     recordLogOnlyValue(handed, VALUE);
     const bag = await new TemplateNoEchoReresolver({
@@ -241,6 +243,7 @@ describe('TemplateNoEchoReresolver.printingNoEchoValues (go-to-k/cdkd#3869)', ()
     } as unknown as ConstructorParameters<typeof TemplateNoEchoReresolver>[0]).printingNoEchoValues();
     expect(bag).toBeDefined();
     expect(maskSecretsInText(`id ${VALUE}`, bag!)).toBe('id ***');
+    expect(bind).not.toHaveBeenCalled();
   });
 });
 
@@ -395,6 +398,69 @@ describe('TemplateNoEchoReresolver.forNestedChild (a nested child inheriting a N
         noEchoLeaves: [['DBInstanceIdentifier']],
       })
     ).toBeUndefined();
+  });
+
+  it("a rejected printing-values call leaves the child's delete re-resolution intact", async () => {
+    const childPath = path.join(dir, 'child.template.json');
+    fs.writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { ChildSecret: { Type: 'String' } },
+        Resources: {
+          ChildCr: {
+            Type: 'Custom::Seed',
+            Properties: { ServiceToken: TOKEN, Token: { Ref: 'ChildSecret' } },
+          },
+        },
+      })
+    );
+    const parent = new TemplateNoEchoReresolver({
+      template: {
+        Parameters: { Secret: { Type: 'String', NoEcho: true, Default: VALUE } },
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'u', Parameters: { ChildSecret: { Ref: 'Secret' } } },
+          },
+        },
+      } as CloudFormationTemplate,
+      stackName: 'Parent',
+      region: 'us-east-1',
+      nestedTemplates: { Child: childPath },
+    });
+    vi.spyOn(parent, 'printingNoEchoValues').mockRejectedValue(new Error('boom'));
+    const row = {
+      properties: { TemplateURL: 'u', Parameters: { ChildSecret: SECRET_MASK } },
+      noEchoLeaves: [['Parameters', 'ChildSecret']] as (string | number)[][],
+    };
+    const rowValues = await parent.valuesFor('Child', {
+      physicalId: 'arn:child',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: row.properties,
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: row.noEchoLeaves,
+    });
+    const child = await parent.forNestedChild(
+      'Child',
+      { ...row, values: rowValues },
+      'Parent-Child',
+      (p: string) => ({
+        template: JSON.parse(fs.readFileSync(p, 'utf-8')) as CloudFormationTemplate,
+        nestedTemplates: {},
+      }),
+      (props: Record<string, unknown>) => props['Parameters'] as Record<string, string>
+    );
+    expect(child).toBeDefined();
+    const values = await child!.valuesFor('ChildCr', {
+      physicalId: 'p',
+      resourceType: 'Custom::Seed',
+      properties: { ServiceToken: TOKEN, Token: SECRET_MASK },
+      attributes: {},
+      dependencies: [],
+      noEchoLeaves: [['Token']],
+    });
+    expect(values?.leaves).toEqual([{ coordinate: ['Token'], value: VALUE }]);
   });
 
   it('answers nothing for a row with no child template on disk', async () => {

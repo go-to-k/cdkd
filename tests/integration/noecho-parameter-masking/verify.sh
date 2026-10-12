@@ -1699,8 +1699,9 @@ fi
 # go-to-k/cdkd#3869: before v11 a NoEcho value was persisted in PLAINTEXT, and
 # nothing migrates a record when it is read, so such a record carries no `***`
 # or `{{resolve:` marker. No current binary writes one: it is written by hand,
-# into NoEchoRenamed's record only. The bucket is versioned, and the final
-# sweep purges this version too.
+# into NoEchoRenamed's record only. The document's `version` stays 11 on
+# purpose: the judge never reads it, only the record's markers. The bucket is
+# versioned, and the final sweep purges this version too.
 echo "==> Phase 4d: rewrite NoEchoRenamed's record as a pre-v11 binary stored it"
 P4D_STATE=$(mktemp)
 SCRATCH_FILES+=("${P4D_STATE}")

@@ -468,6 +468,8 @@ export class TemplateNoEchoReresolver {
   private async printingNeedles(): Promise<RecordedSecretValues> {
     const bag = this.newBag();
     if (this.options.printingSeed !== undefined) carryLogOnlyValues(this.options.printingSeed, bag);
+    // Nothing of its own to bind: no lookup, and no binding-failure line.
+    if (this.noEchoParameters.size === 0) return bag;
     const parameters = await this.boundParameters();
     const section = (this.options.template.Parameters ?? {}) as Record<string, unknown>;
     const supplied = this.options.parameters;

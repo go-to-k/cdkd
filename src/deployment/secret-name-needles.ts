@@ -541,18 +541,28 @@ export function completedReplayEntries(
  * The log-only bag over a stack's orphan records (`state.orphans`, what an
  * earlier rollback kept in AWS; go-to-k/cdkd#3869): each record's own name
  * spellings, judged from the record, which still spells a secret-derived name
- * as its `{{resolve:` reference. One bag for every record: a line names one
- * record, and a sibling's needle only over-masks. Malformed entries are
+ * as its `{{resolve:` reference, or, given `noEchoValues` (`cdkd destroy`'s
+ * listing), a pre-v11 plaintext judged against them as
+ * {@link secretNamePrintingBags} judges it. One bag for every record: a line
+ * names one record, and a sibling's needle only over-masks. Malformed entries are
  * skipped (their own refusal reports them). For the adoption pre-pass's lines
  * and refusal, on `cdkd deploy` and `cdkd diff` alike.
  */
-export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedSecretValues {
+export function orphanRecordsPrintingBag(
+  records: readonly unknown[],
+  noEchoValues?: RecordedSecretValues
+): RecordedSecretValues {
   const bag: RecordedSecretValues = new Map();
+  const secrets =
+    noEchoValues !== undefined && hasMaskableValues(noEchoValues) ? noEchoValues : undefined;
+  if (secrets !== undefined) carryLogOnlyValues(secrets, bag);
   for (const entry of records) {
     if (entry === null || typeof entry !== 'object') continue;
     const { logicalId, state } = entry as { logicalId?: unknown; state?: unknown };
     if (typeof logicalId !== 'string' || state === null || typeof state !== 'object') continue;
-    for (const needle of secretNameNeedlesOf(logicalId, state, undefined) ?? []) {
+    for (const needle of secretNameNeedlesOf(logicalId, state, secrets, {
+      embedded: undefined,
+    }) ?? []) {
       recordLogOnlyValue(bag, needle);
     }
   }

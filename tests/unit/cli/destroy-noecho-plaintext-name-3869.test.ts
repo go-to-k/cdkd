@@ -43,6 +43,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     sts: { send: vi.fn(() => Promise.resolve({ Account: '123456789012' })) },
   }),
 }));
+const readlineQuestion = vi.hoisted(() => vi.fn());
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({ question: readlineQuestion, close: vi.fn() }),
+}));
 vi.mock('../../../src/utils/live-renderer.js', () => ({
   getLiveRenderer: () => ({
     start: vi.fn(),
@@ -54,7 +58,10 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
-import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import {
+  NOECHO_PRINTING_BIND_CAP_MS,
+  runDestroyForStack,
+} from '../../../src/cli/commands/destroy-runner.js';
 import { TemplateNoEchoReresolver } from '../../../src/deployment/noecho-delete-reresolution.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 
@@ -317,5 +324,109 @@ describe('cdkd destroy judges a journaled orphan with the NoEcho values too (go-
     expect(await orphanLine(false)).toBe(`Deleting OrphanDb ${DB_SECRET.toLowerCase()}`);
     expect(listed).toHaveLength(1);
     expect(listed[0]).toContain(DB_SECRET.toLowerCase());
+  });
+});
+
+describe("cdkd destroy masks the prompt's list of kept orphans (go-to-k/cdkd#3869)", () => {
+  const REF = '{{resolve:secretsmanager:team:SecretString:queue::}}';
+  const orphan = (logicalId: string, physicalId: string, queueName: string) => ({
+    logicalId,
+    orphanedAt: 1,
+    state: record(physicalId, 'AWS::SQS::Queue', { QueueName: queueName }),
+  });
+
+  /** The listing's row per orphan, as the sink masks it. */
+  async function listed(withTemplate: boolean): Promise<Record<string, string>> {
+    const rows: Record<string, string> = {};
+    infoSink.write = (raw) => {
+      const id = /^ {2}- (\S+) /.exec(raw)?.[1];
+      if (id !== undefined) rows[id] = currentLogLineMasker()?.(raw) ?? raw;
+    };
+    const state = {
+      ...preV11State(),
+      resources: {},
+      orphans: [
+        orphan('RefNamed', 'team-secret-queue-url', REF),
+        orphan('PlainTextNamed', SECRET, SECRET),
+        orphan('Ordinary', 'ordinary-queue-url', 'ordinary-queue'),
+        // No name key: the id embeds the value, which only the carried value masks.
+        { logicalId: 'Embeds', orphanedAt: 1, state: record(`queue-${SECRET}`, 'AWS::SQS::Queue', {}) },
+      ],
+    } as unknown as StackState;
+    await runDestroyForStack('NoEchoStack', state, makeCtx(vi.fn(), withTemplate));
+    infoSink.write = () => undefined;
+    return rows;
+  }
+
+  it('masks an id named from a secret reference or a NoEcho value; an ordinary id prints', async () => {
+    const rows = await listed(true);
+    expect(rows['RefNamed']).toBeDefined();
+    expect(rows['RefNamed']).not.toContain('team-secret-queue-url');
+    expect(rows['PlainTextNamed']).not.toContain(SECRET);
+    expect(rows['Ordinary']).toContain('ordinary-queue-url');
+    expect(rows['Embeds']).toContain('queue-');
+    expect(rows['Embeds']).not.toContain(SECRET);
+  });
+
+  it('premise: without the template a plaintext name has no evidence; a reference still does', async () => {
+    const rows = await listed(false);
+    expect(rows['PlainTextNamed']).toContain(SECRET);
+    expect(rows['RefNamed']).not.toContain('team-secret-queue-url');
+  });
+});
+
+describe('the NoEcho binding at destroy (go-to-k/cdkd#3869)', () => {
+  it('a declined destroy never asks for the values', async () => {
+    const printingNoEchoValues = vi.fn().mockResolvedValue(undefined);
+    readlineQuestion.mockReset().mockResolvedValue('n');
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    let result;
+    try {
+      result = await runDestroyForStack('NoEchoStack', preV11State(), {
+        ...makeCtx(vi.fn(), false),
+        skipConfirmation: false,
+        noEchoReresolver: {
+          printingNoEchoValues,
+          valuesFor: () => Promise.resolve(undefined),
+        } as unknown as TemplateNoEchoReresolver,
+      });
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    }
+    expect(readlineQuestion).toHaveBeenCalledTimes(1);
+    expect(result.cancelled).toBe(true);
+    expect(printingNoEchoValues).not.toHaveBeenCalled();
+  });
+
+  it('a binding that never settles is capped: the destroy goes on record-only', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const lines: Record<string, string | undefined> = {};
+      const providerDelete = vi.fn((logicalId: string, physicalId: string) => {
+        const line = `Deleting ${logicalId} ${physicalId}`;
+        lines[logicalId] = currentLogLineMasker()?.(line) ?? line;
+        return Promise.resolve(undefined);
+      });
+      const run = runDestroyForStack('NoEchoStack', v11State(), {
+        ...makeCtx(providerDelete, false),
+        noEchoReresolver: {
+          printingNoEchoValues: () => new Promise(() => undefined),
+          valuesFor: () => Promise.resolve(undefined),
+        } as unknown as TemplateNoEchoReresolver,
+      });
+      let settled = false;
+      void run.then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(NOECHO_PRINTING_BIND_CAP_MS - 1);
+      // Premise: the destroy is waiting on the binding, not done.
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await run;
+      expect(result.errorCount).toBe(0);
+      expect(providerDelete).toHaveBeenCalledTimes(5);
+      expect(lines['Bucket']).toBe('Deleting Bucket ***');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

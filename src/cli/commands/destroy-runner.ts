@@ -117,6 +117,7 @@ import { orphanDeleteNeedsIdentity } from '../../deployment/rollback-executor/or
 import {
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
+  orphanRecordsPrintingBag,
   secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
@@ -132,6 +133,12 @@ import type { RecordedSecretValues } from '../../deployment/secret-redaction.js'
  * state pinpoints a different region from the caller's, and for tearing
  * those down on its way out.
  */
+/**
+ * How long `cdkd destroy` waits for the stack's `NoEcho` values before it
+ * judges the printing bags from the records alone (go-to-k/cdkd#3869).
+ */
+export const NOECHO_PRINTING_BIND_CAP_MS = 10_000;
+
 export interface DestroyRunnerContext {
   stateBackend: S3StateBackend;
   lockManager: LockManager;
@@ -1048,14 +1055,33 @@ export async function runDestroyForStack(
   // synthesized template (none under `cdkd state destroy`), judge the journal
   // listing below and every delete's printing bag: a record or journal entry
   // written before schema v11 holds such a value in plaintext, which nothing
-  // in it marks as secret. Started on first use (the listing, or once the run
+  // in it marks as secret. Started on first use (a listing, or once the run
   // is confirmed), so a declined run binds nothing it does not print; it never
-  // rejects, a synchronous throw included.
+  // rejects, a synchronous throw included. Capped at
+  // NOECHO_PRINTING_BIND_CAP_MS (an SSM-typed parameter's lookup can hang
+  // before the prompt and under the lock): past it the run goes on
+  // record-only, as `cdkd state destroy` judges.
   let noEchoValuesPending: Promise<RecordedSecretValues | undefined> | undefined;
-  const stackNoEchoValues = (): Promise<RecordedSecretValues | undefined> =>
-    (noEchoValuesPending ??= Promise.resolve()
+  const stackNoEchoValues = (): Promise<RecordedSecretValues | undefined> => {
+    if (noEchoValuesPending !== undefined) return noEchoValuesPending;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => {
+        logger.debug(
+          `The stack's NoEcho values were not bound within ${NOECHO_PRINTING_BIND_CAP_MS / 1000}s; ` +
+            `a name a record holds in plaintext is judged from the record alone.`
+        );
+        resolve(undefined);
+      }, NOECHO_PRINTING_BIND_CAP_MS);
+      timer.unref?.();
+    });
+    const bound = Promise.resolve()
       .then(() => ctx.noEchoReresolver?.printingNoEchoValues())
-      .catch(() => undefined));
+      .catch(() => undefined)
+      .finally(() => clearTimeout(timer));
+    noEchoValuesPending = Promise.race([bound, capped]);
+    return noEchoValuesPending;
+  };
   const orphansAtDestroy = state.orphans ?? [];
   if (orphansAtDestroy.length > 0) {
     logger.info(
@@ -1068,6 +1094,7 @@ export async function runDestroyForStack(
       `Destroying this stack deletes that record. The resources stay in AWS, may continue to ` +
         `incur charges, and cdkd will no longer know about them:`
     );
+    const orphanListing = orphanRecordsPrintingBag(orphansAtDestroy, await stackNoEchoValues());
     for (const entry of orphansAtDestroy) {
       // Every field sanitized (go-to-k/cdkd#3500 security review). The row guard
       // above validates the record's SHAPE, not the CONTENT of the three strings
@@ -1099,9 +1126,16 @@ export async function runDestroyForStack(
       // dropping MORE. What IS preserved is every printable interior character,
       // which is what makes the id findable in AWS — an interior control
       // character becomes a space, by the same rule that defuses the forged row.
-      logger.info(
-        `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
-          `${displaySafe(entry.state.physicalId)}`
+      //
+      // The one deliberate loss (go-to-k/cdkd#3869, a maintainer decision): an
+      // id named from a secret prints MASKED, under the print-only bag bound
+      // below, as `cdkd diff` masks these records. The logical id and type
+      // still name the resource; an ordinary id prints as it is.
+      withPrintingSecrets(orphanListing, () =>
+        logger.info(
+          `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
+            `${displaySafe(entry.state.physicalId)}`
+        )
       );
     }
   }
