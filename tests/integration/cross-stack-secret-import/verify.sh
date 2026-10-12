@@ -659,7 +659,7 @@ pass "the live SSM parameter carries the RESOLVED secret and no {{resolve: token
 # and this stack's destroy (step 12) then failed with InvalidAddress. The URL is
 # the producer's physical id, stored in plaintext there.
 QUEUE_URL_LIVE="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
-  --query QueueUrl --output text 2>/dev/null || true)"
+  --query QueueUrl --output text)"
 case "${QUEUE_URL_LIVE}" in
   https://*"/${QUEUE_NAME}") ;;
   *) fail "premise: the producer's secret-named queue does not exist under the secret's queue value" ;;
