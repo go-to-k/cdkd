@@ -4682,15 +4682,16 @@ describe('cdkd drift keeps a reader copy of a secret-named physical id (go-to-k/
     expect(output).not.toContain(SECRET_PLAINTEXT);
   });
 
-  it("--accept keeps a record's OWN embedded name in reference form (a deploy records no self-copy)", async () => {
+  it("--revert keeps a record's OWN name in reference form in its attributes (a deploy records no self-copy)", async () => {
     // Review minor-B on PR #4817: a producer NAMED from the secret through an
     // `Fn::Sub`, whose own id embeds the plaintext. Only OTHER records' ids are
-    // copies.
+    // copies, so its ARN attribute is still written in reference form.
     const own = `${SECRET_PLAINTEXT}-fn`;
     const producerBag = (name: string, plain: string): Record<string, unknown> => ({
       FunctionName: name,
       Environment: { Variables: { PLAIN: plain } },
     });
+    const arn = (name: string) => `arn:aws:lambda:us-east-1:123456789012:function:${name}`;
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
@@ -4699,18 +4700,23 @@ describe('cdkd drift keeps a reader copy of a secret-named physical id (go-to-k/
           resourceType: LAMBDA_TYPE,
           properties: producerBag(`${SECRET_EXPR}-fn`, 'ok'),
           observedProperties: producerBag(`${SECRET_EXPR}-fn`, 'ok'),
+          attributes: { Arn: arn(`${SECRET_EXPR}-fn`), Version: '1' },
         },
       })
     );
-    providers({ readCurrentState: async () => producerBag(own, 'edited') });
+    const update = vi.fn().mockResolvedValue({
+      physicalId: own,
+      attributes: { Arn: arn(own), Version: '2' },
+    });
+    providers({ readCurrentState: async () => producerBag(own, 'edited'), update });
 
-    await runDrift(['TestStack', '--accept', '--yes']);
+    await runDrift(['TestStack', '--revert', '--yes']);
 
+    expect(update).toHaveBeenCalledTimes(1);
     expect(mockSaveState).toHaveBeenCalledTimes(1);
-    const saved = mockSaveState.mock.calls[0]![2].resources['Producer']!.observedProperties!;
-    // Premise: the accept wrote the edit.
-    expect(saved).toMatchObject({ Environment: { Variables: { PLAIN: 'edited' } } });
-    expect(saved['FunctionName']).toBe(`${SECRET_EXPR}-fn`);
+    const saved = mockSaveState.mock.calls[0]![2].resources['Producer']!;
+    expect(saved.attributes?.['Version']).toBe('2');
+    expect(saved.attributes?.['Arn']).toBe(arn(`${SECRET_EXPR}-fn`));
   });
 
   it("--revert keeps the reader copy of the queue URL in the provider's attributes", async () => {
