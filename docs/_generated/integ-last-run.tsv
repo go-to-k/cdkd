@@ -42,7 +42,7 @@ cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4
 cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-to-sdk-reroute	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cc-write-only-create-only	2026-10-11T09:33:22Z	PASS	170	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-cdk-cross-account-lookup-role	2026-10-12T04:03:43Z	PASS	196	verify.sh	PR #4812 head build, rc ok, orph clean
+cdk-cross-account-lookup-role	2026-10-12T07:09:30Z	PASS	215	verify.sh	rc ok, orph clean; a/b1/b2/c arms pass on PR #4812 refusal texts
 ci-cd	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-10-11T09:33:22Z	PASS	200	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -92,9 +92,6 @@ dlm-lifecycle-policy	2026-10-08T06:25:38Z	PASS	110	verify.sh	PR #4697 (#4687 rep
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-12T04:31:47Z	PASS	350	verify.sh	PR #4812 head build, rc ok, orph clean
-drift-revert-arrays	2026-10-11T09:33:22Z	PASS	221	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-drift-revert-vpc	2026-10-12T04:44:46Z	PASS	361	verify.sh	PR #4812 head build, rc ok, orph clean
 drift-revert	2026-10-12T05:18:51Z	PASS	311	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08 broad set, rc ok, destroy 0 errors, orph clean
 drift-revert-arrays	2026-10-11T09:33:22Z	PASS	221	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 drift-revert-vpc	2026-10-12T05:24:58Z	PASS	366	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08 broad set, rc ok, destroy 0 errors, orph clean
@@ -138,8 +135,6 @@ eventbridge-pipes	2026-10-11T09:33:22Z	PASS	171	verify.sh	PR #4720 (#4705) final
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-12T04:48:48Z	PASS	235	verify.sh	PR #4812 head build, rc ok, orph clean
-export-nested-stack	2026-10-12T05:10:07Z	PASS	190	verify.sh	PR #4812 head build, rc ok, orph clean
 export	2026-10-12T05:29:00Z	PASS	240	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08 broad set, rc ok, destroy 0 errors, orph clean
 export-nested-stack	2026-10-12T05:32:07Z	PASS	185	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 fallback-recreate-children	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -174,16 +169,13 @@ import-deployed-parameter-secret	2026-10-12T00:02:47Z	PASS	347	verify.sh	PR #482
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
-import-nested-stack	2026-10-12T05:13:14Z	PASS	160	verify.sh	PR #4812 head build, rc ok, orph clean
 import-nested-stack	2026-10-12T05:34:29Z	PASS	140	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 import-noecho-parameter	2026-10-09T11:17:58Z	PASS	125	verify.sh	rc ok, orph clean (PR #4764 #4043 Phase C import/scrub/export)
 import-reimport-masked-attrs	2026-10-12T05:11:28Z	PASS	210	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: deploy record masks non-attribute keys (EncryptionConfiguration, Tags), Name clear; reverted-fix run (8-d) went RED at Phase 1 (EncryptionConfiguration recorded in the clear); destroy 0 errors, orph clean
 import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-secret-observed	2026-10-03T10:38:15Z	PASS	135	verify.sh	rc ok, orph clean (#4508)
-import-value-strong-ref	2026-10-12T05:01:59Z	PASS	201	verify.sh	PR #4812 head build, rc ok, orph clean
-importvalue-chain	2026-10-12T05:04:39Z	PASS	152	verify.sh	PR #4812 head build, rc ok, orph clean
 import-value-strong-ref	2026-10-12T05:10:38Z	PASS	160	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
-importvalue-chain	2026-10-11T09:33:22Z	PASS	145	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+importvalue-chain	2026-10-12T05:04:39Z	PASS	152	verify.sh	PR #4812 head build, rc ok, orph clean
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
@@ -192,8 +184,7 @@ intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) fin
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-12T04:08:23Z	PASS	135	verify.sh	PR #4812 head build, rc ok, orph clean
-lambda	2026-10-12T05:10:03Z	PASS	125	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08 broad set, rc ok, destroy 0 errors, orph clean
+lambda	2026-10-12T07:23:06Z	PASS	135	verify.sh	rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -260,7 +251,7 @@ multi-resource	2026-10-09T06:36:26Z	PASS	75	standard	rc ok, orph clean (PR #4752
 multi-stack-deps	2026-10-09T07:59:51Z	PASS	90	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 neptune-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	2295	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-nested-stack	2026-10-12T05:23:21Z	PASS	80	verify.sh	PR #4812 head build, rc ok, orph clean
+nested-stack	2026-10-12T07:20:13Z	PASS	95	verify.sh	rc ok, orph clean
 nested-stack-3level	2026-10-12T05:32:28Z	PASS	541	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-deep	2026-10-12T05:34:47Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
@@ -292,7 +283,6 @@ recreate-via-sdk-provider	2026-10-07T07:15:44Z	PASS	110	verify.sh	PR #4646 on #4
 redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clean (#4738 PR #4792)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-12T06:52:55Z	PASS	2124	verify.sh	PR #4812 head build, rc ok, orph clean
-remove-protection	2026-10-12T06:15:28Z	PASS	2100	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08 broad set, rc ok, final destroy 0 errors, orph clean
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 remove-protection-journaled-orphan	2026-10-11T15:30:01Z	PASS	661	verify.sh	rc ok, orph clean (#4738 PR #4792)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
