@@ -168,7 +168,7 @@ importers:
     dependencies:
       '@aws-cdk/cloudformation-diff':
         specifier: ^2.187.1
-        version: 2.187.1(@aws-sdk/client-cloudformation@3.1145.0)
+        version: 2.187.5(@aws-sdk/client-cloudformation@3.1145.0)
       '@aws-sdk/client-acm':
         specifier: ^3.1053.0
         version: 3.1145.0
@@ -473,6 +473,9 @@ packages:
   '@aws-cdk/aws-service-spec@0.1.182':
     resolution: {integrity: sha512-m5kqMF722DZtar0mTx2nX9lhMQGBRmuUM/iNWx+s5Fidp2LyPreq7TKDfTrmY5MqHV/usgfCUnFDdtjlymDgwg==}
 
+  '@aws-cdk/aws-service-spec@0.1.219':
+    resolution: {integrity: sha512-y5FOymCqpJKeZSh+56o72aUtbWfqvm44FiN5gMKhrQi0J2ffKtXg9B2uM2b/zgd/TjPlCmotYmVzjLhOZBfqlg==}
+
   '@aws-cdk/cdk-assets-lib@1.4.8':
     resolution: {integrity: sha512-PQn5aeVw3MVn0dWRZ70yWKLaNjceWL6N3x0Kg8Y4IG3CohEDEoDuEX/RsqVg9zOXDYxXOsdwO5JyIztJYSA/sQ==}
     engines: {node: '>= 18.0.0'}
@@ -500,8 +503,8 @@ packages:
       - jsonschema
       - semver
 
-  '@aws-cdk/cloudformation-diff@2.187.1':
-    resolution: {integrity: sha512-MvgW82OfGsqC8wbemVpk2xxuP6GaTxpcCD1uLhjuVAzwdzWL1YhfTizh4KHZW9szCQ1AZT37pw4qt45l5YNniA==}
+  '@aws-cdk/cloudformation-diff@2.187.5':
+    resolution: {integrity: sha512-aWbBG9SWLMogYfQjvMqkY5yHYRDqEjPXRu1Kt8pn84B7zLVWH11nuUM4GuWCXbpXhfvLz9XKFrGV7+KGfUaF7w==}
     engines: {node: '>= 18.0.0'}
     peerDependencies:
       '@aws-sdk/client-cloudformation': ^3
@@ -515,11 +518,14 @@ packages:
       - semver
       - '@aws-cdk/cloud-assembly-api'
 
-  '@aws-cdk/service-spec-types@0.0.237':
-    resolution: {integrity: sha512-qC7dfSXGyJddKU/ys+G/LvmOvLmn+rSbKFa28Jk1eNAbE8d2mRu/Ul8srw4KE1QGI8QklR/xikAb4Xffw11z8Q==}
-
   '@aws-cdk/service-spec-types@0.0.248':
     resolution: {integrity: sha512-vavYeFEUW30ii5CjHPL0mpqy1CUXQa5xWDHkSEKYb5Hg5v1iR+bHikEIp1BlWZqufkLdLZoovvUCNN8fz76eNA==}
+
+  '@aws-cdk/service-spec-types@0.0.274':
+    resolution: {integrity: sha512-D6w1h00QgN8a4cJ5cofuh4pu2ccK3DqHUDCkU6FgMUObRYlgBik/Ps4alt6Q7Jx3g0LEwiZJsDfPAEdtlFmQig==}
+
+  '@aws-cdk/service-spec-types@0.0.285':
+    resolution: {integrity: sha512-4pdwligd4Zqre/0+wnFj4NyOEE8dbawWzgt9f3ihcDgXmuz3npv/Vh3tjtxUutiPI0lrAgPWCJCQRFwdEENo8Q==}
 
   '@aws-cdk/toolkit-lib@1.28.0':
     resolution: {integrity: sha512-L1binntiOh/+stWOVcQF1rrEpnsW5F+IM23vTXEdRfzg18FBhAWK6GsDHUnmR2G0ziQCfOJ+HK1UBfBx2gSo/w==}
@@ -3754,8 +3760,8 @@ packages:
   devtools-protocol@0.0.1680125:
     resolution: {integrity: sha512-rVARKAvOFJCFkvgX01VLvYqKIvt+cRCqvUxIhB2oAqVGPalxk3w3sb5TUGDagpow/EFblBpm/Zl/29QA2dd+jA==}
 
-  diff@8.0.4:
-    resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
+  diff@9.0.0:
+    resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
     engines: {node: '>=0.3.1'}
 
   dom-accessibility-api@0.5.16:
@@ -5152,6 +5158,11 @@ snapshots:
       '@aws-cdk/service-spec-types': 0.0.248
       '@cdklabs/tskb': 0.0.4
 
+  '@aws-cdk/aws-service-spec@0.1.219':
+    dependencies:
+      '@aws-cdk/service-spec-types': 0.0.285
+      '@cdklabs/tskb': 0.0.4
+
   '@aws-cdk/cdk-assets-lib@1.4.8':
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@54.24.0)
@@ -5189,13 +5200,13 @@ snapshots:
 
   '@aws-cdk/cloud-assembly-schema@54.24.0': {}
 
-  '@aws-cdk/cloudformation-diff@2.187.1(@aws-sdk/client-cloudformation@3.1145.0)':
+  '@aws-cdk/cloudformation-diff@2.187.5(@aws-sdk/client-cloudformation@3.1145.0)':
     dependencies:
-      '@aws-cdk/aws-service-spec': 0.1.182
-      '@aws-cdk/service-spec-types': 0.0.237
+      '@aws-cdk/aws-service-spec': 0.1.219
+      '@aws-cdk/service-spec-types': 0.0.274
       '@aws-sdk/client-cloudformation': 3.1145.0
       chalk: 4.1.2
-      diff: 8.0.4
+      diff: 9.0.0
       fast-deep-equal: 3.1.3
       string-width: 4.2.3
       table: 6.9.0
@@ -5204,11 +5215,15 @@ snapshots:
     dependencies:
       '@aws-cdk/cloud-assembly-schema': 54.24.0
 
-  '@aws-cdk/service-spec-types@0.0.237':
+  '@aws-cdk/service-spec-types@0.0.248':
     dependencies:
       '@cdklabs/tskb': 0.0.4
 
-  '@aws-cdk/service-spec-types@0.0.248':
+  '@aws-cdk/service-spec-types@0.0.274':
+    dependencies:
+      '@cdklabs/tskb': 0.0.4
+
+  '@aws-cdk/service-spec-types@0.0.285':
     dependencies:
       '@cdklabs/tskb': 0.0.4
 
@@ -5218,7 +5233,7 @@ snapshots:
       '@aws-cdk/cli-plugin-contract': 2.182.2
       '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.24.0)
       '@aws-cdk/cloud-assembly-schema': 54.24.0
-      '@aws-cdk/cloudformation-diff': 2.187.1(@aws-sdk/client-cloudformation@3.1145.0)
+      '@aws-cdk/cloudformation-diff': 2.187.5(@aws-sdk/client-cloudformation@3.1145.0)
       '@aws-cdk/cx-api': 2.257.0(@aws-cdk/cloud-assembly-schema@54.24.0)
       '@aws-sdk/client-appsync': 3.1145.0
       '@aws-sdk/client-bedrock-agentcore-control': 3.1145.0
@@ -8688,7 +8703,7 @@ snapshots:
 
   devtools-protocol@0.0.1680125: {}
 
-  diff@8.0.4: {}
+  diff@9.0.0: {}
 
   dom-accessibility-api@0.5.16: {}
 
