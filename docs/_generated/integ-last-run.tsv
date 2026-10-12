@@ -100,8 +100,8 @@ dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table 
 dynamodb-fix-forward-orphan	2026-10-09T17:56:31Z	PASS	176	verify.sh	PR #4778 (#4606 DynamoDB slice): rc 0, destroy clean, orph clean, dedicated state bucket; fix-forward deleted the failed CREATE's table by TableId and kept the re-created one; pre-fix run RED at step 2's journaled-identity assertion
 dynamodb-globaltable	2026-10-11T18:48:18Z	PASS	1617	verify.sh	PR #4796, rc ok, orph clean (removed 60 dangling TargetTracking alarms from a 2026-10-07 run before deploy)
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-gsi-update	2026-10-09T10:06:32Z	PASS	1784	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
-dynamodb-ondemand	2026-10-11T16:48:28Z	PASS	367	verify.sh	PR #4796, rc ok, orph clean
+dynamodb-gsi-update	2026-10-12T04:01:05Z	PASS	1333	verify.sh	PR #4822, us-east-1, regression net for the DynamoDB table provider; rc ok, orph clean
+dynamodb-ondemand	2026-10-12T03:38:09Z	PASS	416	verify.sh	PR #4822, us-east-1, Phase 1.8 ceiling refusal arms (update/gsi-update/create) green; revert of src fix reds Phase 1.8a; rc ok, orph clean
 dynamodb-sse	2026-10-03T04:28:40Z	PASS	57	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-08T06:25:38Z	PASS	265	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
