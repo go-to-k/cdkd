@@ -98,11 +98,27 @@ describe("a reader of an in-run producer's attribute (#4802)", () => {
   it.each([
     ['a mask-only entry (the NoEcho arms answer it)', new Map([[NAME, SECRET_MASK]])],
     ['a plaintext under the needle floor', new Map([['q-1', REF]])],
-    ['a pair the value does not carry', new Map([['other-secret', REF]])],
   ])('skips %s', async (_l, producer) => {
     const bag: RecordedSecretValues = new Map();
     await read(producer as RecordedSecretValues, bag);
     expect(bag.size).toBe(0);
+  });
+
+  it('skips a pair the served value does not carry', async () => {
+    // The pair passes every other gate (the loaded id embeds NAME); only the
+    // value lacks it.
+    const bag: RecordedSecretValues = new Map();
+    await read(new Map([[NAME, REF]]), bag, 'arn:aws:sqs:us-east-1:123456789012:unrelated');
+    expect(bag.size).toBe(0);
+  });
+
+  it.each([
+    ['an array', [ARN, 'unrelated']],
+    ['an object', { Arn: ARN, Other: 'unrelated' }],
+  ])('walks the leaves of %s-valued attribute', async (_l, value) => {
+    const bag: RecordedSecretValues = new Map();
+    await read(new Map([[NAME, REF]]), bag, value as never);
+    expect(bag.get(NAME)).toBe(REF);
   });
 
   it.each([

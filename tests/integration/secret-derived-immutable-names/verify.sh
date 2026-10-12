@@ -67,7 +67,7 @@
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
 #      destroy below deletes with it. The same deploy updates SecretQueue's
 #      VisibilityTimeout (45), so its readers resolve its ARN from the provider.
-#      LOAD-BEARING (go-to-k/cdkd#4802): step 5 updated the queue and the nested
+#      LOAD-BEARING (go-to-k/cdkd#4802): step 4 updated the queue and the nested
 #      row in one deploy, and the row and the child's SSM parameter stored the
 #      ARN in reference form, as a reader of an unchanged queue does, so this
 #      deploy does not update the row. Before, they stored the plaintext ARN
@@ -952,7 +952,7 @@ expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
-# LOAD-BEARING (go-to-k/cdkd#4802): step 5's update deploy updated the queue
+# LOAD-BEARING (go-to-k/cdkd#4802): step 4's update deploy updated the queue
 # and the nested row together, so the row was served the provider's fresh ARN
 # in plaintext. It now records the queue's own secret pairs the value carries
 # and stores the reference form, as a reader of an unchanged queue does;

@@ -230,7 +230,7 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
 
     const secretQueue = new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
-      // Steps 5 and 5d (SDIN_MOVE_FILTER=true) update the queue, so its readers
+      // Steps 4 and 5d (SDIN_MOVE_FILTER=true) update the queue, so its readers
       // resolve its ARN from the provider in those deploys and store its
       // reference form (go-to-k/cdkd#4802). Step 5e updates it again, and its
       // automatic rollback restores step 5d's state (go-to-k/cdkd#4801). Step
