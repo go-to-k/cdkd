@@ -626,6 +626,7 @@ export function noteAttributeSecrecy(
   const served = override !== undefined && Object.hasOwn(override, attributeName);
   if (served) value = override[attributeName];
   recordSecretNamedRead(logicalId, value, context);
+  recordProducerSecretPairs(logicalId, value, context);
   const declared = context.noEchoAttributeResources?.get(logicalId);
   const attributeIsDeclared =
     served || declared === true || (declared !== undefined && declared.has(attributeName));
@@ -692,6 +693,39 @@ export function noteAttributeSecrecy(
     });
   }
   return value;
+}
+
+/**
+ * go-to-k/cdkd#4802: a producer resolved in THIS run (created or updated)
+ * returns its attributes from the provider, in plaintext, and the reader is
+ * served that value. Record into the READER's bag each of the producer's own
+ * (plaintext, reference) pairs whose plaintext the value carries, so the
+ * reader persists the reference form, as a reader of an UNCHANGED producer
+ * does (go-to-k/cdkd#4800, whose re-resolution records the same pairs) and as
+ * the next deploy's diff reads it. Without it the reader stored the plaintext
+ * and the next deploy updated it once more.
+ *
+ * Only pairs whose value is a reference (never a mask-only entry, which the
+ * `NoEcho` arms answer), whose plaintext clears {@link MIN_NEEDLE_LENGTH}, and
+ * that the reader's bag does not already key. The producer's bag is read,
+ * never written.
+ */
+function recordProducerSecretPairs(
+  logicalId: string,
+  value: unknown,
+  context: ResolverContext
+): void {
+  const bag = context.recordedSecretValues;
+  if (bag === undefined || context.producerSecrets === undefined) return;
+  const producer = context.producerSecrets(logicalId);
+  if (producer === undefined || producer === bag || producer.size === 0) return;
+  const leaves = [...wholeStringLeavesOf(value)];
+  if (leaves.length === 0) return;
+  for (const [plaintext, expression] of producer) {
+    if (plaintext.length < MIN_NEEDLE_LENGTH || bag.has(plaintext)) continue;
+    if (typeof expression !== 'string' || !expression.startsWith('{{resolve:')) continue;
+    if (leaves.some((leaf) => leaf.includes(plaintext))) bag.set(plaintext, expression);
+  }
 }
 
 /**

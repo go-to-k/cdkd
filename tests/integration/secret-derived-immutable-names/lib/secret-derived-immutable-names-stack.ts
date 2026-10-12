@@ -32,7 +32,14 @@ class QueueReaderChild extends cdk.NestedStack {
       name: process.env.SDIN_CHILD_PARAM_NAME ?? '/cdkd-integ/sdin-unset/child-queue-arn',
       type: 'String',
       value: queueArn.valueAsString,
-      description: props.update ? 'cdkd integ: updated' : 'cdkd integ: initial',
+      // Step 5f (SDIN_READER_EDIT=true) edits this reader alone, so it is
+      // UPDATEd while SecretQueue is NO_CHANGE (go-to-k/cdkd#4800).
+      description:
+        process.env.SDIN_READER_EDIT === 'true'
+          ? 'cdkd integ: reader edited'
+          : props.update
+            ? 'cdkd integ: updated'
+            : 'cdkd integ: initial',
     });
   }
 }
