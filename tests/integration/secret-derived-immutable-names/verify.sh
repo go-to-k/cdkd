@@ -83,7 +83,9 @@
 #      is the nested QueueReaderChild row (its `QueueArn` parameter): it was
 #      sent that spelling and the child's SSM parameter refused it, so the
 #      deploy failed. Now the deploy exits 0 and the SSM parameter holds the
-#      real ARN. (SecretQueueReaderPolicy no longer discriminates: its literal
+#      real ARN. The nested ChildQueuePolicy, whose bag now carries the queue
+#      name, keeps its parent-passed `Queues` URL in plaintext
+#      (go-to-k/cdkd#4819). (SecretQueueReaderPolicy no longer discriminates: its literal
 #      reference, go-to-k/cdkd#4810, makes it store the reference whatever the
 #      fix.) A second redeploy is expected to change nothing (a NOTE otherwise).
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
@@ -1061,6 +1063,20 @@ fi
 expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIVE}" \
   "$(aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" \
     --query 'Parameter.Value' --output text)"
+# go-to-k/cdkd#4819: ChildQueuePolicy reads the parent-passed URL and ARN.
+# PREMISE: its bag carried the queue name (the ARN it read is recorded in its
+# reference form), so the save's value scan met the URL.
+CHILD_POLICY_RESOURCE="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
+  | jq -r '.resources.ChildQueuePolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
+case "${CHILD_POLICY_RESOURCE}" in
+  arn:*'{{resolve:secretsmanager:'*) ;;
+  *) echo "FAIL: premise: ChildQueuePolicy's recorded Resource is '${CHILD_POLICY_RESOURCE}', not the ARN's reference form (its bag did not carry the queue name)" >&2; exit 1 ;;
+esac
+# LOAD-BEARING: the URL, the queue's physical id, stays as the id is; the save
+# rewrote it into `https://sqs.../{{resolve:...}}` and step 6's destroy failed.
+expect_eq "ChildQueuePolicy's recorded Queues URL after the redeploy (go-to-k/cdkd#4819)" "${QUEUE_URL}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
+    | jq -r '.resources.ChildQueuePolicy.properties.Queues[0] // empty')"
 # Not load-bearing for go-to-k/cdkd#4800 (the policy's literal reference makes
 # it store and send the right ARN whatever the fix): a regression guard only.
 expect_eq "SecretQueueReaderPolicy's live Resource after the redeploy" "${QUEUE_ARN_LIVE}" \

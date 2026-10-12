@@ -15,12 +15,17 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import {
   SECRET_MASK,
   clearRecordedSecretExpressions,
+  inheritNestedStackParameterAssociations,
   markSameGenerationBag,
+  physicalNameCopiesOf,
+  recordNestedStackParameterExpressions,
   recordNoEchoParameterFreshValue,
   recordPhysicalNameCopy,
   redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
+import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 const NAME = 'sdin-q-1';
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
@@ -249,5 +254,105 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
       { stackName: 'Producer', region: 'us-east-1', outputKey: 'QueueUrl' }
     );
     expect(fresh.getState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The nested-parameter source: the parent's `AWS::CloudFormation::Stack` row
+ * read the queue by `Ref` (so its bag records the URL as a copy and the name's
+ * pair), and passed the URL as `QueueUrl`; the child's reader reads
+ * `{Ref: QueueUrl}`.
+ */
+describe('a nested child reading a parent-passed physical id (#4819)', () => {
+  const PARAM = 'QueueUrl';
+  const childTemplate = {
+    Parameters: { [PARAM]: { Type: 'String' } },
+    Resources: {},
+  } as unknown as CloudFormationTemplate;
+
+  function parentBag(withCopy = true): RecordedSecretValues {
+    const parent: RecordedSecretValues = new Map([[NAME, REF]]);
+    if (withCopy) recordPhysicalNameCopy(parent, URL);
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { [PARAM]: URL } },
+      { Parameters: { [PARAM]: { Ref: 'SecretNamedQueue' } } }
+    );
+    return parent;
+  }
+
+  async function resolveChild(
+    parent: RecordedSecretValues,
+    source: Record<string, unknown>,
+    value: string = URL
+  ) {
+    // As `DeployEngine.buildResolverContext` builds a child pass's bag.
+    const child: RecordedSecretValues = new Map();
+    inheritNestedStackParameterAssociations(child, parent);
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const resolved = (await resolver.resolve(source, {
+      template: childTemplate,
+      resources: {},
+      parameters: { [PARAM]: value },
+      conditions: {},
+      recordedSecretValues: child,
+      inheritedSecrets: parent,
+    } as never)) as Record<string, unknown>;
+    return { child, resolved };
+  }
+
+  it.each([
+    ['alone', { Queues: [{ Ref: PARAM }] }],
+    [
+      "beside the reader's own literal reference",
+      { Queues: [{ Ref: PARAM }], Resource: `arn:aws:sqs:us-east-1:123456789012:${REF}` },
+    ],
+  ])('keeps the copy %s, as the diff side binds the parameter', async (_label, source) => {
+    const parent = parentBag();
+    const { child, resolved } = await resolveChild(parent, source);
+    // Premise: AWS gets the URL, and the child bag carries the name.
+    expect(resolved['Queues']).toEqual([URL]);
+    expect(child.get(NAME)).toBe(REF);
+    const persisted = redactSecretsForState(
+      markSameGenerationBag({ ...resolved }),
+      child,
+      source
+    ) as Record<string, unknown>;
+    expect(persisted['Queues']).toEqual([URL]);
+    if ('Resource' in source) {
+      expect(persisted['Resource']).toBe(`arn:aws:sqs:us-east-1:123456789012:${REF}`);
+    }
+    // The diff side's binding of the parameter agrees, so no perpetual UPDATE.
+    const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+    expect(redactParametersForDiff.call(engine, { [PARAM]: URL })[PARAM]).toBe(URL);
+  });
+
+  it('control: a URL the parent never read as a physical id is still rewritten', async () => {
+    const parent = parentBag(false);
+    const source = { Queues: [{ Ref: PARAM }] };
+    const { child, resolved } = await resolveChild(parent, source);
+    expect(resolved['Queues']).toEqual([URL]);
+    expect(
+      redactSecretsForState(markSameGenerationBag({ ...resolved }), child, source)
+    ).toEqual({ Queues: [URL.replace(NAME, REF)] });
+  });
+
+  it("carries only a parent copy the parameter's value holds", async () => {
+    const parent = parentBag();
+    recordPhysicalNameCopy(parent, 'other-physical-id');
+    const { child } = await resolveChild(parent, { Queues: [{ Ref: PARAM }] });
+    expect([...(physicalNameCopiesOf.get(child) ?? [])]).toEqual([URL]);
+    const unrelated = await resolveChild(parent, { Name: { Ref: PARAM } }, `prefix-${NAME}`);
+    expect(physicalNameCopiesOf.get(unrelated.child)).toBeUndefined();
+    // A value EMBEDDING the id carries it too, and the embedding persists as AWS got it.
+    const embedding = `queue=${URL}`;
+    const embedded = await resolveChild(parent, { Name: { Ref: PARAM } }, embedding);
+    expect([...(physicalNameCopiesOf.get(embedded.child) ?? [])]).toEqual([URL]);
+    expect(
+      redactSecretsForState(markSameGenerationBag({ ...embedded.resolved }), embedded.child, {
+        Name: { Ref: PARAM },
+      })
+    ).toEqual({ Name: embedding });
   });
 });

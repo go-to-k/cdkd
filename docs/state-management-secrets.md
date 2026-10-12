@@ -86,13 +86,13 @@ parameter. When the name comes from a `NoEcho` parameter, the deploy warns.
 A copy of the physical ID itself that another resource reads, such as a queue
 policy's `Queues` URL, can be stored as the ID is, so that cdkd can address the
 queue through it. That covers a copy read with `Ref` or `Fn::GetAtt` in the
-same stack, and a physical ID of another stack in the same account read with
-`Fn::ImportValue` or `Fn::GetStackOutput`. This can hold
+same stack, a physical ID of another stack in the same account read with
+`Fn::ImportValue` or `Fn::GetStackOutput`, and one a parent stack read and
+passed to a nested stack's parameter. This can hold
 even where the name is a secret's whole value or a `NoEcho` parameter's, and
 even in a property of that resource that is itself read from the secret: those
 characters are already in the queue's `physicalId`. A leaf the template spells
-as the reference itself stays the reference. A copy read through a nested
-stack's parameter is not covered yet, and a record an older cdkd wrote is
+as the reference itself stays the reference. A record an older cdkd wrote is
 repaired by the next `cdkd deploy`.
 
 cdkd masks the name in its logs and in `cdkd diff` output where it recognises
