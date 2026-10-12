@@ -483,16 +483,11 @@ export function recordNoEchoParameterValue(
   // value supplied in this deploy. A value under the needle floor, or a
   // number, registers nothing here; the positional arm masks it by template
   // position. The public tokens (region, stack name) stay out of the
-  // containment arm, as for a custom resource's echo.
-  //
-  // The BOOLEAN declaration only (go-to-k/cdkd#4824): a string-declared value
-  // has always persisted in plaintext where no template position reads it, so
-  // a record written before carries that plaintext with other leaves already
-  // marked, and the migration witness reconciles only an UNMARKED record. Masking
-  // it now would read as a moved create-only value and REPLACE the resource on
-  // an unchanged redeploy. It stays log-only until the witness covers marked
-  // records (go-to-k/cdkd#4831).
-  if (paramDef?.NoEcho !== true) return;
+  // containment arm, as for a custom resource's echo. The string declaration
+  // too (go-to-k/cdkd#4831): a record written before holds that copy in
+  // plaintext beside leaves already marked, which the migration witness
+  // reconciles for a MARKED record since #4836, so an unchanged value is
+  // masked without being read as a create-only change.
   recordNoEchoParameterFreshValue(value, bag, this.publicNoEchoTokens(context));
 }
 
