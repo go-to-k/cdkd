@@ -140,6 +140,7 @@ describe('DeployEngine - bare Fn::GetAtt over HostedZone NameServers as an Outpu
     };
     mockExportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

@@ -226,7 +226,7 @@ function harness(
     } as never,
     { dryRun: false, parameters, ...(inheritedSecrets && { inheritedSecrets }), ...extraOptions },
     'us-east-1',
-    { updateForStack } as never
+    { updateForStack, prefetch: vi.fn().mockResolvedValue(undefined) } as never
   );
   return { engine, saveState, updateForStack, props };
 }

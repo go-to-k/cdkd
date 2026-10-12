@@ -196,6 +196,7 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
     };
     const exportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };
@@ -455,6 +456,7 @@ describe('a grandchild skipped DELETE through two real nested levels (#4453)', (
     };
     const exportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

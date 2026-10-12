@@ -10,6 +10,7 @@ import {
   CreateTokenLedger,
   earliestDefined,
   forgetRecordedCreateTokens,
+  prefetchCreateTokenLedger,
   noteDeployStateRecord,
   noteRetainedResource,
   reserveStackCreateToken,
@@ -329,6 +330,34 @@ describe('reserveStackCreateToken', () => {
     const mem = memoryStore();
     await inDeploy(mem.store, () => reserveStackCreateToken(FS)); // the failed deploy: entry stays
     await inDeploy(mem.store, () => forgetRecordedCreateTokens(['Fs']));
+    expect(mem.current()!.sent['Fs']).toBeUndefined();
+  });
+
+  it('a prefetch at deploy start leaves the forget no read of its own (#4837)', async () => {
+    const mem = memoryStore();
+    await inDeploy(mem.store, () => reserveStackCreateToken(FS)); // an earlier failed deploy
+    const load = vi.spyOn(mem.store, 'load');
+    await inDeploy(mem.store, async () => {
+      await prefetchCreateTokenLedger();
+      expect(load).toHaveBeenCalledOnce();
+      await forgetRecordedCreateTokens(['Fs']);
+    });
+    expect(load).toHaveBeenCalledOnce();
+    // The prefetched copy still drives the forget: the earlier entry goes.
+    expect(mem.current()!.sent['Fs']).toBeUndefined();
+  });
+
+  it('a failed prefetch leaves the forget to read again', async () => {
+    const mem = memoryStore();
+    await inDeploy(mem.store, () => reserveStackCreateToken(FS));
+    const load = vi.spyOn(mem.store, 'load');
+    await inDeploy(mem.store, async () => {
+      mem.store.failLoad = true;
+      await prefetchCreateTokenLedger();
+      mem.store.failLoad = false;
+      await forgetRecordedCreateTokens(['Fs']);
+    });
+    expect(load).toHaveBeenCalledTimes(2);
     expect(mem.current()!.sent['Fs']).toBeUndefined();
   });
 

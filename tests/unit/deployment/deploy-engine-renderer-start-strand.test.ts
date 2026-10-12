@@ -135,6 +135,7 @@ describe('DeployEngine — renderer.start() cannot strand the lock (issue #2171)
     };
     mockExportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

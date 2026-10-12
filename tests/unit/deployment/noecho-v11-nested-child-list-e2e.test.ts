@@ -174,6 +174,7 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
     };
     const exportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

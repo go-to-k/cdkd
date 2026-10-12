@@ -192,6 +192,7 @@ describe('DeployEngine - a failed deploy forgets the children it never restored 
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never
@@ -294,6 +295,7 @@ describe('DeployEngine - a failed deploy forgets the children it never restored 
         REGION,
         {
           updateForStack: vi.fn().mockResolvedValue(undefined),
+          prefetch: vi.fn().mockResolvedValue(undefined),
           lookup: vi.fn().mockResolvedValue(null),
           patchEntry: vi.fn().mockResolvedValue(undefined),
         } as never

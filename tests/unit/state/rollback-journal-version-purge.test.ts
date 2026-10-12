@@ -278,3 +278,92 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
     );
   });
 });
+
+describe('a journal read ABSENT is remembered until the key is touched (#4837)', () => {
+  let sent: Sent[];
+  let releaseGet: (() => void) | undefined;
+  let holdGet = false;
+
+  const client = (): S3Client =>
+    ({
+      send: (cmd: unknown): Promise<unknown> => {
+        const c = cmd as { constructor: { name: string }; input: Sent['input'] };
+        sent.push({ name: c.constructor.name, input: c.input });
+        if (c.constructor.name === 'GetObjectCommand') {
+          const miss = (): never => {
+            throw new NoSuchKey({ message: 'The specified key does not exist.', $metadata: {} });
+          };
+          if (!holdGet) return Promise.resolve().then(miss);
+          return new Promise((resolve) => {
+            releaseGet = () => resolve(undefined);
+          }).then(miss);
+        }
+        if (c.constructor.name === 'ListObjectVersionsCommand') {
+          return Promise.resolve({
+            Versions: SURVIVING_VERSIONS,
+            DeleteMarkers: [{ Key: JOURNAL_KEY, VersionId: 'dm-latest', IsLatest: true }],
+            IsTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+      destroy: vi.fn(),
+    }) as unknown as S3Client;
+
+  const backend = (): S3StateBackend =>
+    new S3StateBackend(client(), { bucket: BUCKET, prefix: 'cdkd' });
+
+  beforeEach(() => {
+    clearReplicationProbeCache();
+    sent = [];
+    holdGet = false;
+    releaseGet = undefined;
+  });
+
+  it('answers true after an absent read, and false before any read', async () => {
+    const b = backend();
+    expect(b.rollbackJournalReadAbsent(STACK, REGION)).toBe(false);
+    expect(await b.loadRollbackJournal(STACK, REGION)).toBeNull();
+    expect(b.rollbackJournalReadAbsent(STACK, REGION)).toBe(true);
+    // Another stack's key is a different fact.
+    expect(b.rollbackJournalReadAbsent('Other', REGION)).toBe(false);
+  });
+
+  it('forgets it once a writer touches the key', async () => {
+    const b = backend();
+    await b.loadRollbackJournal(STACK, REGION);
+    // A supersede with no journal writes nothing, so the fact still holds.
+    await b.markRollbackJournalSuperseded(STACK, REGION, ['A']);
+    expect(b.rollbackJournalReadAbsent(STACK, REGION)).toBe(true);
+    await b.appendRollbackJournalSegment(STACK, REGION, {
+      startedAt: 0,
+      reason: 'deploy-failed',
+      operations: [],
+    } as never);
+    expect(sent.map((x) => x.name)).toContain('PutObjectCommand');
+    expect(b.rollbackJournalReadAbsent(STACK, REGION)).toBe(false);
+  });
+
+  it('does not learn it when a writer touched the key while the read was in flight', async () => {
+    const b = backend();
+    holdGet = true;
+    const reading = b.loadRollbackJournal(STACK, REGION);
+    await new Promise((resolve) => setImmediate(resolve));
+    holdGet = false;
+    const deleting = b.deleteRollbackJournal(STACK, REGION);
+    releaseGet?.();
+    expect(await reading).toBeNull();
+    await deleting;
+    expect(b.rollbackJournalReadAbsent(STACK, REGION)).toBe(false);
+  });
+
+  it('purges the absent key without writing a new delete marker', async () => {
+    await backend().purgeRollbackJournalVersions(STACK, REGION);
+
+    expect(sent.map((s) => s.name)).not.toContain('DeleteObjectCommand');
+    const purged = sent.find((s) => s.name === 'DeleteObjectsCommand');
+    expect(purged?.input.Delete?.Objects).toEqual(
+      SURVIVING_VERSIONS.map(({ Key, VersionId }) => ({ Key, VersionId }))
+    );
+  });
+});

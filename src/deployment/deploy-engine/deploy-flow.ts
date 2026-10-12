@@ -85,6 +85,7 @@ import {
   forgetRecordedCreateTokens,
   noteAbandonedRun,
   noteDeployStateRecord,
+  prefetchCreateTokenLedger,
 } from '../../provisioning/providers/create-token-ledger.js';
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 
@@ -300,8 +301,29 @@ export async function doDeployWithPrefetch(
     // `cdkd rollback` can revert it; the deploy proceeds (fix-forward is
     // still supported). Best-effort — a journal read failure must not
     // block the deploy.
+    // Reads the success path would otherwise make after the last resource,
+    // started here beside the deploy instead (both under the stack lock, after
+    // `noteDeployStateRecord`). The exports index only when the record
+    // publishes no export: then no reader can patch an entry of this stack
+    // into it while this deploy runs, so this copy decides the update as a
+    // fresh read would.
+    if (!this.options.dryRun) {
+      void prefetchCreateTokenLedger();
+      if (this.exportIndexStore && importableOutputKeys(currentState).length === 0) {
+        void this.exportIndexStore.prefetch();
+      }
+    }
+    this.absentJournalVersionPurge = undefined;
     try {
       const loaded = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+      // No journal: purge what an earlier delete's unfinished purge left, now,
+      // beside the deploy, so the success settle need not touch the key.
+      if (loaded === null && !this.options.parentStackInfo && !this.options.dryRun) {
+        this.absentJournalVersionPurge = this.stateBackend.purgeRollbackJournalVersions(
+          stackName,
+          this.stackRegion
+        );
+      }
       // A nested child's `nested-pending-parent` segments record a deploy
       // that SUCCEEDED while its parent's was still running (issue #3754);
       // they are its parent's to replay, not a failure to report here.

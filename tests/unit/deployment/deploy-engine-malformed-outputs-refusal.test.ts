@@ -90,6 +90,7 @@ describe('DeployEngine refuses a malformed `outputs` bag at the load (go-to-k/cd
     };
     exportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

@@ -89,7 +89,7 @@ interface Harness {
     deleteRollbackJournal: ReturnType<typeof vi.fn>;
     loadRollbackJournal: ReturnType<typeof vi.fn>;
   };
-  exportIndexStore: { updateForStack: ReturnType<typeof vi.fn> };
+  exportIndexStore: { prefetch: ReturnType<typeof vi.fn>; updateForStack: ReturnType<typeof vi.fn> };
   lockManager: { releaseLock: ReturnType<typeof vi.fn> };
 }
 
@@ -133,6 +133,7 @@ function buildHarness(opts: {
   };
 
   const exportIndexStore = {
+    prefetch: vi.fn().mockResolvedValue(undefined),
     updateForStack: vi.fn().mockImplementation(async () => {
       order.push('exports:start');
       await opts.gate?.exports;
@@ -243,6 +244,95 @@ describe('DeployEngine — success-path tail ordering', () => {
 
     await expect(h.engine.deploy(stackName, template)).resolves.toBeDefined();
     expect(h.stateBackend.deleteRollbackJournal).toHaveBeenCalledOnce();
+  });
+});
+
+describe('DeployEngine — a journal absent at deploy start (#4837)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** The harness's backend, with the absent-journal capability wired in. */
+  const withAbsentJournal = (h: Harness, stillAbsent: boolean) => {
+    const backend = h.stateBackend as unknown as Record<string, unknown>;
+    const purge = vi.fn().mockImplementation(async () => {
+      h.order.push('journal:purge');
+    });
+    backend['purgeRollbackJournalVersions'] = purge;
+    backend['rollbackJournalReadAbsent'] = vi.fn().mockReturnValue(stillAbsent);
+    return purge;
+  };
+
+  it('purges the key beside the deploy and skips the success settle', async () => {
+    const h = buildHarness();
+    const purge = withAbsentJournal(h, true);
+
+    await h.engine.deploy(stackName, template);
+
+    expect(purge).toHaveBeenCalledOnce();
+    expect(h.order).toContain('journal:purge');
+    expect(h.order.indexOf('journal:purge')).toBeLessThan(h.order.indexOf('create'));
+    // One read at the start; no second read, delete or purge after the save.
+    expect(h.stateBackend.loadRollbackJournal).toHaveBeenCalledOnce();
+    expect(h.stateBackend.deleteRollbackJournal).not.toHaveBeenCalled();
+  });
+
+  it('settles as before when the key was touched since the read', async () => {
+    const h = buildHarness();
+    withAbsentJournal(h, false);
+
+    await h.engine.deploy(stackName, template);
+
+    expect(h.stateBackend.deleteRollbackJournal).toHaveBeenCalledOnce();
+    expect(h.order.indexOf('journal:start')).toBeGreaterThan(h.order.indexOf('saveState'));
+  });
+
+  it('settles as before when a journal exists at the start', async () => {
+    const h = buildHarness();
+    const purge = withAbsentJournal(h, false);
+    h.stateBackend.loadRollbackJournal.mockResolvedValue({ journalVersion: 1, segments: [] });
+
+    await h.engine.deploy(stackName, template);
+
+    expect(purge).not.toHaveBeenCalled();
+    expect(h.stateBackend.deleteRollbackJournal).toHaveBeenCalledOnce();
+  });
+});
+
+describe('DeployEngine — exports index read at deploy start (#4837)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reads the index before provisioning when the record publishes no export', async () => {
+    const h = buildHarness();
+    h.exportIndexStore.prefetch.mockImplementation(async () => {
+      h.order.push('exports:prefetch');
+    });
+
+    await h.engine.deploy(stackName, template);
+
+    expect(h.order).toContain('exports:prefetch');
+    expect(h.order.indexOf('exports:prefetch')).toBeLessThan(h.order.indexOf('create'));
+  });
+
+  it('leaves the read to the update when the record publishes an export', async () => {
+    const h = buildHarness({
+      currentState: {
+        version: 11,
+        stackName,
+        region: 'us-east-1',
+        resources: {},
+        outputs: { Out: 'v', Exported: 'v' },
+        exportNames: ['Exported'],
+        lastModified: 0,
+      },
+    });
+
+    await h.engine.deploy(stackName, template);
+
+    expect(h.exportIndexStore.prefetch).not.toHaveBeenCalled();
+    expect(h.exportIndexStore.updateForStack).toHaveBeenCalledOnce();
   });
 });
 

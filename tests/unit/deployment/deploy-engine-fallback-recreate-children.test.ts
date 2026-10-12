@@ -194,6 +194,7 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

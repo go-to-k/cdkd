@@ -406,6 +406,13 @@ export class DeployEngine {
   /** @internal */
   observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> = new Map();
   /**
+   * The journal-key version purge a deploy starts when it finds no rollback
+   * journal (`deploy-flow.ts` step 1b); the success settle awaits it in place
+   * of its own delete and purge. Never rejects.
+   * @internal
+   */
+  absentJournalVersionPurge: Promise<void> | undefined;
+  /**
    * The cap on the readback that decides a fresh-`NoEcho` replacement ceiling
    * (go-to-k/cdkd#3729). Outliving it keeps the replacement. A field rather
    * than a constant only so a test can shorten it.

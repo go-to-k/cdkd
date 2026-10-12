@@ -2479,6 +2479,7 @@ describe('the engine Export.Name copy sees a concurrent sibling record (issue #2
       'us-east-1',
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never
@@ -2728,6 +2729,7 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     };
     const exportIndex = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

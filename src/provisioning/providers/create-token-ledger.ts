@@ -405,6 +405,22 @@ export class CreateTokenLedger {
   }
 
   /**
+   * Read the ledger now so a later {@link forget} needs no read of its own.
+   * Only for a deploy holding the stack lock, after {@link beginDeploy}: no
+   * other writer can change it while the lock is held. Never throws; a failed
+   * read leaves the next caller to read again.
+   */
+  prefetch(): Promise<void> {
+    return this.serialized(async () => {
+      try {
+        await this.current();
+      } catch {
+        this.stale = true;
+      }
+    });
+  }
+
+  /**
    * Drop the `sent` entries of `logicalIds` once the deploy that sent them
    * has SUCCEEDED and its state record names each of them (go-to-k/cdkd#4438).
    * An entry exists to find a resource an interrupted deploy made but never
@@ -629,6 +645,11 @@ export function earliestDefined(...times: ReadonlyArray<number | undefined>): nu
  * `sent` entries in the bound ledger (see {@link CreateTokenLedger.forget}).
  * No ledger bound, no-op.
  */
+/** See {@link CreateTokenLedger.prefetch}. */
+export async function prefetchCreateTokenLedger(): Promise<void> {
+  await ledgerStore.getStore()?.prefetch();
+}
+
 export async function forgetRecordedCreateTokens(logicalIds: readonly string[]): Promise<void> {
   await ledgerStore.getStore()?.forget(logicalIds);
 }

@@ -605,7 +605,7 @@ function harness(
       ...extraOptions,
     },
     'us-east-1',
-    { updateForStack } as never
+    { updateForStack, prefetch: vi.fn().mockResolvedValue(undefined) } as never
   );
   return { engine, provider, saveState, updateForStack, events };
 }
