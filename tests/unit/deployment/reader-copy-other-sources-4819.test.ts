@@ -190,7 +190,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
       reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
     };
-    const read = (bag: RecordedSecretValues, region: string, skip = false) =>
+    const read = (bag: RecordedSecretValues, region: string) =>
       resolver.reresolveCrossStackValue(
         URL,
         region,
@@ -200,7 +200,6 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
           recordedSecretValues: bag,
           recordedImports,
           stateBackend: backend,
-          ...(skip && { skipDynamicReferences: true }),
         },
         'origin',
         undefined,
