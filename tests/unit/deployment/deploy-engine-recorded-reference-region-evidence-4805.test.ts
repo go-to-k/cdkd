@@ -1,8 +1,8 @@
 /**
  * Issue [#4805](https://github.com/go-to-k/cdkd/issues/4805), through the real
  * `DeployEngine` / `DiffCalculator` / resolver: a reader of an UNCHANGED queue
- * whose name the template ASSEMBLES (`Fn::Join`, the shape of CDK's
- * `secretValueFromJson`) was sent the record's `{{resolve:` spelling of its ARN,
+ * whose name the template ASSEMBLES (an `Fn::Join` of two literal halves, so
+ * no leaf spells the whole token) was sent the record's `{{resolve:` spelling of its ARN,
  * because only a literal token proved its region. The deploy's producer-region
  * evidence now proves it: no producer on record in another region.
  */

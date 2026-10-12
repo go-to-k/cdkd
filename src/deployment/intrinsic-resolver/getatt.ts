@@ -883,11 +883,13 @@ export async function referencesMatchPhysicalId(
  * ({@link ResolverContext.secretRegionEvidence}, go-to-k/cdkd#4805)? A token
  * reaches this stack's record from its own resolution (this region), from a
  * same-account stack it reads (whose region its `imports` / `outputReads`
- * record; a cross-account read of a reference is refused), or from a nested
- * parent (whose regions a child's evidence inherits). So with COMPLETE
- * evidence naming no other region, a region-less token is local; a token
- * naming its own region by ARN says where it resolves. Incomplete or absent
- * evidence proves nothing.
+ * record; a cross-account read of a reference is refused), from a nested
+ * parent (whose regions a child's evidence inherits), or from a nested
+ * child's `Outputs.X` (re-resolved in the child's region, which is this
+ * stack's). So with COMPLETE evidence naming no other region, a region-less
+ * token is local; a token naming its region by ARN resolves there, through
+ * the region-pinned sibling. Incomplete or absent evidence proves nothing,
+ * an ARN token included.
  */
 function referencesRegionProven(value: unknown, context: ResolverContext, region: string): boolean {
   const evidence = context.secretRegionEvidence?.();

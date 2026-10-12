@@ -739,11 +739,20 @@ if [ "${UPDATE_RC}" -ne 0 ]; then
       echo "FAIL: the update failed with '${refusal}': the recorded secret reference was compared with the resolved value (go-to-k/cdkd#4275)" >&2
     fi
   done
+  if awk 'index($0, "AssembledQueueReader") && index($0, "{{") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+    echo "FAIL: AssembledQueueReader's update failed on a {{ value: it was likely sent AssembledNameQueue's recorded {{resolve: ARN (go-to-k/cdkd#4805)" >&2
+  fi
   echo "FAIL: update deploy exited ${UPDATE_RC}" >&2
   log_tail
   exit 1
 fi
 echo "    OK: update deploy exited 0"
+# go-to-k/cdkd#4805: AssembledQueueReader stored the plaintext ARN on create,
+# so this deploy updates it from AssembledNameQueue's record (the path 5f
+# asserts too). Its absence would mean step 4 no longer exercises it.
+if ! awk 'index($0, "AssembledQueueReader") && index($0, "(AWS::SSM::Parameter)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "NOTE: step 4 did not update AssembledQueueReader; go-to-k/cdkd#4805 is exercised by step 5f alone"
+fi
 # The log must not be empty, or the absence checks below certify nothing; the
 # Service's updating line is one this fix made reachable.
 if [ ! -s "${DEPLOY_LOG}" ] || ! grep -qF "Updating ECS service" "${DEPLOY_LOG}"; then
@@ -779,7 +788,7 @@ fi
 # QueuePolicy's from both passes (its Sid changes).
 expect_read_lines "${DEPLOY_LOG}" "update"
 expect_child_read_line "${DEPLOY_LOG}" "update"
-for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
+for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME AQ_QUEUE_NAME; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}"; then
     HIT_LINES="$(grep -nF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}" | cut -d: -f1 | paste -sd ' ' -)"
@@ -1146,6 +1155,10 @@ esac
 expect_eq "AssembledQueueReader's SSM parameter after the redeploy (go-to-k/cdkd#4805)" "${AQ_ARN_LIVE}" \
   "$(aws ssm get-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}" \
     --query 'Parameter.Value' --output text)"
+if grep -qF -- "${AQ_QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy's log names AssembledNameQueue in plaintext (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
 case "$(state_property AssembledQueueReader Value)" in
   arn:*'{{resolve:secretsmanager:'*) ;;
   *) echo "FAIL: AssembledQueueReader's recorded Value is not in {{resolve: reference form (go-to-k/cdkd#4805)" >&2; exit 1 ;;
@@ -1194,6 +1207,10 @@ if [ "${NOOP2_RC}" -ne 0 ]; then
 fi
 if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
   echo "FAIL: the second redeploy's log names SecretQueue in plaintext (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+if grep -qF -- "${AQ_QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the second redeploy's log names AssembledNameQueue in plaintext (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
 # A NOTE until a real run shows this fixture can reach a no-op at all (the

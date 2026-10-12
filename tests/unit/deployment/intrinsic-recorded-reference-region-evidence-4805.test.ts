@@ -27,6 +27,9 @@ const PLAIN_ARN = `arn:aws:sqs:us-east-1:123456789012:${QUEUE_NAME}`;
 const QUEUE_URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${QUEUE_NAME}`;
 
 const smCalls = vi.hoisted(() => ({ count: 0 }));
+const SDIN_WEST_ARN = vi.hoisted(
+  () => 'arn:aws:secretsmanager:us-west-2:123456789012:secret:sdin-AbCdEf'
+);
 const warnSpy = vi.hoisted(() => ({ calls: [] as string[] }));
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -45,7 +48,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     secretsManager: {
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
         smCalls.count += 1;
-        if (command.input?.SecretId === 'sdin') {
+        if (command.input?.SecretId === 'sdin' || command.input?.SecretId === SDIN_WEST_ARN) {
           return { SecretString: JSON.stringify({ queue: QUEUE_NAME }) };
         }
         const notFound = new Error("Secrets Manager can't find the specified secret.");
@@ -127,6 +130,7 @@ describe('a recorded reference is re-resolved on producer-region evidence (#4805
     ],
     ['a name read by GetAtt from another resource (a chain)', { QueueName: { 'Fn::GetAtt': ['A', 'QueueName'] } }],
     ['a name read from a same-region stack output', { QueueName: { 'Fn::ImportValue': 'Name' } }],
+    ['a name read from a parameter', { QueueName: { Ref: 'QueueNameParam' } }],
   ])('%s, with no producer in another region', async (_l, props) => {
     expect(await readArn(props, { regions: [], complete: true })).toBe(PLAIN_ARN);
   });
@@ -145,6 +149,18 @@ describe('a recorded reference is re-resolved on producer-region evidence (#4805
   ])('serves the record as it is with %s', async (_l, evidence) => {
     expect(await readArn({ QueueName: JOINED_NAME }, evidence)).toBe(RECORDED_ARN);
     expect(smCalls.count).toBe(0);
+  });
+
+  it('a token naming its region by ARN resolves there, beside a producer on record in that region', async () => {
+    const token = `{{resolve:secretsmanager:${SDIN_WEST_ARN}:SecretString:queue::}}`;
+    const producer = queue(QUEUE_URL, `arn:aws:sqs:us-east-1:123456789012:${token}`);
+    const resolved = await readArn(
+      { QueueName: { 'Fn::Join': ['', ['{{resolve:secretsmanager:', SDIN_WEST_ARN, ':SecretString:queue::}}']] } },
+      { regions: ['us-west-2'], complete: true },
+      { producer }
+    );
+    expect(resolved).toBe(PLAIN_ARN);
+    expect(smCalls.count).toBe(1);
   });
 
   it('still refuses a value the physical id cannot prove (a rotated secret), with a warning', async () => {
