@@ -117,29 +117,26 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
   });
 
   it.each([
-    ['a same-account producer output holding one of its physical ids', [URL], 'us-east-1', { crossAccount: false }, [URL]],
+    ['a same-account producer output holding one of its physical ids', [URL], { crossAccount: false }, [URL]],
     [
       'a producer output that is NOT a physical id (a plaintext a scrub has not reached)',
       ['https://sqs.us-east-1.amazonaws.com/123456789012/other'],
-      'us-east-1',
       { crossAccount: false },
       [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
     ],
     [
       "a read across an ACCOUNT boundary (its bucket is not this account's)",
       [URL],
-      'us-east-1',
       { crossAccount: true },
       [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
     ],
     [
       'a read naming no producer stack (a nested Outputs read, this stack\'s own value)',
       [URL],
-      'us-east-1',
       undefined,
       [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
     ],
-  ])('a cross-stack plaintext is a copy only for %s', async (_l, ids, region, output, want) => {
+  ])('a cross-stack plaintext is a copy only for %s', async (_l, ids, output, want) => {
     const bag: RecordedSecretValues = new Map([[NAME, REF]]);
     const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
       reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
@@ -150,7 +147,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
         : { stackName: 'Producer', region: 'us-east-1', outputKey: 'QueueUrl', ...output };
     await resolver.reresolveCrossStackValue(
       URL,
-      region,
+      'us-east-1',
       {
         template: { Resources: {} },
         resources: {},
@@ -185,5 +182,57 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     expect(redactSecretsForState({ Queues: [URL] }, bag)).toEqual({
       Queues: [`https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`],
     });
+  });
+
+  it("reads the PRODUCER's state, once per engine run, and not in a pass that persists nothing", async () => {
+    const backend = producerBackend();
+    const recordedImports: unknown[] = [];
+    const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
+      reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
+    };
+    const read = (bag: RecordedSecretValues, region: string, skip = false) =>
+      resolver.reresolveCrossStackValue(
+        URL,
+        region,
+        {
+          template: { Resources: {} },
+          resources: {},
+          recordedSecretValues: bag,
+          recordedImports,
+          stateBackend: backend,
+          ...(skip && { skipDynamicReferences: true }),
+        },
+        'origin',
+        undefined,
+        { stackName: 'Producer', region, outputKey: 'QueueUrl' }
+      );
+    // Two resources (two bags) of one engine run, and an index entry whose
+    // region is empty (read as the resolver's own).
+    const first: RecordedSecretValues = new Map([[NAME, REF]]);
+    const second: RecordedSecretValues = new Map([[NAME, REF]]);
+    await read(first, 'us-east-1');
+    await read(second, '');
+    expect(backend.getState).toHaveBeenCalledTimes(1);
+    expect(backend.getState).toHaveBeenCalledWith('Producer', 'us-east-1');
+    expect(redactSecretsForState({ Q: URL }, second)).toEqual({ Q: URL });
+    // A diff pass records nothing and reads nothing.
+    const diffBag: RecordedSecretValues = new Map([[NAME, REF]]);
+    const fresh = producerBackend();
+    await resolver.reresolveCrossStackValue(
+      URL,
+      'us-east-1',
+      {
+        template: { Resources: {} },
+        resources: {},
+        recordedSecretValues: diffBag,
+        recordedImports: [],
+        stateBackend: fresh,
+        skipDynamicReferences: true,
+      },
+      'origin',
+      undefined,
+      { stackName: 'Producer', region: 'us-east-1', outputKey: 'QueueUrl' }
+    );
+    expect(fresh.getState).not.toHaveBeenCalled();
   });
 });

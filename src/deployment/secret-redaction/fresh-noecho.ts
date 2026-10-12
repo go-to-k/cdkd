@@ -170,6 +170,9 @@ function freshNoEchoLeafTest(
         );
   if (fresh.size === 0) return undefined;
   const needles = containmentNeedlesOf(secrets).filter((needle) => fresh.has(needle));
+  // The equality half still answers "fresh" for a leaf EQUAL to a recorded
+  // physical-name copy, which the persist walk keeps in plaintext
+  // (go-to-k/cdkd#4810); that only costs a redundant update or readback.
   return (leaf) =>
     (fresh.has(leaf) && isMaskOnlyPlaintext(secrets, leaf)) ||
     (leaf !== SECRET_MASK && embedsNeedleOutsideReferences(leaf, needles, secrets));

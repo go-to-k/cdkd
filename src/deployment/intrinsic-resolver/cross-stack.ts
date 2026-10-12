@@ -235,23 +235,30 @@ export async function reresolveCrossStackValue(
   // id: an output that merely holds plaintext (a legacy record a scrub has
   // not reached yet) is redactable and stays the redaction's. Not for a read
   // across an ACCOUNT boundary, whose producer's bucket is not this account's,
-  // and not where no producer stack is named (a nested `Outputs.X` read, this
-  // stack's own stored attributes).
+  // not where no producer stack is named (a nested `Outputs.X` read, this
+  // stack's own stored attributes), and not in a pass that persists nothing
+  // (`skipDynamicReferences`). A producer output a pre-go-to-k/cdkd#4810 deploy
+  // spliced (`https://sqs.../{{resolve:...}}`) is no copy here; its next
+  // deploy stores the plain id. The producer's ids are read once per ENGINE
+  // RUN (keyed by its shared `recordedImports`), never once per resource.
   if (
     context.recordedSecretValues !== undefined &&
     producerOutput !== undefined &&
     producerOutput.crossAccount !== true &&
-    context.stateBackend !== undefined
+    context.stateBackend !== undefined &&
+    context.skipDynamicReferences !== true
   ) {
     const plain = [...wholeStringLeavesOf(value)].filter(
       (leaf) => !leaf.includes('{{resolve:') && !carriesSecretMask(leaf)
     );
     if (plain.length > 0) {
       const ids = await producerPhysicalIds(
-        context.recordedSecretValues,
+        context.recordedImports ?? context.recordedSecretValues,
         context.stateBackend,
         producerOutput.stackName,
-        producerOutput.region
+        // An index entry can carry an empty region; the resolver reads that as
+        // its own (`resolverForProducerRegion`), and so does this read.
+        producerOutput.region || this.resolverRegion
       );
       for (const leaf of plain) {
         if (ids.has(leaf)) recordPhysicalNameCopy(context.recordedSecretValues, leaf);
@@ -792,24 +799,25 @@ export function recordImport(
   });
 }
 
-/** Per resolution pass (keyed by its bag), so one pass reads a producer's state once. */
+/** Per engine run (keyed by its shared `recordedImports`, else the pass's bag): one read per producer. */
 const producerPhysicalIdReads = new WeakMap<object, Map<string, Promise<ReadonlySet<string>>>>();
 
 /**
  * The physical ids of a producer stack's records (go-to-k/cdkd#4819), read
- * from its state once per resolution pass; an empty set when the read fails,
- * so nothing is kept then.
+ * from its state once per `scope` (an engine run); an empty set when the read
+ * fails, so nothing is kept then. A producer deployed earlier in the same
+ * process saved its state before the consumer's engine started.
  */
 function producerPhysicalIds(
-  pass: object,
+  scope: object,
   stateBackend: NonNullable<ResolverContext['stateBackend']>,
   stackName: string,
   region: string
 ): Promise<ReadonlySet<string>> {
-  let reads = producerPhysicalIdReads.get(pass);
+  let reads = producerPhysicalIdReads.get(scope);
   if (reads === undefined) {
     reads = new Map();
-    producerPhysicalIdReads.set(pass, reads);
+    producerPhysicalIdReads.set(scope, reads);
   }
   const key = JSON.stringify([stackName, region]);
   let read = reads.get(key);

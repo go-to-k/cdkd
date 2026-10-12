@@ -659,6 +659,13 @@ case "${QUEUE_URL_LIVE}" in
   https://*"/${QUEUE_NAME}") ;;
   *) fail "premise: the producer's secret-named queue does not exist under the secret's queue value" ;;
 esac
+# PREMISE: the producer stored the exported URL in plaintext (its own
+# physical id), the shape a consumer's copy of it is kept for.
+PRODUCER_QUEUE_OUTPUT="$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" - \
+  | jq -r '.outputs.SecretNamedQueueUrlOutput // empty')"
+if [ "${PRODUCER_QUEUE_OUTPUT}" != "${QUEUE_URL_LIVE}" ]; then
+  fail "premise: the producer's stored SecretNamedQueueUrlOutput is not the queue URL in plaintext (the copy this step checks would come from elsewhere)"
+fi
 RECORDED_QUEUES_0="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - \
   | jq -r '.resources.ImportedQueuePolicy.properties.Queues[0] // empty')"
 if [ "${RECORDED_QUEUES_0}" != "${QUEUE_URL_LIVE}" ]; then
