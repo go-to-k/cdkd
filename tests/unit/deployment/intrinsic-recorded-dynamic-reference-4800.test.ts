@@ -51,7 +51,15 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
         smCalls.count += 1;
         if (command.input?.SecretId === 'sdin') {
-          return { SecretString: JSON.stringify({ queue: 'sdin-q-1', cidr: '10.42.0.0/16', short: 'q1' }) };
+          return {
+            SecretString: JSON.stringify({
+              queue: 'sdin-q-1',
+              cidr: '10.42.0.0/16',
+              short: 'q1',
+              four: 'abcd',
+              upper: 'SDIN-Q-1',
+            }),
+          };
         }
         const notFound = new Error("Secrets Manager can't find the specified secret.");
         notFound.name = 'ResourceNotFoundException';
@@ -362,6 +370,61 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     };
     const resolved = await resolver.resolve({ 'Fn::GetAtt': ['Producer', 'Arn'] }, context as never);
     expect(resolved).toBe(want);
+  });
+
+  it.each([
+    ['in one leaf', { Arn: `${RECORDED_ARN}/${CIDR_REF}` }, 'Arn'],
+    ['in two leaves', { Pair: { A: RECORDED_ARN, B: CIDR_REF } }, 'Pair'],
+  ])(
+    'every token must match the physical id: a second, rotated one (%s) is served as stored',
+    async (_l, attributes, attr) => {
+      // Test review N1 on PR #4804: both tokens are spelled literally (proven
+      // local); the first resolves to text the physical id holds, the second
+      // does not, so the value as a whole cannot be proven.
+      const producer = record('Custom::Thing', CR_ID, { Name: QUEUE_REF, Cidr: CIDR_REF }, attributes);
+      const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', attr] }, {
+        bag: new Map(),
+      });
+      expect(resolved).toEqual(attributes[attr as keyof typeof attributes]);
+      expect(warnSpy.calls.join('\n')).toContain('cdkd cannot confirm the secret still holds the value');
+    }
+  );
+
+  it('the physical-id check ignores case (a service that folds a name)', async () => {
+    const upperRef = '{{resolve:secretsmanager:sdin:SecretString:upper::}}';
+    const producer = record('Custom::Thing', CR_ID, { Name: upperRef }, { Name: upperRef });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Name'] }, {
+      bag: new Map(),
+    });
+    expect(resolved).toBe('SDIN-Q-1');
+  });
+
+  it('a value of exactly the needle floor counts', async () => {
+    const fourRef = '{{resolve:secretsmanager:sdin:SecretString:four::}}';
+    const producer = record('Custom::Thing', 'cr-abcd', { Name: fourRef }, { Name: fourRef });
+    const resolved = await resolveWith(producer, { 'Fn::GetAtt': ['Producer', 'Name'] }, {
+      bag: new Map(),
+    });
+    expect(resolved).toBe('abcd');
+  });
+
+  it('an Fn::If whose condition is unknown walks both branches', async () => {
+    const producer = record('AWS::SQS::Queue', QUEUE_URL, {}, { Arn: RECORDED_ARN });
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = {
+      ...contextFor(producer, { bag: new Map() }),
+      template: {
+        Resources: {
+          Producer: {
+            Type: 'AWS::SQS::Queue',
+            Properties: { QueueName: { 'Fn::If': ['Unknown', 'plain-queue', QUEUE_REF] } },
+          },
+        },
+      },
+      conditions: {},
+    };
+    const resolved = await resolver.resolve({ 'Fn::GetAtt': ['Producer', 'Arn'] }, context as never);
+    expect(resolved).toBe(PLAIN_ARN);
   });
 
   it('a diff context keeps the secret expression and fetches nothing', async () => {

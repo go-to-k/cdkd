@@ -784,7 +784,7 @@ export async function reresolveRecordedReferences(
   // the old name, and today's value would name a resource that does not exist.
   if (!(await this.referencesMatchPhysicalId(value, logicalId, context))) {
     this.logger.warn(
-      safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with (its physical id does not contain it). If the secret changed, update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value.`
+      safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
     );
     return value;
   }
@@ -847,18 +847,6 @@ function readsAnotherStack(node: Record<string, unknown>): boolean {
   );
 }
 
-/**
- * Does the producer's own template `Properties` spell, as a literal string
- * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
- * read of another stack anywhere in them ({@link readsAnotherStack})? A literal
- * token is resolved by the producer's template-leaf route in THIS resolver's
- * region, so re-resolving it here answers from the region the record's value
- * came from; whether it is still the same VALUE is
- * {@link referencesMatchPhysicalId}'s question. A token assembled by
- * an intrinsic, or read from another stack, proves nothing about its region
- * (go-to-k/cdkd#4800 security review). The walk covers one resource's
- * properties, so it does not scale with the stack.
- */
 /** The taken branch of an `Fn::If` node whose condition `context` evaluated, else `undefined`. */
 function takenIfBranch(node: object, context: ResolverContext): { branch: unknown } | undefined {
   if (Array.isArray(node) || !Object.hasOwn(node, 'Fn::If')) return undefined;
@@ -871,6 +859,18 @@ function takenIfBranch(node: object, context: ResolverContext): { branch: unknow
   return { branch: verdict ? args[1] : args[2] };
 }
 
+/**
+ * Does the producer's own template `Properties` spell, as a literal string
+ * leaf (or inside one), every `{{resolve:...}}` token `value` carries, with no
+ * read of another stack anywhere in them ({@link readsAnotherStack})? A literal
+ * token is resolved by the producer's template-leaf route in THIS resolver's
+ * region, so re-resolving it here answers from the region the record's value
+ * came from; whether it is still the same VALUE is
+ * {@link referencesMatchPhysicalId}'s question. A token assembled by
+ * an intrinsic, or read from another stack, proves nothing about its region
+ * (go-to-k/cdkd#4800 security review). The walk covers one resource's
+ * properties, so it does not scale with the stack.
+ */
 function referencesProvenLocal(
   value: unknown,
   logicalId: string,
