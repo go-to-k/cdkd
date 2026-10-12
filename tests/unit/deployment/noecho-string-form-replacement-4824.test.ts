@@ -204,9 +204,13 @@ describe('DeployEngine - honouring NoEcho "true" replaces nothing on an unchange
   });
 
   it.each([
-    ['marked (another leaf already in noEchoLeaves)', true],
-    ['unmarked (no noEchoLeaves at all)', false],
-  ])('a create-only literal EQUAL to an exact-string NoEcho value is not replaced, %s: the value arm stays boolean-only (#4831)', async (_l, marked) => {
+    // Pins the value-arm gate: removing it replaces the topic.
+    ['marked (another leaf already in noEchoLeaves): the value arm stays boolean-only (#4831)', true],
+    // A REGRESSION CONTROL of today's behavior, not a pin of a mechanism: it
+    // stays green with the gate removed or the witness disabled, since the
+    // record carries no `***` for the comparison to read as moved.
+    ['unmarked (no noEchoLeaves at all): regression control', false],
+  ])('a create-only literal EQUAL to an exact-string NoEcho value is not replaced, %s', async (_l, marked) => {
     const template = {
       Parameters: {
         Token: { Type: 'String', NoEcho: 'true', Default: TOPIC },

@@ -44,19 +44,10 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
-import { getLogger } from '../../../src/utils/logger.js';
 
 const FIRST = 'alpha-first-piece-4824';
 const SECOND = 'bravo-second-piece-4824';
 const NOECHO = `${FIRST},${SECOND}`;
-
-function loggedText(): string {
-  const log = getLogger();
-  return [log.debug, log.info, log.warn, log.error]
-    .flatMap((fn) => vi.mocked(fn).mock.calls.flat())
-    .map((arg) => String(arg))
-    .join('\n');
-}
 
 function res(properties: Record<string, unknown>): ResourceState {
   return {
