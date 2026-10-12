@@ -16,14 +16,15 @@
  * written at all. So the return type is `ReadonlySet<string> | undefined` and
  * the failure is the `undefined`.
  *
- * WHAT `readOnlyProperties` MEANS HERE. In the CloudFormation registry schema a
- * type's `readOnlyProperties` are exactly the values `Fn::GetAtt` may read —
- * that is the definition CloudFormation itself applies, and it is why the
- * narrowing this module enables is a CORRECTNESS fix as much as a security one.
- * Cloud Control's `GetResource` returns the whole resource MODEL, whose keys are
- * every readable property, writable ones included; a `Fn::GetAtt` naming one of
- * those is rejected by CloudFormation at template validation, so nothing cdkd
- * drops here was ever a legitimate attribute.
+ * WHAT `readOnlyProperties` IS NOT. It is NOT the set of names `Fn::GetAtt`
+ * may read. CloudFormation validates `Fn::GetAtt` against the resource
+ * specification's `Attributes`, which also names some WRITABLE properties
+ * (`AWS::EC2::Subnet` `VpcId`, `AWS::SQS::Queue` `QueueName`, ...) — and the
+ * registry schema `DescribeType` returns carries no marker for those (issue
+ * #3735). So a caller deciding "is this model key an attribute" must use
+ * {@link getTopLevelAttributeNames}, which unions `readOnlyProperties` with the
+ * generated {@link WRITABLE_GETATT_ATTRIBUTES} table; certifying
+ * `readOnlyProperties` alone masks a value a valid template reads.
  *
  * TOP-LEVEL REDUCTION, deliberately the same convention as the write-only
  * sibling: a nested pointer `/properties/Endpoint/Address` reduces to
@@ -66,6 +67,7 @@
  */
 
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import { WRITABLE_GETATT_ATTRIBUTES } from './getatt-attributes.generated.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
@@ -77,14 +79,54 @@ import { displaySafe } from '../utils/display-safe.js';
  */
 const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 
-/** Clear the per-type cache. Test-only helper. */
+/**
+ * Per-type union built by {@link getTopLevelAttributeNames}. Only built from a
+ * SUCCESSFUL read-only lookup, which that cache never evicts, and cleared with
+ * it, so it cannot outlive the set it was built from.
+ */
+const attributeNamesCache = new Map<string, ReadonlySet<string>>();
+
+/** Clear the per-type caches. Test-only helper. */
 export function clearReadOnlyPropertiesCache(): void {
   readOnlyPropertiesCache.clear();
+  attributeNamesCache.clear();
 }
 
 /**
- * Resolve the TOP-LEVEL read-only (i.e. `Fn::GetAtt`-able) property names for a
- * resource type.
+ * Resolve the TOP-LEVEL names `Fn::GetAtt` may read for a resource type: its
+ * registry `readOnlyProperties` UNION the writable properties the resource
+ * specification also lists as attributes ({@link WRITABLE_GETATT_ATTRIBUTES},
+ * issue #3735).
+ *
+ * Same `undefined` contract as {@link getTopLevelReadOnlyProperties}: when the
+ * schema cannot be resolved the answer stays `undefined` ("cannot certify"),
+ * NOT the table's names alone — the caller's fail-closed arm masks the whole
+ * model there, and certifying a partial set would make that arm's warning
+ * ("every imported attribute ... is recorded as masked") untrue.
+ *
+ * Never throws. The table lookup is one own-property read per call; a type with
+ * no table entry gets the cached read-only set itself, and the union is built
+ * once per type.
+ */
+export async function getTopLevelAttributeNames(
+  resourceType: string
+): Promise<ReadonlySet<string> | undefined> {
+  const readOnly = await getTopLevelReadOnlyProperties(resourceType);
+  if (readOnly === undefined) return undefined;
+  const writable = Object.hasOwn(WRITABLE_GETATT_ATTRIBUTES, resourceType)
+    ? WRITABLE_GETATT_ATTRIBUTES[resourceType]
+    : undefined;
+  if (!writable || writable.length === 0) return readOnly;
+  const cached = attributeNamesCache.get(resourceType);
+  if (cached) return cached;
+  const names: ReadonlySet<string> = new Set([...readOnly, ...writable]);
+  attributeNamesCache.set(resourceType, names);
+  return names;
+}
+
+/**
+ * Resolve the TOP-LEVEL `readOnlyProperties` names for a resource type. NOT
+ * the full `Fn::GetAtt` set — see {@link getTopLevelAttributeNames}.
  *
  * Returns `undefined` when the schema could not be resolved — a missing
  * `cloudformation:DescribeType` permission, an exhausted throttle retry, or a

@@ -35,9 +35,11 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import {
+  getTopLevelAttributeNames,
   getTopLevelReadOnlyProperties,
   clearReadOnlyPropertiesCache,
 } from '../../../src/provisioning/read-only-properties.js';
+import { WRITABLE_GETATT_ATTRIBUTES } from '../../../src/provisioning/getatt-attributes.generated.js';
 import { describeTypeRetryDelays } from '../../../src/provisioning/describe-type.js';
 
 function throttlingError(): Error {
@@ -200,5 +202,85 @@ describe('getTopLevelReadOnlyProperties (issue #2847)', () => {
     await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster');
 
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The registry's own `readOnlyProperties` for `AWS::EC2::Subnet` (the
+// committed fixture `tests/fixtures/cfn-schemas/AWS-EC2-Subnet.json`). It does
+// NOT list `VpcId` / `CidrBlock` / `AvailabilityZone`, all of which CloudFormation
+// accepts in `Fn::GetAtt` and a CDK app reads through `attrVpcId` etc.
+const SUBNET_SCHEMA = JSON.stringify({
+  readOnlyProperties: [
+    '/properties/BlockPublicAccessStates',
+    '/properties/Ipv6CidrBlocks',
+    '/properties/NetworkAclAssociationId',
+    '/properties/SubnetId',
+  ],
+});
+
+describe('getTopLevelAttributeNames (issue #3735)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearReadOnlyPropertiesCache();
+    describeTypeRetryDelays.sleep = async () => {};
+  });
+
+  afterEach(() => {
+    delete describeTypeRetryDelays.sleep;
+  });
+
+  it('certifies the writable properties CloudFormation accepts in Fn::GetAtt, on top of readOnlyProperties', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: SUBNET_SCHEMA });
+
+    const names = await getTopLevelAttributeNames('AWS::EC2::Subnet');
+
+    // Exact set: the four read-only names PLUS the table's writable ones, and
+    // nothing else (`MapPublicIpOnLaunch` is writable and NOT an attribute).
+    expect(names).toEqual(
+      new Set([
+        'BlockPublicAccessStates',
+        'Ipv6CidrBlocks',
+        'NetworkAclAssociationId',
+        'SubnetId',
+        ...WRITABLE_GETATT_ATTRIBUTES['AWS::EC2::Subnet']!,
+      ])
+    );
+    expect(names?.has('VpcId')).toBe(true);
+    expect(names?.has('CidrBlock')).toBe(true);
+    expect(names?.has('AvailabilityZone')).toBe(true);
+    expect(names?.has('MapPublicIpOnLaunch')).toBe(false);
+  });
+
+  it('builds the union once: a second call for the same type returns the same set', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: SUBNET_SCHEMA });
+
+    const first = await getTopLevelAttributeNames('AWS::EC2::Subnet');
+    expect(await getTopLevelAttributeNames('AWS::EC2::Subnet')).toBe(first);
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays undefined when the schema cannot be resolved, rather than certifying the table names alone', async () => {
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+
+    expect(await getTopLevelAttributeNames('AWS::EC2::Subnet')).toBeUndefined();
+  });
+
+  it('returns the read-only set itself for a type with no table entry', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: RDS_CLUSTER_SCHEMA });
+    const type = 'AWS::Pinpoint::APNSChannel';
+    expect(Object.hasOwn(WRITABLE_GETATT_ATTRIBUTES, type)).toBe(false);
+
+    const readOnly = await getTopLevelReadOnlyProperties(type);
+    expect(await getTopLevelAttributeNames(type)).toBe(readOnly);
+  });
+
+  it('does not read an inherited Object.prototype key as a table entry', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: RDS_CLUSTER_SCHEMA });
+
+    // `constructor` is not a resource type; a plain `TABLE[type]` read would
+    // hand back a function and the union would throw on spreading it.
+    expect(await getTopLevelAttributeNames('constructor')).toEqual(
+      new Set(['DBClusterArn', 'Endpoint'])
+    );
   });
 });

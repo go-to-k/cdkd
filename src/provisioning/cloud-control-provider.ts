@@ -78,7 +78,7 @@ import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
 } from './write-only-properties.js';
-import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
+import { getTopLevelAttributeNames } from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
 import {
   errorCauseChain,
@@ -3314,8 +3314,10 @@ export class CloudControlProvider implements ResourceProvider {
    * It passes every other key through AS-IS, and on the CREATE / UPDATE path
    * that bag is still the WHOLE resource model. This comment used to justify
    * that by saying the model's property names match `Fn::GetAtt` attribute
-   * names; they do not — the model is every readable property, and
-   * CloudFormation rejects a `Fn::GetAtt` naming a writable one. Issue
+   * names; they do not — the model is every readable property, while
+   * `Fn::GetAtt` reads only the type's attributes (its `readOnlyProperties`
+   * plus the writable properties the resource specification also lists as
+   * attributes, issue #3735). Issue
    * [#2847](https://github.com/go-to-k/cdkd/issues/2847) narrowed the IMPORT
    * path for that reason; the deploy path is issue
    * [#2925](https://github.com/go-to-k/cdkd/issues/2925), which also carries
@@ -4462,13 +4464,19 @@ export class CloudControlProvider implements ResourceProvider {
    * Cloud-Control-routed type. Where the model carries a credential, the
    * credential landed in `state.json` in the clear.
    *
-   * ## Why "attribute" means `readOnlyProperties`
+   * ## What "attribute" means
    *
-   * That is CloudFormation's own definition: a type's `readOnlyProperties` are
-   * exactly what `Fn::GetAtt` may read, and CloudFormation REJECTS a
-   * `Fn::GetAtt` naming a writable property at template validation. So a key
-   * outside that set was never a legitimate attribute, and cdkd persisting it
-   * bought nothing a valid template could use.
+   * The names CloudFormation accepts in `Fn::GetAtt`: the resource
+   * specification's `Attributes`, resolved by `getTopLevelAttributeNames` as
+   * the registry schema's `readOnlyProperties` UNION the writable properties
+   * the specification also lists as attributes (`AWS::EC2::Subnet` `VpcId`,
+   * `AWS::SQS::Queue` `QueueName`; the generated
+   * `getatt-attributes.generated.ts` table). `readOnlyProperties` alone is NOT
+   * that set — certifying only it masked `Fn::GetAtt` reads CloudFormation
+   * accepts, refusing the deploy with a remedy that re-masked the same key
+   * (issue #3735). A key outside the union is never a legitimate
+   * `Fn::GetAtt` target, so cdkd persisting it bought nothing a valid
+   * template could use.
    *
    * ## Why MASK and not DROP — the load-bearing decision
    *
@@ -4500,7 +4508,7 @@ export class CloudControlProvider implements ResourceProvider {
    *
    * ## The unresolvable-schema arm is FAIL-CLOSED
    *
-   * `getTopLevelReadOnlyProperties` answers `undefined` when it could not find
+   * `getTopLevelAttributeNames` answers `undefined` when it could not find
    * out — a missing `cloudformation:DescribeType` grant, an exhausted throttle
    * retry, or a type with no registry entry. cdkd then cannot tell an attribute
    * from a property for this type, so it certifies NOTHING and masks the whole
@@ -4528,7 +4536,7 @@ export class CloudControlProvider implements ResourceProvider {
    * ## What this does NOT close, stated as the danger direction
    *
    * A CREDENTIAL THAT IS ITSELF A READ-ONLY ATTRIBUTE IS STILL PERSISTED IN THE
-   * CLEAR. `readOnlyProperties` is a structural test, not a sensitivity one, and
+   * CLEAR. The attribute set is a structural test, not a sensitivity one, and
    * the registry schema offers nothing better to key on: it has no general
    * sensitivity marking. The nearest things it does have were both checked and
    * neither serves — `"format": "password"` is declared by a single property in
@@ -4700,7 +4708,7 @@ export class CloudControlProvider implements ResourceProvider {
     // convention inside one method is how the next line gets it wrong.
     const safeType = displaySafe(resourceType, { asciiOnly: true });
     const safeId = displaySafe(physicalId, { asciiOnly: true });
-    const attributeNames = await getTopLevelReadOnlyProperties(resourceType);
+    const attributeNames = await getTopLevelAttributeNames(resourceType);
     if (attributeNames === undefined) {
       // ONCE PER TYPE, not once per resource: a whole-stack import of N
       // Cloud-Control-routed resources of one type would otherwise print N
@@ -4734,9 +4742,9 @@ export class CloudControlProvider implements ResourceProvider {
     if (maskedCount > 0 && attributeNames !== undefined) {
       this.logger.debug(
         `Masked ${maskedCount} non-attribute key(s) out of the ${safeType} ` +
-          `Cloud Control model for ${safeId}: they are not in the type's ` +
-          `readOnlyProperties, so CloudFormation would reject an Fn::GetAtt ` +
-          `naming them and cdkd has no evidence they are safe to persist.`
+          `Cloud Control model for ${safeId}: they are not Fn::GetAtt ` +
+          `attributes of the type, so CloudFormation would reject an ` +
+          `Fn::GetAtt naming them and cdkd has no evidence they are safe to persist.`
       );
     }
     return masked;

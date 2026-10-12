@@ -92,6 +92,7 @@ describe('CI regenerates through gen:all-matrices (#1417)', () => {
         'cli-flag-coverage',
         'format',
         'gen:enrichment-coverage',
+        'gen:getatt-attributes',
         'gen:handled-property-wiring',
         'gen:nested-key-coverage',
         'gen:nested-required',

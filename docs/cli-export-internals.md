@@ -71,7 +71,8 @@ re-deploying the same template does not clear that mask either.
 
 A mask in a record's `attributes` is a different population. `cdkd import`
 writes the mask there for every Cloud Control model key it cannot certify as
-read-only (the whole model when `cloudformation:DescribeType` was unavailable),
+an `Fn::GetAtt` attribute (the whole model when `cloudformation:DescribeType`
+was unavailable),
 so a Cloud-Control-imported record routinely carries masked attributes, and
 those records export normally. The export reads `attributes` at exactly one
 position, the recorded identifier of the few types whose cdkd physical id is
