@@ -408,20 +408,23 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     expect(resolved).toBe('abcd');
   });
 
-  it('an Fn::If whose condition is unknown walks both branches', async () => {
+  it.each([
+    ['unknown, token in the then-branch', ['Unknown', QUEUE_REF, 'plain-queue'], {}],
+    ['unknown, token in the else-branch', ['Unknown', 'plain-queue', QUEUE_REF], {}],
+    ['a non-boolean verdict', ['C', 'plain-queue', QUEUE_REF], { C: undefined }],
+    ['no conditions at all', ['C', QUEUE_REF, 'plain-queue'], undefined],
+  ])('an Fn::If whose condition cannot be read walks both branches (%s)', async (_l, args, conditions) => {
     const producer = record('AWS::SQS::Queue', QUEUE_URL, {}, { Arn: RECORDED_ARN });
     const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const base = contextFor(producer, { bag: new Map() });
     const context = {
-      ...contextFor(producer, { bag: new Map() }),
+      ...base,
       template: {
         Resources: {
-          Producer: {
-            Type: 'AWS::SQS::Queue',
-            Properties: { QueueName: { 'Fn::If': ['Unknown', 'plain-queue', QUEUE_REF] } },
-          },
+          Producer: { Type: 'AWS::SQS::Queue', Properties: { QueueName: { 'Fn::If': args } } },
         },
       },
-      conditions: {},
+      conditions,
     };
     const resolved = await resolver.resolve({ 'Fn::GetAtt': ['Producer', 'Arn'] }, context as never);
     expect(resolved).toBe(PLAIN_ARN);
