@@ -102,6 +102,26 @@ describe('each NoEcho reader honours the string form (go-to-k/cdkd#4824)', () =>
     }
     const plain = engine.diffLogMasker(new Map(), template(false), { P: VALUE }, {});
     expect(plain(`from "${VALUE}"`)).toBe(`from "${VALUE}"`);
+
+    // A piece of an `Fn::Split` over the value (go-to-k/cdkd#4049): the
+    // delimiters are read only for a parameter the masker counts as NoEcho.
+    const split = (noEcho: unknown) =>
+      template(noEcho, {
+        Resources: {
+          R: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: { 'Fn::Select': [1, { 'Fn::Split': [',', { Ref: 'P' }] }] } },
+          },
+        },
+      });
+    const pieces = { P: 'alpha-first-piece,bravo-second-piece' };
+    for (const v of DECLARED) {
+      const masker = engine.diffLogMasker(new Map(), split(v), pieces, {});
+      expect(masker('old "bravo-second-piece"'), String(v)).toBe('old "***"');
+    }
+    expect(engine.diffLogMasker(new Map(), split(false), pieces, {})('old "bravo-second-piece"')).toBe(
+      'old "bravo-second-piece"'
+    );
   });
 
   it("the resolver's NoEcho needle (parameter-secrets.ts recordNoEchoParameterValue)", async () => {
