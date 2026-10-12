@@ -67,10 +67,11 @@
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
 #      destroy below deletes with it. The same deploy updates SecretQueue's
 #      VisibilityTimeout (45), so its readers resolve its ARN from the provider.
-#      LOAD-BEARING (go-to-k/cdkd#4802): the nested row's QueueArn parameter and
-#      the child's SSM parameter store that ARN in reference form, as a reader
-#      of an unchanged queue does; they stored the plaintext ARN, and the next
-#      deploy updated them once more.
+#      LOAD-BEARING (go-to-k/cdkd#4802): step 5 updated the queue and the nested
+#      row in one deploy, and the row and the child's SSM parameter stored the
+#      ARN in reference form, as a reader of an unchanged queue does, so this
+#      deploy does not update the row. Before, they stored the plaintext ARN
+#      and this deploy updated the row once more.
 #   5e. SDIN_ROLLBACK=true updates SecretQueue and SecretQueueReaderPolicy,
 #      then RollbackBreaker's create fails (SSM refuses a Standard-tier value
 #      over 4096 characters), WITHOUT --no-rollback. LOAD-BEARING: the
@@ -951,11 +952,18 @@ expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
-# LOAD-BEARING (go-to-k/cdkd#4802): the queue was UPDATED in this deploy, so
-# its readers were served the provider's fresh ARN in plaintext. They now
-# record the queue's own secret pairs the value carries and store the
-# reference form, as a reader of an unchanged queue does; before, they stored
-# the plaintext ARN and the next deploy updated them once more.
+# LOAD-BEARING (go-to-k/cdkd#4802): step 5's update deploy updated the queue
+# and the nested row together, so the row was served the provider's fresh ARN
+# in plaintext. It now records the queue's own secret pairs the value carries
+# and stores the reference form, as a reader of an unchanged queue does;
+# before, it stored the plaintext ARN, and this deploy (which updates the
+# queue again) updated the row once more. Both halves: no row update in this
+# deploy (the symptom), and the reference form in state.
+if awk 'index($0, "QueueReaderChild") && index($0, "(AWS::CloudFormation::Stack)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: step 5d updated QueueReaderChild again: step 5's deploy, which updated SecretQueue, left its reader unsettled (go-to-k/cdkd#4802)" >&2
+  log_tail
+  exit 1
+fi
 for reader_check in \
   "QueueReaderChild's recorded QueueArn parameter|${STATE_KEY}|.resources.QueueReaderChild.properties.Parameters.QueueArn" \
   "ChildQueueArn's recorded Value|${CHILD_STATE_KEY}|.resources.ChildQueueArn.properties.Value"; do

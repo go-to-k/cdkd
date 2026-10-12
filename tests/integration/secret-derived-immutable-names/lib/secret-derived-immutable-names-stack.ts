@@ -230,13 +230,13 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
 
     const secretQueue = new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
-      // Step 5d (SDIN_MOVE_FILTER=true) also updates the queue, so its readers
-      // resolve its ARN from the provider in that deploy and store it in
-      // plaintext. Step 5e updates it again, and its automatic rollback
-      // restores step 5d's state (go-to-k/cdkd#4801). Step 5f then redeploys
-      // step 5d's template: the queue is NO_CHANGE and its readers resolve the
-      // recorded `{{resolve:` spelling of its ARN, which they were sent as is
-      // (go-to-k/cdkd#4800).
+      // Steps 5 and 5d (SDIN_MOVE_FILTER=true) update the queue, so its readers
+      // resolve its ARN from the provider in those deploys and store its
+      // reference form (go-to-k/cdkd#4802). Step 5e updates it again, and its
+      // automatic rollback restores step 5d's state (go-to-k/cdkd#4801). Step
+      // 5f then redeploys with SDIN_READER_EDIT=true: the queue is NO_CHANGE
+      // and its readers resolve the recorded `{{resolve:` spelling of its ARN,
+      // which they were sent as is (go-to-k/cdkd#4800).
       visibilityTimeout: rollbackArm
         ? 50
         : process.env.SDIN_MOVE_FILTER === 'true'

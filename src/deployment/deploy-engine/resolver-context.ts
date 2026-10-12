@@ -184,6 +184,10 @@ export function buildResolverContext(
     // go-to-k/cdkd#4802: the producer's own bag, for a reader of an attribute
     // this run's provider returned (see `ResolverContext.producerSecrets`).
     producerSecrets: (logicalId: string) => this.perResourceSecrets.get(logicalId),
+    producerPreRunPhysicalId: (logicalId: string) =>
+      Object.hasOwn(this.healBaseline, logicalId)
+        ? this.healBaseline[logicalId]?.physicalId
+        : undefined,
     ...(base.redactedAttributeReads && {
       redactedAttributeReads: base.redactedAttributeReads,
     }),

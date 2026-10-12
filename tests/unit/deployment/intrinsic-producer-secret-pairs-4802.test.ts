@@ -50,7 +50,10 @@ beforeEach(() => {
 async function read(
   producer: RecordedSecretValues | undefined,
   bag: RecordedSecretValues,
-  arn: string = ARN
+  arn: string = ARN,
+  /** `null`: the run loaded no record of the producer. */
+  preRun: string | null = URL,
+  physicalId: string = URL
 ): Promise<unknown> {
   const resolver = new IntrinsicFunctionResolver('us-east-1');
   return await resolver.resolve({ 'Fn::GetAtt': ['Producer', 'Arn'] }, {
@@ -59,7 +62,7 @@ async function read(
     } as CloudFormationTemplate,
     resources: {
       Producer: {
-        physicalId: URL,
+        physicalId,
         resourceType: 'AWS::SQS::Queue',
         properties: { QueueName: NAME },
         attributes: { Arn: arn },
@@ -70,6 +73,7 @@ async function read(
     conditions: {},
     recordedSecretValues: bag,
     producerSecrets: (id: string) => (id === 'Producer' ? producer : undefined),
+    producerPreRunPhysicalId: (id: string) => (id === 'Producer' ? (preRun ?? undefined) : undefined),
   } as never);
 }
 
@@ -99,6 +103,29 @@ describe("a reader of an in-run producer's attribute (#4802)", () => {
     const bag: RecordedSecretValues = new Map();
     await read(producer as RecordedSecretValues, bag);
     expect(bag.size).toBe(0);
+  });
+
+  it.each([
+    ['a producer CREATED this run (no loaded id)', null, URL],
+    ['a producer REPLACED this run (a new id)', URL, URL.replace(NAME, 'sdin-q-2')],
+  ])('copies nothing for %s', async (_l, preRun, physicalId) => {
+    const bag: RecordedSecretValues = new Map();
+    await read(new Map([[NAME, REF]]), bag, ARN, preRun, physicalId);
+    expect(bag.size).toBe(0);
+  });
+
+  it("copies only a plaintext the producer's loaded id embeds", async () => {
+    // `arn:aws:sqs` is in the ARN the reader is served, never in a queue URL.
+    const bag: RecordedSecretValues = new Map();
+    await read(new Map([['arn:aws:sqs', REF]]), bag);
+    expect(bag.size).toBe(0);
+  });
+
+  it("matches the loaded id case-insensitively, as go-to-k/cdkd#4800's check does", async () => {
+    const upper = URL.replace(NAME, NAME.toUpperCase());
+    const bag: RecordedSecretValues = new Map();
+    await read(new Map([[NAME, REF]]), bag, ARN, upper, upper);
+    expect(bag.get(NAME)).toBe(REF);
   });
 
   it("never overwrites a pair the reader's own resolution recorded", async () => {

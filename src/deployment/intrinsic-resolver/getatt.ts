@@ -709,6 +709,14 @@ export function noteAttributeSecrecy(
  * `NoEcho` arms answer), whose plaintext clears {@link MIN_NEEDLE_LENGTH}, and
  * that the reader's bag does not already key. The producer's bag is read,
  * never written.
+ *
+ * And only for the SAME GENERATION: the producer keeps the physical id this
+ * run loaded, and that id embeds the plaintext
+ * ({@link ResolverContext.producerPreRunPhysicalId}). A reference says nothing
+ * of which value it stood for, so a reader of a producer REPLACED under a
+ * rotated secret would compare its recorded reference equal to the new one and
+ * be skipped, left pointing at the deleted resource. A created or replaced
+ * producer copies nothing: its reader stores the plaintext once, as before.
  */
 function recordProducerSecretPairs(
   logicalId: string,
@@ -719,11 +727,18 @@ function recordProducerSecretPairs(
   if (bag === undefined || context.producerSecrets === undefined) return;
   const producer = context.producerSecrets(logicalId);
   if (producer === undefined || producer === bag || producer.size === 0) return;
+  const preRun = context.producerPreRunPhysicalId?.(logicalId);
+  const record = Object.hasOwn(context.resources, logicalId)
+    ? context.resources[logicalId]
+    : undefined;
+  if (typeof preRun !== 'string' || record?.physicalId !== preRun) return;
+  const physicalId = preRun.toLowerCase();
   const leaves = [...wholeStringLeavesOf(value)];
   if (leaves.length === 0) return;
   for (const [plaintext, expression] of producer) {
     if (plaintext.length < MIN_NEEDLE_LENGTH || bag.has(plaintext)) continue;
     if (typeof expression !== 'string' || !expression.startsWith('{{resolve:')) continue;
+    if (!physicalId.includes(plaintext.toLowerCase())) continue;
     if (leaves.some((leaf) => leaf.includes(plaintext))) bag.set(plaintext, expression);
   }
 }
