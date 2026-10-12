@@ -311,6 +311,13 @@ and does not use CDK's bootstrap roles. It also does not resolve the
 template's `BootstrapVersion` parameter. A region that `cdk bootstrap` never
 touched therefore works.
 
+One exception: for a cross-account reference that CDK generates for you, cdkd
+reads the producer's outputs through the producer account's CDK lookup role,
+so both accounts need `cdk bootstrap`, the producer's with
+`--trust-for-lookup <consumer-account>`.
+[Reading from another account](cross-stack-references.md#reading-from-another-account)
+has the details.
+
 After `cdkd export` hands a stack back to CloudFormation, `cdk bootstrap` is
 the CDK CLI's own prerequisite again.
 

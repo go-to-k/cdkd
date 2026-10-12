@@ -96,6 +96,9 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    - `set -euo pipefail`, `cd "$(dirname "$0")"`, and define `STACK`, `REGION`
      (`${AWS_REGION:-us-east-1}`), `STATE_KEY`, and
      `LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"`.
+   - Match a large capture with `grep -q '<needle>' <<<"${OUT}"`, never
+     `printf '%s' "${OUT}" | grep -q`: on a match `printf` takes SIGPIPE and
+     `pipefail` inverts the test (#2582).
    - Require `STATE_BUCKET` (fail fast if unset) and the built `dist/cli.js`.
    - Define a `cleanup()` and arm it on EXIT **and both signals**; run it once
      up-front as a pre-run cleanup:
@@ -127,13 +130,10 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      unrelated resources and still exit 0. Accepting arm first, a pattern that
      cannot match empty, and a WARN containing `teardown sweep refused`.
      **Write YOUR OWN scope's shortest literal prefix plus `?*`** — `Cdkd?*` is
-     what the already-guarded fixtures happen to need and is NOT a house
-     pattern. Plenty of fixtures use a stack name that does not start with
-     `Cdkd` (`EventBridgeStack`, `CognitoStack`, ...), and copying `Cdkd?*` into
-     one of those makes the guard refuse PERMANENTLY and silently, so the sweep
-     never runs, the orphans leak and the run still exits 0. See
+     NOT a house pattern: copied into a fixture whose stack name does not start
+     with `Cdkd` (`EventBridgeStack`, ...), the guard refuses PERMANENTLY and
+     silently, the orphans leak and the run still exits 0. See
      [docs/integ-fixture-conventions.md](../../../docs/integ-fixture-conventions.md).
-     Convention only — nothing checks it yet.
    - **Phase 1 — deploy**, then a **functional assertion that the feature
      actually works and reached AWS** (curl the endpoint / put an object and
      confirm the handler fired / read the property back via the AWS API). A clean

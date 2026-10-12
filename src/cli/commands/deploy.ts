@@ -70,6 +70,11 @@ import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
+import {
+  type RoleArnReference,
+  producerLookupOver,
+  refuseUnreadableCdkCrossAccountRefs,
+} from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import {
   loadProviderClasses,
@@ -512,7 +517,14 @@ async function deployCommand(
     // and the inter-stack DAG-edge building further down use the UNION of
     // `dependencyNames` + these inferred producers. Computed over ALL stacks
     // so auto-include can reach a producer not yet in `targetStacks`.
-    const inferredCrossStackDeps = inferCrossStackStackDeps(allStacks);
+    // The same walk collects every `Fn::GetStackOutput` carrying a `RoleArn`
+    // (most apps: none), for the cross-account pre-flight below.
+    const roleArnReferences: RoleArnReference[] = [];
+    const inferredCrossStackDeps = inferCrossStackStackDeps(allStacks, {
+      onRoleArnReference: (consumer, args) => roleArnReferences.push({ consumer, args }),
+    });
+    // Consulted lazily, by a `RoleArn`-carrying reference only.
+    const producerLookup = producerLookupOver(allStacks);
     const effectiveStackDeps = (stackName: string, deps: readonly string[]): Set<string> => {
       const union = new Set<string>(deps);
       for (const producer of inferredCrossStackDeps.get(stackName) ?? []) {
@@ -600,6 +612,25 @@ async function deployCommand(
     // lock and any engine. The per-row guard in NestedStackProvider stays as
     // the backstop for a context this command did not build.
     refuseMalformedNestedTemplateTrees(targetStacks);
+
+    // An aws-cdk-lib-generated cross-account `Fn::GetStackOutput` that cdkd can
+    // already tell it cannot read is refused HERE, before any lock or engine,
+    // rather than mid-provisioning. No-op unless the walk above found a
+    // `RoleArn`. Top-level templates only: a nested child's reference is
+    // refused when its row resolves it.
+    if (roleArnReferences.length > 0) {
+      // Keyed by stack NAME, like every other per-stack lookup in this command.
+      const stackByName = new Map(allStacks.map((s) => [s.stackName, s]));
+      refuseUnreadableCdkCrossAccountRefs(
+        roleArnReferences,
+        new Set(targetStacks.map((s) => s.stackName)),
+        (name) => ({
+          region: stackByName.get(name)?.region ?? namedCliRegion(options.region),
+          account: stackByName.get(name)?.account,
+        }),
+        producerLookup
+      );
+    }
 
     // go-to-k/cdkd#4705: the run's stack-registry checks, LAZY and memoized
     // per stack and region: a first deploy claims its marker once its state
@@ -1151,6 +1182,8 @@ async function deployCommand(
           finalSnapshotClients: stackAwsClients,
           ...(options.strictGetatt && { strictGetAtt: true }),
           ...(options.cfnFallback === false && { cfnFallback: false }),
+          producerLookup,
+          ...(stackInfo.account && { consumerAccount: stackInfo.account }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,

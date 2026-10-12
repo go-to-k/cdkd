@@ -30,7 +30,10 @@
 #      from a secret is no recorded secret).
 #   3. PREMISE: state records each secret-derived property as the
 #      {{resolve:secretsmanager: expression, and each resource lives under the
-#      name (path, description) the secret holds.
+#      name (path, description) the secret holds. SecretQueueReaderPolicy's
+#      `Queues` holds the queue's URL in plaintext, its physical id, although
+#      the policy's literal reference puts the queue name into its secrets bag
+#      (go-to-k/cdkd#4810: the save rewrote it, and step 6's destroy failed).
 #   3b. ROTATE the secret's `filter` field only (every other field keeps its
 #      value), so the update's resolved FilterName differs from the live one.
 #   4. LOAD-BEARING: the update (CDKD_TEST_UPDATE=true: only the Stages'
@@ -112,9 +115,12 @@
 # from the run's persisted deployment event).
 # Revert src/deployment/intrinsic-resolver/{refs,getatt}.ts ALONE
 # (go-to-k/cdkd#3869) and step 2 fails "the deploy log names a value read from
-# a secret-named resource in plaintext: ${QUEUE_NAME}": the `resolved to` line
-# of SecretQueueReaderPolicy's Ref / Fn::GetAtt prints the queue URL and ARN
-# raw (not yet measured on real AWS).
+# a secret-named resource in plaintext: ${POLICY_PATH}": the `resolved to` line
+# of PlainScheduleRole's Ref prints SecretPolicy's ARN, path and all, raw (not
+# yet measured on real AWS). ${QUEUE_NAME} no longer discriminates that probe:
+# SecretQueueReaderPolicy's literal reference (go-to-k/cdkd#4810) records the
+# queue name as a secret of the policy's own resolution, which may mask its
+# Ref / Fn::GetAtt lines with or without the go-to-k/cdkd#3869 fix.
 # Revert the `withPrintingSecrets` wrap in
 # src/deployment/rollback-executor/journaled-orphans.ts ALONE (go-to-k/cdkd#3869)
 # and step 6b fails naming the repository on the ECR provider's
@@ -598,6 +604,13 @@ expect_eq "SecretDataSource's recorded Name" \
 expect_eq "SecretDataSource's physical id carries the secret's name" \
   "${GQL_API_ID}|${DS_NAME}" "$(state_physical_id SecretDataSource)"
 expect_eq "SecretDataSource's Description after deploy" "cdkd integ: initial" "$(ds_field description)"
+# go-to-k/cdkd#4810: SecretQueueReaderPolicy's literal reference put the queue
+# name into its own secrets bag, and the save rewrote its copy of the queue's
+# URL into `https://sqs.../{{resolve:...}}`; step 6's destroy then sent that to
+# AWS. The copy is the queue's physical id, which state stores in plaintext.
+expect_eq "SecretQueueReaderPolicy's recorded Queues (go-to-k/cdkd#4810)" "${QUEUE_URL}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r '.resources.SecretQueueReaderPolicy.properties.Queues[0] // empty')"
 expect_eq "SecretQueue's URL ends with the secret's queue name" "${QUEUE_NAME}" "${QUEUE_URL##*/}"
 expect_eq "SecretNamedGroup lives under the secret's log group name" "${LOG_GROUP_NAME}" \
   "$(state_physical_id SecretNamedGroup)"

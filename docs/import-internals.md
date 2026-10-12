@@ -129,8 +129,11 @@ recorded value and says so, naming each key, since that value is what the last
 deploy recorded and may be stale. Certified attributes still take the freshly
 read value. When a re-import produces no value for a key the record already
 masks (`GetResource` returned no readable model, the key is masked again, or
-the import omits it), the mask is kept rather than dropped, and the import
-warns, naming each key that stays masked.
+the import omits it), the mask is kept rather than dropped. The import warns,
+naming the key, only when the template reads it through `Fn::GetAtt` or a
+`${Resource.Attribute}` in `Fn::Sub`, since that read is refused at deploy.
+Every other kept mask is listed at `--verbose`: a deploy masks every model key
+that is not an `Fn::GetAtt` attribute, so those keys are masked by design.
 
 ### Records that say `sdk` for a Cloud Control resource
 

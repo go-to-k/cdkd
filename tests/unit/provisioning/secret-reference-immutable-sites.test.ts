@@ -101,6 +101,7 @@ import { KinesisStreamConsumerProvider } from '../../../src/provisioning/provide
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { recordPhysicalNameCopy } from '../../../src/deployment/secret-redaction.js';
 import { MASK_WALK_DEPTH_CAP_MARKER } from '../../../src/provisioning/masked-retry-logger.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
@@ -640,6 +641,21 @@ describe('Scheduler Schedule GroupName: confirmed by the recorded identity (go-t
     expect((error as Error).message).toContain('holds a different schedule of this name');
     expect((error as Error).message).toContain('the secret may have been rotated');
     expect((error as Error).message).not.toContain(NAME);
+    expect(sent()).toEqual(['GetScheduleCommand']);
+  });
+
+  it('a bag that also read the group by Ref (go-to-k/cdkd#4810) still reads the reference as unchanged', async () => {
+    // The group's physical id is its name, so a `Ref` to it records a
+    // physical-name copy in the deploy's bag; the re-point test must still
+    // re-redact the way the record was written.
+    const bag = new Map([[NAME, REF]]);
+    recordPhysicalNameCopy(bag, NAME);
+    // No schedule under the resolved group: a re-pointed reference would be
+    // the typed `--replace` refusal; an unchanged one is the rotation refusal.
+    fakeAws(notFoundAnswer);
+    const error = await caught(update(REF, { ...context, recordedAttributes: recorded }, bag));
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain('holds no schedule of this name');
     expect(sent()).toEqual(['GetScheduleCommand']);
   });
 

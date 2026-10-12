@@ -23,6 +23,7 @@ import {
   isStrictlyInsideASpan,
 } from './fresh-noecho.js';
 import { refuseUncertifiedReadbackPositions } from './readback-certification.js';
+import { physicalNameCopiesOf, physicalNameSpans } from './physical-name-copies.js';
 
 /**
  * Deep-clone `bag`, replacing every occurrence of a recorded secret value with
@@ -191,6 +192,10 @@ function redactSecretsForStatePasses<T>(
   // This arm is ALSO where a mask-only entry is served: `secrets.get(s)` is
   // {@link SECRET_MASK} for one, so the leaf is replaced WHOLE.
   const wholeValueExpr = (s: string): string | undefined => (s === '' ? undefined : secrets.get(s));
+  // The physical ids this pass read (go-to-k/cdkd#4810): a copy of one stays
+  // as it is, since the id itself is stored in plaintext. See
+  // {@link physicalNameCopiesOf}.
+  const physicalNames = physicalNameCopiesOf.get(secrets);
 
   /**
    * The SUBSTRING arm for a leaf the resolver substituted INTO rather than
@@ -290,11 +295,15 @@ function redactSecretsForStatePasses<T>(
     const spans = isDynamicReferenceString(value)
       ? resolvableReferenceSpans(value, vouchedExpressions())
       : [];
+    const names = physicalNameSpans(physicalNames, value);
     // No `lastIndex` reset before `replace`: `RegExp.prototype[Symbol.replace]`
     // sets it to 0 itself for a `/g` pattern. The reset before `.test` at the
     // call site is the one that IS needed.
     return value.replace(needles, (match: string, offset: number) => {
       if (isStrictlyInsideASpan(spans, offset, offset + match.length)) return match;
+      // Inside (or equal to) an occurrence of a physical id this pass read.
+      const end = offset + match.length;
+      if (names.some((n) => n.start <= offset && end <= n.end)) return match;
       // Unreachable today: `needles` is built from {@link substringNeedlesOf},
       // i.e. from `secrets.keys()` minus the mask-only class, so every match is
       // a key. (It was `secrets.keys()` verbatim before issue #2274 narrowed
@@ -312,6 +321,7 @@ function redactSecretsForStatePasses<T>(
 
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') {
+      if (physicalNames?.has(value) === true) return value;
       const whole = wholeValueExpr(value);
       if (whole !== undefined) return whole;
       // A leaf that is ALREADY a complete `{{resolve:...}}` token is an
@@ -543,4 +553,212 @@ export function scrubResourceRecord<
     );
   }
   return next;
+}
+
+/**
+ * `run` with the pass's physical-name copies HIDDEN (go-to-k/cdkd#4810): what
+ * the persist walk wrote for `secrets` before that rule, the LEGACY form. The
+ * side set is restored before returning, also on a throw; the walk is
+ * synchronous, so no other reader of the bag sees it missing.
+ */
+export function withoutPhysicalNameCopies<T>(secrets: RecordedSecretValues, run: () => T): T {
+  const names = physicalNameCopiesOf.get(secrets);
+  if (names === undefined) return run();
+  physicalNameCopiesOf.delete(secrets);
+  try {
+    return run();
+  } finally {
+    physicalNameCopiesOf.set(secrets, names);
+  }
+}
+
+/**
+ * `run` with `ids` added to the pass's physical-name copies for its duration
+ * only (go-to-k/cdkd#4810), for a caller whose bag also feeds a reader that
+ * must keep rewriting them. The previous side set is restored afterwards,
+ * also on a throw; the walk is synchronous.
+ */
+export function withPhysicalNameCopies<T>(
+  secrets: RecordedSecretValues,
+  ids: readonly string[],
+  run: () => T
+): T {
+  const previous = physicalNameCopiesOf.get(secrets);
+  const names = new Set(previous);
+  for (const id of ids) if (id !== '') names.add(id);
+  physicalNameCopiesOf.set(secrets, names);
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) physicalNameCopiesOf.delete(secrets);
+    else physicalNameCopiesOf.set(secrets, previous);
+  }
+}
+
+/**
+ * A RECORD written before go-to-k/cdkd#4810 holds a reader's copy of a read
+ * physical id in its rewritten, `{{resolve:` form. Returns `stored` with each
+ * leaf that holds exactly what `legacy` (today's value persisted the old way)
+ * holds at the same position, where `current` (the persisted form now) holds
+ * something else, replaced by `current`'s leaf: the same value, so the
+ * comparison reads it as unchanged and the record is repaired. POSITION-wise,
+ * so a leaf the template spells as the literal reference (which both forms
+ * persist alike) is never touched. Returns `stored` by identity when nothing
+ * changed.
+ */
+export function repairPhysicalNameCopyLeaves(
+  stored: unknown,
+  legacy: unknown,
+  current: unknown
+): unknown {
+  if (typeof stored === 'string') {
+    return typeof legacy === 'string' &&
+      typeof current === 'string' &&
+      stored === legacy &&
+      current !== legacy
+      ? current
+      : stored;
+  }
+  if (Array.isArray(stored)) {
+    if (!Array.isArray(legacy) || !Array.isArray(current)) return stored;
+    if (legacy.length !== stored.length || current.length !== stored.length) return stored;
+    let changed = false;
+    const out = stored.map((item, i) => {
+      const next = repairPhysicalNameCopyLeaves(item, legacy[i], current[i]);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed ? out : stored;
+  }
+  if (stored !== null && typeof stored === 'object') {
+    if (legacy === null || typeof legacy !== 'object' || Array.isArray(legacy)) return stored;
+    if (current === null || typeof current !== 'object' || Array.isArray(current)) return stored;
+    const l = legacy as Record<string, unknown>;
+    const c = current as Record<string, unknown>;
+    let out: Record<string, unknown> | undefined;
+    for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+      if (!Object.hasOwn(l, key) || !Object.hasOwn(c, key)) continue;
+      const next = repairPhysicalNameCopyLeaves(value, l[key], c[key]);
+      if (next !== value) {
+        out ??= { ...(stored as Record<string, unknown>) };
+        out[key] = next;
+      }
+    }
+    return out ?? stored;
+  }
+  return stored;
+}
+
+/**
+ * The `[legacy, plaintext]` spellings of each physical id the pass read whose
+ * old persist form EMBEDS a reference in surrounding text
+ * (`https://sqs.../{{resolve:...}}`), for repairing a record leaf no desired
+ * value stands beside (a provider-recorded attribute such as an SQS queue
+ * policy's `cdkd:WrittenQueues`). A copy rewritten WHOLE into a single token
+ * is left out: a leaf equal to a token can be a literal reference the
+ * template spells. `legacySecrets` names the plaintexts the old walk knew:
+ * `secrets` itself, or a map resolved from the RECORD's own references when
+ * today's resolution no longer holds the one that rewrote it.
+ */
+export function embeddedPhysicalNameRewrites(
+  secrets: RecordedSecretValues,
+  legacySecrets: RecordedSecretValues = secrets
+): Array<readonly [string, string]> {
+  const names = physicalNameCopiesOf.get(secrets);
+  if (names === undefined) return [];
+  const pairs: Array<readonly [string, string]> = [];
+  withoutPhysicalNameCopies(legacySecrets, () => {
+    for (const name of names) {
+      const legacy = redactSecretsForState(name, legacySecrets);
+      if (
+        typeof legacy === 'string' &&
+        legacy !== name &&
+        legacy.includes('{{resolve:') &&
+        !isSingleDynamicReferenceToken(legacy) &&
+        !legacy.includes(SECRET_MASK)
+      ) {
+        pairs.push([legacy, name]);
+      }
+    }
+  });
+  return pairs;
+}
+
+/** `value` with every string leaf's `legacy` spellings replaced by their plaintext. */
+export function replaceEmbeddedPhysicalNameRewrites(
+  value: unknown,
+  pairs: ReadonlyArray<readonly [string, string]>
+): unknown {
+  if (pairs.length === 0) return value;
+  if (typeof value === 'string') {
+    let next = value;
+    for (const [legacy, name] of pairs) next = next.split(legacy).join(name);
+    return next;
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((item) => {
+      const next = replaceEmbeddedPhysicalNameRewrites(item, pairs);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed ? out : value;
+  }
+  if (value !== null && typeof value === 'object') {
+    let out: Record<string, unknown> | undefined;
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const next = replaceEmbeddedPhysicalNameRewrites(item, pairs);
+      if (next !== item) {
+        out ??= { ...(value as Record<string, unknown>) };
+        out[key] = next;
+      }
+    }
+    return out ?? value;
+  }
+  return value;
+}
+
+/**
+ * `stored` with each string leaf repaired by `pairs` ONLY where the repaired
+ * leaf then equals `target`'s leaf at the same position (go-to-k/cdkd#4810):
+ * the legacy spelling was the whole difference. Any other leaf, and any leaf
+ * whose repair would not reach `target`, is left as it is. Returns `stored`
+ * by identity when nothing changed.
+ */
+export function repairEmbeddedPhysicalNamesTowards(
+  stored: unknown,
+  target: unknown,
+  pairs: ReadonlyArray<readonly [string, string]>
+): unknown {
+  if (pairs.length === 0) return stored;
+  if (typeof stored === 'string') {
+    if (typeof target !== 'string' || stored === target) return stored;
+    const repaired = replaceEmbeddedPhysicalNameRewrites(stored, pairs);
+    return repaired === target ? repaired : stored;
+  }
+  if (Array.isArray(stored)) {
+    if (!Array.isArray(target) || target.length !== stored.length) return stored;
+    let changed = false;
+    const out = stored.map((item, i) => {
+      const next = repairEmbeddedPhysicalNamesTowards(item, target[i], pairs);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed ? out : stored;
+  }
+  if (stored !== null && typeof stored === 'object') {
+    if (target === null || typeof target !== 'object' || Array.isArray(target)) return stored;
+    const t = target as Record<string, unknown>;
+    let out: Record<string, unknown> | undefined;
+    for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+      if (!Object.hasOwn(t, key)) continue;
+      const next = repairEmbeddedPhysicalNamesTowards(value, t[key], pairs);
+      if (next !== value) {
+        out ??= { ...(stored as Record<string, unknown>) };
+        out[key] = next;
+      }
+    }
+    return out ?? stored;
+  }
+  return stored;
 }

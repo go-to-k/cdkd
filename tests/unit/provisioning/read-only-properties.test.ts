@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import {
   getTopLevelAttributeNames,
+  getTopLevelDeployAttributeNames,
   getTopLevelReadOnlyProperties,
   clearReadOnlyPropertiesCache,
 } from '../../../src/provisioning/read-only-properties.js';
@@ -181,8 +182,9 @@ describe('getTopLevelReadOnlyProperties (issue #2847)', () => {
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(2);
   });
 
-  it('does NOT cache a failure: a later call retries and can succeed', async () => {
-    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+  it('does NOT cache a THROTTLED failure: a later call retries and can succeed', async () => {
+    // Every attempt throttled, so the retries are exhausted.
+    mockCloudFormationSend.mockRejectedValue(throttlingError());
     expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toBeUndefined();
 
     mockCloudFormationSend.mockReset();
@@ -190,6 +192,43 @@ describe('getTopLevelReadOnlyProperties (issue #2847)', () => {
 
     // A cached failure would keep answering `undefined` here, which for the
     // caller means "mask everything" forever after one transient throttle.
+    expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toEqual(
+      new Set(['DBClusterArn', 'Endpoint'])
+    );
+  });
+
+  const awsError = (name: string, httpStatusCode: number): Error =>
+    Object.assign(new Error(name), { name, $metadata: { httpStatusCode } });
+
+  it('caches a DEFINITIVE refusal for the run: a missing grant costs one call per type, not per resource', async () => {
+    // CloudFormation's query protocol answers a missing grant with a 403.
+    mockCloudFormationSend.mockRejectedValue(awsError('AccessDenied', 403));
+    expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toBeUndefined();
+    expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toBeUndefined();
+
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('finds the status one link down the cause chain (a wrapped refusal is still definitive)', async () => {
+    mockCloudFormationSend.mockRejectedValue(
+      Object.assign(new Error('wrapped'), { cause: awsError('AccessDenied', 403) })
+    );
+    expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toBeUndefined();
+    expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toBeUndefined();
+
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a 5xx', awsError('InternalFailure', 503)],
+    ['a network error with no HTTP status', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+  ])('does NOT cache %s: the next call retries', async (_label, error) => {
+    // Every attempt fails, so any retry the helper makes is exhausted too.
+    mockCloudFormationSend.mockRejectedValue(error);
+    expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toBeUndefined();
+
+    mockCloudFormationSend.mockReset();
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: RDS_CLUSTER_SCHEMA });
     expect(await getTopLevelReadOnlyProperties('AWS::RDS::DBCluster')).toEqual(
       new Set(['DBClusterArn', 'Endpoint'])
     );
@@ -282,5 +321,38 @@ describe('getTopLevelAttributeNames (issue #3735)', () => {
     expect(await getTopLevelAttributeNames('constructor')).toEqual(
       new Set(['DBClusterArn', 'Endpoint'])
     );
+  });
+});
+
+describe('getTopLevelDeployAttributeNames (issue #2925)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCloudFormationSend.mockReset();
+    clearReadOnlyPropertiesCache();
+    describeTypeRetryDelays.sleep = async () => {};
+  });
+
+  afterEach(() => {
+    delete describeTypeRetryDelays.sleep;
+  });
+
+  it('adds the shape-mismatched writable attributes the import leaves out', async () => {
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Endpoint'] }),
+    });
+
+    // `Port` is a CloudFormation attribute whose shape differs from the
+    // property's: the import masks it, the deploy keeps it (CDK's
+    // `allowDefaultPortFrom` reads it).
+    expect((await getTopLevelAttributeNames('AWS::DocDB::DBCluster'))?.has('Port')).toBe(false);
+    expect((await getTopLevelDeployAttributeNames('AWS::DocDB::DBCluster'))?.has('Port')).toBe(
+      true
+    );
+  });
+
+  it('stays undefined when the schema cannot be resolved', async () => {
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+
+    expect(await getTopLevelDeployAttributeNames('AWS::DocDB::DBCluster')).toBeUndefined();
   });
 });

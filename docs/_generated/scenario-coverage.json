@@ -583,6 +583,11 @@
       "scenarios": []
     },
     {
+      "name": "cdk-cross-account-lookup-role",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []
@@ -3256,6 +3261,7 @@
     "cc-final-snapshot-handlers",
     "cc-to-sdk-reroute",
     "cc-write-only-create-only",
+    "cdk-cross-account-lookup-role",
     "cloudtrail-trail",
     "codebuild-project",
     "codedeploy-lambda-deployment-group",

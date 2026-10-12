@@ -81,6 +81,16 @@ The value is stored in:
 The queue's own `properties` still hold the reference, or `***` for a `NoEcho`
 parameter. When the name comes from a `NoEcho` parameter, the deploy warns.
 
+A copy of the physical ID itself that another resource in the same stack
+reads with `Ref` or `Fn::GetAtt`, such as a queue policy's `Queues` URL, can be
+stored as the ID is, so that cdkd can address the queue through it. This can
+hold even where the name is a secret's whole value, and even in a property of
+that resource that is itself read from the secret: those characters are
+already in the queue's `physicalId`. A leaf the template spells as the
+reference itself stays the reference. A copy read from another stack or
+through a nested stack's parameter, one of a `NoEcho` value (still `***`), a
+record an older cdkd wrote, and a `cdkd rollback` replay are not covered yet.
+
 cdkd masks the name in its logs and in `cdkd diff` output where it recognises
 that the value was read from a secret. Commands that print a stored record,
 such as `cdkd state show` and `cdkd events`, print the name as stored.

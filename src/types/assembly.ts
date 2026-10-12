@@ -91,6 +91,13 @@ export interface StackArtifactProperties {
   /** CloudFormation execution role */
   cloudFormationExecutionRoleArn?: string;
 
+  /**
+   * The bootstrap LOOKUP role of the stack's environment (DefaultStackSynthesizer).
+   * cdkd reads only `arn`, and only to resolve an aws-cdk-lib-generated
+   * cross-account `Fn::GetStackOutput` against this stack's cdkd state.
+   */
+  lookupRole?: { arn?: unknown };
+
   /** Termination protection */
   terminationProtection?: boolean;
 }

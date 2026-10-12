@@ -705,14 +705,14 @@ export function refuseRedactedAttributeReads(
       `its own Fn::Base64, instead of reading it from another resource's attribute or another ` +
       `stack's output — not by a {{resolve:ssm:...}} read of a String parameter holding the ` +
       `encoding, which cdkd treats as public and would record in state in the clear. ` +
-      `(3) The resource was adopted by 'cdkd import' through the Cloud ` +
-      `Control fallback, which records only the type's Fn::GetAtt attributes (its read-only ` +
-      `properties plus the writable ones CloudFormation also accepts in Fn::GetAtt) and masks ` +
-      `the rest. Either the attribute named above is not one of ` +
-      `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
-      `cdkd could not read that schema and masked the whole model, which the import warned about ` +
-      `when it happened. If that warning named a missing ` +
-      `cloudformation:DescribeType permission, grant it first. ` +
+      `(3) The resource is recorded through the Cloud Control fallback (by a deploy or by ` +
+      `'cdkd import'), which keeps in the clear only the Fn::GetAtt attributes it can vouch ` +
+      `for and masks the rest. If the name above is not an Fn::GetAtt attribute CloudFormation ` +
+      `accepts for that resource type, no record will ever hold it: stop reading it. If it ` +
+      `is one, 'cdkd import' masked it because it could not vouch for the value, or could not ` +
+      `read the schema and warned about it when it happened (if that warning named a missing ` +
+      `cloudformation:DescribeType permission, grant it first); a deploy that creates or ` +
+      `updates the resource records it, unless its value came from a secret. ` +
       `See https://github.com/go-to-k/cdkd/issues/2449. ` +
       // LAST: the remedy ends in labelled command lines, and prose after them
       // lands on the final command's line (go-to-k/cdkd#3436).

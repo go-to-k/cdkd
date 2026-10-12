@@ -311,7 +311,8 @@ A hand edit lasts only while AWS no longer holds the value. cdkd records it
 again the next time it reads the resource: on a deploy that updates the
 resource, on `cdkd state refresh-observed`, or on `cdkd drift --accept`. An
 edit to `attributes` lasts until the next deploy that updates the resource,
-which writes every property back.
+which records it again (for a Cloud Control resource: its `Fn::GetAtt`
+attributes in the clear and every other property as `***`).
 
 ## Related
 

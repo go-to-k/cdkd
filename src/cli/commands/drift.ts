@@ -148,7 +148,9 @@ import {
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
   recordNoEchoAttributeValues,
+  recordPhysicalNameCopy,
   redactSecretsForState,
+  withPhysicalNameCopies,
   SECRET_MASK,
   STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_READBACK_RULES,
@@ -4856,11 +4858,19 @@ async function runAccept(
         // than a refusal (`cdkd export` blocks the record and the rollback
         // replay refuses the operation over a template value that was never
         // unknown), which is the whole reason the flag is declared per site.
-        const redactedBaseline = redactSecretsForState(
-          newBaseline,
+        // go-to-k/cdkd#4810: a reader's copy of another record's physical id is
+        // kept as the id is. Scoped to THIS write: the bag also redacts the
+        // drift report, which keeps rewriting it.
+        const redactedBaseline = withPhysicalNameCopies(
           outcome.secrets,
-          existing.properties ?? {},
-          hasObserved ? STATE_SOURCED_BASELINE_RULES : STATE_SOURCED_READBACK_RULES
+          otherPhysicalIds(report.state.resources, outcome.logicalId),
+          () =>
+            redactSecretsForState(
+              newBaseline,
+              outcome.secrets,
+              existing.properties ?? {},
+              hasObserved ? STATE_SOURCED_BASELINE_RULES : STATE_SOURCED_READBACK_RULES
+            )
         );
         let recordedChanges = 0;
         for (const change of accepted) {
@@ -6839,6 +6849,11 @@ async function runRevert(
                 // replay's `resolveReplayProps` on the second synth-free write path.
                 // A bag with no dynamic reference resolves to itself by identity.
                 const secrets: RecordedSecretValues = new Map();
+                // go-to-k/cdkd#4810: the revert's attribute scan keeps a
+                // reader's copy of a physical id, as the deploy's save does.
+                for (const id of otherPhysicalIds(report.state.resources, outcome.logicalId)) {
+                  recordPhysicalNameCopy(secrets, id);
+                }
                 const revertBaseline =
                   stateResource.observedProperties ?? stateResource.properties ?? {};
                 // No `secretPaths` here, deliberately: nothing on this path masks by
@@ -9220,4 +9235,23 @@ export function maskMarkedNoEchoBaselineWithLeaves(
     baseline: maskReadbackAtCoordinates(byIndex, recorded, replaced),
     ...(widened.length > 0 && { noEchoLeaves: canonicalCoordinates([...marked, ...widened]) }),
   };
+}
+
+/**
+ * The physical ids of every record of `resources` OTHER than `logicalId`'s
+ * (go-to-k/cdkd#4810). Drift resolves state with no resource records, so no
+ * `Ref` / `Fn::GetAtt` read records a copy; each of these ids is stored in
+ * plaintext in its own record, so a reader's copy of one adds nothing to
+ * state. The record's OWN id is left out, as a deploy records none: a
+ * resource never reads itself.
+ */
+function otherPhysicalIds(
+  resources: Record<string, ResourceState> | undefined,
+  logicalId: string
+): string[] {
+  const ids: string[] = [];
+  for (const [id, record] of Object.entries(resources ?? {})) {
+    if (id !== logicalId && typeof record?.physicalId === 'string') ids.push(record.physicalId);
+  }
+  return ids;
 }

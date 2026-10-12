@@ -935,6 +935,8 @@ export class DeployEngine {
     this.resolver = new IntrinsicFunctionResolver(stackRegion, {
       strictGetAtt: options.strictGetAtt ?? false,
       cfnFallback: options.cfnFallback ?? true,
+      ...(options.producerLookup && { producerLookup: options.producerLookup }),
+      ...(options.consumerAccount && { consumerAccount: options.consumerAccount }),
     });
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
