@@ -553,8 +553,10 @@ by design.
   the value's type or length. Each such position is listed in the record's
   `noEchoLeaves`, and an attribute a producer declares `NoEcho` in
   `noEchoAttributeNames`. The deploy still sends the real value; to decide
-  whether it changed it reads the resource back from AWS (a record written
-  before `version: 11` is compared with the value it still holds). A create-only
+  whether it changed it reads the resource back from AWS. Where a record still
+  holds the plaintext (one written before `version: 11`, or one written before
+  the parameter was declared `NoEcho`), that stored value is compared instead,
+  and an equal one is then stored masked. A create-only
   property such a value feeds is replaced on a readback only where an earlier
   readback, handed the masked record, proved AWS reports it exactly
   (`noEchoExactEchoLeaves`, issue #4656); otherwise the deploy warns and names

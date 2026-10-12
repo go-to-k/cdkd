@@ -633,11 +633,6 @@ export async function provisionUpdate(
       : witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten);
   const currentPropsAsWritten =
     witness === undefined ? recordedAsWritten : (witness.current as Record<string, unknown>);
-  // A MARKED record keeps its own `noEchoLeaves` on a save it was not written
-  // by (`noEchoLeavesFor`), so a leaf the witness CONFIRMED here is named for
-  // that save: its stored plaintext equals today's value, so the mask and the
-  // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
-  // differing one keeps the old plaintext the record holds until it is sent.
   // A deploy that MIGRATES a leaf to the mask on the witness's word: a
   // pre-v11 record, or a marked one whose plaintext the witness confirmed
   // (go-to-k/cdkd#4831). Its readback is handed the mask at every parameter
@@ -646,6 +641,11 @@ export async function provisionUpdate(
   // attribute supplies nothing fresh), so the echo fidelity a later change
   // of that value needs is recorded.
   const witnessMigrates = unmarkedRecord || (witness?.confirmed.length ?? 0) > 0;
+  // A MARKED record keeps its own `noEchoLeaves` on a save it was not written
+  // by (`noEchoLeavesFor`), so a leaf the witness CONFIRMED here is named for
+  // that save: its stored plaintext equals today's value, so the mask and the
+  // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
+  // differing one keeps the old plaintext the record holds until it is sent.
   if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
     this.witnessConfirmedLeaves.set(
       logicalId,
@@ -1608,12 +1608,25 @@ export async function provisionUpdate(
       )
     );
   }
+  // A leaf the witness CONFIRMED compares as the mask on both sides above,
+  // but the provider diffs the previous side against the plaintext it is
+  // sent: handed `***` there, a create-only one reads as changed and is
+  // re-created inside `update()` (bypassing `UpdateReplacePolicy` and the
+  // stateful guard), or a Cloud Control patch writes it. The value is equal
+  // by the witness, so the previous side gets it back, for the provider's
+  // call only (go-to-k/cdkd#4831; marked and unmarked records alike).
+  let previousForProvider = currentPropsAsWritten;
+  for (const coordinate of witness?.confirmed ?? []) {
+    const value = valueAtCoordinate(resolvedProps, coordinate);
+    if (value !== undefined)
+      previousForProvider = setAtCoordinate(previousForProvider, coordinate, value);
+  }
   return markRestored(
     await this.updateInPlace({
       conditions,
       counts,
       currentProps,
-      currentPropsAsWritten,
+      currentPropsAsWritten: previousForProvider,
       currentResource,
       dependencies,
       desiredForSkipCheckAsWritten,

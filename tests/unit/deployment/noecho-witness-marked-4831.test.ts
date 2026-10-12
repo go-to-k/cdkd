@@ -297,6 +297,57 @@ describe('DeployEngine - the migration witness on a MARKED record (go-to-k/cdkd#
   });
 
   it.each([
+    ['a marked record', true],
+    ['an unmarked (pre-v11) record', false],
+  ])("hands the provider the confirmed create-only leaf's value, not the mask, when another property changes: %s", async (_l, marked) => {
+    // The same deploy edits Tags: an in-place update, whose provider diffs
+    // the previous side. `***` there would read as a TopicName change.
+    const t = template(TOPIC);
+    t.Resources['Topic']!.Properties = {
+      ...(t.Resources['Topic']!.Properties as Record<string, unknown>),
+      Tags: [{ Key: 'k', Value: 'v2' }],
+    };
+    const state = marked ? before() : markedState(TOPIC, TOKEN, []);
+    if (!marked) delete (state.resources['Topic'] as { noEchoLeaves?: unknown }).noEchoLeaves;
+    state.resources['Topic']!.properties['Tags'] = [{ Key: 'k', Value: 'v1' }];
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    await makeEngine().deploy(STACK, t);
+    expect(topicCalls(provider.create)).toBe(0);
+    expect(topicCalls(provider.delete)).toBe(0);
+    const updates = provider.update.mock.calls.filter((c) => c[0] === 'Topic');
+    expect(updates).toHaveLength(1);
+    const [, , , sent, previous] = updates[0] as [string, string, string, Record<string, unknown>, Record<string, unknown>];
+    expect(sent['TopicName']).toBe(TOPIC);
+    expect(previous['TopicName']).toBe(TOPIC);
+    // The saved record still masks and names it.
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState).resources['Topic'];
+    expect(saved?.properties['TopicName']).toBe('***');
+  });
+
+  it('a mixed record: the confirmed leaf is masked and named, a differing one stays as stored and unnamed', async () => {
+    // Two parameters newly declared NoEcho: TopicName unchanged (confirmed),
+    // a Tags value changed (differing). The Tags change is an in-place
+    // update, which fails here, so the old record is saved back.
+    const t = template(TOPIC);
+    t.Parameters!['TagValue'] = { Type: 'String', NoEcho: true, Default: 'tag-4831-new' } as never;
+    t.Resources['Topic']!.Properties = {
+      ...(t.Resources['Topic']!.Properties as Record<string, unknown>),
+      Tags: [{ Key: 'k', Value: { Ref: 'TagValue' } }],
+    };
+    const state = before();
+    state.resources['Topic']!.properties['Tags'] = [{ Key: 'k', Value: 'tag-4831-old' }];
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    provider.update.mockRejectedValue(new Error('update refused in this test'));
+    await makeEngine().deploy(STACK, t).catch(() => undefined);
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState | undefined)?.resources['Topic'];
+    expect(saved).toBeDefined();
+    expect(saved?.properties['TopicName']).toBe('***');
+    expect(saved?.noEchoLeaves).toEqual([['DisplayName'], ['TopicName']]);
+    // The differing leaf keeps what the record held, and is not named.
+    expect(saved?.properties['Tags']).toEqual([{ Key: 'k', Value: 'tag-4831-old' }]);
+  });
+
+  it.each([
     ['an array element (Tags[0].Value)', { Tags: [{ Key: 'k', Value: { Ref: 'TopicName' } }] }, { Tags: [{ Key: 'k', Value: TOPIC }] }, ['Tags', 0, 'Value']],
     ['a nested object leaf (ArchivePolicy.Name)', { ArchivePolicy: { Name: { Ref: 'TopicName' } } }, { ArchivePolicy: { Name: TOPIC } }, ['ArchivePolicy', 'Name']],
   ])('a nested leaf newly declared NoEcho, value unchanged: %s', async (_l, templateProps, stored, coordinate) => {
