@@ -94,7 +94,11 @@ vi.mock('../../../src/state/export-index-store.js', () => ({
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => {
     lockManagerCtorSpy();
-    return { acquireLock: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() };
+    return {
+      acquireLock: vi.fn().mockResolvedValue(true),
+      releaseLock: vi.fn(),
+      settleDeferredPurges: vi.fn().mockResolvedValue(undefined),
+    };
   }),
 }));
 
