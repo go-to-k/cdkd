@@ -192,8 +192,16 @@ const BREAKER = {
 };
 
 describe('rollback restore of a plaintext copy of a secret-derived name (#4801)', () => {
-  it('keeps a reader’s Queues URL as AWS knows it, and its secret position as the reference', async () => {
-    const resource = { 'Fn::GetAtt': ['SecretQueue', 'Arn'] };
+  // The policy reads the queue's ARN through `Fn::GetAtt`, or spells the
+  // reference itself, which puts the queue name into the failing deploy's map
+  // for the policy too, so the final save rescans the restored record with it
+  // (go-to-k/cdkd#4810).
+  it.each([
+    ['an Fn::GetAtt of the queue', { 'Fn::GetAtt': ['SecretQueue', 'Arn'] }],
+    ['a literal reference', ARN_REF],
+  ] as const)(
+    'keeps a reader’s Queues URL as AWS knows it, read through %s',
+    async (_label, resource) => {
     const { last, update } = await deployAndRollBack({
       SecretQueue: {
         Type: 'AWS::SQS::Queue',
@@ -221,7 +229,8 @@ describe('rollback restore of a plaintext copy of a secret-derived name (#4801)'
       Statement: [{ Sid: 'A', Resource: ARN_REF }],
     });
     expect(policy.attributes).toEqual({ 'cdkd:WrittenQueues': URL });
-  });
+  }
+  );
 
   // A template spelling the reference itself puts the queue's name in the
   // FAILING deploy's map for the policy, so the journal's scrub of the
