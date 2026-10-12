@@ -81,6 +81,12 @@ The value is stored in:
 The queue's own `properties` still hold the reference, or `***` for a `NoEcho`
 parameter. When the name comes from a `NoEcho` parameter, the deploy warns.
 
+Another resource's copy of the physical ID itself, such as a queue policy's
+`Queues` URL, is stored as the ID is, so that cdkd can address the queue
+through it. This holds even where the name is a secret's whole value, and
+even in a property of that resource that is itself read from the secret:
+those characters are already in the queue's `physicalId`.
+
 cdkd masks the name in its logs and in `cdkd diff` output where it recognises
 that the value was read from a secret. Commands that print a stored record,
 such as `cdkd state show` and `cdkd events`, print the name as stored.

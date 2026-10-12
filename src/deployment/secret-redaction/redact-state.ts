@@ -633,17 +633,20 @@ export function repairPhysicalNameCopyLeaves(
  * value stands beside (a provider-recorded attribute such as an SQS queue
  * policy's `cdkd:WrittenQueues`). A copy rewritten WHOLE into a single token
  * is left out: a leaf equal to a token can be a literal reference the
- * template spells.
+ * template spells. `legacySecrets` names the plaintexts the old walk knew:
+ * `secrets` itself, or a map resolved from the RECORD's own references when
+ * today's resolution no longer holds the one that rewrote it.
  */
 export function embeddedPhysicalNameRewrites(
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  legacySecrets: RecordedSecretValues = secrets
 ): Array<readonly [string, string]> {
   const names = physicalNameCopiesOf.get(secrets);
   if (names === undefined) return [];
   const pairs: Array<readonly [string, string]> = [];
-  withoutPhysicalNameCopies(secrets, () => {
+  withoutPhysicalNameCopies(legacySecrets, () => {
     for (const name of names) {
-      const legacy = redactSecretsForState(name, secrets);
+      const legacy = redactSecretsForState(name, legacySecrets);
       if (
         typeof legacy === 'string' &&
         legacy !== name &&
@@ -690,4 +693,49 @@ export function replaceEmbeddedPhysicalNameRewrites(
     return out ?? value;
   }
   return value;
+}
+
+/**
+ * `stored` with each string leaf repaired by `pairs` ONLY where the repaired
+ * leaf then equals `target`'s leaf at the same position (go-to-k/cdkd#4810):
+ * the legacy spelling was the whole difference. Any other leaf, and any leaf
+ * whose repair would not reach `target`, is left as it is. Returns `stored`
+ * by identity when nothing changed.
+ */
+export function repairEmbeddedPhysicalNamesTowards(
+  stored: unknown,
+  target: unknown,
+  pairs: ReadonlyArray<readonly [string, string]>
+): unknown {
+  if (pairs.length === 0) return stored;
+  if (typeof stored === 'string') {
+    if (typeof target !== 'string' || stored === target) return stored;
+    const repaired = replaceEmbeddedPhysicalNameRewrites(stored, pairs);
+    return repaired === target ? repaired : stored;
+  }
+  if (Array.isArray(stored)) {
+    if (!Array.isArray(target) || target.length !== stored.length) return stored;
+    let changed = false;
+    const out = stored.map((item, i) => {
+      const next = repairEmbeddedPhysicalNamesTowards(item, target[i], pairs);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed ? out : stored;
+  }
+  if (stored !== null && typeof stored === 'object') {
+    if (target === null || typeof target !== 'object' || Array.isArray(target)) return stored;
+    const t = target as Record<string, unknown>;
+    let out: Record<string, unknown> | undefined;
+    for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+      if (!Object.hasOwn(t, key)) continue;
+      const next = repairEmbeddedPhysicalNamesTowards(value, t[key], pairs);
+      if (next !== value) {
+        out ??= { ...(stored as Record<string, unknown>) };
+        out[key] = next;
+      }
+    }
+    return out ?? stored;
+  }
+  return stored;
 }

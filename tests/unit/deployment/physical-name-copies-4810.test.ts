@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  SECRET_MASK,
   embeddedPhysicalNameRewrites,
   recordPhysicalNameCopy,
   redactSecretsForState,
@@ -107,5 +108,24 @@ describe('a reader copy of a read physical id (#4810)', () => {
     const whole: RecordedSecretValues = new Map([[NAME, REF]]);
     recordPhysicalNameCopy(whole, NAME);
     expect(embeddedPhysicalNameRewrites(whole)).toEqual([]);
+  });
+
+  it('an empty physical id is never recorded, so the scan terminates', () => {
+    // `physicalNameSpans` scans with `indexOf`, which finds an empty needle at
+    // every offset, forever.
+    const bag: RecordedSecretValues = new Map([[NAME, REF]]);
+    recordPhysicalNameCopy(bag, '');
+    expect(redactSecretsForState({ V: URL }, bag)).toEqual({
+      V: `https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`,
+    });
+  });
+
+  it('a read physical id equal to a MASK-ONLY value stays as it is (it is stored in plaintext anyway)', () => {
+    // A custom resource's `NoEcho` Data value that happens to equal a physical
+    // id the reader read: the id itself is in the producer's record, so the
+    // reader's copy is kept, not masked.
+    const bag: RecordedSecretValues = new Map([[NAME, SECRET_MASK]]);
+    recordPhysicalNameCopy(bag, NAME);
+    expect(redactSecretsForState({ Copy: NAME }, bag)).toEqual({ Copy: NAME });
   });
 });

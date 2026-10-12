@@ -105,6 +105,7 @@ export {
   repairPhysicalNameCopyLeaves,
   embeddedPhysicalNameRewrites,
   replaceEmbeddedPhysicalNameRewrites,
+  repairEmbeddedPhysicalNamesTowards,
 } from './secret-redaction/redact-state.js';
 export {
   physicalNameCopiesOf,

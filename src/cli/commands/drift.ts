@@ -148,6 +148,7 @@ import {
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
   recordNoEchoAttributeValues,
+  recordPhysicalNameCopy,
   redactSecretsForState,
   SECRET_MASK,
   STATE_SOURCED_BASELINE_RULES,
@@ -3524,6 +3525,9 @@ async function runDriftForStack(
       // the try body would be out of scope in the catch, and a `let` reassigned
       // there is the same thing with a mutable binding nothing needs.
       const secrets: RecordedSecretValues = new Map();
+      // go-to-k/cdkd#4810: this bag later redacts the record `--accept`
+      // writes, and a reader's copy of a physical id is kept as the id is.
+      seedPhysicalNameCopies(secrets, state.resources);
       try {
         // Schema v7+ (#614): route reads via state-recorded
         // `provisionedBy` so a CC-managed resource is read through Cloud
@@ -6839,6 +6843,9 @@ async function runRevert(
                 // replay's `resolveReplayProps` on the second synth-free write path.
                 // A bag with no dynamic reference resolves to itself by identity.
                 const secrets: RecordedSecretValues = new Map();
+                // go-to-k/cdkd#4810: the revert's attribute scan keeps a
+                // reader's copy of a physical id, as the deploy's save does.
+                seedPhysicalNameCopies(secrets, report.state.resources);
                 const revertBaseline =
                   stateResource.observedProperties ?? stateResource.properties ?? {};
                 // No `secretPaths` here, deliberately: nothing on this path masks by
@@ -9220,4 +9227,19 @@ export function maskMarkedNoEchoBaselineWithLeaves(
     baseline: maskReadbackAtCoordinates(byIndex, recorded, replaced),
     ...(widened.length > 0 && { noEchoLeaves: canonicalCoordinates([...marked, ...widened]) }),
   };
+}
+
+/**
+ * Record every physical id of `resources` as a physical-name copy of `secrets`
+ * (go-to-k/cdkd#4810). Drift resolves state with no resource records, so no
+ * `Ref` / `Fn::GetAtt` read records one; each id is stored in plaintext in its
+ * own record, so keeping a reader's copy of it adds nothing to state.
+ */
+function seedPhysicalNameCopies(
+  secrets: RecordedSecretValues,
+  resources: Record<string, ResourceState> | undefined
+): void {
+  for (const record of Object.values(resources ?? {})) {
+    if (typeof record?.physicalId === 'string') recordPhysicalNameCopy(secrets, record.physicalId);
+  }
 }

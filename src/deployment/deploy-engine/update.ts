@@ -50,6 +50,8 @@ import {
   repairPhysicalNameCopyLeaves,
   embeddedPhysicalNameRewrites,
   replaceEmbeddedPhysicalNameRewrites,
+  repairEmbeddedPhysicalNamesTowards,
+  isSingleDynamicReferenceToken,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
@@ -71,6 +73,10 @@ import {
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
+import {
+  persistedTokenResolverContext,
+  resolveRecordSecrets,
+} from '../masked-baseline-recapture.js';
 import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
 import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
@@ -505,17 +511,37 @@ export async function provisionUpdate(
       comparisonCoordinates
     )
   );
-  const embeddedRewrites = embeddedPhysicalNameRewrites(updateSecrets);
+  // The legacy spellings come from today's bag, plus (review M2 on PR #4817)
+  // from the RECORD's own references resolved into a map of their own: the
+  // secret that rewrote the copy may no longer be one today's template reads
+  // (a literal reference since removed). A wrong answer there (another
+  // region's same-named secret) yields no legacy spelling, so nothing is
+  // repaired; the map persists and decides nothing else.
+  const recordOwnSecrets = recordHoldsEmbeddedReference(currentResource)
+    ? await resolveRecordSecrets(
+        { properties: currentResource.properties, attributes: currentResource.attributes },
+        (token, own) =>
+          this.resolver.resolveDynamicReferences(token, persistedTokenResolverContext(own, []))
+      )
+    : undefined;
+  const embeddedRewrites = [
+    ...embeddedPhysicalNameRewrites(updateSecrets),
+    ...(recordOwnSecrets === undefined || recordOwnSecrets.size === 0
+      ? []
+      : embeddedPhysicalNameRewrites(updateSecrets, recordOwnSecrets)),
+  ];
   // A record whose `properties` bag went missing (a hand edit) has nothing to repair.
   const repairable = [currentProps, currentResource.properties].filter(
     (bag): bag is Record<string, unknown> => bag !== null && typeof bag === 'object'
   );
   for (const bag of new Set(repairable)) {
     for (const key of Object.keys(bag)) {
-      const repaired = repairPhysicalNameCopyLeaves(
-        bag[key],
-        legacyDesired[key],
-        desiredForSkipCheck[key]
+      // A properties leaf takes an embedded spelling only where that makes it
+      // equal today's: the spelling was the whole difference.
+      const repaired = repairEmbeddedPhysicalNamesTowards(
+        repairPhysicalNameCopyLeaves(bag[key], legacyDesired[key], desiredForSkipCheck[key]),
+        desiredForSkipCheck[key],
+        embeddedRewrites
       );
       if (repaired !== bag[key]) bag[key] = repaired;
     }
@@ -1670,4 +1696,24 @@ function recordPreviousNoEchoLeaves(
       recordLogOnlyValue(registry, partlyMasked);
     }
   }
+}
+
+/**
+ * Does the record hold a `{{resolve:` reference EMBEDDED in a longer string, in
+ * its properties or attributes: the shape a pre-go-to-k/cdkd#4810 deploy left
+ * for a reader's copy of a physical id. A whole-token leaf is a literal
+ * reference, never such a copy, so it costs no lookup.
+ */
+function recordHoldsEmbeddedReference(record: {
+  properties?: unknown;
+  attributes?: unknown;
+}): boolean {
+  const walk = (node: unknown): boolean => {
+    if (typeof node === 'string') {
+      return node.includes('{{resolve:') && !isSingleDynamicReferenceToken(node);
+    }
+    if (node === null || typeof node !== 'object') return false;
+    return Object.values(node as Record<string, unknown>).some(walk);
+  };
+  return walk(record.properties) || walk(record.attributes);
 }

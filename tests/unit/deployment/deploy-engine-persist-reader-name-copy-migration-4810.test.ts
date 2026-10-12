@@ -266,4 +266,44 @@ describe('a record an earlier deploy rewrote is repaired, never replaced (#4810)
     expect(run.calls).toEqual(['update:Reader']);
     expect(run.persisted?.properties['Queues']).toEqual([QUEUE_URL]);
   });
+
+  it("a record whose rewriting reference today's template no longer reads is repaired from the record's own reference", async () => {
+    // Review M2 on PR #4817: the literal reference that put the queue name into
+    // the policy's bag was removed, so today's bag cannot spell the legacy
+    // form; the record's own `{{resolve:` text still can.
+    const policyDocument = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 'sqs:SendMessage', Resource: '*' }],
+    };
+    const run = await deploy(
+      {
+        SecretQueue: {
+          physicalId: QUEUE_URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: REF },
+          attributes: {},
+          dependencies: [],
+        },
+        Reader: {
+          physicalId: 'reader-policy',
+          resourceType: 'AWS::SQS::QueuePolicy',
+          properties: { Queues: [REWRITTEN_URL], PolicyDocument: policyDocument },
+          attributes: { 'cdkd:WrittenQueues': REWRITTEN_URL },
+          dependencies: ['SecretQueue'],
+        },
+      } as StackState['resources'],
+      {
+        SecretQueue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF } },
+        Reader: {
+          Type: 'AWS::SQS::QueuePolicy',
+          Properties: { Queues: [{ Ref: 'SecretQueue' }], PolicyDocument: policyDocument },
+        },
+      },
+      [['SecretQueue'], ['Reader']]
+    );
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    expect(run.persisted?.properties['Queues']).toEqual([QUEUE_URL]);
+    expect(run.persisted?.attributes?.['cdkd:WrittenQueues']).toBe(QUEUE_URL);
+  });
 });

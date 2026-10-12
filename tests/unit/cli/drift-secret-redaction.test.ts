@@ -4582,3 +4582,104 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
     expect(saved.resources['Consumer']!.properties).toEqual(lambdaResource().properties);
   });
 });
+
+/**
+ * go-to-k/cdkd#4810: a reader holding a copy of a queue's physical id (its URL)
+ * where the queue is NAMED from the secret, so the URL embeds the plaintext the
+ * reader's own literal reference resolves to. Drift resolves with no resource
+ * records, so nothing recorded that copy, and both writes rewrote it into
+ * `https://sqs.../{{resolve:...}}`, which a destroy or a later update then
+ * sends to AWS. Every physical id of the stack now seeds the bag's copies.
+ */
+describe('cdkd drift keeps a reader copy of a secret-named physical id (go-to-k/cdkd#4810)', () => {
+  const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${SECRET_PLAINTEXT}`;
+  const QUEUE_TYPE = 'AWS::SQS::Queue';
+  const queue = (): ResourceState => ({
+    physicalId: URL,
+    resourceType: QUEUE_TYPE,
+    properties: { QueueName: SECRET_EXPR },
+    observedProperties: { QueueName: SECRET_EXPR },
+  });
+  const readerBag = (): Record<string, unknown> => ({
+    FunctionName: 'fn',
+    Environment: { Variables: { QUEUE_URL: URL, SECRET_PASSWORD: SECRET_EXPR, PLAIN: 'ok' } },
+  });
+  const reader = (): ResourceState => ({
+    physicalId: 'fn',
+    resourceType: LAMBDA_TYPE,
+    properties: readerBag(),
+    observedProperties: readerBag(),
+    attributes: { QueueUrlCopy: URL, Version: '1' },
+  });
+  const readback = () => ({
+    FunctionName: 'fn',
+    Environment: {
+      Variables: { QUEUE_URL: URL, SECRET_PASSWORD: SECRET_PLAINTEXT, PLAIN: 'edited' },
+    },
+  });
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  const providers = (lambda: Record<string, unknown>) => {
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE_TYPE
+        ? { readCurrentState: async () => ({ QueueName: SECRET_PLAINTEXT }) }
+        : lambda
+    );
+  };
+
+  it('--accept keeps the reader copy of the queue URL, and the literal reference as the reference', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Queue: queue(), Reader: reader() }));
+    providers({ readCurrentState: async () => readback() });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2].resources['Reader']!.observedProperties as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    // Premise: the accept wrote the edit.
+    expect(saved.Environment.Variables['PLAIN']).toBe('edited');
+    expect(saved.Environment.Variables['SECRET_PASSWORD']).toBe(SECRET_EXPR);
+    expect(saved.Environment.Variables['QUEUE_URL']).toBe(URL);
+  });
+
+  it("--revert keeps the reader copy of the queue URL in the provider's attributes", async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Queue: queue(), Reader: reader() }));
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'fn',
+      // A new version, so the revert writes the record.
+      attributes: { QueueUrlCopy: URL, Version: '2' },
+    });
+    providers({ readCurrentState: async () => readback(), update });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    // Premise: the revert updated the reader with the resolved secret.
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2].resources['Reader']!;
+    expect(saved.attributes?.['Version']).toBe('2');
+    expect(saved.attributes?.['QueueUrlCopy']).toBe(URL);
+  });
+});
