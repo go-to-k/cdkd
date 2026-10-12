@@ -90,6 +90,11 @@
 #      which ends inside the value, so no literal needle matches it. The
 #      `Creating final snapshot` line prints that name masked, the output
 #      holds no fragment of it, and AWS holds the snapshot, which is deleted.
+#   4w. LOAD-BEARING (go-to-k/cdkd#4831): redeploy with NoEchoWitnessName
+#      newly declared NoEcho, its value unchanged. NoEchoWitnessTopic's
+#      marked record still stores the name in plaintext; the deploy must not
+#      replace the topic (an out-of-band tag survives), must not print the
+#      name, and must store `***` named in noEchoLeaves.
 #   4c. Redeploy with CDKD_TEST_NOECHO_RENAME=true again: the topic is
 #      value-named for the destroy.
 #   4d. Rewrite NoEchoRenamed's record as a binary before schema v11 stored
@@ -229,6 +234,15 @@ if [ "${#SNAP_GROUP_ID}" -le 28 ] || [ "${#SNAP_GROUP_ID}" -gt 40 ] || [ "${#TOK
   exit 1
 fi
 RENAME_OLD_ARN="${RENAME_TOPIC_PREFIX}-a"
+# go-to-k/cdkd#4831: NoEchoWitnessTopic's name, per run. Declared NoEcho only
+# from Phase 4w on; exported so every phase synthesizes the same name.
+WITNESS_NAME="cdkd-test-noecho-witness-${ACCOUNT_ID}-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+if [ "${#WITNESS_NAME}" -lt 40 ]; then
+  echo "FAIL: premise: could not generate NoEchoWitnessTopic's name" >&2
+  exit 1
+fi
+export CDKD_TEST_NOECHO_WITNESS_NAME="${WITNESS_NAME}"
+WITNESS_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${WITNESS_NAME}"
 RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -345,6 +359,7 @@ cleanup() {
     aws sqs delete-queue --queue-url "${failing_queue_url}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   aws sns delete-topic --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws sns delete-topic --topic-arn "${WITNESS_ARN:-}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   # NoEchoSnapshotGroup and the final snapshot its removal takes (#3869),
   # swept by the `${SNAP_STEM}-final-` prefix. A snapshot still `creating`
@@ -1741,9 +1756,69 @@ if [ "${SNAP_GONE}" -ne 1 ]; then
   exit 1
 fi
 
+# --- Phase 4w: a parameter declared NoEcho only now, its value unchanged -----
+# go-to-k/cdkd#4831, LOAD-BEARING: NoEchoWitnessTopic's create-only TopicName
+# reads NoEchoWitnessName, which every earlier phase deployed as an ordinary
+# parameter, so its MARKED record (DisplayName reads a NoEcho parameter) still
+# stores the name in plaintext. Declaring the parameter NoEcho with the same
+# value must not replace the topic: the stored plaintext is an exact witness.
+# The record then stores `***` there and names the coordinate.
+echo "==> Phase 4w: redeploy with NoEchoWitnessName newly declared NoEcho, value unchanged"
+P4W_STATE=$(mktemp)
+SCRATCH_FILES+=("${P4W_STATE}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P4W_STATE}" --region "${REGION}" --quiet
+if [ "$(jq -r '.resources.NoEchoWitnessTopic.properties.TopicName' "${P4W_STATE}")" != "${WITNESS_NAME}" ] \
+  || [ "$(jq -c '.resources.NoEchoWitnessTopic.noEchoLeaves // "<absent>"' "${P4W_STATE}")" != '[["DisplayName"]]' ]; then
+  echo "FAIL: premise: before Phase 4w, NoEchoWitnessTopic's record is not marked at DisplayName alone with its TopicName in plaintext" >&2
+  exit 1
+fi
+P4W_MARKER="cdkd-noecho-p4w-${RANDOM}${RANDOM}"
+aws sns tag-resource --region "${REGION}" --resource-arn "${WITNESS_ARN}" \
+  --tags "Key=cdkd-p4w-marker,Value=${P4W_MARKER}" >/dev/null
+if ! DEPLOY_OUT_P4W=$(CDKD_TEST_NOECHO_WITNESS=true env -u CDKD_TEST_NOECHO_SNAPSHOT -u CDKD_TEST_NOECHO_REJECT -u CDKD_TEST_NOECHO_RENAME \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 4w deploy exited non-zero" >&2
+  diag_output "$(grep -F 'NoEchoWitnessTopic' <<< "${DEPLOY_OUT_P4W}" | grep -vF -- "${WITNESS_NAME}" || true)"
+  exit 1
+fi
+# SENTINEL for the negative: the wording the replacement path prints.
+if ! grep -qF -- 'Replacing ' ../../../dist/*.js; then
+  echo "FAIL: sentinel: the built binary no longer prints 'Replacing <id>' -- the negative below is vacuous" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P4W}" == *"Replacing NoEchoWitnessTopic"* ]]; then
+  echo "FAIL: the Phase 4w deploy REPLACED NoEchoWitnessTopic -- a parameter declared NoEcho with its value unchanged read as a create-only change (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+if gone_probe aws sns get-topic-attributes --topic-arn "${WITNESS_ARN}" --region "${REGION}"; then
+  echo "FAIL: NoEchoWitnessTopic is gone after Phase 4w (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+P4W_TAG=$(aws sns list-tags-for-resource --region "${REGION}" --resource-arn "${WITNESS_ARN}" \
+  --query "Tags[?Key=='cdkd-p4w-marker'].Value | [0]" --output text)
+if [ "${P4W_TAG}" != "${P4W_MARKER}" ]; then
+  echo "FAIL: NoEchoWitnessTopic lost its out-of-band tag in Phase 4w -- it was replaced under the same name (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P4W}" == *"${WITNESS_NAME}"* ]]; then
+  echo "FAIL: the Phase 4w deploy output carries NoEchoWitnessName's value, now declared NoEcho, in plaintext (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P4W_STATE}" --region "${REGION}" --quiet
+if [ "$(jq -r '.resources.NoEchoWitnessTopic.properties.TopicName' "${P4W_STATE}")" != '***' ] \
+  || [ "$(jq -c '.resources.NoEchoWitnessTopic.noEchoLeaves // "<absent>"' "${P4W_STATE}")" != '[["DisplayName"],["TopicName"]]' ]; then
+  echo "FAIL: after Phase 4w, state.json does not hold NoEchoWitnessTopic.TopicName as the mask named in noEchoLeaves (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+echo "    OK: the newly declared NoEcho name is not replaced, and state holds *** named in noEchoLeaves"
+
 # --- Phase 4c: the value-named topic again, for the destroy -----------------
 echo "==> Phase 4c: redeploy with NoEchoRenamed's TopicName embedding the NoEcho value"
-if ! DEPLOY_OUT_P4C=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_SNAPSHOT -u CDKD_TEST_NOECHO_REJECT \
+if ! DEPLOY_OUT_P4C=$(CDKD_TEST_NOECHO_RENAME=true CDKD_TEST_NOECHO_WITNESS=true env -u CDKD_TEST_NOECHO_SNAPSHOT -u CDKD_TEST_NOECHO_REJECT \
   node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -1834,6 +1909,8 @@ assert_gone "SNS topic NoEchoRenamed still exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${RENAME_OLD_ARN}" --region "${REGION}"
 assert_gone "the value-named SNS topic exists after destroy" \
   aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"
+assert_gone "NoEchoWitnessTopic still exists after destroy" \
+  aws sns get-topic-attributes --topic-arn "${WITNESS_ARN}" --region "${REGION}"
 masked_assert_gone "NoEchoSnapshotGroup exists after destroy" \
   aws elasticache describe-replication-groups --replication-group-id "${SNAP_GROUP_ID}" --region "${REGION}"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \

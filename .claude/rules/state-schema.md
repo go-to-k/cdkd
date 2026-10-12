@@ -118,7 +118,7 @@ The `imports` sibling for `Fn::GetStackOutput`: one entry per successful **same-
 
 ## `noEchoLeaves` / `noEchoAttributeNames` (v11+)
 
-Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/noecho.ts`); coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field, one with NONE (pre-v11) takes today's template positions. ABSENT = not known: a non-mask stored leaf there is the MIGRATION WITNESS (`witnessNormalize`), so `version` never certifies redaction. `noEchoAttributeNames` comes from the DECLARATION, never from which attributes hold `***`, unioned with earlier names still masked. Spreading writers carry both. `noEchoExactEchoLeaves` (#4656) is echo behaviour: set only by a readback handed `***` there, never cleared by `differs`, kept while in `noEchoLeaves`; reset by a create-only replacement, dropped on an update's fallback.
+Written at every deploy save by `applyNoEchoPersist`; coordinates are segment arrays, never a value. A record the deploy WROTE is recomputed, one it did not keeps its field plus witness-confirmed leaves (#4831), one with NONE (pre-v11) takes today's template positions. A non-mask stored leaf where today masks is the MIGRATION WITNESS (`witnessNormalize`), marked or not: `version` never certifies redaction. `noEchoAttributeNames` comes from the DECLARATION, never from which attributes hold `***`, unioned with earlier names still masked. Spreading writers carry both. `noEchoExactEchoLeaves` (#4656) is echo behaviour: set only by a readback handed `***` there, never cleared by `differs`, kept while in `noEchoLeaves`; reset by a create-only replacement, dropped on an update's fallback.
 
 ## `observedProperties` (v3+)
 
