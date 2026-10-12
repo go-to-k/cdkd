@@ -6640,6 +6640,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
+        "cross-stack-secret-import",
         "data-pipeline",
         "drift-revert-arrays",
         "dynamodb-globaltable",
@@ -6734,6 +6735,9 @@
         "cross-region-concurrent-stacks": [
           "l2",
           "literal"
+        ],
+        "cross-stack-secret-import": [
+          "l1"
         ],
         "data-pipeline": [
           "l2"
@@ -6906,12 +6910,16 @@
     {
       "resourceType": "AWS::SQS::QueuePolicy",
       "integs": [
+        "cross-stack-secret-import",
         "iam-propagation-stress",
         "migrate-from-cfn",
         "secret-derived-immutable-names",
         "sns-subscription-filter"
       ],
       "signals": {
+        "cross-stack-secret-import": [
+          "l1"
+        ],
         "iam-propagation-stress": [
           "literal"
         ],

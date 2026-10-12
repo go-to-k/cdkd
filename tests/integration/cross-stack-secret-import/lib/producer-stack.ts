@@ -1,14 +1,18 @@
 import * as cdk from 'aws-cdk-lib';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import {
   CONDITIONAL_EXPORT_NAME,
   CONDITIONAL_PLAIN_VALUE,
   EXPORT_NAME,
+  QUEUE_URL_EXPORT_NAME,
   SECRET_JSON_FIELD,
   SECRET_NAME,
+  SECRET_QUEUE_FIELD,
   TAKEN_CONDITIONAL_DECOY_VALUE,
   TAKEN_CONDITIONAL_EXPORT_NAME,
+  integQueueName,
   integSecretPlaintext,
 } from './shared.ts';
 
@@ -37,7 +41,10 @@ export class ProducerStack extends cdk.Stack {
     const secret = new secretsmanager.Secret(this, 'CrossStackSecret', {
       secretName: SECRET_NAME,
       secretStringValue: cdk.SecretValue.unsafePlainText(
-        JSON.stringify({ [SECRET_JSON_FIELD]: integSecretPlaintext() })
+        JSON.stringify({
+          [SECRET_JSON_FIELD]: integSecretPlaintext(),
+          [SECRET_QUEUE_FIELD]: integQueueName(),
+        })
       ),
       // Explicit rather than inherited: the fixture must leave nothing behind,
       // and cdkd's provider force-deletes (no 7-day recovery window) so the
@@ -55,6 +62,21 @@ export class ProducerStack extends cdk.Stack {
     //
     // It carries no `Export`, so it never reaches the exports index and cannot
     // interfere with the import under test.
+    // go-to-k/cdkd#4819: a queue NAMED from the secret, whose URL (its
+    // physical id) is exported in plaintext for the consumer's queue policy.
+    const queue = new sqs.CfnQueue(this, 'SecretNamedQueue', {
+      queueName: cdk.SecretValue.secretsManager(SECRET_NAME, {
+        jsonField: SECRET_QUEUE_FIELD,
+      }).unsafeUnwrap(),
+    });
+    queue.overrideLogicalId('SecretNamedQueue');
+    queue.addDependency(secret.node.defaultChild as cdk.CfnResource);
+    new cdk.CfnOutput(this, 'SecretNamedQueueUrlOutput', {
+      value: queue.ref,
+      exportName: QUEUE_URL_EXPORT_NAME,
+      description: 'The secret-named queue URL, read by the consumer (issue 4819).',
+    });
+
     new cdk.CfnOutput(this, 'CrossStackSecretArnOutput', {
       value: secret.secretArn,
       description: 'ARN of the fixture secret. Non-secret control for the redaction premise.',

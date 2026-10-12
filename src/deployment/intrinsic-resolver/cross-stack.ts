@@ -1,5 +1,6 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { importableOutputKeys } from '../../types/state.js';
 import { sameRegion } from '../../utils/aws-partition.js';
@@ -21,7 +22,9 @@ import {
   isSingleDynamicReferenceToken,
   recordCrossStackExpression,
   recordFreshNoEchoValuesIn,
+  recordPhysicalNameCopy,
   recoverMaskedOutput,
+  wholeStringLeavesOf,
 } from '../secret-redaction.js';
 
 declare module '../intrinsic-function-resolver.js' {
@@ -224,6 +227,48 @@ export async function reresolveCrossStackValue(
         kind: 'cross-stack',
         display: loggedOrigin,
       });
+    }
+  }
+  // go-to-k/cdkd#4819: a leaf equal to one of the PRODUCER's physical ids (an
+  // exported queue URL, `Ref` of a queue) is a copy of that id, which the
+  // producer's record stores in plaintext, so the consumer's copy is kept as
+  // it is, as a same-stack `Ref` copy is (go-to-k/cdkd#4810). ONLY a physical
+  // id: an output that merely holds plaintext (a legacy record a scrub has
+  // not reached yet) is redactable and stays the redaction's. Not for a read
+  // across an ACCOUNT boundary, whose producer's bucket is not this account's,
+  // not where no producer stack is named (a nested `Outputs.X` read, this
+  // stack's own stored attributes), and not in a pass that persists nothing
+  // (`skipDynamicReferences`). A producer output a pre-go-to-k/cdkd#4810 deploy
+  // spliced (`https://sqs.../{{resolve:...}}`) is no copy here; its next
+  // deploy stores the plain id. The producer's ids are read once per ENGINE
+  // RUN (keyed by its shared `recordedImports`), never once per resource.
+  if (
+    context.recordedSecretValues !== undefined &&
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    context.stateBackend !== undefined &&
+    context.skipDynamicReferences !== true
+  ) {
+    const plain = [...wholeStringLeavesOf(value)].filter(
+      (leaf) => !leaf.includes('{{resolve:') && !carriesSecretMask(leaf)
+    );
+    if (plain.length > 0) {
+      const ids = await producerPhysicalIds(
+        context.recordedImports ?? context.recordedSecretValues,
+        context.stateBackend,
+        producerOutput.stackName,
+        // An index entry can carry an empty region; the resolver reads that as
+        // its own (`resolverForProducerRegion`), and so does this read.
+        producerOutput.region || this.resolverRegion,
+        // Names the producer's coordinate only, masked, never a value.
+        () =>
+          this.logger.debug(
+            safeMsg`Could not read the state of producer ${this.displayMasked(producerOutput.stackName, context)} for its physical ids; no cross-stack copy of one is kept (go-to-k/cdkd#4819)`
+          )
+      );
+      for (const leaf of plain) {
+        if (ids.has(leaf)) recordPhysicalNameCopy(context.recordedSecretValues, leaf);
+      }
     }
   }
   if (!carriesDynamicReference(value)) return value;
@@ -758,4 +803,47 @@ export function recordImport(
     sourceStack: producerStack,
     sourceRegion: producerRegion,
   });
+}
+
+/** Per engine run (keyed by its shared `recordedImports`, else the pass's bag): one read per producer. */
+const producerPhysicalIdReads = new WeakMap<object, Map<string, Promise<ReadonlySet<string>>>>();
+
+/**
+ * The physical ids of a producer stack's records (go-to-k/cdkd#4819), read
+ * from its state once per `scope` (an engine run); an empty set when the read
+ * fails, so nothing is kept then. A producer deployed earlier in the same
+ * process saved its state before the consumer's engine started.
+ */
+function producerPhysicalIds(
+  scope: object,
+  stateBackend: NonNullable<ResolverContext['stateBackend']>,
+  stackName: string,
+  region: string,
+  onFailure: () => void
+): Promise<ReadonlySet<string>> {
+  let reads = producerPhysicalIdReads.get(scope);
+  if (reads === undefined) {
+    reads = new Map();
+    producerPhysicalIdReads.set(scope, reads);
+  }
+  const key = JSON.stringify([stackName, region]);
+  let read = reads.get(key);
+  if (read === undefined) {
+    read = (async () => {
+      const ids = new Set<string>();
+      try {
+        const data = await stateBackend.getState(stackName, region);
+        for (const record of Object.values(data?.state.resources ?? {})) {
+          const id = (record as { physicalId?: unknown } | null)?.physicalId;
+          if (typeof id === 'string' && id !== '') ids.add(id);
+        }
+      } catch {
+        // Fail closed: no id, so no copy is kept. The caller logs it.
+        onFailure();
+      }
+      return ids;
+    })();
+    reads.set(key, read);
+  }
+  return read;
 }

@@ -1,11 +1,15 @@
 import * as cdk from 'aws-cdk-lib';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import {
   CONDITIONAL_EXPORT_NAME,
   EXPORT_NAME,
   PARAMETER_NAME,
+  QUEUE_URL_EXPORT_NAME,
   REEXPORT_NAME,
+  SECRET_NAME,
+  SECRET_QUEUE_FIELD,
   TAKEN_CONDITIONAL_EXPORT_NAME,
 } from './shared.ts';
 
@@ -76,6 +80,39 @@ export class ConsumerStack extends cdk.Stack {
     // resolving the import records `plaintext -> {{resolve:...}}`, so both
     // `state.outputs` and the exports index hold the expression, which is what
     // the chain consumer reads back.
+    // go-to-k/cdkd#4819: a queue policy whose `Queues` IMPORTS the producer's
+    // secret-named queue URL, and whose document spells the secret reference
+    // literally, which puts the queue name into the policy's own secrets bag.
+    // The save rewrote the plaintext imported URL into the reference, and
+    // this stack's destroy then failed (InvalidAddress).
+    const policy = new sqs.CfnQueuePolicy(this, 'ImportedQueuePolicy', {
+      queues: [cdk.Fn.importValue(QUEUE_URL_EXPORT_NAME)],
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'CdkdIntegImportedQueue',
+            Effect: 'Allow',
+            Principal: { AWS: cdk.Stack.of(this).account },
+            Action: 'sqs:SendMessage',
+            Resource: cdk.Fn.join('', [
+              'arn:',
+              cdk.Aws.PARTITION,
+              ':sqs:',
+              cdk.Aws.REGION,
+              ':',
+              cdk.Aws.ACCOUNT_ID,
+              ':',
+              cdk.SecretValue.secretsManager(SECRET_NAME, {
+                jsonField: SECRET_QUEUE_FIELD,
+              }).unsafeUnwrap(),
+            ]),
+          },
+        ],
+      },
+    });
+    policy.overrideLogicalId('ImportedQueuePolicy');
+
     new cdk.CfnOutput(this, 'ReexportedSecretOutput', {
       value: importedSecret,
       exportName: REEXPORT_NAME,

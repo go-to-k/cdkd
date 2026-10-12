@@ -62,6 +62,7 @@ import {
   hasMaskableValues,
   markSameGenerationBag,
   passedNoEchoParametersOf,
+  physicalNameCopiesOf,
   recoverMaskedOutput,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -946,6 +947,11 @@ export class NestedStackProvider implements ResourceProvider {
         // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
         // child's lines and is carried into its consuming resources' bags.
         ...(inheritedSecrets && hasMaskableValues(inheritedSecrets) && { inheritedSecrets }),
+        // go-to-k/cdkd#4819: the physical ids the row read, ungated: a row
+        // passing only `Ref Queue` records a copy and no maskable value, and
+        // a child resource spelling the secret itself must still keep it.
+        // Always set, so a grandchild never inherits its grandparent's.
+        inheritedPhysicalNameCopies: inheritedPhysicalNameCopiesOf(inheritedSecrets),
         // go-to-k/cdkd#4543: how the parent classified each value it passes
         // (recorded on the same bag), so the child hashes a clean one into a
         // masked property's input fingerprint and keeps the rest as written.
@@ -1472,4 +1478,16 @@ function runAccountOf(ctx: NestedStackProviderContext): LockRecoveryContext {
     stateBucket: ctx.stateBucket,
     statePrefix: ctx.destroyOptions?.statePrefix,
   };
+}
+
+/**
+ * The `inheritedPhysicalNameCopies` option for a child engine: a snapshot of
+ * the physical ids the parent row's resolution read (go-to-k/cdkd#4810), or
+ * `undefined` when it read none (go-to-k/cdkd#4819).
+ */
+function inheritedPhysicalNameCopiesOf(
+  bag: ReturnType<typeof getCurrentResourceSecrets>
+): ReadonlySet<string> | undefined {
+  const copies = bag === undefined ? undefined : physicalNameCopiesOf.get(bag);
+  return copies === undefined || copies.size === 0 ? undefined : new Set(copies);
 }

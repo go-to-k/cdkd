@@ -63,6 +63,23 @@ export function integSecretPlaintext(): string {
 }
 
 /**
+ * A second JSON key of the secret, which NAMES the producer's SQS queue
+ * (go-to-k/cdkd#4819). Different from the password, so the fixture's "no
+ * plaintext password in state" sweeps are untouched: the queue's NAME is
+ * stored in plaintext by design (its physical id, and a reader's copy of it).
+ */
+export const SECRET_QUEUE_FIELD = 'queue';
+
+/** The queue's name (the secret's `queue` value), unique per run like the password. */
+export function integQueueName(): string {
+  const runId = process.env['CDKD_INTEG_RUN_ID'] ?? 'local';
+  return `integ-1934q-${runId}`;
+}
+
+/** `Output.Export.Name` of the secret-named queue's URL on the producer. */
+export const QUEUE_URL_EXPORT_NAME = 'CdkdCrossStackSecretQueueUrl';
+
+/**
  * `Output.Export.Name` on the CONSUMER, which RE-EXPORTS the value it imported
  * from the producer (issue
  * [#2146](https://github.com/go-to-k/cdkd/issues/2146)).

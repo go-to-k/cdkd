@@ -63,6 +63,7 @@ import { withCurrentResourceSecrets } from '../../../src/deployment/resource-sec
 import {
   recordLogOnlyValue,
   recordPassedNoEchoParameters,
+  recordPhysicalNameCopy,
 } from '../../../src/deployment/secret-redaction.js';
 import { recordPassedParameterClasses } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { DeployEngineOptions } from '../../../src/deployment/deploy-engine.js';
@@ -194,6 +195,35 @@ describe('NestedStackProvider — inherited secrets + child-region provenance', 
       withNestedStackContext(makeContext(), () => provider.create('Child', NESTED, {}))
     );
     expect(childOptions()).not.toHaveProperty('inheritedSecrets');
+  });
+
+  it("forwards the row's physical-id copies even when the bag holds nothing maskable (go-to-k/cdkd#4819)", async () => {
+    // A row passing only `Ref Queue`: its bag records the URL as a copy and
+    // holds no secret, so `inheritedSecrets` is omitted.
+    const url = 'https://sqs.us-east-1.amazonaws.com/123456789012/sdin-q-1';
+    const parentSecrets = new Map<string, string>();
+    recordPhysicalNameCopy(parentSecrets, url);
+    const provider = new NestedStackProvider();
+    await withCurrentResourceSecrets(parentSecrets, () =>
+      withNestedStackContext(makeContext(), () =>
+        provider.create('Child', NESTED, { Parameters: { QueueUrl: url } })
+      )
+    );
+    expect(childOptions()).not.toHaveProperty('inheritedSecrets');
+    expect([...(childOptions().inheritedPhysicalNameCopies ?? [])]).toEqual([url]);
+
+    // A row that read none OVERWRITES the parent engine's own (a grandchild
+    // never inherits its grandparent's).
+    ctorCalls.length = 0;
+    await withCurrentResourceSecrets(new Map(), () =>
+      withNestedStackContext(
+        makeContext({
+          options: { concurrency: 1, inheritedPhysicalNameCopies: new Set([url]) },
+        } as Partial<NestedStackProviderContext>),
+        () => provider.create('Child', NESTED, { Parameters: {} })
+      )
+    );
+    expect(childOptions().inheritedPhysicalNameCopies).toBeUndefined();
   });
 
   it('forwards the NoEcho-fed parameter names even when the bag holds nothing maskable (go-to-k/cdkd#4043 round 10)', async () => {

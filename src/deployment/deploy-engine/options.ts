@@ -202,6 +202,14 @@ export interface DeployEngineOptions {
   inheritedSecrets?: RecordedSecretValues;
 
   /**
+   * The physical ids the PARENT row's resolution read (go-to-k/cdkd#4810), set
+   * by `NestedStackProvider` whether or not {@link inheritedSecrets} is
+   * (go-to-k/cdkd#4819). A child resource whose `{Ref: <Param>}` value
+   * contains one keeps that copy as the id is, as the parent's record does.
+   */
+  inheritedPhysicalNameCopies?: ReadonlySet<string> | undefined;
+
+  /**
    * How the parent classified each value it passes this child, for the
    * child's masked-property input fingerprints (go-to-k/cdkd#4543): `clean`
    * when the parent's expression for it reads only known non-secret inputs,
