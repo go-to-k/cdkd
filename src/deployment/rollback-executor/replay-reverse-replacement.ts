@@ -1020,7 +1020,10 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
     },
     secrets,
-    prevRecord.properties
+    prevRecord.properties,
+    // Read only as evidence of what was persisted, never copied in: a new
+    // attribute identical to a plaintext old one stays plaintext (#4801).
+    prevRecord.attributes
   );
   // go-to-k/cdkd#4225: the re-create put the old resource's inline
   // policies, as the deploy's replacement create does. A re-create that

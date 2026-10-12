@@ -117,6 +117,12 @@ class QueueReaderChild extends cdk.NestedStack {
  *     and the deployed move printed it in the old filter's id on its delete
  *     lines.
  *
+ * `RollbackBreaker` (AWS::SSM::Parameter), created only under SDIN_ROLLBACK=true
+ * after SecretQueueReaderPolicy's update, which SSM refuses: the automatic
+ * rollback then restores the policy, whose record holds the queue's URL in
+ * plaintext, while the replay resolved the queue name from its literal
+ * reference (go-to-k/cdkd#4801).
+ *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
  * `PolicyDocument`, the API's `XrayEnabled`, the DataSource's `Description`
@@ -145,6 +151,10 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     const update = process.env.CDKD_TEST_UPDATE === 'true';
+    // Step 5e (go-to-k/cdkd#4801): updates SecretQueue and its reader policy,
+    // then fails creating RollbackBreaker, so the automatic rollback restores
+    // the policy.
+    const rollbackArm = process.env.SDIN_ROLLBACK === 'true';
     const description = update ? 'cdkd integ: updated' : 'cdkd integ: initial';
     // A placeholder keeps `cdk synth` working without the script; a deploy
     // against it fails at resolve time, which is the loud outcome.
@@ -215,23 +225,31 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       queueName: fromSecret('queue'),
       // Step 5d (SDIN_MOVE_FILTER=true) also updates the queue, so its readers
       // resolve its ARN from the provider in that deploy and store it in
-      // plaintext. Step 5e redeploys the same template: the queue is then
-      // NO_CHANGE and its readers resolve the recorded `{{resolve:` spelling
-      // of its ARN, which they were sent as is (go-to-k/cdkd#4800).
-      visibilityTimeout: process.env.SDIN_MOVE_FILTER === 'true' ? 45 : update ? 60 : 30,
+      // plaintext. Step 5e updates it again, and its automatic rollback
+      // restores step 5d's state (go-to-k/cdkd#4801). Step 5f then redeploys
+      // step 5d's template: the queue is NO_CHANGE and its readers resolve the
+      // recorded `{{resolve:` spelling of its ARN, which they were sent as is
+      // (go-to-k/cdkd#4800).
+      visibilityTimeout: rollbackArm
+        ? 50
+        : process.env.SDIN_MOVE_FILTER === 'true'
+          ? 45
+          : update
+            ? 60
+            : 30,
     });
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
     // and a `Fn::GetAtt` (its ARN) each resolve to a value embedding the name
     // and are no recorded secret, so before the fix the resolver's `resolved
     // to` lines printed the name. The Sid changes on update, so the policy is
     // written on both deploys.
-    new sqs.CfnQueuePolicy(this, 'SecretQueueReaderPolicy', {
+    const readerPolicy = new sqs.CfnQueuePolicy(this, 'SecretQueueReaderPolicy', {
       queues: [secretQueue.ref],
       policyDocument: {
         Version: '2012-10-17',
         Statement: [
           {
-            Sid: update ? 'SdinReaderUpdated' : 'SdinReaderInitial',
+            Sid: rollbackArm ? 'SdinReaderRollback' : update ? 'SdinReaderUpdated' : 'SdinReaderInitial',
             Effect: 'Allow',
             Principal: { AWS: cdk.Stack.of(this).account },
             Action: 'sqs:SendMessage',
@@ -261,6 +279,18 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
         ],
       },
     });
+
+    // go-to-k/cdkd#4801: created only by step 5e, AFTER the policy's update,
+    // and refused by SSM at once (a Standard-tier value over 4096 characters),
+    // so the deploy fails and the automatic rollback restores the policy.
+    if (rollbackArm) {
+      const breaker = new ssm.CfnParameter(this, 'RollbackBreaker', {
+        type: 'String',
+        tier: 'Standard',
+        value: 'x'.repeat(5000),
+      });
+      breaker.addDependency(readerPolicy);
+    }
 
     // Both schedules target this queue, whose name is NOT secret-derived, so
     // each schedule's recorded target is a readable ARN the identity match

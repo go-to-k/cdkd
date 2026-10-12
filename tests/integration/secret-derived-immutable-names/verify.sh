@@ -67,14 +67,25 @@
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
 #      destroy below deletes with it. The same deploy updates SecretQueue's
 #      VisibilityTimeout (45), so its readers resolve its ARN from the provider
-#      and store it in plaintext: step 5e's premise.
-#   5e. LOAD-BEARING (go-to-k/cdkd#4800): the same template redeployed, so
-#      SecretQueue is NO_CHANGE and its readers resolve its ARN from the record,
-#      which holds it as `arn:...:{{resolve:secretsmanager:...}}`. They were
-#      sent that spelling: the nested child's SSM parameter refused it and the
-#      deploy failed. Now the deploy exits 0, and the SSM parameter and the
-#      queue policy's `Resource` hold the real ARN. A second redeploy is
-#      expected to change nothing (a NOTE otherwise).
+#      and store it in plaintext: step 5f's premise.
+#   5e. SDIN_ROLLBACK=true updates SecretQueue and SecretQueueReaderPolicy,
+#      then RollbackBreaker's create fails (SSM refuses a Standard-tier value
+#      over 4096 characters), WITHOUT --no-rollback. LOAD-BEARING: the
+#      automatic rollback restores the policy with its `Queues` and
+#      `cdkd:WrittenQueues` holding the queue's URL in plaintext; the replay
+#      resolved the queue name from the policy's literal reference, and the
+#      restore rewrote both into the reference, so step 6's destroy failed
+#      (go-to-k/cdkd#4801).
+#   5f. LOAD-BEARING (go-to-k/cdkd#4800): step 5d's template redeployed after
+#      5e's rollback restored that state, so SecretQueue is NO_CHANGE and its
+#      readers resolve its ARN from the record, which holds it as
+#      `arn:...:{{resolve:secretsmanager:...}}`. The reader that discriminates
+#      is the nested QueueReaderChild row (its `QueueArn` parameter): it was
+#      sent that spelling and the child's SSM parameter refused it, so the
+#      deploy failed. Now the deploy exits 0 and the SSM parameter holds the
+#      real ARN. (SecretQueueReaderPolicy no longer discriminates: its literal
+#      reference, go-to-k/cdkd#4810, makes it store the reference whatever the
+#      fix.) A second redeploy is expected to change nothing (a NOTE otherwise).
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -141,6 +152,11 @@
 # src/cli/commands/rollback.ts (step 6c) or src/deployment/deploy-engine/rollback.ts
 # (step 6d) ALONE and that step fails naming ${RB_QUEUE_NAME} on the SQS
 # provider's delete line (not yet measured on real AWS).
+# Revert go-to-k/cdkd#4801's src changes (src/deployment/rollback-executor/
+# replay-secrets.ts and its callers, src/deployment/deploy-engine/rollback.ts,
+# which imports the keep) and step 5e fails "SecretQueueReaderPolicy's
+# restored Queues": the record holds `https://sqs.../{{resolve:secretsmanager:...}}`
+# (not yet measured on real AWS).
 # Revert the `secretNameNeedles` / `secretNameSink` lines of
 # src/cli/commands/diff-recursive.ts ALONE and step 5b fails naming
 # ${QUEUE_NAME}; revert the `withPrintingSecrets` wrap in
@@ -925,14 +941,65 @@ if grep -qF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}"; then
   exit 1
 fi
 echo "    OK: the moved deploy's log withholds the replaced filter's old, secret-derived log group name"
-# PREMISE for the sidestep above: the queue WAS updated in this deploy.
+# PREMISE for step 5f: the queue WAS updated in this deploy, so its readers stored the plaintext ARN.
 expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
   "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
 
-echo "==> Step 5e: the same template again: SecretQueue's readers resolve its recorded ARN (go-to-k/cdkd#4800)"
+echo "==> Step 5e: an automatic rollback restores SecretQueueReaderPolicy with its queue URL in plaintext (go-to-k/cdkd#4801)"
+# SDIN_ROLLBACK=true updates SecretQueue (VisibilityTimeout 50) and the policy
+# (a new Sid), then creates RollbackBreaker after the policy, which SSM refuses.
+# The deploy runs WITHOUT --no-rollback, so the automatic rollback reverts the
+# policy. Its replay re-resolves the policy's literal reference, which puts the
+# queue name into the op's secrets; the restore then rewrote the plaintext
+# `Queues` URL into the reference, and step 6's destroy sent that to AWS.
+set +e
+SDIN_ROLLBACK=true SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+ROLLBACK_RC=$?
+set -e
+if [ "${ROLLBACK_RC}" -eq 0 ]; then
+  echo "FAIL: premise: the SDIN_ROLLBACK deploy exited 0 (RollbackBreaker was not refused, so nothing rolled back)" >&2
+  log_tail
+  exit 1
+fi
+# PREMISE: the policy was updated, the breaker failed, and the rollback
+# restored the policy, so the record read below is the restore's. The
+# breaker's needle is the SSM provider's own failure line, the shape
+# noecho-parameter-masking's NoEchoReject asserts: the bare logical id is also
+# in the plan output, which a deploy that never created it prints too.
+for marker in "Failed to create SSM parameter RollbackBreaker" \
+  "Rollback: SecretQueueReaderPolicy restored successfully" \
+  "The automatic rollback restored the pre-deploy state."; do
+  if ! grep -qF -- "${marker}" "${DEPLOY_LOG}"; then
+    echo "FAIL: premise: the SDIN_ROLLBACK deploy's log has no '${marker}' line (the rollback did not restore the policy, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+done
+# The revert reached AWS: the live policy carries the pre-deploy Sid again.
+LIVE_READER_POLICY="$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+  --attribute-names Policy --query 'Attributes.Policy' --output text)"
+case "${LIVE_READER_POLICY}" in
+  *SdinReaderUpdated*) ;;
+  *)
+    echo "FAIL: premise: the live queue policy does not carry the pre-deploy Sid 'SdinReaderUpdated' after the rollback" >&2
+    exit 1
+    ;;
+esac
+# LOAD-BEARING (go-to-k/cdkd#4801): what the queue-policy provider deletes by.
+expect_eq "SecretQueueReaderPolicy's restored Queues (go-to-k/cdkd#4801)" "${QUEUE_URL}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r '.resources.SecretQueueReaderPolicy.properties.Queues[0] // empty')"
+expect_eq "SecretQueueReaderPolicy's restored cdkd:WrittenQueues (go-to-k/cdkd#4801)" "${QUEUE_URL}" \
+  "$(state_attribute SecretQueueReaderPolicy 'cdkd:WrittenQueues')"
+expect_eq "SecretQueue's VisibilityTimeout after the rollback" "45" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
+
+echo "==> Step 5f: step 5d's template again: SecretQueue's readers resolve its recorded ARN (go-to-k/cdkd#4800)"
 # PREMISE: the record holds SecretQueue's ARN as its `{{resolve:` spelling, so
 # the readers of the now NO_CHANGE queue are served it from the record.
 QUEUE_ARN_RECORDED="$(state_attribute SecretQueue Arn)"
@@ -949,14 +1016,20 @@ if [ "${QUEUE_ARN_LIVE##*:}" != "${QUEUE_NAME}" ]; then
   echo "FAIL: premise: SecretQueue's live ARN '${QUEUE_ARN_LIVE}' does not end in its name" >&2
   exit 1
 fi
-# PREMISE: a reader holds the plaintext ARN step 5d wrote, so this deploy
-# re-sends it (an UPDATE) instead of being a no-op that would pass with the
-# fix reverted. Holding the expression already is go-to-k/cdkd#4802 fixed:
-# this step then needs another way to make a reader UPDATE.
-expect_eq "premise: SecretQueueReaderPolicy's recorded Resource after step 5d (go-to-k/cdkd#4802)" \
+# PREMISE: the readers hold the plaintext ARN step 5d wrote (5e's rollback
+# restored that state), so this deploy re-sends it (an UPDATE) instead of being
+# a no-op that would pass with the fix reverted. The nested row's QueueArn
+# parameter in the parent's record, and the child's SSM parameter in the
+# child's. Holding the expression already is go-to-k/cdkd#4802 fixed: this
+# step then needs another way to make a reader UPDATE.
+expect_eq "premise: QueueReaderChild's recorded QueueArn parameter after step 5d (go-to-k/cdkd#4802)" \
   "${QUEUE_ARN_LIVE}" \
   "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
-    | jq -r '.resources.SecretQueueReaderPolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
+    | jq -r '.resources.QueueReaderChild.properties.Parameters.QueueArn // empty')"
+expect_eq "premise: ChildQueueArn's recorded Value after step 5d (go-to-k/cdkd#4802)" \
+  "${QUEUE_ARN_LIVE}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
+    | jq -r '.resources.ChildQueueArn.properties.Value // empty')"
 set +e
 SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
@@ -967,27 +1040,18 @@ if [ "${NOOP_RC}" -ne 0 ]; then
   log_tail
   exit 1
 fi
-# PREMISE: this deploy updated the reader, so the values below were sent now.
-if ! awk 'index($0, "SecretQueueReaderPolicy") && index($0, "(AWS::SQS::QueuePolicy)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
-  echo "FAIL: premise: the redeploy's log has no 'SecretQueueReaderPolicy (AWS::SQS::QueuePolicy) updated' line (the reader was not re-sent, or the wording drifted)" >&2
+# PREMISE: this deploy updated the nested row, so the value below was sent now.
+if ! awk 'index($0, "QueueReaderChild") && index($0, "(AWS::CloudFormation::Stack)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the redeploy's log has no 'QueueReaderChild (AWS::CloudFormation::Stack) updated' line (the reader was not re-sent, or the wording drifted)" >&2
   log_tail
   exit 1
 fi
-# The reader resolved the ARN from the record, so its own record stores the
-# reference again (the plaintext is in its secrets bag).
-SECRET_REF_RESOURCE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
-  | jq -r '.resources.SecretQueueReaderPolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
-case "${SECRET_REF_RESOURCE}" in
-  arn:*"{{resolve:secretsmanager:"*) ;;
-  *)
-    echo "FAIL: SecretQueueReaderPolicy's recorded Resource after the redeploy does not hold the {{resolve:secretsmanager: reference (go-to-k/cdkd#4800)" >&2
-    exit 1
-    ;;
-esac
 expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIVE}" \
   "$(aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" \
     --query 'Parameter.Value' --output text)"
-expect_eq "SecretQueueReaderPolicy's Resource after the redeploy" "${QUEUE_ARN_LIVE}" \
+# Not load-bearing for go-to-k/cdkd#4800 (the policy's literal reference makes
+# it store and send the right ARN whatever the fix): a regression guard only.
+expect_eq "SecretQueueReaderPolicy's live Resource after the redeploy" "${QUEUE_ARN_LIVE}" \
   "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
     --attribute-names Policy --query 'Attributes.Policy' --output text \
     | jq -r '.Statement[0].Resource')"

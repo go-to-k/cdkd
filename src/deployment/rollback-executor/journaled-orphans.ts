@@ -29,6 +29,7 @@ import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js'
 import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import type { RecordedSecretValues } from '../secret-redaction.js';
 import { journaledOrphanPrintingBag, maskEventTextWithBoundBags } from '../secret-name-needles.js';
 import { NESTED_PENDING_PARENT_REASON, displacedPhysicalIdShown } from '../nested-child-journal.js';
 import {
@@ -265,6 +266,12 @@ export async function deleteJournaledOrphans(
      * retry warning turns it off.
      */
     pointAtDrop?: boolean;
+    /**
+     * go-to-k/cdkd#3869: the stack's `NoEcho` values, judged into the printing
+     * bag (`journaledOrphanPrintingBag`): an entry or record written before
+     * schema v11 holds such a value in plaintext. `cdkd destroy` re-binds them.
+     */
+    noEchoValues?: RecordedSecretValues | undefined;
   } = {}
 ): Promise<{
   failures: number;
@@ -310,7 +317,8 @@ export async function deleteJournaledOrphans(
   // to decide: `getCurrentResourceSecrets` never returns it.
   const printing = journaledOrphanPrintingBag(
     orphans.segments.flatMap(({ ops, companions }) => [...(companions ?? []), ...ops]),
-    stateResources
+    stateResources,
+    options.noEchoValues
   );
   const maskedCtx: RollbackExecutorContext =
     record === undefined

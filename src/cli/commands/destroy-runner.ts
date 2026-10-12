@@ -115,10 +115,13 @@ import {
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
 import { orphanDeleteNeedsIdentity } from '../../deployment/rollback-executor/orphan-identity.js';
 import {
+  journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
-  secretNamePrintingBag,
+  orphanRecordsPrintingBag,
+  secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
+import type { RecordedSecretValues } from '../../deployment/secret-redaction.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -130,6 +133,12 @@ import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js'
  * state pinpoints a different region from the caller's, and for tearing
  * those down on its way out.
  */
+/**
+ * How long `cdkd destroy` waits for the stack's `NoEcho` values before it
+ * judges the printing bags from the records alone (go-to-k/cdkd#3869).
+ */
+export const NOECHO_PRINTING_BIND_CAP_MS = 10_000;
+
 export interface DestroyRunnerContext {
   stateBackend: S3StateBackend;
   lockManager: LockManager;
@@ -1042,6 +1051,46 @@ export async function runDestroyForStack(
   // run and a nested-stack child (which the parent invokes with
   // `skipConfirmation: true`). A flagged run has declined to be ASKED, not to
   // be told that live resources stop being tracked.
+  // go-to-k/cdkd#3869: the stack's `NoEcho` values, re-bound once from the
+  // synthesized template (none under `cdkd state destroy`), judge the journal
+  // listing below and every delete's printing bag: a record or journal entry
+  // written before schema v11 holds such a value in plaintext, which nothing
+  // in it marks as secret. Started on first use (a listing, or once the run
+  // is confirmed), so a declined run binds nothing it does not print; it never
+  // rejects, a synchronous throw included. Capped at
+  // NOECHO_PRINTING_BIND_CAP_MS (an SSM-typed parameter's lookup can hang
+  // before the prompt and under the lock): past it the run warns and goes on
+  // record-only, as `cdkd state destroy` judges, but only while the binding
+  // is still pending: a later call (the deletes, after a slow prompt) takes
+  // the binding's value once it settles.
+  let binding:
+    | { bound: Promise<RecordedSecretValues | undefined>; capped: Promise<undefined> }
+    | undefined;
+  const stackNoEchoValues = (): Promise<RecordedSecretValues | undefined> => {
+    if (binding === undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const capped = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          logger.warn(
+            safeMsg`The stack's NoEcho values were not bound within ${NOECHO_PRINTING_BIND_CAP_MS / 1000}s, ` +
+              `so a resource name taken from one may print unmasked where state holds it in plaintext ` +
+              `(state written before schema v11).`
+          );
+          resolve(undefined);
+        }, NOECHO_PRINTING_BIND_CAP_MS);
+        timer.unref?.();
+      });
+      const bound = Promise.resolve()
+        .then(() => ctx.noEchoReresolver?.printingNoEchoValues())
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer));
+      binding = { bound, capped };
+    }
+    // Each call races afresh, the binding FIRST: once both have settled,
+    // `Promise.race` takes the first in order, so a binding that settled after
+    // an earlier call's cap still wins.
+    return Promise.race([binding.bound, binding.capped]);
+  };
   const orphansAtDestroy = state.orphans ?? [];
   if (orphansAtDestroy.length > 0) {
     logger.info(
@@ -1054,6 +1103,7 @@ export async function runDestroyForStack(
       `Destroying this stack deletes that record. The resources stay in AWS, may continue to ` +
         `incur charges, and cdkd will no longer know about them:`
     );
+    const orphanListing = orphanRecordsPrintingBag(orphansAtDestroy, await stackNoEchoValues());
     for (const entry of orphansAtDestroy) {
       // Every field sanitized (go-to-k/cdkd#3500 security review). The row guard
       // above validates the record's SHAPE, not the CONTENT of the three strings
@@ -1085,9 +1135,16 @@ export async function runDestroyForStack(
       // dropping MORE. What IS preserved is every printable interior character,
       // which is what makes the id findable in AWS — an interior control
       // character becomes a space, by the same rule that defuses the forged row.
-      logger.info(
-        `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
-          `${displaySafe(entry.state.physicalId)}`
+      //
+      // The one deliberate loss (go-to-k/cdkd#3869, a maintainer decision): an
+      // id named from a secret prints MASKED, under the print-only bag bound
+      // below, as `cdkd diff` masks these records. The logical id and type
+      // still name the resource; an ordinary id prints as it is.
+      withPrintingSecrets(orphanListing, () =>
+        logger.info(
+          `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
+            `${displaySafe(entry.state.physicalId)}`
+        )
       );
     }
   }
@@ -1100,7 +1157,14 @@ export async function runDestroyForStack(
         `keeps it in AWS, Snapshot takes the final snapshot), unless state or a later deploy may ` +
         `own it, which is warned about instead:`
     );
-    for (const line of journaledOrphanLines(journaledOrphans, logger)) logger.info(line);
+    const listing = journaledOrphanPrintingBag(
+      journaledOrphans.segments.flatMap(({ ops }) => ops),
+      state.resources,
+      await stackNoEchoValues()
+    );
+    withPrintingSecrets(listing, () => {
+      for (const line of journaledOrphanLines(journaledOrphans, logger)) logger.info(line);
+    });
   }
 
   if (!ctx.skipConfirmation) {
@@ -1578,6 +1642,8 @@ export async function runDestroyForStack(
     // outside the `try` would strand the lock and leak the cross-region
     // region/clients — the main `finally` below releases and restores both.
     renderer.start();
+    // Beside the journal re-read below (see `stackNoEchoValues`).
+    void stackNoEchoValues();
 
     // go-to-k/cdkd#4584: before the stack's own resources, which such a
     // resource may depend on (it was created after them), and under the lock.
@@ -1610,6 +1676,7 @@ export async function runDestroyForStack(
           `Nothing was deleted; re-run the destroy to act on the current journal.`
       );
     }
+    const noEchoValues = await stackNoEchoValues();
     if (journaledUnderLock.count > 0) {
       const orphanOutcome = await deleteJournaledOrphans(
         journaledUnderLock,
@@ -1636,7 +1703,7 @@ export async function runDestroyForStack(
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
         },
-        { isInterrupted: () => lock.interrupted }
+        { isInterrupted: () => lock.interrupted, noEchoValues }
       );
       result.errorCount += orphanOutcome.failures;
       journaledOrphanFailures = orphanOutcome.failures;
@@ -1742,6 +1809,10 @@ export async function runDestroyForStack(
 
     logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
 
+    // go-to-k/cdkd#3869: judged with the stack's `NoEcho` values too, each
+    // record once (see `noEchoValues` above).
+    const printingBagOf = secretNamePrintingBags(state.resources, noEchoValues);
+
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
       // Graceful SIGINT (issue #816): once draining, do not start a new
@@ -1768,7 +1839,7 @@ export async function runDestroyForStack(
       // warnings and the final-snapshot lines mask a name derived from a
       // secret. `getCurrentResourceSecrets` never returns it.
       const deletePromises = level.map((logicalId) =>
-        withPrintingSecrets(secretNamePrintingBag(logicalId, state.resources), async () => {
+        withPrintingSecrets(printingBagOf(logicalId), async () => {
           // Graceful SIGINT (issue #816): if the interrupt landed after this
           // level's promises were created but before this resource's delete was
           // dispatched, skip it. It stays in the preserved state for re-run.

@@ -9,8 +9,10 @@ import {
   redactSecretsForState,
   dynamicReferenceTokens,
   STATE_DERIVED_RULES,
+  SECRET_MASK,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
+import { hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
 // `ReplayResolvers` below calls the classifier; `rollback-executor.ts`
 // re-exports it under its historical address.
 import {
@@ -353,12 +355,18 @@ export async function resolveLeafByRegion(
  * need no corroboration to say so). What changes is only how much a reader
  * should think the alternative costs (issue #2691).
  *
+ * A leaf the previous record persisted as PLAINTEXT, which the restore
+ * reproduced byte for byte, is persisted as it was (go-to-k/cdkd#4801), in
+ * `properties` (against `journaledProps`) and `attributes` (against
+ * `journaledAttributes`); see {@link keepPersistedPlainLeaves}.
+ *
  * No-op when the op resolved no secret.
  */
 export function redactRollbackRecord(
   record: ResourceState,
   secrets: RecordedSecretValues,
-  journaledProps?: Record<string, unknown>
+  journaledProps?: Record<string, unknown>,
+  journaledAttributes?: Record<string, unknown>
 ): ResourceState {
   if (secrets.size === 0) return record;
   // Deliberately NOT passed as `sourceProperties`: that parameter means "a
@@ -378,5 +386,110 @@ export function redactRollbackRecord(
             STATE_DERIVED_RULES
           ),
         };
-  return scrubResourceRecord(positioned, secrets);
+  return keepPersistedPlainRecordLeaves(scrubResourceRecord(positioned, secrets), record, {
+    properties: journaledProps,
+    attributes: journaledAttributes,
+  });
+}
+
+/**
+ * {@link keepPersistedPlainLeaves} over a record's `properties` and
+ * `attributes` (go-to-k/cdkd#4801): `scrubbed` is `raw` after redaction,
+ * `persisted` the record state already holds. Shared by the restore above and
+ * the deploy journal's scrub of each op's `previousState`, which is the same
+ * rewrite one writer earlier.
+ *
+ * `observedProperties` stays as scanned: no provider addresses a resource by
+ * it, and `cdkd drift` resolves a reference there before comparing.
+ */
+export function keepPersistedPlainRecordLeaves<T extends ResourceState>(
+  scrubbed: T,
+  raw: Pick<ResourceState, 'properties' | 'attributes'>,
+  persisted: { properties?: unknown; attributes?: unknown }
+): T {
+  const properties = keepPersistedPlainLeaves(
+    scrubbed.properties,
+    raw.properties,
+    persisted.properties
+  ) as Record<string, unknown>;
+  const attributes =
+    scrubbed.attributes === undefined
+      ? undefined
+      : (keepPersistedPlainLeaves(scrubbed.attributes, raw.attributes, persisted.attributes) as
+          | Record<string, unknown>
+          | undefined);
+  if (properties === scrubbed.properties && attributes === scrubbed.attributes) return scrubbed;
+  return {
+    ...scrubbed,
+    properties,
+    ...(attributes !== undefined && { attributes }),
+  };
+}
+
+/**
+ * go-to-k/cdkd#4801: undo the value scan wherever it rewrote a leaf the
+ * PREVIOUS record persisted as plaintext and the restore reproduced exactly.
+ *
+ * The replay re-resolves the record's own `{{resolve:...}}` references, so its
+ * map holds the plaintext of a secret that NAMES a resource. A normal deploy
+ * stores a reader's copy of that physical name (an SQS queue policy's `Queues`
+ * URL) in plaintext, and providers
+ * address the resource by it; the scan rewrote every copy into the reference,
+ * and the next destroy deleted by an address AWS does not know.
+ *
+ * Kept only where all three agree at one path: the persisted leaf is a string
+ * carrying NO dynamic reference, the restored leaf (`raw`, before redaction)
+ * is byte-identical to it, and the redaction did not mask the leaf whole. So
+ * every string this keeps is one the previous record already persisted at
+ * that path — it adds no plaintext to state that state did not hold — and a
+ * leaf the previous record held as a reference is never one of them: that is
+ * the secret itself, and it stays the redaction's. A mismatched array position
+ * can only fail the equality, never keep another leaf's value.
+ *
+ * Returns `redacted` by identity when nothing is kept, and never writes into
+ * any input: on the no-`effectiveProperties` arm `raw` IS the persisted bag.
+ */
+export function keepPersistedPlainLeaves(
+  redacted: unknown,
+  raw: unknown,
+  persisted: unknown
+): unknown {
+  if (typeof raw === 'string') {
+    return typeof persisted === 'string' &&
+      raw === persisted &&
+      redacted !== SECRET_MASK &&
+      dynamicReferenceTokens(persisted).length === 0
+      ? persisted
+      : redacted;
+  }
+  if (Array.isArray(raw)) {
+    if (!Array.isArray(persisted) || !Array.isArray(redacted)) return redacted;
+    if (redacted.length !== raw.length) return redacted;
+    let out: unknown[] | undefined;
+    for (let i = 0; i < redacted.length; i++) {
+      const kept = keepPersistedPlainLeaves(redacted[i], raw[i], persisted[i]);
+      if (kept !== redacted[i]) (out ??= [...redacted])[i] = kept;
+    }
+    return out ?? redacted;
+  }
+  if (!isPlainRecord(raw) || !isPlainRecord(persisted) || !isPlainRecord(redacted)) {
+    return redacted;
+  }
+  let out: Record<string, unknown> | undefined;
+  for (const key of Object.keys(redacted)) {
+    if (!hasOwnKey(raw, key) || !hasOwnKey(persisted, key)) continue;
+    const kept = keepPersistedPlainLeaves(redacted[key], raw[key], persisted[key]);
+    if (kept === redacted[key]) continue;
+    // A spread copies an own `__proto__` key as DATA, so assigning that key
+    // writes the own property and never the prototype setter.
+    out ??= { ...redacted };
+    out[key] = kept;
+  }
+  return out ?? redacted;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' && value !== null && !Array.isArray(value) && hasPlainPrototype(value)
+  );
 }

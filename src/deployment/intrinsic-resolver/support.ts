@@ -336,7 +336,10 @@ export function stringifyParameterForLog(
   paramDef: ParameterDefinition | undefined,
   value: unknown
 ): string {
-  if (paramDef?.NoEcho === true) return '<redacted>';
+  // The string form too, as a hand-written or included template spells it
+  // and every other `NoEcho` reader accepts (go-to-k/cdkd#3869).
+  const noEcho: unknown = paramDef?.NoEcho;
+  if (noEcho === true || noEcho === 'true') return '<redacted>';
   return stringifyValue(value);
 }
 

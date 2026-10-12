@@ -627,7 +627,8 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     redactRollbackRecord(
       recordAfterRollbackUpdate(previousState, revertResult),
       secrets,
-      previousState.properties
+      previousState.properties,
+      previousState.attributes
     ),
     previousState,
     noEcho.substituted

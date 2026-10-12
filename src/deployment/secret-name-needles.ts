@@ -20,6 +20,7 @@ import { secretDerivedNamePairs } from './rollback-executor/names.js';
 import { currentLogLineMasker } from '../utils/log-line-masker.js';
 import {
   type RecordedSecretValues,
+  carryLogOnlyValues,
   hasMaskableValues,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
@@ -387,21 +388,62 @@ export function secretNamedRecordNeedles(
  * resource's own name spellings and those of each secret-named sibling its
  * record holds. Bound by `withPrintingSecrets` around the call, so the
  * provider's lines, a reader's warnings and the final-snapshot lines mask
- * them. Judged from the state records alone.
+ * them. Judged from the state records alone; {@link secretNamePrintingBags}
+ * also judges with the stack's `NoEcho` values.
  */
 export function secretNamePrintingBag(
   logicalId: string,
   resources: Readonly<Record<string, ResourceState>>
 ): RecordedSecretValues {
-  const bag: RecordedSecretValues = new Map();
-  const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
-  for (const needle of secretNameNeedlesOf(logicalId, record, undefined) ?? []) {
-    recordLogOnlyValue(bag, needle);
-  }
-  for (const needle of secretNamesReadBy(logicalId, record, resources)) {
-    recordLogOnlyValue(bag, needle);
-  }
-  return bag;
+  return secretNamePrintingBags(resources, undefined)(logicalId);
+}
+
+/**
+ * {@link secretNamePrintingBag} for every resource of one stack, judged with
+ * `noEchoValues` too (go-to-k/cdkd#3869): the stack's `NoEcho` parameter
+ * values, which `cdkd destroy` re-binds from the synthesized template. A
+ * record written before schema v11 holds such a value in PLAINTEXT, with no
+ * `***` or `{{resolve:` marker for the record-only judge to key on, so a name
+ * taken from it (and the id spelling it) is judged only against these values.
+ * Each bag also carries the values themselves as log-only needles, as the
+ * deploy that bound them masked them. Each record's own needles are judged
+ * ONCE per record object, so a destroy pays the judge per resource, not per
+ * pair of resources.
+ */
+export function secretNamePrintingBags(
+  resources: Readonly<Record<string, ResourceState>>,
+  noEchoValues: RecordedSecretValues | undefined
+): (logicalId: string) => RecordedSecretValues {
+  const secrets =
+    noEchoValues !== undefined && hasMaskableValues(noEchoValues) ? noEchoValues : undefined;
+  const judged = new Map<string, { record: unknown; needles: Set<string> | undefined }>();
+  const needlesOf = (logicalId: string, record: ResourceState | undefined) => {
+    const hit = judged.get(logicalId);
+    if (hit !== undefined && hit.record === record) return hit.needles;
+    // `embedded: undefined`: a stack-wide value embedded by chance in an id is
+    // no evidence the id came from it (`stateSecretNameNeedles`); the value
+    // itself is masked by the carried needles below.
+    const needles = secretNameNeedlesOf(logicalId, record, secrets, { embedded: undefined });
+    judged.set(logicalId, { record, needles });
+    return needles;
+  };
+  return (logicalId) => {
+    const bag: RecordedSecretValues = new Map();
+    if (secrets !== undefined) carryLogOnlyValues(secrets, bag);
+    const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+    for (const needle of needlesOf(logicalId, record) ?? []) recordLogOnlyValue(bag, needle);
+    // What the record READ from each other secret-named record
+    // (`secretNamesReadBy`), over the memoized needles.
+    const leaves = [...wholeStringLeavesOf(record?.properties)].filter((leaf) => leaf !== '');
+    if (leaves.length === 0) return bag;
+    for (const [otherId, other] of Object.entries(resources)) {
+      if (otherId === logicalId) continue;
+      for (const needle of needlesOf(otherId, other) ?? []) {
+        if (leavesHoldNeedle(leaves, needle)) recordLogOnlyValue(bag, needle);
+      }
+    }
+    return bag;
+  };
 }
 
 /**
@@ -413,7 +455,9 @@ export function secretNamePrintingBag(
  * state record, and the state record under the same logical id (the resource
  * a replacement orphan's replacement was replacing). ONE bag per batch, so a
  * name an entry read from a sibling entry is that sibling's own needle, and a
- * sibling's name masked on another's line only over-masks.
+ * sibling's name masked on another's line only over-masks. `noEchoValues`
+ * judges as {@link secretNamePrintingBags} does (a pre-v11 plaintext), and is
+ * carried into the bag.
  */
 export function journaledOrphanPrintingBag(
   ops: readonly {
@@ -422,9 +466,14 @@ export function journaledOrphanPrintingBag(
     physicalId?: string | undefined;
     attemptedProperties?: Record<string, unknown> | undefined;
   }[],
-  stateResources: Readonly<Record<string, ResourceState>>
+  stateResources: Readonly<Record<string, ResourceState>>,
+  noEchoValues?: RecordedSecretValues
 ): RecordedSecretValues {
   const bag: RecordedSecretValues = new Map();
+  const secrets =
+    noEchoValues !== undefined && hasMaskableValues(noEchoValues) ? noEchoValues : undefined;
+  if (secrets !== undefined) carryLogOnlyValues(secrets, bag);
+  const judge = { secrets, embedded: undefined };
   for (const op of ops) {
     const record = {
       resourceType: op.resourceType,
@@ -435,9 +484,9 @@ export function journaledOrphanPrintingBag(
       ? stateResources[op.logicalId]
       : undefined;
     for (const needle of [
-      ...(secretNameNeedlesOf(op.logicalId, record, undefined) ?? []),
-      ...(secretNameNeedlesOf(op.logicalId, replaced, undefined) ?? []),
-      ...secretNamesReadBy(op.logicalId, record, stateResources),
+      ...(secretNameNeedlesOf(op.logicalId, record, secrets, judge) ?? []),
+      ...(secretNameNeedlesOf(op.logicalId, replaced, secrets, judge) ?? []),
+      ...secretNamesReadBy(op.logicalId, record, stateResources, () => judge),
     ]) {
       recordLogOnlyValue(bag, needle);
     }
@@ -492,18 +541,28 @@ export function completedReplayEntries(
  * The log-only bag over a stack's orphan records (`state.orphans`, what an
  * earlier rollback kept in AWS; go-to-k/cdkd#3869): each record's own name
  * spellings, judged from the record, which still spells a secret-derived name
- * as its `{{resolve:` reference. One bag for every record: a line names one
- * record, and a sibling's needle only over-masks. Malformed entries are
+ * as its `{{resolve:` reference, or, given `noEchoValues` (`cdkd destroy`'s
+ * listing), a pre-v11 plaintext judged against them as
+ * {@link secretNamePrintingBags} judges it. One bag for every record: a line
+ * names one record, and a sibling's needle only over-masks. Malformed entries are
  * skipped (their own refusal reports them). For the adoption pre-pass's lines
  * and refusal, on `cdkd deploy` and `cdkd diff` alike.
  */
-export function orphanRecordsPrintingBag(records: readonly unknown[]): RecordedSecretValues {
+export function orphanRecordsPrintingBag(
+  records: readonly unknown[],
+  noEchoValues?: RecordedSecretValues
+): RecordedSecretValues {
   const bag: RecordedSecretValues = new Map();
+  const secrets =
+    noEchoValues !== undefined && hasMaskableValues(noEchoValues) ? noEchoValues : undefined;
+  if (secrets !== undefined) carryLogOnlyValues(secrets, bag);
   for (const entry of records) {
     if (entry === null || typeof entry !== 'object') continue;
     const { logicalId, state } = entry as { logicalId?: unknown; state?: unknown };
     if (typeof logicalId !== 'string' || state === null || typeof state !== 'object') continue;
-    for (const needle of secretNameNeedlesOf(logicalId, state, undefined) ?? []) {
+    for (const needle of secretNameNeedlesOf(logicalId, state, secrets, {
+      embedded: undefined,
+    }) ?? []) {
       recordLogOnlyValue(bag, needle);
     }
   }

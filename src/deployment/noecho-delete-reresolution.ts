@@ -9,6 +9,7 @@ import {
   carryLogOnlyValues,
   carryLogOnlyValuesCarriedBy,
   createSecretMasker,
+  hasMaskableValues,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordLogOnlyParameterValue,
@@ -318,6 +319,13 @@ export interface TemplateNoEchoReresolverOptions {
   inheritedSecrets?: RecordedSecretValues | undefined;
   /** How the parent classed each value it passes (#4543), for the child's input fingerprints. */
   passedClasses?: ReadonlyMap<string, PassedParameterClass> | undefined;
+  /**
+   * The parent's {@link TemplateNoEchoReresolver.printingNoEchoValues}, read by
+   * the child's alone (go-to-k/cdkd#3869): a parent row written before schema
+   * v11 names no `noEchoLeaves`, so nothing else says which child parameter
+   * carries one. PRINT-ONLY: never bound, compared or sent.
+   */
+  printingSeed?: RecordedSecretValues | undefined;
 }
 
 /**
@@ -331,6 +339,7 @@ export class TemplateNoEchoReresolver {
   private readonly logger = getLogger().child('NoEchoDeleteReresolution');
   private readonly resolver: IntrinsicFunctionResolver;
   private parametersPromise: Promise<Record<string, unknown> | undefined> | undefined;
+  private printingNoEchoPromise: Promise<RecordedSecretValues | undefined> | undefined;
   private readonly noEchoParameters: ReadonlySet<string>;
   private readonly options: TemplateNoEchoReresolverOptions;
 
@@ -422,6 +431,61 @@ export class TemplateNoEchoReresolver {
       if (parameters !== undefined && Object.hasOwn(parameters, name)) {
         recordLogOnlyParameterValue(bag, parameters[name]);
       }
+    }
+    return bag;
+  }
+
+  /**
+   * This stack's `NoEcho` values (and what it inherited) as the log-only
+   * needles of a bag, for the destroy's printing bags (go-to-k/cdkd#3869): a
+   * record written before schema v11 holds such a value in plaintext, which
+   * nothing else marks as secret. Bound at most once (the parameters' binding
+   * is shared with {@link valuesFor}), and only when the template declares a
+   * `NoEcho` parameter ({@link printingNeedles}); `undefined` when there is
+   * nothing to mask. READ-ONLY to callers.
+   */
+  printingNoEchoValues(): Promise<RecordedSecretValues | undefined> {
+    this.printingNoEchoPromise ??= this.printingNeedles().then((bag) =>
+      hasMaskableValues(bag) ? bag : undefined
+    );
+    return this.printingNoEchoPromise;
+  }
+
+  /**
+   * {@link noEchoNeedles} for printing alone: it also carries the parent's
+   * `printingSeed`, and when the binding fails AS A WHOLE (an unrelated
+   * SSM-typed parameter's lookup, say) it still records each `NoEcho` value
+   * this stack was handed, or a literal `Default`: cdkd takes no
+   * `--parameters`, so that is what it deployed with. A wrong guess only
+   * over-masks.
+   */
+  private async printingNeedles(): Promise<RecordedSecretValues> {
+    const bag = this.newBag();
+    if (this.options.printingSeed !== undefined) carryLogOnlyValues(this.options.printingSeed, bag);
+    // Nothing of its own to bind: no lookup, and no binding-failure line.
+    if (this.noEchoParameters.size === 0) return bag;
+    const parameters = await this.boundParameters();
+    const section = (this.options.template.Parameters ?? {}) as Record<string, unknown>;
+    const supplied = this.options.parameters;
+    for (const name of this.noEchoParameters) {
+      if (parameters !== undefined) {
+        if (Object.hasOwn(parameters, name)) recordLogOnlyParameterValue(bag, parameters[name]);
+        continue;
+      }
+      if (supplied !== undefined && Object.hasOwn(supplied, name)) {
+        const value = supplied[name];
+        if (!this.options.maskedParameters?.has(name)) {
+          recordLogOnlyParameterValue(bag, value);
+        }
+        continue;
+      }
+      const definition = Object.hasOwn(section, name)
+        ? (section[name] as { Type?: unknown; Default?: unknown } | undefined)
+        : undefined;
+      // An SSM-typed parameter's Default is the parameter NAME, not its value.
+      if (typeof definition?.Type === 'string' && definition.Type.startsWith('AWS::SSM::'))
+        continue;
+      if (definition?.Default !== undefined) recordLogOnlyParameterValue(bag, definition.Default);
     }
     return bag;
   }
@@ -565,8 +629,11 @@ export class TemplateNoEchoReresolver {
               rowTemplate?.Properties?.Parameters,
               this.inputSources(parameters0)
             ).catch(() => undefined);
+      // A masking-only failure must not drop the child's delete re-resolution.
+      const printingSeed = await this.printingNoEchoValues().catch(() => undefined);
       return new TemplateNoEchoReresolver({
         ...(passedClasses !== undefined && { passedClasses }),
+        ...(printingSeed !== undefined && { printingSeed }),
         template: child.template,
         stackName: childStackName,
         region: this.options.region,

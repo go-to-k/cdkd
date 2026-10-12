@@ -46,6 +46,7 @@ import {
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
+import { keepPersistedPlainRecordLeaves } from '../rollback-executor/replay-secrets.js';
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   type RecordedSecretValues,
@@ -148,7 +149,20 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // REPLAYED baseline, not a fresh readback: its bag already sits in
       // `state.json`, so a mask here protects nothing a reader could still
       // be protected from and poisons the record a rollback rebuilds.
+      //
+      // The same holds for the value scan (go-to-k/cdkd#4801): a plaintext
+      // leaf of that record — a reader's copy of a secret-derived physical
+      // name, such as a queue policy's `Queues` URL — stays as state holds it,
+      // or the restore writes the reference where a provider addresses the
+      // resource. "As state holds it" is the working map's record, except for
+      // an id `adoptRollbackOrphans` adopted: there it is the orphan entry's
+      // own `state`, since the adopted record's attributes merge a LIVE
+      // readback and a key state never held must fall to the scan. So the
+      // journal's `previousState` keeps no plaintext state did not hold, and
+      // the restore's own keep (`redactRollbackRecord`) leans on exactly that.
       const previous = next.previousState;
+      const adopted = adoptedOrphanRecords.get(this);
+      const loaded = adopted?.has(op.logicalId) ? adopted.get(op.logicalId) : previous;
       // The `NoEcho` arms over the PREVIOUS record (review B3): its own
       // `noEchoLeaves` when it has them, else today's template positions for
       // the same logical id and type, so a pre-v11 record's plaintext does not
@@ -156,7 +170,11 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       next.previousState = this.applyNoEchoPersist(
         op.logicalId,
         previous,
-        scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
+        keepPersistedPlainRecordLeaves(
+          scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
+          previous,
+          loaded ?? {}
+        ),
         undefined,
         {},
         undefined,
@@ -166,6 +184,14 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
     return next as unknown as T;
   });
 }
+
+/**
+ * Per engine, the record state held for each id {@link adoptRollbackOrphans}
+ * adopted: the orphan entry's own `state`, before the live readback's
+ * attributes are merged in (go-to-k/cdkd#4801). Read by
+ * {@link redactOperationsForJournal}; an id absent here was not adopted.
+ */
+const adoptedOrphanRecords = new WeakMap<DeployEngine, Map<string, ResourceState | undefined>>();
 
 /**
  * Re-adopt what a previous rollback left in AWS, before the diff runs
@@ -233,6 +259,12 @@ export async function adoptRollbackOrphans(
   // carries no command, and the logical id beside it is what the user acts on.
   for (const notice of plan.notices) this.logger.info(maskSecretsInText(notice, named));
 
+  // go-to-k/cdkd#4801: for the journal's keep, what state held for each
+  // adopted id. Installed BEFORE the refusal below, so a refused run never
+  // leaves an earlier run's map behind.
+  const adoptedFrom = new Map<string, ResourceState | undefined>();
+  adoptedOrphanRecords.set(this, adoptedFrom);
+
   if (plan.refusals.length > 0) {
     throw new Error(
       `Deploy refused — cdkd left ${plan.refusals.length} resource(s) in AWS that it cannot ` +
@@ -241,6 +273,9 @@ export async function adoptRollbackOrphans(
   }
 
   for (const [logicalId, record] of Object.entries(plan.adopted)) {
+    // The entry the plan adopted (its `adopted` map is last-wins), read before
+    // `orphans` is replaced below.
+    adoptedFrom.set(logicalId, records.findLast((r) => r.logicalId === logicalId)?.state);
     currentState.resources[logicalId] = record;
     this.logger.info(
       `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +

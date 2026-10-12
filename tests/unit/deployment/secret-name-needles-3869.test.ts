@@ -36,6 +36,7 @@ const {
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
   secretNamePrintingBag,
+  secretNamePrintingBags,
   secretNamesReadBy,
   stateSecretNameNeedles,
 } = await import(
@@ -250,6 +251,93 @@ describe('journaledOrphanPrintingBag (go-to-k/cdkd#3869)', () => {
     // A replacement orphan: the record is the resource being replaced.
     const op = { ...userOp('plain-new-name'), physicalId: 'new-user-id' };
     expect(masks(journaledOrphanPrintingBag([op], { User: user(name) }))).toBe(masked);
+  });
+});
+
+describe('the stack NoEcho values judge a pre-v11 plaintext name (go-to-k/cdkd#3869)', () => {
+  // A record written before schema v11 holds the NoEcho value in plaintext;
+  // RDS folds the identifier, so its id is no literal of the value.
+  const VALUE = 'SuperSecretDb1';
+  const FOLDED = VALUE.toLowerCase();
+  const noEcho = (): Map<string, string> => {
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, VALUE);
+    return bag;
+  };
+  const db = (identifier: string): Records[string] => ({
+    physicalId: FOLDED,
+    resourceType: 'AWS::RDS::DBInstance',
+    properties: { DBInstanceIdentifier: identifier },
+    attributes: {},
+    dependencies: [],
+  });
+  const replica: Records[string] = {
+    physicalId: 'replica-id',
+    resourceType: 'AWS::RDS::DBInstance',
+    properties: { SourceDBInstanceIdentifier: FOLDED },
+    attributes: {},
+    dependencies: ['Db'],
+  };
+  const masks = (bag: Map<string, string>, text = `db ${FOLDED}`): boolean =>
+    maskSecretsInText(text, bag) === 'db ***';
+
+  it('secretNamePrintingBags: the id, a reader of it and the value itself; none without the values', () => {
+    const resources = { Db: db(VALUE), Replica: replica } as Records;
+    const bags = secretNamePrintingBags(resources, noEcho());
+    expect(masks(bags('Db'))).toBe(true);
+    expect(masks(bags('Replica'))).toBe(true);
+    // The value itself is carried, on any resource's line.
+    expect(maskSecretsInText(`pw ${VALUE}`, bags('Replica'))).toBe('pw ***');
+    // Record-only (`cdkd state destroy`, `drift --revert`): no evidence.
+    const recordOnly = secretNamePrintingBags(resources, undefined);
+    expect(masks(recordOnly('Db'))).toBe(false);
+    expect(masks(recordOnly('Replica'))).toBe(false);
+    expect(masks(secretNamePrintingBag('Db', resources))).toBe(false);
+  });
+
+  it('secretNamePrintingBags: a replaced record object is judged afresh, not from the memo', () => {
+    const resources: Record<string, Records[string]> = { Db: db(VALUE) };
+    const bags = secretNamePrintingBags(resources, noEcho());
+    expect(masks(bags('Db'))).toBe(true);
+    resources['Db'] = db('plain-identifier');
+    expect(masks(bags('Db'))).toBe(false);
+  });
+
+  it('negative control: an ordinary name is not masked by the values', () => {
+    const resources = { Db: { ...db('plain-identifier'), physicalId: 'plain-identifier' } } as Records;
+    expect(
+      maskSecretsInText('db plain-identifier', secretNamePrintingBags(resources, noEcho())('Db'))
+    ).toBe('db plain-identifier');
+  });
+
+  it('journaledOrphanPrintingBag: an orphan named from the value, and one that read it', () => {
+    const orphan = {
+      logicalId: 'Db',
+      resourceType: 'AWS::RDS::DBInstance',
+      physicalId: FOLDED,
+      attemptedProperties: { DBInstanceIdentifier: VALUE },
+    };
+    expect(masks(journaledOrphanPrintingBag([orphan], {}, noEcho()))).toBe(true);
+    expect(masks(journaledOrphanPrintingBag([orphan], {}))).toBe(false);
+    // The value itself is carried, on any orphan's line.
+    const plain = { ...orphan, physicalId: 'plain-id', attemptedProperties: {} };
+    expect(maskSecretsInText(`pw ${VALUE}`, journaledOrphanPrintingBag([plain], {}, noEcho()))).toBe(
+      'pw ***'
+    );
+    const reader = {
+      logicalId: 'Replica',
+      resourceType: 'AWS::RDS::DBInstance',
+      physicalId: 'replica-id',
+      attemptedProperties: { SourceDBInstanceIdentifier: FOLDED },
+    };
+    // A replacement orphan: the state record under its logical id (the
+    // resource it was replacing) is judged with the values too.
+    const replacing = { ...orphan, physicalId: 'new-id', attemptedProperties: {} };
+    expect(masks(journaledOrphanPrintingBag([replacing], { Db: db(VALUE) }, noEcho()))).toBe(true);
+    expect(masks(journaledOrphanPrintingBag([replacing], { Db: db(VALUE) }))).toBe(false);
+    // Judged through the state record it read.
+    expect(masks(journaledOrphanPrintingBag([reader], { Db: db(VALUE) }, noEcho()))).toBe(true);
+    expect(masks(journaledOrphanPrintingBag([reader], { Db: db(VALUE) }))).toBe(false);
   });
 });
 
