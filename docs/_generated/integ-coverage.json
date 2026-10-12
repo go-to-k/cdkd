@@ -6341,6 +6341,7 @@
       "resourceType": "AWS::SNS::Subscription",
       "integs": [
         "composite-stack",
+        "secret-derived-immutable-names",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-sqs-event",
@@ -6349,6 +6350,10 @@
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
           "literal"
         ],
         "sns-event-source": [
@@ -6408,6 +6413,7 @@
         "s3-lifecycle",
         "scheduled-task",
         "schema-v10-to-v11-migration",
+        "secret-derived-immutable-names",
         "serverless-api",
         "sns-event-source",
         "sns-inline-subscription",
@@ -6540,6 +6546,10 @@
         ],
         "schema-v10-to-v11-migration": [
           "l1"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ],
         "serverless-api": [
           "l2"
