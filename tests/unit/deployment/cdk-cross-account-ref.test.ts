@@ -280,6 +280,24 @@ describe('the refusal message', () => {
     }
   });
 
+  it('prints the placeholder for a consumer account that is not 12 digits', () => {
+    for (const account of ['22222222222\u001b[2K', '2222\u202e22222222', 'abc', '2222222222222']) {
+      const text = cdkCrossAccountRefRefusal({
+        consumer: 'Consumer',
+        output: 'O',
+        producer: 'Producer',
+        region: 'us-east-1',
+        producerAccount: PRODUCER_ACCOUNT,
+        roleName: 'R',
+        consumerAccount: account,
+        reason: 'r',
+      });
+      expect(text, account).toContain("--trust-for-lookup <consumer-account>'");
+      expect(text, account).not.toContain('\u001b');
+      expect(text, account).not.toContain('\u202e');
+    }
+  });
+
   it('carries no issue number and no date', () => {
     expect(message).not.toMatch(/#\d/);
     expect(message).not.toMatch(/\b20\d\d-\d\d-\d\d\b/);

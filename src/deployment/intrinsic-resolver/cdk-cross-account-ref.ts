@@ -142,9 +142,10 @@ function trustsOnlyCfnExecRoles(document: unknown): boolean {
 /**
  * S2: the producer template declares an `AWS::IAM::Role` named `roleName`
  * whose trust principals are ALL CloudFormation execution roles — the role
- * aws-cdk-lib generates for a cross-account reference. It is ONE role per
- * producer, trusting every consumer account, so it never says which consumer
- * a reference belongs to: the refusal names the consumer stack's own account.
+ * aws-cdk-lib generates for a cross-account reference. It is one role per
+ * producer, trusting the consumers' CloudFormation execution roles, so it does
+ * not say which consumer a reference belongs to: the refusal names the
+ * consumer stack's own account.
  */
 export function isGeneratedReaderRole(template: CloudFormationTemplate, roleName: string): boolean {
   const resources = template.Resources;
@@ -248,7 +249,13 @@ function quotedArg(rendered: string): string {
  * read. Every part is RENDERED by the caller through the display helpers.
  */
 export function cdkCrossAccountRefRefusal(parts: CdkCrossAccountRefRefusalParts): string {
-  const consumerAccount = parts.consumerAccount ?? '<consumer-account>';
+  // The account comes from the manifest's `environment`, which admits any
+  // character but `/`: only a 12-digit account id is printed, so nothing a
+  // terminal interprets reaches it through this pasteable command.
+  const consumerAccount =
+    parts.consumerAccount !== undefined && /^\d{12}$/.test(parts.consumerAccount)
+      ? parts.consumerAccount
+      : '<consumer-account>';
   return (
     `Fn::GetStackOutput: cannot read output ${parts.output} of stack ${parts.producer} ` +
     `(region ${parts.region}, account ${parts.producerAccount})` +

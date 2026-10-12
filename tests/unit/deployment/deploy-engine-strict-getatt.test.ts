@@ -254,13 +254,14 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
       mockDagBuilder as never,
       mockDiffCalculator as never,
       mockProviderRegistry as never,
-      { dryRun: false, producerLookup },
+      { dryRun: false, producerLookup, consumerAccount: '222222222222' },
       'us-east-1'
     );
     expect(vi.mocked(IntrinsicFunctionResolver)).toHaveBeenLastCalledWith('us-east-1', {
       strictGetAtt: false,
       cfnFallback: true,
       producerLookup,
+      consumerAccount: '222222222222',
     });
     expect(producerLookup).not.toHaveBeenCalled();
   });

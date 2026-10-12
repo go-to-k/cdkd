@@ -230,7 +230,7 @@ describe('cdkd deploy and the aws-cdk-lib-generated cross-account reference', ()
     expect(code).toBe(1);
     const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(message).toContain('names no CDK lookup role');
-    expect(message).toContain('--trust-for-lookup');
+    expect(message).toContain(`--trust-for-lookup ${CONSUMER_ACCOUNT}'`);
     for (const spy of [
       expandMacrosSpy,
       stsCtorSpy,
