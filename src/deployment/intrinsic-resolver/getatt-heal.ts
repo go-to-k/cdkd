@@ -443,14 +443,25 @@ export function healBeforeConstructing(
 }
 
 /**
+ * The ARN prefix allowed before a name-identified record's own id
+ * ({@link isMaskedOwnIdCopy}): partition, service, region, account and at most
+ * one resource-type token (`function:`, `table/`), nothing else.
+ */
+const OWN_ID_ARN_PREFIX =
+  /^arn:aws(?:-[a-z]+)*:[a-z0-9-]+:(?:[a-z]{2}(?:-[a-z]+)+-\d+)?:(?:\d{12})?:(?:[A-Za-z0-9-]+[:/])?$/;
+
+/**
  * go-to-k/cdkd#4849: may a re-read value replace the `***` a record holds at
  * `key`? An earlier cdkd masked a copy of the record's own physical id (the
  * `TopicArn` of a topic named from a `NoEcho` value, a function's `Arn`), and a
  * reader of it could not deploy. The read is accepted when it EQUALS the
- * physical id, which state already holds in plaintext, or CONTAINS it and is
- * left unchanged by the producer's own redaction with that id exempted
- * (`producerSecrets`, this run's bag, which must hold a maskable value): every
- * recorded secret it carries lies inside the id. Anything else (the name
+ * physical id, which state already holds in plaintext, or is an ARN ENDING in
+ * it whose prefix holds only an ARN's public fields ({@link OWN_ID_ARN_PREFIX})
+ * and is left unchanged by the producer's own redaction with that id exempted
+ * (`producerSecrets`, this run's bag, which must hold a maskable value). The
+ * shape is what bounds an earlier generation's secret the bag no longer
+ * records: nothing but partition, service, region, account and one
+ * resource-type token sits beside the id. Anything else (the name
  * attribute, which IS the value) stays masked, and so does an attribute the
  * producer declared `NoEcho` (a malformed declaration reads as declared).
  * Shared by the resolver's serve and the persist merge.
@@ -475,6 +486,8 @@ export function isMaskedOwnIdCopy(
     return false;
   }
   if (healed === physicalId) return true;
+  if (!healed.endsWith(physicalId)) return false;
+  if (!OWN_ID_ARN_PREFIX.test(healed.slice(0, healed.length - physicalId.length))) return false;
   if (producerSecrets === undefined || !hasMaskableValues(producerSecrets)) return false;
   return (
     withPhysicalNameCopies(producerSecrets, [physicalId], () =>

@@ -333,12 +333,38 @@ describe('isMaskedOwnIdCopy (go-to-k/cdkd#4849)', () => {
     expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', TOPIC_ARN)).toBe(true);
     expect(isMaskedOwnIdCopy(record(), 'TopicName', '***', TOPIC)).toBe(false);
     expect(isMaskedOwnIdCopy(record(), 'TopicName', '***', TOPIC, producerBag())).toBe(false);
-    // Carrying the id: only with the producer's bag proving nothing else is secret.
-    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`)).toBe(false);
-    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`, new Map())).toBe(false);
-    expect(isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/x`, producerBag())).toBe(
-      true
-    );
+    // An ARN ending in a name-identified record's id: only with the producer's
+    // bag proving nothing else is secret, and only in the ARN shape.
+    const named = record({ physicalId: TOPIC });
+    expect(isMaskedOwnIdCopy(named, 'TopicArn', '***', TOPIC_ARN)).toBe(false);
+    expect(isMaskedOwnIdCopy(named, 'TopicArn', '***', TOPIC_ARN, new Map())).toBe(false);
+    expect(isMaskedOwnIdCopy(named, 'TopicArn', '***', TOPIC_ARN, producerBag())).toBe(true);
+    expect(
+      isMaskedOwnIdCopy(named, 'Arn', '***', `arn:aws:iam::123456789012:role/${TOPIC}`, producerBag())
+    ).toBe(true);
+    expect(isMaskedOwnIdCopy(named, 'Arn', '***', `arn:aws:s3:::${TOPIC}`, producerBag())).toBe(true);
+    // Anything beside the id outside the ARN's public fields is refused, even
+    // where today's bag records nothing there (an earlier generation's secret).
+    for (const shape of [
+      `${TOPIC_ARN}/x`,
+      `arn:aws:iam::123456789012:role/some-path/${TOPIC}`,
+      `arn:aws:sns:us-east-1:123456789012:extra-${TOPIC}`,
+      `prefix-${TOPIC}`,
+      `arn:aws:sns:us-east-1:12345:${TOPIC}`,
+    ]) {
+      expect(isMaskedOwnIdCopy(named, 'Arn', '***', shape, producerBag())).toBe(false);
+    }
+    // An id occurring EARLIER than the end: the slice before the last
+    // `id.length` characters can still read as an ARN prefix.
+    expect(
+      isMaskedOwnIdCopy(
+        record({ physicalId: '123456789012' }),
+        'Arn',
+        '***',
+        'arn:aws:sns:us-east-1:123456789012:QQQQQQQQQQQQ',
+        producerBag()
+      )
+    ).toBe(false);
     // The value again OUTSIDE the id: refused.
     expect(
       isMaskedOwnIdCopy(record(), 'TopicArn', '***', `${TOPIC_ARN}/${TOPIC}`, producerBag())

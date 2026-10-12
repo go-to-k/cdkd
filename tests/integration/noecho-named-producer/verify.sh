@@ -106,9 +106,10 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER}" "${REGION}")"
 INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 
-# ISO-8601 UTC, comparable as a string with S3's LastModified; one second
-# earlier so a write in the same second is not skipped.
-RUN_STARTED_AT=$(date -u -v-1S +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '1 second ago' +%Y-%m-%dT%H:%M:%S)
+# ISO-8601 UTC, comparable as a string with S3's LastModified; five minutes
+# earlier so local clock skew cannot drop this run's own writes (the Phase 4
+# floor on index versions catches it if it does).
+RUN_STARTED_AT=$(date -u -v-5M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S)
 SCRATCH_FILES=()
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -259,6 +260,7 @@ echo "    OK: the edited reader redeployed; the edit reached AWS; the subscripti
 # --- Phase 4 ------------------------------------------------------------------
 echo "==> Phase 4: no object version carries the value outside the ARN"
 VERSIONS_SCANNED=0
+INDEX_VERSIONS_SCANNED=0
 # The two stack prefixes, and the versions of the shared exports index KEY this
 # run wrote (`--prefix` on the key, an exact-key filter, and LastModified at or
 # after the run's start, so other stacks' history is not downloaded).
@@ -275,9 +277,16 @@ for prefix in "${STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${INDEX_KEY}"; do
     aws s3api get-object --bucket "${STATE_BUCKET}" --key "${version_key}" \
       --version-id "${version_id}" "${VERSION_FILE}" >/dev/null
     VERSIONS_SCANNED=$((VERSIONS_SCANNED + 1))
+    if [ "${version_key}" = "${INDEX_KEY}" ]; then INDEX_VERSIONS_SCANNED=$((INDEX_VERSIONS_SCANNED + 1)); fi
     assert_value_only_in_arn "an object version of ${version_key}" "$(cat "${VERSION_FILE}")"
   done < <(printf '%s\n' "${VERSION_ROWS}")
 done
+# Phase 1 wrote the index, so a zero here means the time filter dropped this
+# run's own versions, not that they are clean.
+if [ "${INDEX_VERSIONS_SCANNED}" -lt 1 ]; then
+  echo "FAIL: the exports index scan read no version this run wrote (clock skew past ${RUN_STARTED_AT}?)" >&2
+  exit 1
+fi
 if [ "${VERSIONS_SCANNED}" -lt 3 ]; then
   echo "FAIL: the version scan read ${VERSIONS_SCANNED} object version(s) -- the negative above passes for free" >&2
   exit 1
