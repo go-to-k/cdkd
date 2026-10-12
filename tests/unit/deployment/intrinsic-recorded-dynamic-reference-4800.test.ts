@@ -411,7 +411,7 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
   it.each([
     ['unknown, token in the then-branch', ['Unknown', QUEUE_REF, 'plain-queue'], {}],
     ['unknown, token in the else-branch', ['Unknown', 'plain-queue', QUEUE_REF], {}],
-    ['a non-boolean verdict', ['C', 'plain-queue', QUEUE_REF], { C: undefined }],
+    ['a non-boolean verdict', ['C', QUEUE_REF, 'plain-queue'], { C: undefined }],
     ['no conditions at all', ['C', QUEUE_REF, 'plain-queue'], undefined],
   ])('an Fn::If whose condition cannot be read walks both branches (%s)', async (_l, args, conditions) => {
     const producer = record('AWS::SQS::Queue', QUEUE_URL, {}, { Arn: RECORDED_ARN });
