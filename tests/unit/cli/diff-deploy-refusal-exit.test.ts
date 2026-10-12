@@ -201,6 +201,14 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
     );
   }, 30_000);
 
+  it('--security-only prints the blocking reason itself, since it prints no diff (go-to-k/cdkd#4827)', async () => {
+    stateForDiff.value = record(healthy(), 'abcdef');
+    const { code } = await runDiff(['S', '--state-bucket', 'b', '--security-only']);
+    expect(code).toBe(3);
+    const errors = mockLoggerError.mock.calls.map((c) => String(c[0]));
+    expect(errors.some((line) => line.startsWith('Blocking (S): '))).toBe(true);
+  }, 30_000);
+
   it('renders the COUNT, not the literal 1, when two conditions fire', async () => {
     // Every other case here drives exactly one condition, so the command layer
     // could hard-code the sentence to `1` and stay green — measured. The

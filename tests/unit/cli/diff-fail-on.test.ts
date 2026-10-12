@@ -7,9 +7,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { StackState } from '../../../src/types/state.js';
 
 const mockLoggerError = vi.hoisted(() => vi.fn());
+const mockLoggerInfo = vi.hoisted(() => vi.fn());
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
 const stateForDiff = vi.hoisted(() => ({
   value: null as StackState | null,
   // Per state stack name, for a nested child's record; `value` otherwise.
@@ -21,8 +26,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
+    info: mockLoggerInfo,
+    warn: mockLoggerWarn,
     error: mockLoggerError,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -284,6 +289,126 @@ describe('cdkd diff --fail-on', () => {
       await runDiff(['S', '--fail-on', 'broadening']);
       expect(stateForDiff.reads).toContain('S~Child');
     }, 30_000);
+  });
+
+  describe('--security-only (go-to-k/cdkd#4827)', () => {
+    const SG = {
+      Type: 'AWS::EC2::SecurityGroup',
+      Properties: {
+        GroupDescription: 'sg',
+        SecurityGroupIngress: [{ CidrIp: '0.0.0.0/0', IpProtocol: 'tcp', FromPort: 22, ToPort: 22 }],
+      },
+    };
+    const printed = () => mockLoggerInfo.mock.calls.map((c) => String(c[0])).join('\n');
+    const warned = () => mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+
+    it("prints only a broadening stack's security table, with upstream's warning", async () => {
+      stateForDiff.value = stateWith({ Q: queue() });
+      synthTemplate({ Q: QUEUE_TEMPLATE, Sg: SG, R: { Type: 'AWS::SQS::Queue' } });
+      const { code } = await runDiff(['S', '--security-only']);
+      expect(code).toBeUndefined();
+      expect(warned()).toContain(
+        'This deployment will make potentially sensitive changes according to your current security approval level.'
+      );
+      expect(printed()).toContain('Stack S');
+      expect(printed()).toContain('Everyone (IPv4)');
+      // The ordinary diff is not printed: the added queue appears nowhere.
+      expect(printed()).not.toContain('AWS::SQS::Queue');
+    }, 30_000);
+
+    it('counts only broadening stacks for --fail-on=any-change', async () => {
+      stateForDiff.value = stateWith({ Q: queue() });
+      synthTemplate({ Q: QUEUE_TEMPLATE, R: { Type: 'AWS::SQS::Queue' } });
+      const quiet = await runDiff(['S', '--security-only', '--fail-on', 'any-change']);
+      expect(quiet.code).toBeUndefined();
+      expect(printed()).toContain('✓ No security-broadening changes for stack S');
+      expect(warned()).not.toContain('potentially sensitive');
+
+      synthTemplate({ Q: QUEUE_TEMPLATE, Sg: SG });
+      expect((await runDiff(['S', '--security-only', '--fail-on', 'any-change'])).code).toBe(1);
+    }, 30_000);
+
+    it('fails --fail-on=broadening, reporting the table once', async () => {
+      stateForDiff.value = stateWith({ Q: queue() });
+      synthTemplate({ Q: QUEUE_TEMPLATE, Sg: SG });
+      const { code, said } = await runDiff(['S', '--security-only', '--fail-on', 'broadening']);
+      expect(code).toBe(1);
+      expect(said).not.toContain('broadens permissions (--fail-on=broadening)');
+      expect(printed().split('Everyone (IPv4)')).toHaveLength(2);
+    }, 30_000);
+
+    it('walks nested stacks without --recursive', async () => {
+      stateForDiff.value = stateWith({
+        Q: queue(),
+        Child: queue({ physicalId: 'S~Child', resourceType: 'AWS::CloudFormation::Stack' }),
+      });
+      stateForDiff.byStack = {
+        'S~Child': { ...stateWith({ Inner: queue({ physicalId: 'i' }) }), stackName: 'S~Child' },
+      };
+      synthTemplate({ Q: QUEUE_TEMPLATE });
+      await runDiff(['S', '--security-only']);
+      expect(stateForDiff.reads).toContain('S~Child');
+    }, 30_000);
+
+    it('a broadening only inside a nested stack escalates to its whole tree', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-4827-'));
+      try {
+        const childTemplate = join(dir, 'child.json');
+        writeFileSync(
+          childTemplate,
+          JSON.stringify({ Resources: { Inner: { Type: 'AWS::SQS::Queue' }, Sg: SG } })
+        );
+        stateForDiff.value = stateWith({
+          Q: queue(),
+          Child: queue({ physicalId: 'S~Child', resourceType: 'AWS::CloudFormation::Stack' }),
+        });
+        stateForDiff.byStack = {
+          'S~Child': { ...stateWith({ Inner: queue({ physicalId: 'i' }) }), stackName: 'S~Child' },
+        };
+        mockSynthesize.mockResolvedValue({
+          stacks: [
+            {
+              stackName: 'S',
+              displayName: 'S',
+              artifactId: 'S',
+              template: {
+                Resources: {
+                  Q: QUEUE_TEMPLATE,
+                  Child: {
+                    Type: 'AWS::CloudFormation::Stack',
+                    Metadata: { 'aws:asset:path': 'child.json' },
+                  },
+                },
+              },
+              nestedTemplates: { Child: childTemplate },
+              dependencyNames: [],
+              assets: [],
+            },
+          ],
+        });
+        const { code } = await runDiff(['S', '--security-only', '--fail-on', 'any-change']);
+        expect(code).toBe(1);
+        expect(warned()).toContain('potentially sensitive');
+        const out = printed();
+        // The root changed nothing security-related; its child did.
+        expect(out).toMatch(
+          /Stack S\nThere were no security-related changes \(limitations: https:\/\/github\.com\/aws\/aws-cdk\/issues\/1299\)/
+        );
+        expect(out).toContain('Stack S~Child');
+        expect(out).toContain('Everyone (IPv4)');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('refuses --json', async () => {
+      stateForDiff.value = stateWith({ Q: queue() });
+      synthTemplate({ Q: QUEUE_TEMPLATE });
+      const { code, said } = await runDiff(['S', '--security-only', '--json']);
+      expect(code).toBe(1);
+      expect(said).toContain('--security-only cannot be used with --json');
+      expect(mockSynthesize).not.toHaveBeenCalled();
+    });
   });
 
   it('passes --fail-on=destructive when nothing changed', async () => {
