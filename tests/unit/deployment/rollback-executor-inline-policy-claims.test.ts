@@ -21,7 +21,10 @@ import {
   type FailedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
-import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
+import {
+  RollbackInlinePolicyWriters,
+  standaloneInlinePolicyHandedOff,
+} from '../../../src/deployment/inline-policy-claims.js';
 import type { InlinePolicyClaimed } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import {
@@ -1694,5 +1697,128 @@ describe('RollbackInlinePolicyWriters.takeHeldRemovals (go-to-k/cdkd#4408)', () 
       Managed: { physicalId: 'n', resourceType: 'AWS::IAM::ManagedPolicy', properties: { Roles: [ROLE_PHYS] } },
     };
     expect(writers.takeHeldRemovals(state)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// go-to-k/cdkd#4821: a standalone AWS::IAM::RolePolicy (Cloud Control) in the
+// rollback of a swap with an AWS::IAM::Policy.
+// ---------------------------------------------------------------------------
+
+const ROLE_POLICY = 'AWS::IAM::RolePolicy';
+type RolePolicyProps = { PolicyName: string; RoleName: string; PolicyDocument: string };
+
+/** Cloud Control's RolePolicy: a create of a name the role holds is refused. */
+const rolePolicyProvider = {
+  create: vi.fn(async (_l: string, _t: string, props: RolePolicyProps) => {
+    if (held.has(props.PolicyName)) {
+      throw new Error(`Role: ${props.RoleName}, PolicyName: ${props.PolicyName} already exists`);
+    }
+    put(props.PolicyName, props.PolicyDocument);
+    return { physicalId: `${props.PolicyName}|${props.RoleName}`, attributes: {} };
+  }),
+  update: vi.fn(),
+  delete: vi.fn(async (_l: string, physicalId: string, t: string, props: RolePolicyProps, ctx: unknown) => {
+    if (standaloneInlinePolicyHandedOff(t, props, asked(ctx), physicalId)) return;
+    remove(props.PolicyName);
+  }),
+};
+
+const mixedCtx: RollbackExecutorContext = {
+  ...ctx,
+  providerRegistry: {
+    getProviderFor: ({ resourceType }: { resourceType: string }) =>
+      resourceType === ROLE_POLICY
+        ? { provider: rolePolicyProvider, provisionedBy: 'cc-api' }
+        : { provider: resourceType === ROLE ? roleProvider : policyProvider, provisionedBy: 'sdk' },
+  } as unknown as RollbackExecutorContext['providerRegistry'],
+};
+
+const rolePolicyRecord = (name: string, doc: string): ResourceState => ({
+  physicalId: `${name}|${ROLE_PHYS}`,
+  resourceType: ROLE_POLICY,
+  properties: { PolicyName: name, RoleName: ROLE_PHYS, PolicyDocument: doc },
+  attributes: {},
+  provisionedBy: 'cc-api',
+});
+
+describe('a rollback of an AWS::IAM::Policy <-> RolePolicy swap restores both (go-to-k/cdkd#4821)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    held = new Map();
+  });
+
+  it('reverses the policy before the RolePolicy, whose re-create then succeeds and whose delete leaves the policy\'s name', async () => {
+    // Deploy (forward order: the policy first): P renamed x -> y, then the
+    // RolePolicy S replaced y -> x (its delete of `y` left P's name).
+    const state: Record<string, ResourceState> = {
+      P: policyRecord('y', 'docP'),
+      S: rolePolicyRecord('x', 'docS'),
+    };
+    put('y', 'docP');
+    put('x', 'docS');
+    const ops = [
+      updateOp('P', policyRecord('x', 'docP'), policyRecord('y', 'docP')),
+      { ...updateOp('S', rolePolicyRecord('y', 'docS'), rolePolicyRecord('x', 'docS')), provisionedBy: 'cc-api' as const },
+    ];
+
+    const result = await replayRollback(ops, state, 'S', mixedCtx);
+
+    // Newest-first would re-create S's `y` while P still holds it: refused,
+    // a reported rollback failure, and the role left without S's `y`.
+    expect(result.failures).toBe(0);
+    expect(holding()).toEqual({ x: 'docP', y: 'docS' });
+    const sCreate = rolePolicyProvider.create.mock.invocationCallOrder[0]!;
+    const pRevert = [
+      ...policyProvider.update.mock.invocationCallOrder,
+      ...policyProvider.create.mock.invocationCallOrder,
+    ].sort((a, b) => a - b)[0]!;
+    expect(pRevert).toBeLessThan(sCreate);
+  });
+
+  it('a rolled-back RolePolicy CREATE that took the name a policy released leaves the name the policy put back', async () => {
+    // Deploy: P renamed x -> y first, then the new RolePolicy S took `x`.
+    const state: Record<string, ResourceState> = {
+      P: policyRecord('y', 'docP'),
+      S: rolePolicyRecord('x', 'docS'),
+    };
+    put('y', 'docP');
+    put('x', 'docS');
+    const ops = [
+      updateOp('P', policyRecord('x', 'docP'), policyRecord('y', 'docP')),
+      { ...createOp('S', rolePolicyRecord('x', 'docS')), provisionedBy: 'cc-api' as const },
+    ];
+
+    const result = await replayRollback(ops, state, 'S', mixedCtx);
+
+    // P's reversal re-puts `x`; S's delete then leaves it (claimed by P).
+    expect(result.failures).toBe(0);
+    expect(holding()).toEqual({ x: 'docP' });
+    const sDelete = rolePolicyProvider.delete.mock.calls[0]!;
+    expect(asked(sDelete[4])?.('role', ROLE_PHYS, 'x')).toBe(true);
+  });
+
+  it('a RolePolicy rollback that collides with no other writer keeps the newest-first order', async () => {
+    const state: Record<string, ResourceState> = {
+      P: policyRecord('b', 'docP'),
+      S: rolePolicyRecord('d', 'docS'),
+    };
+    put('b', 'docP');
+    put('d', 'docS');
+    const ops = [
+      updateOp('P', policyRecord('a', 'docP'), policyRecord('b', 'docP')),
+      { ...updateOp('S', rolePolicyRecord('c', 'docS'), rolePolicyRecord('d', 'docS')), provisionedBy: 'cc-api' as const },
+    ];
+
+    const result = await replayRollback(ops, state, 'S', mixedCtx);
+
+    expect(result.failures).toBe(0);
+    expect(holding()).toEqual({ a: 'docP', c: 'docS' });
+    const sCreate = rolePolicyProvider.create.mock.invocationCallOrder[0]!;
+    const pFirst = [
+      ...policyProvider.update.mock.invocationCallOrder,
+      ...policyProvider.create.mock.invocationCallOrder,
+    ].sort((a, b) => a - b)[0]!;
+    expect(sCreate).toBeLessThan(pFirst);
   });
 });

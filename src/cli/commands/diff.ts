@@ -55,6 +55,7 @@ import { planOrphanAdoption, makeSiblingClaimReader } from '../../deployment/orp
 import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import { createReadOnlyAttributeHealerFactory } from '../../deployment/read-only-attribute-healer.js';
 import type { ResourceState, StackState } from '../../types/state.js';
+import type { SecurityDiff } from '../../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
   buildDiffTree,
@@ -72,6 +73,22 @@ import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cros
 /** This node and every descendant, DFS order. */
 function treeNodes(node: DiffTreeNode): DiffTreeNode[] {
   return [node, ...node.children.flatMap(treeNodes)];
+}
+
+/** The node's security diff; a node without one cannot be judged, so it fails. */
+function securityDiffOf(node: DiffTreeNode): Promise<SecurityDiff> {
+  if (node.securityDiff === undefined) {
+    throw new CdkdError(
+      safeMsg`No security diff for stack ${node.displayName}; its security changes cannot be decided.`,
+      'SECURITY_DIFF_FAILED'
+    );
+  }
+  return node.securityDiff();
+}
+
+/** A security table, one log call per row: a value cannot add a row of its own. */
+function logTable(rendered: string, log: (row: string) => void): void {
+  for (const row of rendered.replace(/\n+$/, '').split('\n')) log(safeMsg`${row}`);
 }
 
 /**
@@ -191,6 +208,7 @@ async function diffCommand(
     recursive?: boolean;
     fail?: boolean;
     failOn?: DiffFailOn;
+    securityOnly?: boolean;
     json?: boolean;
     region?: string;
     profile?: string;
@@ -205,6 +223,13 @@ async function diffCommand(
   // stack client scope / globals are set (see `loadProviderClasses`).
   // Before any work: an incompatible flag pair is a usage error.
   const failOn = resolveFailOn(options);
+  const securityOnly = options.securityOnly === true;
+  if (securityOnly && options.json === true) {
+    throw new CdkdError(
+      '--security-only cannot be used with --json: it prints the security tables only',
+      'INCOMPATIBLE_OPTIONS'
+    );
+  }
   const providerClasses = await loadProviderClasses();
   const logger = getLogger();
 
@@ -464,7 +489,10 @@ async function diffCommand(
     // `--recursive` was given: each is a gate, and `cdk diff` checks nested
     // stacks for both, so such a change inside a child must not pass.
     const recursive =
-      (options.recursive ?? false) || failOn === 'destructive' || failOn === 'broadening';
+      (options.recursive ?? false) ||
+      failOn === 'destructive' ||
+      failOn === 'broadening' ||
+      securityOnly;
 
     // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
     // §7 asset-reference rewrite is applied to the template before diffing
@@ -534,7 +562,45 @@ async function diffCommand(
     // Escaped, not sanitised (go-to-k/cdkd#4045): a state value carrying DEL,
     // C1, a line separator or a bidi control is written as `\uXXXX`, so the
     // payload parses back unchanged and cannot drive the terminal.
-    if (options.json) {
+    // `--security-only` (go-to-k/cdkd#4827, `cdk diff --security-only`):
+    // instead of the diff, each top-level stack whose tree broadens
+    // permissions prints upstream's warning and the security table of every
+    // stack in it. Only those stacks count as differences for `--fail-on`.
+    let securityDifferences = 0;
+    let securityBroadening = false;
+    if (securityOnly) {
+      for (const tree of trees) {
+        const nodes = treeNodes(tree);
+        // The diff is not printed, so the conditions behind exit 3 are, or
+        // its "reported above" would point at nothing.
+        for (const node of nodes) {
+          for (const reason of node.blocking) {
+            logger.error(safeMsg`Blocking (${node.displayName}): ${reason}`);
+          }
+        }
+        const results = [];
+        for (const node of nodes) results.push({ node, security: await securityDiffOf(node) });
+        if (!results.some(({ security }) => security.broadening)) {
+          logger.info(safeMsg`\n✓ No security-broadening changes for stack ${tree.displayName}`);
+          continue;
+        }
+        securityBroadening = true;
+        securityDifferences += results.filter(({ security }) => security.rendered !== '').length;
+        logger.warn(
+          'This deployment will make potentially sensitive changes according to your current security approval level.\nPlease confirm you intend to make the following modifications:\n'
+        );
+        for (const { node, security } of results) {
+          logger.info(safeMsg`Stack ${node.displayName}`);
+          if (security.rendered === '') {
+            logger.info(
+              'There were no security-related changes (limitations: https://github.com/aws/aws-cdk/issues/1299)'
+            );
+            continue;
+          }
+          logTable(security.rendered, (row) => logger.info(row));
+        }
+      }
+    } else if (options.json) {
       process.stdout.write(`${stringifyJsonPayload(trees.map(diffTreeToJson))}\n`);
     } else {
       for (const tree of trees) {
@@ -564,7 +630,10 @@ async function diffCommand(
     if (blockingCount > 0) {
       throw new DeployRefusalPreviewError(blockingCount);
     }
-    if (failOn === 'any-change' && trees.some(treeHasChanges)) {
+    if (
+      failOn === 'any-change' &&
+      (securityOnly ? securityDifferences > 0 : trees.some(treeHasChanges))
+    ) {
       throw new DiffDetectedError();
     }
     if (failOn === 'destructive') {
@@ -583,29 +652,22 @@ async function diffCommand(
         throw new DiffDetectedError();
       }
     }
-    if (failOn === 'broadening') {
+    if (failOn === 'broadening' && securityOnly) {
+      // The tables above are the report, as upstream prints them once.
+      if (securityBroadening) throw new DiffDetectedError();
+    } else if (failOn === 'broadening') {
       // go-to-k/cdkd#4601: computed only here, so no other diff loads the
       // security diff. Every stack's table is printed before the exit.
       let broadening = 0;
       for (const node of trees.flatMap(treeNodes)) {
-        // A node without one cannot be judged; a gate does not pass it.
-        if (node.securityDiff === undefined) {
-          throw new CdkdError(
-            safeMsg`No security diff for stack ${node.displayName}; --fail-on=broadening cannot decide it.`,
-            'SECURITY_DIFF_FAILED'
-          );
-        }
-        const security = await node.securityDiff();
+        const security = await securityDiffOf(node);
         if (!security.broadening) continue;
         broadening++;
         // `error`, so it reaches stderr under `--json` too.
         logger.error(
           safeMsg`\n❌  Stack ${node.displayName} broadens permissions (--fail-on=broadening):`
         );
-        // One call per table row: a value cannot add a row of its own.
-        for (const row of security.rendered.replace(/\n+$/, '').split('\n')) {
-          logger.error(safeMsg`${row}`);
-        }
+        logTable(security.rendered, (row) => logger.error(row));
       }
       if (broadening > 0) throw new DiffDetectedError();
     }
@@ -647,6 +709,10 @@ export function createDiffCommand(): Command {
         // parser `choices` installs, so it also refuses a repeated flag.
         .choices(DIFF_FAIL_ON_VALUES)
         .argParser(parseFailOn)
+    )
+    .option(
+      '--security-only',
+      'Only print the security changes (IAM and security-group) of each stack whose changes broaden permissions, and count only those stacks as differences for --fail-on (matches cdk diff --security-only). Checks nested stacks too. Cannot be used with --json.'
     )
     .option(
       '--json',

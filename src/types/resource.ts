@@ -37,8 +37,10 @@ export interface TemplateParameter {
    * CFn's "this value is sensitive" declaration — masked in every place
    * CloudFormation echoes the value. cdkd honors it by redacting the value
    * in `--verbose` debug logs (issue #1329).
+   * A boolean, or the string `"true"` (go-to-k/cdkd#4824): read it with
+   * `isNoEchoDeclared`, never `=== true`.
    */
-  NoEcho?: boolean;
+  NoEcho?: boolean | string;
 }
 
 /**

@@ -754,4 +754,118 @@ describe('DeployEngine hands AWS::IAM::Policy a live inline-policy claim predica
 
     expect(answers).toEqual({ Role: [true] });
   });
+  describe('a standalone AWS::IAM::RolePolicy (go-to-k/cdkd#4821)', () => {
+    const ROLE_POLICY = 'AWS::IAM::RolePolicy';
+    const recordedRolePolicy = (name: string): ResourceState => ({
+      physicalId: `${name}|role-phys`,
+      resourceType: ROLE_POLICY,
+      properties: { PolicyName: name, RoleName: 'role-phys', PolicyDocument: DOC },
+      provisionedBy: 'cc-api',
+    });
+    const rolePolicyRename = (logicalId: string, from: string, to: string): ResourceChange => ({
+      logicalId,
+      changeType: 'UPDATE',
+      resourceType: ROLE_POLICY,
+      currentProperties: { PolicyName: from, RoleName: 'role-phys', PolicyDocument: DOC },
+      desiredProperties: { PolicyName: to, RoleName: { Ref: 'Role' }, PolicyDocument: DOC },
+      propertyChanges: [{ path: 'PolicyName', oldValue: from, newValue: to, requiresReplacement: true }],
+    });
+    const rolePolicyTemplate = (name: string) => ({
+      Type: ROLE_POLICY,
+      Properties: { PolicyName: name, RoleName: { Ref: 'Role' }, PolicyDocument: DOC },
+    });
+
+    it('a swap with an AWS::IAM::Policy: the policy runs first, and the replaced RolePolicy leaves the name the policy took', async () => {
+      // One level, and `A` sorts first: the #4227 rule alone runs the RolePolicy first.
+      prime(
+        { Role: ROLE_STATE, A: recordedRolePolicy('y'), B: recordedPolicy('x') },
+        [rolePolicyRename('A', 'y', 'x'), rename('B', 'x', 'y')],
+        [['A', 'B']]
+      );
+      queries = { A: [['role', 'role-phys', 'y']], B: [['role', 'role-phys', 'x']] };
+
+      await engine().deploy('S', {
+        Resources: {
+          Role: { Type: 'AWS::IAM::Role', Properties: {} },
+          A: rolePolicyTemplate('x'),
+          B: policyTemplate('y'),
+        },
+      });
+
+      // B releases `x` before A's create takes it (Cloud Control refuses a
+      // create while the name is on the role) ...
+      const bUpdate = provider.update!.mock.calls.findIndex((c) => c[0] === 'B');
+      const aCreate = provider.create!.mock.calls.findIndex((c) => c[0] === 'A');
+      expect(bUpdate).toBeGreaterThanOrEqual(0);
+      expect(aCreate).toBeGreaterThanOrEqual(0);
+      expect(provider.update!.mock.invocationCallOrder[bUpdate]!).toBeLessThan(
+        provider.create!.mock.invocationCallOrder[aCreate]!
+      );
+      // ... B's removal of `x` proceeds (A has not written it yet), and A's
+      // delete of its old `y` sees B's completed write of it.
+      expect(answers).toEqual({ A: [true], B: [false] });
+      const aDelete = provider.delete!.mock.calls.find((c) => c[0] === 'A')!;
+      expect(aDelete[3]).toMatchObject({ PolicyName: 'y', RoleName: 'role-phys' });
+    });
+
+    it('a RolePolicy rename that collides with nothing: its old-name delete is asked and sees no claim', async () => {
+      prime(
+        { Role: ROLE_STATE, A: recordedRolePolicy('y'), B: recordedPolicy('x') },
+        [rolePolicyRename('A', 'y', 'w'), rename('B', 'x', 'z')],
+        [['A', 'B']]
+      );
+      queries = { A: [['role', 'role-phys', 'y']] };
+
+      await engine().deploy('S', {
+        Resources: {
+          Role: { Type: 'AWS::IAM::Role', Properties: {} },
+          A: rolePolicyTemplate('w'),
+          B: policyTemplate('z'),
+        },
+      });
+
+      expect(answers['A']).toEqual([false]);
+    });
+
+    it('a RolePolicy DELETE row sees the completed AWS::IAM::Policy that took its name', async () => {
+      prime(
+        { Role: ROLE_STATE, Old: recordedRolePolicy('x'), B: recordedPolicy('y') },
+        [
+          rename('B', 'y', 'x'),
+          { logicalId: 'Old', changeType: 'DELETE', resourceType: ROLE_POLICY, currentProperties: {} },
+        ],
+        [['B']]
+      );
+      queries = { Old: [['role', 'role-phys', 'x'], ['role', 'role-phys', 'y']] };
+
+      await engine().deploy('S', {
+        Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} }, B: policyTemplate('x') },
+      });
+
+      expect(answers['Old']).toEqual([true, false]);
+    });
+
+    it('an AWS::IAM::Policy delete sees a completed RolePolicy create of its name', async () => {
+      prime(
+        { Role: ROLE_STATE, Old: recordedPolicy('x') },
+        [
+          {
+            logicalId: 'New',
+            changeType: 'CREATE',
+            resourceType: ROLE_POLICY,
+            desiredProperties: { PolicyName: 'x', RoleName: { Ref: 'Role' }, PolicyDocument: DOC },
+          },
+          { logicalId: 'Old', changeType: 'DELETE', resourceType: POLICY, currentProperties: {} },
+        ],
+        [['New']]
+      );
+      queries = { Old: [['role', 'role-phys', 'x']] };
+
+      await engine().deploy('S', {
+        Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} }, New: rolePolicyTemplate('x') },
+      });
+
+      expect(answers['Old']).toEqual([true]);
+    });
+  });
 });

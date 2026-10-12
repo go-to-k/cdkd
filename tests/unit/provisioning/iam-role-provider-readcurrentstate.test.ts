@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
@@ -464,6 +465,60 @@ describe('IAMRoleProvider.readCurrentState', () => {
 
       // The sibling-managed policy is filtered out; state.Policies = [] matches.
       expect(result?.Policies).toEqual([]);
+    });
+
+    // go-to-k/cdkd#4821: an `AWS::IAM::RolePolicy` (CDK's `CfnRolePolicy`) is
+    // one inline policy on the role it names in `RoleName` — managed by that
+    // resource, not by the role, exactly as an `AWS::IAM::Policy`'s.
+    it('excludes the inline policy a sibling AWS::IAM::RolePolicy names on this role (no phantom Policies drift)', async () => {
+      setupRoleReadMocks('MyRole', ['Declared', 'FromRolePolicy']);
+      const declared = [{ PolicyName: 'Declared', PolicyDocument: { Doc: 'Declared' } }];
+
+      const result = bagOf(await provider.readCurrentState(
+        'MyRole',
+        'MyRole',
+        'AWS::IAM::Role',
+        { Policies: declared },
+        {
+          siblings: {
+            RP: {
+              resourceType: 'AWS::IAM::RolePolicy',
+              properties: { PolicyName: 'FromRolePolicy', RoleName: 'MyRole' },
+            },
+          },
+        }
+      ));
+
+      expect(result?.Policies).toEqual(declared);
+      expect(calculateResourceDrift({ Policies: declared }, result!)).toEqual([]);
+    });
+
+    it('keeps the inline policy a sibling AWS::IAM::RolePolicy names on ANOTHER role', async () => {
+      setupRoleReadMocks('MyRole', ['FromRolePolicy']);
+
+      const result = bagOf(await provider.readCurrentState(
+        'MyRole',
+        'MyRole',
+        'AWS::IAM::Role',
+        { Policies: [] },
+        {
+          siblings: {
+            RP: {
+              resourceType: 'AWS::IAM::RolePolicy',
+              properties: { PolicyName: 'FromRolePolicy', RoleName: 'OtherRole' },
+            },
+            // A UserPolicy on a user of the same name is another principal kind.
+            UP: {
+              resourceType: 'AWS::IAM::UserPolicy',
+              properties: { PolicyName: 'FromRolePolicy', UserName: 'MyRole' },
+            },
+          },
+        }
+      ));
+
+      expect(result?.Policies).toEqual([
+        { PolicyName: 'FromRolePolicy', PolicyDocument: { Doc: 'FromRolePolicy' } },
+      ]);
     });
 
     it('keeps inline policies whose name does NOT match any sibling', async () => {

@@ -41,6 +41,9 @@ export type InlinePolicyWrite = 'create' | 'update';
  * - An `AWS::IAM::Role` / `Group` / `User` writer claims each recorded
  *   `Policies[].PolicyName` on its recorded physical id — only when the write
  *   put them: a create, or an update whose own diff changed `Policies`.
+ * - An `AWS::IAM::RolePolicy` / `UserPolicy` / `GroupPolicy` writer claims its
+ *   recorded `PolicyName` on its recorded `RoleName` / `UserName` /
+ *   `GroupName`, whichever route wrote it (go-to-k/cdkd#4821).
  *
  * Names compare case-insensitively, as IAM compares them on one principal.
  */
@@ -62,6 +65,20 @@ export function isInlinePolicyClaimedByCompletedWriter(
   for (const [lid, write] of writers) {
     if (lid === selfLogicalId || !Object.hasOwn(stateResources, lid)) continue;
     const record = stateResources[lid]!;
+    // go-to-k/cdkd#4821: a standalone inline policy resource IS one name on
+    // one principal, so a completed create or update of it (whatever its
+    // route) left that name there, holding its recorded document.
+    const standalone = standaloneInlinePolicyOf(record.resourceType, record.properties);
+    if (standalone !== undefined) {
+      if (
+        standalone.kind === kind &&
+        sameIamName(standalone.principal, principal) &&
+        sameIamName(standalone.policyName, policyName)
+      ) {
+        return true;
+      }
+      continue;
+    }
     // Only the SDK providers are known to put every name and entry they
     // record; a Cloud Control write is not confirmed to (an unchanged entry
     // may not be re-put), so it claims nothing.
@@ -116,8 +133,8 @@ export function isInlinePolicyClaimedByCompletedWriter(
  * - A rollback has no deploy diff, so a role / group / user revert counts as
  *   having put its `Policies` only when the two records the revert was handed
  *   differ there (`policiesChanged`).
- * - A write whose ACTUAL route was Cloud Control is not recorded (see
- *   {@link RollbackInlinePolicyWriters.record}).
+ * - A write whose ACTUAL route was Cloud Control is not recorded, except a
+ *   standalone inline policy's (see {@link RollbackInlinePolicyWriters.record}).
  *
  * go-to-k/cdkd#4408: every `false` it answers is a removal that proceeds, and
  * it notes each one. A removal can take a name off a principal while a record
@@ -204,7 +221,9 @@ export class RollbackInlinePolicyWriters {
     policiesChanged: boolean,
     via: 'sdk' | 'cc-api' | undefined
   ): void {
-    if (via === 'cc-api') {
+    // go-to-k/cdkd#4821: a standalone inline policy's write is its one name,
+    // whatever the route.
+    if (via === 'cc-api' && !isStandaloneInlinePolicyType(record.resourceType)) {
       this.entries.delete(logicalId);
       return;
     }
@@ -217,14 +236,21 @@ export class RollbackInlinePolicyWriters {
    * provider asks it before removing a name its own `Policies` drops (a
    * hand-off to the principal's `Policies`, reverted: the policy's reverse
    * re-create puts the name back first, then the principal's revert would
-   * remove it). `undefined` for every other type.
+   * remove it), and a standalone `AWS::IAM::RolePolicy` / `GroupPolicy` /
+   * `UserPolicy` delete, whose Cloud Control delete leaves a name another
+   * completed revert put back (go-to-k/cdkd#4821). `undefined` for every
+   * other type.
    */
   claimedFor(
     resourceType: string,
     logicalId: string,
     stateResources: Record<string, ResourceState>
   ): InlinePolicyClaimed | undefined {
-    if (resourceType !== 'AWS::IAM::Policy' && !Object.hasOwn(PRINCIPAL_KINDS, resourceType)) {
+    if (
+      resourceType !== 'AWS::IAM::Policy' &&
+      !Object.hasOwn(PRINCIPAL_KINDS, resourceType) &&
+      !isStandaloneInlinePolicyType(resourceType)
+    ) {
       return undefined;
     }
     return (kind, principal, policyName) => {
@@ -351,7 +377,9 @@ export interface InlinePolicyHolder {
  * for `kind` names the principal, and a role / group / user of that kind whose
  * physical id is the principal, once per `Policies` entry of that name. What
  * a record holds is what cdkd state says the principal holds, whoever wrote
- * it last. A Cloud Control record holds too: the put-back writes what it
+ * it last. A standalone `AWS::IAM::RolePolicy` / `GroupPolicy` / `UserPolicy`
+ * holds its `PolicyName` on its principal-name property (go-to-k/cdkd#4821).
+ * A Cloud Control record holds too: the put-back writes what it
  * records, it does not trust a write it made. `unreadable` names the records
  * that may hold it unseen: one whose policy name or principal (either can be
  * its physical id) or principal-list entry is not an IAM name (a redacted
@@ -369,6 +397,26 @@ export function inlinePolicyHolders(
   for (const [logicalId, record] of Object.entries(stateResources)) {
     if (record === null || typeof record !== 'object') continue;
     const props = record.properties ?? {};
+    const standalone = standaloneInlinePolicyOf(record.resourceType, props);
+    if (standalone !== undefined) {
+      if (standalone.kind !== kind) continue;
+      const principalMatches = sameIamName(standalone.principal, principal);
+      const nameMatches = sameIamName(standalone.policyName, policyName);
+      if (principalMatches && nameMatches) {
+        holders.push({
+          logicalId,
+          principal: standalone.principal as string,
+          policyName: standalone.policyName as string,
+          document: props['PolicyDocument'],
+        });
+      } else if (
+        (principalMatches || unnamed(standalone.principal)) &&
+        (nameMatches || unnamed(standalone.policyName))
+      ) {
+        unreadable.push(logicalId);
+      }
+      continue;
+    }
     if (record.resourceType === 'AWS::IAM::Policy') {
       // The physical id IS the policy name; a redacted one may name it unseen.
       const nameMatches = sameIamName(record.physicalId, policyName);
@@ -444,6 +492,69 @@ const PRINCIPAL_KINDS: Record<string, InlinePolicyPrincipalKind> = {
   'AWS::IAM::Group': 'group',
   'AWS::IAM::User': 'user',
 };
+
+/**
+ * go-to-k/cdkd#4821: the resource types that are ONE inline policy name on one
+ * principal (no SDK provider: they go through Cloud Control).
+ */
+const STANDALONE_POLICY_KINDS: Record<string, InlinePolicyPrincipalKind> = {
+  'AWS::IAM::RolePolicy': 'role',
+  'AWS::IAM::GroupPolicy': 'group',
+  'AWS::IAM::UserPolicy': 'user',
+};
+
+/** Whether `resourceType` is a standalone inline policy (`AWS::IAM::RolePolicy` ...). */
+export function isStandaloneInlinePolicyType(resourceType: string): boolean {
+  return Object.hasOwn(STANDALONE_POLICY_KINDS, resourceType);
+}
+
+/**
+ * The principal and name a standalone inline policy record holds, read from
+ * its properties, as recorded (unvalidated: a value that is not an IAM name
+ * matches nothing). `undefined` for every other type.
+ */
+export function standaloneInlinePolicyOf(
+  resourceType: string,
+  properties: Readonly<Record<string, unknown>> | undefined
+): { kind: InlinePolicyPrincipalKind; principal: unknown; policyName: unknown } | undefined {
+  if (!isStandaloneInlinePolicyType(resourceType)) return undefined;
+  const kind = STANDALONE_POLICY_KINDS[resourceType]!;
+  const props = properties ?? {};
+  return {
+    kind,
+    principal: props[PRINCIPAL_NAME_FIELDS[kind]],
+    policyName: props['PolicyName'],
+  };
+}
+
+/**
+ * go-to-k/cdkd#4821: whether a delete of the standalone inline policy record
+ * `properties` would remove a name ANOTHER completed writer of this deploy has
+ * put on the same principal (`claimed`), so the delete must leave it. Any
+ * doubt (no predicate, an unreadable name or principal, a `physicalId` that
+ * is not Cloud Control's `<PolicyName>|<principal>` for them) answers
+ * `false`: the delete proceeds.
+ */
+export function standaloneInlinePolicyHandedOff(
+  resourceType: string,
+  properties: Readonly<Record<string, unknown>> | undefined,
+  claimed: InlinePolicyClaimed | undefined,
+  physicalId?: string
+): boolean {
+  if (claimed === undefined) return false;
+  const target = standaloneInlinePolicyOf(resourceType, properties);
+  if (target === undefined) return false;
+  const { kind, principal, policyName } = target;
+  if (typeof principal !== 'string' || !IAM_NAME.test(principal)) return false;
+  if (typeof policyName !== 'string' || !IAM_NAME.test(policyName)) return false;
+  if (
+    physicalId !== undefined &&
+    physicalId.toLowerCase() !== `${policyName}|${principal}`.toLowerCase()
+  ) {
+    return false;
+  }
+  return claimed(kind, principal, policyName) === true;
+}
 
 /** Whether `resourceType` is a principal that holds inline `Policies`. */
 export function isInlinePolicyPrincipalType(resourceType: string): boolean {
@@ -531,6 +642,39 @@ interface InlinePolicyClaim {
 }
 
 /**
+ * go-to-k/cdkd#4821: the pairs a standalone inline policy row PUTS (`desired`:
+ * a create, or the create of a replacement) and REMOVES (`old`: the
+ * replacement's delete of its old copy), each its principal with its own
+ * name. `undefined` for every other type.
+ */
+function standaloneClaimSides(
+  logicalId: string,
+  change: ResourceChange,
+  templateResources: Readonly<Record<string, TemplateResource>>,
+  stateResources: Readonly<Record<string, ResourceState>>
+): { desired: InlinePolicyClaim[]; old: InlinePolicyClaim[] } | undefined {
+  const template = Object.hasOwn(templateResources, logicalId)
+    ? templateResources[logicalId]
+    : undefined;
+  const desired = standaloneInlinePolicyOf(change.resourceType, template?.Properties ?? {});
+  if (desired === undefined) return undefined;
+  const { kind } = desired;
+  const name = nameKey(desired.policyName);
+  const sides = {
+    desired: templatePrincipalKeys(desired.principal, kind, templateResources, stateResources).map(
+      (principal) => ({ kind, principal, name })
+    ),
+    old: [] as InlinePolicyClaim[],
+  };
+  const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
+  if (record?.resourceType === change.resourceType) {
+    const old = standaloneInlinePolicyOf(change.resourceType, record.properties)!;
+    sides.old.push({ kind, principal: nameKey(old.principal), name: nameKey(old.policyName) });
+  }
+  return sides;
+}
+
+/**
  * Every (principal, inline policy name) pair a create / update row may PUT or
  * REMOVE, read before dispatch from its template entry and its pre-deploy
  * record. Over-approximates: what it cannot read keys as {@link ANY}, which
@@ -553,6 +697,8 @@ function inlinePolicyClaimsOf(
       for (const name of new Set(names)) claims.push({ kind, principal, name });
     }
   };
+  const standalone = standaloneClaimSides(logicalId, change, templateResources, stateResources);
+  if (standalone !== undefined) return [...standalone.desired, ...standalone.old];
   if (change.resourceType === 'AWS::IAM::Policy') {
     const desired = template?.Properties ?? {};
     const old = recorded?.properties ?? {};
@@ -621,7 +767,9 @@ function inlinePolicyClaimsOf(
  * Only the colliding rows are ordered, derived from the diff before dispatch:
  * a row that shares no (principal, name) pair with another gets no edge, and a
  * stack with fewer than two inline-policy writers costs one pass over its rows.
- * Each added edge makes the later of the pair (by `rank`, then logical id)
+ * Each added edge makes the later of the pair (by `rank`, then logical id;
+ * a standalone `AWS::IAM::RolePolicy` / `GroupPolicy` / `UserPolicy` paired
+ * with another kind of writer is always the later, go-to-k/cdkd#4821)
  * depend on the earlier one, and only when neither already depends on the
  * other through `dependencies`, so it can never close a cycle: an edge `u -> v`
  * closes one only when `v` already reaches `u`.
@@ -643,7 +791,11 @@ export function orderInlinePolicyWriters(args: {
   const { writes, changes, templateResources, stateResources, dependencies, rank } = args;
   const writers = writes.filter((id) => {
     const type = changes.get(id)?.resourceType;
-    return type === 'AWS::IAM::Policy' || (type !== undefined && isInlinePolicyPrincipalType(type));
+    return (
+      type === 'AWS::IAM::Policy' ||
+      (type !== undefined &&
+        (isInlinePolicyPrincipalType(type) || isStandaloneInlinePolicyType(type)))
+    );
   });
   if (writers.length < 2) return [];
 
@@ -674,10 +826,42 @@ export function orderInlinePolicyWriters(args: {
   const principalRows = new Set(
     writers.filter((id) => isInlinePolicyPrincipalType(changes.get(id)!.resourceType))
   );
+  const standaloneRows = new Set(
+    writers.filter((id) => isStandaloneInlinePolicyType(changes.get(id)!.resourceType))
+  );
+  const sides = new Map(
+    [...standaloneRows].map((id) => [
+      id,
+      standaloneClaimSides(id, changes.get(id)!, templateResources, stateResources)!,
+    ])
+  );
+  const sameClaim = (p: InlinePolicyClaim, q: InlinePolicyClaim): boolean =>
+    p.kind === q.kind &&
+    (p.principal === ANY || q.principal === ANY || p.principal === q.principal) &&
+    (p.name === ANY || q.name === ANY || p.name === q.name);
+  /** Whether standalone row `a`'s old copy holds a pair standalone row `b` creates. */
+  const releasesFor = (a: string, b: string): boolean =>
+    sides.get(a)!.old.some((o) => sides.get(b)!.desired.some((d) => sameClaim(o, d)));
   const pairs = new Map<string, [string, string]>();
   const pair = (a: string, b: string): void => {
     if (a === b || (principalRows.has(a) && principalRows.has(b))) return;
-    const [x, y] = rank(a) < rank(b) || (rank(a) === rank(b) && a < b) ? [a, b] : [b, a];
+    // go-to-k/cdkd#4821: a standalone inline policy's create is refused while
+    // its name is on the principal, so the other writer, which may be
+    // releasing that name, goes first. Its delete of a replaced old name then
+    // leaves the name the other writer has put there (the claim predicate).
+    // Two standalone ones: the one replaced AWAY from a name the other
+    // creates releases it first, when only one of them does.
+    const sa = standaloneRows.has(a);
+    const sb = standaloneRows.has(b);
+    let first: string | undefined;
+    if (sa !== sb) first = sa ? b : a;
+    else if (sa && sb) {
+      const aReleases = releasesFor(a, b);
+      const bReleases = releasesFor(b, a);
+      if (aReleases !== bReleases) first = aReleases ? a : b;
+    }
+    first ??= rank(a) < rank(b) || (rank(a) === rank(b) && a < b) ? a : b;
+    const [x, y] = first === a ? [a, b] : [b, a];
     pairs.set(JSON.stringify([x, y]), [x, y]);
   };
   for (const ids of exact.values()) {
@@ -718,6 +902,114 @@ export function orderInlinePolicyWriters(args: {
     added.push({ before, after });
   }
   return added;
+}
+
+/**
+ * The (principal, inline policy name) pairs a RECORD holds, as match keys
+ * (lowercased; {@link ANY} for an unreadable name or principal). Empty for a
+ * record of no inline-policy-writing type.
+ */
+function recordInlinePolicyKeys(record: ResourceState | undefined): string[] {
+  if (record === undefined || record === null || typeof record !== 'object') return [];
+  const props = record.properties ?? {};
+  const keys: string[] = [];
+  const add = (kind: InlinePolicyPrincipalKind, principal: unknown, name: unknown): void => {
+    keys.push(JSON.stringify([kind, nameKey(principal), nameKey(name)]));
+  };
+  const standalone = standaloneInlinePolicyOf(record.resourceType, props);
+  if (standalone !== undefined) {
+    add(standalone.kind, standalone.principal, standalone.policyName);
+    return keys;
+  }
+  if (record.resourceType === 'AWS::IAM::Policy') {
+    const names = [
+      props['PolicyName'],
+      typeof record.physicalId === 'string' ? record.physicalId.split(':')[0] : record.physicalId,
+    ];
+    for (const kind of ['role', 'group', 'user'] as const) {
+      const listed = props[POLICY_LIST_FIELDS[kind]];
+      if (listed === undefined || listed === null) continue;
+      const principals = Array.isArray(listed) ? (listed as unknown[]) : [undefined];
+      for (const p of principals) for (const n of names) add(kind, p, n);
+    }
+    return keys;
+  }
+  const kind = principalKindOf(record.resourceType);
+  if (kind === undefined) return keys;
+  for (const name of policiesNames(props['Policies'])) add(kind, record.physicalId, name);
+  return keys;
+}
+
+/**
+ * go-to-k/cdkd#4821: the rollback twin of {@link orderInlinePolicyWriters}.
+ * A rollback replays a segment's completed updates and replacements one at a
+ * time, newest first (`replay`, in that order). Reversing a standalone inline
+ * policy's replacement RE-CREATES its old name, which Cloud Control refuses
+ * while another writer of the deploy (an `AWS::IAM::Policy`, or a role /
+ * group / user's `Policies`) still holds that name — the forward order ran
+ * that writer first, so newest-first reverses the standalone one first. Each
+ * standalone op that shares a (principal, name) pair, read from its current
+ * and its pre-deploy record, with a later non-standalone op therefore moves
+ * to just after the last such op, never past an op it has a dependency with
+ * either way (the scan stops there). Every other op keeps its place; with no standalone op among
+ * two or more inline-policy writers, `replay` is returned as is.
+ */
+export function orderInlinePolicyReversals<
+  T extends { logicalId: string; previousState?: ResourceState | undefined },
+>(replay: readonly T[], stateResources: Readonly<Record<string, ResourceState>>): T[] {
+  const current = (op: T): ResourceState | undefined =>
+    Object.hasOwn(stateResources, op.logicalId) ? stateResources[op.logicalId] : undefined;
+  const isStandalone = (op: T): boolean =>
+    [current(op), op.previousState].some(
+      (r) => r !== undefined && r !== null && isStandaloneInlinePolicyType(r.resourceType)
+    );
+  if (!replay.some(isStandalone)) return [...replay];
+  const keysOf = new Map<T, Set<string>>();
+  for (const op of replay) {
+    const keys = [
+      ...recordInlinePolicyKeys(current(op)),
+      ...recordInlinePolicyKeys(op.previousState),
+    ];
+    if (keys.length > 0) keysOf.set(op, new Set(keys));
+  }
+  if (keysOf.size < 2) return [...replay];
+  const meets = (a: string, b: string): boolean => a === ANY || b === ANY || a === b;
+  const collide = (a: Set<string>, b: Set<string>): boolean => {
+    for (const ka of a) {
+      const [kindA, pA, nA] = JSON.parse(ka) as [string, string, string];
+      for (const kb of b) {
+        const [kindB, pB, nB] = JSON.parse(kb) as [string, string, string];
+        if (kindA === kindB && meets(pA, pB) && meets(nA, nB)) return true;
+      }
+    }
+    return false;
+  };
+  const dependsOn = (a: T, b: T): boolean =>
+    [current(a), a.previousState].some(
+      (r) => Array.isArray(r?.dependencies) && r.dependencies.includes(b.logicalId)
+    );
+  const order = [...replay];
+  // Latest-first, so a standalone op moved past another one keeps its place
+  // relative to it.
+  for (const op of [...replay].reverse()) {
+    if (!isStandalone(op)) continue;
+    const mine = keysOf.get(op);
+    if (mine === undefined) continue;
+    const at = order.indexOf(op);
+    let last = -1;
+    for (let j = at + 1; j < order.length; j++) {
+      const other = order[j]!;
+      const theirs = keysOf.get(other);
+      // Never past an op it has a dependency with, colliding or not.
+      if (dependsOn(op, other) || dependsOn(other, op)) break;
+      if (theirs === undefined || isStandalone(other)) continue;
+      if (collide(mine, theirs)) last = j;
+    }
+    if (last < 0) continue;
+    order.splice(at, 1);
+    order.splice(last, 0, op);
+  }
+  return order;
 }
 
 /**

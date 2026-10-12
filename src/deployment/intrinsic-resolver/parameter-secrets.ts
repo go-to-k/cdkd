@@ -21,6 +21,7 @@ import {
   QUOTABLE_RENDER,
   quotedRender,
 } from './support.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -438,7 +439,7 @@ export function recordNoEchoParameterValue(
   context: ResolverContext
 ): void {
   const bag = context.recordedSecretValues;
-  if (paramDef?.NoEcho !== true || bag === undefined) return;
+  if (!declaresNoEcho(paramDef) || bag === undefined) return;
   // One spelling rule, shared with the deploy's diff log masker, which
   // records every `NoEcho` value up front (go-to-k/cdkd#4049).
   recordLogOnlyParameterValue(bag, value);
@@ -449,6 +450,15 @@ export function recordNoEchoParameterValue(
   // number, registers nothing here; the positional arm masks it by template
   // position. The public tokens (region, stack name) stay out of the
   // containment arm, as for a custom resource's echo.
+  //
+  // The BOOLEAN declaration only (go-to-k/cdkd#4824): a string-declared value
+  // has always persisted in plaintext where no template position reads it, so
+  // a record written before carries that plaintext with other leaves already
+  // marked, and the migration witness reconciles only an UNMARKED record. Masking
+  // it now would read as a moved create-only value and REPLACE the resource on
+  // an unchanged redeploy. It stays log-only until the witness covers marked
+  // records (go-to-k/cdkd#4831).
+  if (paramDef?.NoEcho !== true) return;
   recordNoEchoParameterFreshValue(value, bag, this.publicNoEchoTokens(context));
 }
 

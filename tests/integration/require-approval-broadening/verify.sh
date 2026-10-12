@@ -12,7 +12,8 @@
 #      passes while `--fail-on=any-change` fails, and the deploy goes through
 #      without asking;
 #   3. an added `s3:PutObject` statement broadens: `--fail-on=broadening` fails
-#      and prints the security table, `--fail-on=destructive` passes, the
+#      and prints the security table, `--fail-on=destructive` passes,
+#      `--security-only` prints only that table (#4827), the
 #      deploy refuses with the policy untouched, and `--require-approval=never`
 #      (the flag over cdk.json) deploys it;
 #   4. destroy.
@@ -156,6 +157,10 @@ expect_rc 0 "diff --fail-on=broadening over a Description change"
 expect_no_log "broadens permissions"
 CDKD_TEST_UPDATE=describe run_cdkd diff "${STACK}" --fail-on=any-change
 expect_rc 1 "diff --fail-on=any-change over a Description change"
+# go-to-k/cdkd#4827: --security-only counts only a broadening stack.
+CDKD_TEST_UPDATE=describe run_cdkd diff "${STACK}" --security-only --fail-on=any-change
+expect_rc 0 "diff --security-only --fail-on=any-change over a Description change"
+expect_log "No security-broadening changes for stack ${STACK}"
 # No terminal and no --yes: deploys only because nothing broadens.
 CDKD_TEST_UPDATE=describe run_cdkd deploy "${STACK}"
 expect_rc 0 "deploy under cdk.json broadening over a Description change"
@@ -184,6 +189,13 @@ if sed -n '/broadens permissions (--fail-on=broadening):/,$p' "${LOG}" | grep -q
 fi
 CDKD_TEST_UPDATE=broaden run_cdkd diff "${STACK}" --fail-on=destructive
 expect_rc 0 "diff --fail-on=destructive over an added statement"
+CDKD_TEST_UPDATE=broaden run_cdkd diff "${STACK}" --security-only --fail-on=any-change
+expect_rc 1 "diff --security-only --fail-on=any-change over an added statement"
+expect_log "This deployment will make potentially sensitive changes"
+expect_log "IAM Statement Changes"
+expect_log "s3:PutObject"
+# Only the security table: the ordinary diff's resource row is absent.
+expect_no_log "AWS::IAM::Policy"
 CDKD_TEST_UPDATE=broaden run_cdkd deploy "${STACK}"
 expect_rc 1 "deploy under cdk.json broadening over an added statement"
 expect_log "${REFUSAL}"

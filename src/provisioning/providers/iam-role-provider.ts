@@ -1355,10 +1355,23 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 }
 
+/** The standalone inline policy type naming a principal of each kind, and its field. */
+const STANDALONE_POLICY_SIBLINGS: Record<
+  'Roles' | 'Users' | 'Groups',
+  { type: string; field: string }
+> = {
+  Roles: { type: 'AWS::IAM::RolePolicy', field: 'RoleName' },
+  Users: { type: 'AWS::IAM::UserPolicy', field: 'UserName' },
+  Groups: { type: 'AWS::IAM::GroupPolicy', field: 'GroupName' },
+};
+
 /**
  * Issue #323: build the set of inline-policy names that are managed by
  * a sibling `AWS::IAM::Policy` resource in the same stack via the given
- * attachment field (`Roles` / `Users` / `Groups`). cdkd's IAM Role /
+ * attachment field (`Roles` / `Users` / `Groups`), or by a sibling
+ * `AWS::IAM::RolePolicy` / `UserPolicy` / `GroupPolicy` naming the
+ * principal in `RoleName` / `UserName` / `GroupName`
+ * (go-to-k/cdkd#4821). cdkd's IAM Role /
  * User / Group `readCurrentState` helpers exclude these from
  * `ListRolePolicies` / `ListUserPolicies` / `ListGroupPolicies` output
  * to avoid false drift — the inline policy is faithfully managed by
@@ -1392,7 +1405,17 @@ export function collectInlinePolicyNamesManagedBySiblings(
   const result = new Set<string>();
   const siblings = context?.siblings;
   if (!siblings) return result;
+  // go-to-k/cdkd#4821: a standalone `AWS::IAM::RolePolicy` / `UserPolicy` /
+  // `GroupPolicy` manages its ONE name on the principal its scalar field names.
+  const standalone = STANDALONE_POLICY_SIBLINGS[attachmentField];
   for (const sibling of Object.values(siblings)) {
+    if (sibling.resourceType === standalone.type) {
+      const name = sibling.properties['PolicyName'];
+      if (sibling.properties[standalone.field] === targetPhysicalId && typeof name === 'string') {
+        result.add(name);
+      }
+      continue;
+    }
     if (sibling.resourceType !== 'AWS::IAM::Policy') continue;
     const attachments = sibling.properties[attachmentField];
     if (!Array.isArray(attachments)) continue;

@@ -31,6 +31,7 @@ import {
 import { carriesResolvedSecret } from '../provisioning/custom-resource-secure-references.js';
 import { getLogger } from '../utils/logger.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { isNoEchoDeclared } from './noecho-declared.js';
 
 /**
  * Re-resolving a record's `NoEcho` coordinates into a custom resource's
@@ -351,7 +352,7 @@ export class TemplateNoEchoReresolver {
     if (section !== null && typeof section === 'object') {
       for (const [name, definition] of Object.entries(section)) {
         const noEcho = (definition as { NoEcho?: unknown } | undefined)?.NoEcho;
-        if (noEcho === true || noEcho === 'true') declared.add(name);
+        if (isNoEchoDeclared(noEcho)) declared.add(name);
       }
     }
     for (const name of options.inheritedNoEchoParameters ?? []) declared.add(name);

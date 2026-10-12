@@ -81,6 +81,9 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 FN_NAME="cdkd-iam-drift-clean-test-fn"
 QUEUE_NAME="cdkd-iam-drift-clean-test-queue"
 ROLE_NAME="cdkd-iam-drift-clean-test-role"
+# go-to-k/cdkd#4821: the role an AWS::IAM::Policy and an AWS::IAM::RolePolicy
+# swap inline policy names on.
+MIXED_ROLE_NAME="cdkd-iam-drift-clean-mixed-role"
 # Phase 2c-rollback's failing queue: AWS rejects it, so it never exists.
 FAILING_QUEUE_NAME="cdkd-iam-drift-clean-test-failing-queue"
 # Only Phase 2c-rollback's own deploy may inject the failing queue: an
@@ -113,12 +116,14 @@ cleanup() {
   rm -f "${ROLLBACK_LOG:-}"
   # The standalone role keeps its inline + sibling-managed policies; delete
   # them before the role or DeleteRole 409s.
-  for pn in $(aws iam list-role-policies --role-name "${ROLE_NAME}" --region "${REGION}" \
-      --query 'PolicyNames' --output text 2>/dev/null); do
-    aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name "${pn}" \
-      --region "${REGION}" >/dev/null 2>&1 || true
+  for rn in "${ROLE_NAME}" "${MIXED_ROLE_NAME}"; do
+    for pn in $(aws iam list-role-policies --role-name "${rn}" --region "${REGION}" \
+        --query 'PolicyNames' --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "${rn}" --policy-name "${pn}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    done
+    aws iam delete-role --role-name "${rn}" --region "${REGION}" >/dev/null 2>&1 || true
   done
-  aws iam delete-role --role-name "${ROLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   # The function's auto-created log group survives a function delete.
   aws logs delete-log-group --log-group-name "/aws/lambda/${FN_NAME}" \
     --region "${REGION}" >/dev/null 2>&1 || true
@@ -245,12 +250,12 @@ assert_no_role_drift "after rename" true
 # --- Phase 2c: hand inline policy names over in one deploy (go-to-k/cdkd#4156)
 # Each name must end up held, with the RECEIVING resource's document (its own
 # action), so the check reads both the name and whose grant it carries.
-policy_action() { # usage: policy_action <policy-name> -> its first statement's action, or empty when absent
+policy_action() { # usage: policy_action <policy-name> [role] -> its first statement's action, or empty when absent
   # Only NoSuchEntity reads as absent; any other probe failure is FAIL. Inside
   # a $( ) the exit ends only the substitution, so the caller then reads an
   # empty action, which never satisfies a wanted one: the phase still fails.
   local out
-  if out="$(aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name "$1" \
+  if out="$(aws iam get-role-policy --role-name "${2:-${ROLE_NAME}}" --policy-name "$1" \
     --region "${REGION}" --query 'PolicyDocument.Statement[0].Action' --output text 2>&1)"; then
     printf '%s' "${out}"
     return 0
@@ -279,6 +284,23 @@ handoff_mismatch() { # -> prints every name whose holder is wrong; empty when al
     name="${pair%%=*}"
     want="${pair#*=}"
     got="$(policy_action "${name}")"
+    [ "${got}" = "${want}" ] || printf '%s (want %s, got %s) ' "${name}" "${want}" "${got:-<missing>}"
+  done
+}
+# go-to-k/cdkd#4821: name -> the action that must hold it on MIXED_ROLE_NAME,
+# before the hand-off (the policy holds `mixed-x`, the RolePolicy `mixed-y`)
+# and after it (swapped).
+mixed_mismatch() { # usage: mixed_mismatch before|after -> every wrong holder; empty when all match
+  local pair name want got pairs
+  if [ "$1" = "after" ]; then
+    pairs="cdkd-iam-drift-clean-mixed-x=sqs:CancelMessageMoveTask cdkd-iam-drift-clean-mixed-y=sqs:ListMessageMoveTasks"
+  else
+    pairs="cdkd-iam-drift-clean-mixed-x=sqs:ListMessageMoveTasks cdkd-iam-drift-clean-mixed-y=sqs:CancelMessageMoveTask"
+  fi
+  for pair in ${pairs}; do
+    name="${pair%%=*}"
+    want="${pair#*=}"
+    got="$(policy_action "${name}" "${MIXED_ROLE_NAME}")"
     [ "${got}" = "${want}" ] || printf '%s (want %s, got %s) ' "${name}" "${want}" "${got:-<missing>}"
   done
 }
@@ -328,12 +350,19 @@ if ! grep -q 'Rolling back [0-9]* completed operation' "${ROLLBACK_LOG}"; then
   echo "FAIL: the failed deploy did not roll back (no 'Rolling back N completed operation(s)' line)" >&2
   exit 1
 fi
-for lid in SwapA SwapB ToRolePolicy UnorderedSwapA UnorderedSwapB UnorderedRenamed; do
+for lid in SwapA SwapB ToRolePolicy UnorderedSwapA UnorderedSwapB UnorderedRenamed MixedPolicy MixedRolePolicy; do
   if ! grep -qE "Rollback: ${lid} (replacement reversed|restored successfully)" "${ROLLBACK_LOG}"; then
     echo "FAIL: the rollback ran but logged no reversal of ${lid}; the hand-off did not complete before the failure, or the rollback wording drifted" >&2
     exit 1
   fi
 done
+# go-to-k/cdkd#4821: reversed newest-first, the RolePolicy re-created its old
+# name while MixedPolicy still held it, which Cloud Control refuses.
+if grep -qE 'Rollback failed for Mixed(Policy|RolePolicy)' "${ROLLBACK_LOG}"; then
+  echo "FAIL: the rollback failed to reverse the IAM::Policy <-> RolePolicy swap:" >&2
+  grep -E 'Rollback failed for Mixed' "${ROLLBACK_LOG}" >&2
+  exit 1
+fi
 if ! grep -qE 'Rollback: WorkerRole[0-9A-Fa-f]* restored successfully' "${ROLLBACK_LOG}"; then
   echo "FAIL: the rollback ran but logged no revert of the role's own Policies (WorkerRole...)" >&2
   exit 1
@@ -355,14 +384,14 @@ assert_gone "failing queue ${FAILING_QUEUE_NAME} exists; AWS should have rejecte
   aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}"
 rolled_back_ok=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  if [ -z "$(first_owner_mismatch)" ]; then
+  if [ -z "$(first_owner_mismatch)" ] && [ -z "$(mixed_mismatch before)" ]; then
     rolled_back_ok=1
     break
   fi
   sleep 5
 done
 if [ "${rolled_back_ok}" -ne 1 ]; then
-  echo "FAIL: after the rollback the role lost or mis-holds: $(first_owner_mismatch)(role holds: $(role_policies)) — a rollback revert removed a name another revert had put back" >&2
+  echo "FAIL: after the rollback the role lost or mis-holds: $(first_owner_mismatch)(role holds: $(role_policies); mixed role: $(mixed_mismatch before)) — a rollback revert removed a name another revert had put back, or the RolePolicy's re-create was refused while the policy still held its name (go-to-k/cdkd#4821)" >&2
   exit 1
 fi
 # The renamed-to name must be gone: a strict gone-probe, since an empty
@@ -383,14 +412,15 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
     [ "$(policy_action cdkd-iam-drift-clean-swap-y)" = "sqs:ListDeadLetterSourceQueues" ] &&
     [ "$(policy_action cdkd-iam-drift-clean-handoff)" = "sqs:ChangeMessageVisibility" ] &&
     [ "$(policy_action cdkd-iam-drift-clean-to-role)" = "sqs:PurgeQueue" ] &&
-    [ -z "$(first_owner_mismatch)" ]; then
+    [ -z "$(first_owner_mismatch)" ] &&
+    [ -z "$(mixed_mismatch before)" ]; then
     premise_ok=1
     break
   fi
   sleep 5
 done
 if [ "${premise_ok}" -ne 1 ]; then
-  echo "FAIL: premise: the role's hand-off policies are not held by their first owners (got: $(role_policies))" >&2
+  echo "FAIL: premise: the role's hand-off policies are not held by their first owners (got: $(role_policies); mixed role: $(mixed_mismatch before))" >&2
   exit 1
 fi
 CDKD_TEST_RENAME=true CDKD_TEST_HANDOFF=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -408,6 +438,22 @@ if [ "${handoff_ok}" -ne 1 ]; then
   exit 1
 fi
 echo "    every handed-off name is held by its new owner"
+# go-to-k/cdkd#4821: the IAM::Policy <-> RolePolicy swap keeps BOTH policies.
+# CloudFormation's cleanup-phase delete of the RolePolicy's old name removes
+# the IAM::Policy's new one there; cdkd must not.
+mixed_ok=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if [ -z "$(mixed_mismatch after)" ]; then
+    mixed_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${mixed_ok}" -ne 1 ]; then
+  echo "FAIL: after the IAM::Policy <-> RolePolicy swap ${MIXED_ROLE_NAME} lost or mis-holds: $(mixed_mismatch after)— the replaced RolePolicy's delete of its old name, or the policy's removal of its old name, stripped the other's grant (go-to-k/cdkd#4821)" >&2
+  exit 1
+fi
+echo "    the IAM::Policy <-> RolePolicy swap kept both policies"
 if ! has_policy "DeclaredInline" || ! has_policy "${NEW_POLICY}"; then
   echo "FAIL: the hand-off removed an unrelated policy (got: $(role_policies))" >&2
   exit 1
@@ -424,6 +470,9 @@ echo "    function deleted"
 
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}" --region "${REGION}"
 echo "    standalone role deleted"
+
+assert_gone "role ${MIXED_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${MIXED_ROLE_NAME}" --region "${REGION}"
+echo "    mixed-swap role deleted"
 
 assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
 echo "    queue deleted"

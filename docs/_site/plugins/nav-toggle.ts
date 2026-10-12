@@ -7,6 +7,9 @@
 // otherwise run on top of each other. Reduced motion switches at once, as the
 // CSS does.
 
+/** Where an open group is recorded, followed by the group's page. */
+export const NAV_STATE_PREFIX = 'cdkd:nav:';
+
 /**
  * A page with pages under it lists them in a group of its own, folded. This
  * opens the group the reader is in: on the page itself, or on a page under it.
@@ -16,6 +19,37 @@ export function navOpenCurrentScript(): string {
     '(function () {',
     "  document.querySelectorAll('.sidebar details.nav-details').forEach(function (group) {",
     "    if (group.querySelector('.nav-link.active')) group.open = true;",
+    '  });',
+    '})();',
+  ].join('\n');
+}
+
+/**
+ * A group the reader opened stays open on the next page, for as long as the
+ * tab lives. Each page is its own document, so the sidebar is rendered folded
+ * again on every one: Ox Content's `stickyCollapsed` would carry the state
+ * across, but for good, and the groups a reader has passed through would pile
+ * up open. Groups are named by the page they belong to, so a reordered sidebar
+ * keeps them. Runs before `navOpenCurrentScript`, which this then records.
+ */
+export function navRememberScript(): string {
+  return [
+    '(function () {',
+    '  var store;',
+    // Reading the property itself throws where storage is blocked.
+    '  try { store = window.sessionStorage; } catch (e) { return; }',
+    '  if (!store) return;',
+    "  document.querySelectorAll('.sidebar details.nav-details').forEach(function (group) {",
+    "    var link = group.querySelector(':scope > summary a[href]');",
+    '    if (!link) return;',
+    `    var key = ${JSON.stringify(NAV_STATE_PREFIX)} + link.getAttribute('href');`,
+    "    try { if (store.getItem(key) === 'open') group.open = true; } catch (e) {}",
+    "    group.addEventListener('toggle', function () {",
+    '      try {',
+    "        if (group.open) store.setItem(key, 'open');",
+    '        else store.removeItem(key);',
+    '      } catch (e) {}',
+    '    });',
     '  });',
     '})();',
   ].join('\n');

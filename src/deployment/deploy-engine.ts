@@ -23,6 +23,7 @@ import {
 import {
   isInlinePolicyClaimedByCompletedWriter,
   isInlinePolicyPrincipalType,
+  isStandaloneInlinePolicyType,
   type InlinePolicyWrite,
 } from './inline-policy-claims.js';
 import type { StackRecordsView } from './stack-records-scope.js';
@@ -865,6 +866,14 @@ export class DeployEngine {
   /** @internal */
   deployChanges: ReadonlyMap<string, ResourceChange> = new Map();
   /**
+   * go-to-k/cdkd#4821: this deploy's live state bag, set by
+   * `executeDeployment` before its first provider call, read by a
+   * replacement's delete of its old copy to ask `inlinePolicyClaimedFor`.
+   * Per-deploy, like `healBaseline`.
+   */
+  /** @internal */
+  deployStateResources: Record<string, ResourceState> = {};
+  /**
    * go-to-k/cdkd#4492: this deploy's view of the stack's records, bound around
    * each resource's provider call (`stack-records-scope.ts`); set by
    * `executeDeployment` before its first provider call.
@@ -1025,6 +1034,7 @@ export class DeployEngine {
     // serve last deploy's read, nor persist it against today's records.
     this.healBaseline = {};
     this.deployChanges = new Map();
+    this.deployStateResources = {};
     this.inlinePolicyWriters = new Map();
     this.attributeHeals = new Map();
     this.healedAttributes = new Map();
@@ -1356,7 +1366,14 @@ export class DeployEngine {
     // go-to-k/cdkd#4227: a role / group / user update too — it removes the
     // names its `Policies` drops, which a policy ordered before it may have
     // just put there (the rollback twin already asks it).
-    if (resourceType !== 'AWS::IAM::Policy' && !isInlinePolicyPrincipalType(resourceType)) {
+    // go-to-k/cdkd#4821: and a standalone `AWS::IAM::RolePolicy` /
+    // `GroupPolicy` / `UserPolicy` delete (a DELETE row, or a replacement's
+    // delete of its old copy), which leaves a name another writer took.
+    if (
+      resourceType !== 'AWS::IAM::Policy' &&
+      !isInlinePolicyPrincipalType(resourceType) &&
+      !isStandaloneInlinePolicyType(resourceType)
+    ) {
       return undefined;
     }
     const args = {

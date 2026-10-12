@@ -60,6 +60,7 @@ import {
 import { conditionsAssumedFalse } from './assumed-conditions.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
+import { declaresNoEcho } from './noecho-declared.js';
 
 /** The version of the text hash's input layout (`sha256:` entries). */
 const FINGERPRINT_LAYOUT = 1;
@@ -279,9 +280,7 @@ export function parameterInputsFor(args: {
       continue;
     }
     const value = values[name];
-    const noEcho =
-      isPlainObject(definition) &&
-      (definition['NoEcho'] === true || definition['NoEcho'] === 'true');
+    const noEcho = isPlainObject(definition) && declaresNoEcho(definition);
     let secret = noEcho || carriesSecretValue(value, []);
     if (!secret && args.nestedChild === true && args.supplied !== undefined) {
       // PASSED is decidable only here, from the parameter map the parent
@@ -906,9 +905,7 @@ function childParameterInputs(
   const inputs = new Map<string, ParameterInput>();
   for (const name of Object.keys(declared)) {
     const definition = declared[name] as unknown;
-    const noEcho =
-      isPlainObject(definition) &&
-      (definition['NoEcho'] === true || definition['NoEcho'] === 'true');
+    const noEcho = isPlainObject(definition) && declaresNoEcho(definition);
     if (noEcho) {
       inputs.set(name, { kind: 'secret' });
     } else if (passed.has(name)) {

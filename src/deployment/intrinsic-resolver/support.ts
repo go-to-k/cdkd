@@ -5,6 +5,7 @@ import { isListParameterType } from '../../utils/parameter-types.js';
 import { MIN_NEEDLE_LENGTH, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
+import { declaresNoEcho } from '../noecho-declared.js';
 export * from './ref-values.js';
 export * from './context.js';
 export * from './account-drain.js';
@@ -43,7 +44,8 @@ export interface ParameterDefinition {
   MaxValue?: number;
   Description?: string;
   ConstraintDescription?: string;
-  NoEcho?: boolean;
+  /** A boolean, or the string `"true"` (go-to-k/cdkd#4824): read it with `isNoEchoDeclared`. */
+  NoEcho?: boolean | string;
 }
 
 /**
@@ -337,9 +339,8 @@ export function stringifyParameterForLog(
   value: unknown
 ): string {
   // The string form too, as a hand-written or included template spells it
-  // and every other `NoEcho` reader accepts (go-to-k/cdkd#3869).
-  const noEcho: unknown = paramDef?.NoEcho;
-  if (noEcho === true || noEcho === 'true') return '<redacted>';
+  // (go-to-k/cdkd#3869, go-to-k/cdkd#4824).
+  if (declaresNoEcho(paramDef)) return '<redacted>';
   return stringifyValue(value);
 }
 

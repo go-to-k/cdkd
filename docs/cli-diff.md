@@ -34,6 +34,9 @@ cdkd diff --all --fail-on=destructive
 # CI gate: exit 1 only on an IAM / security-group broadening
 cdkd diff --all --fail-on=broadening
 
+# only the security changes of stacks that broaden permissions
+cdkd diff --all --security-only
+
 # machine-readable payload
 cdkd diff MyStack --json
 ```
@@ -242,6 +245,7 @@ The full rules are in
 | `--recursive` | off | Diff every nested stack against its own state. See [`--recursive`](#recursive-nested-stacks). |
 | `--fail-on <kind>` | `never` | Exit `1` on `any-change`, `broadening` or `destructive` changes. See [`--fail-on`](#fail-on). |
 | `--fail` / `--no-fail` | off | Aliases for `--fail-on=any-change` / `--fail-on=never`. Cannot be combined with `--fail-on`. |
+| `--security-only` | off | Print only the security changes of stacks that broaden permissions. See [`--security-only`](#security-only). |
 | `--json` | off | Emit the diff as JSON. See [cdkd diff: JSON output](cli-diff-json.md). |
 | `--use-cdk-bootstrap-assets` | off | Compare against the CDK bootstrap asset destinations verbatim, skipping cdkd's asset-storage redirection. |
 | `--no-cfn-fallback` | fallback on | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. See [`--no-cfn-fallback` (deploy / diff)](cli-deploy-safety-ci-flags.md#no-cfn-fallback-deploy-diff). |
@@ -392,6 +396,27 @@ policy or rule that changed fails the check, since whether it broadens cannot
 be told.
 [`--require-approval`](cli-deploy-safety-ci-flags.md#broadening) explains the
 comparison.
+
+## `--security-only`
+
+`--security-only` prints the security changes instead of the diff, like
+`cdk diff --security-only`. For each top-level stack whose changes broaden
+permissions, including through a nested stack, it prints the AWS CDK CLI's
+warning and the security table of that stack and of every nested stack under
+it. A stack that broadens nothing prints one line:
+
+```console
+$ cdkd diff --security-only MyStack
+...
+✓ No security-broadening changes for stack MyStack
+```
+
+It always checks nested stacks, as if `--recursive` were given, and it cannot
+be combined with `--json`. With `--fail-on`, only the stacks it prints count:
+`--fail-on=any-change` exits `1` when one of them has a security change, and
+`--fail-on=broadening` exits `1` without printing the tables a second time.
+`--fail-on=destructive` still reads the whole diff. Secret values are shown as
+`***`, as under [`--fail-on=broadening`](#broadening).
 
 ## `--recursive` (nested stacks)
 
