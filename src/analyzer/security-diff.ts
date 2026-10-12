@@ -2,18 +2,23 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import type { PropertyChange, ResourceChange, ResourceState } from '../types/state.js';
 import { safeMsg, terminalSafe } from '../utils/display-safe.js';
 import { CdkdError } from '../utils/error-handler.js';
+import {
+  formatSecurityChanges,
+  isScrutinizedProperty,
+  SecurityChanges,
+} from './security-changes.js';
 
 /**
  * The security half of `--fail-on=broadening` / `--require-approval=broadening`
  * (go-to-k/cdkd#4601): does a stack's change broaden IAM permissions or
  * security-group rules?
  *
- * The verdict is the AWS CDK CLI's own: `@aws-cdk/cloudformation-diff`'s
- * `fullDiff(old, new).permissionsBroadened`, the value `cdk diff --fail-on` and
- * `cdk deploy --require-approval` read (IAM statements of policies, roles and
- * resource policies, `AWS::Lambda::Permission`, managed-policy attachments,
- * and security-group ingress / egress, standalone rules included). The package
- * is loaded only when a caller asks, so a run without `broadening` pays nothing.
+ * The verdict follows the AWS CDK CLI's rule for `permissionsBroadened`, the
+ * value `cdk diff --fail-on` and `cdk deploy --require-approval` read (IAM
+ * statements of policies, roles and resource policies,
+ * `AWS::Lambda::Permission`, managed-policy attachments, and security-group
+ * ingress / egress, standalone rules included), as cdkd's own classifier in
+ * `security-changes.ts`.
  *
  * What differs is the input. The CDK CLI diffs the template CloudFormation
  * holds against the synthesized one. cdkd keeps no deployed template; its
@@ -167,52 +172,6 @@ export function securityDiffTemplates(
   };
 }
 
-type CfnDiffModule = typeof import('@aws-cdk/cloudformation-diff');
-type CfnDiffUtilModule = typeof import('@aws-cdk/cloudformation-diff/lib/diff/util.js');
-
-let cfnDiffModule: Promise<CfnDiffModule> | undefined;
-
-/** The package, loaded once and only on first use. */
-function loadCfnDiff(): Promise<CfnDiffModule> {
-  cfnDiffModule ??= import('@aws-cdk/cloudformation-diff').then(
-    // A CommonJS package: Node exposes its exports as named exports, a bundler may
-    // only as `default`.
-    (mod) => ((mod as { default?: CfnDiffModule }).default ?? mod) as CfnDiffModule
-  );
-  return cfnDiffModule;
-}
-
-let cfnDiffUtilModule: Promise<CfnDiffUtilModule> | undefined;
-
-/** `loadResourceModel`, from the same package (no `exports` map gates the path). */
-function loadCfnDiffUtil(): Promise<CfnDiffUtilModule> {
-  cfnDiffUtilModule ??= import('@aws-cdk/cloudformation-diff/lib/diff/util.js').then(
-    (mod) => ((mod as { default?: CfnDiffUtilModule }).default ?? mod) as CfnDiffUtilModule
-  );
-  return cfnDiffUtilModule;
-}
-
-/**
- * Is this a property the security diff reads? The same metadata
- * `@aws-cdk/cloudformation-diff` selects its IAM and security-group changes by:
- * a resource scrutinized as a whole (a policy resource, a Lambda permission, a
- * standalone ingress rule), or a scrutinized property (inline policies, managed
- * policies, ingress / egress rules). A resource scrutinized as a whole counts
- * for every property, its name included: asking about a masked name change is
- * the safe side of a gate that cannot tell.
- */
-function isScrutinized(util: CfnDiffUtilModule, change: MaskedChange): boolean {
-  const model = util.loadResourceModel(change.resourceType) as
-    | { scrutinizable?: string; properties?: Record<string, { scrutinizable?: string }> }
-    | undefined;
-  const scrutinized = (value: string | undefined): boolean =>
-    value !== undefined && value !== 'None';
-  return (
-    scrutinized(model?.scrutinizable) ||
-    scrutinized(model?.properties?.[change.path]?.scrutinizable)
-  );
-}
-
 /**
  * The security diff of one stack's changes. `template` (the new template) only
  * names resources by their `aws:cdk:path` in the table; records do for a
@@ -245,18 +204,14 @@ export async function diffSecurity(args: {
     return { broadening: false, rendered: '' };
   }
   try {
-    const cfnDiff = await loadCfnDiff();
     // A masked security property that changed cannot be judged, so it counts
     // as broadening: a gate that cannot decide must not pass. Only its
     // location is printed, never a value.
-    const unjudged =
-      templates.maskedChanges.length === 0
-        ? []
-        : await loadCfnDiffUtil().then((util) =>
-            templates.maskedChanges.filter((c) => isScrutinized(util, c))
-          );
-    // `fullDiff` normalizes both templates IN PLACE; these are our own copies.
-    const diff = cfnDiff.fullDiff(structuredClone(oldTemplate), structuredClone(newTemplate));
+    const unjudged = templates.maskedChanges.filter((c) =>
+      isScrutinizedProperty(c.resourceType, c.path)
+    );
+    // The classifier normalizes both templates IN PLACE; these are our own copies.
+    const diff = new SecurityChanges(structuredClone(oldTemplate), structuredClone(newTemplate));
     const broadening = diff.permissionsBroadened || unjudged.length > 0;
     const unjudgedNote =
       unjudged.length === 0
@@ -276,19 +231,8 @@ export async function diffSecurity(args: {
       const shownDiff =
         shown === undefined || shown.masked === 0
           ? diff
-          : cfnDiff.fullDiff(shown.templates.oldTemplate, shown.templates.newTemplate);
-      table = '';
-      const stream = {
-        write(chunk: unknown): boolean {
-          table += String(chunk);
-          return true;
-        },
-      } as unknown as NodeJS.WritableStream;
-      cfnDiff.formatSecurityChanges(
-        stream,
-        shownDiff,
-        logicalIdToPath(args.records, args.template)
-      );
+          : new SecurityChanges(shown.templates.oldTemplate, shown.templates.newTemplate);
+      table = formatSecurityChanges(shownDiff, logicalIdToPath(args.records, args.template));
       if (shown !== undefined && shown.masked > 0) {
         table += '(Values that hold a secret are shown as ***.)\n';
       }

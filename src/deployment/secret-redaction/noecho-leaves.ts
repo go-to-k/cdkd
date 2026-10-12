@@ -622,10 +622,13 @@ export function noEchoParametersReadBy(node: unknown, sources: NoEchoPositionSou
  *   leaf equal to or containing (from `MIN_NEEDLE_LENGTH`) the value of a
  *   `NoEcho` parameter the resource reads becomes `***`, which is what the
  *   persist walk writes.
- * - A record no v11 binary wrote (no `noEchoLeaves`) is read through
- *   {@link witnessNormalize} against the unmasked desired side: an equal
- *   stored plaintext compares as unchanged, and a different one shows
- *   {@link PREVIOUS_NOECHO_VALUE} rather than the old value.
+ * - The recorded side is read through {@link witnessNormalize} against the
+ *   unmasked desired side, whatever the record's `noEchoLeaves`: where it
+ *   still holds a plaintext the desired side masks (a record no v11 binary
+ *   wrote, or a leaf a `NoEcho` declaration reaches only since its write,
+ *   go-to-k/cdkd#4831), an equal stored plaintext compares as unchanged, and a
+ *   different one shows {@link PREVIOUS_NOECHO_VALUE} rather than the old
+ *   value.
  */
 export function noEchoComparison(options: {
   sources: NoEchoPositionSources;
@@ -641,10 +644,9 @@ export function noEchoComparison(options: {
   templateProperties: Record<string, unknown>;
   desired: Record<string, unknown>;
   current: Record<string, unknown>;
-  record: { noEchoLeaves?: unknown };
 }) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined {
   const { sources, values, minNeedleLength, publicTokens } = options;
-  return ({ templateProperties, desired, current, record }) => {
+  return ({ templateProperties, desired, current }) => {
     const coordinates = noEchoCoordinatesOf(templateProperties, desired, sources);
     const needles: string[] = [];
     for (const name of noEchoParametersReadBy(templateProperties, sources)) {
@@ -696,7 +698,11 @@ export function noEchoComparison(options: {
       };
       masked = walk(masked) as Record<string, unknown>;
     }
-    if (noEchoLeavesOf(record) !== undefined) return { desired: masked, current };
+    // Every record, a MARKED one too (go-to-k/cdkd#4831): a leaf the record
+    // already holds as `***` is no witness and stays as it is, while one it
+    // still holds in plaintext where today's template masks (a parameter
+    // declared `NoEcho` since that write) is compared exactly like a pre-v11
+    // record's.
     const witnessed = witnessNormalize(current, desired, masked);
     const shown = maskAtCoordinatesWith(
       witnessed.current as Record<string, unknown>,

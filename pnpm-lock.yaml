@@ -169,9 +169,6 @@ importers:
 
   .:
     dependencies:
-      '@aws-cdk/cloudformation-diff':
-        specifier: ^2.187.1
-        version: 2.187.1(@aws-sdk/client-cloudformation@3.1148.0)
       '@aws-sdk/client-acm':
         specifier: ^3.1053.0
         version: 3.1148.0
@@ -395,6 +392,9 @@ importers:
       '@aws-cdk/aws-service-spec':
         specifier: 0.1.219
         version: 0.1.219
+      '@aws-cdk/cloudformation-diff':
+        specifier: ^2.187.1
+        version: 2.187.1(@aws-sdk/client-cloudformation@3.1148.0)
       '@iconify-json/lucide':
         specifier: ^1.2.141
         version: 1.2.142

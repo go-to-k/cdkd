@@ -346,7 +346,11 @@ export function noEchoLeavesFor(
     return canonicalCoordinates(noEchoCoordinatesOf(templateProps, record.properties, sources));
   }
   const existing = noEchoLeavesOf(record);
-  if (existing !== undefined) return canonicalCoordinates(existing);
+  if (existing !== undefined) {
+    // Plus every leaf the migration witness confirmed this deploy (#4831).
+    const confirmed = this.witnessConfirmedLeaves.get(logicalId) ?? [];
+    return canonicalCoordinates([...existing, ...confirmed]);
+  }
   // The bag THIS deploy resolved describes the record only when it was
   // resolved as the record's own type (a failed Type change did not write it).
   const resolvedAsSame = this.perResourceResolvedType.get(logicalId) === record.resourceType;

@@ -23,6 +23,10 @@ import { Construct } from 'constructs';
  * - `NoEchoStringConsumer` (go-to-k/cdkd#4824): the same, from a parameter
  *   declared `NoEcho: "true"` (the string form), so every NoEcho reader must
  *   accept that spelling too.
+ * - `NoEchoWitnessTopic` (go-to-k/cdkd#4831): an SNS topic whose create-only
+ *   `TopicName` reads `NoEchoWitnessName`, declared `NoEcho` only under
+ *   `CDKD_TEST_NOECHO_WITNESS=true`; its `DisplayName` reads a boolean
+ *   NoEcho parameter, so the record is marked before the flip.
  * - `NoEchoReject` (only under `CDKD_TEST_NOECHO_REJECT=true`): an SSM
  *   parameter whose `Tier` IS the token. `PutParameter` rejects it with a
  *   service-side `ValidationException` that quotes the value back
@@ -189,6 +193,20 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NoEchoShortAliasProbe', {
       value: 'short-alias-probe-value',
       exportName: cdk.Fn.join('-', ['short', shortToken.valueAsString, 'probe']),
+    });
+
+    // go-to-k/cdkd#4831: a create-only name read from a parameter declared
+    // `NoEcho` only under CDKD_TEST_NOECHO_WITNESS=true, its value unchanged.
+    // `DisplayName` reads a boolean NoEcho parameter, so the record is MARKED
+    // before the flip and still stores the name in plaintext.
+    const witnessName = new cdk.CfnParameter(this, 'NoEchoWitnessName', {
+      type: 'String',
+      noEcho: process.env['CDKD_TEST_NOECHO_WITNESS'] === 'true',
+      default: process.env['CDKD_TEST_NOECHO_WITNESS_NAME'] ?? `cdkd-test-noecho-witness-${account}`,
+    });
+    new sns.CfnTopic(this, 'NoEchoWitnessTopic', {
+      topicName: witnessName.valueAsString,
+      displayName: shortToken.valueAsString,
     });
 
     const splitToken = new cdk.CfnParameter(this, 'NoEchoSplitToken', {

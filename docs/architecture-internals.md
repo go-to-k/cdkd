@@ -553,8 +553,10 @@ by design.
   the value's type or length. Each such position is listed in the record's
   `noEchoLeaves`, and an attribute a producer declares `NoEcho` in
   `noEchoAttributeNames`. The deploy still sends the real value; to decide
-  whether it changed it reads the resource back from AWS (a record written
-  before `version: 11` is compared with the value it still holds). A create-only
+  whether it changed it reads the resource back from AWS. Where a record still
+  holds the plaintext (one written before `version: 11`, or one written before
+  the parameter was declared `NoEcho`), that stored value is compared instead,
+  and an equal one is then stored masked. A create-only
   property such a value feeds is replaced on a readback only where an earlier
   readback, handed the masked record, proved AWS reports it exactly
   (`noEchoExactEchoLeaves`, issue #4656); otherwise the deploy warns and names
@@ -615,6 +617,12 @@ per-stack-loop algorithm.
 cdkd's own source imports no `@aws-cdk/*` package, and `aws-cdk-lib` is a
 `devDependency` used by the test suite only. That is a statement about cdkd's
 code, and the installed tree looks different.
+
+At run time, every command synthesizes the CDK app through cdkd's own
+synthesizer except four `local` commands that hand synthesis to cdk-local:
+`start-agentcore` and `start-cloudfront` (cdk-local's command of the same name)
+and `start-service` and `start-alb` (cdk-local's ECS service emulator).
+cdk-local synthesizes through `@aws-cdk/toolkit-lib`, loaded only then.
 
 Installing cdkd does bring `@aws-cdk/*` packages in, all of them through [`cdk-local`](https://www.npmjs.com/package/cdk-local) — the
 local-emulation engine cdkd depends on at runtime. It depends on

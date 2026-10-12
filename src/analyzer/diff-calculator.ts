@@ -235,7 +235,6 @@ export type NoEchoCompareFn = (input: {
   templateProperties: Record<string, unknown>;
   desired: Record<string, unknown>;
   current: Record<string, unknown>;
-  record: ResourceState;
 }) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined;
 
 /**
@@ -661,7 +660,6 @@ export class DiffCalculator {
           templateProperties: rawDesiredProps,
           desired: desiredPropsForCompare,
           current: currentPropsForCompare,
-          record: currentResource,
         });
         const desiredCompared = noEchoCompared?.desired ?? desiredPropsForCompare;
         const currentCompared = noEchoCompared?.current ?? currentPropsForCompare;

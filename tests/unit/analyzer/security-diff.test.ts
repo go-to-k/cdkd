@@ -397,7 +397,7 @@ describe('diffSecurity (go-to-k/cdkd#4601)', () => {
     });
   });
 
-  it('an empty change list never loads the package and does not broaden', async () => {
+  it('an empty change list does not broaden', async () => {
     expect(await diffSecurity({ stackName: 'S', changes: [], records: {} })).toEqual({
       broadening: false,
       rendered: '',

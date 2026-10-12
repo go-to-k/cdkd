@@ -609,7 +609,18 @@ export async function provisionUpdate(
   // form), an equal leaf is an unchanged value with no readback, and a
   // different one a change the comparison below sees as moved.
   const unmarkedRecord = noEchoLeavesOf(currentResource) === undefined;
-  const todayAsWritten = unmarkedRecord
+  // For a MARKED record too (go-to-k/cdkd#4831): it can still hold a
+  // plaintext where today's template masks, a leaf a `NoEcho` declaration
+  // reaches only since that write. A leaf it holds as `***` is no witness
+  // (`witnessNormalize` leaves it), so a fully-v11 record reads as before.
+  // Where the witness compares depends only on the stored and persisted
+  // shapes, so a probe with no reference answers whether it can say anything
+  // (every such leaf reads as differing), by the witness's own shape rules.
+  const witnessCanSpeak =
+    unmarkedRecord ||
+    witnessNormalize(recordedAsWritten, undefined, desiredForSkipCheckAsWritten).differing.length >
+      0;
+  const todayAsWritten = witnessCanSpeak
     ? redactSecretsForState(
         markSameGenerationBag({ ...resolvedProps }),
         withoutNoEchoParameterEntries(updateSecrets),
@@ -622,6 +633,25 @@ export async function provisionUpdate(
       : witnessNormalize(recordedAsWritten, todayAsWritten, desiredForSkipCheckAsWritten);
   const currentPropsAsWritten =
     witness === undefined ? recordedAsWritten : (witness.current as Record<string, unknown>);
+  // A deploy that MIGRATES a leaf to the mask on the witness's word: a
+  // pre-v11 record, or a marked one whose plaintext the witness confirmed
+  // (go-to-k/cdkd#4831). Its readback is handed the mask at every parameter
+  // coordinate (#4656 rule 1), and its migration readback is taken even when
+  // nothing else reads (an earlier mark from a held producer's `NoEcho`
+  // attribute supplies nothing fresh), so the echo fidelity a later change
+  // of that value needs is recorded.
+  const witnessMigrates = unmarkedRecord || (witness?.confirmed.length ?? 0) > 0;
+  // A MARKED record keeps its own `noEchoLeaves` on a save it was not written
+  // by (`noEchoLeavesFor`), so a leaf the witness CONFIRMED here is named for
+  // that save: its stored plaintext equals today's value, so the mask and the
+  // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
+  // differing one keeps the old plaintext the record holds until it is sent.
+  if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
+    this.witnessConfirmedLeaves.set(
+      logicalId,
+      witness.confirmed.map((coordinate) => [...coordinate])
+    );
+  }
   // go-to-k/cdkd#4741: a witness that DIFFERS keeps the record's stored
   // plaintext, the PREVIOUS value of a `NoEcho` position, on the side handed
   // to the provider as the previous properties (and to a replacement's
@@ -805,7 +835,7 @@ export async function provisionUpdate(
   // copy with `***` at every `NoEcho` parameter coordinate (#4656, rule 1):
   // a provider that echoes its argument then reports the mask.
   const readbackRecord =
-    unmarkedRecord && parameterCoordinates.length > 0
+    witnessMigrates && parameterCoordinates.length > 0
       ? {
           ...currentResource,
           properties: maskAtCoordinates(currentResource.properties, parameterCoordinates),
@@ -913,11 +943,11 @@ export async function provisionUpdate(
       : lateCrossPrefixRefused
         ? 'differs; the replacement was refused: see the state-prefix warning above'
         : `differs; the replacement was not approved (--require-approval=${this.options.requireApproval ?? 'never'})`;
-  // go-to-k/cdkd#4656: the MIGRATION deploy of a pre-v11 record takes the
+  // go-to-k/cdkd#4656: the MIGRATION deploy (`witnessMigrates`) takes the
   // echo-fidelity readback even when its witness settles every value (so no
   // block below would read), before the skip just below can return.
   if (
-    unmarkedRecord &&
+    witnessMigrates &&
     !typeChanged &&
     echoCandidates.length > 0 &&
     hasAddressablePhysicalId(currentResource)
@@ -1578,12 +1608,25 @@ export async function provisionUpdate(
       )
     );
   }
+  // A leaf the witness CONFIRMED compares as the mask on both sides above,
+  // but the provider diffs the previous side against the plaintext it is
+  // sent: handed `***` there, a create-only one reads as changed and is
+  // re-created inside `update()` (bypassing `UpdateReplacePolicy` and the
+  // stateful guard), or a Cloud Control patch writes it. The value is equal
+  // by the witness, so the previous side gets it back, for the provider's
+  // call only (go-to-k/cdkd#4831; marked and unmarked records alike).
+  let previousForProvider = currentPropsAsWritten;
+  for (const coordinate of witness?.confirmed ?? []) {
+    const value = valueAtCoordinate(resolvedProps, coordinate);
+    if (value !== undefined)
+      previousForProvider = setAtCoordinate(previousForProvider, coordinate, value);
+  }
   return markRestored(
     await this.updateInPlace({
       conditions,
       counts,
       currentProps,
-      currentPropsAsWritten,
+      currentPropsAsWritten: previousForProvider,
       currentResource,
       dependencies,
       desiredForSkipCheckAsWritten,
