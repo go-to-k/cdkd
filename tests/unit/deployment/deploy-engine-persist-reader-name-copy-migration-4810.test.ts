@@ -70,7 +70,8 @@ async function deploy(
   resources: StackState['resources'],
   templateResources: Record<string, unknown>,
   order: string[][],
-  extra: Partial<StackState> = {}
+  extra: Partial<StackState> = {},
+  engineOptions: Record<string, unknown> = {}
 ): Promise<Run> {
   const state = {
     version: 11,
@@ -122,7 +123,7 @@ async function deploy(
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false },
+    { dryRun: false, ...engineOptions },
     'us-east-1'
   );
   let thrown: unknown;
@@ -347,6 +348,64 @@ describe('a record an earlier deploy rewrote is repaired, never replaced (#4810)
           { exportName: 'X', producerStack: 'P', sourceRegion: 'eu-west-1' },
         ] as unknown as StackState['imports'],
       }
+    );
+    expect(run.calls).toEqual(['update:Reader']);
+  });
+
+  const legacyBucketReader = (
+    extra: Partial<StackState> = {},
+    engineOptions: Record<string, unknown> = {}
+  ): Promise<Run> => {
+    // A copy after a SHORT prefix: `s3://` and a bucket named `x-<secret>`.
+    // The record's own reference is the only source of its legacy spelling
+    // (today's template reads no secret in the reader).
+    const BUCKET = 'x-sdin-q-1';
+    const stored = `s3://x-${REF}/k`;
+    return deploy(
+      {
+        SecretBucket: {
+          physicalId: BUCKET,
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: `x-${REF}` },
+          attributes: {},
+          dependencies: [],
+        },
+        Reader: {
+          physicalId: '/reader',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/reader', Type: 'String', Value: stored },
+          attributes: {},
+          dependencies: ['SecretBucket'],
+        },
+      } as StackState['resources'],
+      {
+        SecretBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: `x-${REF}` } },
+        Reader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/reader',
+            Type: 'String',
+            Value: { 'Fn::Join': ['', ['s3://', { Ref: 'SecretBucket' }, '/k']] },
+          },
+        },
+      },
+      [['SecretBucket'], ['Reader']],
+      extra,
+      engineOptions
+    );
+  };
+
+  it('a copy after a short prefix (s3:// and a short bucket id) is repaired from the record', async () => {
+    const run = await legacyBucketReader();
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    expect(run.persisted?.properties['Value']).toBe('s3://x-sdin-q-1/k');
+  });
+
+  it('with INCOMPLETE producer-region evidence (a nested child whose parent gave none) there is no lookup', async () => {
+    const run = await legacyBucketReader(
+      {},
+      { parentStackInfo: { parentStack: 'P', parentLogicalId: 'C', parentRegion: 'us-east-1' } }
     );
     expect(run.calls).toEqual(['update:Reader']);
   });
