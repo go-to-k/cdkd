@@ -290,7 +290,7 @@ replace-squatter-refusal	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705)
 replacement-fanout	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replacement-immutable-name	2026-10-11T15:19:51Z	PASS	130	verify.sh	rc ok, orph clean; #2613 update region guard
 replacement-rename-onto-holder	2026-10-11T09:33:22Z	PASS	637	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-require-approval-broadening	2026-10-12T13:46:43Z	PASS	90	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 security-only arms on e6be0d2a9; revert proof RED at phase-2 security-only expect_rc)
+require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
 retain-orphan-redeploy	2026-10-11T09:33:22Z	PASS	251	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-10-11T09:33:22Z	PASS	1037	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

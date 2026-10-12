@@ -310,39 +310,80 @@ describe('stdoutSupportsColor (chalk 4 on stdout)', () => {
     }
   );
 
+  it('colors a plain terminal on Windows', () => {
+    expect(stdoutSupportsColor({}, [], true, 'win32')).toBe(true);
+  });
+
   it('matches supports-color 7 on the same inputs', () => {
-    const cases: Array<[Record<string, string>, boolean]> = [
-      [{ TERM: 'xterm-256color' }, true],
-      [{ TERM: 'xterm-256color' }, false],
-      [{ TERM: 'dumb', FORCE_COLOR: '1' }, true],
-      [{ TERM: 'dumb', COLORTERM: 'truecolor' }, true],
-      [{ COLORTERM: 'truecolor' }, true],
-      [{ TERM_PROGRAM: 'Apple_Terminal' }, true],
-      [{ CI: 'true', BUILDKITE: '1' }, true],
-      [{ TEAMCITY_VERSION: '9.1.0' }, true],
-      [{ TEAMCITY_VERSION: '8.0.0' }, true],
-      [{}, true],
+    const term = { TERM: 'xterm-256color' };
+    const cases: Array<[Record<string, string>, string[], boolean]> = [
+      [term, [], true],
+      [term, [], false],
+      [{ TERM: 'dumb', FORCE_COLOR: '1' }, [], true],
+      [{ TERM: 'dumb', COLORTERM: 'truecolor' }, [], true],
+      [{ COLORTERM: 'truecolor' }, [], true],
+      [{ TERM_PROGRAM: 'Apple_Terminal' }, [], true],
+      [{ TERM_PROGRAM: 'iTerm.app' }, [], true],
+      [{ CI: 'true', BUILDKITE: '1' }, [], true],
+      [{ CI: 'true', GITLAB_CI: '1' }, [], true],
+      [{ CI: 'true', CI_NAME: 'codeship' }, [], true],
+      [{ CI: 'true', FORCE_COLOR: '1' }, [], true],
+      [{ CI: 'true', ...term }, [], true],
+      [{ TEAMCITY_VERSION: '9.1.0' }, [], true],
+      [{ TEAMCITY_VERSION: '8.0.0' }, [], true],
+      [{ FORCE_COLOR: 'true' }, [], false],
+      [{ FORCE_COLOR: 'false', ...term }, [], true],
+      [{ FORCE_COLOR: '' }, [], false],
+      [{ FORCE_COLOR: 'x' }, [], false],
+      [{ TERM: 'screen' }, [], true],
+      [{ TERM: 'linux' }, [], true],
+      [{ TERM: 'vt100' }, [], true],
+      [{ TERM: 'rxvt' }, [], true],
+      [{ TERM: 'cygwin' }, [], true],
+      [{ TERM: 'ansi' }, [], true],
+      [{ TERM: 'other-256' }, [], true],
+      [{ TERM: 'unknown' }, [], true],
+      [{ COLORTERM: '1' }, [], true],
+      [{}, [], true],
+      [term, ['--no-color'], true],
+      [term, ['--no-colors'], true],
+      [term, ['--color=false'], true],
+      [term, ['--color=never'], true],
+      [{}, ['--color'], false],
+      [{}, ['--colors'], false],
+      [{}, ['--color=true'], false],
+      [{}, ['--color=always'], false],
+      [{}, ['--', '--color'], false],
+      [{}, ['--color=256'], false],
+      [{}, ['--color=16m'], false],
+      [{ FORCE_COLOR: '0' }, ['--color=256'], false],
     ];
     const require = createRequire(require_resolve_chalk());
-    for (const [env, isTTY] of cases) {
+    const savedArgv = process.argv;
+    for (const [env, flags, isTTY] of cases) {
+      const argv = ['node', 'cdkd', ...flags];
       const saved = { ...process.env };
       for (const key of Object.keys(process.env)) delete process.env[key];
       Object.assign(process.env, env);
+      process.argv = argv;
       const modulePath = require.resolve('supports-color');
       delete require.cache[modulePath];
       try {
         const { supportsColor } = require('supports-color') as {
           supportsColor: (stream: { isTTY: boolean }) => false | { level: number };
         };
-        const theirs = supportsColor({ isTTY }) !== false;
-        expect([env, isTTY, stdoutSupportsColor(env, [], isTTY, 'darwin')]).toEqual([
+        const level = supportsColor({ isTTY });
+        const theirs = level !== false && level.level > 0;
+        expect([env, flags, isTTY, stdoutSupportsColor(env, argv, isTTY, 'darwin')]).toEqual([
           env,
+          flags,
           isTTY,
           theirs,
         ]);
       } finally {
         for (const key of Object.keys(process.env)) delete process.env[key];
         Object.assign(process.env, saved);
+        process.argv = savedArgv;
         delete require.cache[modulePath];
       }
     }
