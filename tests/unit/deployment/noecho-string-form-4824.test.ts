@@ -8,10 +8,11 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
+const debugLines = vi.hoisted(() => [] as string[]);
 vi.mock('../../../src/utils/logger.js', () => {
   const quiet = {
     setLevel: (): void => undefined,
-    debug: (): void => undefined,
+    debug: (...args: unknown[]): void => void debugLines.push(args.map(String).join(' ')),
     info: (): void => undefined,
     warn: (): void => undefined,
     error: (): void => undefined,
@@ -145,6 +146,22 @@ describe('each NoEcho reader honours the string form (go-to-k/cdkd#4824)', () =>
       expect(maskSecretsInText(`v ${VALUE}`, await resolve(v)), String(v)).toBe('v ***');
     }
     expect(maskSecretsInText(`v ${VALUE}`, await resolve(false))).toBe(`v ${VALUE}`);
+  });
+
+  it("the resolver's Ref-to-parameter line renders the bare redaction marker (refs.ts)", async () => {
+    const lineFor = async (noEcho: unknown): Promise<string | undefined> => {
+      debugLines.length = 0;
+      await new IntrinsicFunctionResolver('us-east-1').resolve(
+        { Ref: 'P' },
+        { template: template(noEcho), resources: {}, parameters: { P: VALUE } }
+      );
+      return debugLines.find((l) => l.startsWith('Resolved Ref to parameter: P'));
+    };
+    for (const v of DECLARED) {
+      expect(await lineFor(v), String(v)).toBe('Resolved Ref to parameter: P resolved to <redacted>');
+    }
+    // Negative control: an ordinary parameter prints its value.
+    expect(await lineFor(false)).toBe(`Resolved Ref to parameter: P resolved to ${VALUE}`);
   });
 
   it('the export secret scan seed (secret-scan.ts noEchoParameterValueSeed)', () => {
