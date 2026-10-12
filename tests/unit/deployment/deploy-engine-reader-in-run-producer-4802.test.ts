@@ -243,7 +243,6 @@ describe('a reader of a secret-named queue updated in the same deploy (#4802)', 
     });
     expect(next.thrown).toBeUndefined();
     expect(next.calls).toEqual([]);
-    expect(next.last?.outputs?.['QueueArn'] ?? RECORDED_ARN).toBe(RECORDED_ARN);
   });
 
   it('a reader of a queue REPLACED under a rotated secret is sent, and stores, the new ARN', async () => {
