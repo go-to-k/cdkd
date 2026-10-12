@@ -164,7 +164,7 @@ import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, or
 import-attribute-readback-network	2026-10-11T09:33:22Z	PASS	306	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
 import-auto-mode	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607 PR #4608)
-import-deployed-parameter-secret	2026-10-01T06:24:56Z	PASS	440	verify.sh	rc ok, orph clean; #4273 ssm-parameter import refusal (10 del/0 err)
+import-deployed-parameter-secret	2026-10-12T00:02:47Z	PASS	347	verify.sh	PR #4820 (#3466) b48362d; rc 0, step 6d accept arm ok, 71 assertions, destroy 10 del/0 err, 0 state versions, orph clean
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
@@ -238,7 +238,7 @@ local-start-service-watch-fast	2026-10-04T07:04:58Z	PASS	171	verify.sh	cdk-local
 log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix verified: stream deleted on destroy, 0 orphans
 loggroup-class-guard	2026-10-11T09:33:22Z	PASS	140	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 loggroup-kms-associate	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-loggroup-never-expire-guard	2026-10-11T09:33:22Z	PASS	140	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+loggroup-never-expire-guard	2026-10-12T00:02:47Z	PASS	122	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, orph clean
 lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-10-09T06:35:11Z	PASS	45	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
@@ -322,13 +322,13 @@ schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
-schema-v9-to-v10-migration	2026-10-07T18:40:43Z	PASS	146	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
+schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#3466) b48362d regression run; rc 0, 54 assertions, destroy clean, 0 state versions, orph clean
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-11T09:33:22Z	PASS	231	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 secret-derived-immutable-names	2026-10-11T17:39:42Z	PASS	466	verify.sh	rc ok, orph clean; 5c/5d arms each red pre-fix (stateNames, diffLogMasker, provision scan) (PR #4793)
-secrets-array-nested	2026-10-09T10:13:13Z	PASS	401	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
-secrets-dynamic-ref	2026-10-11T09:33:22Z	PASS	857	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+secrets-array-nested	2026-10-12T00:02:47Z	PASS	393	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
+secrets-dynamic-ref	2026-10-12T00:02:47Z	PASS	733	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
