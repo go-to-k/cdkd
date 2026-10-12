@@ -38,12 +38,14 @@ type PropertyScrutiny =
 
 /** `scrutinizable` of each resource type in `@aws-cdk/aws-service-spec` that has one. */
 export const RESOURCE_SCRUTINY: Readonly<Record<string, ResourceScrutiny>> = {
+  'AWS::Bedrock::KnowledgeBasePolicy': 'ResourcePolicyResource',
   'AWS::Bedrock::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::CloudTrail::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::EC2::SecurityGroupEgress': 'EgressRuleResource',
   'AWS::EC2::SecurityGroupIngress': 'IngressRuleResource',
   'AWS::ECR::RegistryPolicy': 'ResourcePolicyResource',
   'AWS::EventSchemas::RegistryPolicy': 'ResourcePolicyResource',
+  'AWS::EventsV2::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::IAM::GroupPolicy': 'IdentityPolicyResource',
   'AWS::IAM::ManagedPolicy': 'IdentityPolicyResource',
   'AWS::IAM::Policy': 'IdentityPolicyResource',
@@ -52,6 +54,7 @@ export const RESOURCE_SCRUTINY: Readonly<Record<string, ResourceScrutiny>> = {
   'AWS::IoT::Policy': 'ResourcePolicyResource',
   'AWS::Kinesis::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::Lambda::Permission': 'LambdaPermission',
+  'AWS::Lambda::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::Lex::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::Logs::ResourcePolicy': 'ResourcePolicyResource',
   'AWS::MSK::ClusterPolicy': 'ResourcePolicyResource',
