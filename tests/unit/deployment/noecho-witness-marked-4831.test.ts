@@ -256,6 +256,46 @@ describe('DeployEngine - the migration witness on a MARKED record (go-to-k/cdkd#
     expect(saved?.noEchoExactEchoLeaves).toEqual([['TopicName']]);
   });
 
+  it("takes the migration readback when the record's earlier mark is a held producer's NoEcho attribute", async () => {
+    // DisplayName reads a custom resource's NoEcho attribute; the producer is
+    // not updated, so nothing is supplied fresh and no other block reads.
+    const SERVICE_TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:h';
+    const t = {
+      Parameters: { Name: { Type: 'String', NoEcho: true, Default: TOPIC } },
+      Resources: {
+        Cr: { Type: 'Custom::Seed', Properties: { ServiceToken: SERVICE_TOKEN } },
+        Topic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { Ref: 'Name' }, DisplayName: { 'Fn::GetAtt': ['Cr', 'Secret'] } },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    const state = markedState(TOPIC, '***', [['DisplayName']]);
+    state.resources['Topic']!.dependencies = ['Cr'];
+    state.resources['Cr'] = {
+      physicalId: 'cr-id',
+      resourceType: 'Custom::Seed',
+      properties: { ServiceToken: SERVICE_TOKEN },
+      attributes: { Secret: '***' },
+      dependencies: [],
+      noEchoAttributeNames: ['Secret'],
+    } as ResourceState;
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    await makeEngine().deploy(STACK, t);
+    expect(topicCalls(provider.create)).toBe(0);
+    expect(topicCalls(provider.update)).toBe(0);
+    const handedTopicNames = provider.readCurrentState.mock.calls.flatMap((call) =>
+      call
+        .filter((arg): arg is Record<string, unknown> => arg !== null && typeof arg === 'object')
+        .filter((arg) => Object.hasOwn(arg, 'TopicName'))
+        .map((arg) => arg['TopicName'])
+    );
+    expect(handedTopicNames).toEqual(['***']);
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState).resources['Topic'];
+    expect(saved?.noEchoLeaves).toEqual([['DisplayName'], ['TopicName']]);
+    expect(saved?.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+  });
+
   it.each([
     ['an array element (Tags[0].Value)', { Tags: [{ Key: 'k', Value: { Ref: 'TopicName' } }] }, { Tags: [{ Key: 'k', Value: TOPIC }] }, ['Tags', 0, 'Value']],
     ['a nested object leaf (ArchivePolicy.Name)', { ArchivePolicy: { Name: { Ref: 'TopicName' } } }, { ArchivePolicy: { Name: TOPIC } }, ['ArchivePolicy', 'Name']],
@@ -283,7 +323,8 @@ describe('DeployEngine - the migration witness on a MARKED record (go-to-k/cdkd#
     expect(topicCalls(provider.create)).toBe(0);
     expect(topicCalls(provider.update)).toBe(0);
     const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState | undefined)?.resources['Topic'];
-    expect(saved?.noEchoLeaves ?? [['DisplayName'], ['TopicName']]).toEqual([['DisplayName'], ['TopicName']]);
+    expect(saved).toBeDefined();
+    expect(saved?.noEchoLeaves).toEqual([['DisplayName'], ['TopicName']]);
   });
 
   it("an engine reused for a second deploy carries no confirmed leaf over (reset per deploy)", async () => {

@@ -641,9 +641,10 @@ export async function provisionUpdate(
   // A deploy that MIGRATES a leaf to the mask on the witness's word: a
   // pre-v11 record, or a marked one whose plaintext the witness confirmed
   // (go-to-k/cdkd#4831). Its readback is handed the mask at every parameter
-  // coordinate (#4656 rule 1), so the echo fidelity a later change of that
-  // value needs is recorded. A marked record's other `NoEcho` leaves are
-  // supplied fresh this deploy, which already takes that readback.
+  // coordinate (#4656 rule 1), and its migration readback is taken even when
+  // nothing else reads (an earlier mark from a held producer's `NoEcho`
+  // attribute supplies nothing fresh), so the echo fidelity a later change
+  // of that value needs is recorded.
   const witnessMigrates = unmarkedRecord || (witness?.confirmed.length ?? 0) > 0;
   if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
     this.witnessConfirmedLeaves.set(
@@ -942,11 +943,11 @@ export async function provisionUpdate(
       : lateCrossPrefixRefused
         ? 'differs; the replacement was refused: see the state-prefix warning above'
         : `differs; the replacement was not approved (--require-approval=${this.options.requireApproval ?? 'never'})`;
-  // go-to-k/cdkd#4656: the MIGRATION deploy of a pre-v11 record takes the
+  // go-to-k/cdkd#4656: the MIGRATION deploy (`witnessMigrates`) takes the
   // echo-fidelity readback even when its witness settles every value (so no
   // block below would read), before the skip just below can return.
   if (
-    unmarkedRecord &&
+    witnessMigrates &&
     !typeChanged &&
     echoCandidates.length > 0 &&
     hasAddressablePhysicalId(currentResource)
