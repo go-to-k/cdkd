@@ -111,3 +111,14 @@ export const WRITABLE_GETATT_ATTRIBUTES: Readonly<Record<string, readonly string
   'AWS::StepFunctions::Activity': ['Name'],
   'AWS::Transfer::User': ['ServerId', 'UserName'],
 };
+
+/**
+ * Writable `Fn::GetAtt` attributes whose attribute and property value shapes
+ * differ. The import masks them; a Cloud Control DEPLOY records them, since a
+ * template CloudFormation accepts reads them. See issue #2925.
+ */
+export const SHAPE_MISMATCHED_GETATT_ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
+  'AWS::DocDB::DBCluster': ['Port'],
+  'AWS::Events::EventBus': ['Policy'],
+  'AWS::MediaLive::Input': ['Destinations', 'Sources'],
+};

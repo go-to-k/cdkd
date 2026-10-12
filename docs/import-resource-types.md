@@ -285,8 +285,15 @@ The record is still sensitive:
 - The mask applies to `attributes` only. The copy of the resource that cdkd
   keeps for drift detection holds every property; see
   [A value your template never references](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it).
-- The next deploy that creates or updates the resource writes every property
-  back into `attributes`.
+- A deploy that creates or updates the resource records `attributes` the same
+  way: attributes in the clear, every other property as `***`. A deploy also
+  keeps the attributes masked above for their value shape, and an
+  `AWS::SSM::Parameter` `Value` the deploy did not resolve from a secret.
+  Only when the
+  deploy cannot read the schema does it record every property, as cdkd did
+  before it narrowed the deploy path, so that a missing
+  `cloudformation:DescribeType` permission does not make every `Fn::GetAtt`
+  fail.
 
 What importing the same resource a second time does to masked values is in
 [Import internals](import-internals.md#re-importing-a-cloud-control-resource).

@@ -9,6 +9,7 @@ import {
   EXCLUDED,
   OUT_FILE,
   SECRET_NAME_ALLOWED,
+  deriveGetAttTables,
   deriveWritableGetAttAttributes,
   loadSpec,
   renderGetAttAttributesModule,
@@ -16,7 +17,10 @@ import {
   type SpecResource,
   type SpecTypeDefinition,
 } from '../../../scripts/gen-getatt-attributes.ts';
-import { WRITABLE_GETATT_ATTRIBUTES } from '../../../src/provisioning/getatt-attributes.generated.js';
+import {
+  SHAPE_MISMATCHED_GETATT_ATTRIBUTES,
+  WRITABLE_GETATT_ATTRIBUTES,
+} from '../../../src/provisioning/getatt-attributes.generated.js';
 
 const str = { type: { type: 'string' } };
 const int = { type: { type: 'integer' } };
@@ -95,10 +99,11 @@ describe('deriveWritableGetAttAttributes', () => {
 });
 
 describe('deriveWritableGetAttAttributes — value shape', () => {
-  it('leaves out a name whose attribute type differs from the property type', () => {
+  it('moves a name whose attribute type differs from the property type to the deploy-only table', () => {
     // The import records the MODEL value (the property's shape); Fn::GetAtt
-    // returns the attribute's. MediaLive `Sources` is structs vs strings.
-    const table = deriveWritableGetAttAttributes(
+    // returns the attribute's. MediaLive `Sources` is structs vs strings. The
+    // import cannot vouch for those; the deploy keeps them (issue #2925).
+    const tables = deriveGetAttTables(
       [
         {
           cloudFormationType: 'AWS::X::Y',
@@ -106,9 +111,25 @@ describe('deriveWritableGetAttAttributes — value shape', () => {
           attributes: { Sources: strArray, Port: str, Name: str },
         },
       ],
-      bare
+      { ...bare, typeDefinitions: new Map([['1', { $id: '1', properties: { Url: str } }]]) }
     );
-    expect([...table]).toEqual([['AWS::X::Y', ['Name']]]);
+    expect([...tables.certified]).toEqual([['AWS::X::Y', ['Name']]]);
+    expect([...tables.shapeMismatched]).toEqual([['AWS::X::Y', ['Port', 'Sources']]]);
+  });
+
+  it('runs the secret-name guard over the deploy-only table too', () => {
+    expect(() =>
+      deriveGetAttTables(
+        [
+          {
+            cloudFormationType: 'AWS::X::Y',
+            properties: { Secret: int },
+            attributes: { Secret: str },
+          },
+        ],
+        bare
+      )
+    ).toThrow('AWS::X::Y.Secret [Secret]');
   });
 
   it('keeps a name whose types differ only in validation keys such as allowedValues', () => {
@@ -140,7 +161,13 @@ describe('deriveWritableGetAttAttributes — value shape', () => {
       ],
       {
         ...bare,
-        typeDefinitions: new Map([['3', { $id: '3', properties: { Region: str } }]]),
+        // Every name is guarded, the mismatched ones too: B's json member is
+        // a free-form value, so it needs its reviewed entry.
+        secretNameAllowed: new Map([['AWS::X::Y.B', { matched: ['<json>@B'], reason: 'r' }]]),
+        typeDefinitions: new Map([
+          ['1', { $id: '1', properties: { Region: str } }],
+          ['3', { $id: '3', properties: { Region: str } }],
+        ]),
       }
     );
     expect([...table]).toEqual([['AWS::X::Y', ['C']]]);
@@ -148,7 +175,7 @@ describe('deriveWritableGetAttAttributes — value shape', () => {
 
   it('leaves out a json-or-string union property read as a string attribute', () => {
     const union = { type: { type: 'union', types: [{ type: 'json' }, { type: 'string' }] } };
-    const table = deriveWritableGetAttAttributes(
+    const tables = deriveGetAttTables(
       [
         {
           cloudFormationType: 'AWS::X::Y',
@@ -156,9 +183,15 @@ describe('deriveWritableGetAttAttributes — value shape', () => {
           attributes: { Policy: str },
         },
       ],
-      bare
+      {
+        ...bare,
+        secretNameAllowed: new Map([
+          ['AWS::X::Y.Policy', { matched: ['<json>@Policy'], reason: 'a policy document' }],
+        ]),
+      }
     );
-    expect(table.size).toBe(0);
+    expect(tables.certified.size).toBe(0);
+    expect([...tables.shapeMismatched]).toEqual([['AWS::X::Y', ['Policy']]]);
   });
 });
 
@@ -430,9 +463,11 @@ describe('deriveWritableGetAttAttributes — guards', () => {
     });
   });
 
-  it('the shipped allow-list is exactly the two reviewed entries', () => {
+  it('the shipped allow-list is exactly the reviewed entries', () => {
     expect([...SECRET_NAME_ALLOWED].map(([key, review]) => [key, review.matched])).toEqual([
       ['AWS::CodeArtifact::Domain.EncryptionKey', ['EncryptionKey']],
+      ['AWS::Events::EventBus.Policy', ['<json>@Policy']],
+      ['AWS::MediaLive::Input.Sources', ['Sources[].PasswordParam']],
       [
         'AWS::RedshiftServerless::Workgroup.Workgroup',
         [
@@ -465,9 +500,11 @@ describe('renderGetAttAttributesModule', () => {
 describe('committed getatt-attributes.generated.ts', () => {
   it('equals a fresh generation from the installed spec (the `--check` predicate)', () => {
     const { resources, typeDefinitions, version } = loadSpec();
+    const tables = deriveGetAttTables(resources, { typeDefinitions });
     const rendered = renderGetAttAttributesModule(
-      deriveWritableGetAttAttributes(resources, { typeDefinitions }),
-      version
+      tables.certified,
+      version,
+      tables.shapeMismatched
     );
     expect(readFileSync(OUT_FILE, 'utf8')).toBe(rendered);
   });
@@ -486,5 +523,12 @@ describe('committed getatt-attributes.generated.ts', () => {
     // The type rule: structs-vs-strings, and json-or-string vs string.
     expect(WRITABLE_GETATT_ATTRIBUTES['AWS::MediaLive::Input']).toBeUndefined();
     expect(WRITABLE_GETATT_ATTRIBUTES['AWS::Events::EventBus']).toEqual(['Name']);
+    // ...and the deploy keeps them (issue #2925): CDK's `allowDefaultPortFrom`
+    // reads the DocDB cluster's `Port`.
+    expect(SHAPE_MISMATCHED_GETATT_ATTRIBUTES['AWS::DocDB::DBCluster']).toEqual(['Port']);
+    expect(SHAPE_MISMATCHED_GETATT_ATTRIBUTES['AWS::MediaLive::Input']).toEqual([
+      'Destinations',
+      'Sources',
+    ]);
   });
 });
