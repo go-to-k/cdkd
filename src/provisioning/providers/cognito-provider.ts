@@ -117,8 +117,8 @@ import {
  * - Not measured, so echoed: `SmsVerificationMessage`,
  *   `EmailVerificationMessage`, `EmailVerificationSubject`, and
  *   `AcrConfiguration` (added by a later SDK; the API reference says a level
- *   the write does not name keeps its DEFAULT name, so omission likely resets
- *   a custom one).
+ *   the write does not name gets its DEFAULT name, so omission could reset a
+ *   custom one). Only its custom levels are echoed: see `customAcrLevels`.
  *
  * The echo was ACCEPTED on every pool measured, MFA `ON` with TOTP only and
  * no `SmsConfiguration` included, and left the pool byte-identical apart from
@@ -180,6 +180,9 @@ export function userPoolDeletionProtectionUpdate(
   for (const member of USER_POOL_ECHO_MEMBERS) {
     if (pool[member] !== undefined) Object.assign(input, { [member]: pool[member] });
   }
+  const acr = customAcrLevels(pool.AcrConfiguration);
+  if (acr === undefined) delete input.AcrConfiguration;
+  else input.AcrConfiguration = acr;
   // A `DEVELOPER` EmailConfiguration (SES) is NOT measured to survive
   // omission -- only `COGNITO_DEFAULT` is, and no verified SES identity was
   // available to measure the other. So it is echoed: if AWS re-validates it
@@ -190,6 +193,26 @@ export function userPoolDeletionProtectionUpdate(
   }
   input.DeletionProtection = value;
   return input;
+}
+
+/**
+ * The levels of a read-back `AcrConfiguration` whose name is CUSTOM, or
+ * `undefined` when there are none. DescribeUserPool returns all four levels
+ * with the defaults (`urn:cognito:loa:<n>` for `Level<n>`) merged in, even on
+ * a Lite pool, where AWS gates custom names behind Essentials. A write that
+ * omits a level applies its default, so dropping the default levels changes
+ * nothing -- and keeps the tier-gated member out of every write that has no
+ * custom name to preserve.
+ */
+function customAcrLevels(acr: UserPoolType['AcrConfiguration']): UserPoolType['AcrConfiguration'] {
+  if (acr === undefined) return undefined;
+  const custom = Object.fromEntries(
+    Object.entries(acr).filter(([level, cfg]) => {
+      const n = /^Level([1-4])$/.exec(level)?.[1];
+      return n === undefined || cfg?.AcrValue !== `urn:cognito:loa:${n}`;
+    })
+  );
+  return Object.keys(custom).length > 0 ? custom : undefined;
 }
 
 /** Failures of a write sent WITHOUT the pool's SES EmailConfiguration. */
