@@ -263,30 +263,25 @@ export class DynamodbOndemandStack extends cdk.Stack {
     // that re-asserted the whole block would look identical to one that sent
     // the edit.
     //
-    // **go-to-k/cdkd#3265** — the TABLE-level ceiling declares one LEGAL
-    // member and one spelling CloudFormation's Integer grammar REJECTS (a
-    // padded `' 25 '`). Both members are SDK-OPTIONAL, so unlike the
-    // `ProvisionedThroughput` sibling the request SUCCEEDS with that half
-    // unapplied — a GREEN deploy, not a loud failure — which is the outcome
-    // only a real `DescribeTable` can confirm. verify.sh asserts AWS ends up
-    // holding the read ceiling and NO write ceiling, and that the rejected
-    // member did not take its legal sibling down with it.
+    // **go-to-k/cdkd#3286** — a ceiling member CloudFormation's Integer
+    // grammar REJECTS (a padded `' 25 '`) used to be DROPPED with a warning,
+    // and since both members are SDK-OPTIONAL the deploy went GREEN with that
+    // half unapplied while state recorded the declared spelling. It is now
+    // REFUSED before any AWS call. `CDKD_TEST_CEILING_REFUSE` drives three
+    // refusal deploys, each of which verify.sh expects to FAIL:
+    //   - `update`: this table's TABLE-level write ceiling is spelled `' 25 '`.
+    //   - `gsi-update`: this table's per-index write ceiling is spelled `' 15 '`.
+    //   - `create`: a table that exists ONLY in that deploy declares a padded
+    //     per-index ceiling, so the refusal must land before `CreateTable`.
     //
-    // What verify.sh deliberately does NOT assert is the RECORD side: state
-    // still carries the declared `' 25 '`, so `cdkd drift` reports the
-    // difference until the template is fixed. That is go-to-k/cdkd#3286, which
-    // stays open — closing it needs `effectiveProperties` plus its
-    // `canonicalizeDesiredProperties` twin AND an agreeing
-    // `observedProperties` capture in `deploy-engine.ts`.
-    //
-    // A hand-written L1 plus an `addPropertyOverride` for the padded value.
+    // A hand-written L1 plus an `addPropertyOverride` for the padded values.
     // BOTH halves are required, and the second was measured rather than
     // assumed: the L2 types these members as `number`, and the L1's own
     // generated validator (`convertCfnTablePropsToCloudFormation`) REFUSES a
     // string too — `cdk synth` dies with `supplied properties not correct for
     // "OnDemandThroughputProperty"`. `addPropertyOverride` writes straight into
     // the rendered template, which is the only way to synthesize the rejected
-    // SPELLING this phase is about.
+    // SPELLING these arms are about.
     //
     // The table and its index are UNCONDITIONAL; only the ceiling VALUE is
     // mode-keyed, the same rule the sibling tables above follow. A mode-gated
@@ -317,19 +312,45 @@ export class DynamodbOndemandStack extends cdk.Stack {
       ],
     });
     gsiCeilingTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    // The padded write ceiling, written past the L1 validator. CloudFormation
-    // refuses this spelling at properties validation, so cdkd DROPS the member
-    // and warns — and because both members are SDK-OPTIONAL the request still
-    // SUCCEEDS (measured us-east-1 2026-09-17: `CreateTable` with an empty
-    // `OnDemandThroughput` is ACCEPTED and `DescribeTable` then reports no
-    // ceiling at all), which is what makes the record fold necessary rather
-    // than cosmetic.
-    gsiCeilingTable.addPropertyOverride('OnDemandThroughput.MaxWriteRequestUnits', ' 25 ');
+    const ceilingRefuse = process.env.CDKD_TEST_CEILING_REFUSE;
+    if (ceilingRefuse === 'update') {
+      gsiCeilingTable.addPropertyOverride('OnDemandThroughput.MaxWriteRequestUnits', ' 25 ');
+    }
+    if (ceilingRefuse === 'gsi-update') {
+      gsiCeilingTable.addPropertyOverride(
+        'GlobalSecondaryIndexes.0.OnDemandThroughput.MaxWriteRequestUnits',
+        ' 15 '
+      );
+    }
+    if (ceilingRefuse === 'create') {
+      const refusedCeilingTable = new dynamodb.CfnTable(this, 'CeilingRefusedTable', {
+        tableName: 'cdkd-ondemand-test-ceiling-refused-table',
+        billingMode: 'PAY_PER_REQUEST',
+        keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+        attributeDefinitions: [
+          { attributeName: 'id', attributeType: 'S' },
+          { attributeName: 'gsipk', attributeType: 'S' },
+        ],
+        globalSecondaryIndexes: [
+          {
+            indexName: 'gsi-ceiling-refused',
+            keySchema: [{ attributeName: 'gsipk', keyType: 'HASH' }],
+            projection: { projectionType: 'ALL' },
+            onDemandThroughput: { maxReadRequestUnits: 20 },
+          },
+        ],
+      });
+      refusedCeilingTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+      refusedCeilingTable.addPropertyOverride(
+        'GlobalSecondaryIndexes.0.OnDemandThroughput.MaxWriteRequestUnits',
+        ' 25 '
+      );
+    }
 
     new cdk.CfnOutput(this, 'GsiCeilingTableName', {
       value: gsiCeilingTable.ref,
       description:
-        'PAY_PER_REQUEST table whose per-GSI OnDemandThroughput read ceiling changes under CDKD_TEST_UPDATE=true (issues #3287 / #3265)',
+        'PAY_PER_REQUEST table whose per-GSI OnDemandThroughput read ceiling changes under CDKD_TEST_UPDATE=true (issues #3287 / #3286)',
     });
 
     // A FIFTH table, for the REMOVAL direction of the same property (issue

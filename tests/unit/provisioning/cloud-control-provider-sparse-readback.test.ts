@@ -41,6 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 
 /**
  * Generic sparse-ResourceModel GetResource read-back (issue #1105).
@@ -132,7 +133,12 @@ describe('CloudControlProvider generic sparse-model read-back (issue #1105)', ()
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset, not just clear: a schema one case sets must not narrow the next
+    // case's attributes (issue #2925). With no schema the narrowing records
+    // the model unnarrowed, which is what these cases are about.
+    mockCloudFormationSend.mockReset();
     clearWriteOnlyPropertiesCache();
+    clearReadOnlyPropertiesCache();
     provider = new CloudControlProvider();
   });
 
@@ -224,8 +230,11 @@ describe('CloudControlProvider generic sparse-model read-back (issue #1105)', ()
         Status: 'UPDATED',
       },
     });
-    // No write-only properties for the type.
-    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+    // No write-only properties; `Arn` / `Status` are read-only attributes, so
+    // the deploy-side narrowing (issue #2925) keeps them.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Arn', '/properties/Status'] }),
+    });
 
     const result = await provider.update(
       'MyThing',

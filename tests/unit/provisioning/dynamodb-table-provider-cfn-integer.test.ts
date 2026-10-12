@@ -1380,17 +1380,30 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
      */
     const ON_DEMAND = 'OnDemandThroughput.MaxReadRequestUnits';
 
+    // Since #3286 the TEMPLATE path refuses a spelling CloudFormation rejects
+    // before any call, so the drop-and-warn send path pinned below is reached
+    // only by a STATE-borne bag. Every case here that drives such a spelling
+    // therefore runs as a rollback replay; the template-path refusal has its
+    // own block after this one.
+    const REPLAY = { replayingState: true } as const;
+
     const runOnDemandCreate = async (
-      properties: Record<string, unknown>
+      properties: Record<string, unknown>,
+      context?: { replayingState?: boolean }
     ): Promise<CreateTableCommand | undefined> => {
       primeGeneric();
-      await provider.create('L', RESOURCE_TYPE, {
-        TableName: TABLE_NAME,
-        KeySchema: KEY_SCHEMA,
-        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
-        BillingMode: 'PAY_PER_REQUEST',
-        ...properties,
-      });
+      await provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          ...properties,
+        },
+        context
+      );
       return findCalls(CreateTableCommand)[0];
     };
 
@@ -1467,12 +1480,15 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
 
     for (const row of CEILING_MATRIX) {
       it(`site 1 create (table): MaxReadRequestUnits ${label(row.value)} -> ${label(row.sent)} (was: ${row.before})`, async () => {
-        const create = await runOnDemandCreate({
-          OnDemandThroughput: {
-            ...(row.value === ABSENT ? {} : { MaxReadRequestUnits: row.value }),
-            MaxWriteRequestUnits: 3,
+        const create = await runOnDemandCreate(
+          {
+            OnDemandThroughput: {
+              ...(row.value === ABSENT ? {} : { MaxReadRequestUnits: row.value }),
+              MaxWriteRequestUnits: 3,
+            },
           },
-        });
+          REPLAY
+        );
 
         const sent = create?.input.OnDemandThroughput as Record<string, unknown> | undefined;
         if (row.sent === ABSENT) {
@@ -1492,18 +1508,20 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // The decision, pinned: dropping the BLOCK would discard a ceiling the
       // template spelled legally, and would make `indexDeclares`' truthiness
       // gate stop describing what cdkd sends.
-      const create = await runOnDemandCreate({
-        OnDemandThroughput: { MaxReadRequestUnits: '0x64', MaxWriteRequestUnits: '11' },
-      });
+      const create = await runOnDemandCreate(
+        { OnDemandThroughput: { MaxReadRequestUnits: '0x64', MaxWriteRequestUnits: '11' } },
+        REPLAY
+      );
       expect(create?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: 11 });
       expect(warnings()).toContain(ON_DEMAND);
       expect(warnings()).not.toContain('OnDemandThroughput.MaxWriteRequestUnits');
     });
 
     it('site 1 create (table): sends an EMPTY block, naming both, when NEITHER member is usable', async () => {
-      const create = await runOnDemandCreate({
-        OnDemandThroughput: { MaxReadRequestUnits: ' 1 ', MaxWriteRequestUnits: 'abc' },
-      });
+      const create = await runOnDemandCreate(
+        { OnDemandThroughput: { MaxReadRequestUnits: ' 1 ', MaxWriteRequestUnits: 'abc' } },
+        REPLAY
+      );
       expect(create?.input.OnDemandThroughput).toEqual({});
       expect(warnings()).toContain(ON_DEMAND);
       expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
@@ -1564,7 +1582,7 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
         // A LITERAL replace, which is what the real `maskSecretsInText` does —
         // a regex spelled here would be a different function from the one in
         // production and could match the escaped form by accident.
-        { maskSecrets: (text: string) => text.split(SECRET).join('<redacted>') }
+        { ...REPLAY, maskSecrets: (text: string) => text.split(SECRET).join('<redacted>') }
       );
 
       const text = warnings();
@@ -1618,7 +1636,7 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // `warnUnusableProvisionedCapacity`: that sentence promises DynamoDB will
       // reject the request naming the member, which is true only because both
       // capacity members are REQUIRED.
-      await runOnDemandCreate({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } });
+      await runOnDemandCreate({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } }, REPLAY);
       const text = warnings();
       expect(text).toContain('NO ceiling was substituted for it');
       expect(text).toContain('OPTIONAL');
@@ -1644,7 +1662,7 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // revision of this case pinned the OPPOSITE ("expect that request to
       // fail"), which the measurement refuted -- so the all-rejected path is
       // the SILENT one and this warning is the user's only signal for it.
-      await runOnDemandCreate({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } });
+      await runOnDemandCreate({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } }, REPLAY);
       const text = warnings();
       expect(text).toContain('an UPDATE KEEPS whatever maximum the table already carries');
       expect(text).toContain('only an explicit -1 removes one');
@@ -1659,22 +1677,25 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // The site the issue's own grep could not see. A sibling index is the
       // control: a per-entry rebuild that leaked across entries, or a scope
       // built from a hardcoded literal, would be invisible to a one-index case.
-      const create = await runOnDemandCreate({
-        GlobalSecondaryIndexes: [
-          {
-            IndexName: 'bad-index',
-            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-            Projection: { ProjectionType: 'ALL' },
-            OnDemandThroughput: { MaxReadRequestUnits: ' 100 ', MaxWriteRequestUnits: '7' },
-          },
-          {
-            IndexName: 'good-index',
-            KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }],
-            Projection: { ProjectionType: 'ALL' },
-            OnDemandThroughput: { MaxReadRequestUnits: '9', MaxWriteRequestUnits: 4 },
-          },
-        ],
-      });
+      const create = await runOnDemandCreate(
+        {
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'bad-index',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              OnDemandThroughput: { MaxReadRequestUnits: ' 100 ', MaxWriteRequestUnits: '7' },
+            },
+            {
+              IndexName: 'good-index',
+              KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              OnDemandThroughput: { MaxReadRequestUnits: '9', MaxWriteRequestUnits: 4 },
+            },
+          ],
+        },
+        REPLAY
+      );
 
       const sentFor = (name: string): unknown =>
         (create?.input.GlobalSecondaryIndexes ?? []).find((g) => g.IndexName === name)
@@ -1705,7 +1726,7 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
         Projection: { ProjectionType: 'ALL' },
         OnDemandThroughput: { MaxReadRequestUnits: '100', MaxWriteRequestUnits: ' 7 ' },
       };
-      const create = await runOnDemandCreate({ GlobalSecondaryIndexes: [entry] });
+      const create = await runOnDemandCreate({ GlobalSecondaryIndexes: [entry] }, REPLAY);
       expect(entry.OnDemandThroughput).toEqual({
         MaxReadRequestUnits: '100',
         MaxWriteRequestUnits: ' 7 ',
@@ -1730,7 +1751,8 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
           TableName: TABLE_NAME,
           BillingMode: 'PAY_PER_REQUEST',
           OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 7 },
-        }
+        },
+        REPLAY
       );
 
       const call = findCalls(UpdateTableCommand).find((c) => c.input.OnDemandThroughput);
@@ -1762,7 +1784,8 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
           TableName: TABLE_NAME,
           BillingMode: 'PAY_PER_REQUEST',
           OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 7 },
-        }
+        },
+        REPLAY
       );
 
       const call = findCalls(UpdateTableCommand).find(
@@ -1831,7 +1854,8 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
     const gsiCeilingOps = async (
       desiredIndexes: unknown[],
       previousIndexes: unknown[],
-      live?: { indexes?: unknown[] }
+      live?: { indexes?: unknown[] },
+      context?: { replayingState?: boolean }
     ) => {
       primeGeneric({
         billingMode: 'PAY_PER_REQUEST',
@@ -1850,7 +1874,8 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
           TableName: TABLE_NAME,
           BillingMode: 'PAY_PER_REQUEST',
           GlobalSecondaryIndexes: previousIndexes,
-        }
+        },
+        context
       );
       return findCalls(UpdateTableCommand)
         .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
@@ -1950,7 +1975,9 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // compares RAW instead.
       const updates = await gsiCeilingOps(
         [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 30 ', MaxWriteRequestUnits: 15 })],
-        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ', MaxWriteRequestUnits: 15 })]
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ', MaxWriteRequestUnits: 15 })],
+        undefined,
+        REPLAY
       );
       // The warning is the point. The op itself still carries only the SURVIVING
       // member, which differs from nothing AWS holds here, so it is emitted.
@@ -2143,7 +2170,8 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
               OnDemandThroughput: { MaxReadRequestUnits: 200, MaxWriteRequestUnits: 60 },
             },
           ],
-        }
+        },
+        REPLAY
       );
       expect(updates).toEqual([
         { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 70 } },
@@ -2345,7 +2373,7 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
           },
           // A non-empty secret bag is what makes the masker a real
           // `String.replace` call rather than the identity default.
-          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+          { ...REPLAY, maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
         )
       ).resolves.not.toThrow();
       expect(warnings()).toContain('<unnamed>');
@@ -2360,7 +2388,9 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // per member, which is the whole licence for withholding it.
       const updates = await gsiCeilingOps(
         [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 200 ', MaxWriteRequestUnits: 'abc' })],
-        [ppRequestGsi('gsi1')]
+        [ppRequestGsi('gsi1')],
+        undefined,
+        REPLAY
       );
       expect(updates).toEqual([]);
       expect(warnings()).toContain(ON_DEMAND);
@@ -2672,7 +2702,8 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
             },
           ],
         },
-        { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [] }
+        { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [] },
+        REPLAY
       );
 
       const actions = findCalls(UpdateTableCommand).flatMap(
@@ -2709,11 +2740,255 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
           { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [] },
           // A non-empty secret bag is what makes the masker a real
           // `String.replace` call rather than the identity default.
-          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+          { ...REPLAY, maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
         )
       ).resolves.not.toThrow();
       expect(warnings()).toContain('<unnamed>');
       expect(warnings()).toContain(ON_DEMAND);
     });
+  });
+
+  describe('a ceiling member CloudFormation rejects is REFUSED on the template path (#3286)', () => {
+    /**
+     * The drop-and-warn above let the call SUCCEED with the member unapplied
+     * while state recorded the declared spelling, so `cdkd drift` reported it
+     * forever. The template path now refuses the spelling before ANY call —
+     * CloudFormation refuses the same template — while every spelling it may
+     * ACCEPT keeps deploying exactly as before.
+     */
+    const REFUSAL = 'must be an Integer CloudFormation accepts';
+
+    const createWith = (properties: Record<string, unknown>, context?: Record<string, unknown>) => {
+      primeGeneric();
+      return provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          ...properties,
+        },
+        context
+      );
+    };
+
+    const updateWith = (
+      desired: Record<string, unknown>,
+      previous: Record<string, unknown>,
+      context?: Record<string, unknown>
+    ) => {
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      return provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', ...desired },
+        { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', ...previous },
+        context
+      );
+    };
+
+    const gsi = (name: string, ceiling?: unknown) => ({
+      IndexName: name,
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+      ...(ceiling === undefined ? {} : { OnDemandThroughput: ceiling }),
+    });
+
+    /** `shape` is what the refusal names; `undefined` means NOT refused. */
+    const SPELLINGS: ReadonlyArray<{ readonly value: unknown; readonly shape?: string }> = [
+      // --- CloudFormation REJECTS: refused -----------------------------------
+      { value: ' 100 ', shape: 'a string' },
+      { value: '100 ', shape: 'a string' },
+      { value: '0x64', shape: 'a string' },
+      { value: '1e2', shape: 'a string' },
+      { value: '6.5', shape: 'a string' },
+      { value: 'abc', shape: 'a string' },
+      { value: 6.5, shape: 'a number that is not an integer' },
+      { value: true, shape: 'a boolean' },
+      { value: null, shape: 'null' },
+      { value: [100], shape: 'an array' },
+      { value: { Ref: 'Unset' }, shape: 'an object' },
+      // --- CloudFormation ACCEPTS: sent as before ----------------------------
+      { value: 100 },
+      { value: '100' },
+      { value: '+8' },
+      { value: '010' },
+      { value: -1 },
+      { value: '-1' },
+      // --- CloudFormation MAY accept: left to the warn-and-drop --------------
+      { value: '' },
+      { value: '   ' },
+      { value: '99999999999999999999' },
+      { value: 2 ** 60 },
+      { value: undefined },
+    ];
+
+    it('keeps its per-outcome row counts', () => {
+      expect(SPELLINGS.length).toBe(22);
+      expect(SPELLINGS.filter((r) => r.shape !== undefined).length).toBe(11);
+      // The removal sentinel is NOT refused, in both spellings.
+      expect(SPELLINGS.filter((r) => r.value === -1 || r.value === '-1').every((r) => !r.shape)).toBe(
+        true
+      );
+    });
+
+    for (const row of SPELLINGS) {
+      const verdict = row.shape === undefined ? 'creates' : `refuses (${row.shape})`;
+      it(`create (table): MaxReadRequestUnits ${label(row.value)} ${verdict}`, async () => {
+        const run = createWith({
+          OnDemandThroughput: { MaxReadRequestUnits: row.value, MaxWriteRequestUnits: 3 },
+        });
+        if (row.shape === undefined) {
+          await expect(run).resolves.toBeDefined();
+          expect(findCalls(CreateTableCommand)).toHaveLength(1);
+          return;
+        }
+        await expect(run).rejects.toThrow(
+          `L: OnDemandThroughput.MaxReadRequestUnits ${REFUSAL}`
+        );
+        await expect(run).rejects.toThrow(`(got ${row.shape})`);
+        // Before ANY call — not only before CreateTable.
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+    }
+
+    it('create (per-index): names the index by POSITION and the member, and sends nothing', async () => {
+      const run = createWith({
+        GlobalSecondaryIndexes: [
+          gsi('good-index', { MaxReadRequestUnits: 9 }),
+          gsi('s3cr3t-index', { MaxReadRequestUnits: 9, MaxWriteRequestUnits: ' 7 ' }),
+        ],
+      });
+      await expect(run).rejects.toThrow(
+        `GlobalSecondaryIndexes[1].OnDemandThroughput.MaxWriteRequestUnits ${REFUSAL}`
+      );
+      // The resolved index name stays out of the thrown text.
+      await expect(run).rejects.not.toThrow('s3cr3t');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('never puts the VALUE in the message', async () => {
+      const run = createWith({ OnDemandThroughput: { MaxReadRequestUnits: 's3cr3t-value' } });
+      await expect(run).rejects.toThrow(REFUSAL);
+      await expect(run).rejects.not.toThrow('s3cr3t');
+    });
+
+    it('a NON-OBJECT block is not refused here (forwarded verbatim, as before)', async () => {
+      await expect(createWith({ OnDemandThroughput: 'abc' })).resolves.toBeDefined();
+      expect(findCalls(CreateTableCommand)[0]?.input.OnDemandThroughput).toBe('abc');
+    });
+
+    it('a REPLAYED create keeps the warn-and-drop', async () => {
+      await expect(
+        createWith({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } }, { replayingState: true })
+      ).resolves.toBeDefined();
+      expect(findCalls(CreateTableCommand)[0]?.input.OnDemandThroughput).toEqual({});
+      expect(warnings()).toContain('OnDemandThroughput.MaxReadRequestUnits');
+    });
+
+    it('update (table): a CHANGED rejected spelling is refused before any call', async () => {
+      const run = updateWith(
+        { OnDemandThroughput: { MaxReadRequestUnits: 30, MaxWriteRequestUnits: ' 25 ' } },
+        { OnDemandThroughput: { MaxReadRequestUnits: 30 } }
+      );
+      await expect(run).rejects.toThrow(
+        `L: OnDemandThroughput.MaxWriteRequestUnits ${REFUSAL}`
+      );
+      await expect(run).rejects.toThrow('Nothing was applied to the table');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('update (table): an UNCHANGED rejected spelling sends nothing, so it is not refused', async () => {
+      // A record written before #3286 still holds the spelling; a deploy that
+      // changes something ELSE must not start failing on it.
+      const block = { MaxReadRequestUnits: 30, MaxWriteRequestUnits: ' 25 ' };
+      await expect(
+        updateWith(
+          { OnDemandThroughput: block, Tags: [{ Key: 'k', Value: 'v' }] },
+          { OnDemandThroughput: { ...block } }
+        )
+      ).resolves.toBeDefined();
+      expect(findCalls(UpdateTableCommand).some((c) => c.input.OnDemandThroughput)).toBe(false);
+    });
+
+    it('update (table): the -1 removal sentinel and a quoted integer still go out', async () => {
+      await expect(
+        updateWith(
+          { OnDemandThroughput: { MaxReadRequestUnits: '-1', MaxWriteRequestUnits: '40' } },
+          { OnDemandThroughput: { MaxReadRequestUnits: 30, MaxWriteRequestUnits: 20 } }
+        )
+      ).resolves.toBeDefined();
+      const call = findCalls(UpdateTableCommand).find((c) => c.input.OnDemandThroughput);
+      expect(call?.input.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: -1,
+        MaxWriteRequestUnits: 40,
+      });
+    });
+
+    it('update (per-index): a CHANGED ceiling on a live index is refused before any call', async () => {
+      const run = updateWith(
+        { GlobalSecondaryIndexes: [gsi('gsi1', { MaxReadRequestUnits: '6.5' })] },
+        { GlobalSecondaryIndexes: [gsi('gsi1', { MaxReadRequestUnits: 6 })] }
+      );
+      await expect(run).rejects.toThrow(
+        `GlobalSecondaryIndexes[0].OnDemandThroughput.MaxReadRequestUnits ${REFUSAL}`
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('update (per-index): a NEW index carrying a rejected ceiling is refused', async () => {
+      const run = updateWith(
+        {
+          GlobalSecondaryIndexes: [
+            gsi('gsi1', { MaxReadRequestUnits: 6 }),
+            gsi('gsi2', { MaxWriteRequestUnits: null }),
+          ],
+        },
+        { GlobalSecondaryIndexes: [gsi('gsi1', { MaxReadRequestUnits: 6 })] }
+      );
+      await expect(run).rejects.toThrow(
+        `GlobalSecondaryIndexes[1].OnDemandThroughput.MaxWriteRequestUnits ${REFUSAL}`
+      );
+      await expect(run).rejects.toThrow('(got null)');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('update (per-index): an UNCHANGED rejected ceiling is not refused when ANOTHER index changes', async () => {
+      await expect(
+        updateWith(
+          {
+            GlobalSecondaryIndexes: [
+              gsi('gsi1', { MaxReadRequestUnits: ' 25 ' }),
+              gsi('gsi2', { MaxReadRequestUnits: 90 }),
+            ],
+          },
+          {
+            GlobalSecondaryIndexes: [
+              gsi('gsi1', { MaxReadRequestUnits: ' 25 ' }),
+              gsi('gsi2', { MaxReadRequestUnits: 80 }),
+            ],
+          }
+        )
+      ).resolves.toBeDefined();
+      // Non-vacuous: the OTHER index's edit really reached the GSI arm.
+      expect(
+        findCalls(UpdateTableCommand).some((c) => (c.input.GlobalSecondaryIndexUpdates ?? []).length)
+      ).toBe(true);
+    });
+
+    for (const context of [{ replayingState: true }, { desiredFromAwsReadback: true }]) {
+      it(`update: a state-borne bag (${Object.keys(context)[0]}) is not refused`, async () => {
+        await expect(
+          updateWith(
+            { OnDemandThroughput: { MaxReadRequestUnits: 30, MaxWriteRequestUnits: ' 25 ' } },
+            { OnDemandThroughput: { MaxReadRequestUnits: 30 } },
+            context
+          )
+        ).resolves.toBeDefined();
+      });
+    }
   });
 });

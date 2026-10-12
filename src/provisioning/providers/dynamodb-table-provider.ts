@@ -391,6 +391,134 @@ function narrowOnDemandCeilings(declared: unknown): {
 }
 
 /**
+ * The shape of an `OnDemandThroughput` ceiling member the template path
+ * REFUSES, or `undefined` when the member is sendable or is one of the drop
+ * shapes deliberately left to {@link narrowOnDemandCeilings} (issue
+ * [#3286](https://github.com/go-to-k/cdkd/issues/3286)).
+ *
+ * A member {@link narrowOnDemandCeilings} drops used to be WARNED and omitted,
+ * and since both members are SDK-optional the call SUCCEEDED: AWS held no
+ * maximum (or kept the old one) while state recorded the declared spelling,
+ * so `cdkd drift` reported it forever. Refusing before any call removes that
+ * disagreement at its source, and it is CloudFormation parity: CloudFormation
+ * refuses the same template, so no template it deploys stops deploying here.
+ *
+ * Refused only where that rejection is EVIDENCED. The DynamoDB Integer grammar
+ * was measured on `ProvisionedThroughput.ReadCapacityUnits` of this type
+ * (issue #3135, table on `toCfnInteger` in `../dynamodb-warm-throughput.ts`):
+ * padded, hex, exponent and decimal-point strings are rejected. `null` and
+ * booleans were measured rejected on `AWS::Logs::LogGroup`'s Integer, and an
+ * array or object fails the schema's `integer` type outright.
+ *
+ * NOT refused, and still dropped with the warning, because CloudFormation may
+ * ACCEPT them:
+ *  - a blank string — measured as "property absent" on the OPTIONAL Logs
+ *    Integer, and both ceiling members are optional;
+ *  - an integer outside JavaScript's safe range — a valid `Long`, which cdkd
+ *    cannot carry exactly;
+ *  - a key holding `undefined`, which no template spells (`AWS::NoValue`
+ *    removes the key).
+ *
+ * The returned shape names the TYPE only, never the value: the member arrives
+ * resolved and may carry a secret.
+ */
+function refusedOnDemandCeilingShape(value: unknown): string | undefined {
+  if (value === undefined || coerceCfnInteger(value) !== undefined) return undefined;
+  if (typeof value === 'string') {
+    if (value.trim() === '' || /^[+-]?\d+$/.test(value)) return undefined;
+    return 'a string';
+  }
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? undefined : 'a number that is not an integer';
+  }
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return 'a boolean';
+  if (Array.isArray(value)) return 'an array';
+  return 'an object';
+}
+
+/**
+ * The template-path pre-flight refusal for an `OnDemandThroughput` ceiling
+ * member CloudFormation rejects (issue
+ * [#3286](https://github.com/go-to-k/cdkd/issues/3286)), at the TABLE level and
+ * in every `GlobalSecondaryIndexes[]` entry, or `undefined`.
+ *
+ * `previousProperties` is the recorded bag on `update()` and `undefined` on
+ * `create()`, where every position is sent. On an update a position is checked
+ * only when its block is a PENDING send: the table-level block when it differs
+ * from the recorded one (the send's own gate), an index when it is new to the
+ * record or its block differs. An unchanged block sends nothing, so refusing it
+ * would fail a deploy that applies nothing for it — the gate this file's other
+ * update-path refusals take.
+ *
+ * A block that is not a plain object is not checked: it is forwarded verbatim
+ * for AWS to reject by shape, as before. The index is named by POSITION only,
+ * for the reason `INDEX_CONTRIBUTOR_INSIGHTS_PATH` gives.
+ */
+function onDemandCeilingRefusal(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown> | undefined,
+  logicalId: string
+): string | undefined {
+  const blockRefusal = (block: unknown, path: string): string | undefined => {
+    if (!isPlainCapacityBlock(block)) return undefined;
+    for (const member of ON_DEMAND_CEILING_MEMBERS) {
+      if (!Object.hasOwn(block, member)) continue;
+      const shape = refusedOnDemandCeilingShape(block[member]);
+      if (shape === undefined) continue;
+      return (
+        `AWS::DynamoDB::Table ${logicalId}: ${path}.${member} must be an Integer ` +
+        `CloudFormation accepts — an optional sign and decimal digits, with no surrounding ` +
+        `whitespace, hex, exponent or decimal point; -1 removes an existing maximum ` +
+        `(got ${shape}). CloudFormation refuses the same template`
+      );
+    }
+    return undefined;
+  };
+  const changed = (desired: unknown, recorded: unknown): boolean =>
+    JSON.stringify(desired) !== JSON.stringify(recorded);
+
+  if (
+    previousProperties === undefined ||
+    changed(properties['OnDemandThroughput'], previousProperties['OnDemandThroughput'])
+  ) {
+    const refusal = blockRefusal(properties['OnDemandThroughput'], 'OnDemandThroughput');
+    if (refusal !== undefined) return refusal;
+  }
+
+  const desiredIndexes = properties['GlobalSecondaryIndexes'];
+  if (!Array.isArray(desiredIndexes)) return undefined;
+  // Keyed exactly as `applyGsiUpdates` keys `prevByName`: truthy names only.
+  const previousByName = new Map<unknown, Record<string, unknown>>();
+  const previousIndexes = previousProperties?.['GlobalSecondaryIndexes'];
+  if (Array.isArray(previousIndexes)) {
+    for (const entry of previousIndexes as unknown[]) {
+      if (isPlainCapacityBlock(entry) && entry['IndexName']) {
+        previousByName.set(entry['IndexName'], entry);
+      }
+    }
+  }
+  for (const [position, entry] of (desiredIndexes as unknown[]).entries()) {
+    if (!isPlainCapacityBlock(entry)) continue;
+    if (previousProperties !== undefined) {
+      const previous = previousByName.get(entry['IndexName']);
+      if (
+        previous !== undefined &&
+        !changed(entry['OnDemandThroughput'], previous['OnDemandThroughput'])
+      ) {
+        continue;
+      }
+    }
+    const refusal = blockRefusal(
+      entry['OnDemandThroughput'],
+      `GlobalSecondaryIndexes[${position}].OnDemandThroughput`
+    );
+    if (refusal !== undefined) return refusal;
+  }
+  return undefined;
+}
+
+/**
  * Does the ceiling AWS currently holds for a GSI already cover every member
  * cdkd is about to send? (issue
  * [#3287](https://github.com/go-to-k/cdkd/issues/3287))
@@ -1822,6 +1950,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         if (pitrRefusal !== undefined) {
           throw new Error(`${pitrRefusal}. Fix the template value`);
         }
+        // An `OnDemandThroughput` ceiling member CloudFormation rejects (issue
+        // #3286), table-level and per index, for the same reason and under the
+        // same replay stand-down: a replayed record keeps the send path's
+        // warn-and-drop.
+        const ceilingRefusal = onDemandCeilingRefusal(properties, undefined, logicalId);
+        if (ceilingRefusal !== undefined) {
+          throw new Error(`${ceilingRefusal}. Nothing was applied; fix the template value`);
+        }
       }
 
       const createParams: CreateTableCommandInput = {
@@ -2263,6 +2399,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
           throw new ProvisioningError(
             `AWS::DynamoDB::Table ${logicalId}: ${pitrRefusal}. Nothing was applied to the ` +
               `table; fix the template value`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+      }
+
+      // An `OnDemandThroughput` ceiling member CloudFormation rejects (issue
+      // #3286), table-level and per index, is REFUSED on the template path
+      // here — before any call — rather than dropped by
+      // `coerceOnDemandCeilingsForSend`, whose call then SUCCEEDED with the
+      // member unapplied while state recorded it: permanent drift. Only a
+      // PENDING send is checked (`onDemandCeilingRefusal` says which); the two
+      // state-borne callers keep the send path's warn-and-drop.
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        const ceilingRefusal = onDemandCeilingRefusal(properties, previousProperties, logicalId);
+        if (ceilingRefusal !== undefined) {
+          throw new ProvisioningError(
+            `${ceilingRefusal}. Nothing was applied to the table; fix the template value`,
             resourceType,
             logicalId,
             physicalId
@@ -3114,18 +3269,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // called and the warning that tells the user what to fix STOPS -- the
       // concealment `.claude/rules/provider-diff-record-folds.md` refuses.
       // The redundant call is also bounded: it needs a template EDIT, fires
-      // once, and DynamoDB's answer to a same-value ceiling is unmeasured. The
-      // real fix is the `effectiveProperties` + `canonicalizeDesiredProperties`
-      // pair that would stop state recording the declared spelling at all, and
-      // that is go-to-k/cdkd#3286, which owns this whole class. That pair was
-      // written for this PR and WITHDRAWN from it: folding the record without
-      // also changing where `observedProperties` is captured
-      // (`deploy-engine.ts`, three call sites) leaves the observed bag carrying
-      // the per-index ceiling the record omits, and `drift-calculator.ts`
-      // compares `GlobalSecondaryIndexes` as one positional deep-equal array --
-      // PERMANENT phantom drift, with `--revert` holding a change to push. That
-      // is a deploy-engine change, so go-to-k/cdkd#3286 stays open and carries
-      // the evidence.
+      // once, and DynamoDB's answer to a same-value ceiling is unmeasured. A
+      // malformed template no longer reaches this detector at all: the
+      // pre-flight at the top of this method refuses it (issue #3286).
       if (
         JSON.stringify(properties['OnDemandThroughput']) !==
         JSON.stringify(previousProperties['OnDemandThroughput'])
@@ -5994,25 +6140,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * {@link coerceIndexThroughputForCreate} can tell "unchanged" from "rewritten"
    * without a structural compare.
    *
-   * **Known residual, deliberately not closed here.** Wherever the call
-   * SUCCEEDS, state records the spelling the TEMPLATE declared while AWS holds
-   * a different ceiling (none on a create, the previous one on an update) — the
-   * permanent phantom-drift class
-   * `.claude/rules/provider-property-fidelity.md` covers, which
-   * {@link coerceIndexCapacityBlock} escapes only because ITS drop makes AWS
-   * fail. Closing it needs `effectiveProperties` AND its
-   * `canonicalizeDesiredProperties` twin (the rule requires the pair; shipping
-   * the first alone re-issues a no-op `UpdateTable` on every later deploy), and
-   * this provider implements neither today. That pair was WRITTEN and
-   * WITHDRAWN: `observedProperties` is captured from the RAW template bag in
-   * `deploy-engine.ts`, so a folded record leaves the observed side carrying a
-   * per-index ceiling the record omits, and `drift-calculator.ts` compares
-   * `GlobalSecondaryIndexes` as one positional deep-equal array — the fold
-   * MANUFACTURES the phantom drift it exists to remove. Agreeing the two is a
-   * deploy-engine change across three call sites. Tracked as issue
-   * [#3286](https://github.com/go-to-k/cdkd/issues/3286), which carries the
-   * evidence; the warning names the residual so a user is not left to discover
-   * it from a `cdkd drift` line. The
+   * **The template path no longer reaches the drop for a spelling
+   * CloudFormation rejects** (issue
+   * [#3286](https://github.com/go-to-k/cdkd/issues/3286)): `create()` and
+   * `update()` refuse it first ({@link onDemandCeilingRefusal}), because
+   * wherever this call SUCCEEDS state records the declared spelling while AWS
+   * holds a different ceiling — permanent drift. What still arrives here is a
+   * state-borne bag (a replay, which cannot be fixed from the template) and
+   * the shapes CloudFormation may accept that the refusal leaves alone
+   * ({@link refusedOnDemandCeilingShape}). Recording the narrowed bag instead
+   * (`effectiveProperties` plus its `canonicalizeDesiredProperties` twin) was
+   * written and withdrawn on PR #3380: the observed-properties capture reads
+   * the RAW bag, so the fold manufactured the drift it meant to remove. The
    * `AWS::DynamoDB::GlobalTable` sibling answers the SAME way for the same
    * spelling — `collectTableOnDemandCeilings` coerces through
    * `coerceCfnInteger` and a rejected ceiling is reported and LEFT UNSENT, with

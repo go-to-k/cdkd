@@ -78,7 +78,10 @@ import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
 } from './write-only-properties.js';
-import { getTopLevelAttributeNames } from './read-only-properties.js';
+import {
+  getTopLevelAttributeNames,
+  getTopLevelDeployAttributeNames,
+} from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
 import {
   errorCauseChain,
@@ -941,7 +944,7 @@ export class CloudControlProvider implements ResourceProvider {
     const mask = maskerOrIdentity(context?.maskSecrets);
     const idLog = new IdScrubLog(this.logger, mask, holdsSecretDerivedLeaf(properties, mask));
     return inIdLogScope(idLog, () =>
-      this.createInIdLogScope(logicalId, resourceType, properties, idLog)
+      this.createInIdLogScope(logicalId, resourceType, properties, idLog, mask)
     );
   }
 
@@ -949,9 +952,14 @@ export class CloudControlProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    idLog: IdScrubLog
+    idLog: IdScrubLog,
+    mask: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating resource ${logicalId} (${resourceType})`);
+    // Started NOW, resolved at the end: the schema lookup the narrowing needs
+    // (issue #2925) runs alongside the create rather than after it. Never
+    // rejects, so an early return or a throw below leaves nothing unhandled.
+    const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
 
     try {
       // Start resource creation
@@ -1022,11 +1030,26 @@ export class CloudControlProvider implements ResourceProvider {
         result.attributes || {}
       );
 
+      // Every key so far came from the Cloud Control model (the event's, or
+      // the read-back that wins over it); the enrichment below adds computed
+      // attributes. Only the MODEL keys are narrowed (issue #2925).
+      const modelKeys = Object.keys(result.attributes);
+
       // Enrich attributes with computed values for specific resource types
       result.attributes = await this.enrichResourceAttributes(
         resourceType,
         progressEvent.Identifier,
         result.attributes
+      );
+
+      result.attributes = await this.maskDeployedNonAttributeKeys(
+        result.attributes,
+        modelKeys,
+        resourceType,
+        progressEvent.Identifier,
+        attributeNamesLookup,
+        properties,
+        mask
       );
 
       return result;
@@ -1358,6 +1381,8 @@ export class CloudControlProvider implements ResourceProvider {
       // read, unchanged or not. A CHANGED one is still re-added -- Cloud
       // Control refuses that too (no patch can express it), and the `add`
       // gets its refusal naming the create-only path (go-to-k/cdkd#4423).
+      // See `create()`: started alongside the update, awaited at its end.
+      const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
       const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
       if (writeOnlyProperties.size > 0) {
         const keptOnPreviousSide = getTopLevelKeysHoldingUnreadableCreateOnly(
@@ -1461,11 +1486,25 @@ export class CloudControlProvider implements ResourceProvider {
         idLog
       );
 
+      // See `create()`: only the MODEL keys are narrowed (issue #2925).
+      const modelKeys = Object.keys(result.attributes);
+
       // Enrich attributes with computed values for specific resource types
       result.attributes = await this.enrichResourceAttributes(
         resourceType,
         physicalId,
         result.attributes,
+        idLog
+      );
+
+      result.attributes = await this.maskDeployedNonAttributeKeys(
+        result.attributes,
+        modelKeys,
+        resourceType,
+        physicalId,
+        attributeNamesLookup,
+        properties,
+        maskerOrIdentity(context?.maskSecrets),
         idLog
       );
 
@@ -3311,17 +3350,11 @@ export class CloudControlProvider implements ResourceProvider {
    * This method adds fallback attributes for edge cases where CC API
    * may not return certain values.
    *
-   * It passes every other key through AS-IS, and on the CREATE / UPDATE path
-   * that bag is still the WHOLE resource model. This comment used to justify
-   * that by saying the model's property names match `Fn::GetAtt` attribute
-   * names; they do not — the model is every readable property, while
-   * `Fn::GetAtt` reads only the type's attributes (its `readOnlyProperties`
-   * plus the writable properties the resource specification also lists as
-   * attributes, issue #3735). Issue
-   * [#2847](https://github.com/go-to-k/cdkd/issues/2847) narrowed the IMPORT
-   * path for that reason; the deploy path is issue
-   * [#2925](https://github.com/go-to-k/cdkd/issues/2925), which also carries
-   * why the same narrowing cannot simply be copied here.
+   * It passes every other key through AS-IS and sees the WHOLE resource
+   * model: its gates read attributes, and some compute from the model. The
+   * narrowing to `Fn::GetAtt` attributes happens AFTER it, in
+   * {@link maskDeployedNonAttributeKeys} (issue #2925), so a computed value
+   * is built from real inputs and a key it adds is never masked.
    */
   private async enrichResourceAttributes(
     resourceType: string,
@@ -4420,6 +4453,93 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
+   * The deploy-side half of the attribute narrowing (issue #2925; the import
+   * side is {@link maskUncertifiedModelValues}). Every MODEL key of a
+   * create / update result that is not an `Fn::GetAtt` attribute of the type
+   * has its leaves replaced with {@link SECRET_MASK}, container shape kept.
+   * Without it the first deploy after `cdkd import` rewrote the narrowed bag
+   * with the whole model.
+   *
+   * THE DEPLOY'S SET IS WIDER THAN THE IMPORT'S, on purpose: every attribute
+   * the resource specification lists stays clear
+   * (`getTopLevelDeployAttributeNames`: the import's certified set plus the
+   * shape-mismatched writable attributes, e.g. `AWS::DocDB::DBCluster` `Port`,
+   * which CDK's `allowDefaultPortFrom` reads), because the deploy recorded
+   * them before this narrowing and a template CloudFormation accepts reads
+   * them. The one writable attribute held back for secrecy, `AWS::SSM::Parameter`
+   * `Value`, stays clear unless the run's secret masker derives it from a
+   * secret ({@link isLiteralDeployOnlyKey}). The schema lookup is started when the
+   * create / update starts (`attributeNamesLookup`), so it adds no round trip
+   * after it.
+   *
+   * MASK, never drop, for the reason the import side states: a missing key
+   * makes `resolveGetAtt` fall back to the physical id, a wrong value sent to
+   * AWS, where a masked one is refused by name.
+   *
+   * ONLY MODEL KEYS (`modelKeys`, taken before enrichment). The enrichment
+   * adds computed attributes, some under flat dotted names (`Endpoint.Port`)
+   * that no top-level set lists; those are attributes by construction.
+   *
+   * AN UNRESOLVABLE SCHEMA KEEPS THE MODEL, the OPPOSITE of the import side's
+   * fail-closed arm, deliberately. On import, masking everything costs a
+   * named refusal for one adopted resource until its next deploy. Here it
+   * would refuse every `Fn::GetAtt` of every Cloud-Control-routed resource
+   * for a user without `cloudformation:DescribeType`, on every deploy, with
+   * no deploy left to clear it. Keeping the model is the behaviour before this
+   * narrowing existed, and the deploy path's `scrubResourceRecord` still
+   * redacts every template-sourced secret on save. Masking everything would
+   * not take such a value out of `state.json` either: the drift baseline
+   * (`observedProperties`, captured from `readCurrentState` unless
+   * `--no-capture-observed-state`) holds the whole model whatever this
+   * method does. This narrowing therefore closes the `attributes` copy, the
+   * one `Fn::GetAtt` and same-run dependents read, not every copy.
+   *
+   * The bag is null-prototype for the same reason as the import side: a model
+   * key `__proto__` must stay an own key.
+   */
+  private async maskDeployedNonAttributeKeys(
+    attributes: Record<string, unknown>,
+    modelKeys: readonly string[],
+    resourceType: string,
+    physicalId: string,
+    attributeNamesLookup: Promise<ReadonlySet<string> | undefined>,
+    desired: Record<string, unknown>,
+    mask: MaskerFn,
+    log: IdLogSink = this.logger
+  ): Promise<Record<string, unknown>> {
+    const safeType = displaySafe(resourceType, { asciiOnly: true });
+    const attributeNames = await attributeNamesLookup;
+    if (attributeNames === undefined) {
+      log.debug(
+        `Could not resolve the CloudFormation schema for ${safeType}; recording its Cloud ` +
+          `Control model unnarrowed for ${displaySafe(physicalId, { asciiOnly: true })}.`
+      );
+      return attributes;
+    }
+    const narrowed = new Set(
+      modelKeys.filter(
+        (key) =>
+          !attributeNames.has(key) && !isLiteralDeployOnlyKey(resourceType, key, desired, mask)
+      )
+    );
+    if (narrowed.size === 0) return attributes;
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(attributes)) {
+      Object.defineProperty(out, key, {
+        value: narrowed.has(key) ? maskLeavesDeep(value) : value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    log.debug(
+      `Masked ${narrowed.size} non-attribute key(s) of the ${safeType} Cloud Control model for ` +
+        `${displaySafe(physicalId, { asciiOnly: true })}: they are not Fn::GetAtt attributes of the type.`
+    );
+    return out;
+  }
+
+  /**
    * Adopt an already-deployed resource into cdkd state via Cloud Control API.
    *
    * Strategy: explicit-override only.
@@ -5007,6 +5127,32 @@ const IMPORT_YIELDED_NO_ATTRIBUTES_CONSEQUENCE =
   `physical id.`;
 
 /**
+ * Whether a deploy keeps `AWS::SSM::Parameter` `Value` in the clear (issue
+ * #2925). The #3735 table holds `Value` back because `GetParameter` returns
+ * the plaintext a dynamic reference or a NoEcho `Ref` put there; CDK's
+ * `stringValue` reads it through `Fn::GetAtt`, so an ordinary value must keep
+ * resolving.
+ *
+ * The provider receives RESOLVED properties, so a `{{resolve:...}}` text is
+ * normally gone by now. What still tells a secret apart is the run's secret
+ * masker (`context.maskSecrets`, which knows every value this deploy resolved
+ * from a secret): `isSecretDerivedValue` asks it, and also catches a
+ * `{{resolve:` left unresolved. A value it flags is masked here; any other
+ * string is kept, as the SDK provider's `create()` records it. Save-time
+ * `scrubResourceRecord` remains the backstop for both routes.
+ */
+function isLiteralDeployOnlyKey(
+  resourceType: string,
+  key: string,
+  desired: Record<string, unknown>,
+  mask: MaskerFn
+): boolean {
+  if (resourceType !== 'AWS::SSM::Parameter' || key !== 'Value') return false;
+  const declared = desired['Value'];
+  return typeof declared === 'string' && !isSecretDerivedValue(declared, mask);
+}
+
+/**
  * Every LEAF of `value` replaced by {@link SECRET_MASK}, with object and array
  * CONTAINERS rebuilt at the same shape. See
  * `CloudControlProvider.maskUncertifiedModelValues` for why the shape must
@@ -5018,8 +5164,10 @@ const IMPORT_YIELDED_NO_ATTRIBUTES_CONSEQUENCE =
  * while this recursion throws `RangeError` between 1,000 and 5,000. No Cloud
  * Control resource model comes close, and the `try` in `import()` is narrowed
  * to the parse, so such a `RangeError` would fail the import loudly rather than
- * degrade it silently — which is the direction this design wants. Recorded so
- * the acyclic sentence is not read as covering depth.
+ * degrade it silently — which is the direction this design wants. On the
+ * deploy path (`maskDeployedNonAttributeKeys`) it would surface as a failed
+ * create / update the same way. Recorded so the acyclic sentence is not read
+ * as covering depth.
  */
 function maskLeavesDeep(value: unknown): unknown {
   if (Array.isArray(value)) {
