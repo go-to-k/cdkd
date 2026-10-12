@@ -1862,7 +1862,7 @@ echo "    OK: the newly declared NoEcho name is not replaced, and state holds **
 # noEchoLeaves.
 echo "==> Phase 4v: deploy the value-arm stack with @go-to-k/cdkd@${VA_CDKD_VERSION}, then unchanged with this binary"
 VA_TMPDIR="$(mktemp -d)"
-(cd "${VA_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@${VA_CDKD_VERSION}" >/dev/null)
+(cd "${VA_TMPDIR}" && npm init -y >/dev/null && npm install --silent --ignore-scripts "@go-to-k/cdkd@${VA_CDKD_VERSION}" >/dev/null)
 VA_BIN="${VA_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
 if [ ! -f "${VA_BIN}" ]; then
   echo "FAIL: premise: @go-to-k/cdkd@${VA_CDKD_VERSION} was not installed at ${VA_BIN}" >&2
@@ -1873,7 +1873,8 @@ if ! VA_OLD_OUT=$(node "${VA_BIN}" deploy "${VA_STACK}" \
   --region "${REGION}" \
   --yes 2>&1); then
   echo "FAIL: the Phase 4v deploy with @go-to-k/cdkd@${VA_CDKD_VERSION} exited non-zero" >&2
-  diag_output "${VA_OLD_OUT}"
+  # That release prints the string-declared value: show the lines without it.
+  diag_output "$(grep -vF -- "${VA_NAME}" <<< "${VA_OLD_OUT}" || true)"
   exit 1
 fi
 VA_STATE=$(mktemp)
@@ -1899,11 +1900,19 @@ if ! VA_NEW_OUT=$(node "${LOCAL_DIST}" deploy "${VA_STACK}" \
   --verbose \
   --yes 2>&1); then
   echo "FAIL: the Phase 4v redeploy with this binary exited non-zero (go-to-k/cdkd#4831)" >&2
-  diag_output "${VA_NEW_OUT}"
+  diag_output "$(grep -vF -- "${VA_NAME}" <<< "${VA_NEW_OUT}" || true)"
   exit 1
 fi
 if [[ "${VA_NEW_OUT}" == *"Replacing NoEchoValueArmTopic"* ]]; then
   echo "FAIL: the Phase 4v redeploy REPLACED NoEchoValueArmTopic -- an unchanged string-declared NoEcho value read as a create-only change (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+# PREMISE for the negative below: the run printed the topic's physical id
+# (the warning that keeps it in state), so a line that could carry the value
+# was emitted, masked.
+if [[ "${VA_NEW_OUT}" != *"NoEchoValueArmTopic: its physical id contains a NoEcho parameter value"* ]]; then
+  echo "FAIL: premise: the Phase 4v redeploy printed no 'NoEchoValueArmTopic: its physical id contains a NoEcho parameter value' line -- the value arm did not see the copy, or the wording drifted (go-to-k/cdkd#4831)" >&2
+  diag_output "$(grep -vF -- "${VA_NAME}" <<< "${VA_NEW_OUT}" || true)"
   exit 1
 fi
 if [[ "${VA_NEW_OUT}" == *"${VA_NAME}"* ]]; then

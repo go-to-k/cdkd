@@ -452,7 +452,7 @@ function recordInheritedNoEchoListElements(
 }
 
 /**
- * Record the value of a `NoEcho: true` PARAMETER as a LOG-ONLY needle of the
+ * Record the value of a `NoEcho` PARAMETER (`true` or `"true"`) as a LOG-ONLY needle of the
  * pass that consumed it (go-to-k/cdkd#1998). `NoEcho` is the template
  * author's declaration that the value is sensitive, and CloudFormation masks
  * it everywhere it echoes one.

@@ -40,13 +40,6 @@ const renderer = {
 };
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
-// Per-test DescribeType knobs (review round 8): a type's write-only list, and
-// a lookup that fails outright (the snapshot fallback then answers).
-const describeType = vi.hoisted(() => ({
-  writeOnly: new Map<string, string[]>(),
-  fail: false,
-}));
-
 vi.mock('../../../src/utils/aws-clients.js', async () => {
   const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
     '../../../src/provisioning/create-only-snapshot.generated.js'
@@ -56,7 +49,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
       cloudFormation: {
         send: vi.fn((command: { input?: { TypeName?: string } }) => {
           const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
-          if (paths === undefined || describeType.fail) {
+          if (paths === undefined) {
             return Promise.reject(
               Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
                 name: 'AccessDeniedException',
@@ -67,19 +60,11 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
           return Promise.resolve({
             Schema: JSON.stringify({
               createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
-              writeOnlyProperties: (describeType.writeOnly.get(command.input?.TypeName ?? '') ?? []).map(
-                (name) => `/properties/${name}`
-              ),
             }),
           });
         }),
       },
       sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
-      secretsManager: {
-        send: vi
-          .fn()
-          .mockResolvedValue({ SecretString: JSON.stringify({ pw: 'sm-secret-plaintext-value' }) }),
-      },
     }),
   };
 });
@@ -88,7 +73,6 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
 const STACK = 'noecho-string-value-arm-stack';
 const REGION = 'us-east-1';
-const TOKEN = 'tok-4831-arm-distinctive-01';
 const TOPIC = 'topic-4831-arm-distinctive';
 const TOPIC_ARN = `arn:aws:sns:us-east-1:123456789012:${TOPIC}`;
 
@@ -101,8 +85,6 @@ describe('DeployEngine - the value arm for a string-declared NoEcho (go-to-k/cdk
   };
 
   beforeEach(() => {
-    describeType.writeOnly.clear();
-    describeType.fail = false;
     clearCreateOnlyPropertiesCache();
     clearWriteOnlyPropertiesCache();
     vi.clearAllMocks();
@@ -115,7 +97,7 @@ describe('DeployEngine - the value arm for a string-declared NoEcho (go-to-k/cdk
       ),
       delete: vi.fn().mockResolvedValue(undefined),
       getAttribute: vi.fn(),
-      readCurrentState: vi.fn(() => Promise.resolve({ TopicName: TOPIC, DisplayName: TOKEN })),
+      readCurrentState: vi.fn(() => Promise.resolve({ TopicName: TOPIC, DisplayName: TOPIC })),
     };
     stateBackend = {
       getState: vi.fn(),
@@ -200,7 +182,7 @@ describe('DeployEngine - the value arm for a string-declared NoEcho (go-to-k/cdk
     await makeEngine().deploy(STACK, template(noEcho));
     const saved = savedTopic();
     expect(saved?.properties['TopicName']).toBe('***');
-    expect(JSON.stringify({ ...saved, physicalId: undefined })).not.toContain(TOPIC);
+    expect(JSON.stringify(saved)).not.toContain(TOPIC);
   });
 
   it('negative control: an ordinary parameter leaves the literal as it is', async () => {
