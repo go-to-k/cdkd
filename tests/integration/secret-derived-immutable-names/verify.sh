@@ -1030,6 +1030,11 @@ expect_eq "premise: ChildQueueArn's recorded Value after step 5d (go-to-k/cdkd#4
   "${QUEUE_ARN_LIVE}" \
   "$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
     | jq -r '.resources.ChildQueueArn.properties.Value // empty')"
+# PREMISE: the queue is NO_CHANGE in this deploy, so its readers resolve its ARN
+# from the record. An UPDATE would serve the provider's fresh ARN, and every
+# check below would pass with the fix reverted.
+expect_eq "premise: SecretQueue's recorded VisibilityTimeout after step 5e's rollback (5f needs the queue NO_CHANGE)" \
+  "45" "$(state_property SecretQueue VisibilityTimeout)"
 set +e
 SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
@@ -1043,6 +1048,13 @@ fi
 # PREMISE: this deploy updated the nested row, so the value below was sent now.
 if ! awk 'index($0, "QueueReaderChild") && index($0, "(AWS::CloudFormation::Stack)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
   echo "FAIL: premise: the redeploy's log has no 'QueueReaderChild (AWS::CloudFormation::Stack) updated' line (the reader was not re-sent, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+# ...and the queue itself was NOT updated (the line format is the one asserted
+# present for QueueReaderChild above, so its absence is not vacuous).
+if awk 'index($0, "SecretQueue") && index($0, "(AWS::SQS::Queue)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the redeploy UPDATED SecretQueue, so its readers were served the provider's fresh ARN rather than the record's (go-to-k/cdkd#4800 is not exercised)" >&2
   log_tail
   exit 1
 fi
