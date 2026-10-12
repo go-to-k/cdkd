@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   SECRET_MASK,
   embeddedPhysicalNameRewrites,
+  repairEmbeddedPhysicalNamesTowards,
   recordPhysicalNameCopy,
   redactSecretsForState,
   scrubResourceRecord,
@@ -127,5 +128,23 @@ describe('a reader copy of a read physical id (#4810)', () => {
     const bag: RecordedSecretValues = new Map([[NAME, SECRET_MASK]]);
     recordPhysicalNameCopy(bag, NAME);
     expect(redactSecretsForState({ Copy: NAME }, bag)).toEqual({ Copy: NAME });
+  });
+
+  it('a properties leaf takes a legacy repair only where it then equals today\'s leaf', () => {
+    const legacy = `https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`;
+    const pairs = [[legacy, URL]] as const;
+    // The legacy spelling was the whole difference: repaired.
+    expect(repairEmbeddedPhysicalNamesTowards({ Q: [legacy] }, { Q: [URL] }, pairs)).toEqual({
+      Q: [URL],
+    });
+    // Today's template spells the same text LITERALLY with the reference, so
+    // today's leaf IS the reference: left as it is.
+    const stored = { Q: [legacy] };
+    expect(repairEmbeddedPhysicalNamesTowards(stored, { Q: [legacy] }, pairs)).toBe(stored);
+    // A different value today: a real change, left as it is.
+    const other = { Q: [legacy] };
+    expect(
+      repairEmbeddedPhysicalNamesTowards(other, { Q: ['https://sqs.../other'] }, pairs)
+    ).toBe(other);
   });
 });
