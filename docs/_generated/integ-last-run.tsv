@@ -69,7 +69,7 @@ cross-region-concurrent-stacks	2026-10-11T21:12:45Z	PASS	216	verify.sh	PR #4809,
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-12T04:51:15Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 cross-stack-references	2026-10-09T07:58:21Z	PASS	40	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
-cross-stack-secret-import	2026-10-12T04:58:31Z	PASS	430	verify.sh	PR #4812 head build, rc ok, orph clean
+cross-stack-secret-import	2026-10-12T16:40:20Z	PASS	465	verify.sh	rc ok, orph clean (PR #4833 2d482c0d9, step 2b imported queue URL copy)
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-11T15:30:01Z	PASS	170	verify.sh	rc ok, orph clean (#4738 PR #4792)
 custom-resource-noecho-nested	2026-10-12T06:17:08Z	PASS	1493	verify.sh	PR #4812 head build, rc ok, orph clean
@@ -252,7 +252,7 @@ multi-stack-deps	2026-10-09T07:59:51Z	PASS	90	standard	rc ok, orph clean (PR #47
 neptune-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	2295	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-12T07:20:13Z	PASS	95	verify.sh	rc ok, orph clean
-nested-stack-3level	2026-10-12T05:32:28Z	PASS	541	verify.sh	PR #4812 head build, rc ok, orph clean
+nested-stack-3level	2026-10-12T16:40:20Z	PASS	531	verify.sh	rc ok, orph clean (PR #4833 2d482c0d9)
 nested-stack-deep	2026-10-12T05:34:47Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-rollback	2026-10-12T05:37:53Z	PASS	105	verify.sh	PR #4812 head build, rc ok, orph clean
@@ -328,7 +328,7 @@ schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#34
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 sdk-to-cc-autoroute	2026-10-11T09:33:22Z	PASS	231	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-secret-derived-immutable-names	2026-10-12T12:38:15Z	PASS	521	verify.sh	rc ok, orph clean; PR #4804 on main-merged 5339517e8 (incl. #4829); pre-fix arm red at 5f
+secret-derived-immutable-names	2026-10-12T16:40:20Z	PASS	521	verify.sh	rc ok, orph clean; PR #4833 2d482c0d9 nested ChildQueuePolicy; pre-fix arm red at ChildQueuePolicy Queues URL
 secrets-array-nested	2026-10-12T00:02:47Z	PASS	393	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-dynamic-ref	2026-10-12T00:02:47Z	PASS	733	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
