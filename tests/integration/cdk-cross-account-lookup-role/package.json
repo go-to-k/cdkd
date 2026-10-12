@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-cdk-cross-account-lookup-role",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd integ: an AWS CDK-generated cross-account Fn::GetStackOutput read through the producer's lookup role (#4808)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.272.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
